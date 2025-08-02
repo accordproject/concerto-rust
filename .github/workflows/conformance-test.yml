@@ -38,5 +38,4 @@ jobs:
           override: true
 
       - name: Run Rust-based Conformance Tests
-        working-directory: concerto-conformance/semantic/features/support/rust/cucumber_tests
-        run: cargo run
+        run: cargo run --manifest-path concerto-conformance/semantic/features/support/rust/cucumber_tests/Cargo.toml
