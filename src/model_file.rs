@@ -17,13 +17,15 @@ pub struct ModelFile {
 
 impl ModelFile {
     /// Creates a new model file
-   pub fn get_name(&self) -> String {
-        self.model.namespace.clone()
-    }
-
+    
     pub fn new(model: Model, content: String, file_name: String) -> Self {
         ModelFile { model, content, file_name }
     }
+    pub fn get_name(&self) -> String {
+        self.model.namespace.clone()
+    }
+
+    
 
     /// Loads a model file from a string
     pub fn from_string(content: String) -> Result<Self, ConcertoError> {
