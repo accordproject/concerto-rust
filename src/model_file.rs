@@ -11,29 +11,21 @@ use crate::validation::Validate;
 pub struct ModelFile {
     /// The metamodel representation
     pub model: Model,
-
-    /// Content of the model file
     pub content: String,
+    pub file_name: String,
 }
 
 impl ModelFile {
     /// Creates a new model file
-    pub fn new(namespace: String, version: Option<String>) -> Self {
-        let model = Model {
-            _class: "concerto.metamodel@1.0.0.Model".to_string(),
-            namespace,
-            concerto_version: version,
-            source_uri: None,
-            imports: None,
-            declarations: None,
-            decorators: None,
-        };
-
-        ModelFile {
-            model,
-            content: String::new(),
-        }
+    
+    pub fn new(model: Model, content: String, file_name: String) -> Self {
+        ModelFile { model, content, file_name }
     }
+    pub fn get_name(&self) -> String {
+        self.model.namespace.clone()
+    }
+
+    
 
     /// Loads a model file from a string
     pub fn from_string(content: String) -> Result<Self, ConcertoError> {
