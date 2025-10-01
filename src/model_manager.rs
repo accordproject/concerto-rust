@@ -52,15 +52,36 @@ impl ModelManager {
         // First, validate each model file individually
         for model_file in self.models.values() {
             model_file.validate()?;
-            // Check for duplicate enum names in the same file
+            // Collect enum names in the current file
+            let mut enum_names = std::collections::HashSet::new();
             if let Some(declarations) = &model_file.model.declarations {
-                let mut enum_names = std::collections::HashSet::new();
                 for decl in declarations {
                     if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                        // Check for duplicate enum names in the same file
                         if !enum_names.insert(&decl.name) {
                             return Err(ConcertoError::ValidationError(
                                 format!("Duplicate enum name '{}' found in namespace '{}'", decl.name, model_file.model.namespace)
                             ));
+                        }
+                    }
+                }
+            }
+            // Check for enum name conflicts with imported models
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    if let Some(imported_namespace) = import.namespace.as_ref() {
+                        if let Some(imported_model_file) = self.get_model_file(imported_namespace.as_str()) {
+                            if let Some(imported_declarations) = &imported_model_file.model.declarations {
+                                for imported_decl in imported_declarations {
+                                    if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                                        if enum_names.contains(&imported_decl.name) {
+                                            return Err(ConcertoError::ValidationError(
+                                                format!("Enum name '{}' already defined in an imported model", imported_decl.name)
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
