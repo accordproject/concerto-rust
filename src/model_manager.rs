@@ -52,8 +52,21 @@ impl ModelManager {
         // First, validate each model file individually
         for model_file in self.models.values() {
             model_file.validate()?;
+            // Check for duplicate enum names in the same file
+            if let Some(declarations) = &model_file.model.declarations {
+                let mut enum_names = std::collections::HashSet::new();
+                for decl in declarations {
+                    if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                        if !enum_names.insert(&decl.name) {
+                            return Err(ConcertoError::ValidationError(
+                                format!("Duplicate enum name '{}' found in namespace '{}'", decl.name, model_file.model.namespace)
+                            ));
+                        }
+                    }
+                }
+            }
         }
-
+        
         // Then perform cross-model validation
         self.validate_references()?;
 
