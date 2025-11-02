@@ -138,20 +138,16 @@ impl ModelManager {
             if let Some(imports) = &model_file.model.imports {
                 for import_kind in imports {
                     match import_kind {
-                        ImportKind::Import { namespace, .. }
-                        | ImportKind::ImportAll { namespace, .. }
-                        | ImportKind::ImportType { namespace, .. } => {
+                        ImportKind::Import { namespace, uri: _ } |
+                        ImportKind::ImportAll { namespace, uri: _ } |
+                        ImportKind::ImportType { namespace, name: _, uri: _ } => {
                             imported_namespaces.push(namespace.clone());
                         }
                     
-                        ImportKind::ImportTypes {
-                            namespace,
-                            aliased_types,
-                            ..
-                        } => {
+                        ImportKind::ImportTypes { namespace, types: _, aliased_types, uri: _ } => {
                             imported_namespaces.push(namespace.clone());
                         
-                            // ✅ collect alias names properly
+                            // ✅ Handle aliased types
                             if let Some(aliased_types) = aliased_types {
                                 for alias in aliased_types {
                                     alias_names.push(alias.aliased_name.clone());
@@ -161,6 +157,7 @@ impl ModelManager {
                     }
                 }
             }
+
 
             // ✅ Iterate over enum declarations in current model
             if let Some(declarations) = &model_file.model.declarations {
