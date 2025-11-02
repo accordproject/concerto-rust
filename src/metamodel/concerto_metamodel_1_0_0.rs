@@ -244,6 +244,25 @@ pub struct Declaration {
       skip_serializing_if = "Option::is_none",
    )]
    pub location: Option<Range>,
+
+   #[serde(
+      rename = "superType",
+      skip_serializing_if = "Option::is_none"
+   )]
+   pub super_type: Option<SuperType>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuperType{
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

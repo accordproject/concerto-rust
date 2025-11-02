@@ -123,6 +123,7 @@ impl ModelFile {
         // Validate the model structure first
         self.model.validate()?;
         self.validate_field_name()?;
+        self.validate_supertypes()?;
         Ok(())
     }
 
@@ -152,4 +153,27 @@ impl ModelFile {
         Ok(())
     }
 
+    fn validate_supertypes(&self) -> Result<(), ConcertoError> {
+        if let Some(declarations) = &self.model.declarations {
+            // Collect all defined declaration names (e.g., BaseConcept, DerivedConcept, etc.)
+            let defined_names: Vec<String> =
+                declarations.iter().map(|d| d.name.clone()).collect();
+
+            for decl in declarations {
+                if let Some(super_type) = &decl.super_type {
+                    let super_name = &super_type.name;
+
+                    // Check if the superType name exists among defined declarations
+                    if !defined_names.contains(super_name) {
+                        return Err(ConcertoError::ValidationError(format!(
+                            "Supertype '{}' of declaration '{}' is not defined in the model",
+                            super_name, decl.name
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
