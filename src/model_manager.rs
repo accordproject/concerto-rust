@@ -128,85 +128,85 @@ impl ModelManager {
         /// Validates that enums do not conflict with imported enums (considering aliases)
         /// Validates that enums do not conflict with imported enums (handles aliased imports via string parsing)
     fn validate_enum_name_conflicts(&self) -> Result<(), ConcertoError> {
-    for model_file in self.models.values() {
-        let namespace = &model_file.model.namespace;
-
-        // Collect imports (if any)
-        let imported_namespaces: Vec<String> = model_file
-            .model
-            .imports
-            .as_ref()
-            .map(|imports| imports.iter().map(|imp| imp.namespace.clone()).collect())
-            .unwrap_or_default();
-
-        // Optional alias mapping (e.g., ConflictEnum as Coenum)
-        // Example input line: import org.external.imported@1.0.0.{ConflictEnum as Coenum}
-        // You might already have parsed this somewhere earlier. If not:
-        let mut alias_map: HashMap<String, String> = HashMap::new();
-
-        if let Some(imports) = &model_file.model.imports {
-            for import in imports {
-                if let Some(uri) = &import.uri {
-                    // detect alias syntax in URI
-                    if uri.contains('{') && uri.contains('}') {
-                        let inside_braces = uri
-                            .split('{')
-                            .nth(1)
-                            .unwrap_or("")
-                            .split('}')
-                            .next()
-                            .unwrap_or("");
-
-                        for pair in inside_braces.split(',') {
-                            let parts: Vec<&str> = pair.trim().split_whitespace().collect();
-                            if parts.len() >= 3 && parts[1] == "as" {
-                                let original = parts[0].trim().to_string();
-                                let alias = parts[2].trim().to_string();
-                                alias_map.insert(alias.clone(), original.clone());
+        for model_file in self.models.values() {
+            let namespace = &model_file.model.namespace;
+        
+            // Collect imports (if any)
+            let imported_namespaces: Vec<String> = model_file
+                .model
+                .imports
+                .as_ref()
+                .map(|imports| imports.iter().map(|imp| imp.namespace.clone()).collect())
+                .unwrap_or_default();
+        
+            // Optional alias mapping (e.g., ConflictEnum as Coenum)
+            // Example input line: import org.external.imported@1.0.0.{ConflictEnum as Coenum}
+            // You might already have parsed this somewhere earlier. If not:
+            let mut alias_map: HashMap<String, String> = HashMap::new();
+        
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    if let Some(uri) = &import.uri {
+                        // detect alias syntax in URI
+                        if uri.contains('{') && uri.contains('}') {
+                            let inside_braces = uri
+                                .split('{')
+                                .nth(1)
+                                .unwrap_or("")
+                                .split('}')
+                                .next()
+                                .unwrap_or("");
+                        
+                            for pair in inside_braces.split(',') {
+                                let parts: Vec<&str> = pair.trim().split_whitespace().collect();
+                                if parts.len() >= 3 && parts[1] == "as" {
+                                    let original = parts[0].trim().to_string();
+                                    let alias = parts[2].trim().to_string();
+                                    alias_map.insert(alias.clone(), original.clone());
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-
-        // Validate enum declarations
-        if let Some(declarations) = &model_file.model.declarations {
-            for decl in declarations {
-                if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
-                    let enum_name = &decl.name;
-
-                    // Check for aliasing — if this enum matches an alias name, skip
-                    if alias_map.contains_key(enum_name) {
-                        continue; // skip, as alias means no direct conflict
-                    }
-
-                    // Check all imported models for conflicts
-                    for imported_ns in &imported_namespaces {
-                        if let Some(imported_model) = self.get_model_file(imported_ns) {
-                            if let Some(imported_decls) = &imported_model.model.declarations {
-                                for imported_decl in imported_decls {
-                                    if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
-                                        // Compare both normal and alias names
-                                        let imported_name = &imported_decl.name;
-                                        let aliased_names: Vec<String> = alias_map
-                                            .iter()
-                                            .filter_map(|(alias, orig)| {
-                                                if orig == imported_name {
-                                                    Some(alias.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .collect();
-
-                                        if imported_name == enum_name
-                                            || aliased_names.contains(enum_name)
-                                        {
-                                            return Err(ConcertoError::ValidationError(format!(
-                                                "Enum '{}' already defined in an imported model (possibly via alias).",
-                                                enum_name
-                                            )));
+        
+            // Validate enum declarations
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                        let enum_name = &decl.name;
+                    
+                        // Check for aliasing — if this enum matches an alias name, skip
+                        if alias_map.contains_key(enum_name) {
+                            continue; // skip, as alias means no direct conflict
+                        }
+                    
+                        // Check all imported models for conflicts
+                        for imported_ns in &imported_namespaces {
+                            if let Some(imported_model) = self.get_model_file(imported_ns) {
+                                if let Some(imported_decls) = &imported_model.model.declarations {
+                                    for imported_decl in imported_decls {
+                                        if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                                            // Compare both normal and alias names
+                                            let imported_name = &imported_decl.name;
+                                            let aliased_names: Vec<String> = alias_map
+                                                .iter()
+                                                .filter_map(|(alias, orig)| {
+                                                    if orig == imported_name {
+                                                        Some(alias.clone())
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .collect();
+                                            
+                                            if imported_name == enum_name
+                                                || aliased_names.contains(enum_name)
+                                            {
+                                                return Err(ConcertoError::ValidationError(format!(
+                                                    "already defined in an imported model"
+                                                )));
+                                            }
                                         }
                                     }
                                 }
@@ -216,10 +216,9 @@ impl ModelManager {
                 }
             }
         }
+    
+        Ok(())
     }
-
-    Ok(())
-}
 
 
 
