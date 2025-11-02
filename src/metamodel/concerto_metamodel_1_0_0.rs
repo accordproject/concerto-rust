@@ -190,12 +190,17 @@ pub struct Decorator {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identified {
    #[serde(
       rename = "$class",
    )]
    pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -250,6 +255,12 @@ pub struct Declaration {
       skip_serializing_if = "Option::is_none"
    )]
    pub super_type: Option<SuperType>,
+
+   #[serde(
+      rename = "identified",
+      skip_serializing_if = "Option::is_none"
+   )]
+   pub identified: Option<Identified>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +278,24 @@ pub struct SuperType{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Properties {
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String,
+
+   #[serde(
+      rename = "type",
+   )]
+   pub type: Option<Type>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Type {
    #[serde(
       rename = "$class",
    )]

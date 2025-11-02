@@ -175,4 +175,68 @@ impl ModelFile {
 
         Ok(())
     }
+
+    fn validate_identifier_type(&self) -> Result<(), ConcertoError> {
+        // Step 1: Gather scalar types and their base kinds
+        let mut string_scalars = std::collections::HashSet::new();
+
+        if let Some(decls) = &self.model.declarations {
+            for decl in decls {
+                // Identify string-based scalars
+                if decl._class == "concerto.metamodel@1.0.0.StringScalar" {
+                    string_scalars.insert(decl.name.clone());
+                }
+            }
+        }
+
+        // Step 2: Validate identified types
+        if let Some(decls) = &self.model.declarations {
+            for decl in decls {
+                if let Some(identified) = &decl.identified {
+                    let id_name = &identified.name;
+
+                    // Find the property that matches this identifier
+                    let property = decl
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.iter().find(|p| p.name == *id_name));
+
+                    if let Some(prop) = property {
+                        match prop._class.as_str() {
+                            // StringProperty is valid
+                            "concerto.metamodel@1.0.0.StringProperty" => continue,
+
+                            // ObjectProperty can be valid if it references a string scalar
+                            "concerto.metamodel@1.0.0.ObjectProperty" => {
+                                if let Some(type_ref) = &prop.r#type {
+                                    if !string_scalars.contains(&type_ref.name) {
+                                        return Err(ConcertoError::ValidationError(format!(
+                                            "Class"
+                                        )));
+                                    }
+                                } else {
+                                    return Err(ConcertoError::ValidationError(format!(
+                                        "Class"
+                                    )));
+                                }
+                            }
+
+                            // Any other property type is invalid
+                            _ => {
+                                return Err(ConcertoError::ValidationError(format!(
+                                    "Class"
+                                )));
+                            }
+                        }
+                    } else {
+                        return Err(ConcertoError::ValidationError(format!(
+                            "Class"
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

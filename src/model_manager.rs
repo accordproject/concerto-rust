@@ -168,7 +168,7 @@ impl ModelManager {
                                         if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
                                             let imported_enum_name = &imported_decl.name;
                                         
-                                            // ❌ Conflict if same enum name and no alias used
+                                            // Conflict if same enum name and no alias used
                                             if imported_enum_name == enum_name && alias_names.is_empty() {
                                                 return Err(ConcertoError::ValidationError(format!(
                                                     "Enum '{}' is already defined in an imported model.",
@@ -176,7 +176,7 @@ impl ModelManager {
                                                 )));
                                             }
                                         
-                                            // ❌ Conflict if alias name itself matches the enum name
+                                            // Conflict if alias name itself matches the enum name
                                             if alias_names.contains(enum_name) {
                                                 return Err(ConcertoError::ValidationError(format!(
                                                     "Enum '{}' conflicts with an aliased import.",
