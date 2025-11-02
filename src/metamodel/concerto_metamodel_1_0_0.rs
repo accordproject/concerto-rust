@@ -291,7 +291,7 @@ pub struct Properties {
    #[serde(
       rename = "type",
    )]
-   pub type: Option<Type>
+   pub r#type: Option<Type>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
