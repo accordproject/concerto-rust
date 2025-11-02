@@ -166,8 +166,7 @@ impl ModelFile {
                     // Check if the superType name exists among defined declarations
                     if !defined_names.contains(super_name) {
                         return Err(ConcertoError::ValidationError(format!(
-                            "Supertype '{}' of declaration '{}' is not defined in the model",
-                            super_name, decl.name
+                            "Could not find super type"
                         )));
                     }
                 }
