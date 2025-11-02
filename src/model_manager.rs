@@ -52,47 +52,15 @@ impl ModelManager {
         // First, validate each model file individually
         for model_file in self.models.values() {
             model_file.validate()?;
-            // Collect enum names in the current file
-            let mut enum_names = std::collections::HashSet::new();
-            if let Some(declarations) = &model_file.model.declarations {
-                for decl in declarations {
-                    if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
-                        // Check for duplicate enum names in the same file
-                        if !enum_names.insert(&decl.name) {
-                            return Err(ConcertoError::ValidationError(
-                                format!("Duplicate enum name '{}' found in namespace '{}'", decl.name, model_file.model.namespace)
-                            ));
-                        }
-                    }
-                }
-            }
-            // Check for enum name conflicts with imported models
-            if let Some(imports) = &model_file.model.imports {
-                for import in imports {
-                    if let Some(imported_namespace) = import.namespace.as_ref() {
-                        if let Some(imported_model_file) = self.get_model_file(imported_namespace.as_str()) {
-                            if let Some(imported_declarations) = &imported_model_file.model.declarations {
-                                for imported_decl in imported_declarations {
-                                    if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
-                                        if enum_names.contains(&imported_decl.name) {
-                                            return Err(ConcertoError::ValidationError(
-                                                format!("Enum name '{}' already defined in an imported model", imported_decl.name)
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
-        
+
         // Then perform cross-model validation
         self.validate_references()?;
 
         // Validate no circular inheritance
         self.validate_no_circular_inheritance()?;
+
+        self.validate_enum_name_conflicts()?;
 
         Ok(())
     }
@@ -155,6 +123,49 @@ impl ModelManager {
         Ok(())
     }
 
+
+        /// Validates that enums do not conflict with imported enums
+    fn validate_enum_name_conflicts(&self) -> Result<(), ConcertoError> {
+        for model_file in self.models.values() {
+            let namespace = &model_file.model.namespace;
+
+            // Collect imports from the current model (if any)
+            let imported_namespaces: Vec<String> = model_file
+                .model
+                .imports
+                .as_ref()
+                .map(|imports| imports.iter().map(|imp| imp.namespace.clone()).collect())
+                .unwrap_or_default();
+
+            // Get all enums defined in this model
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                        let enum_name = &decl.name;
+
+                        // Check all imported models for a conflicting enum name
+                        for imported_ns in &imported_namespaces {
+                            if let Some(imported_model) = self.get_model_file(imported_ns) {
+                                if let Some(imported_decls) = &imported_model.model.declarations {
+                                    for imported_decl in imported_decls {
+                                        if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration"
+                                            && imported_decl.name == *enum_name
+                                        {
+                                            return Err(ConcertoError::ValidationError(format!(
+                                                "already defined in an imported model)"
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 
 
     /// Validates all references between models
