@@ -206,10 +206,16 @@ impl ModelManager {
                     if let Some(properties) = &decl.properties {
                         for prop in properties {
                             let field_name = &prop.name;
-                        
-                            if field_name.starts_with('$') {
+                            // Check: must start with an alphabetic character (a-z or A-Z)
+                            if !field_name
+                                .chars()
+                                .next()
+                                .map(|c| c.is_ascii_alphabetic())
+                                .unwrap_or(false)
+                            {
                                 return Err(ConcertoError::ValidationError(format!(
-                                    "Invalid field name $class"
+                                    "Invalid field name '{}'",
+                                    field_name
                                 )));
                             }
                         }

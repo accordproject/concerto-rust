@@ -118,29 +118,30 @@ impl ModelFile {
 
         properties
     }
-}
 
-impl Validate for ModelFile {
-    fn validate(&self) -> Result<(), ConcertoError> {
+    pub fn validate(&self) -> Result<(), ConcertoError> {
         // Validate the model structure first
-        self.model.validate()?;
+        self.validate_field_name()?;
+        Ok(())
+    }
 
-        // Additional validation for system property names in concept declarations
+    fn validate_field_name(&self) -> Result<(), ConcertoError> {
         if let Some(declarations) = &self.model.declarations {
-            for declaration in declarations {
-                // For each declaration, check if it's a ConceptDeclaration by its class name
-                if declaration._class.contains("ConceptDeclaration") {
-                    // In a real implementation, this would use proper downcasting
-                    // For now, we'll manually check any conceptual properties
-
-                    // Look for the actual ConceptDeclaration in our test case
-                    // This is a simplified approach just for the test
-                    for prop in self.find_properties_for_declaration(declaration).iter() {
-                        // Validate each property
-                        if prop.name.starts_with('$') {
-                            return Err(ConcertoError::ValidationError(
-                                format!("Invalid field name '{}'. Property names starting with $ are reserved for system use", prop.name)
-                            ));
+            for decl in declarations {
+                if let Some(properties) = &decl.properties {
+                    for prop in properties {
+                        let field_name = &prop.name;
+                        // Check: must start with an alphabetic character (a-z or A-Z)
+                        if !field_name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_ascii_alphabetic())
+                            .unwrap_or(false)
+                        {
+                            return Err(ConcertoError::ValidationError(format!(
+                                "Invalid field name '{}'",
+                                field_name
+                            )));
                         }
                     }
                 }
@@ -149,4 +150,5 @@ impl Validate for ModelFile {
 
         Ok(())
     }
+
 }
