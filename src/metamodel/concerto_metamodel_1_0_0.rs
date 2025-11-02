@@ -1491,7 +1491,7 @@ pub struct ImportTypes {
    #[serde(
       rename = "types",
    )]
-   pub types: Vec<String>,
+   pub types: Option<Vec<String>>,
 
    #[serde(
       rename = "aliasedTypes",
