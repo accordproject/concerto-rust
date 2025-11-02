@@ -121,6 +121,7 @@ impl ModelFile {
 
     pub fn validate(&self) -> Result<(), ConcertoError> {
         // Validate the model structure first
+        self.model.validate()?;
         self.validate_field_name()?;
         Ok(())
     }
