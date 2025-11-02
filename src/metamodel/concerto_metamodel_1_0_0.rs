@@ -1305,6 +1305,44 @@ pub struct LongProperty {
    pub location: Option<Range>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "$class")]
+pub enum ImportKind {
+    #[serde(rename = "concerto.metamodel@1.0.0.Import")]
+    Import {
+        namespace: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
+
+    #[serde(rename = "concerto.metamodel@1.0.0.ImportAll")]
+    ImportAll {
+        namespace: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
+
+    #[serde(rename = "concerto.metamodel@1.0.0.ImportType")]
+    ImportType {
+        name: String,
+        namespace: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
+
+    #[serde(rename = "concerto.metamodel@1.0.0.ImportTypes")]
+    ImportTypes {
+        namespace: String,
+        types: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        aliased_types: Option<Vec<AliasedType>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
+}
+
+
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LongDomainValidator {
    #[serde(
@@ -1325,7 +1363,7 @@ pub struct LongDomainValidator {
    pub upper: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AliasedType {
    #[serde(
       rename = "$class",
@@ -1463,7 +1501,7 @@ pub struct Model {
       rename = "imports",
       skip_serializing_if = "Option::is_none",
    )]
-   pub imports: Option<Vec<Import>>,
+   pub imports: Option<Vec<ImportKind>>,
 
    #[serde(
       rename = "declarations",

@@ -131,36 +131,38 @@ impl ModelManager {
         for model_file in self.models.values() {
             let namespace = &model_file.model.namespace;
 
-            // Collect imports from the current model (if any)
-            let imported_namespaces: Vec<String> = model_file
-                .model
-                .imports
-                .as_ref()
-                .map(|imports| imports.iter().map(|imp| imp.namespace.clone()).collect())
-                .unwrap_or_default();
-
-            // ✅ collect alias names too
+            // Collect imported namespaces
+            let mut imported_namespaces: Vec<String> = Vec::new();
             let mut alias_names: Vec<String> = Vec::new();
+
             if let Some(imports) = &model_file.model.imports {
-                for import in imports {
-                    if let Some(uri) = &import.uri {
-                        if uri.contains(" as ") {
-                            // Example: "{ConflictEnum as Coenum}"
-                            let parts: Vec<&str> = uri.split(" as ").collect();
-                            if parts.len() == 2 {
-                                let alias = parts[1]
-                                    .trim()
-                                    .trim_end_matches('}')
-                                    .trim()
-                                    .to_string();
-                                alias_names.push(alias);
+                for import_kind in imports {
+                    match import_kind {
+                        ImportKind::Import { namespace, .. }
+                        | ImportKind::ImportAll { namespace, .. }
+                        | ImportKind::ImportType { namespace, .. } => {
+                            imported_namespaces.push(namespace.clone());
+                        }
+                    
+                        ImportKind::ImportTypes {
+                            namespace,
+                            aliased_types,
+                            ..
+                        } => {
+                            imported_namespaces.push(namespace.clone());
+                        
+                            // ✅ collect alias names properly
+                            if let Some(aliased_types) = aliased_types {
+                                for alias in aliased_types {
+                                    alias_names.push(alias.aliased_name.clone());
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Get all enums defined in this model
+            // ✅ Iterate over enum declarations in current model
             if let Some(declarations) = &model_file.model.declarations {
                 for decl in declarations {
                     if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
@@ -173,17 +175,17 @@ impl ModelManager {
                                     for imported_decl in imported_decls {
                                         if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
                                             let imported_enum_name = &imported_decl.name;
-                                            if !(alias_names.is_empty())
-                                            {
+
+                                            // ⚙️ Conflict checks
+                                            if imported_enum_name == enum_name && alias_names.is_empty() {
                                                 return Err(ConcertoError::ValidationError(format!(
-                                                    "already defined in an imported model)"
+                                                    "already defined in an imported model"
+                                                )));
+                                            } else if alias_names.contains(enum_name) {
+                                                return Err(ConcertoError::ValidationError(format!(
+                                                    "already defined in an imported model"
                                                 )));
                                             }
-                                            // else if alias_names.contains(enum_name){
-                                            //     return Err(ConcertoError::ValidationError(format!(
-                                            //         "already defined in an imported model)"
-                                            //     )));
-                                            // }
                                         }
                                     }
                                 }
@@ -196,6 +198,7 @@ impl ModelManager {
 
         Ok(())
     }
+
 
 
 
