@@ -2,7 +2,7 @@ use std::path::Path;
 use std::fs;
 
 use crate::error::ConcertoError;
-use crate::metamodel::concerto_metamodel_1_0_0::{Model, Import, Declaration, Property};
+use crate::metamodel::concerto_metamodel_1_0_0::{Model, ImportKind, Declaration, Property};
 use crate::validation::Validate;
 
 /// Represents a Concerto model file
@@ -57,7 +57,7 @@ impl ModelFile {
     }
 
     /// Gets the imports for this model file
-    pub fn get_imports(&self) -> Vec<&Import> {
+    pub fn get_imports(&self) -> Vec<&ImportKind> {
         match &self.model.imports {
             Some(imports) => imports.iter().collect(),
             None => Vec::new(),
@@ -73,7 +73,7 @@ impl ModelFile {
     }
 
     /// Adds an import to this model file
-    pub fn add_import(&mut self, import: Import) {
+    pub fn add_import(&mut self, import: ImportKind) {
         if self.model.imports.is_none() {
             self.model.imports = Some(Vec::new());
         }
