@@ -173,17 +173,17 @@ impl ModelManager {
                                     for imported_decl in imported_decls {
                                         if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
                                             let imported_enum_name = &imported_decl.name;
-                                            if imported_enum_name == enum_name && alias_names.is_empty()
+                                            if !(alias_names.is_empty())
                                             {
                                                 return Err(ConcertoError::ValidationError(format!(
                                                     "already defined in an imported model)"
                                                 )));
                                             }
-                                            else if alias_names.contains(enum_name){
-                                                return Err(ConcertoError::ValidationError(format!(
-                                                    "already defined in an imported model)"
-                                                )));
-                                            }
+                                            // else if alias_names.contains(enum_name){
+                                            //     return Err(ConcertoError::ValidationError(format!(
+                                            //         "already defined in an imported model)"
+                                            //     )));
+                                            // }
                                         }
                                     }
                                 }
