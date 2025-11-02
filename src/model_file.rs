@@ -124,6 +124,7 @@ impl ModelFile {
         self.model.validate()?;
         self.validate_field_name()?;
         self.validate_supertypes()?;
+        self.validate_identifier_type()?;
         Ok(())
     }
 
