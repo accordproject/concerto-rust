@@ -224,6 +224,16 @@ pub struct Declaration {
    pub name: String,
 
    #[serde(
+      rename = "isAbstract",
+   )]
+   pub is_abstract: Option<bool>,
+
+   #[serde(
+      rename = "properties",
+   )]
+   pub properties: Option<Vec<Properties>>,
+
+   #[serde(
       rename = "decorators",
       skip_serializing_if = "Option::is_none",
    )]
@@ -234,6 +244,19 @@ pub struct Declaration {
       skip_serializing_if = "Option::is_none",
    )]
    pub location: Option<Range>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Properties {
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

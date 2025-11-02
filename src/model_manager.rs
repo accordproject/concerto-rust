@@ -62,6 +62,8 @@ impl ModelManager {
 
         self.validate_enum_name_conflicts()?;
 
+        self.validate_field_name()?;
+
         Ok(())
     }
 
@@ -195,8 +197,29 @@ impl ModelManager {
     
         Ok(())
     }
-    
 
+
+    fn validate_field_name(&self) -> Result<(), ConcertoError> {
+        for model_file in self.models.values() {
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    if let Some(properties) = &decl.properties {
+                        for prop in properties {
+                            let field_name = &prop.name;
+                        
+                            if field_name.starts_with('$') {
+                                return Err(ConcertoError::ValidationError(format!(
+                                    "Invalid field name $class"
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 
 
 
