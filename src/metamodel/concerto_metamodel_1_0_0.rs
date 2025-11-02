@@ -292,6 +292,11 @@ pub struct Properties {
       rename = "type",
    )]
    pub r#type: Option<Type>,
+
+   #[serde(
+      rename = "isOptional",
+   )]
+   pub is_optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -125,6 +125,7 @@ impl ModelFile {
         self.validate_field_name()?;
         self.validate_supertypes()?;
         self.validate_identifier_type()?;
+        self.validate_identifying_fields()?;
         Ok(())
     }
 
@@ -240,4 +241,42 @@ impl ModelFile {
 
         Ok(())
     }
+
+    fn validate_identifying_fields(&self) -> Result<(), ConcertoError> {
+            if let Some(declarations) = &self.model.declarations {
+                for decl in declarations {
+                    // Only check ConceptDeclarations (classes with identifiers)
+                    if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
+                        if let Some(identified) = &decl.identified {
+                            let identified_name = &identified.name;
+
+                            // Look through all properties of the class
+                            if let Some(properties) = &decl.properties {
+                                for prop in properties {
+                                    // Match property by name
+                                    if &prop.name == identified_name {
+                                        // If it’s optional -> invalid
+                                        if let Some(is_optional) = prop.is_optional {
+                                            if is_optional {
+                                                return Err(ConcertoError::ValidationError(format!(
+                                                    "Identifying field '{}' in concept '{}' cannot be optional.",
+                                                    identified_name, decl.name
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                return Err(ConcertoError::ValidationError(format!(
+                                    "Concept '{}' has an identifying field '{}' but no properties defined.",
+                                    decl.name, identified_name
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        Ok(())
+    }
+
 }
