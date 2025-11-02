@@ -125,35 +125,114 @@ impl ModelManager {
 
 
         /// Validates that enums do not conflict with imported enums
+        /// Validates that enums do not conflict with imported enums (considering aliases)
+        /// Validates that enums do not conflict with imported enums (handles aliased imports via string parsing)
     fn validate_enum_name_conflicts(&self) -> Result<(), ConcertoError> {
         for model_file in self.models.values() {
             let namespace = &model_file.model.namespace;
 
-            // Collect imports from the current model (if any)
-            let imported_namespaces: Vec<String> = model_file
+            // Get all imports for this model
+            let imports = model_file
                 .model
                 .imports
                 .as_ref()
-                .map(|imports| imports.iter().map(|imp| imp.namespace.clone()).collect())
+                .map(|imports| imports.clone())
                 .unwrap_or_default();
 
-            // Get all enums defined in this model
             if let Some(declarations) = &model_file.model.declarations {
                 for decl in declarations {
                     if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
                         let enum_name = &decl.name;
 
-                        // Check all imported models for a conflicting enum name
-                        for imported_ns in &imported_namespaces {
-                            if let Some(imported_model) = self.get_model_file(imported_ns) {
-                                if let Some(imported_decls) = &imported_model.model.declarations {
-                                    for imported_decl in imported_decls {
-                                        if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration"
-                                            && imported_decl.name == *enum_name
-                                        {
-                                            return Err(ConcertoError::ValidationError(format!(
-                                                "already defined in an imported model)"
-                                            )));
+                        // Iterate over imports and check for name conflicts
+                        for import in &imports {
+                            let ns_str = &import.namespace;
+
+                            // Case 1: Import includes specific types in braces {...}
+                            if let Some(start) = ns_str.find('{') {
+                                if let Some(end) = ns_str.find('}') {
+                                    let inner = &ns_str[start + 1..end];
+                                    // Example inner: "ConflictEnum as Coenum, AnotherEnum"
+
+                                    for entry in inner.split(',') {
+                                        let entry = entry.trim();
+
+                                        // Split by 'as' if alias present
+                                        let parts: Vec<&str> = entry.split_whitespace().collect();
+
+                                        // e.g. ["ConflictEnum", "as", "Coenum"]
+                                        let imported_name = parts.get(0).map(|s| *s);
+                                        let alias = if parts.len() == 3 && parts[1] == "as" {
+                                            Some(parts[2])
+                                        } else {
+                                            None
+                                        };
+
+                                        // Skip if alias exists (imported as different name)
+                                        if let Some(alias_name) = alias {
+                                            if alias_name == enum_name {
+                                                continue; // no conflict
+                                            }
+                                        }
+
+                                        // Only conflict if imported name matches our local enum name and no alias
+                                        if let Some(imported_name) = imported_name {
+                                            if imported_name == enum_name {
+                                                // Extract base namespace (before '{')
+                                                let base_ns = &ns_str[..start];
+
+                                                if let Some(imported_model) = self.get_model_file(base_ns) {
+                                                    if let Some(imported_decls) = &imported_model.model.declarations {
+                                                        for imported_decl in imported_decls {
+                                                            if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration"
+                                                                && imported_decl.name == *enum_name
+                                                            {
+                                                                return Err(ConcertoError::ValidationError(format!(
+                                                                    "Enum {} is already defined in an imported model (namespace: {})",
+                                                                    enum_name, base_ns
+                                                                )));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Case 2: Simple import, e.g. "org.external.imported@1.0.0.ConflictEnum"
+                                if let Some((base_ns, imported_name)) = ns_str.rsplit_once('.') {
+                                    if imported_name == enum_name {
+                                        if let Some(imported_model) = self.get_model_file(base_ns) {
+                                            if let Some(imported_decls) = &imported_model.model.declarations {
+                                                for imported_decl in imported_decls {
+                                                    if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration"
+                                                        && imported_decl.name == *enum_name
+                                                    {
+                                                        return Err(ConcertoError::ValidationError(format!(
+                                                            "Enum {} is already defined in an imported model (namespace: {})",
+                                                            enum_name, base_ns
+                                                        )));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Case 3: Whole-namespace import (e.g., "org.external.imported@1.0.0")
+                                    let imported_ns = ns_str.trim();
+                                    if let Some(imported_model) = self.get_model_file(imported_ns) {
+                                        if let Some(imported_decls) = &imported_model.model.declarations {
+                                            for imported_decl in imported_decls {
+                                                if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration"
+                                                    && imported_decl.name == *enum_name
+                                                {
+                                                    return Err(ConcertoError::ValidationError(format!(
+                                                        "Enum {} is already defined in an imported model (namespace: {})",
+                                                        enum_name, imported_ns
+                                                    )));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -166,6 +245,8 @@ impl ModelManager {
 
         Ok(())
     }
+
+
 
 
     /// Validates all references between models
