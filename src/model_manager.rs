@@ -188,8 +188,7 @@ impl ModelManager {
                                                                 && imported_decl.name == *enum_name
                                                             {
                                                                 return Err(ConcertoError::ValidationError(format!(
-                                                                    "Enum {} is already defined in an imported model (namespace: {})",
-                                                                    enum_name, base_ns
+                                                                    "already defined in an imported model"
                                                                 )));
                                                             }
                                                         }
@@ -210,8 +209,7 @@ impl ModelManager {
                                                         && imported_decl.name == *enum_name
                                                     {
                                                         return Err(ConcertoError::ValidationError(format!(
-                                                            "Enum {} is already defined in an imported model (namespace: {})",
-                                                            enum_name, base_ns
+                                                            "already defined in an imported model"
                                                         )));
                                                     }
                                                 }
@@ -228,8 +226,7 @@ impl ModelManager {
                                                     && imported_decl.name == *enum_name
                                                 {
                                                     return Err(ConcertoError::ValidationError(format!(
-                                                        "Enum {} is already defined in an imported model (namespace: {})",
-                                                        enum_name, imported_ns
+                                                        "already defined in an imported model"
                                                     )));
                                                 }
                                             }
