@@ -70,6 +70,8 @@ impl ModelManager {
 
         self.validate_import_namespace_conflicts()?;
 
+        self.validate_duplicate_import_names()?;
+
         Ok(())
     }
 
@@ -491,6 +493,40 @@ impl ModelManager {
 
         Ok(())
     }
+
+
+    fn validate_duplicate_import_names(&self) -> Result<(), ConcertoError> {
+        // A map to track imported names and their originating namespaces
+        let mut import_name_to_namespace: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        
+        // Iterate over all model files
+        for model_file in self.models.values() {
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    if let Some(name) = &import.name {
+                        let ns = &import.namespace;
+                    
+                        // If we've already seen this name before
+                        if let Some(existing_ns) = import_name_to_namespace.get(name) {
+                            // And it belongs to a *different* namespace
+                            if existing_ns != ns {
+                                return Err(ConcertoError::ValidationError(format!(
+                                    "Can't import same names for different namespaces"
+                                )));
+                            }
+                        } else {
+                            // Otherwise, record the name-namespace mapping
+                            import_name_to_namespace.insert(name.clone(), ns.clone());
+                        }
+                    }
+                }
+            }
+        }
+    
+        Ok(())
+    }
+    
+    
 
 
     /// Helper method to treat a declaration as a concept declaration
