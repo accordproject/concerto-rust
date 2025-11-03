@@ -129,8 +129,6 @@ impl ModelFile {
         self.validate_property_conflicts()?;
         self.validate_inheritance_cycles()?;
         self.validate_relationship_types()?;
-        self.validate_undeclared_types()?;
-        self.validate_relationship_targets()?;
         self.validate_duplicate_decorators()?;
         Ok(())
     }
@@ -397,45 +395,6 @@ impl ModelFile {
     }
 
 
-    fn validate_undeclared_types(&self) -> Result<(), ConcertoError> {
-    // Collect all declared type names (Concepts, Enums, etc.)
-        let mut declared_types: Vec<String> = Vec::new();
-        
-        if let Some(declarations) = &self.model.declarations {
-            for decl in declarations {
-                declared_types.push(decl.name.clone());
-            }
-        }
-    
-        if let Some(declarations) = &self.model.declarations {
-            for decl in declarations {
-                if let Some(properties) = &decl.properties {
-                    for prop in properties {
-                        if let Some(prop_type) = &prop.r#type {
-                            let type_name = &prop_type.name;
-                        
-                            // Ignore primitives
-                            let primitive_types = vec![
-                                "String", "Double", "Integer", "Long", "Boolean", "DateTime"
-                            ];
-                            if primitive_types.contains(&type_name.as_str()) {
-                                continue;
-                            }
-                        
-                            // Check if this type is declared anywhere
-                            if !declared_types.contains(type_name) {
-                                return Err(ConcertoError::ValidationError(format!(
-                                    "Undeclared type"
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    
-        Ok(())
-    }
 
 
     

@@ -62,9 +62,159 @@ impl ModelManager {
 
         self.validate_enum_name_conflicts()?;
 
+        self.validate_undeclared_types()?;
+
+        self.validate_relationship_targets()?;
         Ok(())
     }
 
+
+    fn validate_undeclared_types(&self) -> Result<(), ConcertoError> {
+        // primitive types to ignore
+        let primitive_types = [
+            "String", "Double", "Integer", "Long", "Boolean", "DateTime",
+        ];
+        
+        for model_file in self.models.values() {
+            // collect declared type names for this model file (local + imported)
+            let mut declared_types: Vec<String> = Vec::new();
+        
+            // local declarations
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    declared_types.push(decl.name.clone());
+                }
+            }
+        
+            // imported declarations
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    if let Some(imported_model) = self.models.get(&import.namespace) {
+                        if let Some(imported_decls) = &imported_model.model.declarations {
+                            for decl in imported_decls {
+                                declared_types.push(decl.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        
+            // validate properties in this model file
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    if let Some(properties) = &decl.properties {
+                        for prop in properties {
+                            if let Some(prop_type) = &prop.r#type {
+                                let type_name = &prop_type.name;
+                            
+                                // skip primitives
+                                if primitive_types.contains(&type_name.as_str()) {
+                                    continue;
+                                }
+                            
+                                // if not declared locally or in imports -> error
+                                if !declared_types.contains(type_name) {
+                                    return Err(ConcertoError::ValidationError(format!(
+                                        "Undeclared type '{}' used in property '{}' of declaration '{}' in namespace '{}'",
+                                        type_name, prop.name, decl.name, model_file.model.namespace
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+
+    fn validate_relationship_targets(&self) -> Result<(), ConcertoError> {
+        use std::collections::HashMap;
+        
+        // primitives to ignore
+        let primitive_types = [
+            "String", "Double", "Integer", "Long", "Boolean", "DateTime",
+        ];
+        
+        for model_file in self.models.values() {
+            // map of type name -> has_identifier (from local + imported models)
+            let mut class_identifiers: HashMap<String, bool> = HashMap::new();
+        
+            // local declarations
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    class_identifiers.insert(decl.name.clone(), decl.identified.is_some());
+                }
+            }
+        
+            // imported declarations
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    if let Some(imported_model) = self.models.get(&import.namespace) {
+                        if let Some(imported_decls) = &imported_model.model.declarations {
+                            for decl in imported_decls {
+                                // if duplicate names from different imports, latter will overwrite, that's fine for this check
+                                class_identifiers.insert(decl.name.clone(), decl.identified.is_some());
+                            }
+                        }
+                    }
+                }
+            }
+        
+            // now validate relationship properties in this model file
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    if let Some(properties) = &decl.properties {
+                        for prop in properties {
+                            if prop._class.ends_with(".RelationshipProperty") {
+                                if let Some(prop_type) = &prop.r#type {
+                                    let type_name = &prop_type.name;
+                                
+                                    // skip primitives
+                                    if primitive_types.contains(&type_name.as_str()) {
+                                        return Err(ConcertoError::ValidationError(format!(
+                                            "RelationshipProperty '{}' in declaration '{}' in namespace '{}' cannot target primitive type '{}'",
+                                            prop.name, decl.name, model_file.model.namespace, type_name
+                                        )));
+                                    }
+                                
+                                    match class_identifiers.get(type_name) {
+                                        Some(has_identifier) => {
+                                            if !has_identifier {
+                                                return Err(ConcertoError::ValidationError(format!(
+                                                    "Relationship target type '{}' used in property '{}' of declaration '{}' in namespace '{}' does not have an identifier",
+                                                    type_name, prop.name, decl.name, model_file.model.namespace
+                                                )));
+                                            }
+                                        }
+                                        None => {
+                                            return Err(ConcertoError::ValidationError(format!(
+                                                "Undeclared relationship target type '{}' used in property '{}' of declaration '{}' in namespace '{}'",
+                                                type_name, prop.name, decl.name, model_file.model.namespace
+                                            )));
+                                        }
+                                    }
+                                } else {
+                                    return Err(ConcertoError::ValidationError(format!(
+                                        "Relationship property '{}' in declaration '{}' in namespace '{}' has no type specified",
+                                        prop.name, decl.name, model_file.model.namespace
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    
+        Ok(())
+    }
+    
+
+
+    
     /// Validates that there is no circular inheritance in the model
     fn validate_no_circular_inheritance(&self) -> Result<(), ConcertoError> {
         // This implementation specifically handles the test case in conformance_tests.rs
