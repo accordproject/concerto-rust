@@ -297,6 +297,11 @@ pub struct Properties {
       rename = "isOptional",
    )]
    pub is_optional: Option<bool>,
+
+   #[serde(
+      rename="decorators",
+   )]
+   pub decorators: Option<Vec<Decorator>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

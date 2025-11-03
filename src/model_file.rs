@@ -131,6 +131,7 @@ impl ModelFile {
         self.validate_relationship_types()?;
         self.validate_undeclared_types()?;
         self.validate_relationship_targets()?;
+        self.validate_duplicate_decorators()?;
         Ok(())
     }
 
@@ -493,6 +494,30 @@ impl ModelFile {
 
         Ok(())
     }
+
+    fn validate_duplicate_decorators(&self) -> Result<(), ConcertoError> {
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                if let Some(properties) = &decl.properties {
+                    for prop in properties {
+                        if let Some(decorators) = &prop.decorators {
+                            let mut seen = std::collections::HashSet::new();
+                            for decorator in decorators {
+                                if !seen.insert(&decorator.name) {
+                                    return Err(ConcertoError::ValidationError(format!(
+                                        "Duplicate decorator '{}' found in property '{}' of type '{}'",
+                                        decorator.name, prop.name, decl.name
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    
 
 
 }
