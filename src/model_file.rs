@@ -126,6 +126,7 @@ impl ModelFile {
         self.validate_supertypes()?;
         self.validate_identifier_type()?;
         self.validate_identifying_fields()?;
+        self.validate_property_conflicts()?;
         Ok(())
     }
 
@@ -278,5 +279,52 @@ impl ModelFile {
             }
         Ok(())
     }
+    fn validate_property_conflicts(&self) -> Result<(), ConcertoError> {
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                // Only validate concept declarations
+                if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
+                    let concept_name = &decl.name;
+
+                    // Collect current concept property names
+                    let mut property_names = std::collections::HashSet::new();
+                    if let Some(properties) = &decl.properties {
+                        for prop in properties {
+                            if !property_names.insert(&prop.name) {
+                                return Err(ConcertoError::ValidationError(format!(
+                                    "has more than one field named"
+                                )));
+                            }
+                        }
+                    }
+
+                    // Check conflicts with parent (superType), if any
+                    if let Some(super_type) = &decl.super_type {
+                        let parent_name = &super_type.name;
+
+                        // Find parent declaration by name
+                        if let Some(parent_decl) = declarations
+                            .iter()
+                            .find(|d| d.name == *parent_name)
+                        {
+                            if let Some(parent_props) = &parent_decl.properties {
+                                for parent_prop in parent_props {
+                                    if property_names.contains(&parent_prop.name) {
+                                        return Err(ConcertoError::ValidationError(format!(
+                                            "has more than one field named"
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+
 
 }
