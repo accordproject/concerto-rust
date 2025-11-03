@@ -468,23 +468,26 @@ impl ModelManager {
         for model_file in self.models.values() {
             if let Some(imports) = &model_file.model.imports {
                 let mut seen_imports = std::collections::HashSet::new();
-
+            
                 for import in imports {
-                    // Some JSONs use "ImportType" etc — we don't need to special-case _class here,
-                    // just use the declared namespace and name fields.
                     let ns = &import.namespace;
-                    let name = &import.name;
+                    let name = import
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "Unnamed".to_string()); // ✅ Handle Option<String>
+                
                     let key = format!("{}::{}", ns, name);
-
-                    if !seen_imports.insert(key) {
+                
+                    if !seen_imports.insert(key.clone()) {
                         return Err(ConcertoError::ValidationError(format!(
-                            "Import namespace is already defined."
+                            "Import namespace is already defined: '{}' (name: '{}') in model '{}'",
+                            ns, name, model_file.model.namespace
                         )));
                     }
                 }
             }
         }
-
+    
         Ok(())
     }
 

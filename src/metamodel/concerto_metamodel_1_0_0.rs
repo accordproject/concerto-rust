@@ -1521,7 +1521,7 @@ pub struct ImportTypes {
    #[serde(
       rename = "name",
    )]
-   pub name: String,
+   pub name: Option<String>,
 
    #[serde(
       rename = "aliasedTypes",
