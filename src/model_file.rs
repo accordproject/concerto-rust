@@ -132,6 +132,7 @@ impl ModelFile {
         self.validate_duplicate_decorators()?;
         self.validate_import_namespace_defined()?;
         self.validate_numeric_bounds()?;
+        self.validate_string_length_validators()?;
 
         Ok(())
     }
@@ -502,7 +503,7 @@ impl ModelFile {
         }
         Ok(())
     }
-    
+
 
 
     fn validate_import_namespace_defined(&self) -> Result<(), ConcertoError> {
@@ -535,5 +536,50 @@ impl ModelFile {
 
         Ok(())
     }
+
+    pub fn validate_string_length_validators(&self) -> Result<(), ConcertoError> {
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                // Only check ConceptDeclaration types
+                if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
+                    if let Some(properties) = &decl.properties {
+                        for prop in properties {
+                            // Only for StringProperty
+                            if prop._class == "concerto.metamodel@1.0.0.StringProperty" {
+                                if let Some(length_validator) = &prop.length_validator {
+                                    // Ensure it's actually a StringLengthValidator
+                                    if length_validator._class
+                                        == "concerto.metamodel@1.0.0.StringLengthValidator"
+                                    {
+                                        if let (Some(min_len), Some(max_len)) =
+                                            (length_validator.min_length, length_validator.max_length)
+                                        {
+                                            // Rule 1: must be positive
+                                            if min_len <= 0 || max_len <= 0 {
+                                                return Err(ConcertoError::ValidationError(
+                                                    "/minLength and-or maxLength must be positive integers"
+                                                        .to_string(),
+                                                ));
+                                            }
+
+                                            // Rule 2: min <= max
+                                            if min_len > max_len {
+                                                return Err(ConcertoError::ValidationError(
+                                                    "/minLength must be less than or equal to maxLength"
+                                                        .to_string(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
 
 }

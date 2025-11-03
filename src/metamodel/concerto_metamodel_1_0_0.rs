@@ -327,6 +327,11 @@ pub struct Properties {
       rename="validator",
    )]
    pub validator: Option<Validator>,
+
+   #[serde(
+      rename="lengthValidator",
+   )]
+   pub length_validator: Option<StringLengthValidator>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1230,7 +1235,7 @@ pub struct StringRegexValidator {
    pub flags: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringLengthValidator {
    #[serde(
       rename = "$class",
