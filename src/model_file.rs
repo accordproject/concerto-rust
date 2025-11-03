@@ -128,6 +128,7 @@ impl ModelFile {
         self.validate_identifying_fields()?;
         self.validate_property_conflicts()?;
         self.validate_inheritance_cycles()?;
+        self.validate_relationship_types()?;
         Ok(())
     }
 
@@ -360,6 +361,35 @@ impl ModelFile {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate_relationship_types(&self) -> Result<(), ConcertoError> {
+    // Define primitive types in Concerto
+        let primitive_types = vec![
+            "String", "Double", "Integer", "Long", "Boolean", "DateTime"
+        ];
+
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                if let Some(properties) = &decl.properties {
+                    for prop in properties {
+                        if prop._class == "concerto.metamodel@1.0.0.RelationshipProperty" {
+                            if let Some(prop_type) = &prop.r#type {
+                                let type_name = &prop_type.name;
+
+                                if primitive_types.contains(&type_name.as_str()) {
+                                    return Err(ConcertoError::ValidationError(format!(
+                                        "z"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
