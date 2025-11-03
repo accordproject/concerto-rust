@@ -130,6 +130,7 @@ impl ModelFile {
         self.validate_inheritance_cycles()?;
         self.validate_relationship_types()?;
         self.validate_duplicate_decorators()?;
+        self.validate_import_namespace_defined()?;
         Ok(())
     }
 
@@ -474,6 +475,39 @@ impl ModelFile {
                 }
             }
         }
+        Ok(())
+    }
+
+    
+
+    fn validate_import_namespace_defined(&self) -> Result<(), ConcertoError> {
+        // Ensure the model itself has a namespace
+        let current_namespace = &self.model.namespace;
+        
+        // If imports are present, validate them
+        if let Some(imports) = &self.model.imports {
+            for import in imports {
+                let ns = import.namespace.clone();
+                let name = import.name.clone().unwrap_or_else(|| "<unknown>".to_string());
+            
+                // Check: cannot import from its own namespace
+                if ns == *current_namespace {
+                    return Err(ConcertoError::ValidationError(format!(
+                        "Type '{}' cannot import from its own namespace '{}'",
+                        name, ns
+                    )));
+                }
+            
+                // Check: namespace field must not be empty
+                if ns.trim().is_empty() {
+                    return Err(ConcertoError::ValidationError(format!(
+                        "Namespace is not defined for type '{}'",
+                        name
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
