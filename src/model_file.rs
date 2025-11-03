@@ -476,7 +476,5 @@ impl ModelFile {
         }
         Ok(())
     }
-    
-
 
 }

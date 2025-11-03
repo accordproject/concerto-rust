@@ -65,6 +65,8 @@ impl ModelManager {
         self.validate_undeclared_types()?;
 
         self.validate_relationship_targets()?;
+
+        self.validate_undeclared_types_map()?;
         Ok(())
     }
 
@@ -382,6 +384,84 @@ impl ModelManager {
 
         Ok(())
     }
+
+    
+    fn validate_undeclared_types_map(&self) -> Result<(), ConcertoError> {
+        let primitive_types = [
+            "String", "Double", "Integer", "Long", "Boolean", "DateTime",
+        ];
+        
+        for model_file in self.models.values() {
+            // collect declared types (local + imported)
+            let mut declared_types: Vec<String> = Vec::new();
+        
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    declared_types.push(decl.name.clone());
+                }
+            }
+        
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    if let Some(imported_model) = self.models.get(&import.namespace) {
+                        if let Some(imported_decls) = &imported_model.model.declarations {
+                            for decl in imported_decls {
+                                declared_types.push(decl.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        
+            // validate each declaration type
+            if let Some(declarations) = &model_file.model.declarations {
+                for decl in declarations {
+                    match decl._class.as_str() {
+                        // ✅ ConceptDeclaration — check all properties
+                        "concerto.metamodel@1.0.0.ConceptDeclaration" => {
+                            if let Some(properties) = &decl.properties {
+                                for prop in properties {
+                                    if let Some(prop_type) = &prop.r#type {
+                                        let type_name = &prop_type.name;
+                                        if !primitive_types.contains(&type_name.as_str())
+                                            && !declared_types.contains(type_name)
+                                        {
+                                            return Err(ConcertoError::ValidationError(format!(
+                                                "Undeclared type"
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    
+                        // ✅ MapDeclaration — check its value.type
+                        "concerto.metamodel@1.0.0.MapDeclaration" => {
+                            if let Some(value) = &decl.value {
+                                if let Some(value_type) = &value.r#type {
+                                    let type_name = &value_type.name;
+                                    if !primitive_types.contains(&type_name.as_str())
+                                        && !declared_types.contains(type_name)
+                                    {
+                                        return Err(ConcertoError::ValidationError(format!(
+                                            "Undeclared type"
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    
+                        _ => {
+                            // other declaration types — safely ignore
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
 
     /// Helper method to treat a declaration as a concept declaration
     fn as_concept_declaration<'a>(&self, decl: &'a Declaration) -> Option<&'a dyn ConceptDeclarationBase> {

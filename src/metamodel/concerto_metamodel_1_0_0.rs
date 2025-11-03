@@ -1,5 +1,6 @@
 use serde::{ Deserialize, Serialize };
 use chrono::{ DateTime, TimeZone, Utc };
+use serde_json::Value;
 
 use crate::metamodel::concerto_1_0_0::*;
 use crate::metamodel::utils::*;
@@ -261,6 +262,25 @@ pub struct Declaration {
       skip_serializing_if = "Option::is_none"
    )]
    pub identified: Option<Identified>,
+
+   #[serde(
+      rename = "value",
+      skip_serializing_if = "Option::is_none"
+   )]
+   pub value: Option<Values>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Values{
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename="type",
+   )]
+   pub r#type: Option<Type>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
