@@ -281,9 +281,6 @@ impl ModelManager {
     }
 
 
-        /// Validates that enums do not conflict with imported enums
-        /// Validates that enums do not conflict with imported enums (considering aliases)
-        /// Validates that enums do not conflict with imported enums (handles aliased imports via string parsing)
     fn validate_enum_name_conflicts(&self) -> Result<(), ConcertoError> {
         for model_file in self.models.values() {
             let namespace = &model_file.model.namespace;
@@ -296,12 +293,12 @@ impl ModelManager {
                 .map(|imports| imports.iter().map(|imp| imp.namespace.clone()).collect())
                 .unwrap_or_default();
         
-            // ✅ Collect alias names from ImportTypes
+   
             let mut alias_names: Vec<String> = Vec::new();
             if let Some(imports) = &model_file.model.imports {
                 for import in imports {
                     if import._class == "concerto.metamodel@1.0.0.ImportTypes" {
-                        // Safely extract aliased types (if any)
+                
                         if let Some(aliased_types) = &import.aliased_types {
                             for aliased_type in aliased_types {
                                 alias_names.push(aliased_type.aliased_name.clone());
@@ -311,13 +308,12 @@ impl ModelManager {
                 }
             }
         
-            // Get all enums defined in this model
+     
             if let Some(declarations) = &model_file.model.declarations {
                 for decl in declarations {
                     if decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
                         let enum_name = &decl.name;
-                    
-                        // Check all imported models for a conflicting enum name
+  
                         for imported_ns in &imported_namespaces {
                             if let Some(imported_model) = self.get_model_file(imported_ns) {
                                 if let Some(imported_decls) = &imported_model.model.declarations {
@@ -325,7 +321,7 @@ impl ModelManager {
                                         if imported_decl._class == "concerto.metamodel@1.0.0.EnumDeclaration" {
                                             let imported_enum_name = &imported_decl.name;
                                         
-                                            // Conflict if same enum name and no alias used
+                                   
                                             if imported_enum_name == enum_name && alias_names.is_empty() {
                                                 return Err(ConcertoError::ValidationError(format!(
                                                     "Enum '{}' is already defined in an imported model.",
@@ -333,7 +329,7 @@ impl ModelManager {
                                                 )));
                                             }
                                         
-                                            // Conflict if alias name itself matches the enum name
+                                       
                                             if alias_names.contains(enum_name) {
                                                 return Err(ConcertoError::ValidationError(format!(
                                                     "Enum '{}' conflicts with an aliased import.",
@@ -357,29 +353,26 @@ impl ModelManager {
 
 
 
-
-    /// Validates all references between models
     fn validate_references(&self) -> Result<(), ConcertoError> {
-        // Iterate through all model files
+   
         for model_file in self.models.values() {
-            // Get declarations for this model file
+          
             if let Some(declarations) = &model_file.model.declarations {
-                // Check each declaration - using traits to handle different types
+      
                 for declaration in declarations {
-                    // Check for concept declarations that might have super types
+                  
                     if let Some(concept) = self.as_concept_declaration(declaration) {
-                        // Validate super type if present
+            
                         if let Some(super_type) = concept.get_super_type() {
                             self.validate_type_exists(super_type)?;
                         }
 
-                        // Validate property types
                         for property in concept.get_properties() {
                             self.validate_property(property)?;
                         }
                     }
 
-                    // Check for map declarations
+                 
                     if let Some(map_decl) = self.as_map_declaration(declaration) {
                         self.validate_map_value_type(&map_decl.value)?;
                     }
@@ -397,7 +390,7 @@ impl ModelManager {
         ];
         
         for model_file in self.models.values() {
-            // collect declared types (local + imported)
+   
             let mut declared_types: Vec<String> = Vec::new();
         
             if let Some(declarations) = &model_file.model.declarations {
@@ -418,11 +411,11 @@ impl ModelManager {
                 }
             }
         
-            // validate each declaration type
+    
             if let Some(declarations) = &model_file.model.declarations {
                 for decl in declarations {
                     match decl._class.as_str() {
-                        // ✅ ConceptDeclaration — check all properties
+              
                         "concerto.metamodel@1.0.0.ConceptDeclaration" => {
                             if let Some(properties) = &decl.properties {
                                 for prop in properties {
@@ -440,7 +433,6 @@ impl ModelManager {
                             }
                         }
                     
-                        // ✅ MapDeclaration — check its value.type
                         "concerto.metamodel@1.0.0.MapDeclaration" => {
                             if let Some(value) = &decl.value {
                                 if let Some(value_type) = &value.r#type {
@@ -477,7 +469,7 @@ impl ModelManager {
                     let name = import
                         .name
                         .clone()
-                        .unwrap_or_else(|| "Unnamed".to_string()); // ✅ Handle Option<String>
+                        .unwrap_or_else(|| "Unnamed".to_string()); // Handle Option<String>
                 
                     let key = format!("{}::{}", ns, name);
                 
@@ -522,11 +514,11 @@ impl ModelManager {
                 }
             }
         }
-    
+
         Ok(())
     }
-    
-    
+
+
 
 
     /// Helper method to treat a declaration as a concept declaration

@@ -187,7 +187,7 @@ impl ModelFile {
     }
 
     fn validate_identifier_type(&self) -> Result<(), ConcertoError> {
-        // Step 1: Gather scalar types and their base kinds
+
         let mut string_scalars = std::collections::HashSet::new();
 
         if let Some(decls) = &self.model.declarations {
@@ -199,7 +199,6 @@ impl ModelFile {
             }
         }
 
-        // Step 2: Validate identified types
         if let Some(decls) = &self.model.declarations {
             for decl in decls {
                 if let Some(identified) = &decl.identified {
@@ -213,10 +212,10 @@ impl ModelFile {
 
                     if let Some(prop) = property {
                         match prop._class.as_str() {
-                            // StringProperty is valid
+                          
                             "concerto.metamodel@1.0.0.StringProperty" => continue,
 
-                            // ObjectProperty can be valid if it references a string scalar
+               
                             "concerto.metamodel@1.0.0.ObjectProperty" => {
                                 if let Some(type_ref) = &prop.r#type {
                                     if !string_scalars.contains(&type_ref.name) {
@@ -231,7 +230,7 @@ impl ModelFile {
                                 }
                             }
 
-                            // Any other property type is invalid
+                  
                             _ => {
                                 return Err(ConcertoError::ValidationError(format!(
                                     "Class"
@@ -253,17 +252,17 @@ impl ModelFile {
     fn validate_identifying_fields(&self) -> Result<(), ConcertoError> {
             if let Some(declarations) = &self.model.declarations {
                 for decl in declarations {
-                    // Only check ConceptDeclarations (classes with identifiers)
+               
                     if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                         if let Some(identified) = &decl.identified {
                             let identified_name = &identified.name;
 
-                            // Look through all properties of the class
+                          
                             if let Some(properties) = &decl.properties {
                                 for prop in properties {
-                                    // Match property by name
+    
                                     if &prop.name == identified_name {
-                                        // If it’s optional -> invalid
+                           
                                         if let Some(is_optional) = prop.is_optional {
                                             if is_optional {
                                                 return Err(ConcertoError::ValidationError(format!(
@@ -293,7 +292,7 @@ impl ModelFile {
                 if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                     let concept_name = &decl.name;
 
-                    // Collect current concept property names
+                
                     let mut property_names = std::collections::HashSet::new();
                     if let Some(properties) = &decl.properties {
                         for prop in properties {
@@ -305,7 +304,7 @@ impl ModelFile {
                         }
                     }
 
-                    // Check conflicts with parent (superType), if any
+               
                     if let Some(super_type) = &decl.super_type {
                         let parent_name = &super_type.name;
 
@@ -334,7 +333,7 @@ impl ModelFile {
 
     fn validate_inheritance_cycles(&self) -> Result<(), ConcertoError> {
         if let Some(declarations) = &self.model.declarations {
-            // Build a map from concept name → its parent (superType)
+     
             let mut inheritance_map = std::collections::HashMap::new();
         
             for decl in declarations {
@@ -345,7 +344,7 @@ impl ModelFile {
                 }
             }
         
-            // For each concept, traverse upwards to detect cycles
+         
             for (concept, _) in &inheritance_map {
                 let mut visited = std::collections::HashSet::new();
                 let mut current = concept.clone();
@@ -359,7 +358,7 @@ impl ModelFile {
                 
                     current = parent.clone();
                 
-                    // Optional: stop early if we reach a type with no parent
+                  
                     if !inheritance_map.contains_key(&current) {
                         break;
                     }
@@ -370,7 +369,7 @@ impl ModelFile {
     }
 
     fn validate_relationship_types(&self) -> Result<(), ConcertoError> {
-    // Define primitive types in Concerto
+
         let primitive_types = vec![
             "String", "Double", "Integer", "Long", "Boolean", "DateTime"
         ];
@@ -403,28 +402,27 @@ impl ModelFile {
 
     
     fn validate_relationship_targets(&self) -> Result<(), ConcertoError> {
-        // Collect declared types with their identifiers
+       
         let mut class_identifiers: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
 
         if let Some(declarations) = &self.model.declarations {
             for decl in declarations {
-                // true = has identifier
+              
                 let has_identifier = decl.identified.is_some();
                 class_identifiers.insert(decl.name.clone(), has_identifier);
             }
         }
 
-        // Now check all relationship properties
         if let Some(declarations) = &self.model.declarations {
             for decl in declarations {
                 if let Some(properties) = &decl.properties {
                     for prop in properties {
-                        // Check only RelationshipProperty
+           
                         if prop._class.ends_with(".RelationshipProperty") {
                             if let Some(prop_type) = &prop.r#type {
                                 let type_name = &prop_type.name;
 
-                                // Ignore primitives
+                     
                                 let primitive_types = vec![
                                     "String", "Double", "Integer", "Long", "Boolean", "DateTime"
                                 ];
@@ -432,7 +430,7 @@ impl ModelFile {
                                     continue;
                                 }
 
-                                // Check if the target type exists
+                          
                                 match class_identifiers.get(type_name) {
                                     Some(has_identifier) => {
                                         if !has_identifier {
@@ -442,7 +440,7 @@ impl ModelFile {
                                         }
                                     }
                                     None => {
-                                        // If not declared at all
+                                    
                                         return Err(ConcertoError::ValidationError(format!(
                                             "Undeclared type"
                                         )));
@@ -488,7 +486,7 @@ impl ModelFile {
                 if let Some(properties) = &decl.properties {
                     for prop in properties {
                         if let Some(validator) = &prop.validator {
-                            // Check if both lower and upper exist
+                      
                             if let (Some(lower), Some(upper)) = (validator.lower, validator.upper) {
                                 if lower > upper {
                                     return Err(ConcertoError::ValidationError(
@@ -507,16 +505,14 @@ impl ModelFile {
 
 
     fn validate_import_namespace_defined(&self) -> Result<(), ConcertoError> {
-        // Ensure the model itself has a namespace
+       
         let current_namespace = &self.model.namespace;
         
-        // If imports are present, validate them
+     
         if let Some(imports) = &self.model.imports {
             for import in imports {
                 let ns = import.namespace.clone();
                 let name = import.name.clone().unwrap_or_else(|| "<unknown>".to_string());
-            
-                // Check: cannot import from its own namespace
                 if ns == *current_namespace {
                     return Err(ConcertoError::ValidationError(format!(
                         "Type '{}' cannot import from its own namespace '{}'",
@@ -524,7 +520,7 @@ impl ModelFile {
                     )));
                 }
             
-                // Check: namespace field must not be empty
+              
                 if ns.trim().is_empty() {
                     return Err(ConcertoError::ValidationError(format!(
                         "Namespace is not defined for type '{}'",
@@ -540,21 +536,21 @@ impl ModelFile {
     pub fn validate_string_length_validators(&self) -> Result<(), ConcertoError> {
         if let Some(declarations) = &self.model.declarations {
             for decl in declarations {
-                // Only check ConceptDeclaration types
+       
                 if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                     if let Some(properties) = &decl.properties {
                         for prop in properties {
-                            // Only for StringProperty
+                     
                             if prop._class == "concerto.metamodel@1.0.0.StringProperty" {
                                 if let Some(length_validator) = &prop.length_validator {
-                                    // Ensure it's actually a StringLengthValidator
+                         
                                     if length_validator._class
                                         == "concerto.metamodel@1.0.0.StringLengthValidator"
                                     {
                                         if let (Some(min_len), Some(max_len)) =
                                             (length_validator.min_length, length_validator.max_length)
                                         {
-                                            // Rule 1: must be positive
+                             
                                             if min_len <= 0 || max_len <= 0 {
                                                 return Err(ConcertoError::ValidationError(
                                                     "/minLength and-or maxLength must be positive integers"
@@ -562,7 +558,6 @@ impl ModelFile {
                                                 ));
                                             }
 
-                                            // Rule 2: min <= max
                                             if min_len > max_len {
                                                 return Err(ConcertoError::ValidationError(
                                                     "/minLength must be less than or equal to maxLength"
