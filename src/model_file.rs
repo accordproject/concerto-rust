@@ -131,6 +131,8 @@ impl ModelFile {
         self.validate_relationship_types()?;
         self.validate_duplicate_decorators()?;
         self.validate_import_namespace_defined()?;
+        self.validate_numeric_bounds()?;
+
         Ok(())
     }
 
@@ -478,7 +480,30 @@ impl ModelFile {
         Ok(())
     }
 
+
+    fn validate_numeric_bounds(&self) -> Result<(), ConcertoError> {
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                if let Some(properties) = &decl.properties {
+                    for prop in properties {
+                        if let Some(validator) = &prop.validator {
+                            // Check if both lower and upper exist
+                            if let (Some(lower), Some(upper)) = (validator.lower, validator.upper) {
+                                if lower > upper {
+                                    return Err(ConcertoError::ValidationError(
+                                        "Lower bound must be less than or equal to upper bound".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     
+
 
     fn validate_import_namespace_defined(&self) -> Result<(), ConcertoError> {
         // Ensure the model itself has a namespace

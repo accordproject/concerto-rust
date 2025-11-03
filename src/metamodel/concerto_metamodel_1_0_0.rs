@@ -322,6 +322,31 @@ pub struct Properties {
       rename="decorators",
    )]
    pub decorators: Option<Vec<Decorator>>,
+
+   #[serde(
+      rename="validator",
+   )]
+   pub validator: Option<Validator>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Validator {
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "lower",
+      skip_serializing_if = "Option::is_none",
+   )]
+   pub lower: Option<i32>,
+
+   #[serde(
+      rename = "upper",
+      skip_serializing_if = "Option::is_none",
+   )]
+   pub upper: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1272,7 +1297,7 @@ pub struct DoubleProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoubleDomainValidator {
    #[serde(
       rename = "$class",
@@ -1339,7 +1364,7 @@ pub struct IntegerProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegerDomainValidator {
    #[serde(
       rename = "$class",
