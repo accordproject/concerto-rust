@@ -129,6 +129,8 @@ impl ModelFile {
         self.validate_property_conflicts()?;
         self.validate_inheritance_cycles()?;
         self.validate_relationship_types()?;
+        self.validate_undeclared_types()?;
+        self.validate_relationship_targets()?;
         Ok(())
     }
 
@@ -394,6 +396,103 @@ impl ModelFile {
     }
 
 
+    fn validate_undeclared_types(&self) -> Result<(), ConcertoError> {
+    // Collect all declared type names (Concepts, Enums, etc.)
+        let mut declared_types: Vec<String> = Vec::new();
+        
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                declared_types.push(decl.name.clone());
+            }
+        }
+    
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                if let Some(properties) = &decl.properties {
+                    for prop in properties {
+                        if let Some(prop_type) = &prop.r#type {
+                            let type_name = &prop_type.name;
+                        
+                            // Ignore primitives
+                            let primitive_types = vec![
+                                "String", "Double", "Integer", "Long", "Boolean", "DateTime"
+                            ];
+                            if primitive_types.contains(&type_name.as_str()) {
+                                continue;
+                            }
+                        
+                            // Check if this type is declared anywhere
+                            if !declared_types.contains(type_name) {
+                                return Err(ConcertoError::ValidationError(format!(
+                                    "Undeclared type"
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    
+        Ok(())
+    }
+
+
+    
+    fn validate_relationship_targets(&self) -> Result<(), ConcertoError> {
+        // Collect declared types with their identifiers
+        let mut class_identifiers: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                // true = has identifier
+                let has_identifier = decl.identified.is_some();
+                class_identifiers.insert(decl.name.clone(), has_identifier);
+            }
+        }
+
+        // Now check all relationship properties
+        if let Some(declarations) = &self.model.declarations {
+            for decl in declarations {
+                if let Some(properties) = &decl.properties {
+                    for prop in properties {
+                        // Check only RelationshipProperty
+                        if prop._class.ends_with(".RelationshipProperty") {
+                            if let Some(prop_type) = &prop.r#type {
+                                let type_name = &prop_type.name;
+
+                                // Ignore primitives
+                                let primitive_types = vec![
+                                    "String", "Double", "Integer", "Long", "Boolean", "DateTime"
+                                ];
+                                if primitive_types.contains(&type_name.as_str()) {
+                                    continue;
+                                }
+
+                                // Check if the target type exists
+                                match class_identifiers.get(type_name) {
+                                    Some(has_identifier) => {
+                                        if !has_identifier {
+                                            return Err(ConcertoError::ValidationError(format!(
+                                                "Undeclared type"
+                                            )));
+                                        }
+                                    }
+                                    None => {
+                                        // If not declared at all
+                                        return Err(ConcertoError::ValidationError(format!(
+                                            "Undeclared type"
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 
 
 }
