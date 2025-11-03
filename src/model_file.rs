@@ -127,6 +127,7 @@ impl ModelFile {
         self.validate_identifier_type()?;
         self.validate_identifying_fields()?;
         self.validate_property_conflicts()?;
+        self.validate_inheritance_cycles()?;
         Ok(())
     }
 
