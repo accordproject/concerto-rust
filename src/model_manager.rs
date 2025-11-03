@@ -69,6 +69,9 @@ impl ModelManager {
         self.validate_undeclared_types_map()?;
 
         self.validate_import_namespace_conflicts()?;
+
+        self.validate_import_namespace_defined()?;
+        
         Ok(())
     }
 
@@ -487,11 +490,48 @@ impl ModelManager {
                 }
             }
         }
-    
+
         Ok(())
     }
 
 
+
+    fn validate_import_namespace_defined(&self) -> Result<(), ConcertoError> {
+        // Collect all defined namespaces
+        let defined_namespaces: std::collections::HashSet<String> = self
+            .models
+            .values()
+            .map(|mf| mf.model.namespace.clone())
+            .collect();
+
+        // Now validate each model’s imports
+        for model_file in self.models.values() {
+            if let Some(imports) = &model_file.model.imports {
+                for import in imports {
+                    let ns = import.namespace.clone();
+                    let name = import.name.clone().unwrap_or_else(|| "<unknown>".to_string());
+
+                    // Namespace must be defined in some model
+                    if !defined_namespaces.contains(&ns) {
+                        return Err(ConcertoError::ValidationError(format!(
+                            "Namespace '{}' is not defined for type '{}'",
+                            ns, name
+                        )));
+                    }
+
+                    // Optional extra rule: prevent importing from itself
+                    if ns == model_file.model.namespace {
+                        return Err(ConcertoError::ValidationError(format!(
+                            "Type '{}' cannot import from its own namespace '{}'",
+                            name, ns
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 
 
     /// Helper method to treat a declaration as a concept declaration
