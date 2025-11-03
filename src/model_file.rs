@@ -325,6 +325,44 @@ impl ModelFile {
         Ok(())
     }
 
+    fn validate_inheritance_cycles(&self) -> Result<(), ConcertoError> {
+        if let Some(declarations) = &self.model.declarations {
+            // Build a map from concept name → its parent (superType)
+            let mut inheritance_map = std::collections::HashMap::new();
+        
+            for decl in declarations {
+                if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
+                    if let Some(super_type) = &decl.super_type {
+                        inheritance_map.insert(decl.name.clone(), super_type.name.clone());
+                    }
+                }
+            }
+        
+            // For each concept, traverse upwards to detect cycles
+            for (concept, _) in &inheritance_map {
+                let mut visited = std::collections::HashSet::new();
+                let mut current = concept.clone();
+            
+                while let Some(parent) = inheritance_map.get(&current) {
+                    if !visited.insert(current.clone()) {
+                        return Err(ConcertoError::ValidationError(format!(
+                            "Maximum call stack size exceeded"
+                        )));
+                    }
+                
+                    current = parent.clone();
+                
+                    // Optional: stop early if we reach a type with no parent
+                    if !inheritance_map.contains_key(&current) {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+
 
 
 }
