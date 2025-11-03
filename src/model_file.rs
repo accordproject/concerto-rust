@@ -380,7 +380,7 @@ impl ModelFile {
 
                                 if primitive_types.contains(&type_name.as_str()) {
                                     return Err(ConcertoError::ValidationError(format!(
-                                        "z"
+                                        "cannot be to the primitive type"
                                     )));
                                 }
                             }
