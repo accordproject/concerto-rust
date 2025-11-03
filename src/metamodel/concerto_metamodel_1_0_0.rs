@@ -1519,6 +1519,11 @@ pub struct ImportTypes {
    pub types: Option<Vec<String>>,
 
    #[serde(
+      rename = "name",
+   )]
+   pub name: String,
+
+   #[serde(
       rename = "aliasedTypes",
       skip_serializing_if = "Option::is_none",
    )]
