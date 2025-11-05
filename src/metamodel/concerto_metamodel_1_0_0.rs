@@ -321,8 +321,8 @@ pub struct Properties {
    #[serde(
       rename = "isArray",
    )]
-   pub is_array: bool,
-   
+   pub is_array: Option<bool>,
+
    #[serde(
       rename="decorators",
    )]

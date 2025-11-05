@@ -111,7 +111,7 @@ impl ModelFile {
                 name: "$class".to_string(),
                 r#type: None,
                 is_optional: Some(false),
-                is_array: false,
+                is_array: Some(false),
                 decorators: None,
                 validator: None,
                 length_validator: None,
