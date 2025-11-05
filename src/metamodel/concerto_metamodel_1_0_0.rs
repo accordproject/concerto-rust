@@ -319,6 +319,11 @@ pub struct Properties {
    pub is_optional: Option<bool>,
 
    #[serde(
+      rename = "isArray",
+   )]
+   pub is_array: bool,
+   
+   #[serde(
       rename="decorators",
    )]
    pub decorators: Option<Vec<Decorator>>,
