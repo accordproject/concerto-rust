@@ -1512,32 +1512,8 @@ pub struct ImportAll {
    pub uri: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportType {
-   #[serde(
-      rename = "$class",
-   )]
-   pub _class: String,
-
-   #[serde(
-      rename = "name",
-   )]
-   pub name: String,
-
-   #[serde(
-      rename = "namespace",
-   )]
-   pub namespace: String,
-
-   #[serde(
-      rename = "uri",
-      skip_serializing_if = "Option::is_none",
-   )]
-   pub uri: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImportTypes {
+pub struct ImportType {
    #[serde(
       rename = "$class",
    )]
@@ -1599,7 +1575,7 @@ pub struct Model {
       rename = "imports",
       skip_serializing_if = "Option::is_none",
    )]
-   pub imports: Option<Vec<ImportTypes>>,
+   pub imports: Option<Vec<ImportType>>,
 
    #[serde(
       rename = "declarations",
