@@ -1,6 +1,6 @@
 use crate::error::ConcertoError;
 use crate::validation::Validate;
-use crate::metamodel::concerto_metamodel_1_0_0::*;
+use crate::metamodel::extended_metamodel::*;
 
 use regex::Regex;
 

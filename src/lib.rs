@@ -17,7 +17,7 @@ pub use model_manager::ModelManager;
 pub use traits::*;
 
 // Metamodel types exports
-pub use metamodel::concerto_metamodel_1_0_0::{
+pub use metamodel::extended_metamodel::{
     Model, Declaration, Import,
     Property, Decorator, TypeIdentifier
 };

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::fs;
 
 use crate::error::ConcertoError;
-use crate::metamodel::concerto_metamodel_1_0_0::{Declaration, Import, ImportType, Model, Properties};
+use crate::metamodel::extended_metamodel::{Declaration, Import, ImportType, Model, Properties};
 use crate::validation::Validate;
 
 /// Represents a Concerto model file

@@ -1,5 +1,5 @@
 use crate::{ConcertoError, ModelManager, metamodel_validation::is_valid_identifier};
-use crate::metamodel::concerto_metamodel_1_0_0::*;
+use crate::metamodel::extended_metamodel::*;
 use crate::validation::Validate;
 
 /// Base trait for declaration types

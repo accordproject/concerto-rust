@@ -1,7 +1,7 @@
 use serde::{ Deserialize, Serialize };
 use chrono::{ DateTime, TimeZone, Utc };
+use serde_json::Value;
 
-use crate::metamodel::concerto_1_0_0::*;
 use crate::metamodel::utils::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,12 +190,20 @@ pub struct Decorator {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+// Change needed here -> We put clone by ourself which is required 
+// but should be changed in the Rust target for concerto-codegen instead 
+// of modifying in this file
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identified {
    #[serde(
       rename = "$class",
    )]
    pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -224,6 +232,16 @@ pub struct Declaration {
    pub name: String,
 
    #[serde(
+      rename = "isAbstract",
+   )]
+   pub is_abstract: Option<bool>,
+
+   #[serde(
+      rename = "properties",
+   )]
+   pub properties: Option<Vec<Properties>>,
+
+   #[serde(
       rename = "decorators",
       skip_serializing_if = "Option::is_none",
    )]
@@ -234,6 +252,126 @@ pub struct Declaration {
       skip_serializing_if = "Option::is_none",
    )]
    pub location: Option<Range>,
+
+   #[serde(
+      rename = "superType",
+      skip_serializing_if = "Option::is_none"
+   )]
+   pub super_type: Option<SuperType>,
+
+   #[serde(
+      rename = "identified",
+      skip_serializing_if = "Option::is_none"
+   )]
+   pub identified: Option<Identified>,
+
+   #[serde(
+      rename = "value",
+      skip_serializing_if = "Option::is_none"
+   )]
+   pub value: Option<Values>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Values{
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename="type",
+   )]
+   pub r#type: Option<Type>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuperType{
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Properties {
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String,
+
+   #[serde(
+      rename = "type",
+   )]
+   pub r#type: Option<Type>,
+
+   #[serde(
+      rename = "isOptional",
+   )]
+   pub is_optional: Option<bool>,
+
+   #[serde(
+      rename = "isArray",
+   )]
+   pub is_array: Option<bool>,
+
+   #[serde(
+      rename="decorators",
+   )]
+   pub decorators: Option<Vec<Decorator>>,
+
+   #[serde(
+      rename="validator",
+   )]
+   pub validator: Option<Validator>,
+
+   #[serde(
+      rename="lengthValidator",
+   )]
+   pub length_validator: Option<StringLengthValidator>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Validator {
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "lower",
+      skip_serializing_if = "Option::is_none",
+   )]
+   pub lower: Option<i32>,
+
+   #[serde(
+      rename = "upper",
+      skip_serializing_if = "Option::is_none",
+   )]
+   pub upper: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Type {
+   #[serde(
+      rename = "$class",
+   )]
+   pub _class: String,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1104,7 +1242,7 @@ pub struct StringRegexValidator {
    pub flags: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringLengthValidator {
    #[serde(
       rename = "$class",
@@ -1171,7 +1309,7 @@ pub struct DoubleProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoubleDomainValidator {
    #[serde(
       rename = "$class",
@@ -1238,7 +1376,7 @@ pub struct IntegerProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegerDomainValidator {
    #[serde(
       rename = "$class",
@@ -1325,7 +1463,7 @@ pub struct LongDomainValidator {
    pub upper: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AliasedType {
    #[serde(
       rename = "$class",
@@ -1381,32 +1519,8 @@ pub struct ImportAll {
    pub uri: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportType {
-   #[serde(
-      rename = "$class",
-   )]
-   pub _class: String,
-
-   #[serde(
-      rename = "name",
-   )]
-   pub name: String,
-
-   #[serde(
-      rename = "namespace",
-   )]
-   pub namespace: String,
-
-   #[serde(
-      rename = "uri",
-      skip_serializing_if = "Option::is_none",
-   )]
-   pub uri: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ImportTypes {
    #[serde(
       rename = "$class",
    )]
@@ -1415,7 +1529,12 @@ pub struct ImportTypes {
    #[serde(
       rename = "types",
    )]
-   pub types: Vec<String>,
+   pub types: Option<Vec<String>>,
+
+   #[serde(
+      rename = "name",
+   )]
+   pub name: Option<String>,
 
    #[serde(
       rename = "aliasedTypes",
@@ -1463,7 +1582,7 @@ pub struct Model {
       rename = "imports",
       skip_serializing_if = "Option::is_none",
    )]
-   pub imports: Option<Vec<Import>>,
+   pub imports: Option<Vec<ImportType>>,
 
    #[serde(
       rename = "declarations",

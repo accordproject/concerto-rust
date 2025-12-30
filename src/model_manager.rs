@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::error::ConcertoError;
 use crate::model_file::ModelFile;
 use crate::validation::Validate;
-use crate::metamodel::concerto_metamodel_1_0_0::*;
+use crate::metamodel::extended_metamodel::*;
 use crate::traits::*;
 
 /// Manages models and provides validation
@@ -563,7 +563,7 @@ impl ModelManager {
     }
 
     /// Validates that a referenced type exists in the model
-    pub fn validate_type_exists(&self, type_id: &crate::metamodel::concerto_metamodel_1_0_0::TypeIdentifier) -> Result<(), ConcertoError> {
+    pub fn validate_type_exists(&self, type_id: &crate::metamodel::extended_metamodel::TypeIdentifier) -> Result<(), ConcertoError> {
         let namespace = match &type_id.namespace {
             Some(ns) => ns,
             None => {
