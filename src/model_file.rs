@@ -2,7 +2,7 @@ use std::path::Path;
 use std::fs;
 
 use crate::error::ConcertoError;
-use crate::metamodel::extended_metamodel::{Declaration, Import, ImportType, Model, Properties};
+use crate::metamodel::extended_metamodel::{DeclarationUnion, ImportUnion, Model, Properties, Model};
 use crate::validation::Validate;
 
 /// Represents a Concerto model file
@@ -10,14 +10,34 @@ use crate::validation::Validate;
 #[derive(Debug, Clone)]
 pub struct ModelFile {
     /// The metamodel representation
-    pub model: Model,
+    // pub model: Model,
     pub content: String,
     pub file_name: String,
+    pub declarations: Vec<DeclarationUnion>,
+    pub import: Vec<ImportUnion>
+}
+
+impl From<Model> for ModelFile {
+    fn from(value: Model) -> Self {
+        let declarations: Vec<DeclarationUnion> = match value.declarations {
+            Some(declarations) => {
+                declarations.iter().map(
+                    |x| {
+                        match x._class {
+                            "concerto.metamodel@1.0.0.ConceptDeclaration" =>
+                            _ => panic!("Unreachable"),
+                        }
+                    }
+                )
+            },
+            None => Vec::new(),
+        };
+    }
 }
 
 impl ModelFile {
     /// Creates a new model file
-    
+
     pub fn new(model: Model, content: String, file_name: String) -> Self {
         ModelFile { model, content, file_name }
     }
@@ -25,10 +45,9 @@ impl ModelFile {
         self.model.namespace.clone()
     }
 
-    
-
     /// Loads a model file from a string
     pub fn from_string(content: String) -> Result<Self, ConcertoError> {
+
         // Note: This is a placeholder - in a real implementation,
         // you would parse the string into a Model structure.
         // For now, we'll just return an error as this functionality would be
@@ -57,7 +76,7 @@ impl ModelFile {
     }
 
     /// Gets the imports for this model file
-    pub fn get_imports(&self) -> Vec<&ImportType> {
+    pub fn get_imports(&self) -> Vec<&ImportUnion> {
         match &self.model.imports {
             Some(imports) => imports.iter().collect(),
             None => Vec::new(),
@@ -65,7 +84,7 @@ impl ModelFile {
     }
 
     /// Gets the declarations for this model file
-    pub fn get_declarations(&self) -> Vec<&Declaration> {
+    pub fn get_declarations(&self) -> Vec<&DeclarationUnion> {
         match &self.model.declarations {
             Some(declarations) => declarations.iter().collect(),
             None => Vec::new(),
@@ -84,7 +103,7 @@ impl ModelFile {
     }
 
     /// Adds a declaration to this model file
-    pub fn add_declaration(&mut self, declaration: Declaration) {
+    pub fn add_declaration(&mut self, declaration: DeclarationUnion) {
         if self.model.declarations.is_none() {
             self.model.declarations = Some(Vec::new());
         }
@@ -97,7 +116,7 @@ impl ModelFile {
     /// Helper function to find properties for a declaration
     /// In a real implementation, this would use proper type information and downcasting
     /// This is a simplified approach just for the test case
-    pub fn find_properties_for_declaration(&self, declaration: &Declaration) -> Vec<Properties> {
+    pub fn find_properties_for_declaration(&self, declaration: &DeclarationUnion) -> Vec<Properties> {
         // For the test case, we have the properties separately in the test file
         // We're looking specifically for the test where a property name is "$class"
 
@@ -123,7 +142,8 @@ impl ModelFile {
 
     pub fn validate(&self) -> Result<(), ConcertoError> {
         // Validate the model structure first
-        self.model.validate()?;
+        self.validate_declarations()?;
+        self.validate_imports()?;
         self.validate_field_name()?;
         self.validate_supertypes()?;
         self.validate_identifier_type()?;
@@ -214,10 +234,10 @@ impl ModelFile {
 
                     if let Some(prop) = property {
                         match prop._class.as_str() {
-                          
+
                             "concerto.metamodel@1.0.0.StringProperty" => continue,
 
-               
+
                             "concerto.metamodel@1.0.0.ObjectProperty" => {
                                 if let Some(type_ref) = &prop.r#type {
                                     if !string_scalars.contains(&type_ref.name) {
@@ -232,7 +252,7 @@ impl ModelFile {
                                 }
                             }
 
-                  
+
                             _ => {
                                 return Err(ConcertoError::ValidationError(format!(
                                     "Class"
@@ -254,17 +274,17 @@ impl ModelFile {
     fn validate_identifying_fields(&self) -> Result<(), ConcertoError> {
             if let Some(declarations) = &self.model.declarations {
                 for decl in declarations {
-               
+
                     if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                         if let Some(identified) = &decl.identified {
                             let identified_name = &identified.name;
 
-                          
+
                             if let Some(properties) = &decl.properties {
                                 for prop in properties {
-    
+
                                     if &prop.name == identified_name {
-                           
+
                                         if let Some(is_optional) = prop.is_optional {
                                             if is_optional {
                                                 return Err(ConcertoError::ValidationError(format!(
@@ -294,7 +314,7 @@ impl ModelFile {
                 if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                     let concept_name = &decl.name;
 
-                
+
                     let mut property_names = std::collections::HashSet::new();
                     if let Some(properties) = &decl.properties {
                         for prop in properties {
@@ -306,7 +326,7 @@ impl ModelFile {
                         }
                     }
 
-               
+
                     if let Some(super_type) = &decl.super_type {
                         let parent_name = &super_type.name;
 
@@ -335,9 +355,9 @@ impl ModelFile {
 
     fn validate_inheritance_cycles(&self) -> Result<(), ConcertoError> {
         if let Some(declarations) = &self.model.declarations {
-     
+
             let mut inheritance_map = std::collections::HashMap::new();
-        
+
             for decl in declarations {
                 if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                     if let Some(super_type) = &decl.super_type {
@@ -345,22 +365,22 @@ impl ModelFile {
                     }
                 }
             }
-        
-         
+
+
             for (concept, _) in &inheritance_map {
                 let mut visited = std::collections::HashSet::new();
                 let mut current = concept.clone();
-            
+
                 while let Some(parent) = inheritance_map.get(&current) {
                     if !visited.insert(current.clone()) {
                         return Err(ConcertoError::ValidationError(format!(
                             "Maximum call stack size exceeded"
                         )));
                     }
-                
+
                     current = parent.clone();
-                
-                  
+
+
                     if !inheritance_map.contains_key(&current) {
                         break;
                     }
@@ -402,14 +422,14 @@ impl ModelFile {
 
 
 
-    
+
     fn validate_relationship_targets(&self) -> Result<(), ConcertoError> {
-       
+
         let mut class_identifiers: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
 
         if let Some(declarations) = &self.model.declarations {
             for decl in declarations {
-              
+
                 let has_identifier = decl.identified.is_some();
                 class_identifiers.insert(decl.name.clone(), has_identifier);
             }
@@ -419,12 +439,12 @@ impl ModelFile {
             for decl in declarations {
                 if let Some(properties) = &decl.properties {
                     for prop in properties {
-           
+
                         if prop._class.ends_with(".RelationshipProperty") {
                             if let Some(prop_type) = &prop.r#type {
                                 let type_name = &prop_type.name;
 
-                     
+
                                 let primitive_types = vec![
                                     "String", "Double", "Integer", "Long", "Boolean", "DateTime"
                                 ];
@@ -432,7 +452,7 @@ impl ModelFile {
                                     continue;
                                 }
 
-                          
+
                                 match class_identifiers.get(type_name) {
                                     Some(has_identifier) => {
                                         if !has_identifier {
@@ -442,7 +462,7 @@ impl ModelFile {
                                         }
                                     }
                                     None => {
-                                    
+
                                         return Err(ConcertoError::ValidationError(format!(
                                             "Undeclared type"
                                         )));
@@ -488,7 +508,7 @@ impl ModelFile {
                 if let Some(properties) = &decl.properties {
                     for prop in properties {
                         if let Some(validator) = &prop.validator {
-                      
+
                             if let (Some(lower), Some(upper)) = (validator.lower, validator.upper) {
                                 if lower > upper {
                                     return Err(ConcertoError::ValidationError(
@@ -507,10 +527,10 @@ impl ModelFile {
 
 
     fn validate_import_namespace_defined(&self) -> Result<(), ConcertoError> {
-       
+
         let current_namespace = &self.model.namespace;
-        
-     
+
+
         if let Some(imports) = &self.model.imports {
             for import in imports {
                 let ns = import.namespace.clone();
@@ -521,8 +541,8 @@ impl ModelFile {
                         name, ns
                     )));
                 }
-            
-              
+
+
                 if ns.trim().is_empty() {
                     return Err(ConcertoError::ValidationError(format!(
                         "Namespace is not defined for type '{}'",
@@ -538,21 +558,21 @@ impl ModelFile {
     pub fn validate_string_length_validators(&self) -> Result<(), ConcertoError> {
         if let Some(declarations) = &self.model.declarations {
             for decl in declarations {
-       
+
                 if decl._class == "concerto.metamodel@1.0.0.ConceptDeclaration" {
                     if let Some(properties) = &decl.properties {
                         for prop in properties {
-                     
+
                             if prop._class == "concerto.metamodel@1.0.0.StringProperty" {
                                 if let Some(length_validator) = &prop.length_validator {
-                         
+
                                     if length_validator._class
                                         == "concerto.metamodel@1.0.0.StringLengthValidator"
                                     {
                                         if let (Some(min_len), Some(max_len)) =
                                             (length_validator.min_length, length_validator.max_length)
                                         {
-                             
+
                                             if min_len <= 0 || max_len <= 0 {
                                                 return Err(ConcertoError::ValidationError(
                                                     "/minLength and-or maxLength must be positive integers"

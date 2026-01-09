@@ -57,58 +57,74 @@ pub struct Validator {
    pub upper: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Declaration {
-   #[serde(
-      rename = "$class",
-   )]
-   pub _class: String,
-
-   #[serde(
-      rename = "name",
-   )]
-   pub name: String,
-
-   #[serde(
-      rename = "isAbstract",
-   )]
-   pub is_abstract: Option<bool>,
-
-   #[serde(
-      rename = "properties",
-   )]
-   pub properties: Option<Vec<Properties>>,
-
-   #[serde(
-      rename = "decorators",
-      skip_serializing_if = "Option::is_none",
-   )]
-   pub decorators: Option<Vec<Decorator>>,
-
-   #[serde(
-      rename = "location",
-      skip_serializing_if = "Option::is_none",
-   )]
-   pub location: Option<Range>,
-
-   #[serde(
-      rename = "superType",
-      skip_serializing_if = "Option::is_none"
-   )]
-   pub super_type: Option<SuperType>,
-
-   #[serde(
-      rename = "identified",
-      skip_serializing_if = "Option::is_none"
-   )]
-   pub identified: Option<Identified>,
-
-   #[serde(
-      rename = "value",
-      skip_serializing_if = "Option::is_none"
-   )]
-   pub value: Option<Values>,
+#[derive(Clone, Debug)]
+pub enum DeclarationUnion {
+   Declaration(super::concerto_metamodel_1_0_0::Declaration),
+   MapDeclaration(super::concerto_metamodel_1_0_0::MapDeclaration),
+   EnumDeclaration(super::concerto_metamodel_1_0_0::EnumDeclaration),
+   ConceptDeclaration(super::concerto_metamodel_1_0_0::ConceptDeclaration),
 }
+
+#[derive(Clone, Debug)]
+pub enum ImportUnion {
+   Import(super::concerto_metamodel_1_0_0::Import),
+   ImportAll(super::concerto_metamodel_1_0_0::ImportAll),
+   ImportType(super::concerto_metamodel_1_0_0::ImportType),
+   ImportTypes(super::concerto_metamodel_1_0_0::ImportTypes),
+}
+
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub struct Declaration {
+//    #[serde(
+//       rename = "$class",
+//    )]
+//    pub _class: String,
+
+//    #[serde(
+//       rename = "name",
+//    )]
+//    pub name: String,
+
+//    #[serde(
+//       rename = "isAbstract",
+//    )]
+//    pub is_abstract: Option<bool>,
+
+//    #[serde(
+//       rename = "properties",
+//    )]
+//    pub properties: Option<Vec<Properties>>,
+
+//    #[serde(
+//       rename = "decorators",
+//       skip_serializing_if = "Option::is_none",
+//    )]
+//    pub decorators: Option<Vec<Decorator>>,
+
+//    #[serde(
+//       rename = "location",
+//       skip_serializing_if = "Option::is_none",
+//    )]
+//    pub location: Option<Range>,
+
+//    #[serde(
+//       rename = "superType",
+//       skip_serializing_if = "Option::is_none"
+//    )]
+//    pub super_type: Option<SuperType>,
+
+//    #[serde(
+//       rename = "identified",
+//       skip_serializing_if = "Option::is_none"
+//    )]
+//    pub identified: Option<Identified>,
+
+//    #[serde(
+//       rename = "value",
+//       skip_serializing_if = "Option::is_none"
+//    )]
+//    pub value: Option<Values>,
+// }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Values{
@@ -178,3 +194,5 @@ pub struct Properties {
    )]
    pub length_validator: Option<StringLengthValidator>
 }
+
+
