@@ -8,7 +8,7 @@ use concerto_core::validation::Validate;
 #[test]
 fn test_valid_namespace_format() {
     // Create a model file with a valid namespace format
-    let model_file = ModelFile::new("org.example.model".to_string(), Some("1.0.0".to_string()));
+    let model_file = ModelFile::from_namespace("org.example.model".to_string(), Some("1.0.0".to_string()));
 
     // Should pass validation
     let result = model_file.validate();
@@ -18,7 +18,7 @@ fn test_valid_namespace_format() {
 #[test]
 fn test_empty_namespace() {
     // Create a model file with an empty namespace
-    let model_file = ModelFile::new("".to_string(), Some("1.0.0".to_string()));
+    let model_file = ModelFile::from_namespace("".to_string(), Some("1.0.0".to_string()));
 
     // Should fail validation with message about empty namespace
     let result = model_file.validate();
@@ -30,7 +30,7 @@ fn test_empty_namespace() {
 #[ignore]
 fn test_duplicate_namespace_imports() {
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Add duplicate imports
     let import1 = Import {
@@ -59,7 +59,7 @@ fn test_duplicate_namespace_imports() {
 #[test]
 fn test_valid_imports() {
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Add valid imports with different namespaces
     let import1 = Import {
@@ -85,7 +85,7 @@ fn test_valid_imports() {
 #[test]
 fn test_import_with_version() {
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Add import with version
     let import = Import {

@@ -12,7 +12,7 @@ fn test_conformance_system_property_name() {
     // Test: Property name uses system-reserved name
 
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Create a concept declaration with a property that has a reserved name
     let concept_decl = ConceptDeclaration {
@@ -59,7 +59,7 @@ fn test_conformance_duplicate_declaration() {
     // Test: Duplicate declaration names in the same model
 
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // First declaration
     let concept_decl1 = ConceptDeclaration {
@@ -119,7 +119,7 @@ fn test_conformance_circular_inheritance() {
     let mut model_manager = ModelManager::new(true);
 
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Person extends Employee
     let concept_decl1 = ConceptDeclaration {
@@ -190,7 +190,7 @@ fn test_conformance_property_duplicate_names() {
     // Test: Duplicate property names in a declaration
 
     // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
+    let mut model_file = ModelFile::from_namespace("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Create a concept with duplicate property names
     let concept_decl = ConceptDeclaration {

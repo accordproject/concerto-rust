@@ -17,9 +17,28 @@ pub struct ModelFile {
 
 impl ModelFile {
     /// Creates a new model file
-    
+
     pub fn new(model: Model, content: String, file_name: String) -> Self {
         ModelFile { model, content, file_name }
+    }
+
+    /// Creates a new model file from a namespace and optional version.
+    /// Convenience constructor for tests and simple use cases.
+    pub fn from_namespace(namespace: String, version: Option<String>) -> Self {
+        let model = Model {
+            _class: "concerto.metamodel@1.0.0.Model".to_string(),
+            namespace,
+            source_uri: None,
+            concerto_version: version,
+            imports: None,
+            declarations: None,
+            decorators: None,
+        };
+        ModelFile {
+            model,
+            content: String::new(),
+            file_name: String::new(),
+        }
     }
     pub fn get_name(&self) -> String {
         self.model.namespace.clone()
