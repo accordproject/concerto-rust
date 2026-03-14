@@ -1,6 +1,7 @@
+use concerto_metamodel::concerto_metamodel_1_0_0::*;
+
 use crate::error::ConcertoError;
 use crate::validation::Validate;
-use crate::metamodel::concerto_metamodel_1_0_0::*;
 
 use regex::Regex;
 
@@ -19,7 +20,9 @@ impl Validate for Model {
     fn validate(&self) -> Result<(), ConcertoError> {
         // Validate namespace
         if self.namespace.is_empty() {
-            return Err(ConcertoError::ValidationError("Namespace cannot be empty".to_string()));
+            return Err(ConcertoError::ValidationError(
+                "Namespace cannot be empty".to_string(),
+            ));
         }
 
         // Validate declarations if any
@@ -29,9 +32,10 @@ impl Validate for Model {
             for decl in declarations {
                 // Check if this declaration name has already been seen
                 if !declaration_names.insert(&decl.name) {
-                    return Err(ConcertoError::ValidationError(
-                        format!("Duplicate declaration name: {}", decl.name)
-                    ));
+                    return Err(ConcertoError::ValidationError(format!(
+                        "Duplicate declaration name: {}",
+                        decl.name
+                    )));
                 }
 
                 // Validate the declaration itself
@@ -71,7 +75,10 @@ impl DeclarationValidator for Declaration {
         crate::traits::CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         crate::traits::CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -80,7 +87,9 @@ impl Validate for Decorator {
     fn validate(&self) -> Result<(), ConcertoError> {
         // Validate the name of the decorator
         if self.name.is_empty() {
-            return Err(ConcertoError::ValidationError("Decorator name cannot be empty".to_string()));
+            return Err(ConcertoError::ValidationError(
+                "Decorator name cannot be empty".to_string(),
+            ));
         }
 
         // Arguments validation would go here if needed
@@ -109,9 +118,10 @@ impl Validate for ConceptDeclaration {
         for property in &self.properties {
             // Check if this property name has already been seen
             if !property_names.insert(&property.name) {
-                return Err(ConcertoError::ValidationError(
-                    format!("Duplicate property name: {} in concept {}", property.name, self.name)
-                ));
+                return Err(ConcertoError::ValidationError(format!(
+                    "Duplicate property name: {} in concept {}",
+                    property.name, self.name
+                )));
             }
 
             // Validate the property itself
@@ -244,7 +254,9 @@ impl Validate for Import {
     fn validate(&self) -> Result<(), ConcertoError> {
         // Validate namespace
         if self.namespace.is_empty() {
-            return Err(ConcertoError::ValidationError("Import namespace cannot be empty".to_string()));
+            return Err(ConcertoError::ValidationError(
+                "Import namespace cannot be empty".to_string(),
+            ));
         }
 
         Ok(())

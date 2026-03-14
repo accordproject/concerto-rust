@@ -68,10 +68,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "concerto-metamodel"
+version = "3.12.8"
+dependencies = [
+ "chrono",
+ "serde",
+]
+
+[[package]]
 name = "concerto_core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "concerto-metamodel",
  "lazy_static",
  "log",
  "regex",

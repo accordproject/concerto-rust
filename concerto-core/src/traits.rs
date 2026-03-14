@@ -1,6 +1,7 @@
-use crate::{ConcertoError, ModelManager, metamodel_validation::is_valid_identifier};
-use crate::metamodel::concerto_metamodel_1_0_0::*;
+use concerto_metamodel::concerto_metamodel_1_0_0::*;
+
 use crate::validation::Validate;
+use crate::{metamodel_validation::is_valid_identifier, ConcertoError, ModelManager};
 
 /// Base trait for declaration types
 pub trait DeclarationBase {
@@ -27,7 +28,6 @@ impl DeclarationBase for Declaration {
     fn get_location(&self) -> Option<&Range> {
         self.location.as_ref()
     }
-
 }
 
 impl DeclarationBase for AssetDeclaration {
@@ -454,7 +454,7 @@ pub trait PropertyValidator {
 
 impl PropertyValidator for RelationshipProperty {
     fn validate(&self, model_manager: &ModelManager) -> Result<(), ConcertoError> {
-         model_manager.validate_type_exists(&self.type_)
+        model_manager.validate_type_exists(&self.type_)
     }
 }
 
@@ -514,7 +514,8 @@ pub trait DeclarationValidator {
     fn validate_name(&self, name: &str) -> Result<(), ConcertoError>;
 
     /// Validates decorators if present
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError>;
+    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>)
+        -> Result<(), ConcertoError>;
 }
 
 /// Common validator implementation that can be reused across declaration types
@@ -559,9 +560,10 @@ impl CommonDeclarationValidator {
 
             // Check for duplicate property names
             if !property_names.insert(&property.name) {
-                return Err(ConcertoError::ValidationError(
-                    format!("Duplicate property: {}", property.name)
-                ));
+                return Err(ConcertoError::ValidationError(format!(
+                    "Duplicate property: {}",
+                    property.name
+                )));
             }
         }
 
@@ -587,7 +589,10 @@ impl DeclarationValidator for ConceptDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -605,7 +610,10 @@ impl DeclarationValidator for AssetDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -622,7 +630,10 @@ impl DeclarationValidator for ParticipantDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -639,7 +650,10 @@ impl DeclarationValidator for TransactionDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -656,7 +670,10 @@ impl DeclarationValidator for EventDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -671,16 +688,18 @@ impl DeclarationValidator for EnumDeclaration {
         for property in &self.properties {
             // Validate each enum property
             if !CommonDeclarationValidator::validate_identifier(&property.name).is_ok() {
-                return Err(ConcertoError::ValidationError(
-                    format!("'{}' is not a valid enum property name", property.name)
-                ));
+                return Err(ConcertoError::ValidationError(format!(
+                    "'{}' is not a valid enum property name",
+                    property.name
+                )));
             }
 
             // Check for duplicate enum values
             if !enum_values.insert(&property.name) {
-                return Err(ConcertoError::ValidationError(
-                    format!("Duplicate enum value: {}", property.name)
-                ));
+                return Err(ConcertoError::ValidationError(format!(
+                    "Duplicate enum value: {}",
+                    property.name
+                )));
             }
 
             // Validate decorators on enum properties
@@ -697,7 +716,10 @@ impl DeclarationValidator for EnumDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -708,9 +730,11 @@ impl DeclarationValidator for MapDeclaration {
 
         // Validate key type - must be StringMapKeyType or DateTimeMapKeyType
         // We need to check the _class field of the key type
-        if !self.key._class.contains("StringMapKeyType") && !self.key._class.contains("DateTimeMapKeyType") {
+        if !self.key._class.contains("StringMapKeyType")
+            && !self.key._class.contains("DateTimeMapKeyType")
+        {
             return Err(ConcertoError::ValidationError(
-                "Invalid map key type. Map keys must be String or DateTime".to_string()
+                "Invalid map key type. Map keys must be String or DateTime".to_string(),
             ));
         }
 
@@ -726,7 +750,10 @@ impl DeclarationValidator for MapDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -774,7 +801,10 @@ impl DeclarationValidator for ScalarDeclaration {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -885,11 +915,12 @@ impl DeclarationValidator for StringScalar {
             // StringRegexValidator has a direct pattern field (not Option)
             // Try to compile the regex to validate it
             match regex::Regex::new(&validator.pattern) {
-                Ok(_) => {}, // Regex is valid
+                Ok(_) => {} // Regex is valid
                 Err(_) => {
-                    return Err(ConcertoError::ValidationError(
-                        format!("Invalid regex pattern in string validator: {}", validator.pattern)
-                    ));
+                    return Err(ConcertoError::ValidationError(format!(
+                        "Invalid regex pattern in string validator: {}",
+                        validator.pattern
+                    )));
                 }
             }
         }
@@ -901,7 +932,10 @@ impl DeclarationValidator for StringScalar {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -955,7 +989,10 @@ impl DeclarationValidator for BooleanScalar {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }
@@ -970,7 +1007,10 @@ impl DeclarationValidator for DateTimeScalar {
         CommonDeclarationValidator::validate_identifier(name)
     }
 
-    fn validate_decorators(&self, decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
+    fn validate_decorators(
+        &self,
+        decorators: &Option<Vec<Decorator>>,
+    ) -> Result<(), ConcertoError> {
         CommonDeclarationValidator::validate_decorators(decorators)
     }
 }

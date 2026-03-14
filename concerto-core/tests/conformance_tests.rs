@@ -1,11 +1,11 @@
 //! Integration tests for validation rules
 
 use concerto_core::model_file::ModelFile;
-use concerto_core::metamodel::concerto_metamodel_1_0_0::{
-    ConceptDeclaration, Declaration, Property, TypeIdentifier
-};
-use concerto_core::validation::Validate;
 use concerto_core::model_manager::ModelManager;
+use concerto_core::validation::Validate;
+use concerto_metamodel::concerto_metamodel_1_0_0::{
+    ConceptDeclaration, Declaration, Property, TypeIdentifier,
+};
 
 #[test]
 fn test_conformance_system_property_name() {
@@ -19,16 +19,14 @@ fn test_conformance_system_property_name() {
         _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
         name: "Person".to_string(),
         super_type: None,
-        properties: vec![
-            Property {
-                _class: "concerto.metamodel@1.0.0.StringProperty".to_string(),
-                name: "$class".to_string(),  // System-reserved name
-                is_array: false,
-                is_optional: false,
-                decorators: None,
-                location: None,
-            }
-        ],
+        properties: vec![Property {
+            _class: "concerto.metamodel@1.0.0.StringProperty".to_string(),
+            name: "$class".to_string(), // System-reserved name
+            is_array: false,
+            is_optional: false,
+            decorators: None,
+            location: None,
+        }],
         decorators: None,
         is_abstract: false,
         identified: None,
@@ -50,8 +48,6 @@ fn test_conformance_system_property_name() {
     let result = model_file.validate();
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Invalid"));
-
-
 }
 
 #[test]
@@ -215,7 +211,7 @@ fn test_conformance_property_duplicate_names() {
                 is_optional: false,
                 decorators: None,
                 location: None,
-            }
+            },
         ],
         decorators: None,
         is_abstract: false,
@@ -226,7 +222,10 @@ fn test_conformance_property_duplicate_names() {
     // First, directly validate the ConceptDeclaration which should fail due to duplicate properties
     let concept_result = concept_decl.validate();
     assert!(concept_result.is_err());
-    assert!(concept_result.unwrap_err().to_string().contains("Duplicate property"));
+    assert!(concept_result
+        .unwrap_err()
+        .to_string()
+        .contains("Duplicate property"));
 
     // The ModelFile test is not needed since we've already verified the validation works directly
     // If needed in a real implementation, we would need to ensure ModelFile validation

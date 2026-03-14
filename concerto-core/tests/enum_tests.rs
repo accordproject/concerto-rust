@@ -1,9 +1,11 @@
 //! Tests for enum validation
 
-use concerto_core::*;
-use concerto_core::metamodel::concerto_metamodel_1_0_0::{EnumDeclaration, EnumProperty, Declaration, Decorator};
-use concerto_core::validation::Validate;
 use concerto_core::traits::DeclarationBase;
+use concerto_core::validation::Validate;
+use concerto_core::*;
+use concerto_metamodel::concerto_metamodel_1_0_0::{
+    Declaration, Decorator, EnumDeclaration, EnumProperty,
+};
 
 // Helper function to create an EnumProperty
 fn create_enum_property(name: &str) -> EnumProperty {
@@ -17,9 +19,10 @@ fn create_enum_property(name: &str) -> EnumProperty {
 
 // Helper function to create an EnumDeclaration
 fn create_enum_declaration(name: &str, values: Vec<&str>) -> EnumDeclaration {
-    let properties = values.iter()
-                          .map(|v| create_enum_property(v))
-                          .collect::<Vec<_>>();
+    let properties = values
+        .iter()
+        .map(|v| create_enum_property(v))
+        .collect::<Vec<_>>();
 
     EnumDeclaration {
         _class: "concerto.metamodel@1.0.0.EnumDeclaration".to_string(),
@@ -101,14 +104,12 @@ fn test_enum_with_invalid_property_name() {
     let enum_decl = EnumDeclaration {
         _class: "concerto.metamodel@1.0.0.EnumDeclaration".to_string(),
         name: "InvalidEnum".to_string(),
-        properties: vec![
-            EnumProperty {
-                _class: "concerto.metamodel@1.0.0.EnumProperty".to_string(),
-                name: "123INVALID".to_string(),  // Invalid name (starts with number)
-                decorators: None,
-                location: None,
-            }
-        ],
+        properties: vec![EnumProperty {
+            _class: "concerto.metamodel@1.0.0.EnumProperty".to_string(),
+            name: "123INVALID".to_string(), // Invalid name (starts with number)
+            decorators: None,
+            location: None,
+        }],
         decorators: None,
         location: None,
     };

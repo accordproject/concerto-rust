@@ -1,8 +1,9 @@
-use std::path::Path;
 use std::fs;
+use std::path::Path;
+
+use concerto_metamodel::concerto_metamodel_1_0_0::{Declaration, Import, Model, Property};
 
 use crate::error::ConcertoError;
-use crate::metamodel::concerto_metamodel_1_0_0::{Model, Import, Declaration, Property};
 use crate::validation::Validate;
 
 /// Represents a Concerto model file
@@ -19,7 +20,11 @@ impl ModelFile {
     /// Creates a new model file
 
     pub fn new(model: Model, content: String, file_name: String) -> Self {
-        ModelFile { model, content, file_name }
+        ModelFile {
+            model,
+            content,
+            file_name,
+        }
     }
 
     /// Creates a new model file from a namespace and optional version.
@@ -44,8 +49,6 @@ impl ModelFile {
         self.model.namespace.clone()
     }
 
-    
-
     /// Loads a model file from a string
     pub fn from_string(content: String) -> Result<Self, ConcertoError> {
         // Note: This is a placeholder - in a real implementation,
@@ -53,7 +56,8 @@ impl ModelFile {
         // For now, we'll just return an error as this functionality would be
         // provided by the JavaScript parser
         Err(ConcertoError::ParseError(
-            "Parsing from string is not implemented in Rust yet. Use the JavaScript parser.".to_string()
+            "Parsing from string is not implemented in Rust yet. Use the JavaScript parser."
+                .to_string(),
         ))
     }
 

@@ -1,10 +1,10 @@
 //! Tests for scalar validation
 
-use concerto_core::metamodel::concerto_metamodel_1_0_0::{
-    Declaration, IntegerScalar, StringScalar,
-    IntegerDomainValidator, StringRegexValidator, StringLengthValidator
-};
 use concerto_core::validation::Validate;
+use concerto_metamodel::concerto_metamodel_1_0_0::{
+    Declaration, IntegerDomainValidator, IntegerScalar, StringLengthValidator,
+    StringRegexValidator, StringScalar,
+};
 
 #[test]
 fn test_scalar_with_valid_number_bounds() {
@@ -114,5 +114,8 @@ fn test_scalar_with_invalid_name() {
     // Should fail validation with message about invalid identifier
     let result = declaration.validate();
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("not a valid identifier"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("not a valid identifier"));
 }

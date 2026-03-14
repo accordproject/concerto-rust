@@ -1,9 +1,9 @@
 //! Tests for map validation
 
-use concerto_core::metamodel::concerto_metamodel_1_0_0::{
-    MapDeclaration, Declaration, MapKeyType, MapValueType
-};
 use concerto_core::validation::Validate;
+use concerto_metamodel::concerto_metamodel_1_0_0::{
+    Declaration, MapDeclaration, MapKeyType, MapValueType,
+};
 
 #[test]
 fn test_map_with_valid_string_key() {

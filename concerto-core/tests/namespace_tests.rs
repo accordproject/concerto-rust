@@ -1,9 +1,9 @@
 //! Tests for namespace and import validation
 
-use concerto_core::*;
 use concerto_core::model_file::ModelFile;
-use concerto_core::metamodel::concerto_metamodel_1_0_0::Import;
 use concerto_core::validation::Validate;
+use concerto_core::*;
+use concerto_metamodel::concerto_metamodel_1_0_0::Import;
 
 #[test]
 fn test_valid_namespace_format() {

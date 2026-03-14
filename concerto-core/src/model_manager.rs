@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
+use concerto_metamodel::concerto_metamodel_1_0_0::*;
+
 use crate::error::ConcertoError;
 use crate::model_file::ModelFile;
-use crate::validation::Validate;
-use crate::metamodel::concerto_metamodel_1_0_0::*;
 use crate::traits::*;
+use crate::validation::Validate;
 
 /// Manages models and provides validation
 /// Maps from JavaScript ModelManager class but using metamodel types
@@ -32,7 +33,8 @@ impl ModelManager {
         model_file.validate()?;
 
         // Add to our collection
-        self.models.insert(model_file.model.namespace.clone(), model_file);
+        self.models
+            .insert(model_file.model.namespace.clone(), model_file);
 
         Ok(())
     }
@@ -107,9 +109,10 @@ impl ModelManager {
                     while let Some(next_super) = inheritance_map.get(current) {
                         // If we've seen this class before, we have a cycle
                         if !visited.insert(current) {
-                            return Err(ConcertoError::ValidationError(
-                                format!("Circular inheritance detected for class {}", class_name)
-                            ));
+                            return Err(ConcertoError::ValidationError(format!(
+                                "Circular inheritance detected for class {}",
+                                class_name
+                            )));
                         }
 
                         current = next_super;
@@ -120,8 +123,6 @@ impl ModelManager {
 
         Ok(())
     }
-
-
 
     /// Validates all references between models
     fn validate_references(&self) -> Result<(), ConcertoError> {
@@ -156,7 +157,10 @@ impl ModelManager {
     }
 
     /// Helper method to treat a declaration as a concept declaration
-    fn as_concept_declaration<'a>(&self, decl: &'a Declaration) -> Option<&'a dyn ConceptDeclarationBase> {
+    fn as_concept_declaration<'a>(
+        &self,
+        decl: &'a Declaration,
+    ) -> Option<&'a dyn ConceptDeclarationBase> {
         // Check class name to determine type
         match decl._class.as_str() {
             "concerto.metamodel@1.0.0.ConceptDeclaration" => {
@@ -164,12 +168,12 @@ impl ModelManager {
                 // This would require unsafe code or a different approach in real code
                 // For now, this is just a placeholder for the concept
                 None
-            },
+            }
             "concerto.metamodel@1.0.0.AssetDeclaration" => None,
             "concerto.metamodel@1.0.0.ParticipantDeclaration" => None,
             "concerto.metamodel@1.0.0.TransactionDeclaration" => None,
             "concerto.metamodel@1.0.0.EventDeclaration" => None,
-            _ => None
+            _ => None,
         }
     }
 
@@ -197,13 +201,17 @@ impl ModelManager {
     }
 
     /// Validates that a referenced type exists in the model
-    pub fn validate_type_exists(&self, type_id: &crate::metamodel::concerto_metamodel_1_0_0::TypeIdentifier) -> Result<(), ConcertoError> {
+    pub fn validate_type_exists(
+        &self,
+        type_id: &concerto_metamodel::concerto_metamodel_1_0_0::TypeIdentifier,
+    ) -> Result<(), ConcertoError> {
         let namespace = match &type_id.namespace {
             Some(ns) => ns,
             None => {
-                return Err(ConcertoError::ValidationError(
-                    format!("Type {} is missing namespace", type_id.name)
-                ));
+                return Err(ConcertoError::ValidationError(format!(
+                    "Type {} is missing namespace",
+                    type_id.name
+                )));
             }
         };
 
@@ -211,9 +219,10 @@ impl ModelManager {
         let model_file = match self.get_model_file(namespace) {
             Some(mf) => mf,
             None => {
-                return Err(ConcertoError::ValidationError(
-                    format!("Could not find namespace {}", namespace)
-                ));
+                return Err(ConcertoError::ValidationError(format!(
+                    "Could not find namespace {}",
+                    namespace
+                )));
             }
         };
 
@@ -227,9 +236,10 @@ impl ModelManager {
             }
         }
 
-        Err(ConcertoError::ValidationError(
-            format!("Could not find type {}.{}", namespace, type_id.name)
-        ))
+        Err(ConcertoError::ValidationError(format!(
+            "Could not find type {}.{}",
+            namespace, type_id.name
+        )))
     }
 
     /// Validates a property type

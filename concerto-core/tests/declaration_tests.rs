@@ -1,7 +1,7 @@
 //! Basic tests for declaration validation
 
-use concerto_core::metamodel::concerto_metamodel_1_0_0::{ConceptDeclaration, Property, Declaration};
 use concerto_core::validation::Validate;
+use concerto_metamodel::concerto_metamodel_1_0_0::{ConceptDeclaration, Declaration, Property};
 
 #[test]
 fn test_declaration_validation() {
