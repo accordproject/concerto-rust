@@ -26,4 +26,11 @@ pub enum ConcertoError {
     /// Generic error
     #[error("Error: {0}")]
     GenericError(String),
+
+    /// Ast Error
+    #[error("Ast not found")]
+    AstError,
+
+    #[error("JSON parsing error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }

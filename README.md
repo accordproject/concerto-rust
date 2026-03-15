@@ -27,8 +27,6 @@ The project is organized as follows:
   - `model_manager.rs`: Manages model collections and cross-model validations
   - `error.rs`: Error types for the library
   - `validation.rs`: Validation traits and implementations
-  - `introspect/mod.rs`: Introspection capabilities
-  - `util.rs`: Utility functions
 
 ## Testing
 

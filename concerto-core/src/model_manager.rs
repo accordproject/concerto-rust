@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use concerto_metamodel::concerto_metamodel_1_0_0::*;
 
 use crate::error::ConcertoError;
-use crate::model_file::ModelFile;
+use crate::introspect::ModelFile;
 use crate::traits::*;
-use crate::validation::Validate;
 
 /// Manages models and provides validation
 /// Maps from JavaScript ModelManager class but using metamodel types
@@ -33,8 +32,7 @@ impl ModelManager {
         model_file.validate()?;
 
         // Add to our collection
-        self.models
-            .insert(model_file.model.namespace.clone(), model_file);
+        self.models.insert(model_file.get_namespace(), model_file);
 
         Ok(())
     }
@@ -73,10 +71,10 @@ impl ModelManager {
         // Check each namespace for circular inheritance
         for model_file in self.models.values() {
             // Get the namespace name
-            let namespace = &model_file.model.namespace;
+            let namespace = &model_file.get_namespace();
 
             // Get all declarations in this namespace
-            if let Some(declarations) = &model_file.model.declarations {
+            if let Some(declarations) = &model_file.get_declarations() {
                 // Create a map of class name to superclass name
                 let mut inheritance_map = std::collections::HashMap::new();
 
@@ -129,7 +127,7 @@ impl ModelManager {
         // Iterate through all model files
         for model_file in self.models.values() {
             // Get declarations for this model file
-            if let Some(declarations) = &model_file.model.declarations {
+            if let Some(declarations) = &model_file.get_declarations() {
                 // Check each declaration - using traits to handle different types
                 for declaration in declarations {
                     // Check for concept declarations that might have super types
@@ -227,7 +225,7 @@ impl ModelManager {
         };
 
         // Check if type exists in this namespace using the DeclarationBase trait
-        if let Some(declarations) = &model_file.model.declarations {
+        if let Some(declarations) = &model_file.get_declarations() {
             for decl in declarations {
                 // Use the DeclarationBase trait to get name regardless of declaration type
                 if decl.name == type_id.name {
