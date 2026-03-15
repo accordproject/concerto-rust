@@ -31,6 +31,7 @@ fn test_map_with_valid_string_key() {
         name: map_decl.name.clone(),
         decorators: map_decl.decorators.clone(),
         location: map_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should pass validation
@@ -64,6 +65,7 @@ fn test_map_with_datetime_key() {
         name: map_decl.name.clone(),
         decorators: map_decl.decorators.clone(),
         location: map_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should pass validation
@@ -97,6 +99,7 @@ fn test_map_with_missing_key() {
         name: map_decl.name.clone(),
         decorators: map_decl.decorators.clone(),
         location: map_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation due to empty name
@@ -132,6 +135,7 @@ fn test_map_with_missing_value() {
         name: map_decl.name.clone(),
         decorators: map_decl.decorators.clone(),
         location: map_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation due to empty class name

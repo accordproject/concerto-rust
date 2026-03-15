@@ -50,6 +50,7 @@ fn test_scalar_with_invalid_number_bounds() {
         name: scalar_decl.name.clone(),
         decorators: scalar_decl.decorators.clone(),
         location: scalar_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation with message about bounds
@@ -83,6 +84,7 @@ fn test_scalar_with_string_validator() {
         name: scalar_decl.name.clone(),
         decorators: scalar_decl.decorators.clone(),
         location: scalar_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should pass validation
@@ -109,6 +111,7 @@ fn test_scalar_with_invalid_name() {
         name: scalar_decl.name.clone(),
         decorators: scalar_decl.decorators.clone(),
         location: scalar_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation with message about invalid identifier

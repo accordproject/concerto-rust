@@ -42,6 +42,7 @@ fn test_enum_with_duplicate_values() {
         name: enum_decl.name.clone(),
         decorators: enum_decl.decorators.clone(),
         location: enum_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation with "Duplicate enum value"
@@ -61,6 +62,7 @@ fn test_enum_with_valid_values() {
         name: enum_decl.name.clone(),
         decorators: enum_decl.decorators.clone(),
         location: enum_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should pass validation
@@ -86,6 +88,7 @@ fn test_enum_with_empty_values() {
         name: enum_decl.name.clone(),
         decorators: enum_decl.decorators.clone(),
         location: enum_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation with a message about needing at least one value
@@ -119,6 +122,7 @@ fn test_enum_with_invalid_property_name() {
         name: enum_decl.name.clone(),
         decorators: enum_decl.decorators.clone(),
         location: enum_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Should fail validation with message about invalid identifier

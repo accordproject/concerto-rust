@@ -35,12 +35,18 @@ fn test_conformance_system_property_name() {
         location: None,
     };
 
-    // Convert ConceptDeclaration to Declaration
+    // Convert ConceptDeclaration to Declaration, preserving properties in extra
     let declaration = Declaration {
         _class: concept_decl._class.clone(),
         name: concept_decl.name.clone(),
         decorators: concept_decl.decorators.clone(),
         location: concept_decl.location.clone(),
+        extra: {
+            let mut map = std::collections::HashMap::new();
+            map.insert("properties".to_string(), serde_json::to_value(&concept_decl.properties).unwrap());
+            map.insert("isAbstract".to_string(), serde_json::Value::Bool(concept_decl.is_abstract));
+            map
+        },
     };
 
     // Add the declaration to the model file
@@ -50,8 +56,6 @@ fn test_conformance_system_property_name() {
     let result = model_file.validate();
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Invalid"));
-
-
 }
 
 #[test]
@@ -61,43 +65,21 @@ fn test_conformance_duplicate_declaration() {
     // Create a model file
     let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
 
-    // First declaration
-    let concept_decl1 = ConceptDeclaration {
-        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
-        name: "Person".to_string(),
-        super_type: None,
-        properties: vec![],
-        decorators: None,
-        is_abstract: false,
-        identified: None,
-        location: None,
-    };
-
-    // Second declaration with same name
-    let concept_decl2 = ConceptDeclaration {
-        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
-        name: "Person".to_string(),
-        super_type: None,
-        properties: vec![],
-        decorators: None,
-        is_abstract: false,
-        identified: None,
-        location: None,
-    };
-
     // Convert ConceptDeclarations to Declarations
     let declaration1 = Declaration {
-        _class: concept_decl1._class.clone(),
-        name: concept_decl1.name.clone(),
-        decorators: concept_decl1.decorators.clone(),
-        location: concept_decl1.location.clone(),
+        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
+        name: "Person".to_string(),
+        decorators: None,
+        location: None,
+        extra: Default::default(),
     };
 
     let declaration2 = Declaration {
-        _class: concept_decl2._class.clone(),
-        name: concept_decl2.name.clone(),
-        decorators: concept_decl2.decorators.clone(),
-        location: concept_decl2.location.clone(),
+        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
+        name: "Person".to_string(),
+        decorators: None,
+        location: None,
+        extra: Default::default(),
     };
 
     // Add both declarations to the model file
@@ -121,51 +103,21 @@ fn test_conformance_circular_inheritance() {
     // Create a model file
     let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
 
-    // Person extends Employee
-    let concept_decl1 = ConceptDeclaration {
-        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
-        name: "Person".to_string(),
-        super_type: Some(TypeIdentifier {
-            _class: "concerto.metamodel@1.0.0.TypeIdentifier".to_string(),
-            name: "Employee".to_string(),
-            namespace: Some("org.example".to_string()),
-        }),
-        properties: vec![],
-        decorators: None,
-        is_abstract: false,
-        identified: None,
-        location: None,
-    };
-
-    // Employee extends Person (circular)
-    let concept_decl2 = ConceptDeclaration {
-        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
-        name: "Employee".to_string(),
-        super_type: Some(TypeIdentifier {
-            _class: "concerto.metamodel@1.0.0.TypeIdentifier".to_string(),
-            name: "Person".to_string(),
-            namespace: Some("org.example".to_string()),
-        }),
-        properties: vec![],
-        decorators: None,
-        is_abstract: false,
-        identified: None,
-        location: None,
-    };
-
     // Convert ConceptDeclarations to Declarations
     let declaration1 = Declaration {
-        _class: concept_decl1._class.clone(),
-        name: concept_decl1.name.clone(),
-        decorators: concept_decl1.decorators.clone(),
-        location: concept_decl1.location.clone(),
+        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
+        name: "Person".to_string(),
+        decorators: None,
+        location: None,
+        extra: Default::default(),
     };
 
     let declaration2 = Declaration {
-        _class: concept_decl2._class.clone(),
-        name: concept_decl2.name.clone(),
-        decorators: concept_decl2.decorators.clone(),
-        location: concept_decl2.location.clone(),
+        _class: "concerto.metamodel@1.0.0.ConceptDeclaration".to_string(),
+        name: "Employee".to_string(),
+        decorators: None,
+        location: None,
+        extra: Default::default(),
     };
 
     // Add both declarations to the model file
@@ -188,9 +140,6 @@ fn test_conformance_circular_inheritance() {
 #[test]
 fn test_conformance_property_duplicate_names() {
     // Test: Duplicate property names in a declaration
-
-    // Create a model file
-    let mut model_file = ModelFile::new("org.example".to_string(), Some("1.0.0".to_string()));
 
     // Create a concept with duplicate property names
     let concept_decl = ConceptDeclaration {
@@ -227,8 +176,4 @@ fn test_conformance_property_duplicate_names() {
     let concept_result = concept_decl.validate();
     assert!(concept_result.is_err());
     assert!(concept_result.unwrap_err().to_string().contains("Duplicate property"));
-
-    // The ModelFile test is not needed since we've already verified the validation works directly
-    // If needed in a real implementation, we would need to ensure ModelFile validation
-    // properly traverses and validates the full ConceptDeclaration structure
 }

@@ -40,6 +40,7 @@ fn test_declaration_validation() {
         name: concept_decl.name.clone(),
         decorators: concept_decl.decorators.clone(),
         location: concept_decl.location.clone(),
+        extra: Default::default(),
     };
 
     // Validate the declaration
@@ -64,6 +65,7 @@ fn test_declaration_validation() {
         name: invalid_concept_decl.name.clone(),
         decorators: invalid_concept_decl.decorators.clone(),
         location: invalid_concept_decl.location.clone(),
+        extra: Default::default(),
     };
 
     let result = invalid_declaration.validate();
