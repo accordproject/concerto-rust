@@ -213,19 +213,14 @@ impl Validate for ScalarDeclaration {
 
 impl Validate for Property {
     fn validate(&self) -> Result<(), ConcertoError> {
-        // For the standalone Validate trait, we'll do basic validation
-        // The PropertyValidator trait is for validation within a model context
+        // Check for system-reserved property names first (before general identifier check)
+        if self.name.starts_with('$') {
+            return Err(ConcertoError::ValidationError(format!("Invalid field name '{}'. Property names starting with $ are reserved for system use", self.name)));
+        }
 
         // Validate property name
         if !is_valid_identifier(&self.name) {
             return Err(ConcertoError::ValidationError(format!("'{}' is not a valid property name. Identifiers must start with a letter and can contain only letters, numbers, or underscores", self.name)));
-        }
-
-        // TODO check for other reserved names
-
-        // Check for system-reserved property names
-        if self.name.starts_with('$') {
-            return Err(ConcertoError::ValidationError(format!("Invalid field name '{}'. Property names starting with $ are reserved for system use", self.name)));
         }
 
         // Validate decorators if present

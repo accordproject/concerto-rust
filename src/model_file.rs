@@ -2,7 +2,7 @@ use std::path::Path;
 use std::fs;
 
 use crate::error::ConcertoError;
-use crate::metamodel::concerto_metamodel_1_0_0::{Model, Import, Declaration, Property};
+use crate::metamodel::concerto_metamodel_1_0_0::{Model, Import, Declaration};
 use crate::validation::Validate;
 
 /// Represents a Concerto model file
@@ -94,30 +94,6 @@ impl ModelFile {
         }
     }
 
-    /// Helper function to find properties for a declaration
-    /// In a real implementation, this would use proper type information and downcasting
-    /// This is a simplified approach just for the test case
-    pub fn find_properties_for_declaration(&self, declaration: &Declaration) -> Vec<Property> {
-        // For the test case, we have the properties separately in the test file
-        // We're looking specifically for the test where a property name is "$class"
-
-        let mut properties = Vec::new();
-
-        // Special case for our test
-        if declaration.name == "Person" && declaration._class.contains("ConceptDeclaration") {
-            // In test_conformance_system_property_name, we add a property with name "$class"
-            properties.push(Property {
-                _class: "concerto.metamodel@1.0.0.StringProperty".to_string(),
-                name: "$class".to_string(),
-                is_array: false,
-                is_optional: false,
-                decorators: None,
-                location: None,
-            });
-        }
-
-        properties
-    }
 }
 
 impl Validate for ModelFile {
@@ -125,23 +101,19 @@ impl Validate for ModelFile {
         // Validate the model structure first
         self.model.validate()?;
 
-        // Additional validation for system property names in concept declarations
+        // Validate properties within concept-like declarations
         if let Some(declarations) = &self.model.declarations {
             for declaration in declarations {
-                // For each declaration, check if it's a ConceptDeclaration by its class name
-                if declaration._class.contains("ConceptDeclaration") {
-                    // In a real implementation, this would use proper downcasting
-                    // For now, we'll manually check any conceptual properties
-
-                    // Look for the actual ConceptDeclaration in our test case
-                    // This is a simplified approach just for the test
-                    for prop in self.find_properties_for_declaration(declaration).iter() {
-                        // Validate each property
-                        if prop.name.starts_with('$') {
-                            return Err(ConcertoError::ValidationError(
-                                format!("Invalid field name '{}'. Property names starting with $ are reserved for system use", prop.name)
-                            ));
-                        }
+                // Check concept-like declarations that have properties
+                if declaration._class.contains("ConceptDeclaration")
+                    || declaration._class.contains("AssetDeclaration")
+                    || declaration._class.contains("ParticipantDeclaration")
+                    || declaration._class.contains("TransactionDeclaration")
+                    || declaration._class.contains("EventDeclaration")
+                {
+                    let properties = declaration.get_properties();
+                    for prop in &properties {
+                        prop.validate()?;
                     }
                 }
             }
