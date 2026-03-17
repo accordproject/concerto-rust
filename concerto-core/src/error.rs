@@ -33,4 +33,7 @@ pub enum ConcertoError {
 
     #[error("JSON parsing error: {0}")]
     JsonError(#[from] serde_json::Error),
+
+    #[error("Invalid namespace: {0}")]
+    InvalidNS(String),
 }

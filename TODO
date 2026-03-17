@@ -4,3 +4,7 @@
 - Decorated trait
 - Validate trait
 - Traits should only have traits each introspect should implement traits
+
+Visitor pattern
+
+- All introspect classes implements visitor pattern. Maybe add a visitor trait.
