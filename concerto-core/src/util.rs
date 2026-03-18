@@ -1,12 +1,12 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::{types::Ast, ConcertoError};
+use crate::{types::ModelAst, ConcertoError};
 
 /// Parses a potentially versioned namespace into
 /// its name and version parts. The version of the namespace
 /// (if present) is parsed using semver.parse.
-pub fn parse_namespace_and_version(ast: &Ast) -> Result<(String, String), ConcertoError> {
+pub fn parse_namespace_and_version(ast: &ModelAst) -> Result<(String, String), ConcertoError> {
     let x = ast.0.namespace.as_str();
     let parts: Vec<&str> = x.split('@').collect();
     // For now, assume all NS will have to have namespace@version
@@ -30,14 +30,14 @@ pub fn is_valid_identifier(name: &str) -> bool {
 
 #[cfg(test)]
 mod test {
-    use crate::types::Ast;
+    use crate::types::ModelAst;
     use concerto_metamodel::concerto_metamodel_1_0_0::Model;
 
     #[allow(unused)]
-    fn make_ast() -> Ast {
+    fn make_ast() -> ModelAst {
         let basic_ast = include_str!("../examples/assets/concerto_models/basic.json");
         let parsed: Model = serde_json::from_str(basic_ast).expect("Cannot parse basic.json");
-        Ast(parsed)
+        ModelAst(parsed)
     }
 
     #[test]

@@ -1,20 +1,21 @@
 use concerto_metamodel::concerto_metamodel_1_0_0::{Declaration, Model};
 
-use crate::{types::Ast, ConcertoError};
+use crate::{types::ModelAst, ConcertoError, FromAst};
 
 #[derive(Debug)]
 pub struct ModelFile {
-    inner: Ast,
+    inner: ModelAst,
 }
 
+// Builder methods
 impl ModelFile {
     pub fn new(ast_json: &str) -> Result<Self, ConcertoError> {
         let parsed: Model = serde_json::from_str(ast_json)?;
-        let ast = Ast(parsed);
-        ast.into()
+        Ok(ModelFile::from_ast(parsed))
     }
 }
 
+// Public methods
 impl ModelFile {
     pub fn get_namespace(&self) -> &str {
         &self.inner.0.namespace
@@ -29,8 +30,12 @@ impl ModelFile {
     }
 }
 
-impl From<Ast> for Result<ModelFile, ConcertoError> {
-    fn from(value: Ast) -> Self {
-        Ok(ModelFile { inner: value })
+impl FromAst for ModelFile {
+    type ConcertoType = Model;
+
+    fn from_ast(concerto_type: Self::ConcertoType) -> Self {
+        ModelFile {
+            inner: ModelAst(concerto_type),
+        }
     }
 }

@@ -2,6 +2,22 @@ use concerto_metamodel::concerto_metamodel_1_0_0::*;
 
 use crate::{util::is_valid_identifier, ConcertoError, ModelManager};
 
+pub trait FromAst: Sized {
+    /// Concerto core wrapper type around Concerto metamodel
+    type ConcertoType;
+
+    /// Implement the method that returnes Introspect structure from `Self::Ast`
+    fn from_ast(concerto_type: Self::ConcertoType) -> Self;
+
+    fn from_json(json: &str) -> Result<Self, ConcertoError>
+    where
+        Self::ConcertoType: for<'de> serde::Deserialize<'de>,
+    {
+        let parsed: Self::ConcertoType = serde_json::from_str(json)?;
+        Ok(Self::from_ast(parsed))
+    }
+}
+
 pub trait Validate {
     /// Validates the component
     fn validate(&self) -> Result<(), ConcertoError>;
