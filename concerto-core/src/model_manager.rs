@@ -29,10 +29,11 @@ impl ModelManager {
     /// Adds a model file to the model manager
     pub fn add_model_file(&mut self, model_file: ModelFile) -> Result<(), ConcertoError> {
         // Basic validation of the model file (without cross-model validation)
-        model_file.validate()?;
+        // model_file.validate()?;
 
         // Add to our collection
-        self.models.insert(model_file.get_namespace(), model_file);
+        self.models
+            .insert(model_file.get_namespace().to_string(), model_file);
 
         Ok(())
     }

@@ -1,20 +1,7 @@
 use concerto_metamodel::concerto_metamodel_1_0_0::*;
 
 use crate::error::ConcertoError;
-use crate::validation::Validate;
-
-use regex::Regex;
-
-/// Checks if a string is a valid identifier name in Concerto
-/// Identifiers must start with a letter and contain only letters, numbers, or underscores
-pub fn is_valid_identifier(name: &str) -> bool {
-    lazy_static::lazy_static! {
-        // TODO use the full regex from the Concerto spec
-        static ref IDENTIFIER_REGEX: Regex = Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap();
-    }
-
-    IDENTIFIER_REGEX.is_match(name)
-}
+use crate::traits::Validate;
 
 impl Validate for Model {
     fn validate(&self) -> Result<(), ConcertoError> {
@@ -100,6 +87,7 @@ impl Validate for Decorator {
 
 // Use DeclarationValidator trait for implementing Validate
 use crate::traits::DeclarationValidator;
+use crate::util::is_valid_identifier;
 
 impl Validate for AssetDeclaration {
     fn validate(&self) -> Result<(), ConcertoError> {

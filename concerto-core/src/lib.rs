@@ -7,7 +7,7 @@ pub mod metamodel_validation;
 pub mod model_manager;
 pub mod traits;
 pub mod types;
-pub mod validation;
+pub mod util;
 
 // Re-export the main components
 pub use model_manager::ModelManager;
@@ -19,7 +19,6 @@ pub use concerto_metamodel::concerto_metamodel_1_0_0::{
 };
 
 pub use error::ConcertoError;
-pub use validation::Validate;
 
 /// Version of the Concerto core library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

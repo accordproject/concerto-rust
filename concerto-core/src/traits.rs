@@ -1,7 +1,11 @@
 use concerto_metamodel::concerto_metamodel_1_0_0::*;
 
-use crate::validation::Validate;
-use crate::{metamodel_validation::is_valid_identifier, ConcertoError, ModelManager};
+use crate::{util::is_valid_identifier, ConcertoError, ModelManager};
+
+pub trait Validate {
+    /// Validates the component
+    fn validate(&self) -> Result<(), ConcertoError>;
+}
 
 /// Base trait for declaration types
 pub trait DeclarationBase {
@@ -525,7 +529,6 @@ impl CommonDeclarationValidator {
     /// Helper function to validate a Concerto identifier
     pub fn validate_identifier(name: &str) -> Result<(), ConcertoError> {
         // This should use the same validation logic as in metamodel_validation.rs
-        use crate::metamodel_validation::is_valid_identifier;
 
         if !is_valid_identifier(name) {
             return Err(ConcertoError::ValidationError(
@@ -540,7 +543,6 @@ impl CommonDeclarationValidator {
         if let Some(decs) = decorators {
             for decorator in decs {
                 // Use the Validate trait for each decorator
-                use crate::validation::Validate;
                 decorator.validate()?;
             }
         }
