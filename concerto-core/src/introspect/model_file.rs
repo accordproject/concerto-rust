@@ -1,7 +1,7 @@
 use concerto_macros::FromAst;
 use concerto_metamodel::concerto_metamodel_1_0_0::{Declaration, Model};
 
-use crate::{types::ModelAst, ConcertoError, FromAst};
+use crate::{types::ModelAst, ConcertoError, FromAst, Validate};
 
 #[derive(Debug, FromAst)]
 #[concerto_ast_type(Model)]
@@ -26,8 +26,11 @@ impl ModelFile {
     pub fn get_declarations(&self) -> Option<Vec<Declaration>> {
         self.inner.0.declarations.clone()
     }
+}
 
-    pub fn validate(&self) -> Result<(), ConcertoError> {
+// Impls
+impl Validate for ModelFile {
+    fn validate(&self) -> Result<(), ConcertoError> {
         unimplemented!()
     }
 }
