@@ -18,7 +18,7 @@ pub trait FromAst: Sized {
     }
 }
 
-pub trait Validate {
+pub trait Validate: Sized {
     /// Validates the component
     fn validate(&self) -> Result<(), ConcertoError>;
 }

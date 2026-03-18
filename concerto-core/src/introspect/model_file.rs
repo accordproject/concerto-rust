@@ -1,8 +1,11 @@
+use concerto_macros::FromAst;
 use concerto_metamodel::concerto_metamodel_1_0_0::{Declaration, Model};
 
 use crate::{types::ModelAst, ConcertoError, FromAst};
 
-#[derive(Debug)]
+#[derive(Debug, FromAst)]
+#[concerto_ast_type(Model)]
+#[wrapper(ModelAst)]
 pub struct ModelFile {
     inner: ModelAst,
 }
@@ -10,8 +13,7 @@ pub struct ModelFile {
 // Builder methods
 impl ModelFile {
     pub fn new(ast_json: &str) -> Result<Self, ConcertoError> {
-        let parsed: Model = serde_json::from_str(ast_json)?;
-        Ok(ModelFile::from_ast(parsed))
+        ModelFile::from_json(ast_json)
     }
 }
 
@@ -27,15 +29,5 @@ impl ModelFile {
 
     pub fn validate(&self) -> Result<(), ConcertoError> {
         unimplemented!()
-    }
-}
-
-impl FromAst for ModelFile {
-    type ConcertoType = Model;
-
-    fn from_ast(concerto_type: Self::ConcertoType) -> Self {
-        ModelFile {
-            inner: ModelAst(concerto_type),
-        }
     }
 }
