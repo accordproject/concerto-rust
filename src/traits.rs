@@ -537,8 +537,13 @@ impl CommonDeclarationValidator {
     /// Helper function to validate decorators
     pub fn validate_decorators(decorators: &Option<Vec<Decorator>>) -> Result<(), ConcertoError> {
         if let Some(decs) = decorators {
+            let mut seen = std::collections::HashSet::new();
             for decorator in decs {
-                // Use the Validate trait for each decorator
+                if !seen.insert(&decorator.name) {
+                    return Err(ConcertoError::ValidationError(
+                        format!("Duplicate decorator: {}", decorator.name)
+                    ));
+                }
                 use crate::validation::Validate;
                 decorator.validate()?;
             }
@@ -978,15 +983,55 @@ impl DeclarationValidator for DateTimeScalar {
 // Add Validate implementations for all scalar types
 impl Validate for StringScalar {
     fn validate(&self) -> Result<(), ConcertoError> {
-        // Use the DeclarationValidator trait we implemented
-        self.validate_declaration()
+        self.validate_declaration()?;
+
+        // Validate length bounds
+        if let Some(ref length_validator) = self.length_validator {
+            // Both bounds must be non-negative
+            if let Some(min) = length_validator.min_length {
+                if min < 0 {
+                    return Err(ConcertoError::ValidationError(
+                        "minLength and/or maxLength must be positive integers".to_string()
+                    ));
+                }
+            }
+            if let Some(max) = length_validator.max_length {
+                if max < 0 {
+                    return Err(ConcertoError::ValidationError(
+                        "minLength and/or maxLength must be positive integers".to_string()
+                    ));
+                }
+            }
+            // minLength must be <= maxLength
+            if let (Some(min), Some(max)) = (length_validator.min_length, length_validator.max_length) {
+                if min > max {
+                    return Err(ConcertoError::ValidationError(
+                        format!("minLength {} must be less than or equal to maxLength {}", min, max)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
 impl Validate for IntegerScalar {
     fn validate(&self) -> Result<(), ConcertoError> {
-        // Use the DeclarationValidator trait we implemented
-        self.validate_declaration()
+        self.validate_declaration()?;
+
+        // Validate bounds: lower must be <= upper
+        if let Some(ref validator) = self.validator {
+            if let (Some(lower), Some(upper)) = (validator.lower, validator.upper) {
+                if lower > upper {
+                    return Err(ConcertoError::ValidationError(
+                        format!("Lower bound {} must be less than or equal to upper bound {}", lower, upper)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

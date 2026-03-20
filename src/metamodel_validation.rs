@@ -213,7 +213,7 @@ impl Validate for ScalarDeclaration {
 
 impl Validate for Property {
     fn validate(&self) -> Result<(), ConcertoError> {
-        // Check for system-reserved property names first (before general identifier check)
+        // All user-defined properties starting with $ are reserved for system use
         if self.name.starts_with('$') {
             return Err(ConcertoError::ValidationError(format!("Invalid field name '{}'. Property names starting with $ are reserved for system use", self.name)));
         }

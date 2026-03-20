@@ -28,7 +28,6 @@ fn test_scalar_with_valid_number_bounds() {
 }
 
 #[test]
-#[ignore]
 fn test_scalar_with_invalid_number_bounds() {
     // Create a scalar with lower > upper
     let scalar_decl = IntegerScalar {
@@ -44,20 +43,8 @@ fn test_scalar_with_invalid_number_bounds() {
         default_value: None,
     };
 
-    // Create a declaration
-    let declaration = Declaration {
-        _class: scalar_decl._class.clone(),
-        name: scalar_decl.name.clone(),
-        decorators: scalar_decl.decorators.clone(),
-        location: scalar_decl.location.clone(),
-        extra: Default::default(),
-    };
-
-    // Should fail validation with message about bounds
-    // Note: The exact validation message may differ based on implementation
-    let result = declaration.validate();
+    let result = scalar_decl.validate();
     assert!(result.is_err());
-    // The error message should contain something about bounds
     assert!(result.unwrap_err().to_string().contains("bound"));
 }
 
