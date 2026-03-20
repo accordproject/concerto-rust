@@ -6,5 +6,6 @@ pub mod concerto_1_0_0;
 pub mod concerto;
 #[allow(unused_imports)]
 pub mod concerto_metamodel_1_0_0;
+pub mod declaration_ext;
 #[allow(unused_imports)]
 pub mod utils;

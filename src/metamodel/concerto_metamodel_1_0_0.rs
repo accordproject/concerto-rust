@@ -235,24 +235,11 @@ pub struct Declaration {
    )]
    pub location: Option<Range>,
 
-   /// Captures all additional fields from the JSON (properties, isAbstract, superType, etc.)
-   /// that are specific to declaration subtypes (ConceptDeclaration, EnumDeclaration, etc.)
-   #[serde(
-      flatten,
-   )]
+   // TODO: move this to concerto-codegen rustvisitor.js
+   // Captures subtype-specific fields (properties, isAbstract, superType, etc.)
+   // that would otherwise be dropped during deserialization
+   #[serde(flatten)]
    pub extra: std::collections::HashMap<String, serde_json::Value>,
-}
-
-impl Declaration {
-   /// Extracts properties from the flattened extra fields.
-   /// Returns an empty Vec if no properties are present (e.g., for EnumDeclaration, MapDeclaration).
-   pub fn get_properties(&self) -> Vec<Property> {
-      if let Some(props_val) = self.extra.get("properties") {
-         serde_json::from_value::<Vec<Property>>(props_val.clone()).unwrap_or_default()
-      } else {
-         Vec::new()
-      }
-   }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
