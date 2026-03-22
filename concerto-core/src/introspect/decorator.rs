@@ -1,22 +1,25 @@
-use crate::{types::DecoratorAst, ConcertoError, FromAst};
-use concerto_macros::FromAst;
-use concerto_metamodel::concerto_metamodel_1_0_0::Decorator as CDecorator;
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
-#[derive(FromAst)]
-pub struct Decorator {
-    inner: DecoratorAst,
-}
+/// [Decorator] encapsulates a decorator (annotation) on a Class, Property, or a Model.
+#[derive(Debug, Clone)]
+pub struct Decorator(pub(crate) mm::Decorator);
 
-// Builder methods
 impl Decorator {
-    pub fn new(ast_json: &str) -> Result<Self, ConcertoError> {
-        Decorator::from_json(ast_json)
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    pub fn arguments(&self) -> &[mm::DecoratorLiteral] {
+        self.0.arguments.as_deref().unwrap_or(&[])
+    }
+
+    pub fn location(&self) -> Option<&mm::Range> {
+        self.0.location.as_ref()
     }
 }
 
-// Public methods
-impl Decorator {
-    pub fn get_name(&self) -> &str {
-        &self.inner.0.name
+impl From<mm::Decorator> for Decorator {
+    fn from(d: mm::Decorator) -> Self {
+        Self(d)
     }
 }

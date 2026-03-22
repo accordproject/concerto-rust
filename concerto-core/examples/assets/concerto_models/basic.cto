@@ -1,5 +1,0 @@
-namespace com.example.foo@1.0.0
-
-concept Foo {
-    o String bar
-}

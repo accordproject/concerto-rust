@@ -1,39 +1,23 @@
-use thiserror::Error;
+use concerto_metamodel::concerto_metamodel_1_0_0::Range;
 
-/// Error types for Concerto operations
-#[derive(Error, Debug)]
+/// Errors produced by concerto-core.
+#[derive(Debug, thiserror::Error)]
 pub enum ConcertoError {
-    /// Error during parsing
-    #[error("Parse error: {0}")]
-    ParseError(String),
+    /// The model contains an illegal construct.
+    #[error("{message}")]
+    IllegalModel {
+        message: String,
+        file_name: Option<String>,
+        location: Option<Range>,
+    },
 
-    /// Error during validation
-    #[error("Validation error: {0}")]
-    ValidationError(String),
+    /// A referenced type could not be found.
+    #[error("Type not found: {type_name}")]
+    TypeNotFound { type_name: String },
 
-    /// Declaration not found
-    #[error("Declaration not found: {0}")]
-    DeclarationNotFound(String),
-
-    /// Namespace not found
-    #[error("Namespace not found: {0}")]
-    NamespaceNotFound(String),
-
-    /// I/O error
-    #[error("I/O error: {0}")]
-    IoError(String),
-
-    /// Generic error
-    #[error("Error: {0}")]
-    GenericError(String),
-
-    /// Ast Error
-    #[error("Ast not found")]
-    AstError,
-
-    #[error("JSON parsing error: {0}")]
-    JsonError(#[from] serde_json::Error),
-
-    #[error("Invalid namespace: {0}")]
-    InvalidNS(String),
+    /// A value failed validation against the model.
+    #[error("Validation error on {component}: {message}")]
+    Validation { message: String, component: String },
 }
+
+pub type Result<T> = std::result::Result<T, ConcertoError>;

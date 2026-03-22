@@ -1,264 +1,268 @@
+use crate::error::{ConcertoError, Result};
+use crate::introspect::declarations::{ClassDeclaration, Declaration};
+use crate::introspect::model_file::ModelFile;
+use crate::introspect::validation;
+use crate::model_util;
+
 use std::collections::HashMap;
 
-use concerto_metamodel::concerto_metamodel_1_0_0::*;
+// ===================================================================
+// ModelManagerOptions
+// ===================================================================
 
-use crate::error::ConcertoError;
-use crate::introspect::ModelFile;
-use crate::traits::*;
-
-/// Manages models and provides validation
-/// Maps from JavaScript ModelManager class but using metamodel types
-#[derive(Debug, Default)]
-pub struct ModelManager {
-    /// The model files managed by this instance
-    pub models: HashMap<String, ModelFile>,
-
-    /// Whether strict validation is enabled
+/// Configuration for [`ModelManager`].
+#[derive(Debug, Clone)]
+pub struct ModelManagerOptions {
+    /// Require versioned namespaces.
     pub strict: bool,
+    /// Enable the Map type feature.
+    pub enable_map_type: bool,
+}
+
+impl Default for ModelManagerOptions {
+    fn default() -> Self {
+        Self {
+            strict: false,
+            enable_map_type: true,
+        }
+    }
+}
+
+// ===================================================================
+// ModelManager
+// ===================================================================
+
+/// Manages a set of Concerto model files, providing type resolution
+/// and validation across namespaces.
+#[derive(Debug)]
+pub struct ModelManager {
+    model_files: HashMap<String, ModelFile>,
+    options: ModelManagerOptions,
 }
 
 impl ModelManager {
-    /// Creates a new model manager
-    pub fn new(strict: bool) -> Self {
-        ModelManager {
-            models: HashMap::new(),
-            strict,
-        }
+    /// Creates a new [`ModelManager`] with the built-in root model loaded.
+    pub fn new(options: ModelManagerOptions) -> Result<Self> {
+        let mut mgr = Self {
+            model_files: HashMap::new(),
+            options,
+        };
+        mgr.add_root_model()?;
+        Ok(mgr)
     }
 
-    /// Adds a model file to the model manager
-    pub fn add_model_file(&mut self, model_file: ModelFile) -> Result<(), ConcertoError> {
-        // Basic validation of the model file (without cross-model validation)
-        model_file.validate()?;
+    fn add_root_model(&mut self) -> Result<()> {
+        let json = crate::rootmodel::root_model_ast();
+        let mf = ModelFile::from_json(&json, Some("rootmodel".into()))?;
+        self.model_files.insert(mf.namespace().to_string(), mf);
+        Ok(())
+    }
 
-        // Add to our collection
-        self.models
-            .insert(model_file.get_namespace().to_string(), model_file);
+    /// Add a model from its JSON AST representation.
+    pub fn add_model(
+        &mut self,
+        json: &serde_json::Value,
+        file_name: Option<String>,
+        disable_validation: bool,
+    ) -> Result<()> {
+        let mf = ModelFile::from_json(json, file_name)?;
+        let ns = mf.namespace().to_string();
+
+        if self.model_files.contains_key(&ns) {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("Duplicate namespace: {ns}"),
+                file_name: mf.file_name().map(String::from),
+                location: None,
+            });
+        }
+
+        self.model_files.insert(ns, mf);
+
+        if !disable_validation {
+            self.validate_model_files()?;
+        }
 
         Ok(())
     }
 
-    /// Gets a model file by namespace
+    /// Add multiple models at once. On error, all additions are rolled back.
+    pub fn add_models(
+        &mut self,
+        models: &[serde_json::Value],
+        disable_validation: bool,
+    ) -> Result<()> {
+        let mut added_namespaces = Vec::new();
+
+        for json in models {
+            let mf = ModelFile::from_json(json, None)?;
+            let ns = mf.namespace().to_string();
+
+            if self.model_files.contains_key(&ns) {
+                // Rollback
+                for ns in &added_namespaces {
+                    self.model_files.remove(ns);
+                }
+                return Err(ConcertoError::IllegalModel {
+                    message: format!("Duplicate namespace: {ns}"),
+                    file_name: mf.file_name().map(String::from),
+                    location: None,
+                });
+            }
+
+            self.model_files.insert(ns.clone(), mf);
+            added_namespaces.push(ns);
+        }
+
+        if !disable_validation {
+            if let Err(e) = self.validate_model_files() {
+                // Rollback
+                for ns in &added_namespaces {
+                    self.model_files.remove(ns);
+                }
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate all loaded model files.
+    pub fn validate_model_files(&self) -> Result<()> {
+        validation::validate_model_files(&self.model_files)
+    }
+
+    /// Resolve a fully-qualified type name to its declaration.
+    pub fn get_type(&self, fqn: &str) -> Result<&Declaration> {
+        let ns = model_util::get_namespace(fqn);
+        let short = model_util::get_short_name(fqn);
+
+        let mf = self.model_files.get(ns).ok_or_else(|| {
+            ConcertoError::TypeNotFound {
+                type_name: fqn.to_string(),
+            }
+        })?;
+
+        mf.get_local_type(short).ok_or_else(|| {
+            ConcertoError::TypeNotFound {
+                type_name: fqn.to_string(),
+            }
+        })
+    }
+
+    /// Look up a model file by namespace.
     pub fn get_model_file(&self, namespace: &str) -> Option<&ModelFile> {
-        self.models.get(namespace)
+        self.model_files.get(namespace)
     }
 
-    /// Gets all model files
+    /// Returns all loaded model files (excluding system namespaces).
     pub fn get_model_files(&self) -> Vec<&ModelFile> {
-        self.models.values().collect()
+        self.model_files
+            .values()
+            .filter(|mf| !mf.is_system_model_file())
+            .collect()
     }
 
-    /// Validates all models
-    pub fn validate_models(&self) -> Result<(), ConcertoError> {
-        // First, validate each model file individually
-        for model_file in self.models.values() {
-            model_file.validate()?;
-        }
-
-        // Then perform cross-model validation
-        self.validate_references()?;
-
-        // Validate no circular inheritance
-        self.validate_no_circular_inheritance()?;
-
-        Ok(())
+    /// Returns all loaded model files including system namespaces.
+    pub fn get_all_model_files(&self) -> Vec<&ModelFile> {
+        self.model_files.values().collect()
     }
 
-    /// Validates that there is no circular inheritance in the model
-    fn validate_no_circular_inheritance(&self) -> Result<(), ConcertoError> {
-        // This implementation specifically handles the test case in conformance_tests.rs
-        // In a full implementation, we would need proper type information and safe casting
+    pub fn options(&self) -> &ModelManagerOptions {
+        &self.options
+    }
 
-        // Check each namespace for circular inheritance
-        for model_file in self.models.values() {
-            // Get the namespace name
-            let namespace = &model_file.get_namespace();
+    /// Returns all class declarations across all model files.
+    pub fn class_declarations(&self) -> Vec<&ClassDeclaration> {
+        self.model_files
+            .values()
+            .flat_map(|mf| mf.class_declarations())
+            .collect()
+    }
 
-            // Get all declarations in this namespace
-            if let Some(declarations) = &model_file.get_declarations() {
-                // Create a map of class name to superclass name
-                let mut inheritance_map = std::collections::HashMap::new();
+    /// Look up a class declaration by FQN.
+    pub fn get_class_declaration(&self, fqn: &str) -> Result<&ClassDeclaration> {
+        let decl = self.get_type(fqn)?;
+        decl.as_class().ok_or_else(|| ConcertoError::TypeNotFound {
+            type_name: fqn.to_string(),
+        })
+    }
+}
 
-                // First pass: build the inheritance map
-                for decl in declarations {
-                    // We only care about declarations with possible inheritance
-                    if decl._class.contains("ConceptDeclaration") {
-                        // For the test case, we're looking for "Person" and "Employee" with circular references
-                        // In a real implementation, we'd need to safely cast to ConceptDeclaration to get super_type
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-                        // For our test case, we know Person extends Employee and Employee extends Person
-                        if decl.name == "Person" {
-                            inheritance_map.insert("Person", "Employee");
-                        } else if decl.name == "Employee" {
-                            inheritance_map.insert("Employee", "Person");
+    #[test]
+    fn test_model_manager_creates_with_root_model() {
+        let mgr = ModelManager::new(ModelManagerOptions::default()).unwrap();
+        assert!(mgr.get_model_file("concerto@1.0.0").is_some());
+        assert!(mgr.get_type("concerto@1.0.0.Concept").is_ok());
+        assert!(mgr.get_type("concerto@1.0.0.Asset").is_ok());
+    }
+
+    #[test]
+    fn test_model_manager_add_model() {
+        let mut mgr = ModelManager::new(ModelManagerOptions::default()).unwrap();
+
+        let model_json = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.example@1.0.0",
+            "declarations": [
+                {
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "Person",
+                    "isAbstract": false,
+                    "properties": [
+                        {
+                            "$class": "concerto.metamodel@1.0.0.StringProperty",
+                            "name": "name",
+                            "isArray": false,
+                            "isOptional": false
                         }
-                    }
+                    ]
                 }
+            ]
+        });
 
-                // Second pass: check for cycles in the inheritance map
-                for (class_name, super_name) in &inheritance_map {
-                    // Track visited classes to detect cycles
-                    let mut visited = std::collections::HashSet::new();
-                    visited.insert(*class_name);
-
-                    // Start at the superclass
-                    let mut current = *super_name;
-
-                    // Follow the inheritance chain
-                    while let Some(next_super) = inheritance_map.get(current) {
-                        // If we've seen this class before, we have a cycle
-                        if !visited.insert(current) {
-                            return Err(ConcertoError::ValidationError(format!(
-                                "Circular inheritance detected for class {}",
-                                class_name
-                            )));
-                        }
-
-                        current = next_super;
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        mgr.add_model(&model_json, None, false).unwrap();
+        assert!(mgr.get_type("org.example@1.0.0.Person").is_ok());
     }
 
-    /// Validates all references between models
-    fn validate_references(&self) -> Result<(), ConcertoError> {
-        // Iterate through all model files
-        for model_file in self.models.values() {
-            // Get declarations for this model file
-            if let Some(declarations) = &model_file.get_declarations() {
-                // Check each declaration - using traits to handle different types
-                for declaration in declarations {
-                    // Check for concept declarations that might have super types
-                    if let Some(concept) = self.as_concept_declaration(declaration) {
-                        // Validate super type if present
-                        if let Some(super_type) = concept.get_super_type() {
-                            self.validate_type_exists(super_type)?;
-                        }
+    #[test]
+    fn test_duplicate_namespace_rejected() {
+        let mut mgr = ModelManager::new(ModelManagerOptions::default()).unwrap();
 
-                        // Validate property types
-                        for property in concept.get_properties() {
-                            self.validate_property(property)?;
-                        }
-                    }
+        let model_json = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.example@1.0.0",
+            "declarations": []
+        });
 
-                    // Check for map declarations
-                    if let Some(map_decl) = self.as_map_declaration(declaration) {
-                        self.validate_map_value_type(&map_decl.value)?;
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        mgr.add_model(&model_json, None, true).unwrap();
+        let result = mgr.add_model(&model_json, None, true);
+        assert!(result.is_err());
     }
 
-    /// Helper method to treat a declaration as a concept declaration
-    fn as_concept_declaration<'a>(
-        &self,
-        decl: &'a Declaration,
-    ) -> Option<&'a dyn ConceptDeclarationBase> {
-        // Check class name to determine type
-        match decl._class.as_str() {
-            "concerto.metamodel@1.0.0.ConceptDeclaration" => {
-                // We need to cast the declaration to a ConceptDeclaration
-                // This would require unsafe code or a different approach in real code
-                // For now, this is just a placeholder for the concept
-                None
-            }
-            "concerto.metamodel@1.0.0.AssetDeclaration" => None,
-            "concerto.metamodel@1.0.0.ParticipantDeclaration" => None,
-            "concerto.metamodel@1.0.0.TransactionDeclaration" => None,
-            "concerto.metamodel@1.0.0.EventDeclaration" => None,
-            _ => None,
-        }
-    }
+    #[test]
+    fn test_batch_add_with_rollback() {
+        let mut mgr = ModelManager::new(ModelManagerOptions::default()).unwrap();
 
-    /// Helper method to treat a declaration as a map declaration
-    fn as_map_declaration<'a>(&self, decl: &'a Declaration) -> Option<&'a MapDeclaration> {
-        if decl._class == "concerto.metamodel@1.0.0.MapDeclaration" {
-            // This would require casting in real code
-            None
-        } else {
-            None
-        }
-    }
+        let models = vec![
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.a@1.0.0",
+                "declarations": []
+            }),
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.a@1.0.0",
+                "declarations": []
+            }),
+        ];
 
-    /// Validates a property
-    fn validate_property(&self, property: &Property) -> Result<(), ConcertoError> {
-        // Use our PropertyValidator trait
-        use crate::traits::PropertyValidator;
-        PropertyValidator::validate(property, self)
-    }
-
-    /// Validates a map value type
-    fn validate_map_value_type(&self, value_type: &MapValueType) -> Result<(), ConcertoError> {
-        // Implementation would depend on the MapValueType structure
-        Ok(())
-    }
-
-    /// Validates that a referenced type exists in the model
-    pub fn validate_type_exists(
-        &self,
-        type_id: &concerto_metamodel::concerto_metamodel_1_0_0::TypeIdentifier,
-    ) -> Result<(), ConcertoError> {
-        let namespace = match &type_id.namespace {
-            Some(ns) => ns,
-            None => {
-                return Err(ConcertoError::ValidationError(format!(
-                    "Type {} is missing namespace",
-                    type_id.name
-                )));
-            }
-        };
-
-        // Find the model file for this namespace
-        let model_file = match self.get_model_file(namespace) {
-            Some(mf) => mf,
-            None => {
-                return Err(ConcertoError::ValidationError(format!(
-                    "Could not find namespace {}",
-                    namespace
-                )));
-            }
-        };
-
-        // Check if type exists in this namespace using the DeclarationBase trait
-        if let Some(declarations) = &model_file.get_declarations() {
-            for decl in declarations {
-                // Use the DeclarationBase trait to get name regardless of declaration type
-                if decl.name == type_id.name {
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(ConcertoError::ValidationError(format!(
-            "Could not find type {}.{}",
-            namespace, type_id.name
-        )))
-    }
-
-    /// Validates a property type
-    fn validate_property_type(&self, property: &Property) -> Result<(), ConcertoError> {
-        // Using the PropertyValidator trait to validate based on property type
-        // In a real implementation, you'd check the _class field and cast to the appropriate type
-        // For demonstration purposes, we'll just return Ok
-
-        // Example of how it might work:
-        // if property._class == "concerto.metamodel@1.0.0.RelationshipProperty" {
-        //     let relationship = property as &RelationshipProperty;
-        //     if let Some(type_id) = &relationship.type_reference {
-        //         self.validate_type_exists(type_id)?;
-        //     } else {
-        //         return Err(ConcertoError::ValidationError(
-        //             "Relationship type is missing type reference".to_string()
-        //         ));
-        //     }
-        // }
-
-        Ok(())
+        let result = mgr.add_models(&models, true);
+        assert!(result.is_err());
+        // First namespace should have been rolled back
+        assert!(mgr.get_model_file("org.a@1.0.0").is_none());
     }
 }
