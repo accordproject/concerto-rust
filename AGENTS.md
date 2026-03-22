@@ -7,7 +7,7 @@
 
 - Always use the most idiomatic approach suitable for Rust language.
 - If needed split the code into different crates. If a crate does not exist, ask the operator for help.
-- Add a derive macro for repeated `impl`s of a trait, into `cocnerto-macros` crate.
+- Add a derive macro for repeated `impl`s of a trait, into `concerto-macros` crate.
 - Types under `concerto-core` should only refer to the types from `concerto-metamodel` using new-type pattern.
 - Prefer sum-type over complicated traits.
 - Remove any code that is not being used (don't add extra code, just because, that might be useful in the future.)
