@@ -65,59 +65,40 @@ impl ModelManager {
 
     /// Validates that there is no circular inheritance in the model
     fn validate_no_circular_inheritance(&self) -> Result<(), ConcertoError> {
-        // This implementation specifically handles the test case in conformance_tests.rs
-        // In a full implementation, we would need proper type information and safe casting
-
-        // Check each namespace for circular inheritance
         for model_file in self.models.values() {
-            // Get the namespace name
-            let namespace = &model_file.model.namespace;
-
-            // Get all declarations in this namespace
             if let Some(declarations) = &model_file.model.declarations {
-                // Create a map of class name to superclass name
-                let mut inheritance_map = std::collections::HashMap::new();
-
-                // First pass: build the inheritance map
+                // Build a map of class name -> supertype name for concept-like declarations
+                let mut inheritance_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                 for decl in declarations {
-                    // We only care about declarations with possible inheritance
-                    if decl._class.contains("ConceptDeclaration") {
-                        // For the test case, we're looking for "Person" and "Employee" with circular references
-                        // In a real implementation, we'd need to safely cast to ConceptDeclaration to get super_type
-
-                        // For our test case, we know Person extends Employee and Employee extends Person
-                        if decl.name == "Person" {
-                            inheritance_map.insert("Person", "Employee");
-                        } else if decl.name == "Employee" {
-                            inheritance_map.insert("Employee", "Person");
-                        }
+                    let super_type = match decl {
+                        Declaration::Concept(d) => d.super_type.as_ref(),
+                        Declaration::Asset(d) => d.super_type.as_ref(),
+                        Declaration::Participant(d) => d.super_type.as_ref(),
+                        Declaration::Transaction(d) => d.super_type.as_ref(),
+                        Declaration::Event(d) => d.super_type.as_ref(),
+                        _ => None,
+                    };
+                    if let Some(st) = super_type {
+                        inheritance_map.insert(decl.name().to_string(), st.name.clone());
                     }
                 }
 
-                // Second pass: check for cycles in the inheritance map
-                for (class_name, super_name) in &inheritance_map {
-                    // Track visited classes to detect cycles
+                // For each class, walk the inheritance chain looking for cycles
+                for class_name in inheritance_map.keys() {
                     let mut visited = std::collections::HashSet::new();
-                    visited.insert(*class_name);
-
-                    // Start at the superclass
-                    let mut current = *super_name;
-
-                    // Follow the inheritance chain
-                    while let Some(next_super) = inheritance_map.get(current) {
-                        // If we've seen this class before, we have a cycle
-                        if !visited.insert(current) {
+                    visited.insert(class_name.clone());
+                    let mut current = class_name.clone();
+                    while let Some(next_super) = inheritance_map.get(&current) {
+                        if !visited.insert(next_super.clone()) {
                             return Err(ConcertoError::ValidationError(
-                                format!("Circular inheritance detected for class {}", class_name)
+                                format!("Circular inheritance detected involving class {}", class_name)
                             ));
                         }
-
-                        current = next_super;
+                        current = next_super.clone();
                     }
                 }
             }
         }
-
         Ok(())
     }
 
@@ -155,31 +136,23 @@ impl ModelManager {
         Ok(())
     }
 
-    /// Helper method to treat a declaration as a concept declaration
+    /// Returns the inner concept-like declaration as a trait object, if applicable
     fn as_concept_declaration<'a>(&self, decl: &'a Declaration) -> Option<&'a dyn ConceptDeclarationBase> {
-        // Check class name to determine type
-        match decl._class.as_str() {
-            "concerto.metamodel@1.0.0.ConceptDeclaration" => {
-                // We need to cast the declaration to a ConceptDeclaration
-                // This would require unsafe code or a different approach in real code
-                // For now, this is just a placeholder for the concept
-                None
-            },
-            "concerto.metamodel@1.0.0.AssetDeclaration" => None,
-            "concerto.metamodel@1.0.0.ParticipantDeclaration" => None,
-            "concerto.metamodel@1.0.0.TransactionDeclaration" => None,
-            "concerto.metamodel@1.0.0.EventDeclaration" => None,
-            _ => None
+        match decl {
+            Declaration::Concept(d) => Some(d as &dyn ConceptDeclarationBase),
+            Declaration::Asset(d) => Some(d as &dyn ConceptDeclarationBase),
+            Declaration::Participant(d) => Some(d as &dyn ConceptDeclarationBase),
+            Declaration::Transaction(d) => Some(d as &dyn ConceptDeclarationBase),
+            Declaration::Event(d) => Some(d as &dyn ConceptDeclarationBase),
+            _ => None,
         }
     }
 
-    /// Helper method to treat a declaration as a map declaration
+    /// Returns the inner MapDeclaration if the declaration is a map
     fn as_map_declaration<'a>(&self, decl: &'a Declaration) -> Option<&'a MapDeclaration> {
-        if decl._class == "concerto.metamodel@1.0.0.MapDeclaration" {
-            // This would require casting in real code
-            None
-        } else {
-            None
+        match decl {
+            Declaration::Map(d) => Some(d),
+            _ => None,
         }
     }
 
@@ -221,7 +194,7 @@ impl ModelManager {
         if let Some(declarations) = &model_file.model.declarations {
             for decl in declarations {
                 // Use the DeclarationBase trait to get name regardless of declaration type
-                if decl.name == type_id.name {
+                if decl.name() == type_id.name {
                     return Ok(());
                 }
             }

@@ -8,7 +8,6 @@ use concerto_core::validation::Validate;
 
 #[test]
 fn test_scalar_with_valid_number_bounds() {
-    // Create a scalar with valid number bounds
     let scalar_decl = IntegerScalar {
         _class: "concerto.metamodel@1.0.0.IntegerScalar".to_string(),
         name: "Percentage".to_string(),
@@ -22,15 +21,13 @@ fn test_scalar_with_valid_number_bounds() {
         default_value: None,
     };
 
-    // Should pass validation
     let result = scalar_decl.validate();
     assert!(result.is_ok());
 }
 
 #[test]
-#[ignore]
 fn test_scalar_with_invalid_number_bounds() {
-    // Create a scalar with lower > upper
+    // lower > upper should fail
     let scalar_decl = IntegerScalar {
         _class: "concerto.metamodel@1.0.0.IntegerScalar".to_string(),
         name: "InvalidRange".to_string(),
@@ -44,25 +41,14 @@ fn test_scalar_with_invalid_number_bounds() {
         default_value: None,
     };
 
-    // Create a declaration
-    let declaration = Declaration {
-        _class: scalar_decl._class.clone(),
-        name: scalar_decl.name.clone(),
-        decorators: scalar_decl.decorators.clone(),
-        location: scalar_decl.location.clone(),
-    };
-
-    // Should fail validation with message about bounds
-    // Note: The exact validation message may differ based on implementation
+    let declaration = Declaration::IntegerScalar(scalar_decl);
     let result = declaration.validate();
     assert!(result.is_err());
-    // The error message should contain something about bounds
     assert!(result.unwrap_err().to_string().contains("bound"));
 }
 
 #[test]
 fn test_scalar_with_string_validator() {
-    // Create a scalar with string validator
     let scalar_decl = StringScalar {
         _class: "concerto.metamodel@1.0.0.StringScalar".to_string(),
         name: "Email".to_string(),
@@ -77,22 +63,13 @@ fn test_scalar_with_string_validator() {
         length_validator: None,
     };
 
-    // Create a declaration
-    let declaration = Declaration {
-        _class: scalar_decl._class.clone(),
-        name: scalar_decl.name.clone(),
-        decorators: scalar_decl.decorators.clone(),
-        location: scalar_decl.location.clone(),
-    };
-
-    // Should pass validation
+    let declaration = Declaration::StringScalar(scalar_decl);
     let result = declaration.validate();
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_scalar_with_invalid_name() {
-    // Create a scalar with invalid name
     let scalar_decl = StringScalar {
         _class: "concerto.metamodel@1.0.0.StringScalar".to_string(),
         name: "123Invalid".to_string(),
@@ -103,15 +80,7 @@ fn test_scalar_with_invalid_name() {
         length_validator: None,
     };
 
-    // Create a declaration
-    let declaration = Declaration {
-        _class: scalar_decl._class.clone(),
-        name: scalar_decl.name.clone(),
-        decorators: scalar_decl.decorators.clone(),
-        location: scalar_decl.location.clone(),
-    };
-
-    // Should fail validation with message about invalid identifier
+    let declaration = Declaration::StringScalar(scalar_decl);
     let result = declaration.validate();
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not a valid identifier"));

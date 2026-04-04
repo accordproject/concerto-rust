@@ -14,20 +14,18 @@ pub trait DeclarationBase {
     fn get_location(&self) -> Option<&Range>;
 }
 
-// Implement for all declaration types
 impl DeclarationBase for Declaration {
     fn get_name(&self) -> &str {
-        &self.name
+        self.name()
     }
 
     fn get_decorators(&self) -> Option<&Vec<Decorator>> {
-        self.decorators.as_ref()
+        self.decorators()
     }
 
     fn get_location(&self) -> Option<&Range> {
-        self.location.as_ref()
+        self.location()
     }
-
 }
 
 impl DeclarationBase for AssetDeclaration {

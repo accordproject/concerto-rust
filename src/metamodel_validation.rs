@@ -24,17 +24,13 @@ impl Validate for Model {
 
         // Validate declarations if any
         if let Some(declarations) = &self.declarations {
-            // Check for duplicate declaration names
             let mut declaration_names = std::collections::HashSet::new();
             for decl in declarations {
-                // Check if this declaration name has already been seen
-                if !declaration_names.insert(&decl.name) {
+                if !declaration_names.insert(decl.name()) {
                     return Err(ConcertoError::ValidationError(
-                        format!("Duplicate declaration name: {}", decl.name)
+                        format!("Duplicate declaration name: {}", decl.name())
                     ));
                 }
-
-                // Validate the declaration itself
                 decl.validate()?;
             }
         }
@@ -52,19 +48,27 @@ impl Validate for Model {
 
 impl Validate for Declaration {
     fn validate(&self) -> Result<(), ConcertoError> {
-        // Basic validation of a declaration using the common validator
-        self.validate_name(&self.name)?;
-        self.validate_decorators(&self.decorators)?;
-        Ok(())
+        match self {
+            Declaration::Concept(d) => d.validate(),
+            Declaration::Asset(d) => d.validate(),
+            Declaration::Participant(d) => d.validate(),
+            Declaration::Transaction(d) => d.validate(),
+            Declaration::Event(d) => d.validate(),
+            Declaration::Enum(d) => d.validate(),
+            Declaration::Map(d) => d.validate(),
+            Declaration::StringScalar(d) => d.validate(),
+            Declaration::IntegerScalar(d) => d.validate(),
+            Declaration::LongScalar(d) => d.validate(),
+            Declaration::DoubleScalar(d) => d.validate(),
+            Declaration::BooleanScalar(d) => d.validate(),
+            Declaration::DateTimeScalar(d) => d.validate(),
+        }
     }
 }
 
-// Implement DeclarationValidator for the Declaration struct
 impl DeclarationValidator for Declaration {
     fn validate_declaration(&self) -> Result<(), ConcertoError> {
-        self.validate_name(&self.name)?;
-        self.validate_decorators(&self.decorators)?;
-        Ok(())
+        self.validate()
     }
 
     fn validate_name(&self, name: &str) -> Result<(), ConcertoError> {

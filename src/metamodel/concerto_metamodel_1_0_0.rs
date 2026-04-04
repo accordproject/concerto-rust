@@ -51,7 +51,7 @@ pub struct Range {
    pub source: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeIdentifier {
    #[serde(
       rename = "$class",
@@ -190,7 +190,7 @@ pub struct Decorator {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identified {
    #[serde(
       rename = "$class",
@@ -198,7 +198,7 @@ pub struct Identified {
    pub _class: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentifiedBy {
    #[serde(
       rename = "$class",
@@ -211,32 +211,141 @@ pub struct IdentifiedBy {
    pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Declaration {
-   #[serde(
-      rename = "$class",
-   )]
-   pub _class: String,
-
-   #[serde(
-      rename = "name",
-   )]
-   pub name: String,
-
-   #[serde(
-      rename = "decorators",
-      skip_serializing_if = "Option::is_none",
-   )]
-   pub decorators: Option<Vec<Decorator>>,
-
-   #[serde(
-      rename = "location",
-      skip_serializing_if = "Option::is_none",
-   )]
-   pub location: Option<Range>,
+/// A typed declaration — one variant per concrete declaration kind in the Concerto metamodel.
+/// Serializes by delegating to the inner struct (which carries its own `$class` field).
+/// Deserializes by reading `$class` first, then dispatching to the right struct.
+#[derive(Debug, Clone)]
+pub enum Declaration {
+    Concept(ConceptDeclaration),
+    Asset(AssetDeclaration),
+    Participant(ParticipantDeclaration),
+    Transaction(TransactionDeclaration),
+    Event(EventDeclaration),
+    Enum(EnumDeclaration),
+    Map(MapDeclaration),
+    StringScalar(StringScalar),
+    IntegerScalar(IntegerScalar),
+    LongScalar(LongScalar),
+    DoubleScalar(DoubleScalar),
+    BooleanScalar(BooleanScalar),
+    DateTimeScalar(DateTimeScalar),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Declaration {
+    pub fn name(&self) -> &str {
+        match self {
+            Declaration::Concept(d) => &d.name,
+            Declaration::Asset(d) => &d.name,
+            Declaration::Participant(d) => &d.name,
+            Declaration::Transaction(d) => &d.name,
+            Declaration::Event(d) => &d.name,
+            Declaration::Enum(d) => &d.name,
+            Declaration::Map(d) => &d.name,
+            Declaration::StringScalar(d) => &d.name,
+            Declaration::IntegerScalar(d) => &d.name,
+            Declaration::LongScalar(d) => &d.name,
+            Declaration::DoubleScalar(d) => &d.name,
+            Declaration::BooleanScalar(d) => &d.name,
+            Declaration::DateTimeScalar(d) => &d.name,
+        }
+    }
+
+    pub fn decorators(&self) -> Option<&Vec<Decorator>> {
+        match self {
+            Declaration::Concept(d) => d.decorators.as_ref(),
+            Declaration::Asset(d) => d.decorators.as_ref(),
+            Declaration::Participant(d) => d.decorators.as_ref(),
+            Declaration::Transaction(d) => d.decorators.as_ref(),
+            Declaration::Event(d) => d.decorators.as_ref(),
+            Declaration::Enum(d) => d.decorators.as_ref(),
+            Declaration::Map(d) => d.decorators.as_ref(),
+            Declaration::StringScalar(d) => d.decorators.as_ref(),
+            Declaration::IntegerScalar(d) => d.decorators.as_ref(),
+            Declaration::LongScalar(d) => d.decorators.as_ref(),
+            Declaration::DoubleScalar(d) => d.decorators.as_ref(),
+            Declaration::BooleanScalar(d) => d.decorators.as_ref(),
+            Declaration::DateTimeScalar(d) => d.decorators.as_ref(),
+        }
+    }
+
+    pub fn location(&self) -> Option<&Range> {
+        match self {
+            Declaration::Concept(d) => d.location.as_ref(),
+            Declaration::Asset(d) => d.location.as_ref(),
+            Declaration::Participant(d) => d.location.as_ref(),
+            Declaration::Transaction(d) => d.location.as_ref(),
+            Declaration::Event(d) => d.location.as_ref(),
+            Declaration::Enum(d) => d.location.as_ref(),
+            Declaration::Map(d) => d.location.as_ref(),
+            Declaration::StringScalar(d) => d.location.as_ref(),
+            Declaration::IntegerScalar(d) => d.location.as_ref(),
+            Declaration::LongScalar(d) => d.location.as_ref(),
+            Declaration::DoubleScalar(d) => d.location.as_ref(),
+            Declaration::BooleanScalar(d) => d.location.as_ref(),
+            Declaration::DateTimeScalar(d) => d.location.as_ref(),
+        }
+    }
+}
+
+impl serde::Serialize for Declaration {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Declaration::Concept(d) => d.serialize(serializer),
+            Declaration::Asset(d) => d.serialize(serializer),
+            Declaration::Participant(d) => d.serialize(serializer),
+            Declaration::Transaction(d) => d.serialize(serializer),
+            Declaration::Event(d) => d.serialize(serializer),
+            Declaration::Enum(d) => d.serialize(serializer),
+            Declaration::Map(d) => d.serialize(serializer),
+            Declaration::StringScalar(d) => d.serialize(serializer),
+            Declaration::IntegerScalar(d) => d.serialize(serializer),
+            Declaration::LongScalar(d) => d.serialize(serializer),
+            Declaration::DoubleScalar(d) => d.serialize(serializer),
+            Declaration::BooleanScalar(d) => d.serialize(serializer),
+            Declaration::DateTimeScalar(d) => d.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Declaration {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let class = value["$class"]
+            .as_str()
+            .ok_or_else(|| serde::de::Error::missing_field("$class"))?;
+        match class {
+            "concerto.metamodel@1.0.0.ConceptDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Concept).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.AssetDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Asset).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.ParticipantDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Participant).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.TransactionDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Transaction).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.EventDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Event).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.EnumDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Enum).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.MapDeclaration" =>
+                serde_json::from_value(value).map(Declaration::Map).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.StringScalar" =>
+                serde_json::from_value(value).map(Declaration::StringScalar).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.IntegerScalar" =>
+                serde_json::from_value(value).map(Declaration::IntegerScalar).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.LongScalar" =>
+                serde_json::from_value(value).map(Declaration::LongScalar).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.DoubleScalar" =>
+                serde_json::from_value(value).map(Declaration::DoubleScalar).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.BooleanScalar" =>
+                serde_json::from_value(value).map(Declaration::BooleanScalar).map_err(serde::de::Error::custom),
+            "concerto.metamodel@1.0.0.DateTimeScalar" =>
+                serde_json::from_value(value).map(Declaration::DateTimeScalar).map_err(serde::de::Error::custom),
+            other => Err(serde::de::Error::custom(format!("Unknown declaration class: {}", other))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapKeyType {
    #[serde(
       rename = "$class",
@@ -256,7 +365,7 @@ pub struct MapKeyType {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapValueType {
    #[serde(
       rename = "$class",
@@ -276,7 +385,7 @@ pub struct MapValueType {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapDeclaration {
    #[serde(
       rename = "$class",
@@ -546,7 +655,7 @@ pub struct RelationshipMapValueType {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnumDeclaration {
    #[serde(
       rename = "$class",
@@ -576,7 +685,7 @@ pub struct EnumDeclaration {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnumProperty {
    #[serde(
       rename = "$class",
@@ -601,7 +710,7 @@ pub struct EnumProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConceptDeclaration {
    #[serde(
       rename = "$class",
@@ -648,7 +757,7 @@ pub struct ConceptDeclaration {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetDeclaration{
    #[serde(
       rename = "$class",
@@ -695,7 +804,7 @@ pub struct AssetDeclaration{
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticipantDeclaration {
    #[serde(
       rename = "$class",
@@ -742,7 +851,7 @@ pub struct ParticipantDeclaration {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionDeclaration {
    #[serde(
       rename = "$class",
@@ -789,7 +898,7 @@ pub struct TransactionDeclaration {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventDeclaration {
    #[serde(
       rename = "$class",
@@ -836,7 +945,7 @@ pub struct EventDeclaration {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Property {
    #[serde(
       rename = "$class",
@@ -1086,7 +1195,7 @@ pub struct StringProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringRegexValidator {
    #[serde(
       rename = "$class",
@@ -1104,7 +1213,7 @@ pub struct StringRegexValidator {
    pub flags: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringLengthValidator {
    #[serde(
       rename = "$class",
@@ -1171,7 +1280,7 @@ pub struct DoubleProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoubleDomainValidator {
    #[serde(
       rename = "$class",
@@ -1238,7 +1347,7 @@ pub struct IntegerProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegerDomainValidator {
    #[serde(
       rename = "$class",
@@ -1305,7 +1414,7 @@ pub struct LongProperty {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongDomainValidator {
    #[serde(
       rename = "$class",
@@ -1516,7 +1625,7 @@ pub struct ScalarDeclaration {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BooleanScalar {
    #[serde(
       rename = "$class",
@@ -1547,7 +1656,7 @@ pub struct BooleanScalar {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegerScalar {
    #[serde(
       rename = "$class",
@@ -1584,7 +1693,7 @@ pub struct IntegerScalar {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongScalar {
    #[serde(
       rename = "$class",
@@ -1621,7 +1730,7 @@ pub struct LongScalar {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoubleScalar {
    #[serde(
       rename = "$class",
@@ -1658,7 +1767,7 @@ pub struct DoubleScalar {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringScalar {
    #[serde(
       rename = "$class",
@@ -1701,7 +1810,7 @@ pub struct StringScalar {
    pub location: Option<Range>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DateTimeScalar {
    #[serde(
       rename = "$class",
