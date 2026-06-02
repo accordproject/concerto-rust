@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["concerto-metamodel"]
+members = ["concerto-metamodel", "concerto-core"]
 
 [workspace.package]
 version = "0.1.0"
