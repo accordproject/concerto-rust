@@ -6,3 +6,7 @@
 //!
 //! Everything sits on top of the generated [`concerto_metamodel`] types. We
 //! wrap those in our own enums rather than redefining the schema by hand.
+
+pub mod error;
+
+pub use error::{ConcertoError, Result};
