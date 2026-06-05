@@ -8,5 +8,6 @@
 //! wrap those in our own enums rather than redefining the schema by hand.
 
 pub mod error;
+pub mod model_util;
 
 pub use error::{ConcertoError, Result};
