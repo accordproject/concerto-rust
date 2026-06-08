@@ -2,11 +2,13 @@
 //!
 //! This is our take on Concerto's `introspect` API. The generated
 //! [`concerto_metamodel`] structs are awkward to match on directly, so we read
-//! a model's JSON AST into a handful of enums instead, each with the accessors
-//! we actually need.
+//! a model's JSON AST into a handful of enums instead, [`Declaration`] and
+//! [`Property`], each with the accessors we actually need.
 
+pub mod declaration;
 pub mod property;
 
+pub use declaration::{ClassDeclaration, ClassKind, Declaration, ScalarDeclaration};
 pub use property::Property;
 
 /// Pulls the `$class` string off an AST node, or `""` if it's missing.

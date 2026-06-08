@@ -12,4 +12,4 @@ pub mod introspect;
 pub mod model_util;
 
 pub use error::{ConcertoError, Result};
-pub use introspect::Property;
+pub use introspect::{ClassDeclaration, ClassKind, Declaration, Property, ScalarDeclaration};
