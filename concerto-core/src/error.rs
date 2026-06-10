@@ -1,42 +1,40 @@
 //! Error types for `concerto-core`.
 //!
-//! There are really two kinds of failure here, and we keep them apart. A hard
-//! error means the model is broken and we can't go on (a missing type, a bad
-//! namespace). Those are the [`ConcertoError`] cases below. The everyday
-//! "this instance doesn't match its type" failures are a different thing: the
-//! validation layer gathers those up and hands them back as a result, not a
-//! panic-y error.
+//! [`ConcertoError`] covers the hard failures that stop a model from being
+//! used: a type or namespace that cannot be resolved, or model JSON that does
+//! not satisfy the metamodel. Each variant carries enough context to report
+//! what went wrong and, where known, where.
 
 use thiserror::Error;
 
 /// Shorthand `Result` used all over `concerto-core`.
 pub type Result<T> = std::result::Result<T, ConcertoError>;
 
-/// Something went wrong while loading a model or looking up a type.
+/// A hard failure raised while loading a model or resolving a type.
 #[derive(Debug, Error)]
 pub enum ConcertoError {
-    /// We looked for a type and no loaded model has it.
+    /// A fully-qualified type could not be resolved in any loaded model.
     #[error("type not found: {type_name}")]
     TypeNotFound {
-        /// The name we couldn't resolve (qualified or short).
+        /// The name that failed to resolve (qualified or short).
         type_name: String,
     },
 
-    /// A namespace was referenced before it was loaded.
+    /// A namespace was referenced before any model declared it.
     #[error("namespace not found: {namespace}")]
     NamespaceNotFound {
-        /// The namespace we couldn't find.
+        /// The namespace that could not be found.
         namespace: String,
     },
 
-    /// The model JSON is malformed, or breaks one of Concerto's rules.
+    /// The model JSON is malformed or violates a metamodel rule.
     #[error("illegal model: {message}")]
     IllegalModel {
-        /// What went wrong, in plain English.
+        /// A description of the problem.
         message: String,
-        /// Which file it came from, when we know.
+        /// The originating file, if known.
         file_name: Option<String>,
-        /// Where in the file, when we know.
+        /// The source location, if known.
         location: Option<String>,
     },
 }

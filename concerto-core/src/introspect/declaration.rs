@@ -1,11 +1,12 @@
-//! The declarations inside a model file, given proper types.
+//! Internal representations of the Concerto declarations.
 //!
-//! In the JavaScript runtime these are a class hierarchy: concept, asset,
-//! participant, transaction and event all extend one common declaration. But
-//! those five have the exact same shape, so writing five near-identical structs
-//! felt pointless. Instead there's one [`ClassDeclaration`] that carries a
-//! [`ClassKind`] tag to say which it is. Scalars and maps look different, so
-//! they get their own arms of the [`Declaration`] enum.
+//! Concerto's JavaScript runtime models declarations as an inheritance
+//! hierarchy: concept, asset, participant, transaction and event all extend a
+//! common class declaration. Inheritance like that isn't idiomatic in Rust, so
+//! the five class-like declarations are represented by a single
+//! [`ClassDeclaration`] tagged with a [`ClassKind`], while enums, scalars and
+//! maps are the other variants of the [`Declaration`] sum type. Each variant is
+//! selected by matching on the node's `$class`.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -102,8 +103,9 @@ impl ClassDeclaration {
         self.super_type.as_ref()
     }
 
-    /// Just this type's own properties. Inherited ones aren't included here;
-    /// the model manager walks the chain for those.
+    /// The properties declared directly on this type. Inherited properties are
+    /// not included; those are gathered separately by walking the supertype
+    /// chain.
     pub fn own_properties(&self) -> &[Property] {
         &self.properties
     }
@@ -123,7 +125,7 @@ impl ClassDeclaration {
         self.identified.is_some()
     }
 
-    fn parse(kind: ClassKind, value: &serde_json::Value) -> Result<Self> {
+    fn from_json(kind: ClassKind, value: &serde_json::Value) -> Result<Self> {
         let header: ClassHeader =
             serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
                 message: format!("invalid {}: {e}", kind.declaration_kind()),
@@ -186,7 +188,7 @@ impl ScalarDeclaration {
         }
     }
 
-    fn parse(short: &str, value: &serde_json::Value) -> Result<Self> {
+    fn from_json(short: &str, value: &serde_json::Value) -> Result<Self> {
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {short}: {e}"),
             file_name: None,
@@ -261,13 +263,23 @@ impl Declaration {
         }
     }
 
+    /// `true` if this is a concept-like (class) declaration.
+    pub fn is_class_declaration(&self) -> bool {
+        matches!(self, Self::Class(_))
+    }
+
     /// `true` if this is an enum declaration.
-    pub fn is_enum(&self) -> bool {
+    pub fn is_enum_declaration(&self) -> bool {
         matches!(self, Self::Enum(_))
     }
 
+    /// `true` if this is a scalar declaration.
+    pub fn is_scalar_declaration(&self) -> bool {
+        matches!(self, Self::Scalar(_))
+    }
+
     /// `true` if this is a map declaration.
-    pub fn is_map(&self) -> bool {
+    pub fn is_map_declaration(&self) -> bool {
         matches!(self, Self::Map(_))
     }
 }
@@ -287,7 +299,7 @@ impl TryFrom<&serde_json::Value> for Declaration {
         let kind = short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            return Ok(Self::Class(ClassDeclaration::parse(class_kind, value)?));
+            return Ok(Self::Class(ClassDeclaration::from_json(class_kind, value)?));
         }
 
         Ok(match kind {
@@ -307,7 +319,7 @@ impl TryFrom<&serde_json::Value> for Declaration {
                     location: None,
                 }
             })?),
-            s if s.ends_with("Scalar") => Self::Scalar(ScalarDeclaration::parse(s, value)?),
+            s if s.ends_with("Scalar") => Self::Scalar(ScalarDeclaration::from_json(s, value)?),
             other => {
                 return Err(ConcertoError::IllegalModel {
                     message: format!("unknown declaration type: {other}"),
@@ -348,6 +360,9 @@ mod tests {
         assert_eq!(c.own_properties().len(), 2);
         assert_eq!(c.own_properties()[0].type_name(), Some("String"));
         assert!(c.own_properties()[1].is_optional());
+
+        assert!(d.is_class_declaration());
+        assert!(!d.is_enum_declaration());
     }
 
     #[test]
@@ -372,7 +387,8 @@ mod tests {
                 { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "GREEN" }
             ]
         }));
-        assert!(e.is_enum());
+        assert!(e.is_enum_declaration());
+        assert!(!e.is_class_declaration());
         assert_eq!(e.name(), "Color");
 
         let s = decl(serde_json::json!({
@@ -382,6 +398,7 @@ mod tests {
         }));
         assert_eq!(s.as_scalar().unwrap().scalar_type(), "String");
         assert_eq!(s.name(), "Email");
+        assert!(s.is_scalar_declaration());
 
         let m = decl(serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
@@ -389,7 +406,7 @@ mod tests {
             "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
             "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
         }));
-        assert!(m.is_map());
+        assert!(m.is_map_declaration());
         assert_eq!(m.name(), "Dictionary");
     }
 
