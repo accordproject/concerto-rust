@@ -152,6 +152,13 @@ impl TryFrom<&serde_json::Value> for Property {
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
         let class = declared_class(value);
+        if class.is_empty() {
+            return Err(ConcertoError::IllegalModel {
+                message: "property node is missing its $class".into(),
+                file_name: None,
+                location: None,
+            });
+        }
         let kind = short_name(class);
 
         // Parse into whatever struct the `$class` says this is. If serde
@@ -266,5 +273,11 @@ mod tests {
             "name": "x"
         }));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn missing_class_is_rejected() {
+        let err = Property::try_from(&serde_json::json!({ "name": "x" }));
+        assert!(err.unwrap_err().to_string().contains("$class"));
     }
 }

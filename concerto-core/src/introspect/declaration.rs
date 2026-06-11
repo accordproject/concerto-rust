@@ -188,6 +188,18 @@ impl ScalarDeclaration {
         }
     }
 
+    /// The metamodel `$class` short name for this scalar, e.g. `StringScalar`.
+    pub fn declaration_kind(&self) -> &'static str {
+        match self {
+            Self::Boolean(_) => "BooleanScalar",
+            Self::Integer(_) => "IntegerScalar",
+            Self::Long(_) => "LongScalar",
+            Self::Double(_) => "DoubleScalar",
+            Self::String(_) => "StringScalar",
+            Self::DateTime(_) => "DateTimeScalar",
+        }
+    }
+
     fn from_json(short: &str, value: &serde_json::Value) -> Result<Self> {
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {short}: {e}"),
@@ -242,7 +254,7 @@ impl Declaration {
         match self {
             Self::Class(c) => c.kind().declaration_kind(),
             Self::Enum(_) => "EnumDeclaration",
-            Self::Scalar(_) => "ScalarDeclaration",
+            Self::Scalar(s) => s.declaration_kind(),
             Self::Map(_) => "MapDeclaration",
         }
     }
@@ -286,8 +298,13 @@ impl Declaration {
 
 fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
     match value.get("properties") {
+        None => Ok(Vec::new()),
         Some(serde_json::Value::Array(arr)) => arr.iter().map(Property::try_from).collect(),
-        _ => Ok(Vec::new()),
+        Some(_) => Err(ConcertoError::IllegalModel {
+            message: "'properties' must be an array".into(),
+            file_name: None,
+            location: None,
+        }),
     }
 }
 
@@ -296,6 +313,13 @@ impl TryFrom<&serde_json::Value> for Declaration {
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
         let class = declared_class(value);
+        if class.is_empty() {
+            return Err(ConcertoError::IllegalModel {
+                message: "declaration node is missing its $class".into(),
+                file_name: None,
+                location: None,
+            });
+        }
         let kind = short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
@@ -419,5 +443,31 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn missing_class_is_rejected() {
+        let err = Declaration::try_from(&serde_json::json!({ "name": "X" }));
+        assert!(err.unwrap_err().to_string().contains("$class"));
+    }
+
+    #[test]
+    fn non_array_properties_is_rejected() {
+        assert!(
+            Declaration::try_from(&serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Bad",
+                "properties": { "not": "an array" }
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn scalar_reports_its_concrete_kind() {
+        let s = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Email"
+        }));
+        assert_eq!(s.declaration_kind(), "StringScalar");
     }
 }

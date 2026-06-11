@@ -68,7 +68,8 @@ pub struct Namespace {
 
 /// Splits a namespace like `org.example@1.0.0` into name and version.
 ///
-/// A second `@` is nonsense, so that's an [`ConcertoError::IllegalModel`].
+/// A second `@`, or an empty name or version on either side of the `@`, is
+/// rejected as an [`ConcertoError::IllegalModel`].
 ///
 /// ```
 /// # use concerto_core::model_util::parse_namespace;
@@ -77,6 +78,11 @@ pub struct Namespace {
 /// assert_eq!(ns.version.as_deref(), Some("1.0.0"));
 /// ```
 pub fn parse_namespace(namespace: &str) -> Result<Namespace> {
+    let illegal = || ConcertoError::IllegalModel {
+        message: format!("invalid namespace: {namespace}"),
+        file_name: None,
+        location: None,
+    };
     let mut parts = namespace.splitn(3, '@');
     let name = parts.next().unwrap_or("").to_string();
     match (parts.next(), parts.next()) {
@@ -84,15 +90,16 @@ pub fn parse_namespace(namespace: &str) -> Result<Namespace> {
             name,
             version: None,
         }),
-        (Some(version), None) => Ok(Namespace {
-            name,
-            version: Some(version.to_string()),
-        }),
-        (Some(_), Some(_)) => Err(ConcertoError::IllegalModel {
-            message: format!("invalid namespace (multiple '@'): {namespace}"),
-            file_name: None,
-            location: None,
-        }),
+        (Some(version), None) => {
+            if name.is_empty() || version.is_empty() {
+                return Err(illegal());
+            }
+            Ok(Namespace {
+                name,
+                version: Some(version.to_string()),
+            })
+        }
+        (Some(_), Some(_)) => Err(illegal()),
     }
 }
 
@@ -147,6 +154,8 @@ mod tests {
         assert!(ns.version.is_none());
 
         assert!(parse_namespace("a@1@2").is_err());
+        assert!(parse_namespace("@1.0.0").is_err());
+        assert!(parse_namespace("org.example@").is_err());
     }
 
     #[test]
