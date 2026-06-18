@@ -68,6 +68,7 @@ version = "3.12.8"
 dependencies = [
  "chrono",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
