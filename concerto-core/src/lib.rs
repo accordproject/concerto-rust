@@ -9,7 +9,12 @@
 
 pub mod error;
 pub mod introspect;
+pub mod model_manager;
 pub mod model_util;
+pub mod rootmodel;
 
 pub use error::{ConcertoError, Result};
-pub use introspect::{ClassDeclaration, ClassKind, Declaration, Property, ScalarDeclaration};
+pub use introspect::{
+    ClassDeclaration, ClassKind, Declaration, Import, ModelFile, Property, ScalarDeclaration,
+};
+pub use model_manager::ModelManager;
