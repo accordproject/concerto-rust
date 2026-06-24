@@ -11,17 +11,24 @@
 //!
 //! - [`Declaration`], a top-level declaration (class-like, enum, scalar or map)
 //! - [`Property`], a field of a declaration
+//! - [`Import`], a reference to types declared in another namespace
 //!
 //! Deserializing straight into the generated types is lossy: the base
 //! `Property` struct, for instance, drops subtype-specific fields such as
 //! validators and the referenced type. Each node is therefore re-read from its
 //! raw JSON into the enums above, which keep exactly what the runtime needs to
-//! inspect a model.
+//! inspect a model. A [`ModelFile`] groups the declarations and imports of one
+//! namespace; resolving types and inheritance *across* namespaces is the job of
+//! the [`ModelManager`](crate::model_manager::ModelManager).
 
 pub mod declaration;
+pub mod import;
+pub mod model_file;
 pub mod property;
 
 pub use declaration::{ClassDeclaration, ClassKind, Declaration, ScalarDeclaration};
+pub use import::Import;
+pub use model_file::ModelFile;
 pub use property::Property;
 
 /// Returns the `$class` discriminator of an AST node, or `""` if it is absent.
