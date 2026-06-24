@@ -10,26 +10,22 @@ use crate::error::{ConcertoError, Result};
 use crate::introspect::declared_class;
 use crate::model_util::{qualify, short_name};
 
-/// A single import statement in a model file.
+/// A single import statement in a model file. Wildcard imports (`import ns.*`)
+/// are rejected while parsing, mirroring strict mode in Concerto v4.
 #[derive(Debug, Clone)]
 pub enum Import {
-    /// `import ns.*`: every type in a namespace.
-    All {
-        /// The imported namespace.
-        namespace: String,
-    },
     /// `import ns.Name`: a single named type.
     Type {
         /// The namespace the type is imported from.
         namespace: String,
-        /// The imported type's short name.
+        /// The name of the imported type.
         name: String,
     },
     /// `import ns.{A, B}`: several named types, optionally aliased.
     Types {
         /// The namespace the types are imported from.
         namespace: String,
-        /// The imported short type names.
+        /// The names of the imported types.
         names: Vec<String>,
         /// `(local_alias, original_name)` pairs for aliased imports.
         aliases: Vec<(String, String)>,
@@ -40,24 +36,14 @@ impl Import {
     /// The namespace this import refers to.
     pub fn namespace(&self) -> &str {
         match self {
-            Self::All { namespace }
-            | Self::Type { namespace, .. }
-            | Self::Types { namespace, .. } => namespace,
+            Self::Type { namespace, .. } | Self::Types { namespace, .. } => namespace,
         }
     }
 
-    /// `true` for a wildcard (`ns.*`) import, which can only be resolved by
-    /// consulting the declarations of the imported namespace.
-    pub fn is_wildcard(&self) -> bool {
-        matches!(self, Self::All { .. })
-    }
-
     /// Resolves a short name to its fully-qualified name, but only when this
-    /// import names it explicitly. Wildcard imports return `None`, since
-    /// resolving them requires the imported model file.
+    /// import names it explicitly.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
-            Self::All { .. } => None,
             Self::Type { namespace, name } if name == short => Some(qualify(namespace, name)),
             Self::Type { .. } => None,
             Self::Types {
@@ -102,8 +88,14 @@ impl TryFrom<&serde_json::Value> for Import {
             .to_string();
 
         Ok(match kind {
-            // Bare `Import` is the abstract base; treat it like `ImportAll`.
-            "ImportAll" | "Import" => Self::All { namespace },
+            // Concerto v4 disallows wildcard imports; reject them up front.
+            "ImportAll" => {
+                return Err(ConcertoError::IllegalModel {
+                    message: format!("wildcard imports are not allowed: import {namespace}.*"),
+                    file_name: None,
+                    location: None,
+                });
+            }
             "ImportType" => {
                 let name = value
                     .get("name")
@@ -193,15 +185,12 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_import_defers_resolution() {
-        let imp = Import::try_from(&serde_json::json!({
+    fn wildcard_import_is_rejected() {
+        let err = Import::try_from(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ImportAll",
             "namespace": "org.acme@1.0.0"
-        }))
-        .unwrap();
-        assert!(imp.is_wildcard());
-        assert_eq!(imp.resolve("Anything"), None);
-        assert_eq!(imp.namespace(), "org.acme@1.0.0");
+        }));
+        assert!(err.unwrap_err().to_string().contains("wildcard"));
     }
 
     #[test]

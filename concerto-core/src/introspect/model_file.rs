@@ -2,10 +2,9 @@
 //!
 //! A [`ModelFile`] owns the declarations and imports of a single namespace and
 //! indexes its declarations by short name. It resolves a short name to a
-//! fully-qualified one from what it can see locally: the primitives, its own
-//! declarations, and its named imports. Wildcard (`ns.*`) imports are left to
-//! the [`ModelManager`](crate::model_manager::ModelManager), which can see the
-//! imported namespaces.
+//! fully-qualified one from what it declares or imports: the primitives, its
+//! own declarations, and its named imports. (Wildcard imports are rejected
+//! while parsing, per strict mode in Concerto v4.)
 
 use std::collections::HashMap;
 
@@ -132,10 +131,9 @@ impl ModelFile {
         self.namespace == "concerto" || self.namespace.starts_with("concerto@")
     }
 
-    /// Resolves a short name using what this file can see by itself: the
+    /// Resolves a short name from what this file declares or imports: the
     /// primitives, its own declarations, and its named imports. Returns `None`
-    /// if the only possible match would come through a wildcard, since the
-    /// model manager handles those.
+    /// if the name is none of those.
     pub fn resolve_local(&self, short: &str) -> Option<String> {
         if is_primitive_type(short) {
             return Some(short.to_string());

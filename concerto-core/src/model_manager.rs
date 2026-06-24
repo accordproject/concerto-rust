@@ -2,7 +2,7 @@
 //!
 //! The [`ModelManager`] is the only stateful object in the core. It owns the
 //! loaded [`ModelFile`]s and provides the operations that need to see more than
-//! one namespace at once: resolving a type (local, imported, or wildcard),
+//! one namespace at once: resolving a type (local or imported),
 //! collecting every property along an inheritance chain, and checking whether
 //! one type is assignable to another. Keeping that state here lets the
 //! validation layer remain a function over already-resolved model state.
@@ -81,8 +81,8 @@ impl ModelManager {
     }
 
     /// Resolves a short name, as written inside `in_namespace`, to its
-    /// fully-qualified name. Tries primitives, local declarations and named
-    /// imports first, and only then wildcard (`ns.*`) imports.
+    /// fully-qualified name, using the primitives, local declarations and named
+    /// imports the model file can see.
     pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String> {
         let mf =
             self.model_files
@@ -91,21 +91,10 @@ impl ModelManager {
                     namespace: in_namespace.to_string(),
                 })?;
 
-        if let Some(fqn) = mf.resolve_local(short) {
-            return Ok(fqn);
-        }
-
-        for imp in mf.imports().iter().filter(|i| i.is_wildcard()) {
-            if let Some(imported) = self.model_files.get(imp.namespace())
-                && imported.local_declaration(short).is_some()
-            {
-                return Ok(qualify(imp.namespace(), short));
-            }
-        }
-
-        Err(ConcertoError::TypeNotFound {
-            type_name: qualify(in_namespace, short),
-        })
+        mf.resolve_local(short)
+            .ok_or_else(|| ConcertoError::TypeNotFound {
+                type_name: qualify(in_namespace, short),
+            })
     }
 
     /// Every property of a type, gathered by walking from the type up through
