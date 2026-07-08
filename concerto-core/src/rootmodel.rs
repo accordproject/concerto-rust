@@ -2,39 +2,17 @@
 //!
 //! Every model manager starts with the `concerto@1.0.0` namespace already
 //! loaded. It holds the five abstract base types every user type eventually
-//! extends: `Concept`, `Asset`, `Participant`, `Transaction` and `Event`. We
-//! build the AST in code rather than ship a JSON file, so the two can't drift
-//! out of sync.
+//! extends: `Concept`, `Asset`, `Participant`, `Transaction` and `Event`.
+//! The AST is the `rootmodel.json` that ships with `concerto-core`, vendored
+//! unchanged, so the runtime preloads exactly what the reference
+//! implementation preloads.
 
-const MM: &str = "concerto.metamodel@1.0.0";
-
-fn base_concept(name: &str, identified: bool) -> serde_json::Value {
-    let mut decl = serde_json::json!({
-        "$class": format!("{MM}.ConceptDeclaration"),
-        "name": name,
-        "isAbstract": true,
-        "properties": []
-    });
-    if identified {
-        decl["identified"] = serde_json::json!({ "$class": format!("{MM}.Identified") });
-    }
-    decl
-}
+/// The `concerto@1.0.0` root model JSON, as shipped with `concerto-core`.
+const ROOT_MODEL_JSON: &str = include_str!("rootmodel.json");
 
 /// The `concerto@1.0.0` system model, as a JSON AST.
 pub fn root_model_ast() -> serde_json::Value {
-    serde_json::json!({
-        "$class": format!("{MM}.Model"),
-        "namespace": "concerto@1.0.0",
-        "imports": [],
-        "declarations": [
-            base_concept("Concept", false),
-            base_concept("Asset", true),
-            base_concept("Participant", true),
-            base_concept("Transaction", false),
-            base_concept("Event", false),
-        ]
-    })
+    serde_json::from_str(ROOT_MODEL_JSON).expect("the vendored root model is valid JSON")
 }
 
 #[cfg(test)]
