@@ -127,14 +127,14 @@ impl ModelFile {
     }
 
     /// True if this is the built-in `concerto` system namespace.
-    pub fn is_system(&self) -> bool {
+    pub fn is_system_namespace(&self) -> bool {
         self.namespace == "concerto" || self.namespace.starts_with("concerto@")
     }
 
     /// Resolves a short name from what this file declares or imports: the
     /// primitives, its own declarations, and its named imports. Returns `None`
     /// if the name is none of those.
-    pub fn resolve_local(&self, short: &str) -> Option<String> {
+    pub fn resolve_local_type(&self, short: &str) -> Option<String> {
         if is_primitive_type(short) {
             return Some(short.to_string());
         }
@@ -191,22 +191,22 @@ mod tests {
         assert_eq!(mf.declarations().len(), 1);
         assert_eq!(mf.imports().len(), 1);
         assert!(mf.local_declaration("Person").is_some());
-        assert!(!mf.is_system());
+        assert!(!mf.is_system_namespace());
     }
 
     #[test]
     fn resolves_local_primitive_and_import() {
         let mf = sample();
         assert_eq!(
-            mf.resolve_local("Person").as_deref(),
+            mf.resolve_local_type("Person").as_deref(),
             Some("org.example@1.0.0.Person")
         );
-        assert_eq!(mf.resolve_local("String").as_deref(), Some("String"));
+        assert_eq!(mf.resolve_local_type("String").as_deref(), Some("String"));
         assert_eq!(
-            mf.resolve_local("Address").as_deref(),
+            mf.resolve_local_type("Address").as_deref(),
             Some("org.common@1.0.0.Address")
         );
-        assert_eq!(mf.resolve_local("Missing"), None);
+        assert_eq!(mf.resolve_local_type("Missing"), None);
     }
 
     #[test]

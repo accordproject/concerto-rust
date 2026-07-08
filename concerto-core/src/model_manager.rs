@@ -91,7 +91,7 @@ impl ModelManager {
                     namespace: in_namespace.to_string(),
                 })?;
 
-        mf.resolve_local(short)
+        mf.resolve_local_type(short)
             .ok_or_else(|| ConcertoError::TypeNotFound {
                 type_name: qualify(in_namespace, short),
             })
