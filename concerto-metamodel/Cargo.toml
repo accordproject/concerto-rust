@@ -9,6 +9,3 @@ license = "Apache-2.0"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 chrono = "0.4"
-
-[build-dependencies]
-sha2 = "0.10"

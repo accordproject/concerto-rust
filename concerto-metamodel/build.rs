@@ -1,88 +1,85 @@
 //! Keeps the generated sources in sync with the Concerto metamodel.
 //!
-//! The `codegen` directory pins the Concerto packages and holds the script
-//! that runs the Rust code generator over the metamodel. This build script
-//! hashes those inputs and regenerates `src/metamodel` only when the hash
-//! stops matching the recorded one. Routine builds therefore stay offline
-//! and skip the generator entirely; bumping a pinned package (or editing
-//! the generator script) triggers a regeneration, which requires Node.js.
+//! `src/metamodel` holds the Rust types the Concerto CLI generates from the
+//! metamodel. The CLI version that produced them is recorded in
+//! `codegen.version`; while it matches the version pinned here the build does
+//! nothing, so routine builds stay offline. Bumping the pin triggers a
+//! regeneration, which needs Node.js and network access.
 
-use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The files that determine the generated sources.
-const INPUTS: [&str; 3] = [
-    "codegen/package.json",
-    "codegen/package-lock.json",
-    "codegen/generate.js",
-];
+/// The Concerto CLI version the sources are generated with.
+const CLI_VERSION: &str = "4.0.2";
 
-/// Records the input hash the current `src/metamodel` sources were built from.
-const CHECKSUM: &str = "codegen/inputs.sha256";
+/// Records the CLI version the current `src/metamodel` sources came from.
+const RECORD: &str = "codegen.version";
 
 fn main() {
-    for input in INPUTS {
-        println!("cargo:rerun-if-changed={input}");
-    }
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={RECORD}");
 
     let root = env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
     let root = Path::new(&root);
-    let current = hash_inputs(root);
-    let recorded = fs::read_to_string(root.join(CHECKSUM)).unwrap_or_default();
-    if recorded.trim() == current {
+    let recorded = fs::read_to_string(root.join(RECORD)).unwrap_or_default();
+    if recorded.trim() == CLI_VERSION {
         return;
     }
 
-    regenerate(root);
-    format_generated(root);
-    fs::write(root.join(CHECKSUM), current + "\n")
-        .expect("failed to record the codegen input checksum");
+    let staging = staging_dir();
+    generate(&staging);
+    install(&staging, &root.join("src").join("metamodel"));
+    fs::write(root.join(RECORD), format!("{CLI_VERSION}\n"))
+        .expect("failed to record the cli version");
 }
 
-/// Hashes the codegen inputs, length prefixed so file boundaries stay unambiguous.
-fn hash_inputs(root: &Path) -> String {
-    let mut hasher = Sha256::new();
-    for input in INPUTS {
-        let bytes =
-            fs::read(root.join(input)).unwrap_or_else(|error| panic!("read {input}: {error}"));
-        hasher.update(input.as_bytes());
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+/// A scratch directory for the generator output, under cargo's `OUT_DIR`.
+fn staging_dir() -> PathBuf {
+    let staging = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("metamodel");
+    if staging.exists() {
+        fs::remove_dir_all(&staging).expect("failed to clear the staging directory");
     }
-    format!("{:x}", hasher.finalize())
+    fs::create_dir_all(&staging).expect("failed to create the staging directory");
+    staging
 }
 
-/// Installs the pinned packages and runs the code generator.
-fn regenerate(root: &Path) {
-    let codegen = root.join("codegen");
+/// Runs the Concerto CLI code generator into the staging directory.
+fn generate(staging: &Path) {
     run(
-        Command::new("npm")
-            .args(["ci", "--no-audit", "--no-fund"])
-            .current_dir(&codegen),
-        "npm ci (regenerating the metamodel sources requires Node.js)",
-    );
-    run(
-        Command::new("node")
-            .arg("generate.js")
-            .current_dir(&codegen),
-        "node generate.js",
+        Command::new("npx")
+            .args(["-y", &format!("@accordproject/concerto-cli@{CLI_VERSION}")])
+            .args(["compile", "--metamodel", "--target", "rust", "--output"])
+            .arg(staging),
+        "npx concerto-cli compile (regenerating the metamodel sources requires Node.js)",
     );
 }
 
-/// Formats the regenerated sources with rustfmt.
-fn format_generated(root: &Path) {
-    let generated = root.join("src").join("metamodel");
-    let sources = fs::read_dir(&generated)
-        .expect("failed to list the generated sources")
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"));
+/// Moves the generated sources into the crate, replacing the previous set.
+///
+/// The generator assumes the files sit at the crate root; they live in the
+/// metamodel module instead, so crate paths become parent module paths.
+fn install(staging: &Path, target: &Path) {
+    for entry in fs::read_dir(target).expect("failed to list the generated sources") {
+        let path = entry.expect("failed to read a directory entry").path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            fs::remove_file(&path).expect("failed to remove a stale generated source");
+        }
+    }
+    let mut installed = Vec::new();
+    for entry in fs::read_dir(staging).expect("failed to list the staging directory") {
+        let path = entry.expect("failed to read a directory entry").path();
+        let source = fs::read_to_string(&path).expect("failed to read a generated source");
+        let destination = target.join(path.file_name().expect("generated files have names"));
+        fs::write(&destination, source.replace("use crate::", "use super::"))
+            .expect("failed to write a generated source");
+        installed.push(destination);
+    }
     run(
         Command::new("rustfmt")
             .args(["--edition", "2024"])
-            .args(sources),
+            .args(&installed),
         "rustfmt over the generated sources",
     );
 }
