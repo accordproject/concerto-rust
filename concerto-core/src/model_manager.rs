@@ -13,7 +13,7 @@ use crate::error::{ConcertoError, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
-use crate::model_util::{namespace_of, parse_namespace, qualify, short_name};
+use crate::model_util::{namespace_of, qualify, short_name};
 use crate::rootmodel::root_model_ast;
 
 /// Owns a set of model files and resolves types across them.
@@ -58,23 +58,13 @@ impl ModelManager {
 
     /// Looks up a declaration by its fully-qualified name.
     ///
-    /// Matching ignores the namespace version, so `org.acme@1.0.0.Foo` and
-    /// `org.acme.Foo` resolve to the same declaration.
+    /// Namespace versions are mandatory in Concerto v4, so the lookup is
+    /// exact: the name must be written with the versioned namespace it was
+    /// declared in.
     pub fn get_declaration(&self, fqn: &str) -> Result<&Declaration> {
-        let ns = namespace_of(fqn);
-        let short = short_name(fqn);
-
-        if let Some(mf) = self.model_files.get(ns)
-            && let Some(decl) = mf.local_declaration(short)
-        {
-            return Ok(decl);
-        }
-
-        let target_ns = bare_namespace(ns);
         self.model_files
-            .values()
-            .filter(|mf| bare_namespace(mf.namespace()) == target_ns)
-            .find_map(|mf| mf.local_declaration(short))
+            .get(namespace_of(fqn))
+            .and_then(|mf| mf.local_declaration(short_name(fqn)))
             .ok_or_else(|| ConcertoError::TypeNotFound {
                 type_name: fqn.to_string(),
             })
@@ -112,8 +102,7 @@ impl ModelManager {
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
     pub fn is_assignable_to(&self, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
-        let target = bare_fqn(super_fqn);
-        if bare_fqn(sub_fqn) == target {
+        if sub_fqn == super_fqn {
             return Ok(true);
         }
         match self.get_declaration(sub_fqn)?.as_class() {
@@ -121,7 +110,7 @@ impl ModelManager {
             Some(_) => Ok(self
                 .super_chain(sub_fqn)?
                 .iter()
-                .any(|(fqn, _)| bare_fqn(fqn) == target)),
+                .any(|(fqn, _)| fqn == super_fqn)),
         }
     }
 
@@ -133,7 +122,7 @@ impl ModelManager {
         let mut current = fqn.to_string();
 
         loop {
-            if !visited.insert(bare_fqn(&current)) {
+            if !visited.insert(current.clone()) {
                 return Err(ConcertoError::IllegalModel {
                     message: format!("circular inheritance detected at {current}"),
                     file_name: None,
@@ -178,23 +167,6 @@ impl ModelManager {
         }
         Ok(Some(self.resolve_type_name(in_namespace, &ti.name)?))
     }
-}
-
-/// Drops the `@version` off a namespace.
-fn bare_namespace(namespace: &str) -> String {
-    parse_namespace(namespace)
-        .map(|p| p.name)
-        .unwrap_or_else(|_| namespace.to_string())
-}
-
-/// Strips the version off a name's namespace, so two names compare equal
-/// whether or not they were written with one.
-fn bare_fqn(fqn: &str) -> String {
-    let ns = namespace_of(fqn);
-    if ns.is_empty() {
-        return fqn.to_string();
-    }
-    qualify(&bare_namespace(ns), short_name(fqn))
 }
 
 #[cfg(test)]
@@ -252,11 +224,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_local_and_version_insensitive() {
+    fn resolves_by_exact_fqn_only() {
         let mgr = manager();
         assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
-        // version-insensitive lookup
-        assert!(mgr.get_declaration("org.example.Manager").is_ok());
+        // versions are mandatory, so an unversioned lookup does not resolve
+        assert!(mgr.get_declaration("org.example.Manager").is_err());
         assert!(mgr.get_declaration("org.example@1.0.0.Nope").is_err());
     }
 

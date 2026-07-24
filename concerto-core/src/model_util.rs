@@ -2,7 +2,7 @@
 //! `&str` juggling.
 //!
 //! Concerto names a declaration with a fully-qualified name like
-//! `namespace.ShortName`, and the namespace can carry a `@version` (so
+//! `namespace.ShortName`, and the namespace carries a `@version` (so
 //! `org.example@1.0.0.Person`). The functions here just split those apart and
 //! put them back together. The actual type resolution happens over in the
 //! introspect layer.
@@ -57,25 +57,27 @@ pub fn qualify(namespace: &str, short: &str) -> String {
     }
 }
 
-/// A namespace pulled apart into its name and (maybe) a version.
+/// A namespace pulled apart into its name and version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Namespace {
     /// The bare namespace, no version, e.g. `org.example`.
     pub name: String,
-    /// The version (`1.0.0`) if there was one.
-    pub version: Option<String>,
+    /// The version, e.g. `1.0.0`.
+    pub version: String,
 }
 
 /// Splits a namespace like `org.example@1.0.0` into name and version.
 ///
-/// A second `@`, or an empty name or version on either side of the `@`, is
-/// rejected as an [`ConcertoError::IllegalModel`].
+/// Namespace versions are mandatory in Concerto v4, so a namespace without a
+/// `@version`, with a second `@`, or with an empty name or version on either
+/// side of the `@`, is rejected as an [`ConcertoError::IllegalModel`].
 ///
 /// ```
 /// # use concerto_core::model_util::parse_namespace;
 /// let ns = parse_namespace("org.example@1.0.0").unwrap();
 /// assert_eq!(ns.name, "org.example");
-/// assert_eq!(ns.version.as_deref(), Some("1.0.0"));
+/// assert_eq!(ns.version, "1.0.0");
+/// assert!(parse_namespace("org.example").is_err());
 /// ```
 pub fn parse_namespace(namespace: &str) -> Result<Namespace> {
     let illegal = || ConcertoError::IllegalModel {
@@ -86,20 +88,16 @@ pub fn parse_namespace(namespace: &str) -> Result<Namespace> {
     let mut parts = namespace.splitn(3, '@');
     let name = parts.next().unwrap_or("").to_string();
     match (parts.next(), parts.next()) {
-        (None, _) => Ok(Namespace {
-            name,
-            version: None,
-        }),
         (Some(version), None) => {
             if name.is_empty() || version.is_empty() {
                 return Err(illegal());
             }
             Ok(Namespace {
                 name,
-                version: Some(version.to_string()),
+                version: version.to_string(),
             })
         }
-        (Some(_), Some(_)) => Err(illegal()),
+        _ => Err(illegal()),
     }
 }
 
@@ -144,15 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_namespace_handles_version() {
+    fn parse_namespace_requires_version() {
         let ns = parse_namespace("org.example@1.0.0").unwrap();
         assert_eq!(ns.name, "org.example");
-        assert_eq!(ns.version.as_deref(), Some("1.0.0"));
+        assert_eq!(ns.version, "1.0.0");
 
-        let ns = parse_namespace("org.example").unwrap();
-        assert_eq!(ns.name, "org.example");
-        assert!(ns.version.is_none());
-
+        assert!(parse_namespace("org.example").is_err());
         assert!(parse_namespace("a@1@2").is_err());
         assert!(parse_namespace("@1.0.0").is_err());
         assert!(parse_namespace("org.example@").is_err());
