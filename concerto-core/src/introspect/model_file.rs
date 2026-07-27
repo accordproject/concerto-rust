@@ -17,7 +17,7 @@ use crate::model_util::{is_primitive_type, parse_namespace, qualify};
 #[derive(Debug, Clone)]
 pub struct ModelFile {
     namespace: String,
-    version: Option<String>,
+    version: String,
     imports: Vec<Import>,
     declarations: Vec<Declaration>,
     local_types: HashMap<String, usize>,
@@ -96,14 +96,14 @@ impl ModelFile {
         })
     }
 
-    /// The full namespace, including any version, e.g. `org.example@1.0.0`.
+    /// The full namespace, including the version, e.g. `org.example@1.0.0`.
     pub fn namespace(&self) -> &str {
         &self.namespace
     }
 
-    /// The version part of the namespace, if it has one.
-    pub fn version(&self) -> Option<&str> {
-        self.version.as_deref()
+    /// The version part of the namespace.
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     /// The originating file name, if one was supplied.
@@ -128,7 +128,7 @@ impl ModelFile {
 
     /// True if this is the built-in `concerto` system namespace.
     pub fn is_system_namespace(&self) -> bool {
-        self.namespace == "concerto" || self.namespace.starts_with("concerto@")
+        self.namespace.starts_with("concerto@")
     }
 
     /// Resolves a short name from what this file declares or imports: the
@@ -187,7 +187,7 @@ mod tests {
     fn parses_namespace_imports_and_declarations() {
         let mf = sample();
         assert_eq!(mf.namespace(), "org.example@1.0.0");
-        assert_eq!(mf.version(), Some("1.0.0"));
+        assert_eq!(mf.version(), "1.0.0");
         assert_eq!(mf.declarations().len(), 1);
         assert_eq!(mf.imports().len(), 1);
         assert!(mf.local_declaration("Person").is_some());
@@ -229,6 +229,19 @@ mod tests {
     fn missing_namespace_is_rejected() {
         let err = ModelFile::from_json(
             &serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Model" }),
+            None,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn unversioned_namespace_is_rejected() {
+        let err = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example",
+                "declarations": []
+            }),
             None,
         );
         assert!(err.is_err());
