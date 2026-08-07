@@ -56,6 +56,12 @@ impl ModelManager {
         self.model_files.get(namespace)
     }
 
+    /// Every loaded model file, including the built-in system model. The order
+    /// is unspecified.
+    pub fn model_files(&self) -> impl Iterator<Item = &ModelFile> {
+        self.model_files.values()
+    }
+
     /// Looks up a declaration by its fully-qualified name.
     ///
     /// Namespace versions are mandatory in Concerto v4, so the lookup is
