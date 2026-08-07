@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn system_model_is_not_revalidated() {
+    fn test_fresh_model_manager_is_valid() {
         // A fresh manager has only the system model loaded; it must validate.
         let manager = ModelManager::new().unwrap();
         assert!(manager.validate_models().is_ok());
