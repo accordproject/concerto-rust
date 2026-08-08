@@ -77,6 +77,7 @@ pub struct ClassDeclaration {
     is_abstract: bool,
     super_type: Option<mm::TypeIdentifier>,
     identified: Option<mm::Identified>,
+    identifier_field: Option<String>,
     properties: Vec<Property>,
     decorators: Vec<mm::Decorator>,
     location: Option<mm::Range>,
@@ -125,6 +126,14 @@ impl ClassDeclaration {
         self.identified.is_some()
     }
 
+    /// The name of the field that provides identity, for a type that is
+    /// identified by one of its own fields (`identified by field`). A
+    /// system-identified type (`identified`) or a type with no identity both
+    /// return `None`.
+    pub fn identifier_field_name(&self) -> Option<&str> {
+        self.identifier_field.as_deref()
+    }
+
     fn from_json(kind: ClassKind, value: &serde_json::Value) -> Result<Self> {
         let header: ClassHeader =
             serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
@@ -136,6 +145,7 @@ impl ClassDeclaration {
             kind,
             name: header.name,
             is_abstract: header.is_abstract,
+            identifier_field: identifier_field(value),
             super_type: header.super_type,
             identified: header.identified,
             properties: parse_properties(value)?,
@@ -143,6 +153,19 @@ impl ClassDeclaration {
             location: header.location,
         })
     }
+}
+
+/// The identifying field name from an `identified by field` declaration, read
+/// from the raw AST because the base `Identified` type does not carry it.
+fn identifier_field(value: &serde_json::Value) -> Option<String> {
+    let identified = value.get("identified")?;
+    if short_name(declared_class(identified)) != "IdentifiedBy" {
+        return None;
+    }
+    identified
+        .get("name")
+        .and_then(|n| n.as_str())
+        .map(str::to_string)
 }
 
 /// A scalar: a named alias for a primitive, sometimes with a validator
