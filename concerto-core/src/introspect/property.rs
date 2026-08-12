@@ -10,7 +10,7 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::declared_class;
+use crate::introspect::{check_domain, check_length, declared_class};
 use crate::model_util::{is_system_property, short_name};
 
 /// A single property of a concept-like or enum declaration.
@@ -180,7 +180,7 @@ impl TryFrom<&serde_json::Value> for Property {
             location: None,
         };
 
-        Ok(match kind {
+        let property = match kind {
             "BooleanProperty" => Self::Boolean(serde_json::from_value(value.clone()).map_err(bad)?),
             "StringProperty" => Self::String(serde_json::from_value(value.clone()).map_err(bad)?),
             "IntegerProperty" => Self::Integer(serde_json::from_value(value.clone()).map_err(bad)?),
@@ -201,7 +201,36 @@ impl TryFrom<&serde_json::Value> for Property {
                     location: None,
                 });
             }
-        })
+        };
+        property.check_validators()?;
+        Ok(property)
+    }
+}
+
+impl Property {
+    /// Checks the range and length validators this property carries. The
+    /// bounds are part of the property's own declaration, so they are checked
+    /// while loading rather than left to the validation pass.
+    fn check_validators(&self) -> Result<()> {
+        match self {
+            Self::String(p) => match &p.length_validator {
+                Some(validator) => check_length(&p.name, validator),
+                None => Ok(()),
+            },
+            Self::Integer(p) => match &p.validator {
+                Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
+                None => Ok(()),
+            },
+            Self::Long(p) => match &p.validator {
+                Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
+                None => Ok(()),
+            },
+            Self::Double(p) => match &p.validator {
+                Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
     }
 }
 
@@ -290,5 +319,78 @@ mod tests {
     fn missing_class_is_rejected() {
         let err = Property::try_from(&serde_json::json!({ "name": "x" }));
         assert!(err.unwrap_err().to_string().contains("$class"));
+    }
+
+    /// A `Double` property carrying the given range validator.
+    fn ranged(lower: Option<f64>, upper: Option<f64>) -> serde_json::Value {
+        let mut validator = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.DoubleDomainValidator"
+        });
+        if let Some(lower) = lower {
+            validator["lower"] = lower.into();
+        }
+        if let Some(upper) = upper {
+            validator["upper"] = upper.into();
+        }
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+            "name": "value", "isArray": false, "isOptional": false,
+            "validator": validator
+        })
+    }
+
+    /// A `String` property carrying the given length validator.
+    fn sized(min: Option<i32>, max: Option<i32>) -> serde_json::Value {
+        let mut validator = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringLengthValidator"
+        });
+        if let Some(min) = min {
+            validator["minLength"] = min.into();
+        }
+        if let Some(max) = max {
+            validator["maxLength"] = max.into();
+        }
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "text", "isArray": false, "isOptional": false,
+            "lengthValidator": validator
+        })
+    }
+
+    #[test]
+    fn range_lower_above_upper_is_rejected() {
+        let err = Property::try_from(&ranged(Some(10.0), Some(5.0)));
+        assert!(err.unwrap_err().to_string().contains("Lower bound"));
+    }
+
+    #[test]
+    fn range_with_one_open_end_is_accepted() {
+        assert!(Property::try_from(&ranged(Some(1.0), None)).is_ok());
+        assert!(Property::try_from(&ranged(None, Some(1.0))).is_ok());
+        assert!(Property::try_from(&ranged(Some(1.0), Some(10.0))).is_ok());
+    }
+
+    #[test]
+    fn range_without_either_bound_is_rejected() {
+        let err = Property::try_from(&ranged(None, None));
+        assert!(err.unwrap_err().to_string().contains("Invalid range"));
+    }
+
+    #[test]
+    fn negative_string_length_is_rejected() {
+        let err = Property::try_from(&sized(Some(-1), Some(5)));
+        assert!(err.unwrap_err().to_string().contains("positive integers"));
+    }
+
+    #[test]
+    fn string_length_min_above_max_is_rejected() {
+        let err = Property::try_from(&sized(Some(10), Some(5)));
+        assert!(err.unwrap_err().to_string().contains("minLength"));
+    }
+
+    #[test]
+    fn string_length_within_bounds_is_accepted() {
+        assert!(Property::try_from(&sized(Some(1), Some(5))).is_ok());
+        assert!(Property::try_from(&sized(None, Some(5))).is_ok());
     }
 }
