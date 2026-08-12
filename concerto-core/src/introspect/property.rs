@@ -11,7 +11,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::declared_class;
-use crate::model_util::short_name;
+use crate::model_util::{is_system_property, short_name};
 
 /// A single property of a concept-like or enum declaration.
 #[derive(Debug, Clone)]
@@ -155,6 +155,17 @@ impl TryFrom<&serde_json::Value> for Property {
         if class.is_empty() {
             return Err(ConcertoError::IllegalModel {
                 message: "property node is missing its $class".into(),
+                file_name: None,
+                location: None,
+            });
+        }
+        // Concerto keeps a set of property names for itself, so a model may
+        // not declare a field with one of them.
+        if let Some(name) = value.get("name").and_then(|n| n.as_str())
+            && is_system_property(name)
+        {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("Invalid field name '{name}'"),
                 file_name: None,
                 location: None,
             });

@@ -12,6 +12,26 @@ use crate::error::{ConcertoError, Result};
 /// Concerto's six primitives. Everything else is a declared type.
 const PRIMITIVE_TYPES: &[&str] = &["Boolean", "String", "DateTime", "Double", "Integer", "Long"];
 
+/// The property names Concerto reserves for itself. A model may not declare a
+/// field with any of these names. Identifiers are otherwise allowed to start
+/// with a dollar sign, so this is a fixed set rather than a prefix rule.
+const RESERVED_PROPERTIES: &[&str] = &[
+    // Included in serialization.
+    "$class",
+    "$identifier",
+    "$timestamp",
+    "$id",
+    // Internal use.
+    "$classDeclaration",
+    "$namespace",
+    "$type",
+    "$modelManager",
+    "$validator",
+    "$identifierFieldName",
+    "$imports",
+    "$superTypes",
+];
+
 /// The short name: whatever comes after the last `.`.
 ///
 /// ```
@@ -112,6 +132,18 @@ pub fn is_primitive_type(type_name: &str) -> bool {
     PRIMITIVE_TYPES.contains(&type_name)
 }
 
+/// True if this property name is reserved by Concerto and so cannot be
+/// declared on a type.
+///
+/// ```
+/// # use concerto_core::model_util::is_system_property;
+/// assert!(is_system_property("$class"));
+/// assert!(!is_system_property("name"));
+/// ```
+pub fn is_system_property(property_name: &str) -> bool {
+    RESERVED_PROPERTIES.contains(&property_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +183,17 @@ mod tests {
         assert!(parse_namespace("a@1@2").is_err());
         assert!(parse_namespace("@1.0.0").is_err());
         assert!(parse_namespace("org.example@").is_err());
+    }
+
+    #[test]
+    fn reserved_property_names_are_recognised() {
+        for name in ["$class", "$identifier", "$timestamp", "$namespace"] {
+            assert!(is_system_property(name));
+        }
+        // A dollar sign is legal in an identifier, so only the reserved names
+        // are rejected.
+        assert!(!is_system_property("$other"));
+        assert!(!is_system_property("name"));
     }
 
     #[test]

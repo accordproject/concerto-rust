@@ -60,6 +60,7 @@ fn validate_declaration(
 fn validate_class(manager: &ModelManager, namespace: &str, class: &ClassDeclaration) -> Result<()> {
     check_super_type(manager, namespace, class)?;
     check_unique_field_names(manager, class, &qualify(namespace, class.name()))?;
+    check_identifier(manager, namespace, class)?;
     for property in class.own_properties() {
         check_property_type(manager, namespace, class.name(), property)?;
     }
@@ -112,6 +113,61 @@ fn check_unique_field_names(
         }
     }
     Ok(())
+}
+
+/// A field-provided identifier (`identified by field`) must name a required
+/// field typed as `String` or a String-based scalar.
+fn check_identifier(
+    manager: &ModelManager,
+    namespace: &str,
+    class: &ClassDeclaration,
+) -> Result<()> {
+    let Some(field_name) = class.identifier_field_name() else {
+        return Ok(());
+    };
+    let field = class
+        .own_properties()
+        .iter()
+        .find(|property| property.name() == field_name)
+        .ok_or_else(|| {
+            failed(format!(
+                "Class {} is identified by {field_name}, which it does not declare",
+                class.name()
+            ))
+        })?;
+
+    if field.is_optional() {
+        return Err(failed(format!(
+            "Identifying fields cannot be optional: {field_name}"
+        )));
+    }
+    if !is_string_typed(manager, namespace, field) {
+        return Err(failed(format!(
+            "Class {} identifier {field_name} must be a String or a String-based scalar",
+            class.name()
+        )));
+    }
+    Ok(())
+}
+
+/// Whether a field is a `String`, or an object field whose type resolves to a
+/// scalar declared over `String`.
+fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) -> bool {
+    if matches!(field, Property::String(_)) {
+        return true;
+    }
+    let Some(type_identifier) = field.type_identifier() else {
+        return false;
+    };
+    resolve(
+        manager,
+        namespace,
+        &type_identifier.name,
+        type_identifier.namespace.as_deref(),
+    )
+    .and_then(|fqn| manager.get_declaration(&fqn).ok())
+    .and_then(Declaration::as_scalar)
+    .is_some_and(|scalar| scalar.scalar_type() == "String")
 }
 
 /// Object and relationship properties must point at a declared type; a
@@ -370,5 +426,86 @@ mod tests {
         // A fresh manager has only the system model loaded; it must validate.
         let manager = ModelManager::new().unwrap();
         assert!(manager.validate_models().is_ok());
+    }
+
+    #[test]
+    fn identifier_of_non_string_type_fails() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Entity",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "id", "isArray": false, "isOptional": false }
+            ]
+        }))]));
+        assert!(err.unwrap_err().to_string().contains("identifier"));
+    }
+
+    #[test]
+    fn identifier_of_string_type_passes() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Entity",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id", "isArray": false, "isOptional": false }
+            ]
+        }))]));
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn identifier_of_string_scalar_type_passes() {
+        let err = validate(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "CustomString" },
+            concept(serde_json::json!({
+                "name": "Book",
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "isbn" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "isbn", "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "CustomString" } }
+                ]
+            }))
+        ]));
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn optional_identifier_fails() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Product",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "productId" },
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "productId", "isArray": false, "isOptional": true }
+            ]
+        }))]));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("Identifying fields cannot be optional")
+        );
+    }
+
+    #[test]
+    fn reserved_field_name_is_rejected_at_load() {
+        // A `$`-prefixed field name is rejected while loading, before validation.
+        let mut manager = ModelManager::new().unwrap();
+        let result = manager.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": [concept(serde_json::json!({
+                    "name": "Thing",
+                    "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "$class", "isArray": false, "isOptional": false }
+                    ]
+                }))]
+            }),
+            None,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid field name")
+        );
     }
 }
