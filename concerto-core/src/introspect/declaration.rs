@@ -269,7 +269,11 @@ impl ScalarDeclaration {
                 Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
                 None => Ok(()),
             },
-            _ => Ok(()),
+            // Boolean and DateTime scalars declare no validator in the
+            // metamodel, so there is nothing to check. Listing them keeps this
+            // exhaustive: a new scalar kind will not compile until it is
+            // handled here.
+            Self::Boolean(_) | Self::DateTime(_) => Ok(()),
         }
     }
 }

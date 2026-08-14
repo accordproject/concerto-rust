@@ -229,7 +229,14 @@ impl Property {
                 Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
                 None => Ok(()),
             },
-            _ => Ok(()),
+            // The remaining kinds declare no validator in the metamodel, so
+            // there is nothing to check. Listing them keeps this exhaustive:
+            // a new property kind will not compile until it is handled here.
+            Self::Boolean(_)
+            | Self::DateTime(_)
+            | Self::Object(_)
+            | Self::Relationship(_)
+            | Self::Enum(_) => Ok(()),
         }
     }
 }
