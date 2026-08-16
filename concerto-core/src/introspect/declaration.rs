@@ -11,8 +11,8 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::declared_class;
 use crate::introspect::property::Property;
+use crate::introspect::{check_domain, check_length, declared_class};
 use crate::model_util::short_name;
 
 /// Which class-like declaration a [`ClassDeclaration`] represents.
@@ -230,7 +230,7 @@ impl ScalarDeclaration {
             location: None,
         };
         let v = value.clone();
-        Ok(match short {
+        let scalar = match short {
             "BooleanScalar" => Self::Boolean(serde_json::from_value(v).map_err(bad)?),
             "IntegerScalar" => Self::Integer(serde_json::from_value(v).map_err(bad)?),
             "LongScalar" => Self::Long(serde_json::from_value(v).map_err(bad)?),
@@ -244,7 +244,37 @@ impl ScalarDeclaration {
                     location: None,
                 });
             }
-        })
+        };
+        scalar.check_validator()?;
+        Ok(scalar)
+    }
+
+    /// Checks the range or length validator this scalar carries, on the same
+    /// terms as the equivalent property.
+    fn check_validator(&self) -> Result<()> {
+        match self {
+            Self::String(s) => match &s.length_validator {
+                Some(validator) => check_length(&s.name, validator),
+                None => Ok(()),
+            },
+            Self::Integer(s) => match &s.validator {
+                Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
+                None => Ok(()),
+            },
+            Self::Long(s) => match &s.validator {
+                Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
+                None => Ok(()),
+            },
+            Self::Double(s) => match &s.validator {
+                Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
+                None => Ok(()),
+            },
+            // Boolean and DateTime scalars declare no validator in the
+            // metamodel, so there is nothing to check. Listing them keeps this
+            // exhaustive: a new scalar kind will not compile until it is
+            // handled here.
+            Self::Boolean(_) | Self::DateTime(_) => Ok(()),
+        }
     }
 }
 
@@ -492,5 +522,33 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Email"
         }));
         assert_eq!(s.declaration_kind(), "StringScalar");
+    }
+
+    #[test]
+    fn scalar_with_reversed_range_is_rejected() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.IntegerScalar",
+            "name": "Score",
+            "validator": {
+                "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator",
+                "lower": 10, "upper": 5
+            }
+        }));
+        assert!(err.unwrap_err().to_string().contains("Lower bound"));
+    }
+
+    #[test]
+    fn scalar_with_valid_range_is_accepted() {
+        assert!(
+            Declaration::try_from(&serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.IntegerScalar",
+                "name": "Score",
+                "validator": {
+                    "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator",
+                    "lower": 0, "upper": 10
+                }
+            }))
+            .is_ok()
+        );
     }
 }

@@ -21,6 +21,10 @@
 //! namespace; resolving types and inheritance *across* namespaces is the job of
 //! the [`ModelManager`](crate::model_manager::ModelManager).
 
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+
+use crate::error::{ConcertoError, Result};
+
 pub mod declaration;
 pub mod import;
 pub mod model_file;
@@ -35,4 +39,56 @@ pub use property::Property;
 /// The sum types in this module select their variant from this value.
 pub(crate) fn declared_class(value: &serde_json::Value) -> &str {
     value.get("$class").and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// Builds a [`ConcertoError::IllegalModel`] for a malformed validator.
+fn illegal(message: String) -> ConcertoError {
+    ConcertoError::IllegalModel {
+        message,
+        file_name: None,
+        location: None,
+    }
+}
+
+/// Checks a numeric domain validator. At least one bound must be given, and a
+/// lower bound may not exceed the upper one. A domain with only one bound is
+/// left open at the other end.
+pub(crate) fn check_domain<T: PartialOrd>(
+    owner: &str,
+    lower: Option<T>,
+    upper: Option<T>,
+) -> Result<()> {
+    match (lower, upper) {
+        (None, None) => Err(illegal(format!(
+            "Invalid range on {owner}, lower and-or upper bound must be specified"
+        ))),
+        (Some(lower), Some(upper)) if lower > upper => Err(illegal(format!(
+            "Lower bound must be less than or equal to upper bound on {owner}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Checks a string length validator. At least one bound must be given, neither
+/// bound may be negative, and a minimum may not exceed the maximum.
+pub(crate) fn check_length(owner: &str, validator: &mm::StringLengthValidator) -> Result<()> {
+    let (min, max) = (validator.min_length, validator.max_length);
+    if min.is_none() && max.is_none() {
+        return Err(illegal(format!(
+            "Invalid string length on {owner}, minLength and-or maxLength must be specified"
+        )));
+    }
+    if min.is_some_and(|value| value < 0) || max.is_some_and(|value| value < 0) {
+        return Err(illegal(format!(
+            "minLength and-or maxLength must be positive integers on {owner}"
+        )));
+    }
+    if let (Some(min), Some(max)) = (min, max)
+        && min > max
+    {
+        return Err(illegal(format!(
+            "minLength must be less than or equal to maxLength on {owner}"
+        )));
+    }
+    Ok(())
 }

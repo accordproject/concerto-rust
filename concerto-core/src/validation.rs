@@ -1,12 +1,13 @@
 //! Semantic validation of loaded models.
 //!
 //! Loading a model checks that it is structurally well formed: the JSON parses
-//! into the metamodel and each node carries what its `$class` requires. This
-//! module runs the checks that need more than one declaration in view, such as
-//! resolving a super type, ensuring a relationship points at an identifiable
-//! type, and catching a field that is declared twice along an inheritance
-//! chain. These are the checks the Concerto specification calls semantic
-//! validation, and they run over an already loaded [`ModelManager`].
+//! into the metamodel, each node carries what its `$class` requires, and a
+//! declaration's own validators make sense. This module runs the checks that
+//! are left once the models are loaded, mostly those that need more than one
+//! declaration in view: resolving a super type, ensuring a relationship points
+//! at an identifiable type, and catching a field that is declared twice along
+//! an inheritance chain. These are the checks the Concerto specification calls
+//! semantic validation, and they run over an already loaded [`ModelManager`].
 //!
 //! Validation stops at the first problem. A rule that a model breaks is
 //! reported as [`ConcertoError::ValidationFailed`]; a model that cannot be
@@ -15,6 +16,8 @@
 //! validates cleanly returns `Ok(())`.
 
 use std::collections::HashSet;
+
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
@@ -61,8 +64,21 @@ fn validate_class(manager: &ModelManager, namespace: &str, class: &ClassDeclarat
     check_super_type(manager, namespace, class)?;
     check_unique_field_names(manager, class, &qualify(namespace, class.name()))?;
     check_identifier(manager, namespace, class)?;
+    check_unique_decorators(class.decorators())?;
     for property in class.own_properties() {
         check_property_type(manager, namespace, class.name(), property)?;
+        check_unique_decorators(property.decorators())?;
+    }
+    Ok(())
+}
+
+/// An element may not carry the same decorator twice.
+fn check_unique_decorators(decorators: &[mm::Decorator]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for decorator in decorators {
+        if !seen.insert(decorator.name.as_str()) {
+            return Err(failed(format!("Duplicate decorator {}", decorator.name)));
+        }
     }
     Ok(())
 }
@@ -419,6 +435,54 @@ mod tests {
             }))
         ]));
         assert!(err.is_ok());
+    }
+
+    #[test]
+    fn duplicate_decorator_is_rejected() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Product",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "productId",
+                  "isArray": false, "isOptional": false,
+                  "decorators": [
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] },
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] }
+                  ] }
+            ]
+        }))]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    #[test]
+    fn distinct_decorators_are_accepted() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Product",
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "one", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "two", "arguments": [] }
+            ],
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "productId",
+                  "isArray": false, "isOptional": false,
+                  "decorators": [
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] }
+                  ] }
+            ]
+        }))]));
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn duplicate_decorator_on_a_declaration_is_rejected() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Product",
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+            ],
+            "properties": []
+        }))]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
     }
 
     #[test]
