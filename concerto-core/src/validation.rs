@@ -21,6 +21,8 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
+use crate::introspect::import::Import;
+use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
 use crate::model_manager::ModelManager;
 use crate::model_util::{is_primitive_type, qualify};
@@ -38,6 +40,7 @@ impl ModelManager {
         model_files.sort_by_key(|model_file| model_file.namespace());
 
         for model_file in model_files {
+            check_import_clashes(model_file)?;
             for declaration in model_file.declarations() {
                 validate_declaration(self, model_file.namespace(), declaration)?;
             }
@@ -46,9 +49,28 @@ impl ModelManager {
     }
 }
 
-/// Validates one declaration. Only class-like declarations carry
-/// cross-declaration references; enum, scalar and map declarations are already
-/// fully checked while loading.
+/// A declaration may not take the name of a type the file imports. Importing
+/// from the file's own namespace is caught the same way, because such an import
+/// names a type the file declares.
+fn check_import_clashes(model_file: &ModelFile) -> Result<()> {
+    let imported: HashSet<&str> = model_file
+        .imports()
+        .iter()
+        .flat_map(Import::local_names)
+        .collect();
+    for declaration in model_file.declarations() {
+        if imported.contains(declaration.name()) {
+            return Err(failed(format!(
+                "Type {} clashes with an imported type with the same name",
+                declaration.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validates one declaration. Class-like declarations are the only ones with
+/// checks in this pass; enum and scalar declarations are checked while loading.
 fn validate_declaration(
     manager: &ModelManager,
     namespace: &str,
@@ -483,6 +505,111 @@ mod tests {
             "properties": []
         }))]));
         assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// Loads `org.example@1.0.0` with the given imports and declarations.
+    fn validate_with_imports(
+        imports: serde_json::Value,
+        declarations: serde_json::Value,
+    ) -> crate::error::Result<()> {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.common@1.0.0",
+                    "declarations": [concept(serde_json::json!({ "name": "Address" }))]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "imports": imports,
+                    "declarations": declarations
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models()
+    }
+
+    #[test]
+    fn declaration_clashing_with_an_imported_name_is_rejected() {
+        let err = validate_with_imports(
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.common@1.0.0", "name": "Address" }
+            ]),
+            serde_json::json!([concept(serde_json::json!({ "name": "Address" }))]),
+        );
+        assert!(err.unwrap_err().to_string().contains("clashes"));
+    }
+
+    #[test]
+    fn declaration_beside_a_distinct_import_is_accepted() {
+        let err = validate_with_imports(
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.common@1.0.0", "name": "Address" }
+            ]),
+            serde_json::json!([concept(serde_json::json!({ "name": "Person" }))]),
+        );
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn importing_from_the_files_own_namespace_is_rejected() {
+        // A self-import makes the local declaration clash with itself.
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.example@1.0.0", "name": "LocalType" }
+                    ],
+                    "declarations": [concept(serde_json::json!({ "name": "LocalType" }))]
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(
+            manager
+                .validate_models()
+                .unwrap_err()
+                .to_string()
+                .contains("clashes")
+        );
+    }
+
+    #[test]
+    fn an_aliased_import_clashes_under_its_alias() {
+        // `import org.common.{Address as Location}` occupies Location, not Address.
+        let imports = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.ImportTypes",
+              "namespace": "org.common@1.0.0", "types": ["Address"],
+              "aliasedTypes": [
+                { "$class": "concerto.metamodel@1.0.0.AliasedType",
+                  "name": "Address", "aliasedName": "Location" }
+              ] }
+        ]);
+        let clash = validate_with_imports(
+            imports.clone(),
+            serde_json::json!([concept(serde_json::json!({ "name": "Location" }))]),
+        );
+        assert!(clash.unwrap_err().to_string().contains("clashes"));
+
+        let free = validate_with_imports(
+            imports,
+            serde_json::json!([concept(serde_json::json!({ "name": "Address" }))]),
+        );
+        assert!(free.is_ok());
     }
 
     #[test]
