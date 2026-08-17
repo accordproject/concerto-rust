@@ -40,6 +40,24 @@ impl Import {
         }
     }
 
+    /// The names this import makes visible in the importing file. An aliased
+    /// type is visible under its alias rather than its declared name, so these
+    /// are the names a local declaration could collide with.
+    pub fn local_names(&self) -> Vec<&str> {
+        match self {
+            Self::Type { name, .. } => vec![name.as_str()],
+            Self::Types { names, aliases, .. } => names
+                .iter()
+                .map(|name| {
+                    aliases
+                        .iter()
+                        .find(|(_, original)| original == name)
+                        .map_or(name.as_str(), |(alias, _)| alias.as_str())
+                })
+                .collect(),
+        }
+    }
+
     /// Resolves a short name to its fully-qualified name, but only when this
     /// import names it explicitly.
     pub fn resolve(&self, short: &str) -> Option<String> {
@@ -182,6 +200,28 @@ mod tests {
         assert_eq!(imp.resolve("A").as_deref(), Some("org.acme@1.0.0.A"));
         assert_eq!(imp.resolve("Bee").as_deref(), Some("org.acme@1.0.0.B"));
         assert_eq!(imp.resolve("C"), None);
+    }
+
+    #[test]
+    fn local_names_use_the_alias_where_one_is_given() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": ["A", "B"],
+            "aliasedTypes": [
+                { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "B", "aliasedName": "Bee" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(imp.local_names(), ["A", "Bee"]);
+
+        let single = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportType",
+            "namespace": "org.acme@1.0.0",
+            "name": "Person"
+        }))
+        .unwrap();
+        assert_eq!(single.local_names(), ["Person"]);
     }
 
     #[test]
