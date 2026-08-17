@@ -11,7 +11,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::{check_domain, check_length, declared_class};
-use crate::model_util::{is_system_property, short_name};
+use crate::model_util::{is_system_property, is_valid_identifier, short_name};
 
 /// A single property of a concept-like or enum declaration.
 #[derive(Debug, Clone)]
@@ -202,6 +202,13 @@ impl TryFrom<&serde_json::Value> for Property {
                 });
             }
         };
+        if !is_valid_identifier(property.name()) {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("invalid identifier: {}", property.name()),
+                file_name: None,
+                location: None,
+            });
+        }
         property.check_validators()?;
         Ok(property)
     }
@@ -362,6 +369,15 @@ mod tests {
             "name": "text", "isArray": false, "isOptional": false,
             "lengthValidator": validator
         })
+    }
+
+    #[test]
+    fn a_property_name_must_be_an_identifier() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "1bad", "isArray": false, "isOptional": false
+        }));
+        assert!(err.unwrap_err().to_string().contains("invalid identifier"));
     }
 
     #[test]

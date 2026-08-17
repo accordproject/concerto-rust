@@ -90,7 +90,8 @@ pub struct Namespace {
 ///
 /// Namespace versions are mandatory in Concerto v4, so a namespace without a
 /// `@version`, with a second `@`, or with an empty name or version on either
-/// side of the `@`, is rejected as an [`ConcertoError::IllegalModel`].
+/// side of the `@`, is rejected as an [`ConcertoError::IllegalModel`]. Each dot
+/// separated segment of the name has to be a valid identifier.
 ///
 /// ```
 /// # use concerto_core::model_util::parse_namespace;
@@ -112,6 +113,9 @@ pub fn parse_namespace(namespace: &str) -> Result<Namespace> {
             if name.is_empty() || version.is_empty() {
                 return Err(illegal());
             }
+            if !name.split('.').all(is_valid_identifier) {
+                return Err(illegal());
+            }
             Ok(Namespace {
                 name,
                 version: version.to_string(),
@@ -130,6 +134,26 @@ pub fn parse_namespace(namespace: &str) -> Result<Namespace> {
 /// ```
 pub fn is_primitive_type(type_name: &str) -> bool {
     PRIMITIVE_TYPES.contains(&type_name)
+}
+
+/// True if this is a legal Concerto identifier.
+///
+/// An identifier starts with a letter, a dollar sign or an underscore, and
+/// continues with those or a digit. Names of declarations, properties and
+/// namespace segments all have to satisfy this.
+///
+/// ```
+/// # use concerto_core::model_util::is_valid_identifier;
+/// assert!(is_valid_identifier("Person"));
+/// assert!(!is_valid_identifier("1Person"));
+/// ```
+pub fn is_valid_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    let leading = first.is_alphabetic() || first == '$' || first == '_';
+    leading && characters.all(|c| c.is_alphanumeric() || c == '$' || c == '_')
 }
 
 /// True if this property name is reserved by Concerto and so cannot be
@@ -183,6 +207,20 @@ mod tests {
         assert!(parse_namespace("a@1@2").is_err());
         assert!(parse_namespace("@1.0.0").is_err());
         assert!(parse_namespace("org.example@").is_err());
+        // Every segment of the name has to be an identifier.
+        assert!(parse_namespace("org.1bad@1.0.0").is_err());
+        assert!(parse_namespace("1org.bad@1.0.0").is_err());
+        assert!(parse_namespace("org.a.b.c@1.0.0").is_ok());
+    }
+
+    #[test]
+    fn identifiers_must_start_with_a_letter_or_sign() {
+        for name in ["Person", "_private", "$system", "a1", "Ünicode"] {
+            assert!(is_valid_identifier(name), "{name} should be valid");
+        }
+        for name in ["1Person", "", "with space", "with-dash", "with.dot"] {
+            assert!(!is_valid_identifier(name), "{name} should be invalid");
+        }
     }
 
     #[test]
