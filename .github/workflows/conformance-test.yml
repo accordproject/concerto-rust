@@ -1,10 +1,12 @@
 name: Concerto Conformance Tests
 
-# Paused while the Rust runtime is still being built. The upstream conformance
-# suite needs the validation layer, which lands in a later PR, so running it
-# now would only fail. Re-enable the push/pull_request triggers once those
-# tests can pass.
+# The suite runs against the semantic validation the runtime now implements.
+# The Rust harness in the upstream suite still expects an earlier shape of our
+# API, so the job does not pass yet and is reported rather than hidden.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
