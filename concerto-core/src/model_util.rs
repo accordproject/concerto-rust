@@ -1,11 +1,12 @@
-//! String helpers for Concerto names and namespaces. No dependencies, just
-//! `&str` juggling.
+//! Name and namespace helpers.
 //!
 //! Concerto names a declaration with a fully-qualified name like
 //! `namespace.ShortName`, and the namespace carries a `@version` (so
-//! `org.example@1.0.0.Person`). The functions here just split those apart and
-//! put them back together. The actual type resolution happens over in the
-//! introspect layer.
+//! `org.example@1.0.0.Person`). The functions here split those apart and put
+//! them back together, and answer what a name is allowed to be: whether it is
+//! a legal identifier, one of the primitives, or a property name Concerto
+//! keeps for itself. Resolving a name to a type happens over in the introspect
+//! layer.
 
 use crate::error::{ConcertoError, Result};
 

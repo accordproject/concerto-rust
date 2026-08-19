@@ -355,9 +355,39 @@ fn check_identity_matches_super(
     Ok(())
 }
 
-/// A map key must be a `String` or `DateTime`, or a scalar over one of them,
-/// and a map value that names a type must resolve to a declared one.
+/// The key kinds the specification allows: a `String` or `DateTime`, or an
+/// object key naming a scalar over one of those.
+const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
+
+/// The value kinds the specification allows: any primitive, or an object value
+/// naming a scalar or a concept. A relationship is not among them.
+const MAP_VALUE_KINDS: &[&str] = &[
+    "BooleanMapValueType",
+    "DateTimeMapValueType",
+    "DoubleMapValueType",
+    "IntegerMapValueType",
+    "LongMapValueType",
+    "StringMapValueType",
+    "ObjectMapValueType",
+];
+
+/// Checks a map against the key and value types the specification permits.
 fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration) -> Result<()> {
+    if !MAP_KEY_KINDS.contains(&map.key_kind()) {
+        return Err(failed(format!(
+            "The key of map {} must be a String or DateTime, or a scalar over one of them",
+            map.name()
+        )));
+    }
+    if !MAP_VALUE_KINDS.contains(&map.value_kind()) {
+        return Err(failed(format!(
+            "The value of map {} may not be a {}",
+            map.name(),
+            map.value_kind()
+        )));
+    }
+
+    // An object key names a scalar, which has to be over a String or DateTime.
     if let Some(key) = map.key_type() {
         let scalar = resolve(manager, namespace, &key.name, key.namespace.as_deref())
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
@@ -370,15 +400,23 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
             )));
         }
     }
+
+    // An object value names a concept or a scalar, and it has to be declared.
     if let Some(value) = map.value_type() {
-        let exists = resolve(manager, namespace, &value.name, value.namespace.as_deref())
-            .and_then(|fqn| manager.get_declaration(&fqn).ok())
-            .is_some();
-        if !exists {
+        let declared = resolve(manager, namespace, &value.name, value.namespace.as_deref())
+            .and_then(|fqn| manager.get_declaration(&fqn).ok());
+        let Some(declared) = declared else {
             return Err(failed(format!(
                 "Undeclared type {} referenced by the value of map {}",
                 value.name,
                 map.name()
+            )));
+        };
+        if !declared.is_class_declaration() && !declared.is_scalar_declaration() {
+            return Err(failed(format!(
+                "The value of map {} must be a concept or a scalar, and {} is neither",
+                map.name(),
+                value.name
             )));
         }
     }
@@ -852,6 +890,17 @@ mod tests {
     }
 
     #[test]
+    fn a_map_key_kind_outside_the_allowed_set_is_rejected() {
+        // Only String, DateTime and object keys exist; anything else is not a
+        // key the specification allows.
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        ));
+        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+    }
+
+    #[test]
     fn a_map_value_must_name_a_declared_type() {
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let err = validate(map_with(
@@ -861,6 +910,36 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("Undeclared type"));
 
         assert!(validate(map_with(key, object_type("Item", "ObjectMapValueType"))).is_ok());
+    }
+
+    #[test]
+    fn a_map_value_may_not_be_a_relationship() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            object_type("Item", "RelationshipMapValueType"),
+        ));
+        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    }
+
+    #[test]
+    fn a_map_value_may_not_be_an_enum() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let mut declarations = map_with(key, object_type("Colour", "ObjectMapValueType"));
+        declarations
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Colour",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
+                ]
+            }));
+        let err = validate(declarations);
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("must be a concept or a scalar")
+        );
     }
 
     #[test]

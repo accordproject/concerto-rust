@@ -12,7 +12,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::property::Property;
-use crate::introspect::{check_domain, check_length, declared_class};
+use crate::introspect::{check_domain, check_length, check_pattern, declared_class};
 use crate::model_util::{is_valid_identifier, short_name};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents.
@@ -249,14 +249,19 @@ impl ScalarDeclaration {
         Ok(scalar)
     }
 
-    /// Checks the range or length validator this scalar carries, on the same
-    /// terms as the equivalent property.
+    /// Checks the range, length or regular expression validator this scalar
+    /// carries, on the same terms as the equivalent property.
     fn check_validator(&self) -> Result<()> {
         match self {
-            Self::String(s) => match &s.length_validator {
-                Some(validator) => check_length(&s.name, validator),
-                None => Ok(()),
-            },
+            Self::String(s) => {
+                if let Some(validator) = &s.validator {
+                    check_pattern(&s.name, validator)?;
+                }
+                match &s.length_validator {
+                    Some(validator) => check_length(&s.name, validator),
+                    None => Ok(()),
+                }
+            }
             Self::Integer(s) => match &s.validator {
                 Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
                 None => Ok(()),
@@ -291,15 +296,18 @@ pub enum Declaration {
     Map(MapDeclaration),
 }
 
-/// A map declaration, with the types its key and value refer to kept intact.
+/// A map declaration, keeping the kind and the referenced type of its key and
+/// value.
 ///
 /// Deserializing through the generated metamodel keeps only the base key and
-/// value nodes, which drop the type a non-primitive key or value points at, so
-/// those references are re-read from the raw AST.
+/// value nodes, which drop both the kind of node each was and the type a
+/// non-primitive key or value points at, so those are re-read from the raw AST.
 #[derive(Debug, Clone)]
 pub struct MapDeclaration {
     name: String,
+    key_kind: String,
     key_type: Option<mm::TypeIdentifier>,
+    value_kind: String,
     value_type: Option<mm::TypeIdentifier>,
 }
 
@@ -307,6 +315,18 @@ impl MapDeclaration {
     /// The map's short name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The metamodel `$class` short name of the key node, such as
+    /// `StringMapKeyType`.
+    pub fn key_kind(&self) -> &str {
+        &self.key_kind
+    }
+
+    /// The metamodel `$class` short name of the value node, such as
+    /// `ObjectMapValueType`.
+    pub fn value_kind(&self) -> &str {
+        &self.value_kind
     }
 
     /// The type the key refers to, for a key that is not a primitive.
@@ -328,10 +348,18 @@ impl MapDeclaration {
             })?;
         Ok(Self {
             name: declaration.name,
+            key_kind: node_kind(value.get("key")),
             key_type: type_reference(value.get("key")),
+            value_kind: node_kind(value.get("value")),
             value_type: type_reference(value.get("value")),
         })
     }
+}
+
+/// The `$class` short name of a map key or value node.
+fn node_kind(node: Option<&serde_json::Value>) -> String {
+    node.map(|n| short_name(declared_class(n)).to_string())
+        .unwrap_or_default()
 }
 
 /// The type a map key or value node points at. Primitive keys and values carry
