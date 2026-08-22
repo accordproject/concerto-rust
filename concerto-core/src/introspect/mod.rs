@@ -69,6 +69,16 @@ pub(crate) fn check_domain<T: PartialOrd>(
     }
 }
 
+/// Checks that a string regex validator compiles.
+///
+/// Patterns come from the JavaScript runtime, so the engine here is one that
+/// takes the same constructs, lookahead and backreferences among them.
+pub(crate) fn check_pattern(owner: &str, validator: &mm::StringRegexValidator) -> Result<()> {
+    fancy_regex::Regex::new(&validator.pattern)
+        .map_err(|error| illegal(format!("Invalid regular expression on {owner}: {error}")))?;
+    Ok(())
+}
+
 /// Checks a string length validator. At least one bound must be given, neither
 /// bound may be negative, and a minimum may not exceed the maximum.
 pub(crate) fn check_length(owner: &str, validator: &mm::StringLengthValidator) -> Result<()> {

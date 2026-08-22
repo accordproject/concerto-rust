@@ -15,17 +15,19 @@
 //! [`ConcertoError::IllegalModel`] raised while resolving it. A model that
 //! validates cleanly returns `Ok(())`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::declaration::{ClassDeclaration, Declaration};
+use crate::introspect::declaration::{
+    ClassDeclaration, Declaration, MapDeclaration, ScalarDeclaration,
+};
 use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
 use crate::model_manager::ModelManager;
-use crate::model_util::{is_primitive_type, qualify};
+use crate::model_util::{is_primitive_type, parse_namespace, qualify};
 
 impl ModelManager {
     /// Validates every loaded user model, leaving the built-in system model
@@ -41,6 +43,8 @@ impl ModelManager {
 
         for model_file in model_files {
             check_import_clashes(model_file)?;
+            check_import_namespaces(model_file)?;
+            check_imported_types_exist(self, model_file)?;
             for declaration in model_file.declarations() {
                 validate_declaration(self, model_file.namespace(), declaration)?;
             }
@@ -78,7 +82,8 @@ fn validate_declaration(
 ) -> Result<()> {
     match declaration {
         Declaration::Class(class) => validate_class(manager, namespace, class),
-        _ => Ok(()),
+        Declaration::Map(map) => check_map_types(manager, namespace, map),
+        Declaration::Enum(_) | Declaration::Scalar(_) => Ok(()),
     }
 }
 
@@ -86,6 +91,7 @@ fn validate_class(manager: &ModelManager, namespace: &str, class: &ClassDeclarat
     check_super_type(manager, namespace, class)?;
     check_unique_field_names(manager, class, &qualify(namespace, class.name()))?;
     check_identifier(manager, namespace, class)?;
+    check_identity_matches_super(manager, namespace, class)?;
     check_unique_decorators(class.decorators())?;
     for property in class.own_properties() {
         check_property_type(manager, namespace, class.name(), property)?;
@@ -276,6 +282,145 @@ fn resolve(
         Some(ns) => Some(qualify(ns, name)),
         None => manager.resolve_type_name(namespace, name).ok(),
     }
+}
+
+/// A file may not import two versions of one namespace, since a short name
+/// could then mean either of them.
+fn check_import_namespaces(model_file: &ModelFile) -> Result<()> {
+    let mut versions: HashMap<String, String> = HashMap::new();
+    for import in model_file.imports() {
+        let namespace = parse_namespace(import.namespace())?;
+        match versions.get(&namespace.name) {
+            Some(seen) if *seen != namespace.version => {
+                return Err(failed(format!(
+                    "Importing types from different versions ({seen} and {}) of the same namespace {} is not permitted",
+                    namespace.version, namespace.name
+                )));
+            }
+            _ => {
+                versions.insert(namespace.name, namespace.version);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every imported type must exist in the namespace it is imported from.
+fn check_imported_types_exist(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
+    for import in model_file.imports() {
+        for name in import.imported_names() {
+            let fqn = qualify(import.namespace(), name);
+            if manager.get_declaration(&fqn).is_err() {
+                return Err(failed(format!(
+                    "Type {name} is not defined in namespace {}",
+                    import.namespace()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A type that carries the system identifier may not extend one that is
+/// identified by a field of its own, because the two identities would disagree.
+fn check_identity_matches_super(
+    manager: &ModelManager,
+    namespace: &str,
+    class: &ClassDeclaration,
+) -> Result<()> {
+    if !class.is_identified() || class.identifier_field_name().is_some() {
+        return Ok(());
+    }
+    let Some(super_type) = class.super_type() else {
+        return Ok(());
+    };
+    let super_class = resolve(
+        manager,
+        namespace,
+        &super_type.name,
+        super_type.namespace.as_deref(),
+    )
+    .and_then(|fqn| manager.get_declaration(&fqn).ok())
+    .and_then(Declaration::as_class);
+    let Some(super_class) = super_class else {
+        return Ok(());
+    };
+    if let Some(field) = super_class.identifier_field_name() {
+        return Err(failed(format!(
+            "Super type {} has an explicit identifier {field} that {} cannot redeclare",
+            super_type.name,
+            class.name()
+        )));
+    }
+    Ok(())
+}
+
+/// The key kinds the specification allows: a `String` or `DateTime`, or an
+/// object key naming a scalar over one of those.
+const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
+
+/// The value kinds the specification allows: any primitive, or an object value
+/// naming a scalar or a concept. A relationship is not among them.
+const MAP_VALUE_KINDS: &[&str] = &[
+    "BooleanMapValueType",
+    "DateTimeMapValueType",
+    "DoubleMapValueType",
+    "IntegerMapValueType",
+    "LongMapValueType",
+    "StringMapValueType",
+    "ObjectMapValueType",
+];
+
+/// Checks a map against the key and value types the specification permits.
+fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration) -> Result<()> {
+    if !MAP_KEY_KINDS.contains(&map.key_kind()) {
+        return Err(failed(format!(
+            "The key of map {} must be a String or DateTime, or a scalar over one of them",
+            map.name()
+        )));
+    }
+    if !MAP_VALUE_KINDS.contains(&map.value_kind()) {
+        return Err(failed(format!(
+            "The value of map {} may not be a {}",
+            map.name(),
+            map.value_kind()
+        )));
+    }
+
+    // An object key names a scalar, which has to be over a String or DateTime.
+    if let Some(key) = map.key_type() {
+        let scalar = resolve(manager, namespace, &key.name, key.namespace.as_deref())
+            .and_then(|fqn| manager.get_declaration(&fqn).ok())
+            .and_then(Declaration::as_scalar)
+            .map(ScalarDeclaration::scalar_type);
+        if !matches!(scalar, Some("String") | Some("DateTime")) {
+            return Err(failed(format!(
+                "The key of map {} must be a String or DateTime, or a scalar over one of them",
+                map.name()
+            )));
+        }
+    }
+
+    // An object value names a concept or a scalar, and it has to be declared.
+    if let Some(value) = map.value_type() {
+        let declared = resolve(manager, namespace, &value.name, value.namespace.as_deref())
+            .and_then(|fqn| manager.get_declaration(&fqn).ok());
+        let Some(declared) = declared else {
+            return Err(failed(format!(
+                "Undeclared type {} referenced by the value of map {}",
+                value.name,
+                map.name()
+            )));
+        };
+        if !declared.is_class_declaration() && !declared.is_scalar_declaration() {
+            return Err(failed(format!(
+                "The value of map {} must be a concept or a scalar, and {} is neither",
+                map.name(),
+                value.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Builds a [`ConcertoError::ValidationFailed`] with the given message.
@@ -610,6 +755,191 @@ mod tests {
             serde_json::json!([concept(serde_json::json!({ "name": "Address" }))]),
         );
         assert!(free.is_ok());
+    }
+
+    /// Loads `org.a@1.0.0` and `org.a@2.0.0`, then `org.t@1.0.0` with the
+    /// given imports, and validates.
+    fn validate_importing(imports: serde_json::Value) -> crate::error::Result<()> {
+        let mut manager = ModelManager::new().unwrap();
+        for (namespace, declared) in [("org.a@1.0.0", "X"), ("org.a@2.0.0", "Y")] {
+            manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "namespace": namespace,
+                        "declarations": [concept(serde_json::json!({ "name": declared }))]
+                    }),
+                    None,
+                )
+                .unwrap();
+        }
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.t@1.0.0",
+                    "imports": imports,
+                    "declarations": [concept(serde_json::json!({ "name": "Local" }))]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models()
+    }
+
+    fn import_of(namespace: &str, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportType",
+            "namespace": namespace, "name": name
+        })
+    }
+
+    #[test]
+    fn importing_a_type_that_does_not_exist_is_rejected() {
+        let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "Ghost")]));
+        assert!(err.unwrap_err().to_string().contains("not defined"));
+    }
+
+    #[test]
+    fn importing_a_declared_type_is_accepted() {
+        assert!(validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X")])).is_ok());
+    }
+
+    #[test]
+    fn importing_two_versions_of_one_namespace_is_rejected() {
+        let err = validate_importing(serde_json::json!([
+            import_of("org.a@1.0.0", "X"),
+            import_of("org.a@2.0.0", "Y")
+        ]));
+        assert!(err.unwrap_err().to_string().contains("different versions"));
+    }
+
+    #[test]
+    fn a_system_identifier_may_not_extend_an_explicit_one() {
+        let err = validate(serde_json::json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Explicit",
+                "isAbstract": false,
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "code" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "code",
+                      "isArray": false, "isOptional": false }
+                ]
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Systemic",
+                "isAbstract": false,
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Explicit" },
+                "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
+                "properties": []
+            }
+        ]));
+        assert!(err.unwrap_err().to_string().contains("cannot redeclare"));
+    }
+
+    /// A map with the given key and value nodes, beside a String scalar and a
+    /// concept it can point at.
+    fn map_with(key: serde_json::Value, value: serde_json::Value) -> serde_json::Value {
+        serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Code" },
+            { "$class": "concerto.metamodel@1.0.0.DateTimeScalar", "name": "When" },
+            concept(serde_json::json!({ "name": "Item" })),
+            { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+              "key": key, "value": value }
+        ])
+    }
+
+    fn object_type(name: &str, class: &str) -> serde_json::Value {
+        serde_json::json!({
+            "$class": format!("concerto.metamodel@1.0.0.{class}"),
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name }
+        })
+    }
+
+    #[test]
+    fn a_map_key_must_be_string_or_datetime() {
+        let string_value =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+        // A concept is not a legal key.
+        let err = validate(map_with(
+            object_type("Item", "ObjectMapKeyType"),
+            string_value.clone(),
+        ));
+        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+
+        // A scalar over String or over DateTime is.
+        for scalar in ["Code", "When"] {
+            assert!(
+                validate(map_with(
+                    object_type(scalar, "ObjectMapKeyType"),
+                    string_value.clone()
+                ))
+                .is_ok(),
+                "a scalar over {scalar} should be a legal key"
+            );
+        }
+
+        // As is a plain String key.
+        assert!(
+            validate(map_with(
+                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+                string_value
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_map_key_kind_outside_the_allowed_set_is_rejected() {
+        // Only String, DateTime and object keys exist; anything else is not a
+        // key the specification allows.
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        ));
+        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+    }
+
+    #[test]
+    fn a_map_value_must_name_a_declared_type() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let err = validate(map_with(
+            key.clone(),
+            object_type("Missing", "ObjectMapValueType"),
+        ));
+        assert!(err.unwrap_err().to_string().contains("Undeclared type"));
+
+        assert!(validate(map_with(key, object_type("Item", "ObjectMapValueType"))).is_ok());
+    }
+
+    #[test]
+    fn a_map_value_may_not_be_a_relationship() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            object_type("Item", "RelationshipMapValueType"),
+        ));
+        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    }
+
+    #[test]
+    fn a_map_value_may_not_be_an_enum() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let mut declarations = map_with(key, object_type("Colour", "ObjectMapValueType"));
+        declarations
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Colour",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
+                ]
+            }));
+        let err = validate(declarations);
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("must be a concept or a scalar")
+        );
     }
 
     #[test]

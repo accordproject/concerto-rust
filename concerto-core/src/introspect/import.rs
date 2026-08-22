@@ -40,6 +40,16 @@ impl Import {
         }
     }
 
+    /// The names this import pulls in, as they are declared in the source
+    /// namespace. An alias renames a type locally but does not change the name
+    /// it is declared under, so these are the names to look for over there.
+    pub fn imported_names(&self) -> &[String] {
+        match self {
+            Self::Type { name, .. } => std::slice::from_ref(name),
+            Self::Types { names, .. } => names,
+        }
+    }
+
     /// The names this import makes visible in the importing file. An aliased
     /// type is visible under its alias rather than its declared name, so these
     /// are the names a local declaration could collide with.

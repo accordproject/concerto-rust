@@ -10,8 +10,8 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::{check_domain, check_length, declared_class};
-use crate::model_util::{is_system_property, short_name};
+use crate::introspect::{check_domain, check_length, check_pattern, declared_class};
+use crate::model_util::{is_system_property, is_valid_identifier, short_name};
 
 /// A single property of a concept-like or enum declaration.
 #[derive(Debug, Clone)]
@@ -202,21 +202,34 @@ impl TryFrom<&serde_json::Value> for Property {
                 });
             }
         };
+        if !is_valid_identifier(property.name()) {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("invalid identifier: {}", property.name()),
+                file_name: None,
+                location: None,
+            });
+        }
         property.check_validators()?;
         Ok(property)
     }
 }
 
 impl Property {
-    /// Checks the range and length validators this property carries. The
-    /// bounds are part of the property's own declaration, so they are checked
-    /// while loading rather than left to the validation pass.
+    /// Checks the validators this property carries: a numeric range, a string
+    /// length, and a regular expression. All three are part of the property's
+    /// own declaration, so they are checked while loading rather than left to
+    /// the validation pass.
     fn check_validators(&self) -> Result<()> {
         match self {
-            Self::String(p) => match &p.length_validator {
-                Some(validator) => check_length(&p.name, validator),
-                None => Ok(()),
-            },
+            Self::String(p) => {
+                if let Some(validator) = &p.validator {
+                    check_pattern(&p.name, validator)?;
+                }
+                match &p.length_validator {
+                    Some(validator) => check_length(&p.name, validator),
+                    None => Ok(()),
+                }
+            }
             Self::Integer(p) => match &p.validator {
                 Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
                 None => Ok(()),
@@ -362,6 +375,39 @@ mod tests {
             "name": "text", "isArray": false, "isOptional": false,
             "lengthValidator": validator
         })
+    }
+
+    #[test]
+    fn a_property_name_must_be_an_identifier() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "1bad", "isArray": false, "isOptional": false
+        }));
+        assert!(err.unwrap_err().to_string().contains("invalid identifier"));
+    }
+
+    /// A `String` property carrying the given regex validator.
+    fn matching(pattern: &str) -> serde_json::Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "text", "isArray": false, "isOptional": false,
+            "validator": {
+                "$class": "concerto.metamodel@1.0.0.StringRegexValidator",
+                "pattern": pattern, "flags": ""
+            }
+        })
+    }
+
+    #[test]
+    fn a_regex_validator_must_compile() {
+        assert!(Property::try_from(&matching(r"^.+@.+\..+$")).is_ok());
+        for pattern in ["*invalid", "[unclosed", "(unclosed"] {
+            let err = Property::try_from(&matching(pattern));
+            assert!(
+                err.unwrap_err().to_string().contains("regular expression"),
+                "{pattern} should be rejected"
+            );
+        }
     }
 
     #[test]

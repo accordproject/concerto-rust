@@ -12,8 +12,8 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::property::Property;
-use crate::introspect::{check_domain, check_length, declared_class};
-use crate::model_util::short_name;
+use crate::introspect::{check_domain, check_length, check_pattern, declared_class};
+use crate::model_util::{is_valid_identifier, short_name};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,14 +249,19 @@ impl ScalarDeclaration {
         Ok(scalar)
     }
 
-    /// Checks the range or length validator this scalar carries, on the same
-    /// terms as the equivalent property.
+    /// Checks the range, length or regular expression validator this scalar
+    /// carries, on the same terms as the equivalent property.
     fn check_validator(&self) -> Result<()> {
         match self {
-            Self::String(s) => match &s.length_validator {
-                Some(validator) => check_length(&s.name, validator),
-                None => Ok(()),
-            },
+            Self::String(s) => {
+                if let Some(validator) = &s.validator {
+                    check_pattern(&s.name, validator)?;
+                }
+                match &s.length_validator {
+                    Some(validator) => check_length(&s.name, validator),
+                    None => Ok(()),
+                }
+            }
             Self::Integer(s) => match &s.validator {
                 Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
                 None => Ok(()),
@@ -288,7 +293,79 @@ pub enum Declaration {
     /// A scalar alias over a primitive.
     Scalar(ScalarDeclaration),
     /// A map type.
-    Map(mm::MapDeclaration),
+    Map(MapDeclaration),
+}
+
+/// A map declaration, keeping the kind and the referenced type of its key and
+/// value.
+///
+/// Deserializing through the generated metamodel keeps only the base key and
+/// value nodes, which drop both the kind of node each was and the type a
+/// non-primitive key or value points at, so those are re-read from the raw AST.
+#[derive(Debug, Clone)]
+pub struct MapDeclaration {
+    name: String,
+    key_kind: String,
+    key_type: Option<mm::TypeIdentifier>,
+    value_kind: String,
+    value_type: Option<mm::TypeIdentifier>,
+}
+
+impl MapDeclaration {
+    /// The map's short name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The metamodel `$class` short name of the key node, such as
+    /// `StringMapKeyType`.
+    pub fn key_kind(&self) -> &str {
+        &self.key_kind
+    }
+
+    /// The metamodel `$class` short name of the value node, such as
+    /// `ObjectMapValueType`.
+    pub fn value_kind(&self) -> &str {
+        &self.value_kind
+    }
+
+    /// The type the key refers to, for a key that is not a primitive.
+    pub fn key_type(&self) -> Option<&mm::TypeIdentifier> {
+        self.key_type.as_ref()
+    }
+
+    /// The type the value refers to, for a value that is not a primitive.
+    pub fn value_type(&self) -> Option<&mm::TypeIdentifier> {
+        self.value_type.as_ref()
+    }
+
+    fn from_json(value: &serde_json::Value) -> Result<Self> {
+        let declaration: mm::MapDeclaration =
+            serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
+                message: format!("invalid MapDeclaration: {e}"),
+                file_name: None,
+                location: None,
+            })?;
+        Ok(Self {
+            name: declaration.name,
+            key_kind: node_kind(value.get("key")),
+            key_type: type_reference(value.get("key")),
+            value_kind: node_kind(value.get("value")),
+            value_type: type_reference(value.get("value")),
+        })
+    }
+}
+
+/// The `$class` short name of a map key or value node.
+fn node_kind(node: Option<&serde_json::Value>) -> String {
+    node.map(|n| short_name(declared_class(n)).to_string())
+        .unwrap_or_default()
+}
+
+/// The type a map key or value node points at. Primitive keys and values carry
+/// no reference, so they give `None`.
+fn type_reference(node: Option<&serde_json::Value>) -> Option<mm::TypeIdentifier> {
+    serde_json::from_value(node?.get("type")?.clone()).ok()
 }
 
 impl Declaration {
@@ -298,7 +375,7 @@ impl Declaration {
             Self::Class(c) => c.name(),
             Self::Enum(e) => &e.name,
             Self::Scalar(s) => s.name(),
-            Self::Map(m) => &m.name,
+            Self::Map(m) => m.name(),
         }
     }
 
@@ -376,10 +453,11 @@ impl TryFrom<&serde_json::Value> for Declaration {
         let kind = short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            return Ok(Self::Class(ClassDeclaration::from_json(class_kind, value)?));
+            let class = Self::Class(ClassDeclaration::from_json(class_kind, value)?);
+            return check_name(class);
         }
 
-        Ok(match kind {
+        let declaration = match kind {
             "EnumDeclaration" => {
                 Self::Enum(serde_json::from_value(value.clone()).map_err(|e| {
                     ConcertoError::IllegalModel {
@@ -389,13 +467,7 @@ impl TryFrom<&serde_json::Value> for Declaration {
                     }
                 })?)
             }
-            "MapDeclaration" => Self::Map(serde_json::from_value(value.clone()).map_err(|e| {
-                ConcertoError::IllegalModel {
-                    message: format!("invalid MapDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
-                }
-            })?),
+            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => Self::Scalar(ScalarDeclaration::from_json(s, value)?),
             other => {
                 return Err(ConcertoError::IllegalModel {
@@ -404,6 +476,20 @@ impl TryFrom<&serde_json::Value> for Declaration {
                     location: None,
                 });
             }
+        };
+        check_name(declaration)
+    }
+}
+
+/// Every declaration name has to be a legal identifier.
+fn check_name(declaration: Declaration) -> Result<Declaration> {
+    if is_valid_identifier(declaration.name()) {
+        Ok(declaration)
+    } else {
+        Err(ConcertoError::IllegalModel {
+            message: format!("invalid identifier: {}", declaration.name()),
+            file_name: None,
+            location: None,
         })
     }
 }
@@ -514,6 +600,20 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_declaration_name_must_be_an_identifier() {
+        for kind in ["ConceptDeclaration", "EnumDeclaration"] {
+            let err = Declaration::try_from(&serde_json::json!({
+                "$class": format!("concerto.metamodel@1.0.0.{kind}"),
+                "name": "1Bad", "isAbstract": false, "properties": []
+            }));
+            assert!(
+                err.unwrap_err().to_string().contains("invalid identifier"),
+                "{kind} with a bad name should be rejected"
+            );
+        }
     }
 
     #[test]
