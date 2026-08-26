@@ -10,7 +10,7 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::{check_domain, check_length, check_pattern, declared_class};
+use crate::introspect::{check_domain, check_length, check_pattern, check_size, declared_class};
 use crate::model_util::{is_system_property, is_valid_identifier, short_name};
 
 /// A single property of a concept-like or enum declaration.
@@ -131,6 +131,21 @@ impl Property {
         }
     }
 
+    /// The collection size validator, if one is declared on this property.
+    pub fn size_validator(&self) -> Option<&mm::CollectionSizeValidator> {
+        match self {
+            Self::Boolean(p) => p.size_validator.as_ref(),
+            Self::String(p) => p.size_validator.as_ref(),
+            Self::Integer(p) => p.size_validator.as_ref(),
+            Self::Long(p) => p.size_validator.as_ref(),
+            Self::Double(p) => p.size_validator.as_ref(),
+            Self::DateTime(p) => p.size_validator.as_ref(),
+            Self::Object(p) => p.size_validator.as_ref(),
+            Self::Relationship(p) => p.size_validator.as_ref(),
+            Self::Enum(_) => None,
+        }
+    }
+
     /// The decorators attached to this property.
     pub fn decorators(&self) -> &[mm::Decorator] {
         match self {
@@ -216,40 +231,62 @@ impl TryFrom<&serde_json::Value> for Property {
 
 impl Property {
     /// Checks the validators this property carries: a numeric range, a string
-    /// length, and a regular expression. All three are part of the property's
-    /// own declaration, so they are checked while loading rather than left to
-    /// the validation pass.
+    /// length, a regular expression, and a collection size. These are part of
+    /// the property's own declaration, so they are checked while loading
+    /// rather than left to the validation pass.
+    fn check_size_validator(
+        name: &str,
+        is_array: bool,
+        validator: &Option<mm::CollectionSizeValidator>,
+        allow_non_array: bool,
+    ) -> Result<()> {
+        if let Some(v) = validator {
+            if !is_array && !allow_non_array {
+                return Err(ConcertoError::IllegalModel {
+                    message: format!("size validator can only be applied to array or map properties: {name}"),
+                    file_name: None,
+                    location: None,
+                });
+            }
+            check_size(name, v)?;
+        }
+        Ok(())
+    }
+
     fn check_validators(&self) -> Result<()> {
         match self {
             Self::String(p) => {
                 if let Some(validator) = &p.validator {
                     check_pattern(&p.name, validator)?;
                 }
-                match &p.length_validator {
-                    Some(validator) => check_length(&p.name, validator),
-                    None => Ok(()),
+                if let Some(validator) = &p.length_validator {
+                    check_length(&p.name, validator)?;
                 }
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
             }
-            Self::Integer(p) => match &p.validator {
-                Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
-                None => Ok(()),
-            },
-            Self::Long(p) => match &p.validator {
-                Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
-                None => Ok(()),
-            },
-            Self::Double(p) => match &p.validator {
-                Some(validator) => check_domain(&p.name, validator.lower, validator.upper),
-                None => Ok(()),
-            },
-            // The remaining kinds declare no validator in the metamodel, so
-            // there is nothing to check. Listing them keeps this exhaustive:
-            // a new property kind will not compile until it is handled here.
-            Self::Boolean(_)
-            | Self::DateTime(_)
-            | Self::Object(_)
-            | Self::Relationship(_)
-            | Self::Enum(_) => Ok(()),
+            Self::Integer(p) => {
+                if let Some(validator) = &p.validator {
+                    check_domain(&p.name, validator.lower, validator.upper)?;
+                }
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+            }
+            Self::Long(p) => {
+                if let Some(validator) = &p.validator {
+                    check_domain(&p.name, validator.lower, validator.upper)?;
+                }
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+            }
+            Self::Double(p) => {
+                if let Some(validator) = &p.validator {
+                    check_domain(&p.name, validator.lower, validator.upper)?;
+                }
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+            }
+            Self::Boolean(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false),
+            Self::DateTime(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false),
+            Self::Object(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, true),
+            Self::Relationship(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false),
+            Self::Enum(_) => Ok(()),
         }
     }
 }
@@ -445,5 +482,102 @@ mod tests {
     fn string_length_within_bounds_is_accepted() {
         assert!(Property::try_from(&sized(Some(1), Some(5))).is_ok());
         assert!(Property::try_from(&sized(None, Some(5))).is_ok());
+    }
+
+    /// A `String[]` property with a collection size validator.
+    fn collection_sized(is_array: bool, min: Option<i32>, max: Option<i32>) -> serde_json::Value {
+        let mut validator = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator"
+        });
+        if let Some(min) = min {
+            validator["minSize"] = min.into();
+        }
+        if let Some(max) = max {
+            validator["maxSize"] = max.into();
+        }
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "tags", "isArray": is_array, "isOptional": false,
+            "sizeValidator": validator
+        })
+    }
+
+    #[test]
+    fn size_validator_on_array_is_accepted() {
+        assert!(Property::try_from(&collection_sized(true, Some(1), Some(10))).is_ok());
+        assert!(Property::try_from(&collection_sized(true, Some(2), None)).is_ok());
+        assert!(Property::try_from(&collection_sized(true, None, Some(5))).is_ok());
+    }
+
+    #[test]
+    fn size_validator_on_non_array_is_rejected() {
+        let err = Property::try_from(&collection_sized(false, Some(1), Some(5)));
+        assert!(err.unwrap_err().to_string().contains("size validator can only be applied to array or map"));
+    }
+
+    #[test]
+    fn size_validator_min_above_max_is_rejected() {
+        let err = Property::try_from(&collection_sized(true, Some(10), Some(2)));
+        assert!(err.unwrap_err().to_string().contains("minSize must be less than or equal to maxSize"));
+    }
+
+    #[test]
+    fn size_validator_negative_bounds_rejected() {
+        let err = Property::try_from(&collection_sized(true, Some(-1), Some(5)));
+        assert!(err.unwrap_err().to_string().contains("positive integers"));
+    }
+
+    #[test]
+    fn size_validator_on_object_property_without_array_is_allowed() {
+        let json = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+            "name": "contacts",
+            "isArray": false,
+            "isOptional": false,
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "PhoneBook" },
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": 1,
+                "maxSize": 5
+            }
+        });
+        assert!(Property::try_from(&json).is_ok());
+    }
+
+    #[test]
+    fn size_validator_on_relationship_array_is_accepted() {
+        let json = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+            "name": "advisors",
+            "isArray": true,
+            "isOptional": false,
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" },
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": 1,
+                "maxSize": 3
+            }
+        });
+        let p = Property::try_from(&json).unwrap();
+        assert!(p.size_validator().is_some());
+        assert_eq!(p.size_validator().unwrap().min_size, Some(1));
+        assert_eq!(p.size_validator().unwrap().max_size, Some(3));
+    }
+
+    #[test]
+    fn size_validator_on_non_array_relationship_is_rejected() {
+        let json = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+            "name": "owner",
+            "isArray": false,
+            "isOptional": false,
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" },
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": 1
+            }
+        });
+        let err = Property::try_from(&json);
+        assert!(err.unwrap_err().to_string().contains("size validator can only be applied to array or map"));
     }
 }
