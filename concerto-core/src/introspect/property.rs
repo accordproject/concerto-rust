@@ -243,7 +243,9 @@ impl Property {
         if let Some(v) = validator {
             if !is_array && !allow_non_array {
                 return Err(ConcertoError::IllegalModel {
-                    message: format!("size validator can only be applied to array or map properties: {name}"),
+                    message: format!(
+                        "size validator can only be applied to array or map properties: {name}"
+                    ),
                     file_name: None,
                     location: None,
                 });
@@ -282,10 +284,18 @@ impl Property {
                 }
                 Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
             }
-            Self::Boolean(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false),
-            Self::DateTime(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false),
-            Self::Object(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, true),
-            Self::Relationship(p) => Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false),
+            Self::Boolean(p) => {
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+            }
+            Self::DateTime(p) => {
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+            }
+            Self::Object(p) => {
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, true)
+            }
+            Self::Relationship(p) => {
+                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+            }
             Self::Enum(_) => Ok(()),
         }
     }
@@ -512,13 +522,21 @@ mod tests {
     #[test]
     fn size_validator_on_non_array_is_rejected() {
         let err = Property::try_from(&collection_sized(false, Some(1), Some(5)));
-        assert!(err.unwrap_err().to_string().contains("size validator can only be applied to array or map"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("size validator can only be applied to array or map")
+        );
     }
 
     #[test]
     fn size_validator_min_above_max_is_rejected() {
         let err = Property::try_from(&collection_sized(true, Some(10), Some(2)));
-        assert!(err.unwrap_err().to_string().contains("minSize must be less than or equal to maxSize"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("minSize must be less than or equal to maxSize")
+        );
     }
 
     #[test]
@@ -578,6 +596,10 @@ mod tests {
             }
         });
         let err = Property::try_from(&json);
-        assert!(err.unwrap_err().to_string().contains("size validator can only be applied to array or map"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("size validator can only be applied to array or map")
+        );
     }
 }
