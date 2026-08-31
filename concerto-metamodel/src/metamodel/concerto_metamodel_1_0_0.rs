@@ -522,6 +522,9 @@ pub struct Property {
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
 
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
+
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
 
@@ -545,6 +548,9 @@ pub struct RelationshipProperty {
 
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
+
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
 
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
@@ -573,6 +579,9 @@ pub struct ObjectProperty {
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
 
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
+
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
 
@@ -597,6 +606,9 @@ pub struct BooleanProperty {
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
 
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
+
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
 
@@ -617,6 +629,9 @@ pub struct DateTimeProperty {
 
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
+
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
 
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
@@ -647,6 +662,9 @@ pub struct StringProperty {
 
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
+
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
 
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
@@ -680,6 +698,18 @@ pub struct StringLengthValidator {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionSizeValidator {
+    #[serde(rename = "$class")]
+    pub _class: String,
+
+    #[serde(rename = "minSize", skip_serializing_if = "Option::is_none")]
+    pub min_size: Option<i32>,
+
+    #[serde(rename = "maxSize", skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoubleProperty {
     #[serde(rename = "$class")]
     pub _class: String,
@@ -698,6 +728,9 @@ pub struct DoubleProperty {
 
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
+
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
 
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
@@ -738,6 +771,9 @@ pub struct IntegerProperty {
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
 
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
+
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,
 
@@ -776,6 +812,9 @@ pub struct LongProperty {
 
     #[serde(rename = "isOptional")]
     pub is_optional: bool,
+
+    #[serde(rename = "sizeValidator", skip_serializing_if = "Option::is_none")]
+    pub size_validator: Option<CollectionSizeValidator>,
 
     #[serde(rename = "decorators", skip_serializing_if = "Option::is_none")]
     pub decorators: Option<Vec<Decorator>>,

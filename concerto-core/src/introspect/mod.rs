@@ -79,6 +79,30 @@ pub(crate) fn check_pattern(owner: &str, validator: &mm::StringRegexValidator) -
     Ok(())
 }
 
+/// Checks a collection size validator. At least one bound must be given, neither
+/// bound may be negative, and a minimum may not exceed the maximum.
+pub(crate) fn check_size(owner: &str, validator: &mm::CollectionSizeValidator) -> Result<()> {
+    let (min, max) = (validator.min_size, validator.max_size);
+    if min.is_none() && max.is_none() {
+        return Err(illegal(format!(
+            "Invalid collection size on {owner}, minSize and/or maxSize must be specified"
+        )));
+    }
+    if min.is_some_and(|value| value < 0) || max.is_some_and(|value| value < 0) {
+        return Err(illegal(format!(
+            "minSize and/or maxSize must be positive integers on {owner}"
+        )));
+    }
+    if let (Some(min), Some(max)) = (min, max)
+        && min > max
+    {
+        return Err(illegal(format!(
+            "minSize must be less than or equal to maxSize on {owner}"
+        )));
+    }
+    Ok(())
+}
+
 /// Checks a string length validator. At least one bound must be given, neither
 /// bound may be negative, and a minimum may not exceed the maximum.
 pub(crate) fn check_length(owner: &str, validator: &mm::StringLengthValidator) -> Result<()> {

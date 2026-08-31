@@ -266,6 +266,14 @@ fn check_property_type(
         }
     }
 
+    if property.size_validator().is_some() && !property.is_array() && !target.is_map_declaration() {
+        return Err(failed(format!(
+            "size validator can only be applied to array or map properties: {}.{}",
+            owner,
+            property.name()
+        )));
+    }
+
     Ok(())
 }
 
