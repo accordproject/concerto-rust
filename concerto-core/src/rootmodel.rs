@@ -7,12 +7,14 @@
 //! unchanged, so the runtime preloads exactly what the reference
 //! implementation preloads.
 
+// TODO: Load concerto metamodel together with decorator and vocab metamodels from
+//       metamodel repo in build time.
 /// The `concerto@1.0.0` root model JSON, as shipped with `concerto-core`.
 const ROOT_MODEL_JSON: &str = include_str!("rootmodel.json");
 
 /// The `concerto@1.0.0` system model, as a JSON AST.
 pub fn root_model_ast() -> serde_json::Value {
-    serde_json::from_str(ROOT_MODEL_JSON).expect("the vendored root model is valid JSON")
+    serde_json::from_str(ROOT_MODEL_JSON).expect("Root model could not be parsed.")
 }
 
 #[cfg(test)]

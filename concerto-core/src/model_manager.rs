@@ -33,6 +33,9 @@ impl ModelManager {
 
     /// Loads a model from its JSON AST. Loading two models with the same
     /// namespace is an error.
+    // TODO: The corresponding method in TS implementation accepts a CTO string and parses it.
+    // since we don't have a parser in this implementation, this shoul dbe `add_model_file`,
+    // or `add_model_ast` together with `add_model_file` that accepts `ModelFile` instance.
     pub fn add_model(
         &mut self,
         value: &serde_json::Value,
