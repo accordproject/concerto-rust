@@ -1,4 +1,4 @@
-name: CI
+name: Build and Test
 
 on:
   push:
@@ -20,32 +20,15 @@ jobs:
           - beta
           - nightly
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install toolchain
         run: rustup update ${{matrix.toolchain}} && rustup default ${{matrix.toolchain}}
+      - name: Format check (concerto-core)
+        run: cargo fmt -p concerto-core -- --check
+      - name: Clippy (concerto-core)
+        run: cargo clippy -p concerto-core --no-deps --all-targets -- -D warnings
       - name: Build
         run: cargo build --verbose --workspace --all-targets
       - name: Test
         run: cargo test --workspace
 
-      # - name: Install Rust toolchain
-      #   uses: dtolnay/rust-toolchain@stable
-      #   with:
-      #     components: rustfmt, clippy
-
-      # - name: Cache cargo registry and target
-      #   uses: Swatinem/rust-cache@v2
-
-      # # Style and lint gating is scoped to hand-written crates; the generated
-      # # `concerto-metamodel` crate is excluded from fmt/clippy enforcement.
-      # - name: Format check (concerto-core)
-      #   run: cargo fmt -p concerto-core -- --check
-
-      # - name: Clippy (concerto-core)
-      #   run: cargo clippy -p concerto-core --no-deps --all-targets -- -D warnings
-
-      # - name: Build workspace
-      #   run: cargo build --workspace --all-targets
-
-      # - name: Test workspace
-      #   run: cargo test --workspace
