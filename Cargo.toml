@@ -10,7 +10,6 @@ license = "Apache-2.0"
 authors = ["Accord Project <accordproject.org>"]
 keywords = ["concerto", "accordproject", "data representation"]
 repository = "https://github.com/accordproject/concerto-rust"
-license-file = "LICENSE"
 categories = ["cryptography", "data-structures", "template-engine"]
 homepage = "https://concerto.accordproject.org"
 
