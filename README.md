@@ -8,12 +8,12 @@ deployed across multiple platforms (native, WASM, and FFI bindings).
 
 This repository is a Cargo workspace:
 
+- [`concerto-core`](./concerto-core/): Runtime for Concerto. Holds the
+  in-memory representation of Concerto models, implements type validation.
+- [`concerto-vocabulary`](./concerto-vocabulary/): Runtime for Concerto Vocabularies.
+  **To be implemented.**
 - [`concerto-metamodel`](./concerto-metamodel/): generated Rust types for the
   Concerto metamodel (produced from the upstream `concerto-metamodel` package).
-- [`concerto-core`](./concerto-core/): the hand-written core. Holds the
-  in-memory representation of Concerto models, with the validation logic to
-  follow. Core types wrap the generated metamodel types using the new-type
-  pattern.
 
 ## Building
 
@@ -24,10 +24,12 @@ cargo test --workspace
 
 ## Contributing
 
-See [`AGENTS.md`](./AGENTS.md) for the coding conventions used in this
-repository. Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/),
+Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/),
 and commits require a [DCO sign-off](https://github.com/probot/dco#how-it-works)
 (`git commit --signoff`).
+
+See [`AGENTS.md`](./AGENTS.md) for the coding conventions used in this
+repository.
 
 ## License
 
