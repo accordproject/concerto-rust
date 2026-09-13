@@ -1,7 +1,7 @@
 [package]
 name = "accordproject-concerto-vocabulary"
 description = "Vocabulary representation for Accors Project's Concerto language. Associates human-readable text to model declarations."
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
