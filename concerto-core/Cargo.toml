@@ -15,7 +15,7 @@ homepage.workspace = true
 name = "concerto_core"
 
 [dependencies]
-accordproject-concerto-metamodel = { path = "../concerto-metamodel" }
+accordproject-concerto-metamodel = { path = "../concerto-metamodel", version = "3.13.1"}
 fancy-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
