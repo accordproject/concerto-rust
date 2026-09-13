@@ -1,14 +1,22 @@
 [package]
-name = "concerto-core"
-description = "Core runtime for the Accord Project Concerto modeling language: in-memory model representation and validation."
+name = "accordproject-concerto-core"
+description = "Core runtime for the Accord Project's Concerto modeling language: in-memory model representation and validation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+keywords.workspace = true
+repository.workspace = true
+license-file.workspace = true
+categories.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "concerto_core"
 
 [dependencies]
-concerto-metamodel = { path = "../concerto-metamodel" }
+accordproject-concerto-metamodel = { path = "../concerto-metamodel" }
 fancy-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

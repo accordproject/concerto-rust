@@ -1,0 +1,18 @@
+[package]
+name = "accordproject-concerto-vocabulary"
+description = "Vocabulary representation for Accors Project's Concerto language. Associates human-readable text to model declarations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+repository.workspace = true
+license-file.workspace = true
+categories.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "concerto_vocabulary"
+
+[dependencies]
