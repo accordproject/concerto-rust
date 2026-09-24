@@ -38,15 +38,16 @@ under `/home/user/`. Override with the `CONCERTO_REPO` environment
 variable if `concerto` is not there (see `benches/common/mod.rs`).
 
 `concerto-validate-rs` is referenced as an optional **path** dependency
-(`concerto-validator-rs = { path = "/home/user/concerto-validate-rs",
-optional = true }`). Two things follow from that, both load-bearing for
-how this crate is set up:
+(`concerto-validator-rs = { path = "../../concerto-validate-rs",
+optional = true }`, relative to `benches/`, i.e. the sibling of this
+checkout). Two things follow from that, both load-bearing for how this
+crate is set up:
 
 - **The sibling checkout must exist for *any* `cargo` command against
   this crate to work, feature flag or not.** Cargo resolves every path
   dependency's manifest - optional ones included - before it applies
   features, so `--no-default-features` does **not** let you build or
-  bench this crate without `/home/user/concerto-validate-rs` present; it
+  bench this crate without the sibling `concerto-validate-rs` present; it
   only decides whether that dependency is *compiled* (see the next
   point). If the checkout is missing, every `cargo` invocation here,
   even `cargo metadata`, fails with something like `failed to read
@@ -69,9 +70,9 @@ how this crate is set up:
   `--features validate-rs` (see "Running" below) when you want the
   `concerto-validate-rs` half of workload 2, and expect it to modify
   that shared checkout; restore it afterwards with `git -C
-  /home/user/concerto-validate-rs checkout metamodel.json` (harmless to
-  skip if there was no network access to overwrite it with in the first
-  place).
+  ../concerto-validate-rs checkout metamodel.json` from this repo's root
+  (harmless to skip if there was no network access to overwrite it with
+  in the first place).
 
 ## Fixtures
 

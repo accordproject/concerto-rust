@@ -44,7 +44,7 @@ serde_json = "1.0"
 # checkout (see benches/README.md's "Repo layout this assumes"). Opt in
 # explicitly with `--features validate-rs` when you want that half of
 # workload 2, knowing it will touch that shared checkout.
-concerto-validator-rs = { path = "/home/user/concerto-validate-rs", optional = true }
+concerto-validator-rs = { path = "../../concerto-validate-rs", optional = true }
 
 [features]
 default = []
