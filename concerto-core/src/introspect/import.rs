@@ -1,42 +1,32 @@
 //! A model's imports, given proper types.
 //!
-//! Deserializing through the generated metamodel flattens every import into the
-//! base `Import` struct and discards the type names it pulls in. Each import is
-//! therefore re-read from its raw JSON into this [`Import`] enum, keyed on the
-//! `$class`, so the introspect layer can resolve a short name back to the
-//! namespace that declares it.
+//! [`Import`] is a newtype over the metamodel's own `mm::ImportType` and
+//! `mm::ImportTypes` structs, selected from the node's `$class`. A wildcard
+//! import (`import ns.*`, `mm::ImportAll`) is rejected while parsing,
+//! mirroring strict mode in Concerto v4, so the introspect layer never has to
+//! consider it.
+
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::declared_class;
-use crate::model_util::{qualify, short_name};
+use crate::model_util::qualify;
 
-/// A single import statement in a model file. Wildcard imports (`import ns.*`)
-/// are rejected while parsing, mirroring strict mode in Concerto v4.
+/// A single import statement in a model file, wrapping the matching
+/// generated struct.
 #[derive(Debug, Clone)]
 pub enum Import {
     /// `import ns.Name`: a single named type.
-    Type {
-        /// The namespace the type is imported from.
-        namespace: String,
-        /// The name of the imported type.
-        name: String,
-    },
+    Type(mm::ImportType),
     /// `import ns.{A, B}`: several named types, optionally aliased.
-    Types {
-        /// The namespace the types are imported from.
-        namespace: String,
-        /// The names of the imported types.
-        names: Vec<String>,
-        /// `(local_alias, original_name)` pairs for aliased imports.
-        aliases: Vec<(String, String)>,
-    },
+    Types(mm::ImportTypes),
 }
 
 impl Import {
     /// The namespace this import refers to.
     pub fn namespace(&self) -> &str {
         match self {
-            Self::Type { namespace, .. } | Self::Types { namespace, .. } => namespace,
+            Self::Type(t) => &t.namespace,
+            Self::Types(t) => &t.namespace,
         }
     }
 
@@ -45,8 +35,8 @@ impl Import {
     /// it is declared under, so these are the names to look for over there.
     pub fn imported_names(&self) -> &[String] {
         match self {
-            Self::Type { name, .. } => std::slice::from_ref(name),
-            Self::Types { names, .. } => names,
+            Self::Type(t) => std::slice::from_ref(&t.name),
+            Self::Types(t) => &t.types,
         }
     }
 
@@ -55,14 +45,17 @@ impl Import {
     /// are the names a local declaration could collide with.
     pub fn local_names(&self) -> Vec<&str> {
         match self {
-            Self::Type { name, .. } => vec![name.as_str()],
-            Self::Types { names, aliases, .. } => names
+            Self::Type(t) => vec![t.name.as_str()],
+            Self::Types(t) => t
+                .types
                 .iter()
                 .map(|name| {
-                    aliases
+                    t.aliased_types
+                        .as_deref()
+                        .unwrap_or(&[])
                         .iter()
-                        .find(|(_, original)| original == name)
-                        .map_or(name.as_str(), |(alias, _)| alias.as_str())
+                        .find(|aliased| &aliased.name == name)
+                        .map_or(name.as_str(), |aliased| aliased.aliased_name.as_str())
                 })
                 .collect(),
         }
@@ -72,18 +65,20 @@ impl Import {
     /// import names it explicitly.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
-            Self::Type { namespace, name } if name == short => Some(qualify(namespace, name)),
-            Self::Type { .. } => None,
-            Self::Types {
-                namespace,
-                names,
-                aliases,
-            } => {
-                if let Some((_, original)) = aliases.iter().find(|(alias, _)| alias == short) {
-                    return Some(qualify(namespace, original));
+            Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
+            Self::Type(_) => None,
+            Self::Types(t) => {
+                if let Some(aliased) = t
+                    .aliased_types
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .find(|aliased| aliased.aliased_name == short)
+                {
+                    return Some(qualify(&t.namespace, &aliased.name));
                 }
-                if names.iter().any(|n| n == short) {
-                    return Some(qualify(namespace, short));
+                if t.types.iter().any(|n| n == short) {
+                    return Some(qualify(&t.namespace, short));
                 }
                 None
             }
@@ -95,84 +90,26 @@ impl TryFrom<&serde_json::Value> for Import {
     type Error = ConcertoError;
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
-        let class = declared_class(value);
-        if class.is_empty() {
-            return Err(ConcertoError::IllegalModel {
-                message: "import node is missing its $class".into(),
+        let raw: mm::Import =
+            serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
+                message: format!("invalid import: {e}"),
                 file_name: None,
                 location: None,
-            });
-        }
-        let kind = short_name(class);
+            })?;
 
-        let namespace = value
-            .get("namespace")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ConcertoError::IllegalModel {
-                message: format!("import ({kind}) missing 'namespace'"),
-                file_name: None,
-                location: None,
-            })?
-            .to_string();
-
-        Ok(match kind {
+        match raw {
             // Concerto v4 disallows wildcard imports; reject them up front.
-            "ImportAll" => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("wildcard imports are not allowed: import {namespace}.*"),
-                    file_name: None,
-                    location: None,
-                });
-            }
-            "ImportType" => {
-                let name = value
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| ConcertoError::IllegalModel {
-                        message: "ImportType missing 'name'".into(),
-                        file_name: None,
-                        location: None,
-                    })?
-                    .to_string();
-                Self::Type { namespace, name }
-            }
-            "ImportTypes" => {
-                let names = value
-                    .get("types")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let aliases = value
-                    .get("aliasedTypes")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|a| {
-                                let alias = a.get("aliasedName").and_then(|v| v.as_str())?;
-                                let original = a.get("name").and_then(|v| v.as_str())?;
-                                Some((alias.to_string(), original.to_string()))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Self::Types {
-                    namespace,
-                    names,
-                    aliases,
-                }
-            }
-            other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown import type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
-            }
-        })
+            mm::Import::ImportAll(all) => Err(ConcertoError::IllegalModel {
+                message: format!(
+                    "wildcard imports are not allowed: import {}.*",
+                    all.namespace
+                ),
+                file_name: None,
+                location: None,
+            }),
+            mm::Import::ImportType(t) => Ok(Self::Type(t)),
+            mm::Import::ImportTypes(t) => Ok(Self::Types(t)),
+        }
     }
 }
 

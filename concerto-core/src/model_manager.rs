@@ -100,7 +100,7 @@ impl ModelManager {
     /// all of its super types. Returns an error if the name is not a
     /// concept-like type, a super type cannot be resolved, or the inheritance
     /// chain is circular.
-    pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<&Property>> {
+    pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<Property>> {
         Ok(self
             .super_chain(fqn)?
             .into_iter()

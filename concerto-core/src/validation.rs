@@ -93,7 +93,7 @@ fn validate_class(manager: &ModelManager, namespace: &str, class: &ClassDeclarat
     check_identifier(manager, namespace, class)?;
     check_identity_matches_super(manager, namespace, class)?;
     check_unique_decorators(class.decorators())?;
-    for property in class.own_properties() {
+    for property in class.own_properties().iter() {
         check_property_type(manager, namespace, class.name(), property)?;
         check_unique_decorators(property.decorators())?;
     }
@@ -146,9 +146,9 @@ fn check_unique_field_names(
     class: &ClassDeclaration,
     fqn: &str,
 ) -> Result<()> {
-    let mut seen = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for property in manager.get_all_properties(fqn)? {
-        if !seen.insert(property.name()) {
+        if !seen.insert(property.name().to_string()) {
             return Err(failed(format!(
                 "{} has more than one field named {}",
                 class.name(),
@@ -169,8 +169,8 @@ fn check_identifier(
     let Some(field_name) = class.identifier_field_name() else {
         return Ok(());
     };
-    let field = class
-        .own_properties()
+    let properties = class.own_properties();
+    let field = properties
         .iter()
         .find(|property| property.name() == field_name)
         .ok_or_else(|| {

@@ -1,11 +1,16 @@
 //! Properties, with their types kept intact.
 //!
-//! Deserializing a property through the generated metamodel loses the parts we
-//! care about: the validators, and the referenced `type` on object and
-//! relationship properties all get dropped into a bare [`mm::Property`]. So we
-//! read each property a second time, straight from its raw JSON, into this
-//! [`Property`] enum and let the `$class` decide the variant. The getters hang
-//! off the enum directly. No trait hierarchy to chase.
+//! [`Property`] is a newtype over the metamodel's own `$class`-tagged
+//! [`mm::Property`] (every concept-declaration field kind) plus
+//! [`mm::EnumProperty`] (an enum value member, which `mm::Property` does not
+//! cover). Deserializing a node picks the right variant from its `$class` and
+//! wraps the whole generated struct, so nothing about a validator or a
+//! referenced `type` is lost. The business-rule checks the metamodel itself
+//! does not perform - a name Concerto has not reserved, a legal identifier, a
+//! validator that makes sense - run once in [`Property::validate`], both when
+//! a property is parsed directly and when one is read as part of a class
+//! declaration. The getters hang off the enum directly. No trait hierarchy to
+//! chase.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -162,6 +167,32 @@ impl Property {
     }
 }
 
+/// Converts the metamodel's own 8-variant property union (every concept
+/// property kind except an enum member) into the introspect [`Property`]
+/// wrapper. Infallible: `mm::Property` already validated the node's shape.
+impl From<mm::Property> for Property {
+    fn from(value: mm::Property) -> Self {
+        match value {
+            mm::Property::BooleanProperty(p) => Self::Boolean(p),
+            mm::Property::StringProperty(p) => Self::String(p),
+            mm::Property::IntegerProperty(p) => Self::Integer(p),
+            mm::Property::LongProperty(p) => Self::Long(p),
+            mm::Property::DoubleProperty(p) => Self::Double(p),
+            mm::Property::DateTimeProperty(p) => Self::DateTime(p),
+            mm::Property::ObjectProperty(p) => Self::Object(p),
+            mm::Property::RelationshipProperty(p) => Self::Relationship(p),
+        }
+    }
+}
+
+/// Wraps an enum value member, the one property-like kind `mm::Property`
+/// does not cover (it only appears inside an `EnumDeclaration`).
+impl From<mm::EnumProperty> for Property {
+    fn from(value: mm::EnumProperty) -> Self {
+        Self::Enum(value)
+    }
+}
+
 impl TryFrom<&serde_json::Value> for Property {
     type Error = ConcertoError;
 
@@ -174,62 +205,53 @@ impl TryFrom<&serde_json::Value> for Property {
                 location: None,
             });
         }
-        // Concerto keeps a set of property names for itself, so a model may
-        // not declare a field with one of them.
-        if let Some(name) = value.get("name").and_then(|n| n.as_str())
-            && is_system_property(name)
-        {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("Invalid field name '{name}'"),
-                file_name: None,
-                location: None,
-            });
-        }
         let kind = short_name(class);
 
-        // Parse into whatever struct the `$class` says this is. If serde
-        // chokes, the JSON is malformed for the kind it claims to be.
+        // Parse into whatever the `$class` says this is. If serde chokes, the
+        // JSON is malformed for the kind it claims to be.
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {kind}: {e}"),
             file_name: None,
             location: None,
         };
 
-        let property = match kind {
-            "BooleanProperty" => Self::Boolean(serde_json::from_value(value.clone()).map_err(bad)?),
-            "StringProperty" => Self::String(serde_json::from_value(value.clone()).map_err(bad)?),
-            "IntegerProperty" => Self::Integer(serde_json::from_value(value.clone()).map_err(bad)?),
-            "LongProperty" => Self::Long(serde_json::from_value(value.clone()).map_err(bad)?),
-            "DoubleProperty" => Self::Double(serde_json::from_value(value.clone()).map_err(bad)?),
-            "DateTimeProperty" => {
-                Self::DateTime(serde_json::from_value(value.clone()).map_err(bad)?)
-            }
-            "ObjectProperty" => Self::Object(serde_json::from_value(value.clone()).map_err(bad)?),
-            "RelationshipProperty" => {
-                Self::Relationship(serde_json::from_value(value.clone()).map_err(bad)?)
-            }
-            "EnumProperty" => Self::Enum(serde_json::from_value(value.clone()).map_err(bad)?),
-            other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown property type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
-            }
+        let property = if kind == "EnumProperty" {
+            Self::from(serde_json::from_value::<mm::EnumProperty>(value.clone()).map_err(bad)?)
+        } else {
+            let raw: mm::Property = serde_json::from_value(value.clone()).map_err(bad)?;
+            Self::from(raw)
         };
-        if !is_valid_identifier(property.name()) {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("invalid identifier: {}", property.name()),
-                file_name: None,
-                location: None,
-            });
-        }
-        property.check_validators()?;
+        property.validate()?;
         Ok(property)
     }
 }
 
 impl Property {
+    /// Runs the checks every property must satisfy once its shape is known:
+    /// the name is not one Concerto reserves for itself, it is a legal
+    /// identifier, and any validator it carries is well formed. Called both
+    /// while parsing a property node directly and, for a property read as
+    /// part of a class declaration, from [`super::declaration`].
+    pub(crate) fn validate(&self) -> Result<()> {
+        // Concerto keeps a set of property names for itself, so a model may
+        // not declare a field with one of them.
+        if is_system_property(self.name()) {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("Invalid field name '{}'", self.name()),
+                file_name: None,
+                location: None,
+            });
+        }
+        if !is_valid_identifier(self.name()) {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("invalid identifier: {}", self.name()),
+                file_name: None,
+                location: None,
+            });
+        }
+        self.check_validators()
+    }
+
     /// Checks the validators this property carries: a numeric range, a string
     /// length, a regular expression, and a collection size. These are part of
     /// the property's own declaration, so they are checked while loading
