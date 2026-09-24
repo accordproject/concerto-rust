@@ -15,13 +15,30 @@
 //! `file`/`class`/`member` in the frozen TS reference for
 //! `Globalize.messageFormatter(...)` or `Globalize.formatMessage(...)`, and
 //! port every key that turns up (2.2 step 1), plus the pre-approved keys
-//! above. The reproducible form of that grep, run from
-//! `packages/concerto-core/src` in the TS checkout:
-//! `grep -n "Globalize\.\(messageFormatter\|formatMessage\)" <file>` for
-//! each ledger row's `file`, filtered to the methods named in `member` (the
-//! P1-07 attribution index, OD-10, automates this once it exists; until
-//! then a P1/P2/P3 task that finds a key the census missed adds it here,
-//! citing the ledger row). The trial (P0-04b) and the first cut of P1-05
+//! above. The call is written several ways in the reference —
+//! `Globalize.messageFormatter('key')`, `Globalize('en').messageFormatter('key')`,
+//! and with the key on the line after the opening parenthesis
+//! (`classdeclaration.ts:278`, `resourcevalidator.ts:592`) — so a
+//! line-oriented `grep` misses some of them. The reproducible form, run
+//! from `packages/concerto-core` in the TS checkout, reads each file whole
+//! and prints `file:line:key` with the line of the `Globalize` token:
+//!
+//! ```text
+//! perl -0777 -ne 'while (/Globalize\s*(?:\(\s*[^)]*\))?\s*\.\s*(?:messageFormatter|formatMessage)\s*\(\s*([\x27"`])([^\x27"`]+)\1/g) { my $l = (substr($_, 0, $-[0]) =~ tr/\n//) + 1; print "$ARGV:$l:$2\n" }' $(find src -name '*.ts')
+//! ```
+//!
+//! Each hit is then attributed to the ledger row for its `file` whose
+//! `line` is the nearest one at or above it, and kept when that row is
+//! `RUST` or `HYBRID`. At `c48423c` the command finds 34 call sites (32
+//! distinct keys), of which 28 call sites (26 distinct keys) are in a RUST
+//! or HYBRID row; with the five pre-approved keys that is the 31 keys
+//! `od5_catalogue_scope_is_present` (mod.rs) lists. The hits it drops are
+//! `Factory.newResource` (TS in the TSV; its three keys are pre-approved
+//! anyway), `Serializer.constructor` (TS: `serializer-constructor-*`) and
+//! `TypeNotFoundException.constructor` (TS; pre-approved). The P1-07
+//! attribution index, OD-10, automates this once it exists; until then a
+//! P1/P2/P3 task that finds a key the census missed adds it here, citing
+//! the ledger row. The trial (P0-04b) and the first cut of P1-05
 //! covered only the keys their own units' call sites used; this file now
 //! also carries the P1-05 exit-condition sweep over `BaseModelManager`
 //! (`resolveType`, `getType`), `ModelFile` (`constructor`, `resolveType`,
@@ -290,6 +307,18 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Globalize,
         // ClassDeclaration.validate (RUST); not yet called.
         sources: &["src/introspect/classdeclaration.ts:241"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-duplicatefieldname",
+        template: "Class \"{class}\" has more than one field named \"{fieldName}\".",
+        renderer: Renderer::Globalize,
+        // ClassDeclaration.validate (RUST); not yet called. The pre-port
+        // check in validation.rs (`check_unique_field_names`) stands in for
+        // it until the task that ports ClassDeclaration.validate replaces
+        // its message with this entry. The call spans two lines in TS
+        // (`Globalize('en').messageFormatter(` then the key), which is why
+        // the line-oriented grep this module doc used to give missed it.
+        sources: &["src/introspect/classdeclaration.ts:278"],
     },
     CatalogueEntry {
         code: "instancegenerator-newinstance-noconcreteclass",

@@ -889,6 +889,18 @@ mod tests {
     }
 
     #[test]
+    fn golden_classdeclaration_validate_duplicatefieldname() {
+        assert_eq!(
+            contract(
+                "classdeclaration-validate-duplicatefieldname",
+                &[("class", "Foo"), ("fieldName", "bar")]
+            )
+            .message(),
+            "Class \"Foo\" has more than one field named \"bar\"."
+        );
+    }
+
+    #[test]
     fn golden_instancegenerator_newinstance_noconcreteclass() {
         assert_eq!(
             contract(
@@ -1125,6 +1137,7 @@ mod tests {
             "classdeclaration-validate-selfextending",
             "classdeclaration-validate-identifiernotproperty",
             "classdeclaration-validate-identifiernotstring",
+            "classdeclaration-validate-duplicatefieldname",
             // InstanceGenerator.findConcreteSubclass, reached from
             // newInstance (RUST).
             "instancegenerator-newinstance-noconcreteclass",
