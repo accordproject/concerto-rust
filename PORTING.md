@@ -107,9 +107,9 @@ Mechanical rules. Apply them in order.
 
 | Ledger | Rust (`concerto-core`) | `concerto-wasm` | TS view (P4-xx) |
 |---|---|---|---|
-| **RUST** | All of the member's logic, ported in the P2/P3 task named in `planned_task`, in the module named in `target_rust_module` | one binding function or method per member | a one-line delegation, with no branches (plan §7: "keep the views branch-free") |
-| **HYBRID** | Everything *except* what the ledger `reason` column says stays in JS | binding for the Rust part, plus a JS-callback `ResolutionContext` if the reason names the collaborator fallback, or the JS regex evaluator if it names `options.regExp` (3.2) | the JS part named in `reason`, calling Rust for the rest. Nothing else stays in JS. |
-| **TS** | nothing | nothing | unchanged. Do not port it, even if it looks easy. |
+| **RUST** | All of the member's logic, ported in the P2/P3 task named in `planned_task`, in the module named in `target_rust_module` | one binding function or method per member, plus the JS-callback `ResolutionContext` if the row has `needs_fallback=true` (1.4) | a one-line delegation, with no branches (plan §7: "keep the views branch-free"). A row with `needs_fallback=true` still delegates in one line; the collaborator-call path is kept for that member only, behind the binding (1.4). |
+| **HYBRID** | Everything *except* what the ledger `reason` column says stays in JS | binding for the Rust part, plus the JS-callback `ResolutionContext` if the row has `needs_fallback=true` (1.4), or the JS regex evaluator if the reason names `options.regExp` (3.2) | the JS part named in `reason`, calling Rust for the rest. Nothing else stays in JS. |
+| **TS** | nothing | nothing | unchanged. Do not port it, even if it looks easy. A TS row with `needs_fallback=true` (for example the `Factory` or `ModelManager` constructor) is not ported either: the member stays JS, so it has no Rust path to fall back from, and the flag records coupling that P2-10 lifts into fixtures (SUMMARY §10). |
 
 - The `reason` column of a HYBRID row is a contract. What stays in JS is
   exactly what it names (a user callback, the `yaml` library, dayjs object
@@ -121,7 +121,16 @@ Mechanical rules. Apply them in order.
 - **Reclassifying.** Never change a classification in the TSV by hand. Edit
   `migration/ledger/classification.js`, rerun `build-ledger.js`, run
   `extract-members.js --check`, and get architect sign-off on the task issue.
-  Section 5 lists the rows that #32 overrides until the ledger is rebuilt.
+  Section 5 lists the rows that #32 decisions still override because
+  `classification.js` has not yet been updated for them (OD-6).
+- **TSV columns.** The ledger at `accordproject/concerto` commit `c48423c` has
+  `coupled_tests_grep` (the old name-based grep, kept only for comparison),
+  `w_tests` (W tests that stub or spy on this member or its class),
+  `direct_tests` (any test that calls the member directly) and
+  `needs_fallback` (SUMMARY Method section). There is no `coupled_tests`
+  column any more. Use `w_tests`/`direct_tests` for test planning and
+  `needs_fallback` for the fallback decision (1.4); never use
+  `coupled_tests_grep` as evidence.
 - The TS logic of a converted member stays in the TS source until P5-02,
   behind the `CONCERTO_ENGINE=ts|rust` flag (P4-02). Do not delete it earlier.
 
@@ -145,17 +154,32 @@ declarations and properties in an arena, addressed by the stable `DeclId` and
 - The real implementation is `ModelManager` (the arena). The **fallback
   implementation** is in `concerto-wasm`. It calls back into JS objects, for
   views that a white-box test builds over sinon-stubbed parents. Wire it
-  *only* for the ledger's **fallback rows**: the HYBRID rows whose reason says
-  "collaborator-context fallback" (plan §3: "the fallback is kept only where a
-  W test needs it").
-- **Which rows are fallback rows is decided by the coupling re-derivation**
-  (#32 point 9, section 5 row 9). It recomputes `coupled_tests` from P0-02's
-  per-test tags (`migration/tags/test-tags.tsv`) and the runtime sinon trace
-  (`migration/tags/runtime-stub-trace.json`), ahead of P2-10 and P4, and
-  rebuilds the ledger. After that rebuild, the rebuilt ledger's fallback rows
-  are the list. Until then, the current ledger's fallback rows are the list,
-  and a port that meets a W test needing the fallback on a row not in it
-  raises it on its issue instead of wiring it.
+  *only* for the ledger's **fallback rows** (plan §3: "the fallback is kept
+  only where a W test needs it").
+- **The fallback rows are exactly the TSV rows with `needs_fallback=true`**,
+  whatever their classification. The coupling re-derivation (#32 point 9,
+  section 5 row 9) computed that column per `it()` from P0-02's tags
+  (`migration/tags/test-tags.tsv`) and the runtime sinon trace, and it is
+  already in the ledger at commit `c48423c`. A row is flagged when a W test
+  builds the member's class with `new` while a different class is stubbed in
+  the same test, or stubs the whole class with `createStubInstance`. SUMMARY
+  §9 lists them by class: **19 members across 19 classes**, all constructors
+  (3 RUST: `AssetDeclaration`, `NumberValidator`, `Validator`; 7 HYBRID:
+  `Declaration`, `Decorated`, `Decorator`, `Field`, `ModelFile`, `Property`,
+  `StringValidator`; 9 TS). The HYBRID `reason` text does not decide this;
+  the column does.
+- **A RUST row with `needs_fallback=true`** stays RUST. Its view is still a
+  one-line delegation with no branches in production. The only difference is
+  in the binding: for that member alone, `concerto-wasm` keeps a
+  collaborator-call path, so that when the view is built over a JS parent
+  that is not arena-backed (a sinon-stubbed collaborator), the Rust logic
+  resolves its collaborator calls through the JS-callback `ResolutionContext`
+  instead of the arena. A HYBRID row with the flag is handled the same way
+  for its Rust part. A TS row with the flag gets no fallback, because the
+  member is not ported (1.3).
+- A port that meets a W test needing the fallback on a row *without*
+  `needs_fallback=true` raises it on its issue instead of wiring it; the fix
+  is a ledger rebuild, not a local fallback.
 - Core never knows which implementation it is talking to. Section 3.2 uses
   the same pattern for the `options.regExp` engine.
 
@@ -251,11 +275,15 @@ Error classes in the corpus, for the census a P1-05 or P1-07 check can repeat
 except `ParseException` has a kind above.
 
 `ParseException` (225 fixtures) always comes from concerto-cto in JS, and Rust
-never produces it. `SecurityException` has no throw site. The current Rust
-variants `NamespaceNotFound` and `ValidationFailed` have no TS class. P1-05
-maps each of their uses to the kind the TS code throws at that point
-(`validate()` throws `IllegalModelException`) and deletes them. A kind that no
-TS class matches must not exist.
+never produces it. `SecurityException` has no throw site. There is no
+`ErrorKind` type yet: today `concerto-core` has only the `ConcertoError` enum
+(`concerto-core/src/error.rs`), whose variants `ConcertoError::NamespaceNotFound`
+(raised in `model_manager.rs`) and `ConcertoError::ValidationFailed` (raised
+in `validation.rs`) have no TS class. P1-05 replaces `ConcertoError`'s
+variants with the `{kind, code, params, location}` shape, maps each use of
+those two variants to the kind the TS code throws at that point (`validate()`
+throws `IllegalModelException`), and deletes them. A kind that no TS class
+matches must not exist.
 
 ### 2.4 Which error comes first
 
@@ -282,11 +310,22 @@ Four fixtures record a V8 stack overflow, all from cyclic inheritance
 
 Each has outcome
 `{"error":{"class":"RangeError","component":null,"location":null,"message":"Maximum call stack size exceeded"}}`.
-The recursion point is `ClassDeclaration.getProperties`
-(`src/introspect/classdeclaration.ts:541`), which concatenates
-`classDecl.getProperties()` of its super type with no cycle check. It is
-reached from `ClassDeclaration.validate` ("we also have to check fields
-defined in super classes", line 270).
+There are two recursion points on this path, both in
+`src/introspect/classdeclaration.ts`, and neither has a cycle check:
+
+- `ClassDeclaration.getProperties` (line 541), which concatenates
+  `classDecl.getProperties()` of its super type (line 560). It is reached
+  from `ClassDeclaration.validate` ("we also have to check fields defined in
+  super classes", line 270).
+- `ClassDeclaration.getProperty` (line 519), which, when the name is not an
+  own property, calls `classDecl.getProperty(name)` on its super type
+  (line 530). It is reached from `ClassDeclaration.validate` at line 226
+  (`this.getProperty(this.idField)`), which runs *before* line 270, so on a
+  cyclic model where `this.idField` names no property of any declaration in
+  the cycle this is the recursion that overflows first. It is also reached from
+  line 583 and from every caller of `getProperty` outside `validate`.
+
+Port neither as native recursion.
 
 Rules:
 
@@ -306,16 +345,21 @@ Rules:
    message. A cycle check that TS does not have is an added check (7.1).
 4. Record it in `DIVERGENCES.md` as `ts-bug` (TS lacks the cycle check, and
    the observable error is V8's), citing the four fixture ids. The first task
-   that ports a recursion point on this path (P2-03 for `getProperties`, and
-   P2-08 for the `ModelManager` ops that reach it) adds the row and the
-   golden test.
+   that ports a recursion point on this path (P2-03 for `getProperties` and
+   `getProperty`, and P2-08 for the `ModelManager` ops that reach them) adds
+   the row and the golden test.
 5. Deep but acyclic chains that exceed V8's stack in TS and not in Rust have
    no fixture. Rust returns the normal result, and the port records an
    `engine` row only if a fixture or test ever observes the difference.
-6. A TS path that never terminates, rather than overflowing (for example
-   `getAllSuperTypeDeclarations`, line 502, loops forever on a cycle), has no
-   observable outcome and no fixture. Do not invent an error for it. If a
-   port can reach it, raise it on the task issue.
+6. A TS path that fails on a cycle without recursing has no fixture either.
+   `getAllSuperTypeDeclarations` (line 502) is an iterative `for` loop that
+   pushes each super type onto `results`; on a cycle it never stops pushing,
+   so the array grows without bound until the process runs out of heap or V8
+   throws `RangeError: Invalid array length`. Which of the two happens is not
+   deterministic and no fixture records it. Do not invent an error for it,
+   and do not port it as an unbounded loop that grows a `Vec` (that would
+   exhaust memory in Rust too). If a port can reach it on a cycle, raise it
+   on the task issue.
 
 ---
 
@@ -585,13 +629,20 @@ The maintainer settled the ledger's open questions in three comments on #32:
 the approved defaults (1st comment), then the answers to points 1-9 (2nd
 comment) and the remaining answers to points 6, 7a and 9 (3rd comment). The
 later comments supersede the earlier ones wherever they differ, and #32 says
-this file must reflect them. The table gives the final position. **Until the
-ledger is rebuilt, these override the TSV rows they touch** (OD-6).
+this file must reflect them. The table gives the final position.
+
+The ledger at `accordproject/concerto` commit `c48423c` already applies
+points 1, 2 and 9: its D1 figures use the new denominator, and its
+`w_tests`/`direct_tests`/`needs_fallback` columns are the re-derived
+coupling. Points 3, 4 and 5 are not yet in `classification.js` (the DCS rows
+still name only P4-09, `Factory.newResource` is still TS and
+`DecoratorExtractor.quoteStringValue` is still HYBRID), so **for those rows
+this table overrides the TSV** until `classification.js` is updated (OD-6).
 
 | # | Decision (final) | What it means for a port |
 |---|---|---|
-| 1 | D1 gate: HYBRID counts at full weight (confirmed). Reports also show the half-weight figure. | nothing for implementers. The ledger's 84.1% and 70.2% are stale because of row 2. Recomputed from SUMMARY §1 without the 94.5 excluded weight (denominator 6588.5 − 94.5 = 6494), the figures are about **85.3%** at full weight and **71.3%** at half weight. The rebuilt ledger (OD-6) publishes the authoritative figures, and status reports quote those. |
-| 2 | **Constant markers and `accept()` are excluded from the D1 denominator** (−94.5 weight), because they are not logic. *(Changed from the 1st comment, which kept them in.)* | still do not port them (1.1 rules 3 and 5). They stay on the TS class unchanged, and are counted neither as TS nor as ported. |
+| 1 | D1 gate: HYBRID counts at full weight (confirmed). | nothing for implementers. Status reports quote the ledger's published figures (SUMMARY §1, commit `c48423c`): **RUST+HYBRID 85.3%** at full weight against the ≥70% target (met), and **RUST only 57.2%**, over the new denominator of **6498.5** weight. The old 84.1% (all 508 members, denominator 6588.5) and the 1st comment's 70.2% half-weight figure are superseded. The ledger publishes no half-weight figure any more; if a report needs one, it is (3715 + 1826/2) / 6498.5 ≈ 71.2%, labelled as derived. |
+| 2 | **Constant markers and `accept()` are excluded from the D1 denominator**, because they are not logic. *(Changed from the 1st comment, which kept them in.)* The maintainer's note gives −94.5 weight; the rebuilt ledger excludes **60 members, weight 90** (the 53 constant-return rows and the 7 `accept()` rows, SUMMARY §1 and §8 item 2). The 4.5 difference does not move the headline (85.3% either way); quote the ledger's 60 / 90. | still do not port them (1.1 rules 3 and 5). They stay on the TS class unchanged, and are counted neither as TS nor as ported. |
 | 3 | DCS in Rust is its own task, **P2-12** (#82), before its view conversion in P4-09 (confirmed) | `concerto_core::dcs` is ported in P2-12, not in P4-09 |
 | 4 | **The model checks in `Factory.newResource` are delegated to Rust** (abstract type, identifier type, empty identifier, identifier regex). The Factory becomes HYBRID. Instance creation stays in TS (D7). (confirmed) | the four checks, with their `factory-newinstance-*` messages, become one Rust function in `instance`. Factory (TS) calls it before it builds the object, in the same order as today. The `uuid` and dayjs work and the construction of the `Resource` stay in TS. |
 | 5 | **YAML plain-scalar quoting is ported to Rust** with golden tests, so there is no WASM call per string (confirmed) | `DecoratorExtractor.quoteStringValue` becomes fully Rust. Golden tests compare against `yaml.stringify` output, byte for byte. |
@@ -599,7 +650,7 @@ ledger is rebuilt, these override the TSV rows they touch** (OD-6).
 | 7 | **Regex: all evaluation against a validator's regex happens in Rust** (`regress`). The facade only converts the pattern into a JS `RegExp` for TS callers of `StringValidator.getRegex()`, and that `RegExp` is never used for validation. *(Changed from the 1st comment.)* | section 3.2 |
 | 7a | **The `options.regExp` custom engine: option (b).** Rust evaluates by default. Only when a caller supplies a custom engine through `options.regExp` does evaluation fall back to that JS engine. `getRegex()` converts the pattern into a JS object for TS callers. | section 3.2: the evaluator trait in core, its JS implementation in `concerto-wasm`, and the TS scope of the custom engine (`ScalarDeclaration` validators always use the built-in engine) |
 | 8 | `ModelLoader`, `writeModelsToFileSystem` and `updateExternalModels` stay in TS. There is no Rust loader, and the WASM/browser build needs none. (confirmed) | do not port `modelloader.ts`, `writeModelsToFileSystem` or the download in `updateExternalModels` |
-| 9 | **Coupling: yes, and now.** Re-derive the ledger's `coupled_tests` from P0-02's per-test tags and the runtime sinon trace. This is done now, ahead of P2-10 and P4, because it decides where views need a collaborator fallback and which white-box tests need rewriting as fixtures. | inputs: `migration/tags/test-tags.tsv` (B/W/M per `it()`, the authority on which tests are white-box) and `migration/tags/runtime-stub-trace.json`. Its output, the rebuilt ledger, fixes the fallback rows (1.4) and the W tests that P2-10 lifts into fixtures. A port does not re-derive coupling itself. |
+| 9 | **Coupling: yes, and now.** Re-derive the ledger's coupling from P0-02's per-test tags and the runtime sinon trace, ahead of P2-10 and P4, because it decides where views need a collaborator fallback and which white-box tests need rewriting as fixtures. **Done** in the ledger at commit `c48423c`. | the TSV's `coupled_tests` column is gone. It is replaced by `w_tests`, `direct_tests` and `needs_fallback`, and the old grep survives only as `coupled_tests_grep`, for comparison (1.3). The fallback rows are exactly the `needs_fallback=true` rows: 19 members across 19 classes (SUMMARY §9, section 1.4). The W tests to lift into fixtures are SUMMARY §10: 272 W tests across 24 files, which drives P2-10. SUMMARY §11 lists the 19 of them that map to no ledger member (6.1). A port does not re-derive coupling itself. |
 
 ---
 
@@ -618,9 +669,30 @@ task is the first three items for the units it owns.
 - Port the **B** and **M** tests (tags in `migration/tags/test-tags.tsv`)
   assertion for assertion: same inputs, same expected values, same expected
   message and kind.
-- Port a **W** test when the behaviour it asserts can be reached with real
-  data. Otherwise list it at the top of the file as
-  `// not ported (W): <title>: covered by <fixture id or lifted fixture>`.
+- **W** tests. The ledger's SUMMARY (commit `c48423c`) decides which W tests
+  a unit must deal with, and how:
+  - **SUMMARY §10** lists every W test to lift, by test file (272 W tests
+    across 24 files). These are P2-10's work: P2-10 replaces their sinon
+    stubs and spies with real fixtures under `migration/oracle/lifted/`. A P2
+    or P3 unit ports a §10 test directly when the behaviour it asserts can
+    be reached with real data; otherwise it lists it at the top of the file
+    as `// not ported (W): <title>: lifted in P2-10 (SUMMARY §10)`, and
+    replaces that with the lifted fixture id once P2-10 has produced it.
+  - **SUMMARY §11** lists the 19 W tests that map to no ledger member (bare
+    `.ast` reads, and one test with no resolvable stub target). They are
+    still in §10's 272, so they are still lifted, but no member's `w_tests`
+    column points at them: the unit that owns the test *file* claims them.
+    List each as `// not ported (W): <title>: unmapped (SUMMARY §11), lifted
+    in P2-10`, or port it if real data reaches the behaviour.
+  - **SUMMARY §9** (`needs_fallback`) says which W tests the view must keep
+    passing unchanged in rust mode through the collaborator fallback (1.4),
+    rather than waiting for the lift. Those tests are never "not ported" at
+    the P4 view task: `CONCERTO_ENGINE=rust` must pass them.
+  - A W test that appears in none of §9, §10 or §11 does not exist: every
+    W-tagged `it()` in `test-tags.tsv` is in §10 (§11 says so). If a unit
+    finds one, the tags or the ledger are stale; raise it on the issue.
+  - Use the member's `w_tests` and `direct_tests` columns to find its tests.
+    Never use `coupled_tests_grep`.
 - **Never edit `packages/concerto-core/test/**`.** A hook enforces this, and
   so does review.
 - Keep the existing Rust tests green. Where an existing test asserts
@@ -638,7 +710,11 @@ A unit is accountable for two sets of fixtures.
   `fixtures/manifest.json` for the counts. Ops of subclasses count too
   (`ClassDeclaration.validate` for `classdeclaration.ts`,
   `AssetDeclaration.declarationKind` and so on). All of them pass at the
-  unit's task exit.
+  unit's task exit. The `lifted/` fixtures are the ones P2-10 produces from
+  the W tests in SUMMARY §10 (including the §11 unmapped ones); once P2-10
+  has landed, a lifted fixture for the unit's op is an own-op fixture like
+  any other, and it replaces the `not ported (W)` note of 6.1. Before P2-10,
+  the note cites SUMMARY §10 or §11 instead.
 - **Cross-op fixtures: fixtures of another op whose outcome the unit's code
   decides.** Most validation behaviour is observed under the model-loading
   ops, not under the unit's own ops. For `IllegalModelException`, for
@@ -903,7 +979,7 @@ named task.
 | OD-3 | The generated metamodel types collapse `null` into absent and narrow Integer/Long AST fields to `i32`/`i64`, while TS keeps the JS object (key order, `null`, any number) and exposes it as `.ast` / `getAst()` | Each `ModelFile` keeps the AST it was given as `serde_json::Value` (with `preserve_order`) as the source of truth for `ast()`/`getAst()` and for tri-state reads. The typed `mm::*` view is used for logic. A numeric field that fails to deserialise where TS accepts the model is a failure to fix in `concerto-metamodel` codegen, not in core. | P1-02 |
 | OD-4 | The message for an invalid regex comes from the engine (V8 in TS, `regress` in Rust). No fixture or unit test observes it today. | Rust reports `kind = Validator`, `errorType = RegexValidatorException`, with V8's wording (`Invalid regular expression: /<source>/<flags>: <reason>`) for the reasons that regress can map. Record any other reason as an `engine` divergence. | P2-02 |
 | OD-5 | Which en.json keys belong in the Rust catalogue? `composer-*`, `whereastvalidator-*`, `like` and `test-*` have no throw site in concerto-core. | Port every key used by a RUST or HYBRID member, plus `factory-newinstance-*` (#32 point 4) and `typenotfounderror-defaultmessage`. Do not port unused keys. `Globalize` stays TS and keeps en.json for them. | P1-05 |
-| OD-6 | The ledger TSV predates #32. Factory model checks are still TS, `quoteStringValue` is HYBRID, and DCS rows point only at P4-09. Also, the P2-12 brief lists "the DCS/YAML converter", but the ledger keeps `dcsconverter.ts` TS (`yaml` npm lib). It also predates #32 points 2 and 9: its D1 figures still count the constant markers and `accept()`, and its `coupled_tests` come from name matching. | Section 5 overrides the TSV until `classification.js` is updated and rebuilt. The coupling re-derivation (point 9) rebuilds it first, ahead of P2-10 and P4, and that rebuild also applies point 2 to the D1 figures. P2-12 does the DCS rows. The Factory helper is planned as P3-01 (Rust) and P4-10 (view). `dcsconverter.ts` stays TS unless the maintainer extends #32 point 5 to cover it. | P2-12 / maintainer |
+| OD-6 | The ledger at `accordproject/concerto` commit `c48423c` applies #32 points 1, 2 and 9 (new D1 denominator; `w_tests`/`direct_tests`/`needs_fallback` in place of `coupled_tests`), but `classification.js` does not yet apply points 3, 4 and 5: Factory model checks are still TS, `quoteStringValue` is HYBRID, and DCS rows point only at P4-09. Also, the P2-12 brief lists "the DCS/YAML converter", but the ledger keeps `dcsconverter.ts` TS (`yaml` npm lib). | For points 3, 4 and 5, section 5 overrides the TSV until `classification.js` is updated for them and the ledger is re-run. For everything else, including the fallback rows (`needs_fallback=true`, 1.4) and the D1 figures (85.3% full weight, 57.2% RUST only, denominator 6498.5), the TSV and SUMMARY at `c48423c` are authoritative as published. P2-12 does the DCS rows. The Factory helper is planned as P3-01 (Rust) and P4-10 (view). `dcsconverter.ts` stays TS unless the maintainer extends #32 point 5 to cover it. | P2-12 / maintainer |
 | OD-7 | How does the native harness find the corpus, and how does a task run one op? | Set an env var `CONCERTO_ORACLE_DIR`, defaulting to `../concerto/migration/oracle`, and a filter env var `ORACLE_OP=<Class>.<member>` (a prefix match), run with `cargo test -p accordproject-concerto-core --test oracle`. | P1-07 |
 | OD-8 | New dependencies | `regress` (required by the plan), `indexmap` (3.7) and `ryu-js` (3.1) are pre-approved for `concerto-core`. Anything else needs architect approval on the issue. | this rulebook |
 | OD-9 | How does the native harness rebuild the fixtures whose inputs are CTO text (13,006 of 15,037, section 6.2), when CTO parsing stays in JS? | P1-07 adds a JS generator in `migration/oracle/` that runs the frozen `concerto-cto` 5.0.0 parser (the one the oracle recorded with) over every CTO text in the corpus, fixture recipes and blobs included. It writes a CTO→AST cache keyed by the SHA-256 of the exact CTO text and the parser arguments that affect the AST, storing either the AST or the recorded `ParseException`. The cache is committed next to the corpus and regenerated whenever the corpus is re-recorded. A check fails if any CTO text in the corpus has no cache entry. The native harness replays an `addCTOModel` step as `add_model` with the cached AST, and never parses CTO in Rust. | P1-07 |
@@ -953,8 +1029,10 @@ any item fails, and cite the item number.
    `mm::*` with no hand-redeclared metamodel fields (1.1, 1.2), and each item
    has a `TS: <Class>.<member>` doc line.
 8. Collaborator calls go through `ResolutionContext`. The JS fallback is wired
-   only for the ledger's fallback rows, as fixed by the coupling
-   re-derivation (1.4, section 5 row 9).
+   for exactly the unit's rows with `needs_fallback=true` in the TSV (SUMMARY
+   §9) and no others (1.4, section 5 row 9). A RUST row with the flag still
+   has a branch-free one-line view; its collaborator-call path lives only in
+   the binding, for that member only.
 9. There are no WASM or JS types in core's public API, and the `cargo tree`
    and `grep` checks in section 4 are clean.
 10. Serializer checks exist once and are shared by the single-call path and
@@ -963,7 +1041,8 @@ any item fails, and cite the item number.
 
 **Evidence**
 11. Every `it()` in the unit's TS test files is ported, or listed as not
-    ported (W) with the fixture that covers it.
+    ported (W) with the lifted fixture that covers it, or, before P2-10,
+    with its SUMMARY §10 or §11 entry (6.1).
 12. Every own-op fixture of the unit passes natively, and so does every
     attributed cross-op fixture that is due. The deferred ones are listed
     with the task they are due in, and no fixture that passed before the
