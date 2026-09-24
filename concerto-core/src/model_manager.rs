@@ -264,10 +264,15 @@ pub struct ModelManager {
 }
 
 /// The next handle of an arena table holding `len` entries.
+///
+/// A full arena is a Rust-only failure (PORTING.md 2.3): TS keeps its model
+/// graph in unbounded JS arrays and objects, so no TS class, message or
+/// fixture corresponds to it. It keeps the nearest existing variant,
+/// `ConcertoError::IllegalModel` (the model cannot be loaded), with no
+/// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
+/// TS class matches. Four billion elements is not a model anyone loads, but
+/// the boundary path must not panic.
 fn next_index(len: usize) -> Result<u32> {
-    // TODO(#42): a catalogue entry for a full arena; until P1-05 lands this
-    // uses the nearest existing variant. Four billion elements is not a model
-    // anyone loads, but the boundary path must not panic.
     u32::try_from(len).map_err(|_| ConcertoError::IllegalModel {
         message: "the model manager cannot address any more elements".into(),
         file_name: None,
@@ -287,9 +292,16 @@ fn not_a_function(expression: &str) -> ConcertoError {
 }
 
 /// A handle this manager never handed out.
+///
+/// A stale or foreign handle is a Rust-only failure (PORTING.md 2.3): TS
+/// passes object references, which cannot dangle or belong to another
+/// manager, so no TS class, message or fixture corresponds to it, and it
+/// can only arise from a bug in a caller holding handles (the binding, a
+/// harness). It keeps the nearest existing variant,
+/// `ConcertoError::TypeNotFound` (the handle names no element), with no
+/// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
+/// TS class matches.
 fn unknown(node: Node) -> ConcertoError {
-    // TODO(#42): a catalogue entry for a stale or foreign handle; until P1-05
-    // lands this uses the nearest existing variant.
     ConcertoError::TypeNotFound {
         type_name: format!("{node:?}"),
     }
@@ -484,12 +496,28 @@ impl ModelManager {
     /// Resolves a short name, as written inside `in_namespace`, to its
     /// fully-qualified name, using the primitives, local declarations and named
     /// imports the model file can see.
-    pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String> {
-        let mf = self
-            .model_file(in_namespace)
-            .ok_or_else(|| ConcertoError::NamespaceNotFound {
-                namespace: in_namespace.to_string(),
-            })?;
+    ///
+    /// `location` is the AST node's `location`, copied verbatim into the
+    /// error this raises when the namespace is not registered (PORTING.md
+    /// section 2.1); pass `None` where the caller has no AST node in scope.
+    pub fn resolve_type_name(
+        &self,
+        in_namespace: &str,
+        short: &str,
+        location: Option<serde_json::Value>,
+    ) -> Result<String> {
+        let mf = self.model_file(in_namespace).ok_or_else(|| {
+            // TS: BaseModelManager.getType's unregistered-namespace path
+            // (src/basemodelmanager.ts), reused for the equivalent check
+            // here (error/catalogue.rs doc comment on the entry).
+            let fqn = get_fully_qualified_name(in_namespace, short);
+            ContractError::type_not_found(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", fqn.clone())],
+                fqn,
+                location,
+            )
+        })?;
 
         mf.resolve_local_type(short)
             .ok_or_else(|| ConcertoError::TypeNotFound {
@@ -574,7 +602,17 @@ impl ModelManager {
         if let Some(resolved) = &ti.resolved_name {
             return Ok(Some(resolved.clone()));
         }
-        Ok(Some(self.resolve_type_name(in_namespace, &ti.name)?))
+        // TS: ClassDeclaration._resolveSuperType passes `this.ast.location`
+        // to every error it raises (src/introspect/classdeclaration.ts); the
+        // class whose super type is being resolved is the AST node in scope
+        // here, so its `location` is passed on, re-serialised from the typed
+        // `mm::Range` by `location_value` (PORTING.md 2.1).
+        let location = class.location().and_then(crate::error::location_value);
+        Ok(Some(self.resolve_type_name(
+            in_namespace,
+            &ti.name,
+            location,
+        )?))
     }
 
     /// The handle of the declaration a model file's `getLocalType(type)`
@@ -749,9 +787,16 @@ impl ResolutionContext for ModelManager {
                     .transpose()?,
             },
         };
-        // TODO(#42): TS throws `Error('Failed to find fully qualified type
-        // name for property <name> with type <type>')`; that message needs a
-        // catalogue entry, which P1-05 owns.
+        // TODO(#48): TS: Property.getFullyQualifiedTypeName
+        // (src/introspect/property.ts:218) throws `ErrorKind::Error` with the
+        // inline template `'Failed to find fully qualified type name for
+        // property ' + this.name + ' with type ' + this.type` here
+        // (ModelFile.getFullyQualifiedTypeName itself returns null and never
+        // throws). P2-04 ports Property.getFullyQualifiedTypeName and adds
+        // that template and its golden test to the catalogue (PORTING.md
+        // 6.3). Until then the already-ported ModelUtil.isAssignableTo
+        // (model_util.rs) reaches this natively as `TypeNotFound`, where TS
+        // throws `Error`.
         resolved.ok_or_else(|| ConcertoError::TypeNotFound {
             type_name: type_name.unwrap_or("null").to_string(),
         })
@@ -1237,5 +1282,35 @@ mod tests {
             Some(true)
         );
         assert!(ScalarDeclaration::validate(&mgr, &email).is_ok());
+    }
+
+    /// PORTING.md 2.1: `location` is copied verbatim from the AST node the
+    /// caller passes, never recomputed and never hard-coded to `None`.
+    #[test]
+    fn resolve_type_name_carries_the_given_location_verbatim() {
+        let mgr = ModelManager::new().unwrap();
+        let location = serde_json::json!({
+            "start": {"line": 3, "column": 1, "offset": 20},
+            "end": {"line": 3, "column": 9, "offset": 28}
+        });
+        let err = mgr
+            .resolve_type_name("org.does.not.exist@1.0.0", "Foo", Some(location.clone()))
+            .unwrap_err();
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_type_name_with_no_location_carries_none() {
+        let mgr = ModelManager::new().unwrap();
+        let err = mgr
+            .resolve_type_name("org.does.not.exist@1.0.0", "Foo", None)
+            .unwrap_err();
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, None),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
     }
 }

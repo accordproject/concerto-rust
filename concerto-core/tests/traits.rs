@@ -186,7 +186,7 @@ fn a_declaration_validates_against_the_loaded_models() {
             .validate(&manager, "org.example@1.0.0")
             .unwrap_err()
             .to_string(),
-        "validation failed: Could not find super type Missing for Child"
+        "Could not find super type Missing for Child"
     );
     assert!(colour.validate(&manager, "org.example@1.0.0").is_ok());
 }

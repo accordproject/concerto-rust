@@ -95,6 +95,10 @@ type Result<T> = std::result::Result<T, Error>;
 fn kind_name(kind: ErrorKind) -> &'static str {
     match kind {
         ErrorKind::IllegalModel => "IllegalModel",
+        // Not yet reached by the trial units this scaffold binds; added so
+        // the match stays exhaustive now that P1-05 gives `ErrorKind` a
+        // `TypeNotFound` variant (PORTING.md table 2.3).
+        ErrorKind::TypeNotFound => "TypeNotFound",
         ErrorKind::Validator => "Validator",
         ErrorKind::Error => "Error",
         ErrorKind::JsTypeError => "JsTypeError",

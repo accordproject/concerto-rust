@@ -9,15 +9,23 @@
 //! an inheritance chain. These are the checks the Concerto specification calls
 //! semantic validation, and they run over an already loaded [`ModelManager`].
 //!
-//! Validation stops at the first problem. A rule that a model breaks is
-//! reported as [`ConcertoError::ValidationFailed`]; a model that cannot be
-//! walked at all, such as one whose inheritance is circular, surfaces the
-//! [`ConcertoError::IllegalModel`] raised while resolving it. A model that
-//! validates cleanly returns `Ok(())`.
+//! Validation stops at the first problem. TS raises every one of these as
+//! `IllegalModelException` (`ClassDeclaration.validate` and its callees;
+//! PORTING.md section 2.3), so every error here carries
+//! `ConcertoError::Contract` with `ErrorKind::IllegalModel` — built through
+//! [`ContractError::pre_port`] (`failed`, below) until a P2 task ports the
+//! check's exact TS wording. A model that cannot be walked at all, such as
+//! one whose inheritance is circular, surfaces the
+//! [`ConcertoError::IllegalModel`] raised while resolving it. Note that TS
+//! itself has no cycle check on this path and instead recurses until V8
+//! overflows the stack (`RangeError`, PORTING.md section 2.5): this
+//! pre-port cycle check is not yet a faithful port, and section 2.5 assigns
+//! fixing it to the task that ports the recursion point it stands in for.
+//! A model that validates cleanly returns `Ok(())`.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{ConcertoError, Result};
+use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
@@ -26,6 +34,26 @@ use crate::introspect::property::Property;
 use crate::introspect::{Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{get_fully_qualified_name, is_primitive_type};
+
+/// A class's own AST `location`, for [`failed`]'s `location` parameter
+/// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
+/// `mm::Range`, so this re-serialises it through
+/// [`crate::error::location_value`]; it is not a verbatim copy of the AST's
+/// JSON the way `ScalarDeclaration::process` reads `ast.location`.
+fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
+    class.location().and_then(crate::error::location_value)
+}
+
+/// [`class_location`], generalised over any top-level declaration. `None` for
+/// an enum, scalar or map declaration: only [`ClassDeclaration`] reads a
+/// `location` field so far (`MapDeclaration`'s own doc comment records that
+/// its `location` is deliberately not read).
+fn declaration_location(declaration: &Declaration) -> Option<serde_json::Value> {
+    match declaration {
+        Declaration::Class(class) => class_location(class),
+        Declaration::Enum(_) | Declaration::Scalar(_) | Declaration::Map(_) => None,
+    }
+}
 
 impl ModelManager {
     /// Validates every loaded user model, leaving the built-in system model
@@ -62,10 +90,13 @@ fn check_import_clashes(model_file: &ModelFile) -> Result<()> {
         .collect();
     for declaration in model_file.declarations() {
         if imported.contains(declaration.name()) {
-            return Err(failed(format!(
-                "Type {} clashes with an imported type with the same name",
-                declaration.name()
-            )));
+            return Err(failed(
+                format!(
+                    "Type {} clashes with an imported type with the same name",
+                    declaration.name()
+                ),
+                declaration_location(declaration),
+            ));
         }
     }
     Ok(())
@@ -93,21 +124,31 @@ impl Validate for ClassDeclaration {
         )?;
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
-        check_unique_decorators(self)?;
+        check_unique_decorators(self, class_location(self))?;
         for property in self.own_properties() {
-            check_property_type(manager, namespace, self.name(), property)?;
-            check_unique_decorators(property)?;
+            check_property_type(manager, namespace, self, property)?;
+            // Neither `Property` nor `mm::Decorator` carries its own `location`
+            // (only `ClassDeclaration` does so far, 7.2), so the owning class's
+            // is the nearest AST node in scope, as for the class's own decorators
+            // above.
+            check_unique_decorators(property, class_location(self))?;
         }
         Ok(())
     }
 }
 
 /// An element may not carry the same decorator twice.
-fn check_unique_decorators(element: &impl Decorated) -> Result<()> {
+fn check_unique_decorators(
+    element: &impl Decorated,
+    location: Option<serde_json::Value>,
+) -> Result<()> {
     let mut seen = HashSet::new();
     for decorator in element.decorators() {
         if !seen.insert(decorator.name.as_str()) {
-            return Err(failed(format!("Duplicate decorator {}", decorator.name)));
+            return Err(failed(
+                format!("Duplicate decorator {}", decorator.name),
+                location,
+            ));
         }
     }
     Ok(())
@@ -133,11 +174,14 @@ fn check_super_type(
     if resolves_to_class {
         Ok(())
     } else {
-        Err(failed(format!(
-            "Could not find super type {} for {}",
-            super_type.name,
-            class.name()
-        )))
+        Err(failed(
+            format!(
+                "Could not find super type {} for {}",
+                super_type.name,
+                class.name()
+            ),
+            class_location(class),
+        ))
     }
 }
 
@@ -151,11 +195,14 @@ fn check_unique_field_names(
     let mut seen = HashSet::new();
     for property in manager.get_all_properties(fqn)? {
         if !seen.insert(property.name()) {
-            return Err(failed(format!(
-                "{} has more than one field named {}",
-                class.name(),
-                property.name()
-            )));
+            return Err(failed(
+                format!(
+                    "{} has more than one field named {}",
+                    class.name(),
+                    property.name()
+                ),
+                class_location(class),
+            ));
         }
     }
     Ok(())
@@ -176,22 +223,29 @@ fn check_identifier(
         .iter()
         .find(|property| property.name() == field_name)
         .ok_or_else(|| {
-            failed(format!(
-                "Class {} is identified by {field_name}, which it does not declare",
-                class.name()
-            ))
+            failed(
+                format!(
+                    "Class {} is identified by {field_name}, which it does not declare",
+                    class.name()
+                ),
+                class_location(class),
+            )
         })?;
 
     if field.is_optional() {
-        return Err(failed(format!(
-            "Identifying fields cannot be optional: {field_name}"
-        )));
+        return Err(failed(
+            format!("Identifying fields cannot be optional: {field_name}"),
+            class_location(class),
+        ));
     }
     if !is_string_typed(manager, namespace, field) {
-        return Err(failed(format!(
-            "Class {} identifier {field_name} must be a String or a String-based scalar",
-            class.name()
-        )));
+        return Err(failed(
+            format!(
+                "Class {} identifier {field_name} must be a String or a String-based scalar",
+                class.name()
+            ),
+            class_location(class),
+        ));
     }
     Ok(())
 }
@@ -221,20 +275,24 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
 fn check_property_type(
     manager: &ModelManager,
     namespace: &str,
-    owner: &str,
+    class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
+    let owner = class.name();
     let Some(type_identifier) = property.type_identifier() else {
         return Ok(());
     };
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
-        return Err(failed(format!(
-            "Relationship {} on {} cannot be to the primitive type {}",
-            property.name(),
-            owner,
-            type_identifier.name
-        )));
+        return Err(failed(
+            format!(
+                "Relationship {} on {} cannot be to the primitive type {}",
+                property.name(),
+                owner,
+                type_identifier.name
+            ),
+            class_location(class),
+        ));
     }
 
     let target = resolve(
@@ -246,12 +304,15 @@ fn check_property_type(
     .and_then(|fqn| manager.get_declaration(&fqn).ok());
 
     let Some(target) = target else {
-        return Err(failed(format!(
-            "Undeclared type {} referenced by {}.{}",
-            type_identifier.name,
-            owner,
-            property.name()
-        )));
+        return Err(failed(
+            format!(
+                "Undeclared type {} referenced by {}.{}",
+                type_identifier.name,
+                owner,
+                property.name()
+            ),
+            class_location(class),
+        ));
     };
 
     if property.is_relationship() {
@@ -259,20 +320,26 @@ fn check_property_type(
             .as_class()
             .is_some_and(ClassDeclaration::is_identified);
         if !identifiable {
-            return Err(failed(format!(
-                "Relationship {} on {} must be to a class that has an identifier",
-                property.name(),
-                owner
-            )));
+            return Err(failed(
+                format!(
+                    "Relationship {} on {} must be to a class that has an identifier",
+                    property.name(),
+                    owner
+                ),
+                class_location(class),
+            ));
         }
     }
 
     if property.size_validator().is_some() && !property.is_array() && !target.is_map_declaration() {
-        return Err(failed(format!(
-            "size validator can only be applied to array or map properties: {}.{}",
-            owner,
-            property.name()
-        )));
+        return Err(failed(
+            format!(
+                "size validator can only be applied to array or map properties: {}.{}",
+                owner,
+                property.name()
+            ),
+            class_location(class),
+        ));
     }
 
     Ok(())
@@ -289,7 +356,12 @@ fn resolve(
 ) -> Option<String> {
     match reference_namespace {
         Some(ns) => Some(get_fully_qualified_name(ns, name)),
-        None => manager.resolve_type_name(namespace, name).ok(),
+        // The error is discarded (`.ok()`) by every caller: they use `None`
+        // to mean "does not resolve" and build their own message (`failed`,
+        // below), so the location `resolve_type_name` would attach to its
+        // own error never surfaces. Passing `None` here is exact, not a
+        // shortcut.
+        None => manager.resolve_type_name(namespace, name, None).ok(),
     }
 }
 
@@ -301,9 +373,16 @@ fn check_import_namespaces(model_file: &ModelFile) -> Result<()> {
         let (name, version) = split_versioned_namespace(import.namespace())?;
         match versions.get(&name) {
             Some(seen) if *seen != version => {
-                return Err(failed(format!(
-                    "Importing types from different versions ({seen} and {version}) of the same namespace {name} is not permitted"
-                )));
+                // No class-like declaration is in scope for an import check
+                // (`ModelFile` itself carries no `location` field in this
+                // port, 7.2): `None` here is a placeholder, like `failed`'s
+                // doc comment explains, not a claim TS passes none.
+                return Err(failed(
+                    format!(
+                        "Importing types from different versions ({seen} and {version}) of the same namespace {name} is not permitted"
+                    ),
+                    None,
+                ));
             }
             _ => {
                 versions.insert(name, version);
@@ -319,10 +398,15 @@ fn check_imported_types_exist(manager: &ModelManager, model_file: &ModelFile) ->
         for name in import.imported_names() {
             let fqn = get_fully_qualified_name(import.namespace(), name);
             if manager.get_declaration(&fqn).is_err() {
-                return Err(failed(format!(
-                    "Type {name} is not defined in namespace {}",
-                    import.namespace()
-                )));
+                // As above (`check_import_namespaces`): no class-like
+                // declaration is in scope for an import check.
+                return Err(failed(
+                    format!(
+                        "Type {name} is not defined in namespace {}",
+                        import.namespace()
+                    ),
+                    None,
+                ));
             }
         }
     }
@@ -354,11 +438,14 @@ fn check_identity_matches_super(
         return Ok(());
     };
     if let Some(field) = super_class.identifier_field_name() {
-        return Err(failed(format!(
-            "Super type {} has an explicit identifier {field} that {} cannot redeclare",
-            super_type.name,
-            class.name()
-        )));
+        return Err(failed(
+            format!(
+                "Super type {} has an explicit identifier {field} that {} cannot redeclare",
+                super_type.name,
+                class.name()
+            ),
+            class_location(class),
+        ));
     }
     Ok(())
 }
@@ -386,19 +473,29 @@ impl Validate for MapDeclaration {
     }
 }
 
+/// Every error in `check_map_types` passes `location: None`: `MapDeclaration`'s
+/// own doc comment records that its `location` (and its key's and value's) is
+/// deliberately not read, so there is no AST node to copy from, not a gap
+/// left for later.
 fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration) -> Result<()> {
     if !MAP_KEY_KINDS.contains(&map.key_kind()) {
-        return Err(failed(format!(
-            "The key of map {} must be a String or DateTime, or a scalar over one of them",
-            map.name()
-        )));
+        return Err(failed(
+            format!(
+                "The key of map {} must be a String or DateTime, or a scalar over one of them",
+                map.name()
+            ),
+            None,
+        ));
     }
     if !MAP_VALUE_KINDS.contains(&map.value_kind()) {
-        return Err(failed(format!(
-            "The value of map {} may not be a {}",
-            map.name(),
-            map.value_kind()
-        )));
+        return Err(failed(
+            format!(
+                "The value of map {} may not be a {}",
+                map.name(),
+                map.value_kind()
+            ),
+            None,
+        ));
     }
 
     // An object key names a scalar, which has to be over a String or DateTime.
@@ -407,10 +504,13 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
             .and_then(Typed::type_name);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
-            return Err(failed(format!(
-                "The key of map {} must be a String or DateTime, or a scalar over one of them",
-                map.name()
-            )));
+            return Err(failed(
+                format!(
+                    "The key of map {} must be a String or DateTime, or a scalar over one of them",
+                    map.name()
+                ),
+                None,
+            ));
         }
     }
 
@@ -419,30 +519,52 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
         let declared = resolve(manager, namespace, &value.name, value.namespace.as_deref())
             .and_then(|fqn| manager.get_declaration(&fqn).ok());
         let Some(declared) = declared else {
-            return Err(failed(format!(
-                "Undeclared type {} referenced by the value of map {}",
-                value.name,
-                map.name()
-            )));
+            return Err(failed(
+                format!(
+                    "Undeclared type {} referenced by the value of map {}",
+                    value.name,
+                    map.name()
+                ),
+                None,
+            ));
         };
         if !declared.is_class_declaration() && !declared.is_scalar_declaration() {
-            return Err(failed(format!(
-                "The value of map {} must be a concept or a scalar, and {} is neither",
-                map.name(),
-                value.name
-            )));
+            return Err(failed(
+                format!(
+                    "The value of map {} must be a concept or a scalar, and {} is neither",
+                    map.name(),
+                    value.name
+                ),
+                None,
+            ));
         }
     }
     Ok(())
 }
 
-/// Builds a [`ConcertoError::ValidationFailed`] with the given message.
-fn failed(message: String) -> ConcertoError {
-    ConcertoError::ValidationFailed { message }
+/// Builds a semantic-validation error from a hand-written message.
+///
+/// TS: `ClassDeclaration.validate` and its callees throw
+/// `IllegalModelException` for every one of these checks (section 2.3), so
+/// `kind` is `IllegalModel`. The message text itself is not yet a faithful
+/// port of the TS wording (that is P2-01/P2-03/P2-08's job, one class at a
+/// time, PORTING.md section 7.2), so it is built with
+/// [`ContractError::pre_port`] rather than a catalogue code.
+///
+/// `location` is the AST node's `location`, copied verbatim, exactly as
+/// every real TS throw on this path passes `this.ast.location` (PORTING.md
+/// 2.1); callers pass their class's own [`class_location`], or `None` where
+/// no class-like declaration is in scope (2.2's rule that `location` is
+/// `None` exactly where TS passes none does not yet apply to every check
+/// here, since the check itself is still pre-port; `None` is a placeholder
+/// there too, not a claim that TS passes none).
+fn failed(message: String, location: Option<serde_json::Value>) -> ConcertoError {
+    ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::error::ConcertoError;
     use crate::model_manager::ModelManager;
 
     /// Loads `org.example@1.0.0` with the given declarations and validates it.
@@ -492,6 +614,28 @@ mod tests {
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" }
         }))]));
         assert!(err.unwrap_err().to_string().contains("super type"));
+    }
+
+    /// PORTING.md 2.1: `failed`'s `location` is the failing class's own AST
+    /// `location`, copied verbatim, not hard-coded to `None` (P1-05 exit
+    /// condition).
+    #[test]
+    fn super_type_that_is_missing_carries_the_class_ast_location() {
+        let location = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Range",
+            "start": {"$class": "concerto.metamodel@1.0.0.Position", "line": 3, "column": 1, "offset": 20},
+            "end": {"$class": "concerto.metamodel@1.0.0.Position", "line": 3, "column": 9, "offset": 28}
+        });
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Employee",
+            "location": location,
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" }
+        }))]))
+        .unwrap_err();
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
     }
 
     #[test]
