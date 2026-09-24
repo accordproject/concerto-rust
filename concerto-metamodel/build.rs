@@ -411,8 +411,13 @@ impl<'a> TypeTable<'a> {
         let mut rust = match kind {
             "StringProperty" => "String".to_string(),
             "BooleanProperty" => "bool".to_string(),
-            "IntegerProperty" => "i32".to_string(),
-            "LongProperty" => "i64".to_string(),
+            // Integer and Long AST fields are widened to `f64`: TS reads
+            // them as plain JS numbers (53-bit semantics), so a Long bound
+            // above `i64::MAX`, an Integer bound that overflows `i32`, or a
+            // float in a location field all load, matching the TS reference
+            // (OD-3). `i32`/`i64` would reject models TS accepts.
+            "IntegerProperty" => "f64".to_string(),
+            "LongProperty" => "f64".to_string(),
             "DoubleProperty" => "f64".to_string(),
             "ObjectProperty" => {
                 let target = owner.resolve(&property["type"]);
