@@ -5,6 +5,7 @@
 
 # Adding and modifying code
 
+- When porting any part of the TypeScript `concerto-core` to Rust, follow [PORTING.md](./PORTING.md).
 - Always use the most idiomatic approach suitable for Rust language.
 - If needed split the code into different crates. If a crate does not exist, ask the operator for help.
 - Add a derive macro for repeated `impl`s of a trait, into `concerto-macros` crate.
