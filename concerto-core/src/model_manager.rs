@@ -19,9 +19,13 @@
 //! counts the mutations, so that a binding caching a snapshot of an element
 //! knows when to drop it (spike input on #41; PORTING.md 1.5).
 //!
-//! Any future removal (P1-06's rollback, `deleteModelFile`,
-//! `clearModelFiles`) must leave a tombstone rather than shift the arena, so
-//! that the handles of the elements that stay remain valid.
+//! [`ModelManager::add_models`] (P1-06) undoes a failed batch by truncating
+//! each vector back to its length before the call: safe without a tombstone,
+//! because a batch only ever appends and rolls back its own tail, so no
+//! handle from before the call is touched. Any future removal that is not a
+//! batch's own rollback (`deleteModelFile`, `clearModelFiles`) is a different
+//! shape — it must leave a tombstone rather than shift the arena, so that the
+//! handles of the elements that stay remain valid.
 //!
 //! A ported member reaches its collaborators through the
 //! [`ResolutionContext`] trait. The manager implements it over the arena, with
@@ -367,6 +371,84 @@ impl ModelManager {
         }
         self.insert(mf)?;
         Ok(())
+    }
+
+    /// Loads a batch of models irrespective of import order between them
+    /// (#26, P1-06). Every model in `models` is added first, then the whole
+    /// manager — the new models together with whatever was already loaded —
+    /// is validated once with [`ModelManager::validate_models`]. If loading
+    /// or that validation fails, the batch has no effect at all: every model
+    /// this call added is discarded and the error is returned, exactly as if
+    /// `add_models` had never been called.
+    ///
+    /// This is the batch counterpart of [`ModelManager::add_model`], which
+    /// stays order-sensitive only in the sense that it does not validate at
+    /// all (validation is a separate, explicit step); `add_models` is what
+    /// lets a caller load a set of mutually-dependent models without sorting
+    /// them into dependency order first, matching the TS reference's
+    /// `addModelFiles` (`basemodelmanager.ts`).
+    ///
+    /// TS: `BaseModelManager.addModelFiles`.
+    pub fn add_models<'a>(
+        &mut self,
+        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
+    ) -> Result<Vec<ModelFileId>> {
+        // A snapshot of every piece of state a load mutates, so a failure
+        // partway through — a duplicate namespace within the batch, a
+        // structural error in one of the models, or a semantic validation
+        // failure over the whole set — can be undone exactly. Because the
+        // arena is append-only and this call is the only writer while it
+        // runs, everything it adds sits in a contiguous tail of each vector;
+        // rolling back is truncating each one back to its snapshot length; no
+        // handle handed out before this call is touched, since none of them
+        // name a slot at or past that length.
+        let files_len = self.files.len();
+        let declarations_len = self.declarations.len();
+        let properties_len = self.properties.len();
+        let namespaces_snapshot = self.namespaces.clone();
+        let generation = self.generation;
+
+        let mut result = Ok(Vec::new());
+        for (value, file_name) in models {
+            let outcome = ModelFile::from_json(value, file_name).and_then(|mf| {
+                if self.namespaces.contains_key(mf.namespace()) {
+                    return Err(ConcertoError::IllegalModel {
+                        message: format!("duplicate namespace: {}", mf.namespace()),
+                        file_name: mf.file_name().map(str::to_string),
+                        location: None,
+                    });
+                }
+                self.insert(mf)
+            });
+            match outcome {
+                Ok(id) => {
+                    if let Ok(ids) = &mut result {
+                        ids.push(id);
+                    }
+                }
+                Err(err) => {
+                    result = Err(err);
+                    break;
+                }
+            }
+        }
+        // Validate the whole manager, new models and pre-existing ones
+        // together, only once every model in the batch loaded cleanly.
+        if result.is_ok()
+            && let Err(err) = self.validate_models()
+        {
+            result = Err(err);
+        }
+
+        if let Err(err) = result {
+            self.files.truncate(files_len);
+            self.declarations.truncate(declarations_len);
+            self.properties.truncate(properties_len);
+            self.namespaces = namespaces_snapshot;
+            self.generation = generation;
+            return Err(err);
+        }
+        result
     }
 
     /// Appends a model file, its declarations and their properties to the
@@ -1401,5 +1483,134 @@ mod tests {
             ConcertoError::Contract(contract) => assert_eq!(contract.location, None),
             other => panic!("expected a Contract error, got {other:?}"),
         }
+    }
+
+    /// `org.base@1.0.0.Base`, and `org.dependent@1.0.0.Sub`, which extends it.
+    /// Loading `Sub` before `Base` with a single [`ModelManager::add_model`]
+    /// succeeds too (loading never validates on its own), but validating the
+    /// pair only succeeds once both are loaded, whatever order they loaded
+    /// in; [`ModelManager::add_models`] (#26, P1-06) is what does both steps
+    /// as one all-or-nothing unit.
+    fn base_model() -> serde_json::Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.base@1.0.0",
+            "declarations": [
+                { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Base", "isAbstract": false, "properties": [] }
+            ]
+        })
+    }
+
+    fn dependent_model() -> serde_json::Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.dependent@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.base@1.0.0", "name": "Base" }
+            ],
+            "declarations": [
+                { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Sub", "isAbstract": false,
+                  "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" },
+                  "properties": [] }
+            ]
+        })
+    }
+
+    #[test]
+    fn add_models_relaxes_import_order() {
+        let base = base_model();
+        let dependent = dependent_model();
+
+        // The dependency-last order would defeat a single `add_model` per
+        // file followed by eager per-file validation; `add_models` adds both
+        // first and validates once, so the order they are listed in does not
+        // matter.
+        let mut mgr = ModelManager::new().unwrap();
+        let ids = mgr.add_models([(&dependent, None), (&base, None)]).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(mgr.validate_models().is_ok());
+        assert!(
+            mgr.is_assignable_to("org.dependent@1.0.0.Sub", "org.base@1.0.0.Base")
+                .unwrap()
+        );
+
+        // The reverse order validates just as cleanly.
+        let mut mgr2 = ModelManager::new().unwrap();
+        mgr2.add_models([(&base, None), (&dependent, None)])
+            .unwrap();
+        assert!(mgr2.validate_models().is_ok());
+    }
+
+    #[test]
+    fn add_models_rolls_back_the_whole_batch_on_validation_failure() {
+        let mut mgr = manager();
+        let generation = mgr.generation();
+        let namespaces_before: Vec<String> = mgr
+            .model_files()
+            .map(|mf| mf.namespace().to_string())
+            .collect();
+
+        // `Sub` extends a `Base` that is never part of this batch, so the
+        // batch-wide `validate_models` fails; the dependent model on its own
+        // is otherwise well formed, so only the missing super type is at
+        // fault.
+        let dependent = dependent_model();
+        let err = mgr.add_models([(&dependent, None)]).unwrap_err();
+        assert!(err.to_string().contains("Base"), "{err}");
+
+        // Nothing from the failed batch survives: not the new namespace, not
+        // the generation counter, not the arena length.
+        assert_eq!(mgr.generation(), generation);
+        assert_eq!(mgr.model_file_id("org.dependent@1.0.0"), None);
+        let namespaces_after: Vec<String> = mgr
+            .model_files()
+            .map(|mf| mf.namespace().to_string())
+            .collect();
+        assert_eq!(namespaces_after, namespaces_before);
+    }
+
+    #[test]
+    fn add_models_rolls_back_on_duplicate_namespace_within_the_batch() {
+        let mut mgr = ModelManager::new().unwrap();
+        let generation = mgr.generation();
+        let base = base_model();
+
+        assert!(mgr.add_models([(&base, None), (&base, None)]).is_err());
+
+        assert_eq!(mgr.generation(), generation);
+        assert_eq!(mgr.model_file_id("org.base@1.0.0"), None);
+    }
+
+    #[test]
+    fn add_models_rolls_back_on_duplicate_against_an_existing_model() {
+        let mut mgr = manager();
+        let generation = mgr.generation();
+        let count_before = mgr.model_files().count();
+
+        let clash = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.example@1.0.0", "declarations": []
+        });
+        let other = base_model();
+        // The clash is listed second, so the first model in the batch does
+        // get inserted before the failure — and must be undone too.
+        assert!(mgr.add_models([(&other, None), (&clash, None)]).is_err());
+
+        assert_eq!(mgr.generation(), generation);
+        assert_eq!(mgr.model_files().count(), count_before);
+        assert_eq!(mgr.model_file_id("org.base@1.0.0"), None);
+    }
+
+    #[test]
+    fn add_models_leaves_pre_existing_models_validating_on_success() {
+        let mut mgr = manager();
+        let base = base_model();
+        let dependent = dependent_model();
+        mgr.add_models([(&dependent, None), (&base, None)]).unwrap();
+        // The pre-existing models (from `manager()`) are still there and
+        // still validate, alongside the two the batch added.
+        assert!(mgr.get_declaration("org.example@1.0.0.Manager").is_ok());
+        assert!(mgr.validate_models().is_ok());
     }
 }
