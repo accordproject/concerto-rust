@@ -10,6 +10,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{ConcertoError, ContractError, Result};
+use crate::introspect::FullyQualified;
+// `name()` moved from the property type to the `Named` trait; the test module
+// below reaches it through `use super::*`.
+#[cfg(test)]
+use crate::introspect::Named;
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
@@ -117,16 +122,14 @@ pub trait ResolutionContext {
 /// field that may be a sinon stub (the `NumberValidator` constructor is a
 /// `needs_fallback` row). P1-04 decides whether this folds into
 /// [`ResolutionContext`].
-pub trait ValidatedElement {
-    /// What reading the element can raise.
-    type Error: From<ContractError>;
-
+///
+/// Its [`FullyQualified`] name is TS
+/// `this.getFieldOrScalarDeclaration().getFullyQualifiedName()`, read only
+/// when an error is reported; its `Error` is what reading the element can
+/// raise.
+pub trait ValidatedElement: FullyQualified {
     /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
     fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
-
-    /// TS: `this.getFieldOrScalarDeclaration().getFullyQualifiedName()`, read
-    /// only when an error is reported.
-    fn fully_qualified_name(&self) -> std::result::Result<String, Self::Error>;
 }
 
 /// Owns a set of model files and resolves types across them.

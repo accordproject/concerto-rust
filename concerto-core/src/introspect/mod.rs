@@ -23,23 +23,31 @@
 //! given, unchanged, as [`ModelFile::ast`]; resolving types and inheritance
 //! *across* namespaces is the job of the
 //! [`ModelManager`](crate::model_manager::ModelManager).
+//!
+//! What the families share, such as a name ([`Named`]), a declaration kind
+//! ([`DeclarationKind`]) or decorators ([`Decorated`]), is a trait, derived
+//! where it is the same over every variant (see [`crate::derive`]).
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 
 pub mod declaration;
+pub mod decorator;
 pub mod import;
 pub mod model_file;
 pub mod property;
 pub mod scalar;
+mod traits;
 pub mod validators;
 
 pub use declaration::{ClassDeclaration, ClassKind, Declaration};
+pub use decorator::Decorated;
 pub use import::Import;
 pub use model_file::ModelFile;
 pub use property::Property;
 pub use scalar::ScalarDeclaration;
+pub use traits::{DeclarationKind, FullyQualified, HasValidators, Named, Typed, Validate};
 
 /// Returns the `$class` discriminator of an AST node, or `""` if it is absent.
 /// The sum types in this module select their variant from this value.

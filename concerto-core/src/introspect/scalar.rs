@@ -16,6 +16,9 @@ use serde_json::Value;
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::validators::NumberValidator;
+use crate::introspect::{
+    DeclarationKind, FullyQualified, HasValidators, Named, Typed, check_length, check_pattern,
+};
 use crate::model_manager::{ResolutionContext, ValidatedElement};
 use crate::model_util::is_primitive_type;
 
@@ -62,15 +65,17 @@ struct ScalarElement<'a, E> {
     fully_qualified_name: &'a dyn Fn() -> Result<String, E>,
 }
 
-impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
+impl<E: From<ContractError>> FullyQualified for ScalarElement<'_, E> {
     type Error = E;
-
-    fn default_value(&self) -> Result<Option<Value>, E> {
-        Ok(self.ast.get("defaultValue").cloned())
-    }
 
     fn fully_qualified_name(&self) -> Result<String, E> {
         (self.fully_qualified_name)()
+    }
+}
+
+impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
+    fn default_value(&self) -> Result<Option<Value>, E> {
+        Ok(self.ast.get("defaultValue").cloned())
     }
 }
 
@@ -164,31 +169,6 @@ impl ScalarDeclaration {
         &self.node
     }
 
-    /// The scalar's short name.
-    pub fn name(&self) -> &str {
-        match &self.node {
-            mm::ScalarDeclaration::BooleanScalar(s) => &s.name,
-            mm::ScalarDeclaration::IntegerScalar(s) => &s.name,
-            mm::ScalarDeclaration::LongScalar(s) => &s.name,
-            mm::ScalarDeclaration::DoubleScalar(s) => &s.name,
-            mm::ScalarDeclaration::StringScalar(s) => &s.name,
-            mm::ScalarDeclaration::DateTimeScalar(s) => &s.name,
-        }
-    }
-
-    /// The metamodel `$class` short name of the loaded node, e.g.
-    /// `StringScalar`.
-    pub fn declaration_kind(&self) -> &'static str {
-        match &self.node {
-            mm::ScalarDeclaration::BooleanScalar(_) => "BooleanScalar",
-            mm::ScalarDeclaration::IntegerScalar(_) => "IntegerScalar",
-            mm::ScalarDeclaration::LongScalar(_) => "LongScalar",
-            mm::ScalarDeclaration::DoubleScalar(_) => "DoubleScalar",
-            mm::ScalarDeclaration::StringScalar(_) => "StringScalar",
-            mm::ScalarDeclaration::DateTimeScalar(_) => "DateTimeScalar",
-        }
-    }
-
     /// The primitive type this scalar aliases, or `None` (JS `null`) when its
     /// `$class` is not one of the six fully-qualified scalar classes.
     ///
@@ -239,6 +219,66 @@ impl ScalarDeclaration {
                 vec![("name", duplicate.clone())],
             )
             .into());
+        }
+        Ok(())
+    }
+}
+
+/// The short name of a generated scalar node.
+pub(crate) fn node_name(node: &mm::ScalarDeclaration) -> &str {
+    match node {
+        mm::ScalarDeclaration::BooleanScalar(s) => &s.name,
+        mm::ScalarDeclaration::IntegerScalar(s) => &s.name,
+        mm::ScalarDeclaration::LongScalar(s) => &s.name,
+        mm::ScalarDeclaration::DoubleScalar(s) => &s.name,
+        mm::ScalarDeclaration::StringScalar(s) => &s.name,
+        mm::ScalarDeclaration::DateTimeScalar(s) => &s.name,
+    }
+}
+
+impl Named for ScalarDeclaration {
+    /// The scalar's short name.
+    fn name(&self) -> &str {
+        node_name(&self.node)
+    }
+}
+
+impl DeclarationKind for ScalarDeclaration {
+    /// The metamodel `$class` short name of the loaded node, e.g.
+    /// `StringScalar`.
+    fn declaration_kind(&self) -> &'static str {
+        match &self.node {
+            mm::ScalarDeclaration::BooleanScalar(_) => "BooleanScalar",
+            mm::ScalarDeclaration::IntegerScalar(_) => "IntegerScalar",
+            mm::ScalarDeclaration::LongScalar(_) => "LongScalar",
+            mm::ScalarDeclaration::DoubleScalar(_) => "DoubleScalar",
+            mm::ScalarDeclaration::StringScalar(_) => "StringScalar",
+            mm::ScalarDeclaration::DateTimeScalar(_) => "DateTimeScalar",
+        }
+    }
+}
+
+impl Typed for ScalarDeclaration {
+    /// The same as [`ScalarDeclaration::scalar_type`].
+    fn type_name(&self) -> Option<&str> {
+        self.scalar_type()
+    }
+}
+
+impl HasValidators for ScalarDeclaration {
+    /// `StringValidator` is not ported yet (P2-02): the checks its constructor
+    /// makes on a String scalar are still the loader's own. A Number
+    /// validator is checked by [`ScalarDeclaration::process`], which builds it.
+    fn check_validators(&self) -> crate::error::Result<()> {
+        if let (Some(ScalarValidator::String { .. }), mm::ScalarDeclaration::StringScalar(s)) =
+            (self.validator(), &self.node)
+        {
+            if let Some(validator) = &s.validator {
+                check_pattern(&s.name, validator)?;
+            }
+            if let Some(validator) = &s.length_validator {
+                check_length(&s.name, validator)?;
+            }
         }
         Ok(())
     }
