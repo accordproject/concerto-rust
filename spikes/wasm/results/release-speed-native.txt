@@ -1,0 +1,3 @@
+native load set (serde_json parse + add_model): 97.110 ms
+native serde_json parse only:                    23.091 ms
+native validate_models:                          4.546 ms
