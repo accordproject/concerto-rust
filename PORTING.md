@@ -511,6 +511,15 @@ those two variants to the kind the TS code throws at that point (`validate()`
 throws `IllegalModelException`), and deletes them. A kind that no TS class
 matches must not exist.
 
+Two failures of P1-04's arena (`model_manager.rs`) have no TS counterpart at
+all: a full arena (`next_index`, more than `u32::MAX` elements) and a stale or
+foreign handle (`unknown`). TS keeps its graph in unbounded arrays and passes
+object references, so neither can happen there, no fixture observes them, and
+no member port owns them. P1-05 decided they keep the nearest existing
+`ConcertoError` variant (`IllegalModel` and `TypeNotFound` respectively) with
+no catalogue entry, and no new `ErrorKind` is added for them; their doc
+comments record this.
+
 ### 2.4 Which error comes first
 
 TS throws the **first** error it meets. Rust must return the same one:

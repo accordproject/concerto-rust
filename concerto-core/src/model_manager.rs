@@ -264,10 +264,15 @@ pub struct ModelManager {
 }
 
 /// The next handle of an arena table holding `len` entries.
+///
+/// A full arena is a Rust-only failure (PORTING.md 2.3): TS keeps its model
+/// graph in unbounded JS arrays and objects, so no TS class, message or
+/// fixture corresponds to it. It keeps the nearest existing variant,
+/// `ConcertoError::IllegalModel` (the model cannot be loaded), with no
+/// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
+/// TS class matches. Four billion elements is not a model anyone loads, but
+/// the boundary path must not panic.
 fn next_index(len: usize) -> Result<u32> {
-    // TODO(#42): a catalogue entry for a full arena; until P1-05 lands this
-    // uses the nearest existing variant. Four billion elements is not a model
-    // anyone loads, but the boundary path must not panic.
     u32::try_from(len).map_err(|_| ConcertoError::IllegalModel {
         message: "the model manager cannot address any more elements".into(),
         file_name: None,
@@ -287,9 +292,16 @@ fn not_a_function(expression: &str) -> ConcertoError {
 }
 
 /// A handle this manager never handed out.
+///
+/// A stale or foreign handle is a Rust-only failure (PORTING.md 2.3): TS
+/// passes object references, which cannot dangle or belong to another
+/// manager, so no TS class, message or fixture corresponds to it, and it
+/// can only arise from a bug in a caller holding handles (the binding, a
+/// harness). It keeps the nearest existing variant,
+/// `ConcertoError::TypeNotFound` (the handle names no element), with no
+/// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
+/// TS class matches.
 fn unknown(node: Node) -> ConcertoError {
-    // TODO(#42): a catalogue entry for a stale or foreign handle; until P1-05
-    // lands this uses the nearest existing variant.
     ConcertoError::TypeNotFound {
         type_name: format!("{node:?}"),
     }
@@ -775,9 +787,16 @@ impl ResolutionContext for ModelManager {
                     .transpose()?,
             },
         };
-        // TODO(#42): TS throws `Error('Failed to find fully qualified type
-        // name for property <name> with type <type>')`; that message needs a
-        // catalogue entry, which P1-05 owns.
+        // TODO(#48): TS: Property.getFullyQualifiedTypeName
+        // (src/introspect/property.ts:218) throws `ErrorKind::Error` with the
+        // inline template `'Failed to find fully qualified type name for
+        // property ' + this.name + ' with type ' + this.type` here
+        // (ModelFile.getFullyQualifiedTypeName itself returns null and never
+        // throws). P2-04 ports Property.getFullyQualifiedTypeName and adds
+        // that template and its golden test to the catalogue (PORTING.md
+        // 6.3). Until then the already-ported ModelUtil.isAssignableTo
+        // (model_util.rs) reaches this natively as `TypeNotFound`, where TS
+        // throws `Error`.
         resolved.ok_or_else(|| ConcertoError::TypeNotFound {
             type_name: type_name.unwrap_or("null").to_string(),
         })

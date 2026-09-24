@@ -418,13 +418,17 @@ impl ContractError {
 ///
 /// OD-3 widened the metamodel's number fields to `f64`, so serialising a
 /// `Range` straight back gives `3.0` where the AST said `3`. JS has a single
-/// number type, so both are the same value and `JSON.stringify` writes `3`;
-/// each integral number that fits an `i64` or `u64` (where the conversion is
-/// exact) is written back as a JSON integer to match, and `-0` becomes `0`,
-/// as `JSON.stringify(-0)` writes it. Non-integral numbers are left as they
-/// are, and so is an integral number of 2^64 or more: `serde_json` cannot
-/// hold it as an integer, so it keeps its float form, where JS would write
-/// its digits up to 1e21. No real source position comes near that.
+/// number type, so both are the same value and `JSON.stringify` writes `3`.
+/// Each integral number that fits an `i64` or `u64` (where the conversion is
+/// exact) is written back as a JSON integer holding its exact value, and
+/// `-0` becomes `0`, as `JSON.stringify(-0)` writes it. Up to 2^53 that
+/// integer's digits are the ones `JSON.stringify` writes; above 2^53 it is
+/// the same number, but JS may print it with different digits (it prints the
+/// shortest string that round-trips, so 2^63 + 2^11 is `9223372036854778000`
+/// in JS, `9223372036854777856` here), so it matches in value, not in text.
+/// Non-integral numbers are left as they are, and so is an integral number
+/// of 2^64 or more, which `serde_json` cannot hold as an integer and so
+/// keeps its float form. No real source position comes near 2^53.
 pub(crate) fn location_value(
     range: &concerto_metamodel::concerto_metamodel_1_0_0::Range,
 ) -> Option<serde_json::Value> {
@@ -1284,9 +1288,11 @@ mod tests {
     }
 
     #[test]
-    fn location_value_writes_integers_above_2_pow_53_as_json_stringify_does() {
-        // 2^53 + 2 and 2^63 + 2^11 are exact f64 integers; JS writes their
-        // digits, and so does the result.
+    fn location_value_writes_integers_above_2_pow_53_as_their_exact_value() {
+        // 2^53 + 2 and 2^63 + 2^11 are exact f64 integers, written as their
+        // exact integer value. That equals the JS number, but is not always
+        // JSON.stringify's text: JS prints 2^63 + 2^11 as
+        // 9223372036854778000 (see `location_value`).
         assert_eq!(
             positions(
                 [9_007_199_254_740_994.0, 1.0, 1.0],
