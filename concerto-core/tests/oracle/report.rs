@@ -3,30 +3,51 @@
 //! just a single pass/fail count), so the status reporter (P0-06) and the
 //! dashboard (P0-08) can show which specific behaviours are still failing".
 //!
-//! # The known-failures baseline
+//! # The baseline
 //!
 //! The Rust engine is mid-port, so a full run has real failures: every
 //! difference between the pre-port `ModelManager`/introspection code and TS
-//! that a model-manager fixture exposes. They are reported per rule and per
-//! fixture, and recorded in `known-failures.tsv` next to this file (`<op>
-//! TAB <fixture id>`, sorted). The test fails on a **regression**: a fixture
-//! that fails and is not in the baseline (PORTING.md 6.2, "No regressions
-//! ... against the P1-07 baseline"). A baseline entry whose fixture now
-//! passes is listed as fixed, so the task that fixed it can drop it from the
-//! file. `ORACLE_UPDATE_BASELINE=1` rewrites the file from a full,
-//! unfiltered run.
+//! that a model-manager fixture exposes. `baseline.tsv` next to this file
+//! records the verdict of every fixture that was compared on the last full
+//! run, one `<op> TAB <fixture id> TAB <status>` line per fixture, sorted by
+//! op and id, where `<status>` is `pass` or `fail:<kind>` (the
+//! [`FailKind`] of its first difference: `message-mismatch`,
+//! `class-mismatch`, `state-divergence`, ...). The test fails on a
+//! **regression** (PORTING.md 6.2, "No regressions ... against the P1-07
+//! baseline"):
+//!
+//! - a fixture fails that the baseline does not list as failing;
+//! - a baselined failure fails with another kind (it started failing for a
+//!   different reason);
+//! - a baselined fixture (passing or failing) is now `unsupported` or a
+//!   harness error: it dropped out of the comparison.
+//!
+//! A baselined failure that passes now is listed as fixed, and a fixture
+//! that passes without being baselined as new; neither fails the run, and
+//! `ORACLE_UPDATE_BASELINE=1` on a full, unfiltered run rewrites the file to
+//! take them in. A baselined fixture that is not in the corpus at all (the
+//! corpus was re-recorded) is listed as missing and does not fail the run.
+//! With `ORACLE_OP`, only baseline entries whose op matches are checked.
+//!
+//! The baseline stores the failure kind only, not a digest of the message:
+//! the Rust side of a message mismatch is pre-port text that every porting
+//! task rewrites on its way to the TS text, so a digest would flag progress
+//! as a regression, while the kind still catches a fixture whose failure
+//! changes character.
 //!
 //! Harness errors and load errors are never baselined: each one fails the
 //! run (README: "A harness error is never a pass").
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::compare::Verdict;
+use super::compare::{FailKind, Verdict};
 use super::fixture::{Fixture, LoadError};
+use super::ledger::{Ledger, UNOWNED};
+use super::recipe::Blocker;
 
 #[derive(Default)]
 struct RuleCounts {
@@ -34,7 +55,8 @@ struct RuleCounts {
     fail: u64,
     unsupported: u64,
     harness_error: u64,
-    reasons: BTreeMap<String, u64>,
+    /// `(reason, owner)` to count.
+    reasons: BTreeMap<(String, String), u64>,
     fail_reasons: BTreeMap<String, u64>,
 }
 
@@ -50,17 +72,23 @@ struct FixtureProblem {
 #[derive(Serialize)]
 struct Counted {
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
     count: u64,
 }
 
 #[derive(Serialize)]
 struct RuleReport {
     op: String,
+    /// The task that owns this op (`ledger.rs`): the owner of its failures,
+    /// and of its unsupported fixtures unless a reason names another.
+    owner: String,
     pass: u64,
     fail: u64,
     unsupported: u64,
     harness_error: u64,
-    /// Why this rule's fixtures are unsupported, most common first.
+    /// Why this rule's fixtures are unsupported, with the owner of what
+    /// blocks them, most common first.
     unsupported_reasons: Vec<Counted>,
     /// The failures' details with fixture-specific text trimmed, most
     /// common first.
@@ -77,10 +105,18 @@ pub struct Report {
     fail: u64,
     unsupported: u64,
     harness_error: u64,
-    /// Failing fixtures not in `known-failures.tsv`.
+    /// Unsupported or failing fixtures whose owner is `unowned`.
+    unowned: u64,
+    /// Unsupported and failing fixtures per owner.
+    owners: BTreeMap<String, u64>,
+    /// Fixtures whose verdict regressed against `baseline.tsv`.
     regressions: u64,
-    /// `known-failures.tsv` entries whose fixture passes now.
+    /// Baselined failures that pass now.
     fixed: Vec<String>,
+    /// Passing fixtures `baseline.tsv` does not list.
+    new_passes: Vec<String>,
+    /// Baselined fixtures absent from this corpus.
+    missing: Vec<String>,
     rules: Vec<RuleReport>,
     failures: Vec<FixtureProblem>,
     harness_errors: Vec<FixtureProblem>,
@@ -88,16 +124,52 @@ pub struct Report {
     #[serde(skip)]
     regression_detail: Vec<String>,
     #[serde(skip)]
-    failing: BTreeSet<(String, String)>,
+    statuses: BTreeMap<(String, String), Status>,
 }
+
+/// One fixture's verdict, as the baseline records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Pass,
+    Fail(FailKind),
+    Unsupported,
+    HarnessError,
+}
+
+impl Status {
+    fn as_string(self) -> String {
+        match self {
+            Self::Pass => "pass".into(),
+            Self::Fail(kind) => format!("fail:{}", kind.as_str()),
+            Self::Unsupported => "unsupported".into(),
+            Self::HarnessError => "harness-error".into(),
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        if text == "pass" {
+            return Some(Self::Pass);
+        }
+        let kind = text.strip_prefix("fail:")?;
+        FailKind::ALL
+            .into_iter()
+            .find(|k| k.as_str() == kind)
+            .map(Self::Fail)
+    }
+}
+
+/// The baseline: `(op, id)` to the recorded status (`pass` or `fail:<kind>`).
+pub type Baseline = BTreeMap<(String, String), Status>;
 
 pub struct Recorder {
     fixtures_dir: PathBuf,
     filter: Option<String>,
     per_rule: BTreeMap<String, RuleCounts>,
+    rule_owner: BTreeMap<String, String>,
+    owners: BTreeMap<String, u64>,
     failures: Vec<FixtureProblem>,
     harness_errors: Vec<FixtureProblem>,
-    passing: BTreeSet<(String, String)>,
+    statuses: BTreeMap<(String, String), Status>,
     load_errors: Vec<LoadError>,
 }
 
@@ -133,10 +205,17 @@ fn problem(fixture: &Fixture, detail: String) -> FixtureProblem {
     }
 }
 
-fn top(map: BTreeMap<String, u64>) -> Vec<Counted> {
+fn top<K>(map: BTreeMap<K, u64>, split: impl Fn(K) -> (String, Option<String>)) -> Vec<Counted> {
     let mut v: Vec<Counted> = map
         .into_iter()
-        .map(|(reason, count)| Counted { reason, count })
+        .map(|(key, count)| {
+            let (reason, owner) = split(key);
+            Counted {
+                reason,
+                owner,
+                count,
+            }
+        })
         .collect();
     v.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
     v
@@ -148,50 +227,82 @@ impl Recorder {
             fixtures_dir,
             filter,
             per_rule: BTreeMap::new(),
+            rule_owner: BTreeMap::new(),
+            owners: BTreeMap::new(),
             failures: Vec::new(),
             harness_errors: Vec::new(),
-            passing: BTreeSet::new(),
+            statuses: BTreeMap::new(),
             load_errors,
         }
     }
 
-    pub fn record(&mut self, fixture: &Fixture, verdict: Verdict) {
+    /// Records one verdict. `owners` resolves an op or blocking member to
+    /// its owning task (`ledger.rs`).
+    pub fn record(&mut self, fixture: &Fixture, verdict: Verdict, owners: &Ledger) {
+        let op_owner = self
+            .rule_owner
+            .entry(fixture.op.clone())
+            .or_insert_with(|| owners.owner(&fixture.op))
+            .clone();
+        let owner = match &verdict {
+            Verdict::Pass | Verdict::HarnessError { .. } => None,
+            Verdict::Fail { .. } | Verdict::Unsupported { blocker: None, .. } => Some(op_owner),
+            Verdict::Unsupported {
+                blocker: Some(Blocker::Member(member)),
+                ..
+            } => Some(owners.owner(member)),
+            Verdict::Unsupported {
+                blocker: Some(Blocker::Owner(owner)),
+                ..
+            } => Some(owner.clone()),
+        };
+        if let Some(owner) = &owner {
+            *self.owners.entry(owner.clone()).or_default() += 1;
+        }
         let counts = self.per_rule.entry(fixture.op.clone()).or_default();
-        match verdict {
+        let status = match verdict {
             Verdict::Pass => {
                 counts.pass += 1;
-                self.passing
-                    .insert((fixture.op.clone(), fixture.id.clone()));
+                Status::Pass
             }
-            Verdict::Unsupported { reason } => {
+            Verdict::Unsupported { reason, .. } => {
                 counts.unsupported += 1;
-                *counts.reasons.entry(reason).or_default() += 1;
+                *counts
+                    .reasons
+                    .entry((reason, owner.unwrap_or_default()))
+                    .or_default() += 1;
+                Status::Unsupported
             }
-            Verdict::Fail { detail } => {
+            Verdict::Fail { kind, detail } => {
                 counts.fail += 1;
                 *counts.fail_reasons.entry(kind_of(&detail)).or_default() += 1;
                 self.failures.push(problem(fixture, detail));
+                Status::Fail(kind)
             }
             Verdict::HarnessError { detail } => {
                 counts.harness_error += 1;
                 self.harness_errors.push(problem(fixture, detail));
+                Status::HarnessError
             }
-        }
+        };
+        self.statuses
+            .insert((fixture.op.clone(), fixture.id.clone()), status);
     }
 
     /// Totals, and the comparison with `baseline` (`(op, id)` pairs).
-    pub fn finish(self, baseline: &BTreeSet<(String, String)>) -> Report {
+    pub fn finish(self, baseline: &Baseline) -> Report {
         let rules: Vec<RuleReport> = self
             .per_rule
             .into_iter()
             .map(|(op, counts)| RuleReport {
+                owner: self.rule_owner.get(&op).cloned().unwrap_or_default(),
                 op,
                 pass: counts.pass,
                 fail: counts.fail,
                 unsupported: counts.unsupported,
                 harness_error: counts.harness_error,
-                unsupported_reasons: top(counts.reasons),
-                fail_kinds: top(counts.fail_reasons),
+                unsupported_reasons: top(counts.reasons, |(r, o)| (r, Some(o))),
+                fail_kinds: top(counts.fail_reasons, |r| (r, None)),
             })
             .collect();
 
@@ -200,27 +311,54 @@ impl Recorder {
         let unsupported = rules.iter().map(|r| r.unsupported).sum();
         let harness_error = rules.iter().map(|r| r.harness_error).sum();
 
-        let failing: BTreeSet<(String, String)> = self
-            .failures
-            .iter()
-            .map(|f| (f.op.clone(), f.id.clone()))
-            .collect();
-        let regression_detail: Vec<String> = self
-            .failures
-            .iter()
-            .filter(|f| !baseline.contains(&(f.op.clone(), f.id.clone())))
-            .map(|f| {
-                format!(
-                    "[{}] {} {} ({}): {}",
-                    f.source, f.op, f.id, f.path, f.detail
-                )
-            })
-            .collect();
-        let fixed = baseline
-            .iter()
-            .filter(|key| self.passing.contains(*key))
-            .map(|(op, id)| format!("{op}\t{id}"))
-            .collect();
+        let detail_of = |op: &str, id: &str| {
+            self.failures
+                .iter()
+                .chain(&self.harness_errors)
+                .find(|f| f.op == op && f.id == id)
+                .map(|f| format!("[{}] ({}): {}", f.source, f.path, f.detail))
+                .unwrap_or_default()
+        };
+        let in_scope = |op: &str| {
+            self.filter
+                .as_ref()
+                .is_none_or(|f| op.starts_with(f.as_str()))
+        };
+        let mut regression_detail = Vec::new();
+        let mut fixed = Vec::new();
+        let mut new_passes = Vec::new();
+        let mut missing = Vec::new();
+        for ((op, id), was) in baseline {
+            if !in_scope(op) {
+                continue;
+            }
+            let key = format!("{op}\t{id}");
+            match self.statuses.get(&(op.clone(), id.clone())) {
+                None => missing.push(key),
+                Some(now) if now == was => {}
+                Some(Status::Pass) => fixed.push(key),
+                Some(now) => regression_detail.push(format!(
+                    "{op} {id}: baseline {}, now {} {}",
+                    was.as_string(),
+                    now.as_string(),
+                    detail_of(op, id)
+                )),
+            }
+        }
+        for ((op, id), now) in &self.statuses {
+            if baseline.contains_key(&(op.clone(), id.clone())) {
+                continue;
+            }
+            match now {
+                Status::Pass => new_passes.push(format!("{op}\t{id}")),
+                Status::Fail(_) => regression_detail.push(format!(
+                    "{op} {id}: not in the baseline, now {} {}",
+                    now.as_string(),
+                    detail_of(op, id)
+                )),
+                Status::Unsupported | Status::HarnessError => {}
+            }
+        }
 
         Report {
             fixtures_dir: self.fixtures_dir.display().to_string(),
@@ -231,8 +369,12 @@ impl Recorder {
             fail,
             unsupported,
             harness_error,
+            unowned: self.owners.get(UNOWNED).copied().unwrap_or(0),
+            owners: self.owners,
             regressions: regression_detail.len() as u64,
             fixed,
+            new_passes,
+            missing,
             rules,
             failures: self.failures,
             harness_errors: self.harness_errors,
@@ -242,22 +384,30 @@ impl Recorder {
                 .map(|e| format!("{}: {}", e.path.display(), e.message))
                 .collect(),
             regression_detail,
-            failing,
+            statuses: self.statuses,
         }
     }
 }
 
-/// Reads `known-failures.tsv`: `<op>\t<id>` lines; `#` starts a comment.
-pub fn read_baseline(path: &Path) -> BTreeSet<(String, String)> {
+/// Reads `baseline.tsv` (module doc); `#` starts a comment. A line this
+/// harness cannot read panics: a corrupt baseline must not pass quietly.
+pub fn read_baseline(path: &Path) -> Baseline {
     let Ok(text) = fs::read_to_string(path) else {
-        return BTreeSet::new();
+        return Baseline::new();
     };
     text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| {
-            let (op, id) = l.split_once('\t')?;
-            Some((op.to_string(), id.to_string()))
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut fields = l.split('\t');
+            let (Some(op), Some(id), Some(status), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                panic!("{}: malformed baseline line {l:?}", path.display());
+            };
+            let status = Status::parse(status).unwrap_or_else(|| {
+                panic!("{}: unknown status in baseline line {l:?}", path.display())
+            });
+            ((op.to_string(), id.to_string()), status)
         })
         .collect()
 }
@@ -282,8 +432,8 @@ impl Report {
         }
 
         println!(
-            "oracle harness: {} fixtures under {}{} ({} load errors): {} pass, {} fail ({} not in \
-             the baseline), {} unsupported, {} harness errors",
+            "oracle harness: {} fixtures under {}{} ({} load errors): {} pass, {} fail, {} unsupported, {} harness errors; {} \
+             regressions against baseline.tsv",
             self.total_fixtures,
             self.fixtures_dir,
             self.filter
@@ -293,15 +443,24 @@ impl Report {
             self.load_errors,
             self.pass,
             self.fail,
-            self.regressions,
             self.unsupported,
-            self.harness_error
+            self.harness_error,
+            self.regressions
         );
-        println!("oracle harness: per rule (pass / fail / unsupported / harness error):");
+        println!(
+            "oracle harness: owners of the unsupported and failing fixtures ({} unowned): {}",
+            self.unowned,
+            self.owners
+                .iter()
+                .map(|(owner, n)| format!("{owner} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!("oracle harness: per rule (pass / fail / unsupported / harness error  [owner]):");
         for rule in &self.rules {
             println!(
-                "  {:<60} {:>6} {:>6} {:>6} {:>4}",
-                rule.op, rule.pass, rule.fail, rule.unsupported, rule.harness_error
+                "  {:<60} {:>6} {:>6} {:>6} {:>4}  [{}]",
+                rule.op, rule.pass, rule.fail, rule.unsupported, rule.harness_error, rule.owner
             );
             for kind in rule.fail_kinds.iter().take(3) {
                 println!("      fail x{}: {}", kind.count, kind.reason);
@@ -309,7 +468,11 @@ impl Report {
             if rule.pass + rule.fail + rule.harness_error == 0
                 && let Some(reason) = rule.unsupported_reasons.first()
             {
-                println!("      unsupported: {}", reason.reason);
+                println!(
+                    "      unsupported: {} [{}]",
+                    reason.reason,
+                    reason.owner.as_deref().unwrap_or_default()
+                );
             }
         }
         for problem in &self.harness_errors {
@@ -319,41 +482,64 @@ impl Report {
             );
         }
         for line in &self.regression_detail {
-            println!("ERROR regression (not in known-failures.tsv) {line}");
+            println!("ERROR regression against baseline.tsv: {line}");
         }
-        if !self.fixed.is_empty() {
-            println!(
-                "oracle harness: {} known failures now pass; drop them from known-failures.tsv:",
-                self.fixed.len()
-            );
-            for key in &self.fixed {
-                println!("  fixed {key}");
+        for (label, keys) in [
+            ("baselined failures now pass", &self.fixed),
+            (
+                "passing fixtures are not in the baseline yet",
+                &self.new_passes,
+            ),
+            ("baselined fixtures are not in this corpus", &self.missing),
+        ] {
+            if !keys.is_empty() {
+                println!(
+                    "oracle harness: {} {label} (ORACLE_UPDATE_BASELINE=1 takes them in):",
+                    keys.len()
+                );
+                for key in keys.iter().take(20) {
+                    println!("  {key}");
+                }
             }
         }
         println!("oracle harness: full report written to {}", path.display());
     }
 
-    /// Rewrites the baseline from this run's failures.
+    /// Rewrites the baseline from this run: every compared fixture, sorted.
+    /// Only a valid, full, unfiltered run may do so: a run with harness or
+    /// load errors (a broken CTO cache, say) would silently shrink it.
     pub fn write_baseline(&self, path: &Path) {
-        let mut text = String::from(
-            "# Oracle fixtures the native harness knows to fail, one `<op>\\t<fixture id>` per line\n\
-             # (concerto-core/tests/oracle/report.rs). A failing fixture not listed here fails\n\
-             # `cargo test --test oracle`; regenerate with ORACLE_UPDATE_BASELINE=1 on a full run.\n",
+        assert!(
+            self.filter.is_none(),
+            "ORACLE_UPDATE_BASELINE=1 needs a full run: unset ORACLE_OP"
         );
-        for (op, id) in &self.failing {
-            text.push_str(&format!("{op}\t{id}\n"));
+        self.assert_valid_run();
+        let mut text = String::from(
+            "# The native oracle harness's baseline (concerto-core/tests/oracle/report.rs): the\n\
+             # verdict of every compared fixture, `<op>\\t<fixture id>\\t<pass | fail:<kind>>`.\n\
+             # A fixture that regresses against it fails `cargo test --test oracle`; regenerate\n\
+             # with ORACLE_UPDATE_BASELINE=1 on a full, unfiltered run.\n",
+        );
+        let (mut passes, mut fails) = (0, 0);
+        for ((op, id), status) in &self.statuses {
+            match status {
+                Status::Pass => passes += 1,
+                Status::Fail(_) => fails += 1,
+                Status::Unsupported | Status::HarnessError => continue,
+            }
+            text.push_str(&format!("{op}\t{id}\t{}\n", status.as_string()));
         }
-        fs::write(path, text).expect("write known-failures.tsv");
+        fs::write(path, text).expect("write baseline.tsv");
         println!(
-            "oracle harness: wrote {} known failures to {}",
-            self.failing.len(),
+            "oracle harness: wrote {passes} passing and {fails} failing fixtures to {}",
             path.display()
         );
     }
 
-    /// Fails the test on a load error, a harness error, or a failure that
-    /// is not in the baseline. `unsupported` fixtures never fail it.
-    pub fn assert_no_regressions(&self) {
+    /// Fails the test when the run itself is invalid: a fixture file that
+    /// did not load, or a fixture that could not be set up (a missing CTO
+    /// cache entry, say). Nothing is judged, or written, from such a run.
+    pub fn assert_valid_run(&self) {
         assert!(
             self.load_errors == 0,
             "{} oracle fixture file(s) could not be loaded (malformed JSON, a missing or corrupt \
@@ -367,11 +553,25 @@ impl Report {
              harness error is never a pass",
             self.harness_error
         );
+    }
+
+    /// Fails the test on an invalid run ([`Self::assert_valid_run`]), a
+    /// regression against the baseline (module doc), or, on a full,
+    /// unfiltered run, a baselined fixture that is not in the corpus.
+    pub fn assert_no_regressions(&self) {
+        self.assert_valid_run();
         assert!(
             self.regressions == 0,
-            "{} oracle fixture(s) failed that are not in known-failures.tsv (see the ERROR \
-             regression lines above and the report at the path printed above)",
+            "{} oracle fixture(s) regressed against baseline.tsv (see the ERROR regression \
+             lines above and the report at the path printed above)",
             self.regressions
+        );
+        assert!(
+            self.filter.is_some() || self.missing.is_empty(),
+            "{} baselined fixture(s) are not in the corpus (listed above): the corpus was \
+             re-recorded or truncated; regenerate the baseline with ORACLE_UPDATE_BASELINE=1 if \
+             that is intended",
+            self.missing.len()
         );
     }
 }

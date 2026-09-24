@@ -600,7 +600,10 @@ fn a_step_that_replays_with_another_status_is_a_failure() {
     );
     let verdict = judge_one(&with_cache(&cache), &dir);
     match verdict {
-        Verdict::Fail { detail } => assert!(detail.contains("state divergence"), "{detail}"),
+        Verdict::Fail { kind, detail } => {
+            assert_eq!(kind, compare::FailKind::StateDivergence);
+            assert!(detail.contains("state divergence"), "{detail}");
+        }
         other => panic!("expected Fail, got {other:?}"),
     }
     let _ = fs::remove_dir_all(&dir);
@@ -699,11 +702,41 @@ fn a_validating_add_after_an_unvalidated_one_is_unsupported() {
     let _ = fs::remove_dir_all(&cache);
 }
 
-/// The baseline: a known failure does not fail the run, a new one does, and
-/// a known failure that passes now is listed as fixed.
+/// Runs a directory of fixtures through the recorder against `baseline`.
+fn report_against(dir: &std::path::Path, baseline: &report::Baseline) -> report::Report {
+    let (fixtures, load_errors) = fixture::load_all(dir);
+    assert!(load_errors.is_empty(), "{load_errors:?}");
+    let mut recorder = report::Recorder::new(dir.to_path_buf(), None, Vec::new());
+    for fx in &fixtures {
+        recorder.record(
+            fx,
+            compare::judge(fx, ops::exec(&bare(), &fx.op, &fx.inputs)),
+            &Ledger::default(),
+        );
+    }
+    recorder.finish(baseline)
+}
+
+fn regresses(report: &report::Report) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        report.assert_no_regressions()
+    }))
+    .is_err()
+}
+
+fn entry(id: &str, status: report::Status) -> ((String, String), report::Status) {
+    (
+        ("ModelUtil.getShortName".to_string(), id.to_string()),
+        status,
+    )
+}
+
+/// A baselined failure with the same kind does not fail the run, and a
+/// baselined failure that passes now is listed as fixed; a baselined
+/// fixture gone from the corpus is listed as missing and fails a full run.
 #[test]
-fn judges_failures_against_the_known_failures_baseline() {
-    let dir = scratch_dir("baseline");
+fn a_run_that_matches_the_baseline_passes() {
+    let dir = scratch_dir("baseline-ok");
     write_fixture(
         &dir,
         "ModelUtil.getShortName",
@@ -713,36 +746,162 @@ fn judges_failures_against_the_known_failures_baseline() {
     write_fixture(
         &dir,
         "ModelUtil.getShortName",
-        "now-passes",
+        "passes",
         json!({ "inputs": { "args": ["org.acme.Bar"] }, "outcome": { "ok": "Bar" } }),
     );
-    let (fixtures, _) = fixture::load_all(&dir);
-    let run = |baseline: &std::collections::BTreeSet<(String, String)>| {
-        let mut recorder = report::Recorder::new(dir.clone(), None, Vec::new());
-        for fx in &fixtures {
-            recorder.record(
-                fx,
-                compare::judge(fx, ops::exec(&bare(), &fx.op, &fx.inputs)),
-            );
-        }
-        recorder.finish(baseline)
-    };
-    let key = |id: &str| ("ModelUtil.getShortName".to_string(), id.to_string());
-
-    let known: std::collections::BTreeSet<_> = [key("known"), key("now-passes")].into();
-    let report = run(&known);
+    let baseline: report::Baseline = [
+        entry(
+            "known",
+            report::Status::Fail(compare::FailKind::ValueMismatch),
+        ),
+        entry(
+            "passes",
+            report::Status::Fail(compare::FailKind::ValueMismatch),
+        ),
+    ]
+    .into();
+    let report = report_against(&dir, &baseline);
     report.assert_no_regressions();
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["fixed"], json!(["ModelUtil.getShortName\tnow-passes"]));
+    assert_eq!(json["fixed"], json!(["ModelUtil.getShortName\tpasses"]));
 
-    let empty = std::collections::BTreeSet::new();
-    let report = run(&empty);
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        report.assert_no_regressions()
-    }));
+    // A baselined fixture that is not in the corpus fails a full run.
+    let mut stale = baseline.clone();
+    stale.extend([entry("gone", report::Status::Pass)]);
+    let report = report_against(&dir, &stale);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["missing"], json!(["ModelUtil.getShortName\tgone"]));
     assert!(
-        caught.is_err(),
-        "a failure outside the baseline must fail the run"
+        regresses(&report),
+        "a stale baseline entry must fail a full run"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// Each regression the baseline guards against fails the run: a new
+/// failure, a known failure of another kind, a pass that fails, and a
+/// baselined fixture (passing or failing) that becomes unsupported.
+#[test]
+fn every_kind_of_regression_against_the_baseline_fails_the_run() {
+    use compare::FailKind::{MessageMismatch, ValueMismatch};
+    use report::Status::{Fail, Pass};
+
+    let dir = scratch_dir("baseline-regressions");
+    // Fails with a value mismatch.
+    write_fixture(
+        &dir,
+        "ModelUtil.getShortName",
+        "value",
+        json!({ "inputs": { "args": ["org.acme.Foo"] }, "outcome": { "ok": "NotFoo" } }),
+    );
+    // Unsupported (the env.random guard).
+    write_fixture(
+        &dir,
+        "ModelUtil.getShortName",
+        "random",
+        json!({
+            "inputs": { "args": ["org.acme.Foo"] },
+            "outcome": { "ok": "Foo" },
+            "env": { "random": true }
+        }),
+    );
+    let cases: [(&str, report::Baseline); 5] = [
+        ("a failure not in the baseline", [].into()),
+        (
+            "a known failure of another kind",
+            [entry("value", Fail(MessageMismatch))].into(),
+        ),
+        ("a pass that now fails", [entry("value", Pass)].into()),
+        (
+            "a pass that is now unsupported",
+            [entry("value", Fail(ValueMismatch)), entry("random", Pass)].into(),
+        ),
+        (
+            "a known failure that is now unsupported",
+            [
+                entry("value", Fail(ValueMismatch)),
+                entry("random", Fail(ValueMismatch)),
+            ]
+            .into(),
+        ),
+    ];
+    for (what, baseline) in cases {
+        assert!(
+            regresses(&report_against(&dir, &baseline)),
+            "{what} must fail the run"
+        );
+    }
+    // And the same corpus against its own baseline is clean.
+    let own: report::Baseline = [entry("value", Fail(ValueMismatch))].into();
+    assert!(!regresses(&report_against(&dir, &own)));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Only a `ParseException` gets concerto-util's default component and its
+/// location's `source: undefined` back; any other cached error keeps what
+/// the cache recorded, and an entry without a class is a harness error.
+#[test]
+fn only_a_cached_parse_exception_gets_its_defaults_restored() {
+    let location = json!({ "start": { "line": 1, "column": 1, "offset": 0 }, "end": { "line": 1, "column": 2, "offset": 1 } });
+    let parse = ops::OracleError::from_cached_error(
+        &json!({ "class": "ParseException", "message": "m", "location": location }),
+    )
+    .unwrap();
+    assert_eq!(
+        parse.component.as_deref(),
+        Some("@accordproject/concerto-util")
+    );
+    assert_eq!(
+        parse.location.unwrap()["source"],
+        json!({ "@@oracle": "undefined" })
+    );
+
+    let other = ops::OracleError::from_cached_error(
+        &json!({ "class": "TypeError", "message": "m", "location": location }),
+    )
+    .unwrap();
+    assert_eq!(other.component, None);
+    assert_eq!(other.location, Some(location));
+
+    assert!(ops::OracleError::from_cached_error(&json!({ "message": "m" })).is_err());
+}
+
+/// A run with a harness error (here, a CTO text with no cache entry) must
+/// not regenerate the baseline.
+#[test]
+fn a_run_with_harness_errors_cannot_write_the_baseline() {
+    let dir = scratch_dir("regenerate-invalid");
+    write_fixture(
+        &dir,
+        "ModelManager.addCTOModel",
+        "no-cache",
+        json!({
+            "inputs": {
+                "target": { "@@oracle": "mm", "id": 0, "kind": "ModelManager", "steps": [] },
+                "args": [CTO, "test.cto"]
+            },
+            "outcome": { "ok": null }
+        }),
+    );
+    let report = report_against(&dir, &report::Baseline::new());
+    let out = dir.join("baseline.tsv");
+    let caught =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| report.write_baseline(&out)));
+    assert!(
+        caught.is_err(),
+        "a run with a harness error must not write the baseline"
+    );
+    assert!(!out.exists(), "nothing may be written");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Owners: the ledger by member, then by class, then PORTING's op families,
+/// and `unowned` spelled out when none applies.
+#[test]
+fn owners_fall_back_to_the_porting_op_families_and_unowned() {
+    let ledger = Ledger::default();
+    assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
+    assert_eq!(ledger.owner("ModelManager.deleteModelFile"), "P2-08");
+    assert_eq!(ledger.owner("DecoratorManager.decorateModels"), "P2-12");
+    assert_eq!(ledger.owner("Declaration.getName"), "unowned");
 }

@@ -68,6 +68,7 @@ use serde_json::{Value, json};
 
 use super::Harness;
 use super::cto_cache::CacheEntry;
+use super::ledger::UNOWNED;
 use super::ops::{OracleError, to_oracle_error};
 
 pub const M: &str = "@@oracle";
@@ -79,8 +80,12 @@ const EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator
 /// Why a fixture could not be judged on its outcome.
 #[derive(Debug)]
 pub enum Fault {
-    /// A value, step or op this harness cannot replay on the Rust engine yet.
+    /// The fixture's op cannot be replayed with these inputs yet; the op's
+    /// own owner is responsible.
     Unsupported(String),
+    /// Something other than the fixture's op blocks it: a recipe step, an
+    /// option, an input kind. The [`Blocker`] names who owns that.
+    Blocked(String, Blocker),
     /// The fixture itself is broken, or its CTO text is missing from the
     /// cache: never a pass (plan §2.6).
     Harness(String),
@@ -91,6 +96,35 @@ pub enum Fault {
 }
 
 pub type Faulty<T> = Result<T, Fault>;
+
+/// What blocks an unsupported fixture, for its owner (`ledger.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Blocker {
+    /// A TS member, `<Class>.<member>`, whose owner the ledger gives.
+    Member(String),
+    /// An owner named directly: a task, or `ledger::UNOWNED`.
+    Owner(String),
+}
+
+fn blocked(reason: impl Into<String>, member: impl Into<String>) -> Fault {
+    Fault::Blocked(reason.into(), Blocker::Member(member.into()))
+}
+
+/// The TS member an input kind this harness cannot rebuild stands for.
+fn member_of_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "declnew" => "ScalarDeclaration.new",
+        "decoref" => "Decorator.new",
+        "validatorref" => "Validator.new",
+        "typed" => "Resource.new",
+        "factory" => "Factory.new",
+        "serializer" => "Serializer.new",
+        "introspector" => "Introspector.new",
+        "predicate" => "BaseModelManager.filter",
+        "decoratorfactory" => "BaseModelManager.addDecoratorFactory",
+        _ => return None,
+    })
+}
 
 /// What an engine call produced: a value in the oracle's output encoding,
 /// or an error in its `outcome.error` shape.
@@ -270,9 +304,13 @@ impl<'h> Session<'h> {
                 Ok(Arg::Prop(mm, id))
             }
             "blob" => Err(Fault::Harness("unresolved blob".into())),
-            other => Err(Fault::Unsupported(format!(
-                "@@oracle:{other} has no Rust counterpart yet"
-            ))),
+            other => {
+                let reason = format!("@@oracle:{other} has no Rust counterpart yet");
+                Err(match member_of_kind(other) {
+                    Some(member) => blocked(reason, member),
+                    None => Fault::Unsupported(reason),
+                })
+            }
         }
     }
 
@@ -299,9 +337,10 @@ impl<'h> Session<'h> {
     fn replay(&mut self, node: &Value) -> Faulty<usize> {
         if let Some(derived) = node.get("derived") {
             let op = derived.get("op").and_then(Value::as_str).unwrap_or("?");
-            return Err(Fault::Unsupported(format!(
-                "a model manager derived from {op}, which is not replayed natively"
-            )));
+            return Err(blocked(
+                format!("a model manager derived from {op}, which is not replayed natively"),
+                op,
+            ));
         }
         let kind = Kind::parse(node.get("kind").and_then(Value::as_str).unwrap_or(""))?;
         let options = node.get("options").cloned().unwrap_or_else(undefined);
@@ -398,9 +437,9 @@ impl<'h> Session<'h> {
             .get("mf")
             .ok_or_else(|| Fault::Harness("declref without mf".into()))?;
         if mf.get(M).and_then(Value::as_str) != Some("mfref") {
-            return Err(Fault::Unsupported(
-                "a declaration of a model file that is not registered (mfnew) has no Rust handle"
-                    .into(),
+            return Err(blocked(
+                "a declaration of a model file that is not registered (mfnew) has no Rust handle",
+                "ModelFile.new",
             ));
         }
         let owner = self.mm_index(
@@ -430,17 +469,18 @@ impl<'h> Session<'h> {
 
     fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
         if v.get("part").and_then(Value::as_str).is_some() {
-            return Err(Fault::Unsupported(
-                "a map key or value type has no Rust handle yet (MapKeyType/MapValueType, P2-06)"
-                    .into(),
+            return Err(blocked(
+                "a map key or value type has no Rust handle yet (MapKeyType/MapValueType)",
+                "MapKeyType.new",
             ));
         }
         let decl = v
             .get("decl")
             .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
         if decl.get(M).and_then(Value::as_str) != Some("declref") {
-            return Err(Fault::Unsupported(
-                "a property of a declaration that is not in its model file (declnew)".into(),
+            return Err(blocked(
+                "a property of a declaration that is not in its model file (declnew)",
+                "ScalarDeclaration.new",
             ));
         }
         let (owner, decl) = self.declref(decl)?;
@@ -491,9 +531,34 @@ const UNMODELLED_OPTIONS: [&str; 5] = [
 
 /// Options concerto-core 5.0.0 never reads on these paths: `strict`,
 /// `enableMapType` and `importAliasing` are v3/v4 flags no 5.0.0 source file
-/// reads, and `utcOffset` only reaches the `Serializer` the constructor
-/// builds, which no dispatched op uses. Replaying without them is exact.
-const INERT_OPTIONS: [&str; 4] = ["strict", "enableMapType", "importAliasing", "utcOffset"];
+/// reads, `utcOffset` only reaches the `Serializer` the constructor builds,
+/// which no dispatched op uses, and `offline` is a `ModelLoader` option
+/// (`modelloader.ts`) that the model manager itself never reads. Replaying
+/// without them is exact.
+const INERT_OPTIONS: [&str; 5] = [
+    "strict",
+    "enableMapType",
+    "importAliasing",
+    "utcOffset",
+    "offline",
+];
+
+/// The TS member that reads an unmodelled option, whose owner ports it.
+fn option_reader(key: &str) -> Option<&'static str> {
+    Some(match key {
+        // `addModelFile` -> `validateAst` (src/basemodelmanager.ts).
+        "metamodelValidation" => "BaseModelManager.validateAst",
+        // The constructor adds the metamodel file.
+        "addMetamodel" => "BaseModelManager.new",
+        // `Decorator.validate` reads `mm.getDecoratorValidation()`.
+        "decoratorValidation" => "Decorator.validate",
+        // `Declaration.validate` (src/introspect/declaration.ts).
+        "dangerouslyAllowReservedSystemTypeNamesInUserModels" => "Declaration.validate",
+        // `StringValidator`'s constructor builds the custom RegExp.
+        "regExp" => "StringValidator.new",
+        _ => return None,
+    })
+}
 
 /// Checks a recipe's options, returning its `skipLocationNodes` (which only
 /// selects the cache entry, i.e. the AST's shape). An unmodelled option with
@@ -510,9 +575,12 @@ fn check_options(options: &Value) -> Faulty<Value> {
     for (key, value) in map {
         let inert = key == "skipLocationNodes" || INERT_OPTIONS.contains(&key.as_str());
         if !inert && (truthy(value) || !UNMODELLED_OPTIONS.contains(&key.as_str())) {
-            return Err(Fault::Unsupported(format!(
-                "ModelManager option `{key}` is not modelled by the Rust engine yet"
-            )));
+            let reason =
+                format!("ModelManager option `{key}` is not modelled by the Rust engine yet");
+            return Err(match option_reader(key) {
+                Some(member) => blocked(reason, member),
+                None => Fault::Blocked(reason, Blocker::Owner(UNOWNED.into())),
+            });
         }
     }
     Ok(match map.get("skipLocationNodes") {
@@ -642,7 +710,9 @@ impl Replayed {
             .map_err(Fault::Harness)?
         {
             CacheEntry::Ast(ast) => Ok(Ok(ast)),
-            CacheEntry::Error(error) => Ok(Err(OracleError::from_cached_parse_error(&error))),
+            CacheEntry::Error(error) => Ok(Err(
+                OracleError::from_cached_error(&error).map_err(Fault::Harness)?
+            )),
         }
     }
 
@@ -654,10 +724,11 @@ impl Replayed {
                 let Value::String(cto) = input else {
                     // TS parses `String(input)`; build-cto-cache.js collects
                     // string arguments only, so the cache has no entry for it.
-                    return Err(Fault::Unsupported(
+                    return Err(Fault::Blocked(
                         "a ModelManager given a non-string model input, which TS parses as \
                          String(input): the P1-07a CTO cache collects string inputs only"
                             .into(),
+                        Blocker::Owner("P1-07a".into()),
                     ));
                 };
                 self.cto_ast(h, cto, file_name.as_str())
@@ -686,10 +757,10 @@ impl Replayed {
         });
         if validate {
             if !before_valid {
-                return Err(Fault::Unsupported(
-                    "validating one added model file needs ModelFile.validate, not ported yet \
-                     (P2-08), and an earlier file was added without validation"
-                        .into(),
+                return Err(blocked(
+                    "validating one added model file needs ModelFile.validate, not ported yet, \
+                     and an earlier file was added without validation",
+                    "ModelFile.validate",
                 ));
             }
             if let Err(e) = self.mm.validate_models() {
@@ -817,9 +888,10 @@ impl Replayed {
                 }
                 Ok(Ok(undefined()))
             }
-            other => Err(Fault::Unsupported(format!(
-                "ModelManager.{other} has no Rust counterpart yet"
-            ))),
+            other => Err(blocked(
+                format!("ModelManager.{other} has no Rust counterpart yet"),
+                format!("ModelManager.{other}"),
+            )),
         }
     }
 

@@ -7,8 +7,9 @@
 use serde_json::Value;
 
 use super::fixture::Fixture;
+use super::ledger::UNOWNED;
 use super::ops::Dispatch;
-use super::recipe::Fault;
+use super::recipe::{Blocker, Fault};
 
 #[derive(Debug)]
 pub enum Verdict {
@@ -17,11 +18,16 @@ pub enum Verdict {
     /// same verdict, message, class and location").
     Pass,
     /// A real behavioural mismatch, or a state divergence while the inputs
-    /// were rebuilt on the Rust engine.
-    Fail { detail: String },
+    /// were rebuilt on the Rust engine. `kind` is what differs, the part the
+    /// baseline records (`report.rs`); `detail` is the full first difference.
+    Fail { kind: FailKind, detail: String },
     /// The op, or something these inputs need, has no Rust counterpart yet.
-    /// `reason` says what, and which task owns it.
-    Unsupported { reason: String },
+    /// `reason` says what; `blocker` names what blocks it when that is not
+    /// the op itself, for its owner (`ledger.rs`).
+    Unsupported {
+        reason: String,
+        blocker: Option<Blocker>,
+    },
     /// The fixture could not be set up for reasons of the fixture or the
     /// CTO cache (a dangling reference, a missing cache entry). Never a
     /// pass: it fails the run (README "Verdicts").
@@ -33,21 +39,129 @@ pub fn judge(fixture: &Fixture, dispatch: Dispatch) -> Verdict {
         // README: "An engine that cannot reproduce that PRNG should compare
         // such fixtures structurally". No op this harness runs draws from
         // Math.random yet, so none is compared at all.
+        // PORTING.md names no task that reproduces the seeded PRNG.
         return Verdict::Unsupported {
             reason: "env.random: the JS seeded PRNG is not reproduced".into(),
+            blocker: Some(Blocker::Owner(UNOWNED.into())),
         };
     }
 
     let actual = match dispatch {
-        Dispatch::Fault(Fault::Unsupported(reason)) => return Verdict::Unsupported { reason },
+        Dispatch::Fault(Fault::Unsupported(reason)) => {
+            return Verdict::Unsupported {
+                reason,
+                blocker: None,
+            };
+        }
+        Dispatch::Fault(Fault::Blocked(reason, blocker)) => {
+            return Verdict::Unsupported {
+                reason,
+                blocker: Some(blocker),
+            };
+        }
         Dispatch::Fault(Fault::Harness(detail)) => return Verdict::HarnessError { detail },
-        Dispatch::Fault(Fault::Divergence(detail)) => return Verdict::Fail { detail },
+        Dispatch::Fault(Fault::Divergence(detail)) => {
+            let kind = if detail.starts_with("input construction failed") {
+                FailKind::InputConstruction
+            } else {
+                FailKind::StateDivergence
+            };
+            return Verdict::Fail { kind, detail };
+        }
         Dispatch::Ran(outcome) => outcome,
     };
 
     match first_diff(&fixture.outcome.0, &actual, "$") {
         None => Verdict::Pass,
-        Some(detail) => Verdict::Fail { detail },
+        Some(detail) => Verdict::Fail {
+            kind: FailKind::of_diff(&detail),
+            detail,
+        },
+    }
+}
+
+/// What a failing fixture got wrong: the coarse category of its first
+/// difference, stable across runs and across message rewordings, which the
+/// baseline stores per fixture so that a known failure that starts failing
+/// for another reason is caught (`report.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FailKind {
+    /// A recipe step replayed with another status or error class, or a
+    /// handle it should have produced is missing.
+    StateDivergence,
+    /// Rebuilding an input (`new ModelFile` for an `mfnew`) failed.
+    InputConstruction,
+    /// TS returned a value, Rust threw.
+    UnexpectedError,
+    /// TS threw, Rust returned a value.
+    MissingError,
+    /// Both threw, with different classes.
+    ClassMismatch,
+    /// Both threw, with different components.
+    ComponentMismatch,
+    /// Both threw, at different locations.
+    LocationMismatch,
+    /// Both threw, with different messages.
+    MessageMismatch,
+    /// Both returned, with different values.
+    ValueMismatch,
+    /// The `effects` differ.
+    EffectsMismatch,
+}
+
+impl FailKind {
+    pub const ALL: [Self; 10] = [
+        Self::StateDivergence,
+        Self::InputConstruction,
+        Self::UnexpectedError,
+        Self::MissingError,
+        Self::ClassMismatch,
+        Self::ComponentMismatch,
+        Self::LocationMismatch,
+        Self::MessageMismatch,
+        Self::ValueMismatch,
+        Self::EffectsMismatch,
+    ];
+
+    /// Classifies a [`first_diff`] path. Keys are compared in sorted order,
+    /// so for an error `class` wins over `component`, `location` and
+    /// `message`: one fixture always gets the same kind.
+    fn of_diff(detail: &str) -> Self {
+        let path = detail.split(':').next().unwrap_or(detail);
+        if path.starts_with("$.error.class") {
+            Self::ClassMismatch
+        } else if path.starts_with("$.error.component") {
+            Self::ComponentMismatch
+        } else if path.starts_with("$.error.location") {
+            Self::LocationMismatch
+        } else if path.starts_with("$.error.message") {
+            Self::MessageMismatch
+        } else if path.starts_with("$.error") {
+            if detail.contains("expected (absent)") {
+                Self::UnexpectedError
+            } else {
+                Self::MissingError
+            }
+        } else if path.starts_with("$.effects") {
+            Self::EffectsMismatch
+        } else {
+            Self::ValueMismatch
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StateDivergence => "state-divergence",
+            Self::InputConstruction => "input-construction",
+            Self::UnexpectedError => "unexpected-error",
+            Self::MissingError => "missing-error",
+            Self::ClassMismatch => "class-mismatch",
+            Self::ComponentMismatch => "component-mismatch",
+            Self::LocationMismatch => "location-mismatch",
+            Self::MessageMismatch => "message-mismatch",
+            Self::ValueMismatch => "value-mismatch",
+            Self::EffectsMismatch => "effects-mismatch",
+        }
     }
 }
 

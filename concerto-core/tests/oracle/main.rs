@@ -45,7 +45,7 @@
 //! yet is reported `unsupported`, with the reason and the owning task,
 //! never silently skipped and never counted as a pass or a fail
 //! (`report.rs`). Failures are reported per rule and per fixture, and
-//! judged against `known-failures.tsv` (`report.rs`).
+//! judged against `baseline.tsv` (`report.rs`).
 //!
 //! # Running part of the corpus
 //!
@@ -213,14 +213,14 @@ fn run(fixtures_dir: &Path, explicit: bool) {
         }
         let dispatch = ops::exec(&harness, &fx.op, &fx.inputs);
         let verdict = compare::judge(fx, dispatch);
-        recorder.record(fx, verdict);
+        recorder.record(fx, verdict, &harness.ledger);
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let baseline_path = manifest_dir
         .join("tests")
         .join("oracle")
-        .join("known-failures.tsv");
+        .join("baseline.tsv");
     let baseline = report::read_baseline(&baseline_path);
     let report = recorder.finish(&baseline);
     let report_path = manifest_dir
@@ -229,10 +229,6 @@ fn run(fixtures_dir: &Path, explicit: bool) {
         .join("oracle-report.json");
     report.write(&report_path);
     if env::var("ORACLE_UPDATE_BASELINE").is_ok_and(|v| v == "1") {
-        assert!(
-            filter.is_none(),
-            "ORACLE_UPDATE_BASELINE=1 needs a full run: unset ORACLE_OP"
-        );
         report.write_baseline(&baseline_path);
         return;
     }

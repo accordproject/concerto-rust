@@ -53,37 +53,57 @@ pub struct OracleError {
 }
 
 impl OracleError {
-    /// A `ParseException` recorded in the CTO cache. Rust never raises one
-    /// (PORTING.md 2.3): the harness replays the recorded one. The cache
-    /// keeps `{class, message, location}`; `component` is what
-    /// `ParseException` inherits from concerto-util's `BaseException` when
-    /// concerto-cto passes none (`component || packageJson.name`), unless
-    /// the entry records its own.
-    pub fn from_cached_parse_error(error: &Value) -> Self {
-        Self {
-            class: error
-                .get("class")
+    /// An error recorded in the CTO cache, replayed as the outcome: Rust
+    /// never parses CTO, so never raises a `ParseException` (PORTING.md
+    /// 2.3). The cache keeps `{class, message, location}` for whatever
+    /// `build-cto-cache.js`'s `parseOne` caught; an entry without a string
+    /// `class` or `message` is a harness error.
+    ///
+    /// Two things the cache does not keep are restored, for a
+    /// `ParseException` only: its `component`, which it inherits from
+    /// concerto-util's `BaseException` because concerto-cto passes none
+    /// (`component || packageJson.name`), and its location's
+    /// `source: undefined` ([`restore_location_source`]). Any other class
+    /// keeps the entry's own `component` (JS `null` when absent, as
+    /// `codec.js`'s `encodeError` records an `Error` without one) and its
+    /// location as cached.
+    pub fn from_cached_error(error: &Value) -> Result<Self, String> {
+        let text = |key: &str| {
+            error
+                .get(key)
                 .and_then(Value::as_str)
-                .unwrap_or("ParseException")
-                .to_string(),
-            message: error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            location: error
-                .get("location")
-                .filter(|l| !l.is_null())
-                .cloned()
-                .map(restore_location_source),
-            component: Some(
-                error
-                    .get("component")
-                    .and_then(Value::as_str)
-                    .unwrap_or(PARSE_EXCEPTION_COMPONENT)
-                    .to_string(),
-            ),
-        }
+                .map(str::to_string)
+                .ok_or_else(|| format!("CTO cache error entry without a string `{key}`: {error}"))
+        };
+        let class = text("class")?;
+        let message = text("message")?;
+        let is_parse_exception = class == "ParseException";
+        let location = error
+            .get("location")
+            .filter(|l| !l.is_null())
+            .cloned()
+            .map(|l| {
+                if is_parse_exception {
+                    restore_location_source(l)
+                } else {
+                    l
+                }
+            });
+        let recorded_component = error
+            .get("component")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let component = if is_parse_exception {
+            recorded_component.or_else(|| Some(PARSE_EXCEPTION_COMPONENT.to_string()))
+        } else {
+            recorded_component
+        };
+        Ok(Self {
+            class,
+            message,
+            location,
+            component,
+        })
     }
 
     pub fn to_value(&self) -> Value {
@@ -362,10 +382,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         _ => false,
     };
     if !dispatched {
-        return Ok(unsupported(format!(
-            "{op} is not ported yet{}",
-            h.ledger.owner(op)
-        )));
+        return Ok(unsupported(format!("{op} is not ported yet")));
     }
 
     let mut session = Session::new(h);
@@ -467,9 +484,10 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
                 return unsupported("getAst with non-plain arguments");
             };
             if recipe::truthy(&resolve) {
-                return unsupported(
-                    "getAst(resolve = true) needs resolveMetaModel, not ported yet (ledger: P2-08)",
-                );
+                return Dispatch::Fault(Fault::Blocked(
+                    "getAst(resolve = true) needs resolveMetaModel, not ported yet".into(),
+                    recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
+                ));
             }
             ran(Ok(r.ast(recipe::truthy(&include))))
         }
