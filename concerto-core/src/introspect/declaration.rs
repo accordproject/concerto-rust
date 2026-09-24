@@ -12,8 +12,10 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::property::Property;
-use crate::introspect::{check_domain, check_length, check_pattern, declared_class};
+use crate::introspect::property::{Property, normalized_property_json};
+use crate::introspect::{
+    check_domain, check_length, check_pattern, declared_class, with_qualified_class,
+};
 use crate::model_util::{is_valid_identifier, short_name};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents.
@@ -190,6 +192,7 @@ impl ClassDeclaration {
     /// identifier, a validator that makes sense - are run here explicitly
     /// rather than lost.
     fn from_json(kind: ClassKind, value: &serde_json::Value) -> Result<Self> {
+        let value = normalized_class_json(value)?;
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {}: {e}", kind.declaration_kind()),
             file_name: None,
@@ -215,12 +218,57 @@ impl ClassDeclaration {
     }
 }
 
+/// Prepares a class-like declaration's JSON for structural deserialization
+/// into the matching `mm::*Declaration` struct, which - unlike the older,
+/// hand-rolled equivalent - requires a `properties` array and requires each
+/// property's `$class` to already be fully qualified. This restores the
+/// original tolerance on both counts: a missing `properties` array means no
+/// properties, a non-array one is rejected with the same message the older
+/// code gave, and each property's `$class` may still be given as its short
+/// name (see [`normalized_property_json`]).
+fn normalized_class_json(value: &serde_json::Value) -> Result<serde_json::Value> {
+    let mut prepared = value.clone();
+    let Some(obj) = prepared.as_object_mut() else {
+        return Ok(prepared);
+    };
+    let properties = match obj.get("properties") {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|item| normalized_property_json(item, false))
+            .collect::<Result<Vec<_>>>()?,
+        Some(_) => {
+            return Err(ConcertoError::IllegalModel {
+                message: "'properties' must be an array".into(),
+                file_name: None,
+                location: None,
+            });
+        }
+    };
+    obj.insert(
+        "properties".to_string(),
+        serde_json::Value::Array(properties),
+    );
+    Ok(prepared)
+}
+
 /// A scalar: a named alias for a primitive, sometimes with a validator
 /// attached. A newtype over the metamodel's own `$class`-tagged
 /// [`mm::ScalarDeclaration`]; [`ScalarDeclaration::scalar_type`] tells you
 /// which primitive it wraps.
 #[derive(Debug, Clone)]
 pub struct ScalarDeclaration(mm::ScalarDeclaration);
+
+/// The metamodel `$class` short names `mm::ScalarDeclaration`'s tagged union
+/// covers.
+const SCALAR_KINDS: [&str; 6] = [
+    "BooleanScalar",
+    "IntegerScalar",
+    "LongScalar",
+    "DoubleScalar",
+    "StringScalar",
+    "DateTimeScalar",
+];
 
 impl ScalarDeclaration {
     /// The scalar's short name.
@@ -260,8 +308,19 @@ impl ScalarDeclaration {
     }
 
     fn from_json(short: &str, value: &serde_json::Value) -> Result<Self> {
+        if !SCALAR_KINDS.contains(&short) {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("unknown scalar type: {short}"),
+                file_name: None,
+                location: None,
+            });
+        }
+        // `short` may be the bare `$class` short name; qualify it so the
+        // generated, `$class`-tagged `mm::ScalarDeclaration` recognises it
+        // the same way it recognises the fully-qualified form.
+        let qualified = with_qualified_class(value, short);
         let scalar: mm::ScalarDeclaration =
-            serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
+            serde_json::from_value(qualified).map_err(|e| ConcertoError::IllegalModel {
                 message: format!("invalid {short}: {e}"),
                 file_name: None,
                 location: None,
@@ -321,61 +380,97 @@ pub enum Declaration {
     Map(MapDeclaration),
 }
 
-/// A map declaration: a newtype over [`mm::MapDeclaration`]'s shared fields,
-/// keeping the kind and the referenced type of its key and value.
+/// A map declaration.
 ///
-/// The key and value nodes are *also* parsed against the metamodel's own
-/// [`mm::MapKeyType`] and [`mm::MapValueType`], but leniently: a kind the
-/// metamodel does not declare (e.g. an `IntegerMapKeyType`) is kept as its
-/// bare `$class` short name with no resolved type, rather than failing to
-/// load the model. This lets a key or value kind the specification does not
-/// allow reach semantic validation, which reports it with a proper message,
-/// instead of an opaque deserialization error.
+/// The common case, [`MapDeclaration::Typed`], is a newtype over the
+/// metamodel's own [`mm::MapDeclaration`] - key and value included, since
+/// `mm::MapDeclaration` already requires each to be a kind its
+/// [`mm::MapKeyType`] / [`mm::MapValueType`] unions declare.
+///
+/// A key or value kind the metamodel does not declare (e.g. an
+/// `IntegerMapKeyType`) is not a shape `mm::MapDeclaration` can represent at
+/// all, so that case - and only that case - falls back to
+/// [`MapDeclaration::Untyped`], which keeps just the map's name and the bare
+/// `$class` short name of the key and value, read from the raw node. This
+/// lets a key or value kind the specification does not allow reach semantic
+/// validation, which reports it with a proper message, instead of failing to
+/// load the model on an opaque deserialization error.
 #[derive(Debug, Clone)]
-pub struct MapDeclaration {
-    name: String,
-    key_kind: String,
-    key: Option<mm::MapKeyType>,
-    value_kind: String,
-    value: Option<mm::MapValueType>,
+#[allow(clippy::large_enum_variant)]
+pub enum MapDeclaration {
+    /// The key and value are both kinds the metamodel declares.
+    Typed(mm::MapDeclaration),
+    /// The key or value (or both) is a kind the metamodel does not declare,
+    /// or the key/value node is otherwise malformed.
+    Untyped {
+        /// The map's short name.
+        name: String,
+        /// The bare `$class` short name of the key node.
+        key_kind: String,
+        /// The bare `$class` short name of the value node.
+        value_kind: String,
+    },
 }
 
 impl MapDeclaration {
     /// The map's short name.
     pub fn name(&self) -> &str {
-        &self.name
+        match self {
+            Self::Typed(m) => &m.name,
+            Self::Untyped { name, .. } => name,
+        }
     }
 
     /// The metamodel `$class` short name of the key node, such as
     /// `StringMapKeyType`.
     pub fn key_kind(&self) -> &str {
-        &self.key_kind
+        match self {
+            Self::Typed(m) => map_key_kind(&m.key),
+            Self::Untyped { key_kind, .. } => key_kind,
+        }
     }
 
     /// The metamodel `$class` short name of the value node, such as
     /// `ObjectMapValueType`.
     pub fn value_kind(&self) -> &str {
-        &self.value_kind
+        match self {
+            Self::Typed(m) => map_value_kind(&m.value),
+            Self::Untyped { value_kind, .. } => value_kind,
+        }
     }
 
     /// The type the key refers to, for a key that is not a primitive.
     pub fn key_type(&self) -> Option<&mm::TypeIdentifier> {
-        match &self.key {
-            Some(mm::MapKeyType::ObjectMapKeyType(k)) => Some(&k.type_),
-            _ => None,
+        match self {
+            Self::Typed(m) => match &m.key {
+                mm::MapKeyType::ObjectMapKeyType(k) => Some(&k.type_),
+                _ => None,
+            },
+            Self::Untyped { .. } => None,
         }
     }
 
     /// The type the value refers to, for a value that is not a primitive.
     pub fn value_type(&self) -> Option<&mm::TypeIdentifier> {
-        match &self.value {
-            Some(mm::MapValueType::ObjectMapValueType(v)) => Some(&v.type_),
-            Some(mm::MapValueType::RelationshipMapValueType(v)) => Some(&v.type_),
-            _ => None,
+        match self {
+            Self::Typed(m) => match &m.value {
+                mm::MapValueType::ObjectMapValueType(v) => Some(&v.type_),
+                mm::MapValueType::RelationshipMapValueType(v) => Some(&v.type_),
+                _ => None,
+            },
+            Self::Untyped { .. } => None,
         }
     }
 
     fn from_json(value: &serde_json::Value) -> Result<Self> {
+        // Try the whole node against the metamodel's own MapDeclaration
+        // first. Its `key`/`value` fields being typed unions means this can
+        // only fail this way for a genuinely malformed node: a missing
+        // 'name', or a key/value kind the metamodel does not declare.
+        if let Ok(typed) = serde_json::from_value::<mm::MapDeclaration>(value.clone()) {
+            return Ok(Self::Typed(typed));
+        }
+
         let name = value
             .get("name")
             .and_then(|v| v.as_str())
@@ -386,40 +481,25 @@ impl MapDeclaration {
             })?
             .to_string();
 
-        let key_node = value.get("key");
-        let value_node = value.get("value");
-        let key = key_node.and_then(|n| serde_json::from_value::<mm::MapKeyType>(n.clone()).ok());
-        let value =
-            value_node.and_then(|n| serde_json::from_value::<mm::MapValueType>(n.clone()).ok());
-
-        Ok(Self {
+        Ok(Self::Untyped {
             name,
-            key_kind: key
-                .as_ref()
-                .map(map_key_kind)
-                .unwrap_or_else(|| node_kind(key_node)),
-            key,
-            value_kind: value
-                .as_ref()
-                .map(map_value_kind)
-                .unwrap_or_else(|| node_kind(value_node)),
-            value,
+            key_kind: node_kind(value.get("key")),
+            value_kind: node_kind(value.get("value")),
         })
     }
 }
 
 /// The metamodel `$class` short name of a known map key kind.
-fn map_key_kind(key: &mm::MapKeyType) -> String {
+fn map_key_kind(key: &mm::MapKeyType) -> &'static str {
     match key {
         mm::MapKeyType::StringMapKeyType(_) => "StringMapKeyType",
         mm::MapKeyType::DateTimeMapKeyType(_) => "DateTimeMapKeyType",
         mm::MapKeyType::ObjectMapKeyType(_) => "ObjectMapKeyType",
     }
-    .to_string()
 }
 
 /// The metamodel `$class` short name of a known map value kind.
-fn map_value_kind(value: &mm::MapValueType) -> String {
+fn map_value_kind(value: &mm::MapValueType) -> &'static str {
     match value {
         mm::MapValueType::BooleanMapValueType(_) => "BooleanMapValueType",
         mm::MapValueType::DateTimeMapValueType(_) => "DateTimeMapValueType",
@@ -430,7 +510,6 @@ fn map_value_kind(value: &mm::MapValueType) -> String {
         mm::MapValueType::ObjectMapValueType(_) => "ObjectMapValueType",
         mm::MapValueType::RelationshipMapValueType(_) => "RelationshipMapValueType",
     }
-    .to_string()
 }
 
 /// The bare `$class` short name of a map key or value node the metamodel does
@@ -474,6 +553,14 @@ impl Declaration {
     pub fn as_scalar(&self) -> Option<&ScalarDeclaration> {
         match self {
             Self::Scalar(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Borrow this as a [`MapDeclaration`], if it is one.
+    pub fn as_map(&self) -> Option<&MapDeclaration> {
+        match self {
+            Self::Map(m) => Some(m),
             _ => None,
         }
     }
@@ -653,14 +740,76 @@ mod tests {
 
     #[test]
     fn non_array_properties_is_rejected() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Bad",
+            "properties": { "not": "an array" }
+        }));
         assert!(
-            Declaration::try_from(&serde_json::json!({
-                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                "name": "Bad",
-                "properties": { "not": "an array" }
-            }))
-            .is_err()
+            err.unwrap_err()
+                .to_string()
+                .contains("'properties' must be an array")
         );
+    }
+
+    #[test]
+    fn a_class_declaration_with_no_properties_field_loads_with_none() {
+        let d = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Empty"
+        }));
+        assert!(d.as_class().unwrap().own_properties().is_empty());
+    }
+
+    #[test]
+    fn a_class_declaration_property_class_may_be_given_as_the_short_name() {
+        let d = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "properties": [
+                { "$class": "StringProperty", "name": "firstName", "isArray": false, "isOptional": false }
+            ]
+        }));
+        let c = d.as_class().unwrap();
+        assert_eq!(c.own_properties().len(), 1);
+        assert_eq!(c.own_properties()[0].type_name(), Some("String"));
+    }
+
+    #[test]
+    fn a_scalar_class_may_be_given_as_the_short_name() {
+        let s = decl(serde_json::json!({
+            "$class": "StringScalar",
+            "name": "Email"
+        }));
+        assert_eq!(s.as_scalar().unwrap().scalar_type(), "String");
+    }
+
+    #[test]
+    fn unknown_scalar_kind_errors() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MysteryScalar",
+            "name": "X"
+        }));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("unknown scalar type: MysteryScalar")
+        );
+    }
+
+    #[test]
+    fn a_map_with_an_unrecognised_key_kind_still_loads() {
+        let m = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "Lookup",
+            "key": { "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" },
+            "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+        }));
+        let map = m.as_map().expect("map declaration");
+        assert_eq!(map.name(), "Lookup");
+        assert_eq!(map.key_kind(), "IntegerMapKeyType");
+        assert_eq!(map.value_kind(), "StringMapValueType");
+        assert!(map.key_type().is_none());
     }
 
     #[test]

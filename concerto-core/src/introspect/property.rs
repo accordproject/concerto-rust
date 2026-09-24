@@ -15,8 +15,58 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::{check_domain, check_length, check_pattern, check_size, declared_class};
+use crate::introspect::{
+    check_domain, check_length, check_pattern, check_size, declared_class, with_qualified_class,
+};
 use crate::model_util::{is_system_property, is_valid_identifier, short_name};
+
+/// The metamodel `$class` short names `mm::Property`'s tagged union covers:
+/// every concept-declaration field kind except an enum value member, which is
+/// `mm::EnumProperty` instead (see [`normalized_property_json`]).
+const PROPERTY_KINDS: [&str; 8] = [
+    "BooleanProperty",
+    "StringProperty",
+    "IntegerProperty",
+    "LongProperty",
+    "DoubleProperty",
+    "DateTimeProperty",
+    "ObjectProperty",
+    "RelationshipProperty",
+];
+
+/// Checks a property node's `$class` against the kinds `mm::Property` (and,
+/// when `allow_enum_member` is set, `mm::EnumProperty`) recognise, and - for a
+/// recognised kind - returns a copy with `$class` expanded to the metamodel's
+/// fully-qualified form, so a short `$class` parses the same as the long one
+/// (see [`with_qualified_class`]).
+///
+/// Used both when a property node is parsed on its own, and by
+/// [`super::declaration`] to normalise each item of a class-like
+/// declaration's `properties` array before the array is handed to serde as
+/// part of the whole `mm::*Declaration` struct.
+pub(crate) fn normalized_property_json(
+    value: &serde_json::Value,
+    allow_enum_member: bool,
+) -> Result<serde_json::Value> {
+    let class = declared_class(value);
+    if class.is_empty() {
+        return Err(ConcertoError::IllegalModel {
+            message: "property node is missing its $class".into(),
+            file_name: None,
+            location: None,
+        });
+    }
+    let kind = short_name(class);
+    let known = PROPERTY_KINDS.contains(&kind) || (allow_enum_member && kind == "EnumProperty");
+    if !known {
+        return Err(ConcertoError::IllegalModel {
+            message: format!("unknown property type: {kind}"),
+            file_name: None,
+            location: None,
+        });
+    }
+    Ok(with_qualified_class(value, kind))
+}
 
 /// A single property of a concept-like or enum declaration.
 #[derive(Debug, Clone)]
@@ -197,15 +247,8 @@ impl TryFrom<&serde_json::Value> for Property {
     type Error = ConcertoError;
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
-        let class = declared_class(value);
-        if class.is_empty() {
-            return Err(ConcertoError::IllegalModel {
-                message: "property node is missing its $class".into(),
-                file_name: None,
-                location: None,
-            });
-        }
-        let kind = short_name(class);
+        let qualified = normalized_property_json(value, true)?;
+        let kind = short_name(declared_class(value));
 
         // Parse into whatever the `$class` says this is. If serde chokes, the
         // JSON is malformed for the kind it claims to be.
@@ -216,9 +259,9 @@ impl TryFrom<&serde_json::Value> for Property {
         };
 
         let property = if kind == "EnumProperty" {
-            Self::from(serde_json::from_value::<mm::EnumProperty>(value.clone()).map_err(bad)?)
+            Self::from(serde_json::from_value::<mm::EnumProperty>(qualified).map_err(bad)?)
         } else {
-            let raw: mm::Property = serde_json::from_value(value.clone()).map_err(bad)?;
+            let raw: mm::Property = serde_json::from_value(qualified).map_err(bad)?;
             Self::from(raw)
         };
         property.validate()?;
@@ -401,13 +444,33 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.MysteryProperty",
             "name": "x"
         }));
-        assert!(err.is_err());
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("unknown property type: MysteryProperty")
+        );
     }
 
     #[test]
     fn missing_class_is_rejected() {
         let err = Property::try_from(&serde_json::json!({ "name": "x" }));
-        assert!(err.unwrap_err().to_string().contains("$class"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("property node is missing its $class")
+        );
+    }
+
+    #[test]
+    fn a_property_class_may_be_given_as_the_short_name() {
+        let p = prop(serde_json::json!({
+            "$class": "StringProperty",
+            "name": "email",
+            "isArray": false,
+            "isOptional": false
+        }));
+        assert_eq!(p.name(), "email");
+        assert!(p.is_primitive());
     }
 
     /// A `Double` property carrying the given range validator.

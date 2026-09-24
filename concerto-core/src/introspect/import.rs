@@ -9,7 +9,8 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::model_util::qualify;
+use crate::introspect::{declared_class, with_qualified_class};
+use crate::model_util::{qualify, short_name};
 
 /// A single import statement in a model file, wrapping the matching
 /// generated struct.
@@ -90,25 +91,70 @@ impl TryFrom<&serde_json::Value> for Import {
     type Error = ConcertoError;
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
-        let raw: mm::Import =
-            serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                message: format!("invalid import: {e}"),
+        let class = declared_class(value);
+        if class.is_empty() {
+            return Err(ConcertoError::IllegalModel {
+                message: "import node is missing its $class".into(),
+                file_name: None,
+                location: None,
+            });
+        }
+        let kind = short_name(class);
+
+        let namespace = value
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ConcertoError::IllegalModel {
+                message: format!("import ({kind}) missing 'namespace'"),
                 file_name: None,
                 location: None,
             })?;
 
-        match raw {
-            // Concerto v4 disallows wildcard imports; reject them up front.
-            mm::Import::ImportAll(all) => Err(ConcertoError::IllegalModel {
-                message: format!(
-                    "wildcard imports are not allowed: import {}.*",
-                    all.namespace
-                ),
+        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
+            message: format!("invalid import: {e}"),
+            file_name: None,
+            location: None,
+        };
+
+        match kind {
+            // Concerto v4 disallows wildcard imports; reject them up front,
+            // before trying to parse the rest of the node.
+            "ImportAll" => Err(ConcertoError::IllegalModel {
+                message: format!("wildcard imports are not allowed: import {namespace}.*"),
                 file_name: None,
                 location: None,
             }),
-            mm::Import::ImportType(t) => Ok(Self::Type(t)),
-            mm::Import::ImportTypes(t) => Ok(Self::Types(t)),
+            "ImportType" => {
+                if value.get("name").and_then(|v| v.as_str()).is_none() {
+                    return Err(ConcertoError::IllegalModel {
+                        message: "ImportType missing 'name'".into(),
+                        file_name: None,
+                        location: None,
+                    });
+                }
+                // `kind` may be the bare `$class` short name; qualify it so
+                // the generated, `$class`-tagged `mm::Import` recognises it
+                // the same way it recognises the fully-qualified form.
+                let qualified = with_qualified_class(value, kind);
+                let t: mm::ImportType = serde_json::from_value(qualified).map_err(bad)?;
+                Ok(Self::Type(t))
+            }
+            "ImportTypes" => {
+                let mut node = with_qualified_class(value, kind);
+                if let Some(obj) = node.as_object_mut() {
+                    // A model with no named types (`import ns.{}`) omits
+                    // 'types' entirely rather than writing an empty array.
+                    obj.entry("types")
+                        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                }
+                let t: mm::ImportTypes = serde_json::from_value(node).map_err(bad)?;
+                Ok(Self::Types(t))
+            }
+            other => Err(ConcertoError::IllegalModel {
+                message: format!("unknown import type: {other}"),
+                file_name: None,
+                location: None,
+            }),
         }
     }
 }
@@ -183,6 +229,49 @@ mod tests {
     #[test]
     fn missing_class_is_rejected() {
         let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
-        assert!(err.unwrap_err().to_string().contains("$class"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("import node is missing its $class")
+        );
+    }
+
+    #[test]
+    fn an_import_class_may_be_given_as_the_short_name() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "ImportType",
+            "namespace": "org.acme@1.0.0",
+            "name": "Person"
+        }))
+        .unwrap();
+        assert_eq!(imp.namespace(), "org.acme@1.0.0");
+        assert_eq!(
+            imp.resolve("Person").as_deref(),
+            Some("org.acme@1.0.0.Person")
+        );
+    }
+
+    #[test]
+    fn import_types_with_no_types_array_is_empty() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0"
+        }))
+        .unwrap();
+        assert!(imp.imported_names().is_empty());
+        assert!(imp.local_names().is_empty());
+    }
+
+    #[test]
+    fn unknown_import_kind_errors() {
+        let err = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MysteryImport",
+            "namespace": "org.acme@1.0.0"
+        }));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("unknown import type: MysteryImport")
+        );
     }
 }

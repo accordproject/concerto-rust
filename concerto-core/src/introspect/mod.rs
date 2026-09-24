@@ -41,6 +41,32 @@ pub(crate) fn declared_class(value: &serde_json::Value) -> &str {
     value.get("$class").and_then(|v| v.as_str()).unwrap_or("")
 }
 
+/// The namespace every metamodel `$class` belongs to.
+const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
+
+/// Returns a clone of `value` with its `$class` set to `kind`, qualified with
+/// the metamodel namespace.
+///
+/// Concerto's JS runtime accepts a node's `$class` given either fully
+/// qualified (`concerto.metamodel@1.0.0.StringProperty`) or as the bare short
+/// name (`StringProperty`); only the qualified form is one the generated,
+/// `$class`-tagged `mm::*` unions recognise on their own (an individual `mm::*`
+/// struct such as `mm::StringProperty`, deserialized directly rather than
+/// through its enum, does not look at `$class` at all). Callers that have
+/// already read `kind` off the node's own `$class` - so they know which
+/// concrete variant it names - use this to normalise it before handing the
+/// node to serde, so either form parses the same way.
+pub(crate) fn with_qualified_class(value: &serde_json::Value, kind: &str) -> serde_json::Value {
+    let mut qualified = value.clone();
+    if let Some(obj) = qualified.as_object_mut() {
+        obj.insert(
+            "$class".to_string(),
+            serde_json::Value::String(format!("{METAMODEL_NAMESPACE}.{kind}")),
+        );
+    }
+    qualified
+}
+
 /// Builds a [`ConcertoError::IllegalModel`] for a malformed validator.
 fn illegal(message: String) -> ConcertoError {
     ConcertoError::IllegalModel {
