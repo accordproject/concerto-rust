@@ -1101,7 +1101,11 @@ mod tests {
 
     #[test]
     fn test_fresh_model_manager_is_valid() {
-        // A fresh manager has only the system model loaded; it must validate.
+        // A fresh manager has only the two system models loaded (P1-07b: the
+        // decorator model, then the root model); it must validate. Only the
+        // root model is a system namespace by `is_system_namespace`'s check
+        // (TS: `isSystemModelFile`, `concerto@` only), so this also covers
+        // the decorator model's own declarations validating cleanly.
         let manager = ModelManager::new().unwrap();
         assert!(manager.validate_models().is_ok());
     }
