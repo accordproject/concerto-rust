@@ -1,9 +1,25 @@
-//! Error types for `concerto-core`.
+//! Error types for `concerto-core` (PORTING.md section 2: the error contract).
 //!
 //! [`ConcertoError`] covers the hard failures that stop a model from being
-//! used: a type or namespace that cannot be resolved, or model JSON that does
-//! not satisfy the metamodel. Each variant carries enough context to report
-//! what went wrong and, where known, where.
+//! used: a type that cannot be resolved, or model JSON that does not satisfy
+//! the metamodel. Each variant carries enough context to report what went
+//! wrong and, where known, where.
+//!
+//! [`ContractError`] is the `{kind, code, params, location}` shape every
+//! ported member builds its errors from (section 2.1). `kind` selects the TS
+//! exception class the shim throws (section 2.3); `code` is a key into the
+//! [`catalogue`] module, the verbatim port of `messages/en.json` and the
+//! inline templates the reference throws (section 2.2), scoped to the keys
+//! OD-5 lists. A call site that has not yet been faithfully ported from TS
+//! builds its `ContractError` with [`ContractError::pre_port`] instead of a
+//! catalogue code, so that it compiles against this contract without
+//! claiming a verbatim TS message it does not have; the unit that later
+//! ports that member (named in its doc comment) replaces the call with a
+//! real catalogue entry and its golden test (section 7.2).
+
+mod catalogue;
+
+pub use catalogue::{CATALOGUE, catalogue_entry};
 
 use thiserror::Error;
 
@@ -20,13 +36,6 @@ pub enum ConcertoError {
         type_name: String,
     },
 
-    /// A namespace was referenced before any model declared it.
-    #[error("namespace not found: {namespace}")]
-    NamespaceNotFound {
-        /// The namespace that could not be found.
-        namespace: String,
-    },
-
     /// The model JSON is malformed or violates a metamodel rule.
     #[error("illegal model: {message}")]
     IllegalModel {
@@ -36,15 +45,6 @@ pub enum ConcertoError {
         file_name: Option<String>,
         /// The source location, if known.
         location: Option<String>,
-    },
-
-    /// A loaded model is structurally sound but fails semantic validation:
-    /// an unresolved super type, a property whose type is not declared, a
-    /// duplicated field across an inheritance chain, and the like.
-    #[error("validation failed: {message}")]
-    ValidationFailed {
-        /// A description of what did not validate.
-        message: String,
     },
 
     /// An error in the `{kind, code, params, location}` shape of PORTING.md
@@ -60,23 +60,17 @@ impl From<ContractError> for ConcertoError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// P0-04b trial: the error contract for the three trial units only.
-//
-// P1-05 owns the error module and the message catalogue. This section holds
-// exactly what ModelUtil, NumberValidator and ScalarDeclaration need, in the
-// shape PORTING.md section 2 fixes, so that P1-05 can absorb it into
-// `error/` unchanged: the `ErrorKind` variants, the `ContractError` fields,
-// the catalogue entries (with their sources and renderers) and their golden
-// tests. Nothing else may be added here.
-// ---------------------------------------------------------------------------
-
 /// Selects the TS class the shim throws (PORTING.md table 2.3). Only the
-/// kinds the trial units raise exist so far.
+/// kinds a ported (or minimally adapted, section 7.2) unit raises exist so
+/// far; `ParseException` and `SecurityException` have no Rust throw site
+/// (2.3) and so no kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     /// `IllegalModelException(message, modelFile, location)`.
     IllegalModel,
+    /// `TypeNotFoundException(typeName, message)`. `params` must include
+    /// `typeName` (table 2.3); build these with [`ContractError::type_not_found`].
+    TypeNotFound,
     /// concerto-util `BaseException(message, undefined, errorType)`, thrown by
     /// `Validator.reportError`.
     Validator,
@@ -92,6 +86,7 @@ impl ErrorKind {
     pub fn ts_class(self) -> &'static str {
         match self {
             Self::IllegalModel => "IllegalModelException",
+            Self::TypeNotFound => "TypeNotFoundException",
             Self::Validator => "BaseException",
             Self::Error => "Error",
             Self::JsTypeError => "TypeError",
@@ -107,6 +102,11 @@ pub enum Renderer {
     /// An inline template literal or string concatenation: each `{param}` is
     /// replaced once, and inserted values are never scanned again.
     Inline,
+    /// Not a catalogue template at all: the single `message` param is used
+    /// verbatim. Reserved for [`ContractError::pre_port`]; never cite this
+    /// renderer as a faithful TS port (section 2.2), and its one entry
+    /// (`code = "pre-port"`) is exempt from the OD-5 completeness test.
+    Raw,
 }
 
 /// One message template.
@@ -122,105 +122,6 @@ pub struct CatalogueEntry {
     pub sources: &'static [&'static str],
 }
 
-/// The trial units' messages (P0-04b). P1-05 moves them into the catalogue.
-pub const TRIAL_CATALOGUE: &[CatalogueEntry] = &[
-    CatalogueEntry {
-        code: "modelutil-getnamespace-nofnq",
-        template: "FQN is invalid.",
-        renderer: Renderer::Globalize,
-        sources: &["src/modelutil.ts:93"],
-    },
-    CatalogueEntry {
-        code: "modelutil-parsenamespace-nullorundefined",
-        template: "Namespace is null or undefined.",
-        renderer: Renderer::Inline,
-        sources: &["src/modelutil.ts:124"],
-    },
-    CatalogueEntry {
-        code: "modelutil-parsenamespace-invalidnamespace",
-        template: "Invalid namespace {ns}",
-        renderer: Renderer::Inline,
-        sources: &["src/modelutil.ts:130", "src/modelutil.ts:136"],
-    },
-    CatalogueEntry {
-        code: "modelutil-isassignableto-cannotfindtype",
-        template: "Cannot find type {typeName}",
-        renderer: Renderer::Inline,
-        sources: &["src/modelutil.ts:196"],
-    },
-    CatalogueEntry {
-        code: "metamodelutil-importfullyqualifiednames-unrecognizedimports",
-        template: "Unrecognized imports {$class}",
-        renderer: Renderer::Inline,
-        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:257"],
-    },
-    CatalogueEntry {
-        code: "validator-reporterror",
-        template: "Validator error for field `{id}`. {fqn}: {msg}",
-        renderer: Renderer::Inline,
-        sources: &["src/introspect/validator.ts:82"],
-    },
-    CatalogueEntry {
-        code: "numbervalidator-constructor-nobounds",
-        template: "Invalid range, lower and-or upper bound must be specified.",
-        renderer: Renderer::Inline,
-        sources: &["src/introspect/numbervalidator.ts:65"],
-    },
-    CatalogueEntry {
-        code: "numbervalidator-constructor-lowerhigherthanupper",
-        template: "Lower bound must be less than or equal to upper bound.",
-        renderer: Renderer::Inline,
-        sources: &["src/introspect/numbervalidator.ts:70"],
-    },
-    CatalogueEntry {
-        code: "numbervalidator-constructor-outsidelowerbound",
-        template: "Value {value} is outside lower bound {lowerBound}",
-        renderer: Renderer::Inline,
-        sources: &[
-            "src/introspect/numbervalidator.ts:77",
-            "src/introspect/numbervalidator.ts:111",
-        ],
-    },
-    CatalogueEntry {
-        code: "numbervalidator-constructor-outsideupperbound",
-        template: "Value {value} is outside upper bound {upperBound}",
-        renderer: Renderer::Inline,
-        sources: &[
-            "src/introspect/numbervalidator.ts:81",
-            "src/introspect/numbervalidator.ts:115",
-        ],
-    },
-    CatalogueEntry {
-        code: "scalardeclaration-process-primitivename",
-        template: "Invalid scalar name '{scalarName}'. Name conflicts with primitive type.",
-        renderer: Renderer::Inline,
-        sources: &["src/introspect/scalardeclaration.ts:66"],
-    },
-    CatalogueEntry {
-        code: "scalardeclaration-validate-duplicateclassname",
-        template: "Duplicate class name {name}",
-        renderer: Renderer::Inline,
-        sources: &["src/introspect/scalardeclaration.ts:138"],
-    },
-    CatalogueEntry {
-        code: "engine-typeerror-readproperties",
-        template: "Cannot read properties of {value} (reading '{property}')",
-        renderer: Renderer::Inline,
-        sources: &["V8 (property read on null or undefined)"],
-    },
-    CatalogueEntry {
-        code: "engine-typeerror-notafunction",
-        template: "{expression} is not a function",
-        renderer: Renderer::Inline,
-        sources: &["V8 (call of a non-function)"],
-    },
-];
-
-/// Looks up a trial catalogue entry.
-pub fn catalogue_entry(code: &str) -> Option<&'static CatalogueEntry> {
-    TRIAL_CATALOGUE.iter().find(|entry| entry.code == code)
-}
-
 /// Renders a template with its params.
 fn render(code: &str, params: &[(&'static str, String)]) -> String {
     let Some(entry) = catalogue_entry(code) else {
@@ -229,7 +130,27 @@ fn render(code: &str, params: &[(&'static str, String)]) -> String {
         return code.to_string();
     };
     match entry.renderer {
-        Renderer::Globalize => entry.template.to_string(),
+        // Globalize.messageFormatter (globalize.ts), ported faithfully
+        // (PORTING.md section 2.2): params are substituted in insertion
+        // order, one param after another over the whole message built so
+        // far, each substitution global (every `{name}` occurrence, not just
+        // the first) and following `String.prototype.replace`'s special
+        // patterns in the *value* (`$$`, `$&`, `` $` ``, `$'`). This means a
+        // value inserted by an earlier param that happens to spell a later
+        // param's placeholder is substituted again — unlike `Inline`, which
+        // never rescans.
+        Renderer::Globalize => {
+            let mut message = entry.template.to_string();
+            for (name, value) in params {
+                message = globalize_replace_all(&message, name, value);
+            }
+            message
+        }
+        Renderer::Raw => params
+            .iter()
+            .find(|(name, _)| *name == "message")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default(),
         Renderer::Inline => {
             // One left-to-right pass: a `{name}` naming a param is replaced by
             // its value, and the value is not scanned again.
@@ -260,6 +181,70 @@ fn render(code: &str, params: &[(&'static str, String)]) -> String {
             out
         }
     }
+}
+
+/// Replaces every `{name}` in `message` with `value`, JS
+/// `message.replace(new RegExp('\\{name\\}', 'g'), value)` style: `$`/`\``
+/// and the match position in `value` are resolved per occurrence, against
+/// `message` as it was *before this call* (JS computes `` $` `` and `$'` from
+/// the string the `.replace` call runs over, not from the output being
+/// built), matching how `Globalize` calls `String.prototype.replace` once
+/// per param (section 2.2).
+fn globalize_replace_all(message: &str, name: &str, value: &str) -> String {
+    let pattern = format!("{{{name}}}");
+    if !message.contains(pattern.as_str()) {
+        return message.to_string();
+    }
+    let mut out = String::with_capacity(message.len());
+    let mut last_end = 0;
+    for (idx, _) in message.match_indices(pattern.as_str()) {
+        out.push_str(&message[last_end..idx]);
+        let before = &message[..idx];
+        let after = &message[idx + pattern.len()..];
+        out.push_str(&substitute_dollar_sequences(value, &pattern, before, after));
+        last_end = idx + pattern.len();
+    }
+    out.push_str(&message[last_end..]);
+    out
+}
+
+/// The substitution patterns `String.prototype.replace` recognises in a
+/// plain-string replacement (no capture groups, since `{name}` has none):
+/// `$$` is a literal `$`, `$&` is the matched substring, `` $` `` is the text
+/// before the match and `$'` is the text after it. Any other `$x` is left
+/// alone.
+fn substitute_dollar_sequences(value: &str, matched: &str, before: &str, after: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            match chars.peek() {
+                Some('$') => {
+                    chars.next();
+                    out.push('$');
+                    continue;
+                }
+                Some('&') => {
+                    chars.next();
+                    out.push_str(matched);
+                    continue;
+                }
+                Some('`') => {
+                    chars.next();
+                    out.push_str(before);
+                    continue;
+                }
+                Some('\'') => {
+                    chars.next();
+                    out.push_str(after);
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// What `Validator.reportError` adds to a validator message: the instance
@@ -303,6 +288,46 @@ impl ContractError {
             code,
             params,
             location: None,
+            model_file: None,
+            validator: None,
+        }
+    }
+
+    /// `ErrorKind::TypeNotFound`, from the catalogue: `params` gets the
+    /// template's own params, plus `typeName` (table 2.3), the value
+    /// `TypeNotFoundException`'s constructor stores separately from the
+    /// rendered message.
+    pub fn type_not_found(
+        code: &'static str,
+        mut params: Vec<(&'static str, String)>,
+        type_name: String,
+        location: Option<serde_json::Value>,
+    ) -> Self {
+        params.push(("typeName", type_name));
+        Self {
+            kind: ErrorKind::TypeNotFound,
+            code,
+            params,
+            location,
+            model_file: None,
+            validator: None,
+        }
+    }
+
+    /// A call site that has not yet been faithfully ported from the TS
+    /// reference (module doc; PORTING.md section 7.2). `message` is used
+    /// verbatim, through [`Renderer::Raw`], never through the catalogue: it
+    /// is not claimed to be a verbatim TS template, and the OD-5
+    /// completeness test does not expect a golden test with its own name for
+    /// every such call site, only for the one shared `"pre-port"` entry.
+    /// The unit that later ports this member replaces the call with a real
+    /// catalogue entry (and deletes this one).
+    pub fn pre_port(kind: ErrorKind, message: String, location: Option<serde_json::Value>) -> Self {
+        Self {
+            kind,
+            code: "pre-port",
+            params: vec![("message", message)],
+            location,
             model_file: None,
             validator: None,
         }
@@ -363,14 +388,19 @@ impl ContractError {
                     crate::model_util::capitalize_first_letter(&suffix)
                 )
             }
-            ErrorKind::Validator | ErrorKind::Error | ErrorKind::JsTypeError => message,
+            ErrorKind::TypeNotFound
+            | ErrorKind::Validator
+            | ErrorKind::Error
+            | ErrorKind::JsTypeError => message,
         }
     }
 
     /// The `component` the oracle records for this error.
     pub fn component(&self) -> Option<&'static str> {
         match self.kind {
-            ErrorKind::IllegalModel => Some("@accordproject/concerto-core"),
+            ErrorKind::IllegalModel | ErrorKind::TypeNotFound => {
+                Some("@accordproject/concerto-core")
+            }
             ErrorKind::Validator => Some("@accordproject/concerto-util"),
             ErrorKind::Error | ErrorKind::JsTypeError => None,
         }
@@ -565,26 +595,167 @@ mod tests {
         );
     }
 
-    /// Every trial entry is unique, cites its source, and has a golden test
-    /// above (checked by name).
+    /// `Globalize` templates are the opposite of `Inline` on every edge case
+    /// 6.3 asks for: a repeated `{param}` is replaced at each occurrence, a
+    /// value containing another param's placeholder is substituted again
+    /// once that later param is applied, and `$$`/`$&` in a value follow JS
+    /// `String.prototype.replace` (section 2.2).
     #[test]
-    fn trial_catalogue_is_complete() {
-        let source = include_str!("error.rs");
-        for (i, entry) in TRIAL_CATALOGUE.iter().enumerate() {
-            assert!(!entry.sources.is_empty(), "{} cites no source", entry.code);
+    fn globalize_rendering_rescans_inserted_values_and_applies_replace_patterns() {
+        assert_eq!(
+            contract(
+                "factory-newinstance-missingidentifier",
+                &[("type", "{namespace} $$ $&"), ("namespace", "org.acme")]
+            )
+            .message(),
+            // The "type" pass runs first: "$$" -> "$", "$&" -> the matched
+            // text "{type}" (not "{namespace}": $& is relative to *this*
+            // pass's own match). That leaves a literal "{namespace}" in the
+            // message, which the later "namespace" pass then substitutes too
+            // (rescanning) — but the "{type}" that "$&" just inserted is not
+            // reprocessed, because the "type" param has already run.
+            "Missing identifier for Type \"org.acme $ {type}\" in namespace \"org.acme\"."
+        );
+    }
+
+    // ---- the P1-05 additions (beyond the P0-04b trial payload above) ----
+
+    #[test]
+    fn golden_typenotfounderror_defaultmessage() {
+        assert_eq!(
+            contract(
+                "typenotfounderror-defaultmessage",
+                &[("typeName", "org.acme.Doge")]
+            )
+            .message(),
+            "Type \"org.acme.Doge\" not found."
+        );
+    }
+
+    #[test]
+    fn golden_factory_newinstance_missingidentifier() {
+        assert_eq!(
+            contract(
+                "factory-newinstance-missingidentifier",
+                &[("type", "MyAsset"), ("namespace", "org.acme")]
+            )
+            .message(),
+            "Missing identifier for Type \"MyAsset\" in namespace \"org.acme\"."
+        );
+    }
+
+    #[test]
+    fn golden_factory_newinstance_invalididentifier() {
+        assert_eq!(
+            contract(
+                "factory-newinstance-invalididentifier",
+                &[("type", "MyAsset"), ("namespace", "org.acme")]
+            )
+            .message(),
+            "Invalid or missing identifier for Type \"MyAsset\" in namespace \"org.acme\"."
+        );
+    }
+
+    #[test]
+    fn golden_factory_newinstance_abstracttype() {
+        assert_eq!(
+            contract(
+                "factory-newinstance-abstracttype",
+                &[("type", "MyAsset"), ("namespace", "org.acme")]
+            )
+            .message(),
+            "Cannot instantiate the abstract type \"MyAsset\" in the \"org.acme\" namespace."
+        );
+    }
+
+    #[test]
+    fn golden_factory_newinstance_typenotdeclaredinns() {
+        assert_eq!(
+            contract(
+                "factory-newinstance-typenotdeclaredinns",
+                &[("type", "MyAsset"), ("namespace", "org.acme")]
+            )
+            .message(),
+            "Cannot instantiate Type \"MyAsset\" in namespace \"org.acme\"."
+        );
+    }
+
+    #[test]
+    fn golden_modelmanager_gettype_noregisteredns() {
+        assert_eq!(
+            contract(
+                "modelmanager-gettype-noregisteredns",
+                &[("type", "org.acme@1.0.0.Doge")]
+            )
+            .message(),
+            "Namespace is not defined for type \"org.acme@1.0.0.Doge\"."
+        );
+    }
+
+    /// The one non-catalogue renderer: [`ContractError::pre_port`] carries a
+    /// hand-written message verbatim, for a call site not yet faithfully
+    /// ported (module doc). This is not a golden test against the TS
+    /// reference; it only pins the passthrough behaviour.
+    #[test]
+    fn golden_pre_port() {
+        let err = ContractError::pre_port(
+            ErrorKind::IllegalModel,
+            "duplicate namespace: org.acme@1.0.0".into(),
+            None,
+        );
+        assert_eq!(err.code, "pre-port");
+        assert_eq!(err.message(), "duplicate namespace: org.acme@1.0.0");
+    }
+
+    /// [`ContractError::type_not_found`] appends `typeName` after the
+    /// template's own params (table 2.3), without disturbing rendering.
+    #[test]
+    fn type_not_found_constructor_adds_type_name_param() {
+        let err = ContractError::type_not_found(
+            "modelmanager-gettype-noregisteredns",
+            vec![("type", "org.acme@1.0.0.Doge".to_string())],
+            "org.acme@1.0.0.Doge".to_string(),
+            None,
+        );
+        assert_eq!(err.kind, ErrorKind::TypeNotFound);
+        assert_eq!(
+            err.params.last(),
+            Some(&("typeName", "org.acme@1.0.0.Doge".to_string()))
+        );
+        assert_eq!(
+            err.message(),
+            "Namespace is not defined for type \"org.acme@1.0.0.Doge\"."
+        );
+    }
+
+    /// OD-5: the Rust catalogue holds exactly the en.json keys used by a
+    /// RUST or HYBRID member, plus `factory-newinstance-*` and
+    /// `typenotfounderror-defaultmessage` (pre-approved ahead of their P3-01
+    /// call site). Every key in that scope has an entry; see `catalogue.rs`
+    /// for the completeness check the other way (every entry has a golden
+    /// test).
+    #[test]
+    fn od5_catalogue_scope_is_present() {
+        const OD5_EN_JSON_KEYS: &[&str] = &[
+            // Used today: ModelUtil.getNamespace (src/modelutil.ts).
+            "modelutil-getnamespace-nofnq",
+            // Used today: ModelManager.getType's unregistered-namespace path
+            // (src/basemodelmanager.ts), reused faithfully by
+            // model_manager::ModelManager::resolve_type_name (section 7.2).
+            "modelmanager-gettype-noregisteredns",
+            // OD-5: pre-approved ahead of their call site.
+            "typenotfounderror-defaultmessage",
+            "factory-newinstance-missingidentifier",
+            "factory-newinstance-invalididentifier",
+            "factory-newinstance-abstracttype",
+            "factory-newinstance-typenotdeclaredinns",
+        ];
+        for key in OD5_EN_JSON_KEYS {
             assert!(
-                TRIAL_CATALOGUE[..i]
-                    .iter()
-                    .all(|e| e.code != entry.code && e.template != entry.template),
-                "{} is duplicated",
-                entry.code
+                catalogue_entry(key).is_some(),
+                "{key} missing from the catalogue"
             );
-            let golden = format!("fn golden_{}()", entry.code.replace('-', "_"));
-            assert!(
-                source.contains(&golden),
-                "{} has no golden test",
-                entry.code
-            );
+            assert_eq!(catalogue_entry(key).unwrap().renderer, Renderer::Globalize);
         }
     }
 

@@ -485,11 +485,18 @@ impl ModelManager {
     /// fully-qualified name, using the primitives, local declarations and named
     /// imports the model file can see.
     pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String> {
-        let mf = self
-            .model_file(in_namespace)
-            .ok_or_else(|| ConcertoError::NamespaceNotFound {
-                namespace: in_namespace.to_string(),
-            })?;
+        let mf = self.model_file(in_namespace).ok_or_else(|| {
+            // TS: BaseModelManager.getType's unregistered-namespace path
+            // (src/basemodelmanager.ts), reused for the equivalent check
+            // here (error/catalogue.rs doc comment on the entry).
+            let fqn = get_fully_qualified_name(in_namespace, short);
+            ContractError::type_not_found(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", fqn.clone())],
+                fqn,
+                None,
+            )
+        })?;
 
         mf.resolve_local_type(short)
             .ok_or_else(|| ConcertoError::TypeNotFound {

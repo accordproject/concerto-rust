@@ -9,15 +9,23 @@
 //! an inheritance chain. These are the checks the Concerto specification calls
 //! semantic validation, and they run over an already loaded [`ModelManager`].
 //!
-//! Validation stops at the first problem. A rule that a model breaks is
-//! reported as [`ConcertoError::ValidationFailed`]; a model that cannot be
-//! walked at all, such as one whose inheritance is circular, surfaces the
-//! [`ConcertoError::IllegalModel`] raised while resolving it. A model that
-//! validates cleanly returns `Ok(())`.
+//! Validation stops at the first problem. TS raises every one of these as
+//! `IllegalModelException` (`ClassDeclaration.validate` and its callees;
+//! PORTING.md section 2.3), so every error here carries
+//! `ConcertoError::Contract` with `ErrorKind::IllegalModel` — built through
+//! [`ContractError::pre_port`] (`failed`, below) until a P2 task ports the
+//! check's exact TS wording. A model that cannot be walked at all, such as
+//! one whose inheritance is circular, surfaces the
+//! [`ConcertoError::IllegalModel`] raised while resolving it. Note that TS
+//! itself has no cycle check on this path and instead recurses until V8
+//! overflows the stack (`RangeError`, PORTING.md section 2.5): this
+//! pre-port cycle check is not yet a faithful port, and section 2.5 assigns
+//! fixing it to the task that ports the recursion point it stands in for.
+//! A model that validates cleanly returns `Ok(())`.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{ConcertoError, Result};
+use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
@@ -436,9 +444,16 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
     Ok(())
 }
 
-/// Builds a [`ConcertoError::ValidationFailed`] with the given message.
+/// Builds a semantic-validation error from a hand-written message.
+///
+/// TS: `ClassDeclaration.validate` and its callees throw
+/// `IllegalModelException` for every one of these checks (section 2.3), so
+/// `kind` is `IllegalModel`. The message text itself is not yet a faithful
+/// port of the TS wording (that is P2-01/P2-03/P2-08's job, one class at a
+/// time, PORTING.md section 7.2), so it is built with
+/// [`ContractError::pre_port`] rather than a catalogue code.
 fn failed(message: String) -> ConcertoError {
-    ConcertoError::ValidationFailed { message }
+    ContractError::pre_port(ErrorKind::IllegalModel, message, None).into()
 }
 
 #[cfg(test)]
