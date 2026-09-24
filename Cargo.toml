@@ -1,6 +1,19 @@
 [workspace]
 resolver = "3"
 members = ["concerto-metamodel", "concerto-core", "concerto-vocabulary"]
+# benches/ is deliberately NOT a workspace member (and is excluded, not just
+# omitted, so Cargo doesn't warn that it "believes it's in a workspace"): it
+# has an optional path dependency on the separate concerto-validate-rs repo
+# (see benches/Cargo.toml), and Cargo requires every path dependency's
+# manifest to exist at resolution time, even an optional, feature-gated one,
+# before any feature is applied. As a workspace member, that requirement
+# applied to `cargo build --workspace` / `cargo test --workspace` too - i.e.
+# every crate here, including this repo's own CI - breaking on any checkout
+# that doesn't happen to have concerto-validate-rs cloned at that exact path.
+# Excluding it means only someone who explicitly builds/benches benches/
+# (via `cargo bench --manifest-path benches/Cargo.toml`, see its README)
+# needs that sibling checkout.
+exclude = ["benches"]
 
 [workspace.package]
 version = "0.1.0"
