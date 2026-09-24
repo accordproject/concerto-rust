@@ -41,7 +41,7 @@ use crate::introspect::{FullyQualified, Named, Typed};
 use crate::model_util::{
     PRIMITIVE_TYPES, get_fully_qualified_name, get_namespace, get_short_name, is_primitive_type,
 };
-use crate::rootmodel::root_model_ast;
+use crate::rootmodel::{decorator_model_ast, root_model_ast};
 
 /// The namespace part of a fully-qualified name, `""` when there is none.
 fn namespace_of(fqn: &str) -> &str {
@@ -325,9 +325,23 @@ fn imported_type(model_file: &ModelFile, type_name: &str) -> Option<String> {
 }
 
 impl ModelManager {
-    /// A fresh manager with the `concerto@1.0.0` system model already loaded.
+    /// A fresh manager with both system models already loaded: the decorator
+    /// model, then the root model.
+    ///
+    /// TS: `BaseModelManager`'s constructor calls `this.addDecoratorModel()`
+    /// then `this.addRootModel()` (src/basemodelmanager.ts), each of which
+    /// builds a `ModelFile` from the vendored AST and adds it with
+    /// `addModelFile(m, cto, fileName, true)` - validation disabled. The
+    /// arena's [`Self::insert`] never validates on load (that is a separate,
+    /// opt-in pass, [`crate::validation`]), so it already behaves as TS's
+    /// `disableValidation = true` does for both models.
     pub fn new() -> Result<Self> {
         let mut mgr = Self::default();
+        let decorator = ModelFile::from_json(
+            &decorator_model_ast(),
+            Some("concerto.decorator@1.0.0".into()),
+        )?;
+        mgr.insert(decorator)?;
         let root = ModelFile::from_json(&root_model_ast(), Some("concerto@1.0.0".into()))?;
         mgr.insert(root)?;
         Ok(mgr)
@@ -406,8 +420,8 @@ impl ModelManager {
         self.model_file_id(namespace).and_then(|id| self.file(id))
     }
 
-    /// Every loaded model file, including the built-in system model, in the
-    /// order they were loaded.
+    /// Every loaded model file, including the built-in decorator and root
+    /// models, in the order they were loaded.
     pub fn model_files(&self) -> impl Iterator<Item = &ModelFile> {
         self.files.iter().map(|slot| &slot.model_file)
     }
@@ -932,6 +946,72 @@ mod tests {
         assert!(mgr.get_declaration("concerto@1.0.0.Asset").is_ok());
     }
 
+    /// P1-07b: a fresh manager preloads `concerto.decorator@1.0.0` as well as
+    /// `concerto@1.0.0`, decorator model first, matching TS's
+    /// `addDecoratorModel(); addRootModel();`.
+    #[test]
+    fn preloads_decorator_model_before_root_model() {
+        let mgr = ModelManager::new().unwrap();
+        assert!(mgr.model_file("concerto.decorator@1.0.0").is_some());
+        assert!(mgr.model_file("concerto@1.0.0").is_some());
+        let namespaces: Vec<&str> = mgr.model_files().map(ModelFile::namespace).collect();
+        assert_eq!(namespaces, ["concerto.decorator@1.0.0", "concerto@1.0.0"]);
+    }
+
+    /// P1-07b exit condition: `concerto.decorator@1.0.0.Decorator` and
+    /// `DotNetNamespace` resolve on a fresh manager.
+    #[test]
+    fn decorator_and_dot_net_namespace_resolve() {
+        let mgr = ModelManager::new().unwrap();
+        let decorator = mgr
+            .get_declaration("concerto.decorator@1.0.0.Decorator")
+            .unwrap();
+        assert_eq!(decorator.name(), "Decorator");
+        let dot_net_namespace = mgr
+            .get_declaration("concerto.decorator@1.0.0.DotNetNamespace")
+            .unwrap();
+        assert_eq!(dot_net_namespace.name(), "DotNetNamespace");
+    }
+
+    /// P1-07b exit condition: a user model that imports
+    /// `concerto.decorator@1.0.0.Decorator` and extends it loads and
+    /// validates against the preloaded decorator model.
+    #[test]
+    fn user_model_extending_decorator_loads_and_validates() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "concerto.decorator@1.0.0", "name": "Decorator" }
+                ],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "CustomDecorator",
+                      "isAbstract": false,
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Decorator" },
+                      "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            mgr.get_declaration("org.acme@1.0.0.CustomDecorator")
+                .is_ok()
+        );
+        assert!(
+            mgr.is_assignable_to(
+                "org.acme@1.0.0.CustomDecorator",
+                "concerto.decorator@1.0.0.Decorator"
+            )
+            .unwrap()
+        );
+        assert!(mgr.validate_models().is_ok());
+    }
+
     #[test]
     fn duplicate_namespace_rejected() {
         let mut mgr = ModelManager::new().unwrap();
@@ -1090,7 +1170,8 @@ mod tests {
         });
         assert!(mgr.add_model(&model, None).is_err());
         assert_eq!(mgr.generation(), generation);
-        assert_eq!(mgr.model_files().count(), 2);
+        // The two system models (P1-07b) plus `org.example@1.0.0` from `manager()`.
+        assert_eq!(mgr.model_files().count(), 3);
     }
 
     #[test]
@@ -1112,9 +1193,17 @@ mod tests {
         // Enum values are not properties yet (P2-04).
         let color = mgr.declaration_id("org.example@1.0.0.Color").unwrap();
         assert_eq!(mgr.property_ids(color).count(), 0);
-        // Model files are listed in load order, the system model first.
+        // Model files are listed in load order: the decorator model, then the
+        // root model (P1-07b, matching TS's `addDecoratorModel(); addRootModel();`).
         let namespaces: Vec<&str> = mgr.model_files().map(ModelFile::namespace).collect();
-        assert_eq!(namespaces, ["concerto@1.0.0", "org.example@1.0.0"]);
+        assert_eq!(
+            namespaces,
+            [
+                "concerto.decorator@1.0.0",
+                "concerto@1.0.0",
+                "org.example@1.0.0"
+            ]
+        );
     }
 
     #[test]
