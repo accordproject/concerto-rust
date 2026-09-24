@@ -18,5 +18,6 @@ name = "concerto_core"
 accordproject-concerto-metamodel = { path = "../concerto-metamodel", version = "3.17.0"}
 fancy-regex = { workspace = true }
 serde = { workspace = true }
+# OD-3: keep the given AST in its original key order. DV-001
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
