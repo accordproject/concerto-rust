@@ -1,19 +1,23 @@
 //! A model's imports, given proper types.
 //!
-//! [`Import`] is a newtype over the metamodel's own `mm::ImportType` and
-//! `mm::ImportTypes` structs, selected from the node's `$class`. A wildcard
-//! import (`import ns.*`, `mm::ImportAll`) is rejected while parsing,
-//! mirroring strict mode in Concerto v4, so the introspect layer never has to
-//! consider it.
+//! [`Import`] is a sum type whose variants are newtypes over the generated
+//! `mm::ImportType` and `mm::ImportTypes` structs, selected from the node's
+//! `$class`. Each is filled from exactly the fields the import is read for:
+//! the namespace, the imported name or names, and the aliases. A `types` or
+//! `aliasedTypes` entry of the wrong shape is skipped rather than rejected, as
+//! it always has been, so these structs are built from the node's values
+//! instead of by deserializing the whole node. A wildcard import
+//! (`import ns.*`) is rejected while parsing, mirroring strict mode in
+//! Concerto v4.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::{declared_class, with_qualified_class};
+use crate::introspect::{declared_class, qualified_class};
 use crate::model_util::{qualify, short_name};
 
-/// A single import statement in a model file, wrapping the matching
-/// generated struct.
+/// A single import statement in a model file. Wildcard imports (`import ns.*`)
+/// are rejected while parsing, mirroring strict mode in Concerto v4.
 #[derive(Debug, Clone)]
 pub enum Import {
     /// `import ns.Name`: a single named type.
@@ -51,9 +55,7 @@ impl Import {
                 .types
                 .iter()
                 .map(|name| {
-                    t.aliased_types
-                        .as_deref()
-                        .unwrap_or(&[])
+                    aliases(t)
                         .iter()
                         .find(|aliased| &aliased.name == name)
                         .map_or(name.as_str(), |aliased| aliased.aliased_name.as_str())
@@ -69,10 +71,7 @@ impl Import {
             Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
             Self::Type(_) => None,
             Self::Types(t) => {
-                if let Some(aliased) = t
-                    .aliased_types
-                    .as_deref()
-                    .unwrap_or(&[])
+                if let Some(aliased) = aliases(t)
                     .iter()
                     .find(|aliased| aliased.aliased_name == short)
                 {
@@ -85,6 +84,11 @@ impl Import {
             }
         }
     }
+}
+
+/// The aliases of a multi-type import, or none.
+fn aliases(import: &mm::ImportTypes) -> &[mm::AliasedType] {
+    import.aliased_types.as_deref().unwrap_or(&[])
 }
 
 impl TryFrom<&serde_json::Value> for Import {
@@ -108,55 +112,87 @@ impl TryFrom<&serde_json::Value> for Import {
                 message: format!("import ({kind}) missing 'namespace'"),
                 file_name: None,
                 location: None,
-            })?;
+            })?
+            .to_string();
+        let uri = value
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
-        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-            message: format!("invalid import: {e}"),
-            file_name: None,
-            location: None,
-        };
-
-        match kind {
-            // Concerto v4 disallows wildcard imports; reject them up front,
-            // before trying to parse the rest of the node.
-            "ImportAll" => Err(ConcertoError::IllegalModel {
-                message: format!("wildcard imports are not allowed: import {namespace}.*"),
-                file_name: None,
-                location: None,
-            }),
+        Ok(match kind {
+            // Concerto v4 disallows wildcard imports; reject them up front.
+            "ImportAll" => {
+                return Err(ConcertoError::IllegalModel {
+                    message: format!("wildcard imports are not allowed: import {namespace}.*"),
+                    file_name: None,
+                    location: None,
+                });
+            }
             "ImportType" => {
-                if value.get("name").and_then(|v| v.as_str()).is_none() {
-                    return Err(ConcertoError::IllegalModel {
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ConcertoError::IllegalModel {
                         message: "ImportType missing 'name'".into(),
                         file_name: None,
                         location: None,
-                    });
-                }
-                // `kind` may be the bare `$class` short name; qualify it so
-                // the generated, `$class`-tagged `mm::Import` recognises it
-                // the same way it recognises the fully-qualified form.
-                let qualified = with_qualified_class(value, kind);
-                let t: mm::ImportType = serde_json::from_value(qualified).map_err(bad)?;
-                Ok(Self::Type(t))
+                    })?
+                    .to_string();
+                Self::Type(mm::ImportType {
+                    namespace,
+                    uri,
+                    name,
+                })
             }
             "ImportTypes" => {
-                let mut node = with_qualified_class(value, kind);
-                if let Some(obj) = node.as_object_mut() {
-                    // A model with no named types (`import ns.{}`) omits
-                    // 'types' entirely rather than writing an empty array.
-                    obj.entry("types")
-                        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-                }
-                let t: mm::ImportTypes = serde_json::from_value(node).map_err(bad)?;
-                Ok(Self::Types(t))
+                // Entries of the wrong shape are skipped, not rejected.
+                let types = value
+                    .get("types")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let aliased_types = value
+                    .get("aliasedTypes")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(aliased_type).collect())
+                    .unwrap_or_default();
+                Self::Types(mm::ImportTypes {
+                    namespace,
+                    uri,
+                    types,
+                    aliased_types: Some(aliased_types),
+                })
             }
-            other => Err(ConcertoError::IllegalModel {
-                message: format!("unknown import type: {other}"),
-                file_name: None,
-                location: None,
-            }),
-        }
+            other => {
+                return Err(ConcertoError::IllegalModel {
+                    message: format!("unknown import type: {other}"),
+                    file_name: None,
+                    location: None,
+                });
+            }
+        })
     }
+}
+
+/// Reads one `aliasedTypes` entry, or `None` if it lacks a string `name` or
+/// `aliasedName`. An entry with no `$class` of its own is still an alias, and
+/// is given the metamodel's.
+fn aliased_type(entry: &serde_json::Value) -> Option<mm::AliasedType> {
+    let aliased_name = entry.get("aliasedName").and_then(|v| v.as_str())?;
+    let name = entry.get("name").and_then(|v| v.as_str())?;
+    let class = match declared_class(entry) {
+        "" => qualified_class("AliasedType"),
+        class => class.to_string(),
+    };
+    Some(mm::AliasedType {
+        _class: class,
+        name: name.to_string(),
+        aliased_name: aliased_name.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -229,10 +265,27 @@ mod tests {
     #[test]
     fn missing_class_is_rejected() {
         let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("import node is missing its $class")
+        assert!(err.unwrap_err().to_string().contains("$class"));
+    }
+
+    #[test]
+    fn missing_class_is_reported_verbatim() {
+        let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: import node is missing its $class"
+        );
+    }
+
+    #[test]
+    fn unknown_import_kind_errors() {
+        let err = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MysteryImport",
+            "namespace": "org.acme@1.0.0"
+        }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: unknown import type: MysteryImport"
         );
     }
 
@@ -244,7 +297,6 @@ mod tests {
             "name": "Person"
         }))
         .unwrap();
-        assert_eq!(imp.namespace(), "org.acme@1.0.0");
         assert_eq!(
             imp.resolve("Person").as_deref(),
             Some("org.acme@1.0.0.Person")
@@ -263,15 +315,56 @@ mod tests {
     }
 
     #[test]
-    fn unknown_import_kind_errors() {
-        let err = Import::try_from(&serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.MysteryImport",
-            "namespace": "org.acme@1.0.0"
-        }));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("unknown import type: MysteryImport")
+    fn an_alias_with_no_class_is_still_an_alias() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": ["A", "B"],
+            "aliasedTypes": [{ "name": "B", "aliasedName": "Bee" }]
+        }))
+        .unwrap();
+        assert_eq!(imp.resolve("Bee").as_deref(), Some("org.acme@1.0.0.B"));
+        assert_eq!(imp.local_names(), ["A", "Bee"]);
+    }
+
+    #[test]
+    fn non_string_types_and_malformed_aliases_are_skipped() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": ["A", 3, { "name": "C" }],
+            "aliasedTypes": [{ "name": "A" }, 7, { "name": "A", "aliasedName": "Ay" }]
+        }))
+        .unwrap();
+        assert_eq!(imp.imported_names(), ["A"]);
+        assert_eq!(imp.resolve("Ay").as_deref(), Some("org.acme@1.0.0.A"));
+    }
+
+    #[test]
+    fn types_or_aliases_that_are_not_arrays_are_empty() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": "A",
+            "aliasedTypes": {}
+        }))
+        .unwrap();
+        assert!(imp.imported_names().is_empty());
+        assert_eq!(imp.resolve("A"), None);
+    }
+
+    #[test]
+    fn a_non_string_uri_is_ignored() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportType",
+            "namespace": "org.acme@1.0.0",
+            "name": "Person",
+            "uri": 5
+        }))
+        .unwrap();
+        assert_eq!(
+            imp.resolve("Person").as_deref(),
+            Some("org.acme@1.0.0.Person")
         );
     }
 }

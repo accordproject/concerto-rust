@@ -13,13 +13,16 @@
 //! - [`Property`], a field of a declaration
 //! - [`Import`], a reference to types declared in another namespace
 //!
-//! Deserializing straight into the generated types is lossy: the base
-//! `Property` struct, for instance, drops subtype-specific fields such as
-//! validators and the referenced type. Each node is therefore re-read from its
-//! raw JSON into the enums above, which keep exactly what the runtime needs to
-//! inspect a model. A [`ModelFile`] groups the declarations and imports of one
-//! namespace; resolving types and inheritance *across* namespaces is the job of
-//! the [`ModelManager`](crate::model_manager::ModelManager).
+//! Each variant of these enums is a newtype over the generated `mm::*` struct
+//! for its `$class`. The variant is picked from the node's `$class` while the
+//! model is loaded, which is the one place the raw JSON is read: a `$class`
+//! may be given fully qualified or as its bare short name, and a few shapes
+//! the generated unions cannot hold are still accepted (see [`Property`],
+//! [`Import`] and [`declaration::MapDeclaration`]). A [`ModelFile`] groups the
+//! declarations and imports of one namespace and keeps the JSON AST it was
+//! given, unchanged, as [`ModelFile::ast`]; resolving types and inheritance
+//! *across* namespaces is the job of the
+//! [`ModelManager`](crate::model_manager::ModelManager).
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -44,27 +47,10 @@ pub(crate) fn declared_class(value: &serde_json::Value) -> &str {
 /// The namespace every metamodel `$class` belongs to.
 const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
-/// Returns a clone of `value` with its `$class` set to `kind`, qualified with
-/// the metamodel namespace.
-///
-/// Concerto's JS runtime accepts a node's `$class` given either fully
-/// qualified (`concerto.metamodel@1.0.0.StringProperty`) or as the bare short
-/// name (`StringProperty`); only the qualified form is one the generated,
-/// `$class`-tagged `mm::*` unions recognise on their own (an individual `mm::*`
-/// struct such as `mm::StringProperty`, deserialized directly rather than
-/// through its enum, does not look at `$class` at all). Callers that have
-/// already read `kind` off the node's own `$class` - so they know which
-/// concrete variant it names - use this to normalise it before handing the
-/// node to serde, so either form parses the same way.
-pub(crate) fn with_qualified_class(value: &serde_json::Value, kind: &str) -> serde_json::Value {
-    let mut qualified = value.clone();
-    if let Some(obj) = qualified.as_object_mut() {
-        obj.insert(
-            "$class".to_string(),
-            serde_json::Value::String(format!("{METAMODEL_NAMESPACE}.{kind}")),
-        );
-    }
-    qualified
+/// The fully-qualified metamodel `$class` for a short name, such as
+/// `concerto.metamodel@1.0.0.StringMapKeyType` for `StringMapKeyType`.
+pub(crate) fn qualified_class(short: &str) -> String {
+    format!("{METAMODEL_NAMESPACE}.{short}")
 }
 
 /// Builds a [`ConcertoError::IllegalModel`] for a malformed validator.
