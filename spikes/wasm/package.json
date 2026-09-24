@@ -1,0 +1,16 @@
+{
+  "name": "concerto-wasm-spike",
+  "private": true,
+  "description": "Throwaway WASM feasibility spike (concerto-rust#86). Not published.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "sh build.sh",
+    "smoke:node": "node scripts/node-smoke.mjs && node scripts/node-smoke.cjs",
+    "smoke:chromium": "node scripts/chromium-smoke.mjs",
+    "bench": "node scripts/bench.mjs"
+  },
+  "devDependencies": {
+    "binaryen": "132.0.0",
+    "playwright": "1.59.1"
+  }
+}

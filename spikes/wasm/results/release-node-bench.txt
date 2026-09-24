@@ -1,0 +1,27 @@
+node v24.21.0, best of 5
+noop()                                                    65,879,293 calls/s       15 ns
+add(u32, u32) -> u32                                      33,367,998 calls/s       30 ns
+strLen(32-char string)                                     1,972,700 calls/s      507 ns
+strLen(1 KiB string)                                          73,831 calls/s    13544 ns
+makeStr(32) -> string                                        893,904 calls/s     1119 ns
+makeStr(1024) -> string                                      538,780 calls/s     1856 ns
+JS baseline: read s.length                                51,755,734 calls/s       19 ns   for scale
+load set: JSON.stringify + addModel(string)                   94.126 ms   11 files, 562 decls, 5006 props, 720 KiB JSON
+load set: addModel(pre-stringified)                           84.223 ms   string marshalling + serde_json parse in WASM
+load set: addModelObject(object) [serde-wasm-bindgen]        177.468 ms
+JS baseline: JSON.stringify(set)                               5.006 ms
+new Engine() + free()                                          0.082 ms   parses the system model
+validateModels() on the set                                    8.328 ms
+snapshotJson() -> string                                      14.570 ms   514 KiB
+snapshotJson() + JSON.parse                                   21.938 ms
+snapshotObject() [serde-wasm-bindgen]                         19.003 ms
+fine walk, namespace-string keys                              28.088 ms   16715 calls, 1680 ns/call
+fine walk, integer handles                                    25.753 ms   16715 calls, 1541 ns/call
+coarse: snapshotObject() then the same walk in JS             21.480 ms
+JS baseline: same walk over a cached snapshot                  0.300 ms
+declName(nsString, i) -> string                              459,437 calls/s     2177 ns
+hDeclName(handle, i) -> string                               657,388 calls/s     1521 ns
+hPropIsOptional(handle, i, j) -> bool                      1,762,368 calls/s      567 ns
+throw mapped error, strategy A (plain Error)                  16,392 calls/s    61007 ns
+throw mapped error, strategy B (JS factory)                   12,336 calls/s    81064 ns
+JS baseline: throw/catch new Error                            51,634 calls/s    19367 ns
