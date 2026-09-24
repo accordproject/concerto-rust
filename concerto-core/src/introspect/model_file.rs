@@ -5,6 +5,11 @@
 //! fully-qualified one from what it declares or imports: the primitives, its
 //! own declarations, and its named imports. (Wildcard imports are rejected
 //! while parsing, per strict mode in Concerto v4.)
+//!
+//! A model file also keeps the JSON AST it was built from, unchanged, as
+//! [`ModelFile::ast`]. That AST is the source of truth for what the model
+//! says: its key order, its `null`s and its numbers exactly as given. The typed
+//! declarations and imports are a view of it, used for the runtime's logic.
 
 use std::collections::HashMap;
 
@@ -22,6 +27,7 @@ pub struct ModelFile {
     declarations: Vec<Declaration>,
     local_types: HashMap<String, usize>,
     file_name: Option<String>,
+    ast: serde_json::Value,
 }
 
 impl ModelFile {
@@ -93,6 +99,7 @@ impl ModelFile {
             declarations,
             local_types,
             file_name,
+            ast: value.clone(),
         })
     }
 
@@ -104,6 +111,11 @@ impl ModelFile {
     /// The version part of the namespace.
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// The JSON AST this model file was built from, exactly as it was given.
+    pub fn ast(&self) -> &serde_json::Value {
+        &self.ast
     }
 
     /// The originating file name, if one was supplied.
@@ -268,5 +280,14 @@ mod tests {
             None,
         );
         assert!(bad_imports.is_err());
+    }
+
+    #[test]
+    fn keeps_the_ast_it_was_given_in_its_original_key_order() {
+        let text = r#"{"namespace":"org.order@1.0.0","$class":"concerto.metamodel@1.0.0.Model","declarations":[{"properties":[],"name":"A","$class":"concerto.metamodel@1.0.0.ConceptDeclaration","isAbstract":false,"extra":null}]}"#;
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mf = ModelFile::from_json(&value, None).unwrap();
+        assert_eq!(mf.ast(), &value);
+        assert_eq!(serde_json::to_string(mf.ast()).unwrap(), text);
     }
 }

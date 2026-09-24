@@ -1,11 +1,14 @@
 //! Properties, with their types kept intact.
 //!
-//! Deserializing a property through the generated metamodel loses the parts we
-//! care about: the validators, and the referenced `type` on object and
-//! relationship properties all get dropped into a bare [`mm::Property`]. So we
-//! read each property a second time, straight from its raw JSON, into this
-//! [`Property`] enum and let the `$class` decide the variant. The getters hang
-//! off the enum directly. No trait hierarchy to chase.
+//! [`Property`] is a sum type whose variants are newtypes over the generated
+//! metamodel structs: the eight field kinds of [`mm::Property`] and
+//! [`mm::EnumProperty`]. Each node is deserialized into the concrete struct its
+//! `$class` names, whether the `$class` is fully qualified or given as its bare
+//! short name, so the validators and the referenced `type` are kept whole. A
+//! class declaration keeps its properties as this type too, because it also
+//! accepts an `EnumProperty`, which the generated `mm::Property` union does
+//! not cover. The getters hang off the enum directly. No trait hierarchy to
+//! chase.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -600,6 +603,65 @@ mod tests {
             err.unwrap_err()
                 .to_string()
                 .contains("size validator can only be applied to array or map")
+        );
+    }
+
+    #[test]
+    fn unknown_property_kind_is_reported_by_name() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MysteryProperty",
+            "name": "x"
+        }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: unknown property type: MysteryProperty"
+        );
+    }
+
+    #[test]
+    fn missing_class_is_reported_verbatim() {
+        let err = Property::try_from(&serde_json::json!({ "name": "x" }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: property node is missing its $class"
+        );
+    }
+
+    #[test]
+    fn a_property_class_may_be_given_as_the_short_name() {
+        let p = prop(serde_json::json!({
+            "$class": "StringProperty",
+            "name": "email",
+            "isArray": false,
+            "isOptional": false
+        }));
+        assert_eq!(p.name(), "email");
+        assert!(p.is_primitive());
+    }
+
+    #[test]
+    fn a_reserved_name_is_rejected_before_the_kind_is_checked() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MysteryProperty",
+            "name": "$identifier"
+        }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: Invalid field name '$identifier'"
+        );
+    }
+
+    #[test]
+    fn a_malformed_property_is_reported_under_its_own_kind() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "s",
+            "isArray": "yes"
+        }));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .starts_with("illegal model: invalid StringProperty: ")
         );
     }
 }

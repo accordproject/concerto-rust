@@ -13,13 +13,16 @@
 //! - [`Property`], a field of a declaration
 //! - [`Import`], a reference to types declared in another namespace
 //!
-//! Deserializing straight into the generated types is lossy: the base
-//! `Property` struct, for instance, drops subtype-specific fields such as
-//! validators and the referenced type. Each node is therefore re-read from its
-//! raw JSON into the enums above, which keep exactly what the runtime needs to
-//! inspect a model. A [`ModelFile`] groups the declarations and imports of one
-//! namespace; resolving types and inheritance *across* namespaces is the job of
-//! the [`ModelManager`](crate::model_manager::ModelManager).
+//! Each variant of these enums is a newtype over the generated `mm::*` struct
+//! for its `$class`. The variant is picked from the node's `$class` while the
+//! model is loaded, which is the one place the raw JSON is read: a `$class`
+//! may be given fully qualified or as its bare short name, and a few shapes
+//! the generated unions cannot hold are still accepted (see [`Property`],
+//! [`Import`] and [`declaration::MapDeclaration`]). A [`ModelFile`] groups the
+//! declarations and imports of one namespace and keeps the JSON AST it was
+//! given, unchanged, as [`ModelFile::ast`]; resolving types and inheritance
+//! *across* namespaces is the job of the
+//! [`ModelManager`](crate::model_manager::ModelManager).
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -39,6 +42,15 @@ pub use property::Property;
 /// The sum types in this module select their variant from this value.
 pub(crate) fn declared_class(value: &serde_json::Value) -> &str {
     value.get("$class").and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// The namespace every metamodel `$class` belongs to.
+const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
+
+/// The fully-qualified metamodel `$class` for a short name, such as
+/// `concerto.metamodel@1.0.0.StringMapKeyType` for `StringMapKeyType`.
+pub(crate) fn qualified_class(short: &str) -> String {
+    format!("{METAMODEL_NAMESPACE}.{short}")
 }
 
 /// Builds a [`ConcertoError::IllegalModel`] for a malformed validator.

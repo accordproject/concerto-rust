@@ -1,13 +1,19 @@
 //! A model's imports, given proper types.
 //!
-//! Deserializing through the generated metamodel flattens every import into the
-//! base `Import` struct and discards the type names it pulls in. Each import is
-//! therefore re-read from its raw JSON into this [`Import`] enum, keyed on the
-//! `$class`, so the introspect layer can resolve a short name back to the
-//! namespace that declares it.
+//! [`Import`] is a sum type whose variants are newtypes over the generated
+//! `mm::ImportType` and `mm::ImportTypes` structs, selected from the node's
+//! `$class`. Each is filled from exactly the fields the import is read for:
+//! the namespace, the imported name or names, and the aliases. A `types` or
+//! `aliasedTypes` entry of the wrong shape is skipped rather than rejected, as
+//! it always has been, so these structs are built from the node's values
+//! instead of by deserializing the whole node. A wildcard import
+//! (`import ns.*`) is rejected while parsing, mirroring strict mode in
+//! Concerto v4.
+
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::declared_class;
+use crate::introspect::{declared_class, qualified_class};
 use crate::model_util::{qualify, short_name};
 
 /// A single import statement in a model file. Wildcard imports (`import ns.*`)
@@ -15,28 +21,17 @@ use crate::model_util::{qualify, short_name};
 #[derive(Debug, Clone)]
 pub enum Import {
     /// `import ns.Name`: a single named type.
-    Type {
-        /// The namespace the type is imported from.
-        namespace: String,
-        /// The name of the imported type.
-        name: String,
-    },
+    Type(mm::ImportType),
     /// `import ns.{A, B}`: several named types, optionally aliased.
-    Types {
-        /// The namespace the types are imported from.
-        namespace: String,
-        /// The names of the imported types.
-        names: Vec<String>,
-        /// `(local_alias, original_name)` pairs for aliased imports.
-        aliases: Vec<(String, String)>,
-    },
+    Types(mm::ImportTypes),
 }
 
 impl Import {
     /// The namespace this import refers to.
     pub fn namespace(&self) -> &str {
         match self {
-            Self::Type { namespace, .. } | Self::Types { namespace, .. } => namespace,
+            Self::Type(t) => &t.namespace,
+            Self::Types(t) => &t.namespace,
         }
     }
 
@@ -45,8 +40,8 @@ impl Import {
     /// it is declared under, so these are the names to look for over there.
     pub fn imported_names(&self) -> &[String] {
         match self {
-            Self::Type { name, .. } => std::slice::from_ref(name),
-            Self::Types { names, .. } => names,
+            Self::Type(t) => std::slice::from_ref(&t.name),
+            Self::Types(t) => &t.types,
         }
     }
 
@@ -55,14 +50,15 @@ impl Import {
     /// are the names a local declaration could collide with.
     pub fn local_names(&self) -> Vec<&str> {
         match self {
-            Self::Type { name, .. } => vec![name.as_str()],
-            Self::Types { names, aliases, .. } => names
+            Self::Type(t) => vec![t.name.as_str()],
+            Self::Types(t) => t
+                .types
                 .iter()
                 .map(|name| {
-                    aliases
+                    aliases(t)
                         .iter()
-                        .find(|(_, original)| original == name)
-                        .map_or(name.as_str(), |(alias, _)| alias.as_str())
+                        .find(|aliased| &aliased.name == name)
+                        .map_or(name.as_str(), |aliased| aliased.aliased_name.as_str())
                 })
                 .collect(),
         }
@@ -72,23 +68,27 @@ impl Import {
     /// import names it explicitly.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
-            Self::Type { namespace, name } if name == short => Some(qualify(namespace, name)),
-            Self::Type { .. } => None,
-            Self::Types {
-                namespace,
-                names,
-                aliases,
-            } => {
-                if let Some((_, original)) = aliases.iter().find(|(alias, _)| alias == short) {
-                    return Some(qualify(namespace, original));
+            Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
+            Self::Type(_) => None,
+            Self::Types(t) => {
+                if let Some(aliased) = aliases(t)
+                    .iter()
+                    .find(|aliased| aliased.aliased_name == short)
+                {
+                    return Some(qualify(&t.namespace, &aliased.name));
                 }
-                if names.iter().any(|n| n == short) {
-                    return Some(qualify(namespace, short));
+                if t.types.iter().any(|n| n == short) {
+                    return Some(qualify(&t.namespace, short));
                 }
                 None
             }
         }
     }
+}
+
+/// The aliases of a multi-type import, or none.
+fn aliases(import: &mm::ImportTypes) -> &[mm::AliasedType] {
+    import.aliased_types.as_deref().unwrap_or(&[])
 }
 
 impl TryFrom<&serde_json::Value> for Import {
@@ -114,6 +114,10 @@ impl TryFrom<&serde_json::Value> for Import {
                 location: None,
             })?
             .to_string();
+        let uri = value
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
         Ok(match kind {
             // Concerto v4 disallows wildcard imports; reject them up front.
@@ -134,10 +138,15 @@ impl TryFrom<&serde_json::Value> for Import {
                         location: None,
                     })?
                     .to_string();
-                Self::Type { namespace, name }
+                Self::Type(mm::ImportType {
+                    namespace,
+                    uri,
+                    name,
+                })
             }
             "ImportTypes" => {
-                let names = value
+                // Entries of the wrong shape are skipped, not rejected.
+                let types = value
                     .get("types")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
@@ -146,24 +155,17 @@ impl TryFrom<&serde_json::Value> for Import {
                             .collect()
                     })
                     .unwrap_or_default();
-                let aliases = value
+                let aliased_types = value
                     .get("aliasedTypes")
                     .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|a| {
-                                let alias = a.get("aliasedName").and_then(|v| v.as_str())?;
-                                let original = a.get("name").and_then(|v| v.as_str())?;
-                                Some((alias.to_string(), original.to_string()))
-                            })
-                            .collect()
-                    })
+                    .map(|arr| arr.iter().filter_map(aliased_type).collect())
                     .unwrap_or_default();
-                Self::Types {
+                Self::Types(mm::ImportTypes {
                     namespace,
-                    names,
-                    aliases,
-                }
+                    uri,
+                    types,
+                    aliased_types: Some(aliased_types),
+                })
             }
             other => {
                 return Err(ConcertoError::IllegalModel {
@@ -174,6 +176,23 @@ impl TryFrom<&serde_json::Value> for Import {
             }
         })
     }
+}
+
+/// Reads one `aliasedTypes` entry, or `None` if it lacks a string `name` or
+/// `aliasedName`. An entry with no `$class` of its own is still an alias, and
+/// is given the metamodel's.
+fn aliased_type(entry: &serde_json::Value) -> Option<mm::AliasedType> {
+    let aliased_name = entry.get("aliasedName").and_then(|v| v.as_str())?;
+    let name = entry.get("name").and_then(|v| v.as_str())?;
+    let class = match declared_class(entry) {
+        "" => qualified_class("AliasedType"),
+        class => class.to_string(),
+    };
+    Some(mm::AliasedType {
+        _class: class,
+        name: name.to_string(),
+        aliased_name: aliased_name.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -247,5 +266,105 @@ mod tests {
     fn missing_class_is_rejected() {
         let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
         assert!(err.unwrap_err().to_string().contains("$class"));
+    }
+
+    #[test]
+    fn missing_class_is_reported_verbatim() {
+        let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: import node is missing its $class"
+        );
+    }
+
+    #[test]
+    fn unknown_import_kind_errors() {
+        let err = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MysteryImport",
+            "namespace": "org.acme@1.0.0"
+        }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: unknown import type: MysteryImport"
+        );
+    }
+
+    #[test]
+    fn an_import_class_may_be_given_as_the_short_name() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "ImportType",
+            "namespace": "org.acme@1.0.0",
+            "name": "Person"
+        }))
+        .unwrap();
+        assert_eq!(
+            imp.resolve("Person").as_deref(),
+            Some("org.acme@1.0.0.Person")
+        );
+    }
+
+    #[test]
+    fn import_types_with_no_types_array_is_empty() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0"
+        }))
+        .unwrap();
+        assert!(imp.imported_names().is_empty());
+        assert!(imp.local_names().is_empty());
+    }
+
+    #[test]
+    fn an_alias_with_no_class_is_still_an_alias() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": ["A", "B"],
+            "aliasedTypes": [{ "name": "B", "aliasedName": "Bee" }]
+        }))
+        .unwrap();
+        assert_eq!(imp.resolve("Bee").as_deref(), Some("org.acme@1.0.0.B"));
+        assert_eq!(imp.local_names(), ["A", "Bee"]);
+    }
+
+    #[test]
+    fn non_string_types_and_malformed_aliases_are_skipped() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": ["A", 3, { "name": "C" }],
+            "aliasedTypes": [{ "name": "A" }, 7, { "name": "A", "aliasedName": "Ay" }]
+        }))
+        .unwrap();
+        assert_eq!(imp.imported_names(), ["A"]);
+        assert_eq!(imp.resolve("Ay").as_deref(), Some("org.acme@1.0.0.A"));
+    }
+
+    #[test]
+    fn types_or_aliases_that_are_not_arrays_are_empty() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": "A",
+            "aliasedTypes": {}
+        }))
+        .unwrap();
+        assert!(imp.imported_names().is_empty());
+        assert_eq!(imp.resolve("A"), None);
+    }
+
+    #[test]
+    fn a_non_string_uri_is_ignored() {
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportType",
+            "namespace": "org.acme@1.0.0",
+            "name": "Person",
+            "uri": 5
+        }))
+        .unwrap();
+        assert_eq!(
+            imp.resolve("Person").as_deref(),
+            Some("org.acme@1.0.0.Person")
+        );
     }
 }
