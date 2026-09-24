@@ -296,12 +296,16 @@ pub enum Declaration {
     Map(MapDeclaration),
 }
 
+/// The name of a map declaration. The key and value nodes are read from the
+/// raw AST instead, so that a key or value kind the metamodel does not declare
+/// reaches validation, which reports it.
+#[derive(serde::Deserialize)]
+struct MapHeader {
+    name: String,
+}
+
 /// A map declaration, keeping the kind and the referenced type of its key and
-/// value.
-///
-/// Deserializing through the generated metamodel keeps only the base key and
-/// value nodes, which drop both the kind of node each was and the type a
-/// non-primitive key or value points at, so those are re-read from the raw AST.
+/// value, which are read from the raw AST.
 #[derive(Debug, Clone)]
 pub struct MapDeclaration {
     name: String,
@@ -340,14 +344,14 @@ impl MapDeclaration {
     }
 
     fn from_json(value: &serde_json::Value) -> Result<Self> {
-        let declaration: mm::MapDeclaration =
+        let header: MapHeader =
             serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
                 message: format!("invalid MapDeclaration: {e}"),
                 file_name: None,
                 location: None,
             })?;
         Ok(Self {
-            name: declaration.name,
+            name: header.name,
             key_kind: node_kind(value.get("key")),
             key_type: type_reference(value.get("key")),
             value_kind: node_kind(value.get("value")),

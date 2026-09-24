@@ -1,0 +1,61 @@
+{
+    "$class": "concerto.metamodel@1.0.0.Model",
+    "decorators": [
+        {
+            "$class": "concerto.metamodel@1.0.0.Decorator",
+            "name": "DotNetNamespace",
+            "arguments": [
+                {
+                    "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                    "value": "AccordProject.Concerto"
+                }
+            ]
+        }
+    ],
+    "namespace": "concerto@1.0.0",
+    "imports": [
+        {
+            "$class": "concerto.metamodel@1.0.0.ImportType",
+            "name": "DotNetNamespace",
+            "namespace": "concerto.decorator@1.0.0"
+        }
+    ],
+    "declarations": [
+        {
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Concept",
+            "isAbstract": true,
+            "properties": []
+        },
+        {
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Asset",
+            "isAbstract": true,
+            "properties": [],
+            "identified": {
+                "$class": "concerto.metamodel@1.0.0.Identified"
+            }
+        },
+        {
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Participant",
+            "isAbstract": true,
+            "properties": [],
+            "identified": {
+                "$class": "concerto.metamodel@1.0.0.Identified"
+            }
+        },
+        {
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Transaction",
+            "isAbstract": true,
+            "properties": []
+        },
+        {
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Event",
+            "isAbstract": true,
+            "properties": []
+        }
+    ]
+}
