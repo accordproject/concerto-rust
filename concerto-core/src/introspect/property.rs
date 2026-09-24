@@ -7,17 +7,21 @@
 //! short name, so the validators and the referenced `type` are kept whole. A
 //! class declaration keeps its properties as this type too, because it also
 //! accepts an `EnumProperty`, which the generated `mm::Property` union does
-//! not cover. The getters hang off the enum directly. No trait hierarchy to
-//! chase.
+//! not cover. The getters hang off the enum directly, and those it shares
+//! with the declarations come from the traits in [`crate::introspect`].
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
+use crate::derive::Named;
 use crate::error::{ConcertoError, Result};
-use crate::introspect::{check_domain, check_length, check_pattern, check_size, declared_class};
+use crate::introspect::{
+    Decorated, HasValidators, Named, Typed, check_domain, check_length, check_pattern, check_size,
+    declared_class,
+};
 use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
 
 /// A single property of a concept-like or enum declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Named)]
 pub enum Property {
     /// A `Boolean` primitive field.
     Boolean(mm::BooleanProperty),
@@ -39,50 +43,34 @@ pub enum Property {
     Enum(mm::EnumProperty),
 }
 
-impl Property {
-    /// The property's name.
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Boolean(p) => &p.name,
-            Self::String(p) => &p.name,
-            Self::Integer(p) => &p.name,
-            Self::Long(p) => &p.name,
-            Self::Double(p) => &p.name,
-            Self::DateTime(p) => &p.name,
-            Self::Object(p) => &p.name,
-            Self::Relationship(p) => &p.name,
-            Self::Enum(p) => &p.name,
+/// Picks the same field out of whichever generated struct a [`Property`]
+/// holds. The eight field kinds share the metamodel's property fields; an
+/// enum value has fewer, so its arm is given separately.
+macro_rules! property_field {
+    ($property:expr, $p:ident => $field:expr, $value:pat => $enum_value:expr) => {
+        match $property {
+            Property::Boolean($p) => $field,
+            Property::String($p) => $field,
+            Property::Integer($p) => $field,
+            Property::Long($p) => $field,
+            Property::Double($p) => $field,
+            Property::DateTime($p) => $field,
+            Property::Object($p) => $field,
+            Property::Relationship($p) => $field,
+            Property::Enum($value) => $enum_value,
         }
-    }
+    };
+}
 
+impl Property {
     /// Whether the property is an array (`[]`). Enum members are never arrays.
     pub fn is_array(&self) -> bool {
-        match self {
-            Self::Boolean(p) => p.is_array,
-            Self::String(p) => p.is_array,
-            Self::Integer(p) => p.is_array,
-            Self::Long(p) => p.is_array,
-            Self::Double(p) => p.is_array,
-            Self::DateTime(p) => p.is_array,
-            Self::Object(p) => p.is_array,
-            Self::Relationship(p) => p.is_array,
-            Self::Enum(_) => false,
-        }
+        property_field!(self, p => p.is_array, _ => false)
     }
 
     /// Whether the property is optional. Enum members are never optional.
     pub fn is_optional(&self) -> bool {
-        match self {
-            Self::Boolean(p) => p.is_optional,
-            Self::String(p) => p.is_optional,
-            Self::Integer(p) => p.is_optional,
-            Self::Long(p) => p.is_optional,
-            Self::Double(p) => p.is_optional,
-            Self::DateTime(p) => p.is_optional,
-            Self::Object(p) => p.is_optional,
-            Self::Relationship(p) => p.is_optional,
-            Self::Enum(_) => false,
-        }
+        property_field!(self, p => p.is_optional, _ => false)
     }
 
     /// `true` for the six primitive property kinds.
@@ -117,10 +105,17 @@ impl Property {
         }
     }
 
+    /// The collection size validator, if one is declared on this property.
+    pub fn size_validator(&self) -> Option<&mm::CollectionSizeValidator> {
+        property_field!(self, p => p.size_validator.as_ref(), _ => None)
+    }
+}
+
+impl Typed for Property {
     /// The name of the property's type. For primitives that's the primitive
     /// itself; for object/relationship properties it's the type they point at.
     /// Enum members don't have a type, so they get `None`.
-    pub fn type_name(&self) -> Option<&str> {
+    fn type_name(&self) -> Option<&str> {
         match self {
             Self::Boolean(_) => Some("Boolean"),
             Self::String(_) => Some("String"),
@@ -133,35 +128,15 @@ impl Property {
             Self::Enum(_) => None,
         }
     }
+}
 
-    /// The collection size validator, if one is declared on this property.
-    pub fn size_validator(&self) -> Option<&mm::CollectionSizeValidator> {
-        match self {
-            Self::Boolean(p) => p.size_validator.as_ref(),
-            Self::String(p) => p.size_validator.as_ref(),
-            Self::Integer(p) => p.size_validator.as_ref(),
-            Self::Long(p) => p.size_validator.as_ref(),
-            Self::Double(p) => p.size_validator.as_ref(),
-            Self::DateTime(p) => p.size_validator.as_ref(),
-            Self::Object(p) => p.size_validator.as_ref(),
-            Self::Relationship(p) => p.size_validator.as_ref(),
-            Self::Enum(_) => None,
-        }
-    }
-
-    /// The decorators attached to this property.
-    pub fn decorators(&self) -> &[mm::Decorator] {
-        match self {
-            Self::Boolean(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::String(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::Integer(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::Long(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::Double(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::DateTime(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::Object(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::Relationship(p) => p.decorators.as_deref().unwrap_or(&[]),
-            Self::Enum(p) => p.decorators.as_deref().unwrap_or(&[]),
-        }
+impl Decorated for Property {
+    fn decorators(&self) -> &[mm::Decorator] {
+        property_field!(
+            self,
+            p => p.decorators.as_deref().unwrap_or(&[]),
+            p => p.decorators.as_deref().unwrap_or(&[])
+        )
     }
 }
 
@@ -233,10 +208,8 @@ impl TryFrom<&serde_json::Value> for Property {
 }
 
 impl Property {
-    /// Checks the validators this property carries: a numeric range, a string
-    /// length, a regular expression, and a collection size. These are part of
-    /// the property's own declaration, so they are checked while loading
-    /// rather than left to the validation pass.
+    /// Checks a collection size validator, which only an array may carry
+    /// unless `allow_non_array` is set.
     fn check_size_validator(
         name: &str,
         is_array: bool,
@@ -257,7 +230,13 @@ impl Property {
         }
         Ok(())
     }
+}
 
+impl HasValidators for Property {
+    /// Checks the validators this property carries: a numeric range, a string
+    /// length, a regular expression, and a collection size. These are part of
+    /// the property's own declaration, so they are checked while loading
+    /// rather than left to the validation pass.
     fn check_validators(&self) -> Result<()> {
         match self {
             Self::String(p) => {

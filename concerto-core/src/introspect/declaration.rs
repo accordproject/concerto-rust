@@ -12,39 +12,37 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::de::Error as _;
 
+use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, Result};
 use crate::introspect::property::Property;
-use crate::introspect::scalar::{ScalarDeclaration, ScalarValidator};
-use crate::introspect::{check_length, check_pattern, declared_class, qualified_class};
+use crate::introspect::scalar::{self, ScalarDeclaration};
+use crate::introspect::{
+    DeclarationKind, Decorated, HasValidators, Named, Typed, declared_class, qualified_class,
+};
 use crate::model_util::{get_fully_qualified_name, get_short_name, is_valid_identifier};
 
-/// Which class-like declaration a [`ClassDeclaration`] represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which class-like declaration a [`ClassDeclaration`] represents. Its
+/// [`DeclarationKind`] is the metamodel `$class` short name for the kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, DeclarationKind)]
 pub enum ClassKind {
     /// A `concept`.
+    #[concerto(kind = "ConceptDeclaration")]
     Concept,
     /// An `asset` (system-identifiable).
+    #[concerto(kind = "AssetDeclaration")]
     Asset,
     /// A `participant` (system-identifiable).
+    #[concerto(kind = "ParticipantDeclaration")]
     Participant,
     /// A `transaction`.
+    #[concerto(kind = "TransactionDeclaration")]
     Transaction,
     /// An `event`.
+    #[concerto(kind = "EventDeclaration")]
     Event,
 }
 
 impl ClassKind {
-    /// The metamodel `$class` short name for this kind.
-    pub fn declaration_kind(self) -> &'static str {
-        match self {
-            Self::Concept => "ConceptDeclaration",
-            Self::Asset => "AssetDeclaration",
-            Self::Participant => "ParticipantDeclaration",
-            Self::Transaction => "TransactionDeclaration",
-            Self::Event => "EventDeclaration",
-        }
-    }
-
     fn from_short(short: &str) -> Option<Self> {
         Some(match short {
             "ConceptDeclaration" => Self::Concept,
@@ -108,11 +106,6 @@ impl ClassDeclaration {
         }
     }
 
-    /// The declaration's short name (without namespace).
-    pub fn name(&self) -> &str {
-        class_field!(&self.node, d => &d.name)
-    }
-
     /// Abstract types can't be instantiated on their own.
     pub fn is_abstract(&self) -> bool {
         class_field!(&self.node, d => d.is_abstract)
@@ -128,11 +121,6 @@ impl ClassDeclaration {
     /// chain.
     pub fn own_properties(&self) -> &[Property] {
         &self.properties
-    }
-
-    /// The decorators attached to this declaration.
-    pub fn decorators(&self) -> &[mm::Decorator] {
-        class_field!(&self.node, d => d.decorators.as_deref().unwrap_or(&[]))
     }
 
     /// The source location, if the AST carried one.
@@ -191,6 +179,25 @@ impl ClassDeclaration {
     }
 }
 
+impl Named for ClassDeclaration {
+    /// The declaration's short name (without namespace).
+    fn name(&self) -> &str {
+        class_field!(&self.node, d => &d.name)
+    }
+}
+
+impl Decorated for ClassDeclaration {
+    fn decorators(&self) -> &[mm::Decorator] {
+        class_field!(&self.node, d => d.decorators.as_deref().unwrap_or(&[]))
+    }
+}
+
+impl DeclarationKind for ClassDeclaration {
+    fn declaration_kind(&self) -> &'static str {
+        self.kind().declaration_kind()
+    }
+}
+
 /// Loads a scalar declaration: the generated node for its `$class` (the
 /// loader's structural check), then the ported `ScalarDeclaration.process`.
 /// The name is checked first, as `Declaration.process` runs before it in TS.
@@ -231,46 +238,36 @@ fn load_scalar(
             });
         }
     };
-    let name = match &node {
-        mm::ScalarDeclaration::BooleanScalar(s) => &s.name,
-        mm::ScalarDeclaration::IntegerScalar(s) => &s.name,
-        mm::ScalarDeclaration::LongScalar(s) => &s.name,
-        mm::ScalarDeclaration::DoubleScalar(s) => &s.name,
-        mm::ScalarDeclaration::StringScalar(s) => &s.name,
-        mm::ScalarDeclaration::DateTimeScalar(s) => &s.name,
-    };
+    let name = scalar::node_name(&node);
     check_identifier(name)?;
     let fqn = get_fully_qualified_name(namespace, name);
     let processed =
         ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
-    // `StringValidator` is not ported yet (P2-02): its constructor's checks
-    // are still the loader's own.
-    if let (Some(ScalarValidator::String { .. }), mm::ScalarDeclaration::StringScalar(s)) =
-        (&processed.validator, &node)
-    {
-        if let Some(validator) = &s.validator {
-            check_pattern(&s.name, validator)?;
-        }
-        if let Some(validator) = &s.length_validator {
-            check_length(&s.name, validator)?;
-        }
-    }
-    Ok(ScalarDeclaration::new(node, processed))
+    let scalar = ScalarDeclaration::new(node, processed);
+    scalar.check_validators()?;
+    Ok(scalar)
 }
 
 /// A top-level declaration within a model file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Named, DeclarationKind)]
+#[concerto(delegate)]
 #[allow(clippy::large_enum_variant)]
 pub enum Declaration {
     /// A concept-like declaration (see [`ClassDeclaration`]).
     Class(ClassDeclaration),
     /// An enumeration.
-    Enum(mm::EnumDeclaration),
+    Enum(EnumDeclaration),
     /// A scalar alias over a primitive.
     Scalar(ScalarDeclaration),
     /// A map type.
     Map(MapDeclaration),
 }
+
+/// An enumeration declaration: a newtype over the generated
+/// [`mm::EnumDeclaration`].
+#[derive(Debug, Clone, Named, DeclarationKind)]
+#[concerto(kind = "EnumDeclaration")]
+pub struct EnumDeclaration(mm::EnumDeclaration);
 
 /// The key kinds the generated [`mm::MapKeyType`] union declares.
 const MM_MAP_KEY_KINDS: [&str; 3] = ["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
@@ -311,7 +308,8 @@ const MM_MAP_VALUE_KINDS: [&str; 8] = [
 /// Either way, a key or value kind the specification does not allow reaches
 /// semantic validation, which reports it, and a referenced type is checked
 /// there whichever variant holds it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Named, DeclarationKind)]
+#[concerto(kind = "MapDeclaration")]
 #[allow(clippy::large_enum_variant)]
 pub enum MapDeclaration {
     /// The key and value are both representable by the generated union types.
@@ -332,14 +330,6 @@ pub enum MapDeclaration {
 }
 
 impl MapDeclaration {
-    /// The map's short name.
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Typed(m) => &m.name,
-            Self::Untyped { name, .. } => name,
-        }
-    }
-
     /// The metamodel `$class` short name of the key node, such as
     /// `StringMapKeyType`.
     pub fn key_kind(&self) -> &str {
@@ -481,27 +471,18 @@ fn type_reference(node: Option<&serde_json::Value>) -> Option<mm::TypeIdentifier
     serde_json::from_value(node?.get("type")?.clone()).ok()
 }
 
+impl Typed for Declaration {
+    /// The primitive type of a scalar declaration; every other declaration has
+    /// none.
+    fn type_name(&self) -> Option<&str> {
+        match self {
+            Self::Scalar(s) => s.type_name(),
+            Self::Class(_) | Self::Enum(_) | Self::Map(_) => None,
+        }
+    }
+}
+
 impl Declaration {
-    /// The declaration's short name.
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Class(c) => c.name(),
-            Self::Enum(e) => &e.name,
-            Self::Scalar(s) => s.name(),
-            Self::Map(m) => m.name(),
-        }
-    }
-
-    /// The metamodel `$class` short name for this declaration.
-    pub fn declaration_kind(&self) -> &'static str {
-        match self {
-            Self::Class(c) => c.kind().declaration_kind(),
-            Self::Enum(_) => "EnumDeclaration",
-            Self::Scalar(s) => s.declaration_kind(),
-            Self::Map(_) => "MapDeclaration",
-        }
-    }
-
     /// Borrow this as a [`ClassDeclaration`], if it is one.
     pub fn as_class(&self) -> Option<&ClassDeclaration> {
         match self {
@@ -593,15 +574,13 @@ impl Declaration {
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => {
-                Self::Enum(serde_json::from_value(value.clone()).map_err(|e| {
-                    ConcertoError::IllegalModel {
-                        message: format!("invalid EnumDeclaration: {e}"),
-                        file_name: None,
-                        location: None,
-                    }
-                })?)
-            }
+            "EnumDeclaration" => Self::Enum(EnumDeclaration(
+                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
+                    message: format!("invalid EnumDeclaration: {e}"),
+                    file_name: None,
+                    location: None,
+                })?,
+            )),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)

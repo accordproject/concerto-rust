@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use crate::error::{ConcertoError, Result};
+use crate::introspect::Named;
 use crate::introspect::declaration::Declaration;
 use crate::introspect::import::Import;
 use crate::model_util::{get_fully_qualified_name, is_primitive_type, is_valid_identifier};

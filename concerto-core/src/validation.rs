@@ -17,15 +17,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-
 use crate::error::{ConcertoError, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
-use crate::introspect::scalar::ScalarDeclaration;
+use crate::introspect::{Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{get_fully_qualified_name, is_primitive_type};
 
@@ -46,7 +44,7 @@ impl ModelManager {
             check_import_namespaces(model_file)?;
             check_imported_types_exist(self, model_file)?;
             for declaration in model_file.declarations() {
-                validate_declaration(self, model_file.namespace(), declaration)?;
+                declaration.validate(self, model_file.namespace())?;
             }
         }
         Ok(())
@@ -73,41 +71,41 @@ fn check_import_clashes(model_file: &ModelFile) -> Result<()> {
     Ok(())
 }
 
-/// Validates one declaration. Class-like declarations are the only ones with
-/// checks in this pass; enum and scalar declarations are checked while loading.
-fn validate_declaration(
-    manager: &ModelManager,
-    namespace: &str,
-    declaration: &Declaration,
-) -> Result<()> {
-    match declaration {
-        Declaration::Class(class) => validate_class(manager, namespace, class),
-        Declaration::Map(map) => check_map_types(manager, namespace, map),
-        Declaration::Enum(_) | Declaration::Scalar(_) => Ok(()),
+impl Validate for Declaration {
+    /// Class-like and map declarations are the only ones with checks in this
+    /// pass; enum and scalar declarations are checked while loading.
+    fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
+        match self {
+            Declaration::Class(class) => class.validate(manager, namespace),
+            Declaration::Map(map) => map.validate(manager, namespace),
+            Declaration::Enum(_) | Declaration::Scalar(_) => Ok(()),
+        }
     }
 }
 
-fn validate_class(manager: &ModelManager, namespace: &str, class: &ClassDeclaration) -> Result<()> {
-    check_super_type(manager, namespace, class)?;
-    check_unique_field_names(
-        manager,
-        class,
-        &get_fully_qualified_name(namespace, class.name()),
-    )?;
-    check_identifier(manager, namespace, class)?;
-    check_identity_matches_super(manager, namespace, class)?;
-    check_unique_decorators(class.decorators())?;
-    for property in class.own_properties() {
-        check_property_type(manager, namespace, class.name(), property)?;
-        check_unique_decorators(property.decorators())?;
+impl Validate for ClassDeclaration {
+    fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
+        check_super_type(manager, namespace, self)?;
+        check_unique_field_names(
+            manager,
+            self,
+            &get_fully_qualified_name(namespace, self.name()),
+        )?;
+        check_identifier(manager, namespace, self)?;
+        check_identity_matches_super(manager, namespace, self)?;
+        check_unique_decorators(self)?;
+        for property in self.own_properties() {
+            check_property_type(manager, namespace, self.name(), property)?;
+            check_unique_decorators(property)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// An element may not carry the same decorator twice.
-fn check_unique_decorators(decorators: &[mm::Decorator]) -> Result<()> {
+fn check_unique_decorators(element: &impl Decorated) -> Result<()> {
     let mut seen = HashSet::new();
-    for decorator in decorators {
+    for decorator in element.decorators() {
         if !seen.insert(decorator.name.as_str()) {
             return Err(failed(format!("Duplicate decorator {}", decorator.name)));
         }
@@ -214,8 +212,7 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
         type_identifier.namespace.as_deref(),
     )
     .and_then(|fqn| manager.get_declaration(&fqn).ok())
-    .and_then(Declaration::as_scalar)
-    .is_some_and(|scalar| scalar.scalar_type() == Some("String"))
+    .is_some_and(|declaration| declaration.type_name() == Some("String"))
 }
 
 /// Object and relationship properties must point at a declared type; a
@@ -382,7 +379,13 @@ const MAP_VALUE_KINDS: &[&str] = &[
     "ObjectMapValueType",
 ];
 
-/// Checks a map against the key and value types the specification permits.
+impl Validate for MapDeclaration {
+    /// Checks a map against the key and value types the specification permits.
+    fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
+        check_map_types(manager, namespace, self)
+    }
+}
+
 fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration) -> Result<()> {
     if !MAP_KEY_KINDS.contains(&map.key_kind()) {
         return Err(failed(format!(
@@ -402,8 +405,7 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
     if let Some(key) = map.key_type() {
         let scalar = resolve(manager, namespace, &key.name, key.namespace.as_deref())
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
-            .and_then(Declaration::as_scalar)
-            .and_then(ScalarDeclaration::scalar_type);
+            .and_then(Typed::type_name);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
             return Err(failed(format!(
                 "The key of map {} must be a String or DateTime, or a scalar over one of them",

@@ -30,6 +30,7 @@ use std::cell::RefCell;
 
 use concerto_core::ConcertoError;
 use concerto_core::error::{ContractError, ErrorKind};
+use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
 use concerto_core::introspect::validators::{NumberValidator, Validator};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
@@ -598,8 +599,6 @@ struct JsElement<'a> {
 }
 
 impl ValidatedElement for JsElement<'_> {
-    type Error = Error;
-
     fn default_value(&self) -> Result<Option<Value>> {
         // `this.field?.ast?.defaultValue`
         let field = get(self.validator, "field")?;
@@ -612,6 +611,10 @@ impl ValidatedElement for JsElement<'_> {
         }
         to_json(&get(&ast, "defaultValue")?)
     }
+}
+
+impl FullyQualified for JsElement<'_> {
+    type Error = Error;
 
     fn fully_qualified_name(&self) -> Result<String> {
         let element = call(

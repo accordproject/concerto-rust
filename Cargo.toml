@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["concerto-metamodel", "concerto-core", "concerto-vocabulary"]
+members = ["concerto-metamodel", "concerto-macros", "concerto-core", "concerto-vocabulary"]
 # benches/ is deliberately NOT a workspace member (and is excluded, not just
 # omitted, so Cargo doesn't warn that it "believes it's in a workspace"): it
 # has an optional path dependency on the separate concerto-validate-rs repo
