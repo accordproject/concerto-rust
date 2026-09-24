@@ -479,6 +479,61 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("Invalid range"));
     }
 
+    /// OD-3: an Integer domain bound that overflows `i32` loads and
+    /// validates, matching TS (which reads it as a plain JS number).
+    ///
+    /// Checked against the frozen TS 5.0.0 reference (`migration/oracle/reference`
+    /// in the `/home/user/concerto` workspace): `ModelManager.fromAst` loading
+    /// the same `IntegerDomainValidator` AST returns a `NumberValidator` whose
+    /// `upperBound` is `2147483648`, matching `upper` here.
+    #[test]
+    fn integer_domain_bound_above_i32_max_loads() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.IntegerProperty",
+            "name": "value", "isArray": false, "isOptional": false,
+            "validator": {
+                "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator",
+                "lower": 0,
+                "upper": (i32::MAX as i64) + 1
+            }
+        }));
+        match &p {
+            Property::Integer(i) => {
+                assert_eq!(
+                    i.validator.as_ref().unwrap().upper,
+                    Some((i32::MAX as f64) + 1.0)
+                );
+            }
+            _ => panic!("expected Integer"),
+        }
+    }
+
+    /// OD-3: a Long domain bound above `i64::MAX` loads, as JS rounds it to
+    /// the nearest f64 and TS accepts it.
+    ///
+    /// Checked against the frozen TS 5.0.0 reference (`migration/oracle/reference`
+    /// in the `/home/user/concerto` workspace): `ModelManager.fromAst` loading
+    /// the same `LongDomainValidator` AST returns a `NumberValidator` whose
+    /// `upperBound` is `10000000000000000000` (`1e19`), matching `upper` here.
+    #[test]
+    fn long_domain_bound_above_i64_max_loads() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.LongProperty",
+            "name": "value", "isArray": false, "isOptional": false,
+            "validator": {
+                "$class": "concerto.metamodel@1.0.0.LongDomainValidator",
+                "lower": 0,
+                "upper": 1e19
+            }
+        }));
+        match &p {
+            Property::Long(l) => {
+                assert_eq!(l.validator.as_ref().unwrap().upper, Some(1e19));
+            }
+            _ => panic!("expected Long"),
+        }
+    }
+
     #[test]
     fn negative_string_length_is_rejected() {
         let err = Property::try_from(&sized(Some(-1), Some(5)));
@@ -581,8 +636,8 @@ mod tests {
         });
         let p = Property::try_from(&json).unwrap();
         assert!(p.size_validator().is_some());
-        assert_eq!(p.size_validator().unwrap().min_size, Some(1));
-        assert_eq!(p.size_validator().unwrap().max_size, Some(3));
+        assert_eq!(p.size_validator().unwrap().min_size, Some(1.0));
+        assert_eq!(p.size_validator().unwrap().max_size, Some(3.0));
     }
 
     #[test]

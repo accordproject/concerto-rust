@@ -103,7 +103,7 @@ pub(crate) fn check_size(owner: &str, validator: &mm::CollectionSizeValidator) -
             "Invalid collection size on {owner}, minSize and/or maxSize must be specified"
         )));
     }
-    if min.is_some_and(|value| value < 0) || max.is_some_and(|value| value < 0) {
+    if min.is_some_and(|value| value < 0.0) || max.is_some_and(|value| value < 0.0) {
         return Err(illegal(format!(
             "minSize and/or maxSize must be positive integers on {owner}"
         )));
@@ -127,7 +127,7 @@ pub(crate) fn check_length(owner: &str, validator: &mm::StringLengthValidator) -
             "Invalid string length on {owner}, minLength and-or maxLength must be specified"
         )));
     }
-    if min.is_some_and(|value| value < 0) || max.is_some_and(|value| value < 0) {
+    if min.is_some_and(|value| value < 0.0) || max.is_some_and(|value| value < 0.0) {
         return Err(illegal(format!(
             "minLength and-or maxLength must be positive integers on {owner}"
         )));
