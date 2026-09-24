@@ -17,6 +17,7 @@ pub use concerto_macros as derive;
 
 mod ecma;
 pub mod error;
+pub mod instance;
 pub mod introspect;
 pub mod model_manager;
 pub mod model_util;
