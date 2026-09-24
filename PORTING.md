@@ -883,11 +883,12 @@ concerto-core/src/
 The binding is its own crate at the repository root:
 
 ```
-concerto-wasm/      wasm-bindgen binding (P4-01; the trial scaffold binds only its three units)
+concerto-wasm/      wasm-bindgen binding (P4-01): the ModelManagerHandle handle API, plus the P0-04b trial units
   Cargo.toml        its own [workspace]: the host build of concerto-core never compiles wasm-bindgen
   src/lib.rs        bindings, argument coercion, the JS-callback ResolutionContext, error payloads
-  build.sh          cargo (wasm32) + wasm-bindgen-cli 0.2.128 (+ wasm-opt when present)
+  build.sh          cargo (wasm32) + wasm-bindgen-cli 0.2.128 (+ wasm-opt when present), 4 MiB size budget
   scripts/inline.mjs  pkg/concerto-engine.cjs and .mjs, with the .wasm inlined, instantiated synchronously
+  scripts/*-smoke.*   the Node and headless-Chromium smokes (`npm run smoke`)
 ```
 
 - Check it with `cargo fmt -- --check` and
@@ -897,7 +898,10 @@ concerto-wasm/      wasm-bindgen binding (P4-01; the trial scaffold binds only i
   it happened in (spike REPORT §4).
 - concerto-core's shim loads the built module from `CONCERTO_ENGINE_MODULE`
   (a path to `pkg/concerto-engine.cjs`), or from the package name
-  `@accordproject/concerto-engine` when that is unset (P4-01 publishes it).
+  `@accordproject/concerto-engine` when that is unset. P4-01 builds that
+  package into `concerto-wasm/pkg/`; it is not published (D9), and the
+  concerto checkout links it as the workspace `packages/concerto-engine`,
+  from a concerto-rust checkout next to it.
 
 - A task creates the module it needs. It does not create empty modules ahead
   of time (AGENTS.md: no speculative code).

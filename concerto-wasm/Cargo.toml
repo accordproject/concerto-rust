@@ -1,8 +1,9 @@
 # The WASM binding of concerto-core (PORTING.md section 4), built for the
 # concerto-core TS views behind CONCERTO_ENGINE=rust.
 #
-# P0-04b trial scaffold: it binds only ModelUtil, NumberValidator and
-# ScalarDeclaration. P4-01 owns the crate, its handle API and its packaging.
+# It binds the handle API over the ModelManager arena (P4-01) and the P0-04b
+# trial units; pkg/ is the npm package @accordproject/concerto-engine
+# (README.md).
 #
 # Like the spike, it is not a member of the root workspace (the empty
 # [workspace] table below), so the host build of concerto-core never compiles
