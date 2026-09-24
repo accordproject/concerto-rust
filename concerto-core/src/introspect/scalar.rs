@@ -77,6 +77,16 @@ impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
     fn default_value(&self) -> Result<Option<Value>, E> {
         Ok(self.ast.get("defaultValue").cloned())
     }
+
+    fn name(&self) -> Result<String, E> {
+        // `this.getName()`: a scalar's short name is its AST `name`.
+        Ok(self
+            .ast
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
 }
 
 /// A scalar declaration loaded into a model file.
