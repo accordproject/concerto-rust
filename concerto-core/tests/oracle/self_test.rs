@@ -960,3 +960,30 @@ fn owners_fall_back_to_the_porting_op_families_and_unowned() {
     assert_eq!(ledger.owner("DecoratorManager.decorateModels"), "P2-12");
     assert_eq!(ledger.owner("Declaration.getName"), "unowned");
 }
+
+/// A plan-owner override beats the ledger: `Factory`'s ledger rows are TS
+/// with no task, yet its fixtures belong to P3-01. Other stays-TS classes
+/// are unaffected.
+#[test]
+fn plan_owner_overrides_take_precedence_over_the_ledger() {
+    let root = std::env::temp_dir().join(format!(
+        "concerto-oracle-self-test-owner-override-{}",
+        std::process::id()
+    ));
+    let fixtures = root.join("migration").join("oracle").join("fixtures");
+    let ledger_dir = root.join("migration").join("ledger");
+    fs::create_dir_all(&fixtures).unwrap();
+    fs::create_dir_all(&ledger_dir).unwrap();
+    fs::write(
+        ledger_dir.join("SEAM_LEDGER.tsv"),
+        "file\tclass\tmember\tclassification\tplanned_task\n\
+         src/factory.ts\tFactory\tnewResource\tTS\t-\n\
+         src/modelloader.ts\tModelLoader\tloadModelManager\tTS\t-\n",
+    )
+    .unwrap();
+    let ledger = Ledger::load(&fixtures);
+    assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
+    assert_eq!(ledger.owner("Factory.new"), "P3-01");
+    assert_eq!(ledger.owner("ModelLoader.loadModelManager"), "stays-ts");
+    let _ = fs::remove_dir_all(&root);
+}

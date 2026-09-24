@@ -28,6 +28,10 @@
 //! ...). No porting task will add its dispatch entry; the fixture replays
 //! through the WASM adapter, where TS runs it.
 //!
+//! Plan-owner overrides ([`PLAN_OWNER_OVERRIDES`]) are checked before
+//! everything else. They record owner decisions that the ledger doesn't
+//! express yet.
+//!
 //! The ledger is read from the checkout the corpus lives in
 //! (`<fixtures>/../../ledger/`); without it only steps 3 and 4 apply.
 
@@ -40,6 +44,12 @@ pub const UNOWNED: &str = "unowned";
 
 /// The owner of code the ledger keeps in TS.
 pub const STAYS_TS: &str = "stays-ts";
+
+/// Plan-owner decisions that take precedence over the ledger, by class.
+/// `Factory`'s ledger rows are TS with no task (D7), but the plan owner
+/// assigned its fixtures to P3-01, which owns the Factory model checks
+/// (#32: "Factory model checks go to Rust").
+const PLAN_OWNER_OVERRIDES: &[(&str, &str)] = &[("Factory", "P3-01")];
 
 #[derive(Default)]
 pub struct Ledger {
@@ -163,6 +173,9 @@ impl Ledger {
     /// its family.
     pub fn owner(&self, op: &str) -> String {
         let (class, member) = op.split_once('.').unwrap_or((op, ""));
+        if let Some((_, owner)) = PLAN_OWNER_OVERRIDES.iter().find(|(c, _)| *c == class) {
+            return (*owner).to_string();
+        }
         let mut names = vec![op.to_string()];
         if matches!(class, "ModelManager" | "AstModelManager") {
             names.push(format!("BaseModelManager.{member}"));
