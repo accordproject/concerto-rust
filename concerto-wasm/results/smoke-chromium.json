@@ -1,0 +1,212 @@
+{
+  "origin": "http://127.0.0.1:63722",
+  "wasmBytes": 1789836,
+  "browsers": [
+    {
+      "browser": "headless shell (default)",
+      "version": "147.0.7727.15",
+      "syncLimit": [
+        {
+          "size": 4194304,
+          "ok": true
+        },
+        {
+          "size": 8388608,
+          "ok": true
+        },
+        {
+          "size": 8388609,
+          "ok": false,
+          "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+        }
+      ],
+      "sizeCheck": {
+        "wasmBytes": 1789836,
+        "largestSyncCompileAccepted": 8388608,
+        "ok": true
+      },
+      "mainThread": {
+        "ok": true,
+        "importMs": 104.59999999403954,
+        "rows": [
+          {
+            "name": "a new manager holds the system model",
+            "ok": true,
+            "detail": {
+              "generation": 1
+            }
+          },
+          {
+            "name": "addModel returns the model file handle and bumps the generation",
+            "ok": true,
+            "detail": {
+              "file": 1,
+              "generation": 2
+            }
+          },
+          {
+            "name": "declaration handles and snapshots",
+            "ok": true
+          },
+          {
+            "name": "property handles and snapshots",
+            "ok": true
+          },
+          {
+            "name": "model file snapshot",
+            "ok": true
+          },
+          {
+            "name": "handles stay valid across a later load",
+            "ok": true
+          },
+          {
+            "name": "validateModels accepts a valid model set",
+            "ok": true
+          },
+          {
+            "name": "errors leave through the registered factory",
+            "ok": true,
+            "detail": {
+              "duplicate": "IllegalModel/pre-port: duplicate namespace: org.example@1.0.0",
+              "validate": "IllegalModel/pre-port: Could not find super type Ghost for Orphan",
+              "handle": "TypeNotFound: type not found: Declaration(DeclId(1000000))"
+            }
+          },
+          {
+            "name": "a freed manager throws",
+            "ok": true
+          },
+          {
+            "name": "the trial bindings are still exported",
+            "ok": true
+          },
+          {
+            "name": "init() resolves on a loaded module",
+            "ok": true
+          }
+        ]
+      },
+      "worker": {
+        "ok": true,
+        "rows": []
+      },
+      "asyncFallback": {
+        "ok": true,
+        "compileMs": 6.899999991059303,
+        "instantiateMs": 13.200000002980232
+      },
+      "nsPerCall": {
+        "generation()": 60,
+        "declarationId(fqn)": 395,
+        "propertyIds(decl)": 635,
+        "declarationSnapshot(decl)": 6610,
+        "JSON.parse(declarationSnapshot(decl))": 9905
+      },
+      "pageErrors": []
+    },
+    {
+      "browser": "chromium, new headless",
+      "version": "147.0.7727.15",
+      "syncLimit": [
+        {
+          "size": 4194304,
+          "ok": true
+        },
+        {
+          "size": 8388608,
+          "ok": true
+        },
+        {
+          "size": 8388609,
+          "ok": false,
+          "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+        }
+      ],
+      "sizeCheck": {
+        "wasmBytes": 1789836,
+        "largestSyncCompileAccepted": 8388608,
+        "ok": true
+      },
+      "mainThread": {
+        "ok": true,
+        "importMs": 58.70000000298023,
+        "rows": [
+          {
+            "name": "a new manager holds the system model",
+            "ok": true,
+            "detail": {
+              "generation": 1
+            }
+          },
+          {
+            "name": "addModel returns the model file handle and bumps the generation",
+            "ok": true,
+            "detail": {
+              "file": 1,
+              "generation": 2
+            }
+          },
+          {
+            "name": "declaration handles and snapshots",
+            "ok": true
+          },
+          {
+            "name": "property handles and snapshots",
+            "ok": true
+          },
+          {
+            "name": "model file snapshot",
+            "ok": true
+          },
+          {
+            "name": "handles stay valid across a later load",
+            "ok": true
+          },
+          {
+            "name": "validateModels accepts a valid model set",
+            "ok": true
+          },
+          {
+            "name": "errors leave through the registered factory",
+            "ok": true,
+            "detail": {
+              "duplicate": "IllegalModel/pre-port: duplicate namespace: org.example@1.0.0",
+              "validate": "IllegalModel/pre-port: Could not find super type Ghost for Orphan",
+              "handle": "TypeNotFound: type not found: Declaration(DeclId(1000000))"
+            }
+          },
+          {
+            "name": "a freed manager throws",
+            "ok": true
+          },
+          {
+            "name": "the trial bindings are still exported",
+            "ok": true
+          },
+          {
+            "name": "init() resolves on a loaded module",
+            "ok": true
+          }
+        ]
+      },
+      "worker": {
+        "ok": true,
+        "rows": []
+      },
+      "asyncFallback": {
+        "ok": true,
+        "compileMs": 6,
+        "instantiateMs": 5.9000000059604645
+      },
+      "nsPerCall": {
+        "generation()": 45,
+        "declarationId(fqn)": 310,
+        "propertyIds(decl)": 315,
+        "declarationSnapshot(decl)": 7460,
+        "JSON.parse(declarationSnapshot(decl))": 12185
+      },
+      "pageErrors": []
+    }
+  ]
+}

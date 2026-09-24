@@ -1,10 +1,16 @@
 //! The WASM binding of `concerto-core` for the concerto-core TS views
 //! (PORTING.md section 4).
 //!
-//! P0-04b trial scaffold: it binds the three trial units, `ModelUtil`,
-//! `NumberValidator` and `ScalarDeclaration`, and nothing else. P4-01 owns the
-//! crate: the handle API over one exported object per `ModelManager`, the
-//! loaders and the packaging.
+//! It binds:
+//! - the **handle API** (P4-01): one exported object per `ModelManager`,
+//!   [`ModelManagerHandle`], over the P1-04 arena. Model files, declarations
+//!   and properties cross the boundary as their dense `u32` handles
+//!   (`ModelFileId`, `DeclId`, `PropId`), plain JS numbers; their state
+//!   crosses as one JSON snapshot per element, which a view caches until
+//!   `generation()` moves (spike REPORT §3, "Input to P1-04");
+//! - the three P0-04b trial units, `ModelUtil`, `NumberValidator` and
+//!   `ScalarDeclaration`, whose views still hand their JS objects back (the
+//!   model graph they meet is TS until P4-06 … P4-08).
 //!
 //! Everything JS-shaped lives here, never in core (PORTING.md 4):
 //! - **argument coercion** (3.5): each binding converts its JS arguments the
@@ -20,21 +26,23 @@
 //!
 //! Views are snapshot-based (spike REPORT §3): a call that builds an object
 //! (`ScalarDeclaration.process`, the `NumberValidator` constructor) returns
-//! its snapshot as JSON, the view caches it in the object's fields, and later
-//! calls hand the snapshot back instead of holding a Rust handle.
+//! its snapshot as JSON, the view caches it in the object's fields. The trial
+//! units' later calls hand the snapshot back; a view over the arena holds a
+//! handle instead.
 //!
 //! Strings cross the boundary as UTF-8, so a lone UTF-16 surrogate becomes
 //! U+FFFD. No oracle fixture or unit test passes one.
 
 use std::cell::RefCell;
 
-use concerto_core::ConcertoError;
 use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
 use concerto_core::introspect::validators::{NumberValidator, Validator};
+use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
+use concerto_core::{ConcertoError, ModelManager, Named};
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -84,8 +92,22 @@ impl From<ConcertoError> for Error {
     fn from(err: ConcertoError) -> Self {
         match err {
             ConcertoError::Contract(err) => Self::Contract(err),
-            // Pre-port errors have no TS class; the trial units never raise them.
-            other => Self::Js(js_sys::Error::new(&other.to_string()).into()),
+            // The loader's errors that no unit has ported yet (the manager's
+            // duplicate namespace, its circular-inheritance and handle
+            // checks): they leave through the error factory like every other
+            // core error, with the `pre-port` code and their message verbatim
+            // (error/mod.rs, `ContractError::pre_port`), so the shim still
+            // picks the TS class from `kind`.
+            ConcertoError::IllegalModel {
+                message, location, ..
+            } => ContractError::pre_port(ErrorKind::IllegalModel, message, location).into(),
+            ConcertoError::TypeNotFound { type_name } => {
+                let message = format!("type not found: {type_name}");
+                let mut err = ContractError::pre_port(ErrorKind::TypeNotFound, message, None);
+                // `TypeNotFound` payloads carry `typeName` (table 2.3).
+                err.params.push(("typeName", type_name));
+                err.into()
+            }
         }
     }
 }
@@ -95,9 +117,6 @@ type Result<T> = std::result::Result<T, Error>;
 fn kind_name(kind: ErrorKind) -> &'static str {
     match kind {
         ErrorKind::IllegalModel => "IllegalModel",
-        // Not yet reached by the trial units this scaffold binds; added so
-        // the match stays exhaustive now that P1-05 gives `ErrorKind` a
-        // `TypeNotFound` variant (PORTING.md table 2.3).
         ErrorKind::TypeNotFound => "TypeNotFound",
         ErrorKind::Validator => "Validator",
         ErrorKind::Error => "Error",
@@ -803,4 +822,260 @@ pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result
         )?)?;
         Ok(ScalarDeclaration::to_string(&fqn))
     })
+}
+
+// ---------------------------------------------------------------------------
+// The handle API: one object per ModelManager (P4-01)
+// ---------------------------------------------------------------------------
+
+/// A handle that names nothing in this manager, as the arena reports one
+/// (`model_manager.rs`, `unknown`): a `TypeNotFound` naming the node.
+fn unknown(node: Node) -> Error {
+    ConcertoError::TypeNotFound {
+        type_name: format!("{node:?}"),
+    }
+    .into()
+}
+
+/// A snapshot as the JSON text that crosses the boundary: one string per
+/// element, which the view parses once (spike REPORT §3: JSON text beats
+/// serde-wasm-bindgen and per-field getters for trees).
+fn snapshot(value: &Value) -> Result<String> {
+    serde_json::to_string(value).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// A `ModelManager`, exported to JS as one object (spike "Input to P1-04",
+/// point 1). The model files, declarations and properties it holds are
+/// addressed by the arena's dense `u32` handles, which cross the boundary as
+/// plain numbers and keep naming the same element for the life of the
+/// manager (PORTING.md 1.4). An element's state crosses as a JSON snapshot,
+/// which a view caches until [`ModelManagerHandle::generation`] changes
+/// (PORTING.md 1.5).
+///
+/// wasm-bindgen registers a `FinalizationRegistry`, so a view need not call
+/// `free()`; after `free()`, every call throws.
+#[wasm_bindgen]
+pub struct ModelManagerHandle {
+    manager: ModelManager,
+}
+
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// A fresh manager with the `concerto@1.0.0` system model loaded.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> std::result::Result<ModelManagerHandle, JsValue> {
+        run(|| {
+            Ok(Self {
+                manager: ModelManager::new()?,
+            })
+        })
+    }
+
+    /// Loads a model from its JSON AST, passed as JSON text (the view calls
+    /// `JSON.stringify(ast)`: spike REPORT §3), and returns the handle of its
+    /// model file. Malformed JSON throws a JS `SyntaxError`.
+    #[wasm_bindgen(js_name = addModel)]
+    pub fn add_model(
+        &mut self,
+        ast: &str,
+        file_name: Option<String>,
+    ) -> std::result::Result<u32, JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            self.manager.add_model(&value, file_name)?;
+            // `add_model` read the namespace from this AST, so it is there.
+            let namespace = value
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            self.manager
+                .model_file_id(namespace)
+                .map(ModelFileId::index)
+                .ok_or_else(|| {
+                    ConcertoError::TypeNotFound {
+                        type_name: namespace.to_string(),
+                    }
+                    .into()
+                })
+        })
+    }
+
+    /// Validates every loaded user model; throws the first problem found.
+    #[wasm_bindgen(js_name = validateModels)]
+    pub fn validate_models(&self) -> std::result::Result<(), JsValue> {
+        run(|| Ok(self.manager.validate_models()?))
+    }
+
+    /// The mutation counter: a snapshot taken at one generation is current
+    /// while the generation is unchanged. A JS number (exact up to 2^53).
+    pub fn generation(&self) -> f64 {
+        // Precision loss only past 2^53 mutations.
+        #[allow(clippy::cast_precision_loss)]
+        let generation = self.manager.generation() as f64;
+        generation
+    }
+
+    /// The handle of the model file for a namespace; `undefined` if none.
+    #[wasm_bindgen(js_name = modelFileId)]
+    pub fn model_file_id(&self, namespace: &str) -> Option<u32> {
+        self.manager
+            .model_file_id(namespace)
+            .map(ModelFileId::index)
+    }
+
+    /// The handles of every loaded model file, the system model included,
+    /// in load order.
+    #[wasm_bindgen(js_name = modelFileIds)]
+    pub fn model_file_ids(&self) -> Vec<u32> {
+        self.manager
+            .model_files()
+            .filter_map(|file| self.manager.model_file_id(file.namespace()))
+            .map(ModelFileId::index)
+            .collect()
+    }
+
+    /// The handle of a declaration, by its exact fully-qualified name;
+    /// `undefined` if none.
+    #[wasm_bindgen(js_name = declarationId)]
+    pub fn declaration_id(&self, fqn: &str) -> Option<u32> {
+        self.manager.declaration_id(fqn).map(DeclId::index)
+    }
+
+    /// The handles of a model file's declarations, in file order; empty for
+    /// a handle that names nothing.
+    #[wasm_bindgen(js_name = declarationIds)]
+    pub fn declaration_ids(&self, model_file: u32) -> Vec<u32> {
+        self.manager
+            .declaration_ids(ModelFileId::from_index(model_file))
+            .map(DeclId::index)
+            .collect()
+    }
+
+    /// The handles of a class declaration's own properties, in declaration
+    /// order; empty for any other declaration, or a handle that names nothing.
+    #[wasm_bindgen(js_name = propertyIds)]
+    pub fn property_ids(&self, declaration: u32) -> Vec<u32> {
+        self.manager
+            .property_ids(DeclId::from_index(declaration))
+            .map(PropId::index)
+            .collect()
+    }
+
+    /// The handle of a declaration's model file; `undefined` if the handle
+    /// names nothing.
+    #[wasm_bindgen(js_name = modelFileOf)]
+    pub fn model_file_of(&self, declaration: u32) -> Option<u32> {
+        self.manager
+            .model_file_of(DeclId::from_index(declaration))
+            .map(ModelFileId::index)
+    }
+
+    /// The handle of a property's declaration; `undefined` if the handle
+    /// names nothing.
+    #[wasm_bindgen(js_name = parentOf)]
+    pub fn parent_of(&self, property: u32) -> Option<u32> {
+        self.manager
+            .parent_of(PropId::from_index(property))
+            .map(DeclId::index)
+    }
+
+    /// A model file's snapshot, as JSON text:
+    /// `{namespace, version, fileName, ast}`. `fileName` is `null` when the
+    /// file has none; `ast` is the AST as it was loaded (OD-3).
+    #[wasm_bindgen(js_name = modelFileSnapshot)]
+    pub fn model_file_snapshot(&self, model_file: u32) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let id = ModelFileId::from_index(model_file);
+            let file = self
+                .manager
+                .file(id)
+                .ok_or_else(|| unknown(Node::ModelFile(id)))?;
+            snapshot(&json!({
+                "namespace": file.namespace(),
+                "version": file.version(),
+                "fileName": file.file_name(),
+                "ast": file.ast(),
+            }))
+        })
+    }
+
+    /// A declaration's snapshot, as JSON text:
+    /// `{name, fullyQualifiedName, modelFile, ast}`, where `modelFile` is the
+    /// handle of its model file and `ast` its node of the model file's AST.
+    #[wasm_bindgen(js_name = declarationSnapshot)]
+    pub fn declaration_snapshot(&self, declaration: u32) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let id = DeclId::from_index(declaration);
+            let (file_id, file, found) = self.declaration_parts(id)?;
+            let ast = self.declaration_ast(id)?;
+            snapshot(&json!({
+                "name": found.name(),
+                "fullyQualifiedName": mu::get_fully_qualified_name(file.namespace(), found.name()),
+                "modelFile": file_id.index(),
+                "ast": ast,
+            }))
+        })
+    }
+
+    /// A property's snapshot, as JSON text: `{name, declaration, ast}`, where
+    /// `declaration` is the handle of the declaration it belongs to and `ast`
+    /// its node of that declaration's AST.
+    #[wasm_bindgen(js_name = propertySnapshot)]
+    pub fn property_snapshot(&self, property: u32) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let id = PropId::from_index(property);
+            let missing = || unknown(Node::Property(id));
+            let found = self.manager.property(id).ok_or_else(missing)?;
+            let parent = self.manager.parent_of(id).ok_or_else(missing)?;
+            let index = self
+                .manager
+                .property_ids(parent)
+                .position(|p| p == id)
+                .ok_or_else(missing)?;
+            let ast = self
+                .declaration_ast(parent)?
+                .get("properties")
+                .and_then(|properties| properties.get(index))
+                .ok_or_else(missing)?;
+            snapshot(&json!({
+                "name": found.name(),
+                "declaration": parent.index(),
+                "ast": ast,
+            }))
+        })
+    }
+}
+
+impl ModelManagerHandle {
+    /// A declaration, with its model file and that file's handle.
+    fn declaration_parts(
+        &self,
+        id: DeclId,
+    ) -> Result<(
+        ModelFileId,
+        &concerto_core::ModelFile,
+        &concerto_core::Declaration,
+    )> {
+        let missing = || unknown(Node::Declaration(id));
+        let found = self.manager.declaration(id).ok_or_else(missing)?;
+        let file_id = self.manager.model_file_of(id).ok_or_else(missing)?;
+        let file = self.manager.file(file_id).ok_or_else(missing)?;
+        Ok((file_id, file, found))
+    }
+
+    /// A declaration's node of its model file's AST.
+    fn declaration_ast(&self, id: DeclId) -> Result<&Value> {
+        let missing = || unknown(Node::Declaration(id));
+        let (file_id, file, _) = self.declaration_parts(id)?;
+        let index = self
+            .manager
+            .declaration_ids(file_id)
+            .position(|d| d == id)
+            .ok_or_else(missing)?;
+        file.ast()
+            .get("declarations")
+            .and_then(|declarations| declarations.get(index))
+            .ok_or_else(missing)
+    }
 }
