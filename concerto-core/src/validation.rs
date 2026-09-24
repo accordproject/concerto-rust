@@ -454,8 +454,11 @@ fn check_identity_matches_super(
 /// object key naming a scalar over one of those.
 const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
 
-/// The value kinds the specification allows: any primitive, or an object value
-/// naming a scalar or a concept. A relationship is not among them.
+/// The value kinds the specification allows: any primitive, or an object or
+/// relationship value naming a declared type.
+///
+/// TS: `ModelUtil.isValidMapValue` (src/modelutil.ts) lists the same eight
+/// kinds, including `RelationshipMapValueType`.
 const MAP_VALUE_KINDS: &[&str] = &[
     "BooleanMapValueType",
     "DateTimeMapValueType",
@@ -464,6 +467,7 @@ const MAP_VALUE_KINDS: &[&str] = &[
     "LongMapValueType",
     "StringMapValueType",
     "ObjectMapValueType",
+    "RelationshipMapValueType",
 ];
 
 impl Validate for MapDeclaration {
@@ -514,7 +518,10 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
         }
     }
 
-    // An object value names a concept or a scalar, and it has to be declared.
+    // TS: `MapValueType.validate` allows any declaration as a map value except
+    // another MapDeclaration ("All declarations, with the exception of
+    // MapDeclarations, are valid Values."); it does not itself check that the
+    // referenced type is declared.
     if let Some(value) = map.value_type() {
         let declared = resolve(manager, namespace, &value.name, value.namespace.as_deref())
             .and_then(|fqn| manager.get_declaration(&fqn).ok());
@@ -528,11 +535,10 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
                 None,
             ));
         };
-        if !declared.is_class_declaration() && !declared.is_scalar_declaration() {
+        if declared.is_map_declaration() {
             return Err(failed(
                 format!(
-                    "The value of map {} must be a concept or a scalar, and {} is neither",
-                    map.name(),
+                    "MapDeclaration as Map Type Value is not supported: {}",
                     value.name
                 ),
                 None,
@@ -1070,16 +1076,21 @@ mod tests {
     }
 
     #[test]
-    fn a_map_value_may_not_be_a_relationship() {
-        let err = validate(map_with(
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-            object_type("Item", "RelationshipMapValueType"),
-        ));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    fn a_map_value_may_be_a_relationship() {
+        // TS: `MapValueType.validate` allows any declaration but a
+        // MapDeclaration, including a relationship to a concept.
+        assert!(
+            validate(map_with(
+                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+                object_type("Item", "RelationshipMapValueType"),
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
-    fn a_map_value_may_not_be_an_enum() {
+    fn a_map_value_may_be_an_enum() {
+        // TS: same rule as above; an enum is a declaration like any other.
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let mut declarations = map_with(key, object_type("Colour", "ObjectMapValueType"));
         declarations
@@ -1091,11 +1102,28 @@ mod tests {
                     { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
                 ]
             }));
+        assert!(validate(declarations).is_ok());
+    }
+
+    #[test]
+    fn a_map_value_may_not_be_a_map_declaration() {
+        // TS: `MapValueType.validate` throws only when the referenced
+        // declaration is itself a MapDeclaration.
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let mut declarations = map_with(key.clone(), object_type("Other", "ObjectMapValueType"));
+        declarations
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Other",
+                "key": key,
+                "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+            }));
         let err = validate(declarations);
         assert!(
             err.unwrap_err()
                 .to_string()
-                .contains("must be a concept or a scalar")
+                .contains("MapDeclaration as Map Type Value is not supported")
         );
     }
 
