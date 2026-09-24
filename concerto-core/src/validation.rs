@@ -35,9 +35,11 @@ use crate::introspect::{Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{get_fully_qualified_name, is_primitive_type};
 
-/// A class's own AST `location`, copied verbatim for [`failed`]'s `location`
-/// parameter (PORTING.md 2.1), the same way `ContractError`-building code
-/// elsewhere reads `ast.location` verbatim (`ScalarDeclaration::process`).
+/// A class's own AST `location`, for [`failed`]'s `location` parameter
+/// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
+/// `mm::Range`, so this re-serialises it through
+/// [`crate::error::location_value`]; it is not a verbatim copy of the AST's
+/// JSON the way `ScalarDeclaration::process` reads `ast.location`.
 fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
     class.location().and_then(crate::error::location_value)
 }

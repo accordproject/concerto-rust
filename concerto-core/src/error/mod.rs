@@ -410,29 +410,35 @@ impl ContractError {
     }
 }
 
-/// A typed AST `location` (`mm::Range`) as the JSON value TS holds for it,
-/// for a [`ContractError::location`] (PORTING.md 2.1).
+/// A typed AST `location` (`mm::Range`) re-serialised as the JSON value TS
+/// holds for it, for a [`ContractError::location`] (PORTING.md 2.1). This is
+/// not a verbatim copy of the AST's JSON, as `ScalarDeclaration::process`
+/// makes: the typed `Range` is written back out, so any field it does not
+/// model is dropped.
 ///
 /// OD-3 widened the metamodel's number fields to `f64`, so serialising a
 /// `Range` straight back gives `3.0` where the AST said `3`. JS has a single
 /// number type, so both are the same value and `JSON.stringify` writes `3`;
-/// each integral number is written back as a JSON integer to match. Other
-/// numbers are left as they are.
+/// each integral number that fits an `i64` or `u64` (where the conversion is
+/// exact) is written back as a JSON integer to match, and `-0` becomes `0`,
+/// as `JSON.stringify(-0)` writes it. Non-integral numbers are left as they
+/// are, and so is an integral number of 2^64 or more: `serde_json` cannot
+/// hold it as an integer, so it keeps its float form, where JS would write
+/// its digits up to 1e21. No real source position comes near that.
 pub(crate) fn location_value(
     range: &concerto_metamodel::concerto_metamodel_1_0_0::Range,
 ) -> Option<serde_json::Value> {
     fn js_numbers(value: serde_json::Value) -> serde_json::Value {
         use serde_json::Value;
-        // Integers up to 2^53 are exact in both f64 and i64.
-        const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+        // 2^63 and 2^64, both exact in f64.
+        const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+        const TWO_64: f64 = 18_446_744_073_709_551_616.0;
         match value {
-            Value::Number(n) => match n.as_f64() {
-                // `-0` becomes `0`, as `JSON.stringify(-0)` writes it.
-                Some(f)
-                    if !n.is_i64() && !n.is_u64() && f.fract() == 0.0 && f.abs() <= MAX_SAFE =>
-                {
+            Value::Number(n) if n.is_f64() => match n.as_f64() {
+                Some(f) if f.fract() == 0.0 && (-TWO_63..TWO_63).contains(&f) => {
                     Value::from(f as i64)
                 }
+                Some(f) if f.fract() == 0.0 && (0.0..TWO_64).contains(&f) => Value::from(f as u64),
                 _ => Value::Number(n),
             },
             Value::Array(items) => Value::Array(items.into_iter().map(js_numbers).collect()),
@@ -1210,5 +1216,94 @@ mod tests {
             location: None,
         };
         assert!(err.to_string().contains("missing 'namespace'"));
+    }
+
+    /// A `Range` whose `start` and `end` positions carry the given numbers.
+    fn range(
+        start: [f64; 3],
+        end: [f64; 3],
+    ) -> concerto_metamodel::concerto_metamodel_1_0_0::Range {
+        let position = |[line, column, offset]: [f64; 3]| {
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Position",
+                "line": line, "column": column, "offset": offset
+            })
+        };
+        serde_json::from_value(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Range",
+            "start": position(start),
+            "end": position(end)
+        }))
+        .unwrap()
+    }
+
+    /// The `start` and `end` positions of a [`location_value`] result, as
+    /// JSON text, the way `JSON.stringify` would write them.
+    fn positions(start: [f64; 3], end: [f64; 3]) -> (String, String) {
+        let value = location_value(&range(start, end)).unwrap();
+        let text = |key: &str| {
+            let position = &value[key];
+            format!(
+                "{},{},{}",
+                position["line"], position["column"], position["offset"]
+            )
+        };
+        (text("start"), text("end"))
+    }
+
+    #[test]
+    fn location_value_writes_integral_numbers_as_integers() {
+        // Both nested positions are rewritten, not just the first.
+        assert_eq!(
+            positions([3.0, 1.0, 20.0], [3.0, 9.0, 28.0]),
+            ("3,1,20".to_string(), "3,9,28".to_string())
+        );
+        let value = location_value(&range([3.0, 1.0, 20.0], [3.0, 9.0, 28.0])).unwrap();
+        assert!(value["start"]["line"].is_i64());
+        assert!(value["end"]["offset"].is_i64());
+    }
+
+    #[test]
+    fn location_value_keeps_negative_integers_and_zeroes_negative_zero() {
+        assert_eq!(
+            positions([-3.0, -0.0, 0.0], [-1.0, -0.0, -9_007_199_254_740_993.0]),
+            (
+                "-3,0,0".to_string(),
+                // -(2^53 + 1) is not an f64; it rounds to -(2^53), as in JS.
+                "-1,0,-9007199254740992".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn location_value_leaves_non_integral_numbers_alone() {
+        assert_eq!(
+            positions([1.5, 0.25, -2.75], [1.0, 2.0, 3.0]),
+            ("1.5,0.25,-2.75".to_string(), "1,2,3".to_string())
+        );
+    }
+
+    #[test]
+    fn location_value_writes_integers_above_2_pow_53_as_json_stringify_does() {
+        // 2^53 + 2 and 2^63 + 2^11 are exact f64 integers; JS writes their
+        // digits, and so does the result.
+        assert_eq!(
+            positions(
+                [9_007_199_254_740_994.0, 1.0, 1.0],
+                [9_223_372_036_854_777_856.0, 1.0, 1.0]
+            ),
+            (
+                "9007199254740994,1,1".to_string(),
+                "9223372036854777856,1,1".to_string()
+            )
+        );
+        // 2^64 and beyond do not fit an integer JSON number here; the float
+        // form is kept (documented on `location_value`).
+        let value = location_value(&range(
+            [18_446_744_073_709_551_616.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ))
+        .unwrap();
+        assert!(value["start"]["line"].is_f64());
     }
 }

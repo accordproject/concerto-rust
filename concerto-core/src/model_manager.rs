@@ -593,7 +593,8 @@ impl ModelManager {
         // TS: ClassDeclaration._resolveSuperType passes `this.ast.location`
         // to every error it raises (src/introspect/classdeclaration.ts); the
         // class whose super type is being resolved is the AST node in scope
-        // here, so its `location` is copied verbatim (PORTING.md 2.1).
+        // here, so its `location` is passed on, re-serialised from the typed
+        // `mm::Range` by `location_value` (PORTING.md 2.1).
         let location = class.location().and_then(crate::error::location_value);
         Ok(Some(self.resolve_type_name(
             in_namespace,

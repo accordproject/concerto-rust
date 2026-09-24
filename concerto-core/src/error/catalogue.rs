@@ -1,12 +1,20 @@
 //! The message catalogue (PORTING.md section 2.2, OD-5).
 //!
 //! Rust owns the message templates the ported units of `concerto-core`
-//! throw: this is the verbatim port of the `messages/en.json` keys and the
-//! inline templates that a RUST or HYBRID member's throw site uses (OD-5),
-//! plus the `factory-newinstance-*` keys and `typenotfounderror-defaultmessage`
-//! OD-5 pre-approves ahead of their own call site (P3-01, table 2.3). No
-//! unused `en.json` key is ported: `composer-*`, `whereastvalidator-*`,
-//! `like` and `test-*` have no throw site in `concerto-core` and stay in TS.
+//! throw. This file holds two kinds of entry:
+//!
+//! - the `messages/en.json` keys OD-5 scopes in, ported verbatim: every key
+//!   a RUST or HYBRID member's throw site uses, plus the
+//!   `factory-newinstance-*` keys and `typenotfounderror-defaultmessage` that
+//!   OD-5 pre-approves ahead of their own call site (P3-01, table 2.3);
+//! - the inline templates (template literals and string concatenations,
+//!   2.2 step 2) of the members the P0-04b trial ported.
+//!
+//! It does not yet hold the inline templates of every RUST or HYBRID member:
+//! each member's own port adds its inline templates, with their golden
+//! tests, in the same PR (6.3). No unused `en.json` key is ported:
+//! `composer-*`, `whereastvalidator-*`, `like` and `test-*` have no throw
+//! site in `concerto-core` and stay in TS.
 //!
 //! **Deriving the OD-5 scope.** "Every `en.json` key used by a RUST or
 //! HYBRID member" (OD-5) means: take the ledger
@@ -183,27 +191,29 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "factory-newinstance-missingidentifier",
         template: "Missing identifier for Type \"{type}\" in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        // OD-5 / #32 point 4: one of Factory.newResource's four model
-        // checks; not yet called (P3-01 delegates them to Rust).
-        sources: &["src/factory.ts (messages/en.json)"],
+        // OD-5 / #32 point 4: one of Factory.newResource's model checks;
+        // not yet called (P3-01 delegates them to Rust).
+        sources: &["src/factory.ts:115"],
     },
     CatalogueEntry {
         code: "factory-newinstance-invalididentifier",
         template: "Invalid or missing identifier for Type \"{type}\" in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        sources: &["src/factory.ts (messages/en.json)"],
+        sources: &["src/factory.ts:107"],
     },
     CatalogueEntry {
         code: "factory-newinstance-abstracttype",
         template: "Cannot instantiate the abstract type \"{type}\" in the \"{namespace}\" namespace.",
         renderer: Renderer::Globalize,
-        sources: &["src/factory.ts (messages/en.json)"],
+        sources: &["src/factory.ts:94"],
     },
     CatalogueEntry {
         code: "factory-newinstance-typenotdeclaredinns",
         template: "Cannot instantiate Type \"{type}\" in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        sources: &["src/factory.ts (messages/en.json)"],
+        // No TS call site: the key is in messages/en.json but nothing in
+        // src/ uses it. OD-5 pre-approves it with the other three.
+        sources: &["messages/en.json only (no TS call site)"],
     },
     // ---- P1-05 exit-condition sweep: the rest of the OD-5 scope the first
     //      cut of this file missed (module doc). Each of these units has no
