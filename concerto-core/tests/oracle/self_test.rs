@@ -174,6 +174,39 @@ fn passes_a_correct_fixture_for_each_supported_op() {
             "outcome": { "ok": ["org.acme.*"] }
         }),
     );
+    // Real recorded fixtures (task P1-07 review; `TypeNotFoundException
+    // #constructor with N arguments`, and the JSONPopulator fixture that
+    // hits the same default-message path from inside a real port): this op
+    // needs no `ModelManager` reconstruction at all, unlike every other
+    // non-`ModelUtil` op (see `ops.rs`'s module doc).
+    write_fixture(
+        &dir,
+        "TypeNotFoundException.new",
+        "type-not-found-default-message",
+        json!({
+            "inputs": { "args": ["namespace.TypeName"] },
+            "outcome": { "ok": { "@@oracle": "error", "error": {
+                "class": "TypeNotFoundException",
+                "message": "Type \"namespace.TypeName\" not found.",
+                "location": null,
+                "component": "@accordproject/concerto-core"
+            } } }
+        }),
+    );
+    write_fixture(
+        &dir,
+        "TypeNotFoundException.new",
+        "type-not-found-custom-message-and-component",
+        json!({
+            "inputs": { "args": ["namespace.TypeName", "MESSAGE_TEXT", "foo"] },
+            "outcome": { "ok": { "@@oracle": "error", "error": {
+                "class": "TypeNotFoundException",
+                "message": "MESSAGE_TEXT",
+                "location": null,
+                "component": "foo"
+            } } }
+        }),
+    );
 
     let (fixtures, load_errors) = fixture::load_all(&dir);
     assert!(
@@ -182,7 +215,7 @@ fn passes_a_correct_fixture_for_each_supported_op() {
     );
     assert_eq!(
         fixtures.len(),
-        15,
+        17,
         "expected one fixture per write_fixture call"
     );
 

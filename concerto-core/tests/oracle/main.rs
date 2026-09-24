@@ -50,8 +50,21 @@ mod self_test;
 use std::env;
 use std::path::{Path, PathBuf};
 
+/// Where the corpus directory came from: whether a developer or CI job
+/// pointed at it explicitly, or this harness found it itself by convention.
+/// The two are judged differently (see `replays_the_oracle_corpus`): a
+/// path nobody asked for is fine to skip when it is absent, but a path
+/// someone configured is a promise that a corpus is there, and a broken
+/// promise is a harness failure, not a quiet pass.
+enum Located {
+    /// `$CONCERTO_ORACLE_FIXTURES` was set to this path.
+    Explicit(PathBuf),
+    /// Found by searching next to this checkout; nobody configured it.
+    Discovered(PathBuf),
+}
+
 /// Finds the oracle's `fixtures` directory (see the module doc).
-fn find_fixtures_dir() -> Option<PathBuf> {
+fn find_fixtures_dir() -> Option<Located> {
     if let Ok(configured) = env::var("CONCERTO_ORACLE_FIXTURES") {
         let path = PathBuf::from(configured);
         let candidate = if path.file_name().and_then(|n| n.to_str()) == Some("fixtures") {
@@ -59,7 +72,7 @@ fn find_fixtures_dir() -> Option<PathBuf> {
         } else {
             path.join("fixtures")
         };
-        return Some(candidate);
+        return Some(Located::Explicit(candidate));
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -73,12 +86,15 @@ fn find_fixtures_dir() -> Option<PathBuf> {
         repo_root.join("../concerto/migration/oracle/fixtures"),
         repo_root.join("../../concerto/migration/oracle/fixtures"),
     ];
-    siblings.into_iter().find(|p| p.is_dir())
+    siblings
+        .into_iter()
+        .find(|p| p.is_dir())
+        .map(Located::Discovered)
 }
 
 #[test]
 fn replays_the_oracle_corpus() {
-    let Some(fixtures_dir) = find_fixtures_dir() else {
+    let Some(located) = find_fixtures_dir() else {
         eprintln!(
             "oracle harness: no fixture corpus found (set CONCERTO_ORACLE_FIXTURES, or generate \
              one with migration/oracle/bin/record-all.sh in a sibling `concerto` checkout, see \
@@ -86,7 +102,26 @@ fn replays_the_oracle_corpus() {
         );
         return;
     };
+
+    let (fixtures_dir, explicit) = match located {
+        Located::Explicit(dir) => (dir, true),
+        Located::Discovered(dir) => (dir, false),
+    };
+
     if !fixtures_dir.is_dir() {
+        // A path this harness found on its own not existing just means no
+        // corpus was ever generated there — fine to skip. A path someone
+        // set CONCERTO_ORACLE_FIXTURES to is a promise that a corpus lives
+        // there, and a missing directory breaks that promise: the run must
+        // fail loudly rather than silently report a pass with nothing run
+        // (task P1-07 review).
+        assert!(
+            !explicit,
+            "oracle harness: CONCERTO_ORACLE_FIXTURES was set to {}, but it is not a directory \
+             (generate the corpus with migration/oracle/bin/record-all.sh, see \
+             migration/oracle/README.md in the `concerto` checkout)",
+            fixtures_dir.display()
+        );
         eprintln!(
             "oracle harness: {} is not a directory — skipping",
             fixtures_dir.display()
@@ -94,15 +129,27 @@ fn replays_the_oracle_corpus() {
         return;
     }
 
-    run(&fixtures_dir);
+    run(&fixtures_dir, explicit);
 }
 
 /// Split out from the `#[test]` so a fixed, hand-authored corpus can drive
 /// the same path in this crate's own tests of the harness (see
 /// `oracle/self_test.rs`).
-fn run(fixtures_dir: &Path) {
+fn run(fixtures_dir: &Path, explicit: bool) {
     let (fixtures, load_errors) = fixture::load_all(fixtures_dir);
     if fixtures.is_empty() && load_errors.is_empty() {
+        // Same reasoning as the missing-directory case above: a directory
+        // this harness found by convention being empty is not evidence of
+        // anything wrong (nobody promised a corpus there), but a directory
+        // someone explicitly configured being empty means the harness ran
+        // zero fixtures while claiming a corpus was in use — that must fail
+        // rather than report `test result: ok` (task P1-07 review).
+        assert!(
+            !explicit,
+            "oracle harness: CONCERTO_ORACLE_FIXTURES ({}) contains no fixtures — a corpus was \
+             explicitly configured, so an empty one is a failure, not a skip",
+            fixtures_dir.display()
+        );
         eprintln!(
             "oracle harness: {} contains no fixtures — skipping",
             fixtures_dir.display()

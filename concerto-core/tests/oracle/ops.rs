@@ -10,7 +10,9 @@
 //! `importFullyQualifiedNames`, `isPrimitiveType`, `capitalizeFirstLetter`,
 //! `isValidIdentifier`, `getFullyQualifiedName`,
 //! `removeNamespaceVersionFromFullyQualifiedName`, `isSystemProperty`,
-//! `isPrivateSystemProperty`, `isValidMapKey`, `isValidMapValue`.
+//! `isPrivateSystemProperty`, `isValidMapKey`, `isValidMapValue`; plus
+//! `TypeNotFoundException.new`, the one non-`ModelUtil` op that is equally
+//! receiver-free (task P1-07 review; see its match arm below for why).
 //!
 //! The other five `ModelUtil` statics (`isAssignableTo`, `isEnum`, `isMap`,
 //! `isScalar`, `isValidMapKeyScalar`) take a model manager collaborator
@@ -21,6 +23,32 @@
 //! [`Dispatch::Unsupported`]. A later task extends this registry rather than
 //! replacing it (the corpus and the comparison machinery in `fixture.rs`,
 //! `compare.rs` and `report.rs` do not change).
+//!
+//! **Why `ModelManager` ops (`ModelManager.new`, `.addModel`, `.getType`,
+//! ...) are not simply wired up next, even though `concerto_core::model_manager`
+//! already exists (task P1-07 review):** every one of them needs the fixture's
+//! receiver reconstructed as a real [`concerto_core::model_manager::ModelManager`]
+//! first, and that reconstruction cannot be faithful yet. `ModelManager::new`
+//! preloads only `concerto@1.0.0`; the TS reference's `BaseModelManager`
+//! constructor *unconditionally* also loads `concerto.decorator@1.0.0`
+//! (`addDecoratorModel()`, called before `addRootModel()`, with no option to
+//! skip it — see `packages/concerto-core/src/basemodelmanager.ts`), and
+//! `concerto-core/src/rootmodel.rs`'s own module doc records this as a known
+//! gap: the decorator model "ships alongside [the root model] but is not
+//! preloaded". So a fixture recorded from `new ModelManager()` never matches
+//! a freshly built Rust one: its namespace list and `getAst` snapshot always
+//! carry `concerto.decorator@1.0.0`, which this crate's manager does not yet
+//! have. Decoding the `mm` recipe and comparing anyway would do one of two
+//! dishonest things: quietly drop the decorator namespace from the
+//! comparison to force a pass (exactly the "unsupported never asserted on"
+//! failure mode this review is about, moved into a different corner), or
+//! turn on a comparison this harness knows will fail for essentially every
+//! `ModelManager` fixture, which would fail `cargo test` for a production
+//! gap this task is not the one to close. Closing it belongs to the
+//! `ModelManager`/introspection porting tasks (plan §4 phase 2); once
+//! `ModelManager::new` preloads the decorator model the same way the
+//! reference does, this registry can decode `mm`/`mfref`/`declref` and wire
+//! up the `ModelManager` and introspection op families for real.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::model_util::{self, ParsedNamespace};
@@ -162,6 +190,56 @@ pub fn exec(op: &str, inputs: &Inputs) -> Dispatch {
             let arg0 = decode::arg(&args, 0);
             let value = decode::as_value(&arg0).cloned();
             model_util::is_valid_map_value(value.as_ref()).map(Value::Bool)
+        }
+        // `new TypeNotFoundException(typeName, message?, component?)`
+        // (src/typenotfoundexception.ts): unlike every other op here, this
+        // constructor does not need a `ModelManager` at all — it is pure
+        // string handling over its own arguments — so it needs none of the
+        // `mm`/`mfref` receiver reconstruction the module doc explains is
+        // not implemented yet. The TS reference does not throw here: the
+        // constructed exception is itself the `ok` value, codec.js encoding
+        // it the same way any other outcome-only `Error` is (`{"@@oracle":
+        // "error", "error": {...}}`), confirmed against a real recorded
+        // fixture (task P1-07 review; `TypeNotFoundException #constructor`).
+        "TypeNotFoundException.new" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(type_name) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            let arg1 = decode::arg(&args, 1);
+            let Ok(message) = decode::as_nullable_str(&arg1) else {
+                bad_args!()
+            };
+            let arg2 = decode::arg(&args, 2);
+            let Ok(component) = decode::as_nullable_str(&arg2) else {
+                bad_args!()
+            };
+            // TS: `if (!message) { message = <default> }` and
+            // `component || '@accordproject/concerto-core'` — both falsy
+            // checks, so an explicit `""` falls back exactly as a missing
+            // argument does.
+            // The `typenotfounderror-defaultmessage` catalogue entry
+            // (`error/catalogue.rs`), rendered by hand: its `render` is
+            // private to `concerto_core::error`, but the template has one
+            // placeholder and no `$`-pattern hazards, so a literal format
+            // matches it byte for byte — the same template `to_oracle_error`
+            // below builds for `ConcertoError::TypeNotFound`.
+            let message = message
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Type \"{type_name}\" not found."));
+            let component = component
+                .filter(|c| !c.is_empty())
+                .unwrap_or("@accordproject/concerto-core");
+            Ok(json!({
+                "@@oracle": "error",
+                "error": {
+                    "class": "TypeNotFoundException",
+                    "message": message,
+                    "location": Value::Null,
+                    "component": component,
+                }
+            }))
         }
         _ => return Dispatch::Unsupported(format!("op not implemented: {op}")),
     };

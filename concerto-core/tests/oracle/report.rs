@@ -175,7 +175,20 @@ impl Report {
     /// condition every Phase 2 introspection task is judged against) means.
     /// `unsupported` fixtures never fail the test — they are exactly the
     /// ops a later task still has to add.
+    ///
+    /// A load error also fails the test. README ("Fixture schema"): "A
+    /// missing, corrupt or unreadable blob is a harness error", and the
+    /// oracle's own verdicts document a harness error as "never a pass" —
+    /// so a corpus with even one unreadable or malformed fixture file must
+    /// not report `test result: ok` (task P1-07 review).
     pub fn assert_no_regressions(&self) {
+        assert!(
+            self.load_errors == 0,
+            "{} oracle fixture file(s) could not be loaded (malformed JSON, a missing or corrupt \
+             blob, or a shape this harness's Fixture does not model) — see load_error_detail in \
+             the report at the path printed above; a harness error is never a pass",
+            self.load_errors
+        );
         assert!(
             self.fail == 0,
             "{} oracle fixture(s) diverged from the reference for an op this harness runs; see the failures above and the report at the path printed above",
