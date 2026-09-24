@@ -1,0 +1,44 @@
+[package]
+name = "concerto-benches"
+description = "Criterion benchmarks of concerto-core (and concerto-validate-rs) against the same workloads as the TS harness in migration/bench/ of the concerto repo."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+# We declare bench targets explicitly below; `benches/common/` holds shared
+# fixture-loading code, not a bench target, and would otherwise be picked up
+# by Cargo's directory-based autodiscovery too.
+autobenches = false
+
+[dependencies]
+accordproject-concerto-core = { path = "../concerto-core" }
+serde_json = { workspace = true }
+
+# concerto-validate-rs is a separate repository, checked out as a sibling of
+# this repo (see the top-level migration plan's repo layout:
+# `accordproject/concerto`, `accordproject/concerto-rust` and
+# `accordproject/concerto-validate-rs` all under the same parent directory,
+# e.g. `/home/user/<repo>`). It is not part of this workspace and is not
+# itself changed by this crate; we only call its public
+# `validate_metamodel` function for workload 2 (see benches/README.md).
+#
+# If that checkout is not present, build with `--no-default-features` to
+# skip it (workload 2 then only reports the concerto-core side).
+concerto-validator-rs = { path = "/home/user/concerto-validate-rs", optional = true }
+
+[features]
+default = ["validate-rs"]
+validate-rs = ["concerto-validator-rs"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "load_validate"
+harness = false
+
+[[bench]]
+name = "validate_metamodel"
+harness = false

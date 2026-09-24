@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["concerto-metamodel", "concerto-core", "concerto-vocabulary"]
+members = ["concerto-metamodel", "concerto-core", "concerto-vocabulary", "benches"]
 
 [workspace.package]
 version = "0.1.0"
