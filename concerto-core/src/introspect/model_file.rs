@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use crate::error::{ConcertoError, Result};
 use crate::introspect::declaration::Declaration;
 use crate::introspect::import::Import;
-use crate::model_util::{is_primitive_type, parse_namespace, qualify};
+use crate::model_util::{get_fully_qualified_name, is_primitive_type, is_valid_identifier};
 
 /// A parsed model file for one namespace.
 #[derive(Debug, Clone)]
@@ -43,9 +43,9 @@ impl ModelFile {
             })?
             .to_string();
 
-        let version = parse_namespace(&namespace)?.version;
+        let version = split_versioned_namespace(&namespace)?.1;
 
-        let imports = match value.get("imports") {
+        let mut imports = match value.get("imports") {
             None => Vec::new(),
             Some(serde_json::Value::Array(arr)) => arr
                 .iter()
@@ -60,13 +60,27 @@ impl ModelFile {
             }
         };
 
+        // Every non-system model file imports the system types implicitly.
+        // TS: ModelFile.fromAst (src/introspect/modelfile.ts), the built-in
+        // import; ported here because the trial's oracle fixtures load models
+        // that use them (P0-04b).
+        let is_system = namespace.starts_with("concerto@") || namespace == "concerto";
+        if !is_system {
+            imports.push(Import::try_from(&serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                "namespace": "concerto@1.0.0",
+                "types": ["Concept", "Asset", "Transaction", "Participant", "Event"]
+            }))?);
+        }
+
         let mut declarations = Vec::new();
         let mut local_types = HashMap::new();
         match value.get("declarations") {
             None => {}
             Some(serde_json::Value::Array(arr)) => {
                 for raw in arr {
-                    let decl = Declaration::try_from(raw).map_err(|e| annotate(e, &file_name))?;
+                    let decl = Declaration::from_model_json(raw, &namespace, file_name.as_deref())
+                        .map_err(|e| annotate(e, &file_name))?;
                     if local_types
                         .insert(decl.name().to_string(), declarations.len())
                         .is_some()
@@ -151,9 +165,35 @@ impl ModelFile {
             return Some(short.to_string());
         }
         if self.local_types.contains_key(short) {
-            return Some(qualify(&self.namespace, short));
+            return Some(get_fully_qualified_name(&self.namespace, short));
         }
         self.imports.iter().find_map(|imp| imp.resolve(short))
+    }
+}
+
+/// Splits a namespace like `org.example@1.0.0` into its name and version,
+/// rejecting a namespace without a `@version`, with a second `@`, with an empty
+/// name or version, or with a name segment that is not an identifier.
+///
+/// This is the pre-port loader's own check, not a port of
+/// `ModelUtil.parseNamespace` (which accepts unversioned namespaces, DV-003).
+/// It goes when `ModelFile` is ported (P2-08).
+pub(crate) fn split_versioned_namespace(namespace: &str) -> Result<(String, String)> {
+    let illegal = || ConcertoError::IllegalModel {
+        message: format!("invalid namespace: {namespace}"),
+        file_name: None,
+        location: None,
+    };
+    let mut parts = namespace.splitn(3, '@');
+    let name = parts.next().unwrap_or("").to_string();
+    match (parts.next(), parts.next()) {
+        (Some(version), None) => {
+            if name.is_empty() || version.is_empty() || !name.split('.').all(is_valid_identifier) {
+                return Err(illegal());
+            }
+            Ok((name, version.to_string()))
+        }
+        _ => Err(illegal()),
     }
 }
 
@@ -201,7 +241,9 @@ mod tests {
         assert_eq!(mf.namespace(), "org.example@1.0.0");
         assert_eq!(mf.version(), "1.0.0");
         assert_eq!(mf.declarations().len(), 1);
-        assert_eq!(mf.imports().len(), 1);
+        // The declared import, then the built-in import of the system types.
+        assert_eq!(mf.imports().len(), 2);
+        assert_eq!(mf.imports()[1].namespace(), "concerto@1.0.0");
         assert!(mf.local_declaration("Person").is_some());
         assert!(!mf.is_system_namespace());
     }

@@ -1,0 +1,44 @@
+# The WASM binding of concerto-core (PORTING.md section 4), built for the
+# concerto-core TS views behind CONCERTO_ENGINE=rust.
+#
+# P0-04b trial scaffold: it binds only ModelUtil, NumberValidator and
+# ScalarDeclaration. P4-01 owns the crate, its handle API and its packaging.
+#
+# Like the spike, it is not a member of the root workspace (the empty
+# [workspace] table below), so the host build of concerto-core never compiles
+# wasm-bindgen. Build it with `sh build.sh`; lint it with
+# `cargo clippy --target wasm32-unknown-unknown -- -D warnings` from here.
+[package]
+name = "concerto-wasm"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+accordproject-concerto-core = { path = "../concerto-core" }
+# Pinned: wasm-bindgen-cli must be exactly this version (spike REPORT §5).
+wasm-bindgen = "=0.2.128"
+js-sys = "0.3"
+serde_json = "1.0"
+
+[lints.clippy]
+# A panic on the boundary path poisons the object it happened in (spike
+# REPORT §4): the binding never unwraps or indexes.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

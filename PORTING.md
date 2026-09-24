@@ -1,7 +1,9 @@
 # PORTING.md: rules for porting concerto-core from TypeScript to Rust
 
 This is the rulebook for every porting task in the concerto-core migration
-(plan: accordproject/concerto-rust#29; task P0-04a, #33). If you implement a
+(plan: accordproject/concerto-rust#29; task P0-04a, #33; revised by the
+three-unit trial P0-04b, #81, which ported `ModelUtil`, `NumberValidator` and
+`ScalarDeclaration` end to end and folded its lessons in here). If you implement a
 port, follow it step by step. If you review one, judge the port against it,
 using the checklist in section 10. If a rule is unclear, or a real case falls
 outside it, do not decide the question inside your task. Raise it on the
@@ -82,6 +84,19 @@ Mechanical rules. Apply them in order.
    `name()`. Free functions keep `get_`. Every ported item carries a doc line
    `TS: <Class>.<member> (src/<file>.ts)`, so that
    `grep -rn "TS: ModelUtil.getShortName"` finds the port.
+   - When the accessor name is a Rust keyword, prefix the noun:
+     `ScalarDeclaration.getType` → `scalar_type()`.
+   - `toString()` becomes an `impl fmt::Display` when the struct holds
+     everything the text needs (`NumberValidator`). When it needs collaborator
+     data (`ScalarDeclaration.toString` prints `getFullyQualifiedName()`), it
+     becomes an associated function `to_string(fully_qualified_name: &str)`,
+     and the binding makes the collaborator call.
+9. **A trait for one collaborator.** When a member reads only the object it
+   is attached to (a validator reading its `field`), a small trait for that
+   element is clearer than a whole `ResolutionContext` (1.4).
+   The trial added `model_manager::ValidatedElement` (`default_value()`,
+   `fully_qualified_name()`) with the architect's sign-off on #81; P1-04
+   decides whether it folds into `ResolutionContext` (OD-12).
 
 ### 1.2 Newtypes over `concerto-metamodel`
 
@@ -102,12 +117,22 @@ Mechanical rules. Apply them in order.
 - Where a generated type is *less faithful* than the TS object (it collapses
   `null` into absent, or narrows a JS number to `i32`/`i64`), see Open
   decision OD-3. Do not work around it locally.
+- **A member that TS runs over any JS object reads the AST as
+  `serde_json::Value`** (OD-3), not as the generated type. Constructors and
+  `process()` methods are the usual case: the unit tests build them over ASTs
+  the generated types reject (`new ScalarDeclaration(modelFile, {name:
+  'suchName'})` has no `$class`; `new NumberValidator(field, {lower: null,
+  upper: 100})` has none either). `ScalarDeclaration::process(&Value, …)` is
+  the pattern: it returns the computed state (`ProcessedScalar`), and the
+  loader keeps the generated node next to it as its typed view. Compare
+  `$class` the way TS does: `ScalarDeclaration.process` matches the
+  fully-qualified `$class` only, so a short `$class` gives `type: null`.
 
 ### 1.3 Where each ledger classification puts code
 
 | Ledger | Rust (`concerto-core`) | `concerto-wasm` | TS view (P4-xx) |
 |---|---|---|---|
-| **RUST** | All of the member's logic, ported in the P2/P3 task named in `planned_task`, in the module named in `target_rust_module` | one binding function or method per member, plus the JS-callback `ResolutionContext` if the row has `needs_fallback=true` (1.4) | a one-line delegation, with no branches (plan §7: "keep the views branch-free"). A row with `needs_fallback=true` still delegates in one line; the collaborator-call path is kept for that member only, behind the binding (1.4). |
+| **RUST** | All of the member's logic, ported in the P2/P3 task named in `planned_task`, in the module named in `target_rust_module` | one binding function or method per member, plus the JS-callback `ResolutionContext` (1.4) | a one-line delegation, with no branches (plan §7: "keep the views branch-free"), **or a read of the object's cached snapshot** (1.5). During the flag period the delegation sits behind the one `if (rust)` guard of 1.5. A row with `needs_fallback=true` still delegates in one line; the collaborator-call path is kept for that member only, behind the binding (1.4). |
 | **HYBRID** | Everything *except* what the ledger `reason` column says stays in JS | binding for the Rust part, plus the JS-callback `ResolutionContext` if the row has `needs_fallback=true` (1.4), or the JS regex evaluator if the reason names `options.regExp` (3.2) | the JS part named in `reason`, calling Rust for the rest. Nothing else stays in JS. |
 | **TS** | nothing | nothing | unchanged. Do not port it, even if it looks easy. A TS row with `needs_fallback=true` (for example the `Factory` or `ModelManager` constructor) is not ported either: the member stays JS, so it has no Rust path to fall back from, and the flag records coupling that P2-10 lifts into fixtures (SUMMARY §10). |
 
@@ -133,6 +158,7 @@ Mechanical rules. Apply them in order.
   `coupled_tests_grep` as evidence.
 - The TS logic of a converted member stays in the TS source until P5-02,
   behind the `CONCERTO_ENGINE=ts|rust` flag (P4-02). Do not delete it earlier.
+  Section 1.5 fixes the exact shape.
 
 ### 1.4 `ResolutionContext`: collaborator calls (P1-04)
 
@@ -182,6 +208,141 @@ declarations and properties in an arena, addressed by the stable `DeclId` and
   is a ledger rebuild, not a local fallback.
 - Core never knows which implementation it is talking to. Section 3.2 uses
   the same pattern for the `options.regExp` engine.
+- **Until the arena owns the graph, every collaborator call goes through the
+  JS-callback context** (lesson of P0-04b). `needs_fallback` describes the end
+  state, when `ModelManager`, `ModelFile` and the declarations are Rust-backed
+  views (P4-06 … P4-08). Before that, the collaborators a converted member
+  meets are TS objects in production too, so its binding answers every
+  collaborator call by calling them back, whatever the flag says. Two cases
+  the flag does not show:
+  - **Statics that take collaborators as arguments.** `ModelUtil.isAssignableTo(modelFile,
+    typeName, property)` has `needs_fallback=false`, but its six W tests pass
+    `sinon.createStubInstance(ModelFile)` and `(Property)` as arguments. The
+    coupling derivation flags only `new` of the member's own class, so it
+    misses stubbed arguments. The JS-callback context passes them unchanged
+    (the stubs answer `undefined`, and the port throws `Cannot find type …`
+    exactly as TS does).
+  - **Members of a view built by another unit.** A scalar's `NumberValidator`
+    reads `this.field.ast.defaultValue` and `getFullyQualifiedName()` from a
+    TS `ScalarDeclaration` or `Field`.
+  Once the graph is Rust-backed, the arena answers these calls natively, and
+  the JS-callback path stays only for the `needs_fallback` rows.
+- **Collaborator errors pass through unchanged.** A JS callback that throws
+  (a stub, or `ModelManager.getType` throwing `TypeNotFoundException`) must
+  reach the caller as the same JS exception. The trait's `Error` type is the
+  implementation's: `ConcertoError` natively, and in the binding an enum of
+  "JS exception to rethrow" or "core error to map". Core functions are
+  generic over it (`Result<T, C::Error>` with `C::Error: From<ContractError>`).
+- The trait mirrors the TS calls one to one, and its methods are only those a
+  port needs. The trial's methods are `get_type` (`ModelFile.getType`),
+  `get_all_super_type_declarations`, `get_fully_qualified_name`,
+  `get_fully_qualified_type_name`, `get_parent`, `get_model_file`,
+  `get_type_name` (`Property.getType`), `is_enum`, `is_map_declaration` and
+  `is_scalar_declaration` (the optional calls `?.()`, `None` when the method
+  is missing), `get_ast_class` (`decl.ast.$class`) and `get_all_declarations`.
+  Its handle is one associated `Node` type (a `JsValue` in the binding;
+  P1-04 decides the arena's). Optional-chained calls keep their three
+  outcomes: `typeDeclaration?.isEnum()` is `Option<bool>`, `None` being
+  `undefined`.
+
+### 1.5 Views: snapshots, and their shape during the flag period (P0-04b)
+
+**Views read snapshots** (spike REPORT §3, #41). A boundary call costs about
+1.5 µs per string getter, so a view never makes one call per getter:
+
+- A Rust call that **builds an object** (a constructor, `process()`) returns
+  a **snapshot**: a JSON object of the state TS would have put in the
+  object's fields, from a `Serialize` struct in core (`NumberValidator`
+  serialises to `{lowerBound, upperBound}`; `ScalarDeclaration::process`
+  returns `ProcessedScalar`). The shim writes it into the same fields, in the
+  same order, as the TS body. Nested objects are materialised from their own
+  snapshot (`Object.create(NumberValidator.prototype)` plus the fields its
+  constructors set) rather than constructed again.
+- **Getters over that state stay as they are.** `getType()`,
+  `getValidator()`, `getDefaultValue()`, `getLowerBound()` return a field the
+  snapshot filled, so the unchanged TS body *is* the view: no call, no branch.
+  A RUST row of this kind needs no view code.
+- **Logic calls hand the snapshot back** (the trial passes the view object
+  and the binding reads its fields; P1-04 replaces that with a `DeclId`/`PropId`
+  handle into the arena, and a `generation()` counter that invalidates cached
+  snapshots on mutation).
+- **Heavy work is one coarse call** (validation, `Serializer.fromJSON`/`toJSON`).
+
+**The flag period.** From P4-02 until P5-02 a converted member keeps its TS
+body and gains exactly one guarded delegation. The shape is fixed, so that
+`CONCERTO_ENGINE=ts` is byte-for-byte the old behaviour and neither the nyc
+gate nor the `.d.ts` snapshot moves:
+
+```ts
+// module level, once per file (src/engine/index.ts explains the flag)
+declare const __webpack_require__: unknown;
+declare const __non_webpack_require__: NodeRequire;
+/* istanbul ignore next */
+const loadEngine = (specifier: string) =>
+    typeof __webpack_require__ === 'function' ? __non_webpack_require__(specifier) : module.require(specifier);
+/* istanbul ignore next */
+const rust: { [binding: string]: (...args: any[]) => never } | null =
+    typeof process !== 'undefined' && process.env?.CONCERTO_ENGINE === 'rust' ? loadEngine('./engine').rust : null;
+
+static getShortName(fqn) {
+    /* istanbul ignore if */
+    if (rust) {
+        return rust.modelUtilGetShortName(fqn);
+    }
+    let result = fqn;            // the TS body, untouched
+    …
+}
+```
+
+- **Methods:** the guard is the first statement, or the first after
+  `super.x()` when the TS body starts with one (`super.process()`,
+  `super.validate()` stay TS until their own unit is converted). A `void`
+  method calls and returns: `rust.numberValidatorValidate(this, identifier, value); return;`.
+- **Constructors:** after `super(…)`,
+  `Object.assign(this, rust.numberValidatorNew(this, ast)); return;` writes
+  the snapshot. Mark the fields the TS body assigns as definitely assigned
+  (`lowerBound!: number | null`); the `!` does not reach the `.d.ts`.
+- **Objects built from a snapshot** go through a shim function
+  (`src/engine/views.ts`, e.g. `scalarDeclarationProcess(this)`), called in
+  one line; it also builds the objects of units not yet ported with their TS
+  constructors (`new StringValidator(…)` until P2-02).
+- **`instanceof` checks** pass the class to the binding, which tests the
+  prototype chain: `rust.numberValidatorCompatibleWith(this, other, NumberValidator)`.
+- **Why `never`:** an untyped (`any`) delegation widens every inferred return
+  type it joins (`getNamespace(fqn): string` became `any`, and so did
+  `ModelFile.isDefined`, which returns `ModelUtil.isPrimitiveType(…)`). The
+  guardrail's `.d.ts` check caught it. A `never`-typed binding leaves the
+  inferred type exactly as the TS body makes it.
+- **Why `require` and `istanbul ignore`:** `src/engine/` is rust-mode code.
+  Each of its files carries `/* istanbul ignore file */`, every guard
+  carries `/* istanbul ignore if */`, and the module-level `rust` constant
+  `/* istanbul ignore next */`, so ts mode's coverage counts exactly the
+  statements, branches and functions it counted before (checked in the
+  trial: the uncovered counts did not change). The views load the shim with
+  `require`, and `tsconfig.build.json` excludes `src/engine`, so tsc emits no
+  `.d.ts` for it and the API snapshot stays identical. The consequence is
+  that `dist/` does not carry the shim yet; OD-11. `scripts/build-esm.js`
+  honours the same exclude, so the ESM builds compile exactly the CJS
+  build's modules (no `dist/esm*/engine/`, and no change to the chunk graph).
+- **Why `loadEngine` and not `require('./engine')`:** a downstream bundler
+  (esbuild, webpack, rollup) resolves every string-literal `require` it sees,
+  even behind a runtime guard that is false in ts mode. With `dist/` lacking
+  `engine/`, a literal specifier made every Node bundle of the package fail
+  in ts mode (`Could not resolve "./engine"`), a regression the review of the
+  trial caught. `loadEngine` hides the specifier from all of them without a
+  new diagnostic: its argument is not a literal and it never names the bare
+  `require` (esbuild's ESM output would otherwise add a `__require` shim,
+  which webpack reports as a critical dependency); `module.require` loads
+  relative to the view's own file, like `require`; and webpack folds
+  `typeof __webpack_require__` to `'function'` and drops the Node branch.
+  Checked in the trial: esbuild and webpack bundles of `dist/index.js`,
+  `dist/esm/index.mjs` and `dist/esm-browser/index.mjs`, and rollup of
+  `dist/index.js`, build with the same errors (none) and warnings as before
+  the flag; only the guards' own bytes are added. When P4-02 ships the shim
+  in `dist/` (OD-11), bundling must still leave the engine module out of a
+  ts-mode bundle, so keep the non-literal load.
+- The rust-mode runs cover the ignored code instead: the unit's test files
+  in rust mode (6.2) and the WASM replay of the oracle.
 
 ---
 
@@ -214,6 +375,32 @@ P1-05 defines the concrete types. Ports must use them as follows:
 - Build errors only through the P1-05 constructor or the P1-03 error-builder
   macro. Never hand-build an error string at a throw site.
 
+**What the trial fixed in code** (`concerto-core/src/error.rs`, in the section
+marked "P0-04b trial", which P1-05 absorbs unchanged):
+
+- `ErrorKind` (only the kinds a ported unit raises), `ContractError { kind,
+  code, params, location, model_file, validator }`, and the catalogue entries
+  with their sources, renderers and golden tests.
+- `ContractError` travels as `ConcertoError::Contract(Box<ContractError>)`.
+  Core's public functions return `Result<_, ConcertoError>`; a function
+  generic over a context returns `C::Error` with `C::Error: From<ContractError>`
+  (1.4). Returning `ContractError` by value trips `clippy::result_large_err`.
+- `model_file: Option<Option<String>>` is `Some` exactly when TS passes a model
+  file to `IllegalModelException`, holding `modelFile.getName()` for the
+  native decoration. The binding does not use the name: it hands the JS model
+  file itself to the factory.
+- `validator: Option<ValidatorReport { id, fqn, error_type }>` carries what
+  `Validator.reportError` adds. `message()` renders the whole
+  `Validator error for field …` text in Rust (the ledger's HYBRID reason for
+  `reportError`: "the message text and error code come from Rust"), while
+  `code` stays the inner message's key, so that attribution (OD-10) finds the
+  unit that owns the throw site, not `Validator`.
+- `final_message()` applies the exception constructor's decoration (OD-2) for
+  the native harness; `component()` gives the oracle's `component`.
+- The binding hands the error factory the payload
+  `{kind, code, params, message, location, errorType, modelFile}`, with
+  `message` the raw rendered text, so that the TS constructor decorates it.
+
 ### 2.2 Finding and porting each message
 
 For each `throw` in the member you port:
@@ -236,6 +423,26 @@ For each `throw` in the member you port:
    exact V8 message text as the template, and record it in `DIVERGENCES.md`
    as `ts-bug` (section 7.3). Stack overflow is one such case, with its own
    rule (2.5).
+
+Catalogue rules the trial added:
+
+- **One template, several throw sites.** When the same inline template is
+  thrown from several places in one file (`NumberValidator` throws
+  `Value ${value} is outside lower bound ${this.lowerBound}` from its
+  constructor and from `validate`), it is **one** entry, keyed by the first
+  site in source order (`numbervalidator-constructor-outsidelowerbound`), whose
+  `sources` lists every site. Two entries with the same text would make every
+  such fixture match twice, and OD-10 lists a double match as unattributed.
+- **Messages thrown by a dependency** that a member ports with it cite the
+  package and version: `ModelUtil.importFullyQualifiedNames` delegates to
+  `MetaModelUtil.importFullyQualifiedNames`, so its entry is
+  `metamodelutil-importfullyqualifiednames-unrecognizedimports`, source
+  `@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:257`.
+- **V8 `TypeError`s share generic entries**: `engine-typeerror-readproperties`
+  (`Cannot read properties of {value} (reading '{property}')`) and
+  `engine-typeerror-notafunction` (`{expression} is not a function`). The
+  first is exact for any nullish receiver. The second needs the source
+  expression, which the port writes as TS spells it (`imp.types.forEach`).
 
 **Rendering is a faithful port of `globalize.ts` `messageFormatter`.** Params
 are replaced in insertion order. Each `{name}` is replaced *globally*, and
@@ -262,7 +469,7 @@ harness, Rust also provides a port of each constructor's decoration, so that
 | `TypeNotFound` | `TypeNotFoundException(typeName, message)` | `@accordproject/concerto-core` | `params` must include `typeName`. The default message is `typenotfounderror-defaultmessage`. |
 | `Validation` | `ValidationException(message)` | `@accordproject/concerto-util` | the BaseException default component |
 | `Metamodel` | `MetamodelException(message)` | `@accordproject/concerto-util` | |
-| `Validator` | concerto-util `BaseException(message, undefined, errorType)` | `@accordproject/concerto-util` | the message is `Validator error for field \`<id>\`. <fqn>: <msg>` (`Validator.reportError`). `errorType` is `DefaultValidatorException` or `RegexValidatorException`. |
+| `Validator` | concerto-util `BaseException(message, undefined, errorType)` | `@accordproject/concerto-util` | the message is `Validator error for field \`<id>\`. <fqn>: <msg>` (`Validator.reportError`), rendered whole in Rust (catalogue `validator-reporterror`); `code` is the inner message's key. `errorType` is `DefaultValidatorException` or `RegexValidatorException`. |
 | `Error` | `Error(message)` | `null` | 638 fixtures |
 | `JsTypeError` | `TypeError(message)` | `null` | reproduced engine errors (2.2 step 3); 92 fixtures |
 | `JsRangeError` | `RangeError(message)` | `null` | stack overflow at a TS recursion point, message `Maximum call stack size exceeded`, location `None` (2.5); 4 fixtures |
@@ -275,9 +482,11 @@ Error classes in the corpus, for the census a P1-05 or P1-07 check can repeat
 except `ParseException` has a kind above.
 
 `ParseException` (225 fixtures) always comes from concerto-cto in JS, and Rust
-never produces it. `SecurityException` has no throw site. There is no
-`ErrorKind` type yet: today `concerto-core` has only the `ConcertoError` enum
-(`concerto-core/src/error.rs`), whose variants `ConcertoError::NamespaceNotFound`
+never produces it. `SecurityException` has no throw site. The trial (P0-04b)
+added `ErrorKind` with the four kinds its units raise (`IllegalModel`,
+`Validator`, `Error`, `JsTypeError`) and the `ConcertoError::Contract` variant
+that carries a `ContractError` (2.1). The rest of `ConcertoError`
+(`concerto-core/src/error.rs`) is pre-port; its variants `ConcertoError::NamespaceNotFound`
 (raised in `model_manager.rs`) and `ConcertoError::ValidationFailed` (raised
 in `validation.rs`) have no TS class. P1-05 replaces `ConcertoError`'s
 variants with the `{kind, code, params, location}` shape, maps each use of
@@ -399,7 +608,25 @@ Rules:
   U+FFFF, so compare `encode_utf16()` iterators.
 - JS `toUpperCase` and Rust `to_uppercase` both use full Unicode case mapping
   (`ß` → `SS`). `charAt(0)` takes a single UTF-16 unit, and this can split a
-  surrogate pair. Port it that way (`capitalizeFirstLetter`).
+  surrogate pair. Port it that way (`capitalizeFirstLetter`): a first code
+  point outside the BMP comes back unchanged.
+- **JS `trim` is not Rust `trim`.** JS removes WhiteSpace and LineTerminator,
+  which includes U+FEFF and excludes U+0085; Rust's `char::is_whitespace` is
+  the other way round. Use `ecma::js_trim` (node-semver trims the version it
+  parses).
+- **`String.prototype.replace` with a string pattern replaces the first
+  occurrence only** (`ns.replace('@', '_')` is `replacen('@', "_", 1)`).
+- **Comparisons on AST values keep JS semantics.** TS compares whatever the
+  AST holds (`defaultValue < lowerBound`), and a JSON AST can hold a string,
+  `null` or `true` where the metamodel says number. Use `ecma::less_than` and
+  `ecma::greater_than` (IsLessThan: two strings compare by UTF-16 units,
+  anything else through `ToNumber`, where `null` is 0 and `NaN` compares
+  false), and print with `ecma::to_js_string` (so a `null` default prints
+  `Value null is outside lower bound 10`). Instance values the TS code has
+  already type-checked (`ResourceValidator` passes only finite numbers to
+  `NumberValidator.validate`) are plain `f64`.
+- **Truthiness** (`if (this.ast.validator)`) is `ecma::is_truthy`; `0`,
+  `""` and `NaN` are falsy, `[]` and `{}` truthy.
 
 ### 3.2 Regular expressions
 
@@ -506,9 +733,10 @@ Rules:
 
 - Port this pattern character for character, compiled once with `regress`
   and the `u` flag. Do not approximate it with `char::is_alphabetic` or
-  `is_alphanumeric`. The current `model_util::is_valid_identifier` does that
-  and is wrong: it accepts digits outside `Nd` and rejects `Mn`, `Mc`, `Pc`,
-  ZWJ and ZWNJ.
+  `is_alphanumeric`, as the pre-port `model_util::is_valid_identifier` did
+  (it accepted digits outside `Nd` and rejected `Mn`, `Mc`, `Pc`, ZWJ and
+  ZWNJ). P0-04b replaced it with the `regress` port, and the loader's name
+  checks use it.
 - `\\u[0-9A-Fa-f]{4}` matches a **literal** backslash-u escape of six
   characters inside the name. It is not an escape sequence.
 - `ID_REGEX.test(undefined)` tests the string `"undefined"` and returns true.
@@ -538,7 +766,31 @@ Rules:
 - **JS argument coercion** (a number passed where TS expects a string,
   `undefined` passed to `test`) is done in `concerto-wasm`, per binding, the
   way the TS code applies it. Core takes Rust types. Reproduce a coercion only
-  when an oracle fixture or a unit test exercises it.
+  when an oracle fixture or a unit test exercises it. The trial met these,
+  all in fixtures, and the binding has a helper for each:
+  - strict-equality lookups (`includes`, `indexOf`) never match a
+    non-string: `isSystemProperty(1)` and `isPrimitiveType(undefined)` are
+    `false`;
+  - `RegExp.prototype.test(x)` and template literals apply `String(x)`:
+    `isValidIdentifier(undefined)` tests `"undefined"` (DV-002);
+  - falsy checks (`!fqn`, `if (namespace)`) cover every falsy JS value, so
+    the binding tests JS truthiness before converting;
+  - **pass-through results:** `getFullyQualifiedName(undefined, undefined)`
+    returns its `type` argument itself (`undefined`), so the binding returns
+    the JS value it was given rather than a converted copy;
+  - a method call on a nullish receiver is V8's
+    `Cannot read properties of undefined (reading '…')`, which the binding
+    reproduces through the catalogue (2.2).
+  A coercion no fixture or test exercises may fail differently (a
+  non-string, non-nullish receiver gives `… is not a function` with the
+  expression as the port spells it); say so in the binding's doc comment.
+- **Results that are instances of a JS library class** (a `SemVer` from
+  `semver.parse`, a dayjs object) are built in JS. Rust ports the check that
+  decides the result (node-semver 7.6.3's `valid`: the length limit, `trim`,
+  the `FULL` pattern and the `MAX_SAFE_INTEGER` bounds), and the binding calls
+  the library through a **host function the shim registers at load**
+  (`setHost(errorFactory, semverParse)`), so the view stays one line. Pin the
+  library version the port follows, and name it in the doc comment.
 
 ### 3.6 D6: match TS where it differs from Concerto v4
 
@@ -547,7 +799,8 @@ conformance expectations or the current Rust code, **match TS**, because TS is
 the oracle. Examples already known:
 
 - TS `ModelUtil.parseNamespace('org.acme')` accepts an unversioned namespace
-  (`version: null`), but the current Rust `parse_namespace` rejects it.
+  (`version: null`), which the pre-port Rust `parse_namespace` rejected
+  (DV-003, ported in P0-04b).
 - The two conformance scenarios that expect errors the reference never raises
   (plan §1.2).
 
@@ -597,8 +850,28 @@ concerto-core/src/
   dcs/              decoratormanager.ts, decoratorextractor.ts (P2-12)
   validation.rs     (existing, crate-private) shared semantic checks
   ecma.rs           crate-private helpers for ECMAScript semantics (3.1): Number::toString,
-                    JSON.stringify, UTF-16 length and compare, ToString for params
+                    JSON.stringify, UTF-16 length and compare, ToString for params,
+                    ToNumber/StringToNumber, IsLessThan, truthiness, String.prototype.trim
 ```
+
+The binding is its own crate at the repository root:
+
+```
+concerto-wasm/      wasm-bindgen binding (P4-01; the trial scaffold binds only its three units)
+  Cargo.toml        its own [workspace]: the host build of concerto-core never compiles wasm-bindgen
+  src/lib.rs        bindings, argument coercion, the JS-callback ResolutionContext, error payloads
+  build.sh          cargo (wasm32) + wasm-bindgen-cli 0.2.128 (+ wasm-opt when present)
+  scripts/inline.mjs  pkg/concerto-engine.cjs and .mjs, with the .wasm inlined, instantiated synchronously
+```
+
+- Check it with `cargo fmt -- --check` and
+  `cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings`
+  from `concerto-wasm/`. Its `Cargo.toml` denies `unwrap_used`, `expect_used`,
+  `indexing_slicing` and `panic`: a panic on the boundary poisons the object
+  it happened in (spike REPORT §4).
+- concerto-core's shim loads the built module from `CONCERTO_ENGINE_MODULE`
+  (a path to `pkg/concerto-engine.cjs`), or from the package name
+  `@accordproject/concerto-engine` when that is unset (P4-01 publishes it).
 
 - A task creates the module it needs. It does not create empty modules ahead
   of time (AGENTS.md: no speculative code).
@@ -702,11 +975,33 @@ task is the first three items for the units it owns.
     finds one, the tags or the ledger are stale; raise it on the issue.
   - Use the member's `w_tests` and `direct_tests` columns to find its tests.
     Never use `coupled_tests_grep`.
+- **Porting a W test with real data** (P0-04b). Most W tests stub a
+  collaborator only to give it a fixed answer (`mockField.getFullyQualifiedName.returns('org.acme.myField')`,
+  `mockProperty.getFullyQualifiedTypeName.returns('String')`, a model file
+  whose `getType` answers `undefined`). That answer is data: the ported test
+  implements `ResolutionContext` (or `ValidatedElement`) in a few lines,
+  answering exactly what the stub answers, and asserts the same result. All
+  27 W tests of `numbervalidator.js` and the 6 of `modelutil.js` were ported
+  that way; the one exception is a test whose other object has no Rust type
+  yet (`StringValidator` before P2-02), noted as `not ported (W)`.
+- **Tests of other units' members.** A test file also tests members its unit
+  does not port: inherited members (`#getName`, `#getNamespace`, `#accept` in
+  `scalardeclaration.js` belong to `Declaration`) and TS rows (the
+  constant-return markers). List them at the top of the ported file as
+  `not ported (<owner>)`; port only the assertions on the unit's own members
+  (`#getName` also asserts `toString()`, which is ported).
+- **Tests the TS runs over CTO files** load the AST the frozen parser
+  produces for them, inlined in the Rust test (the oracle fixtures record it).
+- **Two `it()` with one title.** The doc comment's first line is still the
+  exact title; a second paragraph says which one it is, and the Rust names
+  differ by a suffix.
 - **Never edit `packages/concerto-core/test/**`.** A hook enforces this, and
   so does review.
 - Keep the existing Rust tests green. Where an existing test asserts
   behaviour that differs from TS (D6), change it to assert the TS behaviour
-  and cite the `DV-` id.
+  and cite the `DV-` id. A pre-port unit test of a function the port replaces
+  (the old `model_util` tests) goes with the function; the ported tests take
+  its place.
 
 ### 6.2 Oracle fixtures a unit must pass
 
@@ -763,6 +1058,31 @@ A unit is accountable for two sets of fixtures.
   skip. A fixture that cannot be set up is a harness error, never a pass
   (plan §2.6). Run only the unit's ops while iterating. P1-07 fixes the exact
   command and filter (OD-7).
+  - Until P1-07 lands, the trial's harness is the template:
+    `concerto-core/tests/oracle.rs`, run as
+    `CONCERTO_ORACLE_DIR=<concerto>/migration/oracle CONCERTO_CTO_CACHE=<file> [ORACLE_OP=<prefix>] cargo test -p accordproject-concerto-core --test oracle -- --nocapture`,
+    with the cache written by
+    `ORACLE_REFERENCE_DIR=<installed reference> node migration/oracle/bin/cto-cache.js --op <Class>. --out <file>`.
+    With `CONCERTO_ORACLE_DIR` unset and no corpus next to the checkout, it
+    passes with a notice, so that CI without the corpus stays green (OD-7).
+  - **Ops of the unit's classes that the unit does not port** (TS rows such
+    as `ScalarDeclaration.isAbstract`, which have fixtures) are listed in the
+    harness and counted as "not replayed", never as a pass or a failure. Any
+    other op of those classes without a dispatch entry is a failure.
+  - **A recipe that the pre-port loader cannot replay is the unit's
+    problem.** Own-op fixtures build their receiver from a model-manager
+    recipe (`addCTOModel`, `addModelFiles`, `validateModelFiles`,
+    `clearModelFiles`), replayed on the Rust `ModelManager`. When a step's
+    status differs from the recorded one because of a loader gap, the
+    fixture fails (state divergence). If the missing behaviour is small,
+    port it as its own `TS:`-marked helper (7.2) and say so in the PR; the
+    trial ported the built-in import of the `concerto@1.0.0` system types
+    (`ModelFile.fromAst`), without which `system.cto` did not validate and
+    9 of the 131 fixtures failed. Otherwise the fixture waits for P2-08, and
+    the unit does not meet its native exit condition until then.
+  - The harness needs a stand-in `ResolutionContext` over the pre-port
+    `ModelManager` until P1-04 adds the arena (`isAssignableTo` fixtures pass
+    a model file and a property).
 - **CTO inputs.** 13,006 of the 15,037 fixtures either are
   `ModelManager.addCTOModel` ops or rebuild a model manager whose recipe has
   an `addCTOModel` step (counted with `{"@@oracle":"blob"}` references
@@ -773,12 +1093,27 @@ A unit is accountable for two sets of fixtures.
   cache is a harness error, never a skip or a pass. A recorded parse failure
   replays as the recorded `ParseException`, which Rust never produces (2.3).
 - **Through WASM (P4-01, P4-02).** Run
-  `node migration/oracle/bin/replay.js --engine <concerto-wasm oracle adapter> --op <Class>.<member>`
-  from the concerto checkout. The adapter follows `migration/oracle/README.md`,
-  "Adding an engine adapter". The run must pass 100% for the unit's ops.
+  `CONCERTO_ENGINE_MODULE=<concerto-rust>/concerto-wasm/pkg/concerto-engine.cjs node migration/oracle/bin/replay.js --engine migration/oracle/lib/rust-adapter.js --op <Class>.<member>`
+  from the concerto checkout (add `--fixtures <dir>` when the corpus lives in
+  another checkout). The adapter runs the workspace `src/` with
+  `CONCERTO_ENGINE=rust`, so a fixture passes only if view, binding and port
+  agree with the recording. `replay.js` takes one `--op`, so loop over the
+  unit's ops. The run must pass 100% for the unit's ops.
+  - **Replay the whole corpus in rust mode as well** (no `--op`, about
+    100 s): it is the cross-op regression check for the converted members,
+    and it covers the ops the native harness cannot replay yet. The trial's
+    run passed 15,037 of 15,037.
 - **The unit's TS test files in rust mode** (P4 view tasks):
-  `CONCERTO_ENGINE=rust migration/bin/run-core-tests.sh --nyc-temp-dir … --report-dir … test/<file>.js`.
-  Never run `npm test` directly (see `migration/README.md`).
+  `CONCERTO_ENGINE=rust CONCERTO_ENGINE_MODULE=… migration/bin/run-core-tests.sh --nyc-temp-dir … --report-dir … test/<file>.js`.
+  Never run `npm test` directly (see `migration/README.md`). Checking that a
+  wrong `CONCERTO_ENGINE_MODULE` makes the run fail shows that rust mode was
+  really on.
+- **The whole suite in both modes.** In ts mode it must give the baseline
+  result (1299 of 1308 passing, the one failure being the network-blocked
+  `ModelLoader #loadModelFromUrl`), and the nyc report must show the same
+  *uncovered* statement, branch and function counts as before the change
+  (1.5). In rust mode, report the result as evidence (the trial: the same
+  1299 of 1308).
 - Send test output to log files, with `ERROR`-prefixed summary lines
   (plan §5). Run per-file while iterating. Full suites are for runner and
   gate tasks.
@@ -796,6 +1131,17 @@ A unit is accountable for two sets of fixtures.
   (OD-5) has an entry, and every entry cites its source.
 - If a port adds a message, it adds the entry and its golden test in the
   same PR.
+
+### 6.4 Flag-period checks in the concerto checkout
+
+Every PR that touches concerto-core's `src/` also runs, from the concerto
+checkout: `node migration/bin/check-guardrails.mjs --base-ref <integration branch>`
+(test files, nyc thresholds and the `.d.ts` snapshot; 1.5 explains how a view
+keeps the snapshot unchanged), the `lint:deps` ESLint pass
+(`npx eslint --no-eslintrc --resolve-plugins-relative-to . --config .eslintrc.deps.yml --ext .js,.ts src`;
+the shim loads the engine by a computed name, so no undeclared dependency
+appears), `npx tsc -p tsconfig.build.json --noEmit`, and
+`npm run build -w packages/concerto-core`.
 
 ---
 
@@ -822,7 +1168,17 @@ A unit is accountable for two sets of fixtures.
   green.
 - Do not touch another unit's code beyond the calls you need. If you need a
   helper from an unported unit, port only that helper, as its own
-  `TS: X.y`-marked item, and say so in the PR.
+  `TS: X.y`-marked item, and say so in the PR. The trial needed two: the
+  message half of `Validator.reportError` (for `NumberValidator`), and the
+  built-in system-type import of `ModelFile.fromAst` (for its fixtures'
+  recipes, 6.2).
+- When the pre-port Rust code already has a function under another name
+  (`short_name`, `namespace_of`, `qualify`), the port replaces it and renames
+  its callers in the same commit. When a caller relies on pre-port behaviour
+  that the TS member does not have (the loader's versioned-namespace check
+  used the old `parse_namespace`), move that behaviour next to the caller,
+  as a crate-private function documented as the pre-port check it is, until
+  the caller's own unit is ported (`split_versioned_namespace`, P2-08).
 
 ### 7.3 TS bugs and divergences: port them and record them, never fix them silently
 
@@ -872,8 +1228,8 @@ static getShortName(fqn) {
 }
 ```
 
-**Rust** (`concerto-core/src/model_util.rs`, which replaces the existing
-`short_name`; callers are renamed in the same commit):
+**Rust** (`concerto-core/src/model_util.rs`, which replaced the existing
+`short_name` in P0-04b; callers were renamed in the same commit):
 
 ```rust
 /// Returns everything after the last dot, if present, of the source string.
@@ -915,28 +1271,35 @@ fn get_short_name_should_handle_a_name_without_a_namespace() {
 }
 ```
 
-**Binding** (`concerto-wasm`; illustrative, since P4-01 fixes the naming
-scheme):
+**Binding** (`concerto-wasm/src/lib.rs`, as the trial wrote it). It takes a
+`JsValue`, because TS `fqn.lastIndexOf` on a non-string is a `TypeError`
+that the binding reproduces (3.5):
 
 ```rust
+/// TS: ModelUtil.getShortName
 #[wasm_bindgen(js_name = modelUtilGetShortName)]
-pub fn model_util_get_short_name(fqn: &str) -> String {
-    concerto_core::model_util::get_short_name(fqn).to_owned()
+pub fn model_util_get_short_name(fqn: JsValue) -> std::result::Result<String, JsValue> {
+    run(|| Ok(mu::get_short_name(&receiver(&fqn, "fqn", "lastIndexOf")?).to_string()))
 }
 ```
 
-**TS view** (`src/modelutil.ts`, P4-03; P4-02 fixes the engine import and how
-`CONCERTO_ENGINE` selects between it and the original body, which stays until
-P5-02):
+**TS view** (`src/modelutil.ts`; the flag-period shape of 1.5, with the
+original body kept until P5-02 removes the guard and the body):
 
 ```ts
 static getShortName(fqn) {
-    return engine().modelUtilGetShortName(fqn);
+    /* istanbul ignore if */
+    if (rust) {
+        return rust.modelUtilGetShortName(fqn);
+    }
+    let result = fqn;
+    …
 }
 ```
 
-The view has one line and no branches, and its signature and JSDoc are
-unchanged, so the `.d.ts` snapshot does not move.
+The delegation is one line, its signature and JSDoc are unchanged, and the
+`never`-typed binding keeps the inferred return type, so the `.d.ts`
+snapshot does not move.
 
 **Oracle fixtures.** There are four under
 `migration/oracle/fixtures/unit/ModelUtil.getShortName/`, for example
@@ -971,7 +1334,13 @@ or `""` fails the TS `!fqn` check.
 - the ported tests pass;
 - the 4 fixtures pass natively and through WASM;
 - `test/modelutil.js` passes with `CONCERTO_ENGINE=rust`;
-- the rest of the suite stays green with `CONCERTO_ENGINE=ts`.
+- the rest of the suite stays green with `CONCERTO_ENGINE=ts`, with the same
+  uncovered counts, and the checks of 6.4 pass.
+
+The trial (P0-04b) did this for all of `ModelUtil`, `NumberValidator` and
+`ScalarDeclaration`: 131 own-op fixtures natively, 142 through WASM
+(including the 11 of TS rows), the whole corpus (15,037) through WASM, the
+three test files in rust mode, and the whole suite in both modes.
 
 ---
 
@@ -984,15 +1353,17 @@ named task.
 | # | Question | Recommended default | Decided in |
 |---|---|---|---|
 | OD-1 | What is `code`: the message key, or the concerto-util `errorType`? | `code` is the catalogue key. The catalogue entry carries `error_type` for `Validator`/`TypeNotFound` kinds (`DefaultValidatorException`, `RegexValidatorException`, `TypeNotFoundException`). | P1-05 |
-| OD-2 | Who applies the exception-class decoration (the `IllegalModelException` file and line suffix, the `Validator error for field …` prefix)? | The shim passes the raw message to the real TS constructor, which decorates it. Rust keeps a verbatim port of each decoration that is used only to compute the final message for the native harness, and golden-tests it against fixtures. | P1-05, P1-07 |
+| OD-2 | Who applies the exception-class decoration (the `IllegalModelException` file and line suffix, the `Validator error for field …` prefix)? | The shim passes the raw message to the real TS constructor, which decorates it. Rust keeps a verbatim port of each decoration that is used only to compute the final message for the native harness, and golden-tests it against fixtures. The `Validator error for field …` prefix is not a constructor decoration: `Validator.reportError` builds it before constructing the `BaseException`, so Rust renders it as part of the message (P0-04b; 2.1). | P1-05, P1-07 |
 | OD-3 | The generated metamodel types collapse `null` into absent and narrow Integer/Long AST fields to `i32`/`i64`, while TS keeps the JS object (key order, `null`, any number) and exposes it as `.ast` / `getAst()` | Each `ModelFile` keeps the AST it was given as `serde_json::Value` (with `preserve_order`) as the source of truth for `ast()`/`getAst()` and for tri-state reads. The typed `mm::*` view is used for logic. A numeric field that fails to deserialise where TS accepts the model is a failure to fix in `concerto-metamodel` codegen, not in core. | P1-02 |
 | OD-4 | The message for an invalid regex comes from the engine (V8 in TS, `regress` in Rust). No fixture or unit test observes it today. | Rust reports `kind = Validator`, `errorType = RegexValidatorException`, with V8's wording (`Invalid regular expression: /<source>/<flags>: <reason>`) for the reasons that regress can map. Record any other reason as an `engine` divergence. | P2-02 |
 | OD-5 | Which en.json keys belong in the Rust catalogue? `composer-*`, `whereastvalidator-*`, `like` and `test-*` have no throw site in concerto-core. | Port every key used by a RUST or HYBRID member, plus `factory-newinstance-*` (#32 point 4) and `typenotfounderror-defaultmessage`. Do not port unused keys. `Globalize` stays TS and keeps en.json for them. | P1-05 |
 | OD-6 | The ledger at `accordproject/concerto` commit `c48423c` applies #32 points 1, 2 and 9 (new D1 denominator; `w_tests`/`direct_tests`/`needs_fallback` in place of `coupled_tests`), but `classification.js` does not yet apply points 3 to 8: Factory model checks are still TS, `quoteStringValue` is HYBRID, DCS rows point only at P4-09, and the `Serializer.toJSON`/`fromJSON` reasons still describe a Serializer-level visitor path that option B forbids. Also, the P2-12 brief lists "the DCS/YAML converter", but the ledger keeps `dcsconverter.ts` TS (`yaml` npm lib). | Wherever a row's classification or reason differs from any decision in section 5 (points 3 to 8), section 5 overrides the TSV until `classification.js` applies them and the ledger is re-run. For everything else, including the fallback rows (`needs_fallback=true`, 1.4) and the D1 figures (85.3% full weight, 57.2% RUST only, denominator 6498.5), the TSV and SUMMARY at `c48423c` are authoritative as published. P2-12 does the DCS rows. The Factory helper is planned as P3-01 (Rust) and P4-10 (view). `dcsconverter.ts` stays TS unless the maintainer extends #32 point 5 to cover it. | P2-12 / maintainer |
-| OD-7 | How does the native harness find the corpus, and how does a task run one op? | Set an env var `CONCERTO_ORACLE_DIR`, defaulting to `../concerto/migration/oracle`, and a filter env var `ORACLE_OP=<Class>.<member>` (a prefix match), run with `cargo test -p accordproject-concerto-core --test oracle`. | P1-07 |
-| OD-8 | New dependencies | `regress` (required by the plan), `indexmap` (3.7) and `ryu-js` (3.1) are pre-approved for `concerto-core`. Anything else needs architect approval on the issue. | this rulebook |
+| OD-7 | How does the native harness find the corpus, and how does a task run one op? | Set an env var `CONCERTO_ORACLE_DIR`, defaulting to `../concerto/migration/oracle`, and a filter env var `ORACLE_OP=<Class>.<member>` (a prefix match), run with `cargo test -p accordproject-concerto-core --test oracle`. The trial also reads `CONCERTO_CTO_CACHE` (the cache file), and passes with a notice when neither the variable nor the default corpus exists, because concerto-rust's CI has no corpus; P1-07 decides whether CI fetches one instead. | P1-07 |
+| OD-8 | New dependencies | `regress` (required by the plan), `indexmap` (3.7) and `ryu-js` (3.1) are pre-approved for `concerto-core`; the trial added `regress` and `ryu-js`. `concerto-wasm` uses `wasm-bindgen` (pinned `=0.2.128`, the CLI version), `js-sys` and `serde_json`, as the spike did. Anything else needs architect approval on the issue. | this rulebook |
 | OD-9 | How does the native harness rebuild the fixtures whose inputs are CTO text (13,006 of 15,037, section 6.2), when CTO parsing stays in JS? | P1-07 adds a JS generator in `migration/oracle/` that runs the frozen `concerto-cto` 5.0.0 parser (the one the oracle recorded with) over every CTO text in the corpus, fixture recipes and blobs included. It writes a CTO→AST cache keyed by the SHA-256 of the exact CTO text and the parser arguments that affect the AST, storing either the AST or the recorded `ParseException`. The cache is committed next to the corpus and regenerated whenever the corpus is re-recorded. A check fails if any CTO text in the corpus has no cache entry. The native harness replays an `addCTOModel` step as `add_model` with the cached AST, and never parses CTO in Rust. | P1-07 |
 | OD-10 | How are cross-op error fixtures attributed to a unit (section 6.2)? | The P1-07 harness writes an attribution index, `fixture id → catalogue key → src/<file>.ts:<line> → unit`, by matching each error fixture's class and final message against the catalogue (2.2, 2.3). It lists fixtures with no match or several matches as unattributed. The index is regenerated whenever the catalogue changes, and each P2 or P3 PR quotes its unit's slice of it, split into due and deferred (6.2). | P1-07 |
+| OD-11 | How does the shim ship in `dist/`? The trial keeps `src/engine/` out of the declaration build (`tsconfig.build.json` excludes it, and the views `require` it) so that the `.d.ts` snapshot does not move; so `dist/` has no shim, and rust mode runs only from `src/` (ts-node), as the tests and the oracle do. The views load it through `loadEngine` (1.5), never a literal `require('./engine')`, so bundling `dist/` in ts mode is unchanged; `scripts/build-esm.js` honours the exclude too. | P4-02 includes `src/engine/` in the build and regenerates the snapshot once, with the maintainer's sign-off that its only change is the new internal `engine/*.d.ts` files (or teaches the snapshot to skip `src/engine/`). The views' `never`-typed guard keeps every public signature as it is either way. | P4-02, P4-11 |
+| OD-12 | Snapshot pass-back or handles, and one context trait or two? The trial's views hand the JS object back and the binding reads the cached fields; the arena will hand a `DeclId`/`PropId` instead. The trial also added `ValidatedElement` next to `ResolutionContext`. | Keep the snapshot fields as the view's state either way (getters read them, 1.5); P1-04 replaces the pass-back with handles and a `generation()` counter, and decides whether `ValidatedElement` becomes `ResolutionContext` methods on a `Node`. | P1-04 |
 
 ---
 
@@ -1037,11 +1408,17 @@ any item fails, and cite the item number.
 7. Families are enums, only P1-03 traits are used, types are newtypes over
    `mm::*` with no hand-redeclared metamodel fields (1.1, 1.2), and each item
    has a `TS: <Class>.<member>` doc line.
-8. Collaborator calls go through `ResolutionContext`. The JS fallback is wired
-   for exactly the unit's RUST and HYBRID rows with `needs_fallback=true` in the TSV (SUMMARY
-   §9) and no others (1.4, section 5 row 9). A RUST row with the flag still
-   has a branch-free one-line view; its collaborator-call path lives only in
-   the binding, for that member only.
+8. Collaborator calls go through `ResolutionContext`. Once the arena owns the
+   graph, the JS fallback is wired for exactly the unit's RUST and HYBRID rows
+   with `needs_fallback=true` in the TSV (SUMMARY §9) and no others (1.4,
+   section 5 row 9); before that, the JS-callback context answers every
+   collaborator call (1.4). A RUST row with the flag still has a one-line
+   view; its collaborator-call path lives only in the binding, for that
+   member only.
+8a. Every view has the flag-period shape of 1.5: one `/* istanbul ignore if */`
+   guard with a one-line delegation (or a snapshot read) before the untouched
+   TS body, `never`-typed bindings, and snapshot fields written in the TS
+   order. Nothing in `src/engine/` runs in ts mode.
 9. There are no WASM or JS types in core's public API, and the `cargo tree`
    and `grep` checks in section 4 are clean.
 10. Serializer checks exist once and are shared by the single-call path and
@@ -1058,7 +1435,9 @@ any item fails, and cite the item number.
     change fails after it (6.2). For P4 tasks, the own-op fixtures also
     pass through WASM, and the unit's TS test files pass with
     `CONCERTO_ENGINE=rust` while the suite stays green with
-    `CONCERTO_ENGINE=ts`. The reviewer re-runs at least the native fixtures.
+    `CONCERTO_ENGINE=ts` (same uncovered counts), the whole corpus replays
+    through WASM, and the checks of 6.4 pass. The reviewer re-runs at least
+    the native fixtures.
 13. `cargo build` and `cargo test` are clean. Every commit is
     DCO-signed, and the PR title uses Conventional Commits.
 

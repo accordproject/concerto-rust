@@ -20,14 +20,14 @@ use std::collections::{HashMap, HashSet};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
-use crate::introspect::declaration::{
-    ClassDeclaration, Declaration, MapDeclaration, ScalarDeclaration,
-};
+use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
+use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
+use crate::introspect::scalar::ScalarDeclaration;
 use crate::model_manager::ModelManager;
-use crate::model_util::{is_primitive_type, parse_namespace, qualify};
+use crate::model_util::{get_fully_qualified_name, is_primitive_type};
 
 impl ModelManager {
     /// Validates every loaded user model, leaving the built-in system model
@@ -89,7 +89,11 @@ fn validate_declaration(
 
 fn validate_class(manager: &ModelManager, namespace: &str, class: &ClassDeclaration) -> Result<()> {
     check_super_type(manager, namespace, class)?;
-    check_unique_field_names(manager, class, &qualify(namespace, class.name()))?;
+    check_unique_field_names(
+        manager,
+        class,
+        &get_fully_qualified_name(namespace, class.name()),
+    )?;
     check_identifier(manager, namespace, class)?;
     check_identity_matches_super(manager, namespace, class)?;
     check_unique_decorators(class.decorators())?;
@@ -211,7 +215,7 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
     )
     .and_then(|fqn| manager.get_declaration(&fqn).ok())
     .and_then(Declaration::as_scalar)
-    .is_some_and(|scalar| scalar.scalar_type() == "String")
+    .is_some_and(|scalar| scalar.scalar_type() == Some("String"))
 }
 
 /// Object and relationship properties must point at a declared type; a
@@ -287,7 +291,7 @@ fn resolve(
     reference_namespace: Option<&str>,
 ) -> Option<String> {
     match reference_namespace {
-        Some(ns) => Some(qualify(ns, name)),
+        Some(ns) => Some(get_fully_qualified_name(ns, name)),
         None => manager.resolve_type_name(namespace, name).ok(),
     }
 }
@@ -297,16 +301,15 @@ fn resolve(
 fn check_import_namespaces(model_file: &ModelFile) -> Result<()> {
     let mut versions: HashMap<String, String> = HashMap::new();
     for import in model_file.imports() {
-        let namespace = parse_namespace(import.namespace())?;
-        match versions.get(&namespace.name) {
-            Some(seen) if *seen != namespace.version => {
+        let (name, version) = split_versioned_namespace(import.namespace())?;
+        match versions.get(&name) {
+            Some(seen) if *seen != version => {
                 return Err(failed(format!(
-                    "Importing types from different versions ({seen} and {}) of the same namespace {} is not permitted",
-                    namespace.version, namespace.name
+                    "Importing types from different versions ({seen} and {version}) of the same namespace {name} is not permitted"
                 )));
             }
             _ => {
-                versions.insert(namespace.name, namespace.version);
+                versions.insert(name, version);
             }
         }
     }
@@ -317,7 +320,7 @@ fn check_import_namespaces(model_file: &ModelFile) -> Result<()> {
 fn check_imported_types_exist(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
     for import in model_file.imports() {
         for name in import.imported_names() {
-            let fqn = qualify(import.namespace(), name);
+            let fqn = get_fully_qualified_name(import.namespace(), name);
             if manager.get_declaration(&fqn).is_err() {
                 return Err(failed(format!(
                     "Type {name} is not defined in namespace {}",
@@ -400,7 +403,7 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
         let scalar = resolve(manager, namespace, &key.name, key.namespace.as_deref())
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
             .and_then(Declaration::as_scalar)
-            .map(ScalarDeclaration::scalar_type);
+            .and_then(ScalarDeclaration::scalar_type);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
             return Err(failed(format!(
                 "The key of map {} must be a String or DateTime, or a scalar over one of them",

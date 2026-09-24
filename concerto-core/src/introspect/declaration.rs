@@ -14,10 +14,9 @@ use serde::de::Error as _;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::property::Property;
-use crate::introspect::{
-    check_domain, check_length, check_pattern, declared_class, qualified_class,
-};
-use crate::model_util::{is_valid_identifier, short_name};
+use crate::introspect::scalar::{ScalarDeclaration, ScalarValidator};
+use crate::introspect::{check_length, check_pattern, declared_class, qualified_class};
+use crate::model_util::{get_fully_qualified_name, get_short_name, is_valid_identifier};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,125 +191,71 @@ impl ClassDeclaration {
     }
 }
 
-/// A scalar: a named alias for a primitive, sometimes with a validator
-/// attached. A newtype over the generated [`mm::ScalarDeclaration`] union;
-/// [`ScalarDeclaration::scalar_type`] tells you which primitive it wraps.
-#[derive(Debug, Clone)]
-pub struct ScalarDeclaration(mm::ScalarDeclaration);
-
-impl ScalarDeclaration {
-    /// The scalar's short name.
-    pub fn name(&self) -> &str {
-        match &self.0 {
-            mm::ScalarDeclaration::BooleanScalar(s) => &s.name,
-            mm::ScalarDeclaration::IntegerScalar(s) => &s.name,
-            mm::ScalarDeclaration::LongScalar(s) => &s.name,
-            mm::ScalarDeclaration::DoubleScalar(s) => &s.name,
-            mm::ScalarDeclaration::StringScalar(s) => &s.name,
-            mm::ScalarDeclaration::DateTimeScalar(s) => &s.name,
+/// Loads a scalar declaration: the generated node for its `$class` (the
+/// loader's structural check), then the ported `ScalarDeclaration.process`.
+/// The name is checked first, as `Declaration.process` runs before it in TS.
+fn load_scalar(
+    short: &str,
+    value: &serde_json::Value,
+    namespace: &str,
+    file_name: Option<&str>,
+) -> Result<ScalarDeclaration> {
+    let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
+        message: format!("invalid {short}: {e}"),
+        file_name: None,
+        location: None,
+    };
+    let v = value.clone();
+    let node = match short {
+        "BooleanScalar" => {
+            mm::ScalarDeclaration::BooleanScalar(serde_json::from_value(v).map_err(bad)?)
+        }
+        "IntegerScalar" => {
+            mm::ScalarDeclaration::IntegerScalar(serde_json::from_value(v).map_err(bad)?)
+        }
+        "LongScalar" => mm::ScalarDeclaration::LongScalar(serde_json::from_value(v).map_err(bad)?),
+        "DoubleScalar" => {
+            mm::ScalarDeclaration::DoubleScalar(serde_json::from_value(v).map_err(bad)?)
+        }
+        "StringScalar" => {
+            mm::ScalarDeclaration::StringScalar(serde_json::from_value(v).map_err(bad)?)
+        }
+        "DateTimeScalar" => {
+            mm::ScalarDeclaration::DateTimeScalar(serde_json::from_value(v).map_err(bad)?)
+        }
+        other => {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("unknown scalar type: {other}"),
+                file_name: None,
+                location: None,
+            });
+        }
+    };
+    let name = match &node {
+        mm::ScalarDeclaration::BooleanScalar(s) => &s.name,
+        mm::ScalarDeclaration::IntegerScalar(s) => &s.name,
+        mm::ScalarDeclaration::LongScalar(s) => &s.name,
+        mm::ScalarDeclaration::DoubleScalar(s) => &s.name,
+        mm::ScalarDeclaration::StringScalar(s) => &s.name,
+        mm::ScalarDeclaration::DateTimeScalar(s) => &s.name,
+    };
+    check_identifier(name)?;
+    let fqn = get_fully_qualified_name(namespace, name);
+    let processed =
+        ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
+    // `StringValidator` is not ported yet (P2-02): its constructor's checks
+    // are still the loader's own.
+    if let (Some(ScalarValidator::String { .. }), mm::ScalarDeclaration::StringScalar(s)) =
+        (&processed.validator, &node)
+    {
+        if let Some(validator) = &s.validator {
+            check_pattern(&s.name, validator)?;
+        }
+        if let Some(validator) = &s.length_validator {
+            check_length(&s.name, validator)?;
         }
     }
-
-    /// The primitive type this scalar aliases.
-    pub fn scalar_type(&self) -> &'static str {
-        match &self.0 {
-            mm::ScalarDeclaration::BooleanScalar(_) => "Boolean",
-            mm::ScalarDeclaration::IntegerScalar(_) => "Integer",
-            mm::ScalarDeclaration::LongScalar(_) => "Long",
-            mm::ScalarDeclaration::DoubleScalar(_) => "Double",
-            mm::ScalarDeclaration::StringScalar(_) => "String",
-            mm::ScalarDeclaration::DateTimeScalar(_) => "DateTime",
-        }
-    }
-
-    /// The metamodel `$class` short name for this scalar, e.g. `StringScalar`.
-    pub fn declaration_kind(&self) -> &'static str {
-        match &self.0 {
-            mm::ScalarDeclaration::BooleanScalar(_) => "BooleanScalar",
-            mm::ScalarDeclaration::IntegerScalar(_) => "IntegerScalar",
-            mm::ScalarDeclaration::LongScalar(_) => "LongScalar",
-            mm::ScalarDeclaration::DoubleScalar(_) => "DoubleScalar",
-            mm::ScalarDeclaration::StringScalar(_) => "StringScalar",
-            mm::ScalarDeclaration::DateTimeScalar(_) => "DateTimeScalar",
-        }
-    }
-
-    /// Deserializes the node into the generated struct its `$class` short name
-    /// names. The struct does not read `$class` itself, so a short `$class`
-    /// loads the same as a fully-qualified one.
-    fn from_json(short: &str, value: &serde_json::Value) -> Result<Self> {
-        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-            message: format!("invalid {short}: {e}"),
-            file_name: None,
-            location: None,
-        };
-        let v = value.clone();
-        let scalar = match short {
-            "BooleanScalar" => {
-                mm::ScalarDeclaration::BooleanScalar(serde_json::from_value(v).map_err(bad)?)
-            }
-            "IntegerScalar" => {
-                mm::ScalarDeclaration::IntegerScalar(serde_json::from_value(v).map_err(bad)?)
-            }
-            "LongScalar" => {
-                mm::ScalarDeclaration::LongScalar(serde_json::from_value(v).map_err(bad)?)
-            }
-            "DoubleScalar" => {
-                mm::ScalarDeclaration::DoubleScalar(serde_json::from_value(v).map_err(bad)?)
-            }
-            "StringScalar" => {
-                mm::ScalarDeclaration::StringScalar(serde_json::from_value(v).map_err(bad)?)
-            }
-            "DateTimeScalar" => {
-                mm::ScalarDeclaration::DateTimeScalar(serde_json::from_value(v).map_err(bad)?)
-            }
-            other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown scalar type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
-            }
-        };
-        let scalar = Self(scalar);
-        scalar.check_validator()?;
-        Ok(scalar)
-    }
-
-    /// Checks the range, length or regular expression validator this scalar
-    /// carries, on the same terms as the equivalent property.
-    fn check_validator(&self) -> Result<()> {
-        match &self.0 {
-            mm::ScalarDeclaration::StringScalar(s) => {
-                if let Some(validator) = &s.validator {
-                    check_pattern(&s.name, validator)?;
-                }
-                match &s.length_validator {
-                    Some(validator) => check_length(&s.name, validator),
-                    None => Ok(()),
-                }
-            }
-            mm::ScalarDeclaration::IntegerScalar(s) => match &s.validator {
-                Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
-                None => Ok(()),
-            },
-            mm::ScalarDeclaration::LongScalar(s) => match &s.validator {
-                Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
-                None => Ok(()),
-            },
-            mm::ScalarDeclaration::DoubleScalar(s) => match &s.validator {
-                Some(validator) => check_domain(&s.name, validator.lower, validator.upper),
-                None => Ok(()),
-            },
-            // Boolean and DateTime scalars declare no validator in the
-            // metamodel, so there is nothing to check. Listing them keeps this
-            // exhaustive: a new scalar kind will not compile until it is
-            // handled here.
-            mm::ScalarDeclaration::BooleanScalar(_) | mm::ScalarDeclaration::DateTimeScalar(_) => {
-                Ok(())
-            }
-        }
-    }
+    Ok(ScalarDeclaration::new(node, processed))
 }
 
 /// A top-level declaration within a model file.
@@ -526,7 +471,7 @@ fn drop_unreadable_annotations(node: &mut serde_json::Map<String, serde_json::Va
 
 /// The `$class` short name of a map key or value node.
 fn node_kind(node: Option<&serde_json::Value>) -> String {
-    node.map(|n| short_name(declared_class(n)).to_string())
+    node.map(|n| get_short_name(declared_class(n)).to_string())
         .unwrap_or_default()
 }
 
@@ -617,7 +562,21 @@ fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
 impl TryFrom<&serde_json::Value> for Declaration {
     type Error = ConcertoError;
 
+    /// Loads a declaration outside any namespace or file.
     fn try_from(value: &serde_json::Value) -> Result<Self> {
+        Self::from_model_json(value, "", None)
+    }
+}
+
+impl Declaration {
+    /// Loads a declaration of the model file for `namespace`, named
+    /// `file_name`: both are what the TS declaration reads from its model file
+    /// when it reports an error.
+    pub(crate) fn from_model_json(
+        value: &serde_json::Value,
+        namespace: &str,
+        file_name: Option<&str>,
+    ) -> Result<Self> {
         let class = declared_class(value);
         if class.is_empty() {
             return Err(ConcertoError::IllegalModel {
@@ -626,7 +585,7 @@ impl TryFrom<&serde_json::Value> for Declaration {
                 location: None,
             });
         }
-        let kind = short_name(class);
+        let kind = get_short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
             let class = Self::Class(ClassDeclaration::from_json(class_kind, value)?);
@@ -644,7 +603,9 @@ impl TryFrom<&serde_json::Value> for Declaration {
                 })?)
             }
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
-            s if s.ends_with("Scalar") => Self::Scalar(ScalarDeclaration::from_json(s, value)?),
+            s if s.ends_with("Scalar") => {
+                Self::Scalar(load_scalar(s, value, namespace, file_name)?)
+            }
             other => {
                 return Err(ConcertoError::IllegalModel {
                     message: format!("unknown declaration type: {other}"),
@@ -659,11 +620,16 @@ impl TryFrom<&serde_json::Value> for Declaration {
 
 /// Every declaration name has to be a legal identifier.
 fn check_name(declaration: Declaration) -> Result<Declaration> {
-    if is_valid_identifier(declaration.name()) {
-        Ok(declaration)
+    check_identifier(declaration.name())?;
+    Ok(declaration)
+}
+
+fn check_identifier(name: &str) -> Result<()> {
+    if is_valid_identifier(name) {
+        Ok(())
     } else {
         Err(ConcertoError::IllegalModel {
-            message: format!("invalid identifier: {}", declaration.name()),
+            message: format!("invalid identifier: {name}"),
             file_name: None,
             location: None,
         })
@@ -735,7 +701,7 @@ mod tests {
             "name": "Email",
             "validator": { "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": ".*", "flags": "" }
         }));
-        assert_eq!(s.as_scalar().unwrap().scalar_type(), "String");
+        assert_eq!(s.as_scalar().unwrap().scalar_type(), Some("String"));
         assert_eq!(s.name(), "Email");
         assert!(s.is_scalar_declaration());
 
@@ -895,13 +861,18 @@ mod tests {
         );
     }
 
+    /// The pre-port loader accepts a short scalar `$class` (TS
+    /// `ModelFile.fromAst` rejects it; P2-08 ports that), but the ported
+    /// `ScalarDeclaration.process` compares the fully-qualified `$class`, as
+    /// TS does, so the scalar has no type (`getType()` is `null`).
     #[test]
     fn a_scalar_class_may_be_given_as_the_short_name() {
         let s = decl(serde_json::json!({
             "$class": "StringScalar",
             "name": "Email"
         }));
-        assert_eq!(s.as_scalar().unwrap().scalar_type(), "String");
+        assert_eq!(s.declaration_kind(), "StringScalar");
+        assert_eq!(s.as_scalar().unwrap().scalar_type(), None);
     }
 
     #[test]

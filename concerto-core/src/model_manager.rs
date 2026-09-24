@@ -9,12 +9,125 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{ConcertoError, Result};
+use crate::error::{ConcertoError, ContractError, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
-use crate::model_util::{namespace_of, qualify, short_name};
+use crate::model_util::{get_fully_qualified_name, get_namespace, get_short_name};
 use crate::rootmodel::root_model_ast;
+
+/// The namespace part of a fully-qualified name, `""` when there is none.
+fn namespace_of(fqn: &str) -> &str {
+    // An empty name has no namespace; the loader looks it up and fails.
+    get_namespace(Some(fqn)).unwrap_or_default()
+}
+
+/// The collaborator calls a ported member makes (PORTING.md 1.4).
+///
+/// In TS, some members call other model objects: a model file, the model
+/// manager, a parent declaration. The Rust port makes each such call through
+/// this trait, so that core never knows whether it is talking to the arena or
+/// to JS objects. Each method mirrors the TS method it replaces, with the same
+/// name in snake case and the same failure.
+///
+/// P0-04b trial: this holds only the calls the three trial units make. P1-04
+/// owns the trait and its arena implementation (with `DeclId`/`PropId`
+/// handles); until then the implementations are the WASM binding's
+/// JS-callback context and the native oracle harness's.
+pub trait ResolutionContext {
+    /// A handle to a model element: a model file, a declaration or a property.
+    type Node;
+    /// What a collaborator call can raise. The JS-callback context carries the
+    /// JS exception through unchanged.
+    type Error: From<ContractError>;
+
+    /// TS: ModelFile.getType (src/introspect/modelfile.ts). `None` is a
+    /// nullish result.
+    fn get_type(
+        &self,
+        model_file: &Self::Node,
+        type_name: &str,
+    ) -> std::result::Result<Option<Self::Node>, Self::Error>;
+
+    /// TS: ClassDeclaration.getAllSuperTypeDeclarations (src/introspect/classdeclaration.ts)
+    fn get_all_super_type_declarations(
+        &self,
+        declaration: &Self::Node,
+    ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
+
+    /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts)
+    fn get_fully_qualified_name(
+        &self,
+        declaration: &Self::Node,
+    ) -> std::result::Result<String, Self::Error>;
+
+    /// TS: Property.getFullyQualifiedTypeName (src/introspect/property.ts)
+    fn get_fully_qualified_type_name(
+        &self,
+        property: &Self::Node,
+    ) -> std::result::Result<String, Self::Error>;
+
+    /// TS: Property.getParent (src/introspect/property.ts)
+    fn get_parent(&self, property: &Self::Node) -> std::result::Result<Self::Node, Self::Error>;
+
+    /// TS: Declaration.getModelFile (src/introspect/declaration.ts)
+    fn get_model_file(
+        &self,
+        declaration: &Self::Node,
+    ) -> std::result::Result<Self::Node, Self::Error>;
+
+    /// TS: Property.getType (src/introspect/property.ts)
+    fn get_type_name(&self, property: &Self::Node) -> std::result::Result<String, Self::Error>;
+
+    /// TS: Declaration.isEnum (src/introspect/declaration.ts)
+    fn is_enum(&self, declaration: &Self::Node) -> std::result::Result<bool, Self::Error>;
+
+    /// TS: `declaration.isMapDeclaration?.()`; `None` when the method is
+    /// missing.
+    fn is_map_declaration(
+        &self,
+        declaration: &Self::Node,
+    ) -> std::result::Result<Option<bool>, Self::Error>;
+
+    /// TS: `declaration.isScalarDeclaration?.()`; `None` when the method is
+    /// missing.
+    fn is_scalar_declaration(
+        &self,
+        declaration: &Self::Node,
+    ) -> std::result::Result<Option<bool>, Self::Error>;
+
+    /// TS: `declaration.ast.$class`; `None` when it is not a string.
+    fn get_ast_class(
+        &self,
+        declaration: &Self::Node,
+    ) -> std::result::Result<Option<String>, Self::Error>;
+
+    /// TS: ModelFile.getAllDeclarations (src/introspect/modelfile.ts)
+    fn get_all_declarations(
+        &self,
+        model_file: &Self::Node,
+    ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
+}
+
+/// The field or scalar declaration a validator is attached to, as a validator
+/// reads it (TS: `Validator.field`, typed `Property | ScalarDeclaration`).
+///
+/// P0-04b trial: a validator is built both by the Rust loader (for a scalar
+/// declaration it is constructing) and, through the WASM binding, over a JS
+/// field that may be a sinon stub (the `NumberValidator` constructor is a
+/// `needs_fallback` row). P1-04 decides whether this folds into
+/// [`ResolutionContext`].
+pub trait ValidatedElement {
+    /// What reading the element can raise.
+    type Error: From<ContractError>;
+
+    /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
+    fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
+
+    /// TS: `this.getFieldOrScalarDeclaration().getFullyQualifiedName()`, read
+    /// only when an error is reported.
+    fn fully_qualified_name(&self) -> std::result::Result<String, Self::Error>;
+}
 
 /// Owns a set of model files and resolves types across them.
 #[derive(Debug, Default)]
@@ -73,7 +186,7 @@ impl ModelManager {
     pub fn get_declaration(&self, fqn: &str) -> Result<&Declaration> {
         self.model_files
             .get(namespace_of(fqn))
-            .and_then(|mf| mf.local_declaration(short_name(fqn)))
+            .and_then(|mf| mf.local_declaration(get_short_name(fqn)))
             .ok_or_else(|| ConcertoError::TypeNotFound {
                 type_name: fqn.to_string(),
             })
@@ -92,7 +205,7 @@ impl ModelManager {
 
         mf.resolve_local_type(short)
             .ok_or_else(|| ConcertoError::TypeNotFound {
-                type_name: qualify(in_namespace, short),
+                type_name: get_fully_qualified_name(in_namespace, short),
             })
     }
 
@@ -169,7 +282,7 @@ impl ModelManager {
             return Ok(None);
         };
         if let Some(ns) = &ti.namespace {
-            return Ok(Some(qualify(ns, &ti.name)));
+            return Ok(Some(get_fully_qualified_name(ns, &ti.name)));
         }
         if let Some(resolved) = &ti.resolved_name {
             return Ok(Some(resolved.clone()));

@@ -14,7 +14,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::{declared_class, qualified_class};
-use crate::model_util::{qualify, short_name};
+use crate::model_util::{get_fully_qualified_name, get_short_name};
 
 /// A single import statement in a model file. Wildcard imports (`import ns.*`)
 /// are rejected while parsing, mirroring strict mode in Concerto v4.
@@ -68,17 +68,19 @@ impl Import {
     /// import names it explicitly.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
-            Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
+            Self::Type(t) if t.name == short => {
+                Some(get_fully_qualified_name(&t.namespace, &t.name))
+            }
             Self::Type(_) => None,
             Self::Types(t) => {
                 if let Some(aliased) = aliases(t)
                     .iter()
                     .find(|aliased| aliased.aliased_name == short)
                 {
-                    return Some(qualify(&t.namespace, &aliased.name));
+                    return Some(get_fully_qualified_name(&t.namespace, &aliased.name));
                 }
                 if t.types.iter().any(|n| n == short) {
-                    return Some(qualify(&t.namespace, short));
+                    return Some(get_fully_qualified_name(&t.namespace, short));
                 }
                 None
             }
@@ -103,7 +105,7 @@ impl TryFrom<&serde_json::Value> for Import {
                 location: None,
             });
         }
-        let kind = short_name(class);
+        let kind = get_short_name(class);
 
         let namespace = value
             .get("namespace")

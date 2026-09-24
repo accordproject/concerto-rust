@@ -14,7 +14,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ConcertoError, Result};
 use crate::introspect::{check_domain, check_length, check_pattern, check_size, declared_class};
-use crate::model_util::{is_system_property, is_valid_identifier, short_name};
+use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
 
 /// A single property of a concept-like or enum declaration.
 #[derive(Debug, Clone)]
@@ -188,7 +188,7 @@ impl TryFrom<&serde_json::Value> for Property {
                 location: None,
             });
         }
-        let kind = short_name(class);
+        let kind = get_short_name(class);
 
         // Parse into whatever struct the `$class` says this is. If serde
         // chokes, the JSON is malformed for the kind it claims to be.
