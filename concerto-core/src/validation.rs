@@ -56,8 +56,8 @@ fn declaration_location(declaration: &Declaration) -> Option<serde_json::Value> 
 }
 
 impl ModelManager {
-    /// Validates every loaded user model, leaving the built-in system model
-    /// aside. Returns `Ok(())` if every model is semantically valid, otherwise
+    /// Validates every loaded model except the root model (`concerto@1.0.0`),
+    /// so user models and the built-in decorator model are checked. Returns `Ok(())` if every model is semantically valid, otherwise
     /// the first problem found. Namespaces are visited in order so that the
     /// same set of models always reports the same problem.
     pub fn validate_models(&self) -> Result<()> {
@@ -1103,9 +1103,9 @@ mod tests {
     fn test_fresh_model_manager_is_valid() {
         // A fresh manager has only the two system models loaded (P1-07b: the
         // decorator model, then the root model); it must validate. Only the
-        // root model is a system namespace by `is_system_namespace`'s check
-        // (TS: `isSystemModelFile`, `concerto@` only), so this also covers
-        // the decorator model's own declarations validating cleanly.
+        // root model is skipped by `is_system_namespace`, so this also covers
+        // the decorator model's own declarations validating cleanly. (TS
+        // `validateModelFiles` validates every model file, the root included.)
         let manager = ModelManager::new().unwrap();
         assert!(manager.validate_models().is_ok());
     }

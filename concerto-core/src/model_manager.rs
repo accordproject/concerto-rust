@@ -420,8 +420,8 @@ impl ModelManager {
         self.model_file_id(namespace).and_then(|id| self.file(id))
     }
 
-    /// Every loaded model file, including the built-in system model, in the
-    /// order they were loaded.
+    /// Every loaded model file, including the built-in decorator and root
+    /// models, in the order they were loaded.
     pub fn model_files(&self) -> impl Iterator<Item = &ModelFile> {
         self.files.iter().map(|slot| &slot.model_file)
     }
