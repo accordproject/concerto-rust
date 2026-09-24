@@ -484,7 +484,16 @@ impl ModelManager {
     /// Resolves a short name, as written inside `in_namespace`, to its
     /// fully-qualified name, using the primitives, local declarations and named
     /// imports the model file can see.
-    pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String> {
+    ///
+    /// `location` is the AST node's `location`, copied verbatim into the
+    /// error this raises when the namespace is not registered (PORTING.md
+    /// section 2.1); pass `None` where the caller has no AST node in scope.
+    pub fn resolve_type_name(
+        &self,
+        in_namespace: &str,
+        short: &str,
+        location: Option<serde_json::Value>,
+    ) -> Result<String> {
         let mf = self.model_file(in_namespace).ok_or_else(|| {
             // TS: BaseModelManager.getType's unregistered-namespace path
             // (src/basemodelmanager.ts), reused for the equivalent check
@@ -494,7 +503,7 @@ impl ModelManager {
                 "modelmanager-gettype-noregisteredns",
                 vec![("type", fqn.clone())],
                 fqn,
-                None,
+                location,
             )
         })?;
 
@@ -581,7 +590,16 @@ impl ModelManager {
         if let Some(resolved) = &ti.resolved_name {
             return Ok(Some(resolved.clone()));
         }
-        Ok(Some(self.resolve_type_name(in_namespace, &ti.name)?))
+        // TS: ClassDeclaration._resolveSuperType passes `this.ast.location`
+        // to every error it raises (src/introspect/classdeclaration.ts); the
+        // class whose super type is being resolved is the AST node in scope
+        // here, so its `location` is copied verbatim (PORTING.md 2.1).
+        let location = class.location().and_then(crate::error::location_value);
+        Ok(Some(self.resolve_type_name(
+            in_namespace,
+            &ti.name,
+            location,
+        )?))
     }
 
     /// The handle of the declaration a model file's `getLocalType(type)`
@@ -1244,5 +1262,35 @@ mod tests {
             Some(true)
         );
         assert!(ScalarDeclaration::validate(&mgr, &email).is_ok());
+    }
+
+    /// PORTING.md 2.1: `location` is copied verbatim from the AST node the
+    /// caller passes, never recomputed and never hard-coded to `None`.
+    #[test]
+    fn resolve_type_name_carries_the_given_location_verbatim() {
+        let mgr = ModelManager::new().unwrap();
+        let location = serde_json::json!({
+            "start": {"line": 3, "column": 1, "offset": 20},
+            "end": {"line": 3, "column": 9, "offset": 28}
+        });
+        let err = mgr
+            .resolve_type_name("org.does.not.exist@1.0.0", "Foo", Some(location.clone()))
+            .unwrap_err();
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_type_name_with_no_location_carries_none() {
+        let mgr = ModelManager::new().unwrap();
+        let err = mgr
+            .resolve_type_name("org.does.not.exist@1.0.0", "Foo", None)
+            .unwrap_err();
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, None),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
     }
 }

@@ -43,8 +43,11 @@ pub enum ConcertoError {
         message: String,
         /// The originating file, if known.
         file_name: Option<String>,
-        /// The source location, if known.
-        location: Option<String>,
+        /// The AST node's `location` (`concerto.metamodel@1.0.0.Range`),
+        /// copied verbatim, exactly as [`ContractError::location`] is
+        /// (PORTING.md section 2.1). `None` where the check has no AST node
+        /// in scope, or where TS itself passes none.
+        location: Option<serde_json::Value>,
     },
 
     /// An error in the `{kind, code, params, location}` shape of PORTING.md
@@ -407,6 +410,41 @@ impl ContractError {
     }
 }
 
+/// A typed AST `location` (`mm::Range`) as the JSON value TS holds for it,
+/// for a [`ContractError::location`] (PORTING.md 2.1).
+///
+/// OD-3 widened the metamodel's number fields to `f64`, so serialising a
+/// `Range` straight back gives `3.0` where the AST said `3`. JS has a single
+/// number type, so both are the same value and `JSON.stringify` writes `3`;
+/// each integral number is written back as a JSON integer to match. Other
+/// numbers are left as they are.
+pub(crate) fn location_value(
+    range: &concerto_metamodel::concerto_metamodel_1_0_0::Range,
+) -> Option<serde_json::Value> {
+    fn js_numbers(value: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        // Integers up to 2^53 are exact in both f64 and i64.
+        const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+        match value {
+            Value::Number(n) => match n.as_f64() {
+                // `-0` becomes `0`, as `JSON.stringify(-0)` writes it.
+                Some(f)
+                    if !n.is_i64() && !n.is_u64() && f.fract() == 0.0 && f.abs() <= MAX_SAFE =>
+                {
+                    Value::from(f as i64)
+                }
+                _ => Value::Number(n),
+            },
+            Value::Array(items) => Value::Array(items.into_iter().map(js_numbers).collect()),
+            Value::Object(map) => {
+                Value::Object(map.into_iter().map(|(k, v)| (k, js_numbers(v))).collect())
+            }
+            other => other,
+        }
+    }
+    serde_json::to_value(range).ok().map(js_numbers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,6 +730,319 @@ mod tests {
         );
     }
 
+    // ---- the P1-05 exit-condition sweep (catalogue.rs module doc) ----
+
+    #[test]
+    fn golden_modelmanager_resolvetype_nonsfortype() {
+        assert_eq!(
+            contract(
+                "modelmanager-resolvetype-nonsfortype",
+                &[("type", "org.acme.Foo"), ("context", "resolving type")]
+            )
+            .message(),
+            "No registered namespace for type \"org.acme.Foo\" in \"resolving type\"."
+        );
+    }
+
+    #[test]
+    fn golden_modelmanager_resolvetype_notypeinnsforcontext() {
+        assert_eq!(
+            contract(
+                "modelmanager-resolvetype-notypeinnsforcontext",
+                &[
+                    ("context", "resolving type"),
+                    ("type", "Foo"),
+                    ("namespace", "org.acme@1.0.0")
+                ]
+            )
+            .message(),
+            "No type \"Foo\" in namespace \"org.acme@1.0.0\" for \"resolving type\"."
+        );
+    }
+
+    #[test]
+    fn golden_modelmanager_gettype_notypeinns() {
+        assert_eq!(
+            contract(
+                "modelmanager-gettype-notypeinns",
+                &[("type", "Foo"), ("namespace", "org.acme@1.0.0")]
+            )
+            .message(),
+            "Type \"Foo\" is not defined in namespace \"org.acme@1.0.0\"."
+        );
+    }
+
+    #[test]
+    fn golden_modelmanager_gettype_duplicatensimport() {
+        assert_eq!(
+            contract(
+                "modelmanager-gettype-duplicatensimport",
+                &[
+                    ("namespace", "org.acme"),
+                    ("version1", "1.0.0"),
+                    ("version2", "2.0.0")
+                ]
+            )
+            .message(),
+            "Importing types from different versions (\"1.0.0\", \"2.0.0\") of the same namespace \"org.acme\" is not permitted."
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_resolvetype_undecltype() {
+        assert_eq!(
+            contract(
+                "modelfile-resolvetype-undecltype",
+                &[("type", "Foo"), ("context", "a field")]
+            )
+            .message(),
+            "Undeclared type \"Foo\" in \"a field\"."
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_resolveimport_failfindimp() {
+        assert_eq!(
+            contract(
+                "modelfile-resolveimport-failfindimp",
+                &[
+                    ("type", "Foo"),
+                    ("imports", "org.acme.Bar"),
+                    ("namespace", "org.acme@1.0.0")
+                ]
+            )
+            .message(),
+            "Failed to find \"Foo\" in list of imports \"[org.acme.Bar]\" for namespace \"org.acme@1.0.0\"."
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_constructor_unrecmodelelem() {
+        assert_eq!(
+            contract(
+                "modelfile-constructor-unrecmodelelem",
+                &[("type", "concerto.metamodel@1.0.0.Foo")]
+            )
+            .message(),
+            "Unrecognised model element \"concerto.metamodel@1.0.0.Foo\"."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_validate_undefined_properties() {
+        assert_eq!(
+            contract(
+                "classdeclaration-validate-undefined-properties",
+                &[("class", "org.acme.Foo")]
+            )
+            .message(),
+            "Properties of Class \"org.acme.Foo\" has to be defined."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_process_unrecmodelelem() {
+        assert_eq!(
+            contract(
+                "classdeclaration-process-unrecmodelelem",
+                &[("type", "concerto.metamodel@1.0.0.Bar")]
+            )
+            .message(),
+            "Unrecognised model element \"concerto.metamodel@1.0.0.Bar\"."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_validate_selfextending() {
+        assert_eq!(
+            contract(
+                "classdeclaration-validate-selfextending",
+                &[("class", "Foo")]
+            )
+            .message(),
+            "Class \"Foo\" cannot extend itself."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_validate_identifiernotproperty() {
+        assert_eq!(
+            contract(
+                "classdeclaration-validate-identifiernotproperty",
+                &[("class", "Foo"), ("idField", "bar")]
+            )
+            .message(),
+            "Class \"Foo\" is identified by field \"bar\", but does not contain this property."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_validate_identifiernotstring() {
+        assert_eq!(
+            contract(
+                "classdeclaration-validate-identifiernotstring",
+                &[("class", "Foo"), ("idField", "bar")]
+            )
+            .message(),
+            "Class \"Foo\" is identified by field \"bar\", but the type of the field is not \"String\"."
+        );
+    }
+
+    #[test]
+    fn golden_instancegenerator_newinstance_noconcreteclass() {
+        assert_eq!(
+            contract(
+                "instancegenerator-newinstance-noconcreteclass",
+                &[("type", "org.acme@1.0.0.Foo")]
+            )
+            .message(),
+            "No concrete extending type for \"org.acme@1.0.0.Foo\"."
+        );
+    }
+
+    #[test]
+    fn golden_serializer_tojson_notcobject() {
+        assert_eq!(
+            contract("serializer-tojson-notcobject", &[]).message(),
+            "\"Serializer.toJSON\" only accepts \"Concept\", \"Event\", \"Asset\", \"Participant\" or \"Transaction\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_fieldtypeviolation() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-fieldtypeviolation",
+                &[
+                    ("resourceId", "org.acme.Foo#1"),
+                    ("propertyName", "bar"),
+                    ("fieldType", "String"),
+                    ("value", "42"),
+                    ("typeOfValue", "number")
+                ]
+            )
+            .message(),
+            "Model violation in the \"org.acme.Foo#1\" instance. The field \"bar\" has a value of \"42\" (type of value: \"number\"). Expected type of value: \"String\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_notresourceorconcept() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-notresourceorconcept",
+                &[
+                    ("resourceId", "org.acme.Foo#1"),
+                    ("classFQN", "org.acme.Bar"),
+                    ("invalidValue", "42")
+                ]
+            )
+            .message(),
+            "Model violation in the \"org.acme.Foo#1\" instance. Class \"org.acme.Bar\" has the value of \"42\". Expected a \"Resource\" or a \"Concept\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_notrelationship() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-notrelationship",
+                &[
+                    ("resourceId", "org.acme.Foo#1"),
+                    ("classFQN", "org.acme.Bar"),
+                    ("invalidValue", "42")
+                ]
+            )
+            .message(),
+            "Model violation in the \"org.acme.Foo#1\" instance. Class \"org.acme.Bar\" has a value of \"42\". Expected a \"Relationship\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_missingrequiredproperty() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-missingrequiredproperty",
+                &[("resourceId", "org.acme.Foo#1"), ("fieldName", "bar")]
+            )
+            .message(),
+            "The instance \"org.acme.Foo#1\" is missing the required field \"bar\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_emptyidentifier() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-emptyidentifier",
+                &[("resourceId", "org.acme.Foo#1")]
+            )
+            .message(),
+            "Instance \"org.acme.Foo#1\" has an empty identifier."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_invalidenumvalue() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-invalidenumvalue",
+                &[
+                    ("resourceId", "org.acme.Foo#1"),
+                    ("value", "BLUE"),
+                    ("fieldName", "color")
+                ]
+            )
+            .message(),
+            "Model violation in the \"org.acme.Foo#1\" instance. Invalid enum value of \"BLUE\" for the field \"color\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_abstractclass() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-abstractclass",
+                &[("className", "org.acme.Foo")]
+            )
+            .message(),
+            "The class \"org.acme.Foo\" is abstract and should not contain an instance."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_undeclaredfield() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-undeclaredfield",
+                &[
+                    ("resourceId", "org.acme.Foo#1"),
+                    ("propertyName", "bar"),
+                    ("fullyQualifiedTypeName", "org.acme.Foo")
+                ]
+            )
+            .message(),
+            "Instance \"org.acme.Foo#1\" has a property named \"bar\", which is not declared in \"org.acme.Foo\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_invalidfieldassignment() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-invalidfieldassignment",
+                &[
+                    ("resourceId", "org.acme.Foo#1"),
+                    ("propertyName", "bar"),
+                    ("objectType", "org.acme.Baz"),
+                    ("fieldType", "org.acme.Bar")
+                ]
+            )
+            .message(),
+            "Instance \"org.acme.Foo#1\" has a property \"bar\" with type \"org.acme.Baz\" that is not derived from \"org.acme.Bar\"."
+        );
+    }
+
     /// The one non-catalogue renderer: [`ContractError::pre_port`] carries a
     /// hand-written message verbatim, for a call site not yet faithfully
     /// ported (module doc). This is not a golden test against the TS
@@ -734,21 +1085,61 @@ mod tests {
     /// call site). Every key in that scope has an entry; see `catalogue.rs`
     /// for the completeness check the other way (every entry has a golden
     /// test).
+    ///
+    /// This list is derived from the ledger (`SEAM_LEDGER.tsv`, commit
+    /// `c48423c`, OD-6) and the frozen TS reference, not from what the
+    /// catalogue happens to hold today: `catalogue.rs`'s module doc records
+    /// the reproducible grep, and the "RUST or HYBRID" scope is exactly
+    /// [`Renderer::Globalize`] — a literal `en.json` key ported from
+    /// `Globalize.messageFormatter`/`formatMessage` (2.2 step 1) — as
+    /// opposed to [`Renderer::Inline`] (2.2 step 2: an inline template given
+    /// an en.json-style name, not an actual en.json key, such as
+    /// `modelutil-parsenamespace-invalidnamespace`). So this test also
+    /// asserts the two lists coincide exactly, in both directions: every
+    /// `Renderer::Globalize` entry is scoped by OD-5 (nothing unscoped
+    /// sneaks in under this renderer) and every OD-5 key has an entry.
     #[test]
     fn od5_catalogue_scope_is_present() {
         const OD5_EN_JSON_KEYS: &[&str] = &[
-            // Used today: ModelUtil.getNamespace (src/modelutil.ts).
+            // Used today: ModelUtil.getNamespace (src/modelutil.ts, RUST).
             "modelutil-getnamespace-nofnq",
-            // Used today: ModelManager.getType's unregistered-namespace path
-            // (src/basemodelmanager.ts), reused faithfully by
-            // model_manager::ModelManager::resolve_type_name (section 7.2).
-            "modelmanager-gettype-noregisteredns",
             // OD-5: pre-approved ahead of their call site.
             "typenotfounderror-defaultmessage",
             "factory-newinstance-missingidentifier",
             "factory-newinstance-invalididentifier",
             "factory-newinstance-abstracttype",
             "factory-newinstance-typenotdeclaredinns",
+            // BaseModelManager.resolveType/getType (RUST) and ModelFile
+            // (constructor, resolveType, resolveImport, validate; RUST).
+            "modelmanager-gettype-noregisteredns",
+            "modelmanager-resolvetype-nonsfortype",
+            "modelmanager-resolvetype-notypeinnsforcontext",
+            "modelmanager-gettype-notypeinns",
+            "modelmanager-gettype-duplicatensimport",
+            "modelfile-resolvetype-undecltype",
+            "modelfile-resolveimport-failfindimp",
+            "modelfile-constructor-unrecmodelelem",
+            // ClassDeclaration.process/validate (RUST).
+            "classdeclaration-validate-undefined-properties",
+            "classdeclaration-process-unrecmodelelem",
+            "classdeclaration-validate-selfextending",
+            "classdeclaration-validate-identifiernotproperty",
+            "classdeclaration-validate-identifiernotstring",
+            // InstanceGenerator.findConcreteSubclass, reached from
+            // newInstance (RUST).
+            "instancegenerator-newinstance-noconcreteclass",
+            // Serializer.toJSON (HYBRID).
+            "serializer-tojson-notcobject",
+            // ResourceValidator (HYBRID): every report* method.
+            "resourcevalidator-fieldtypeviolation",
+            "resourcevalidator-notresourceorconcept",
+            "resourcevalidator-notrelationship",
+            "resourcevalidator-missingrequiredproperty",
+            "resourcevalidator-emptyidentifier",
+            "resourcevalidator-invalidenumvalue",
+            "resourcevalidator-abstractclass",
+            "resourcevalidator-undeclaredfield",
+            "resourcevalidator-invalidfieldassignment",
         ];
         for key in OD5_EN_JSON_KEYS {
             assert!(
@@ -757,6 +1148,16 @@ mod tests {
             );
             assert_eq!(catalogue_entry(key).unwrap().renderer, Renderer::Globalize);
         }
+        let globalize_entries: std::collections::HashSet<&str> = CATALOGUE
+            .iter()
+            .filter(|entry| entry.renderer == Renderer::Globalize)
+            .map(|entry| entry.code)
+            .collect();
+        let od5_keys: std::collections::HashSet<&str> = OD5_EN_JSON_KEYS.iter().copied().collect();
+        assert_eq!(
+            globalize_entries, od5_keys,
+            "every Renderer::Globalize entry must be exactly the OD-5 scope, no more and no less"
+        );
     }
 
     #[test]

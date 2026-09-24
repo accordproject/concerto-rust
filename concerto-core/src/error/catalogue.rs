@@ -8,6 +8,32 @@
 //! unused `en.json` key is ported: `composer-*`, `whereastvalidator-*`,
 //! `like` and `test-*` have no throw site in `concerto-core` and stay in TS.
 //!
+//! **Deriving the OD-5 scope.** "Every `en.json` key used by a RUST or
+//! HYBRID member" (OD-5) means: take the ledger
+//! (`migration/ledger/SEAM_LEDGER.tsv`, commit `c48423c`, PORTING.md OD-6)
+//! rows whose `classification` is `RUST` or `HYBRID`, for each one grep its
+//! `file`/`class`/`member` in the frozen TS reference for
+//! `Globalize.messageFormatter(...)` or `Globalize.formatMessage(...)`, and
+//! port every key that turns up (2.2 step 1), plus the pre-approved keys
+//! above. The reproducible form of that grep, run from
+//! `packages/concerto-core/src` in the TS checkout:
+//! `grep -n "Globalize\.\(messageFormatter\|formatMessage\)" <file>` for
+//! each ledger row's `file`, filtered to the methods named in `member` (the
+//! P1-07 attribution index, OD-10, automates this once it exists; until
+//! then a P1/P2/P3 task that finds a key the census missed adds it here,
+//! citing the ledger row). The trial (P0-04b) and the first cut of P1-05
+//! covered only the keys their own units' call sites used; this file now
+//! also carries the P1-05 exit-condition sweep over `BaseModelManager`
+//! (`resolveType`, `getType`), `ModelFile` (`constructor`, `resolveType`,
+//! `resolveImport`, `validate`), `ClassDeclaration` (`process`, `validate`),
+//! `InstanceGenerator` (RUST: `findConcreteSubclass`, reached from
+//! `newInstance`) and `Serializer.toJSON` (HYBRID), plus the nine
+//! `resourcevalidator-*` keys `ResourceValidator` (HYBRID, every `visit*`
+//! and `report*` method) uses — none of these units has its own call site
+//! yet, so each entry below is pre-approved the same way
+//! `factory-newinstance-*` is (2.2), and the unit that ports the member
+//! deletes the pre-approval note from its doc comment.
+//!
 //! One further entry, `"pre-port"`, is not a TS template at all: it is the
 //! escape hatch [`super::ContractError::pre_port`] uses for a call site that
 //! has not yet been faithfully ported (module doc on [`super`]).
@@ -129,7 +155,12 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         // its equivalent check (PORTING.md section 7.2): both ask whether a
         // namespace is loaded before resolving a name inside it. A future
         // P2-08 port of ModelManager.getType itself uses the same entry.
-        sources: &["src/basemodelmanager.ts:661"],
+        // ModelFile.validate throws the same key (RUST) for the same check
+        // over an import's namespace, one template, two throw sites (2.2).
+        sources: &[
+            "src/basemodelmanager.ts:661",
+            "src/introspect/modelfile.ts:251",
+        ],
     },
     CatalogueEntry {
         code: "factory-newinstance-missingidentifier",
@@ -157,6 +188,181 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Globalize,
         sources: &["src/factory.ts (messages/en.json)"],
     },
+    // ---- P1-05 exit-condition sweep: the rest of the OD-5 scope the first
+    //      cut of this file missed (module doc). Each of these units has no
+    //      call site yet, so the entry is pre-approved the same way
+    //      `factory-newinstance-*` is, ahead of the P1/P2/P3 task that ports
+    //      its unit and deletes the "not yet called" note. ----
+    CatalogueEntry {
+        code: "modelmanager-resolvetype-nonsfortype",
+        template: "No registered namespace for type \"{type}\" in \"{context}\".",
+        renderer: Renderer::Globalize,
+        // BaseModelManager.resolveType (RUST); not yet called.
+        sources: &["src/basemodelmanager.ts:591"],
+    },
+    CatalogueEntry {
+        code: "modelmanager-resolvetype-notypeinnsforcontext",
+        template: "No type \"{type}\" in namespace \"{namespace}\" for \"{context}\".",
+        renderer: Renderer::Globalize,
+        // BaseModelManager.resolveType (RUST); not yet called.
+        sources: &["src/basemodelmanager.ts:602"],
+    },
+    CatalogueEntry {
+        code: "modelmanager-gettype-notypeinns",
+        template: "Type \"{type}\" is not defined in namespace \"{namespace}\".",
+        renderer: Renderer::Globalize,
+        // BaseModelManager.getType (RUST) and ModelFile.validate (RUST),
+        // one template, two throw sites (2.2); neither is called yet.
+        sources: &[
+            "src/basemodelmanager.ts:669",
+            "src/introspect/modelfile.ts:276",
+        ],
+    },
+    CatalogueEntry {
+        code: "modelmanager-gettype-duplicatensimport",
+        template: "Importing types from different versions (\"{version1}\", \"{version2}\") of the same namespace \"{namespace}\" is not permitted.",
+        renderer: Renderer::Globalize,
+        // ModelFile.validate (RUST); not yet called.
+        sources: &["src/introspect/modelfile.ts:266"],
+    },
+    CatalogueEntry {
+        code: "modelfile-resolvetype-undecltype",
+        template: "Undeclared type \"{type}\" in \"{context}\".",
+        renderer: Renderer::Globalize,
+        // ModelFile.resolveType (RUST); not yet called. TS passes the AST
+        // `fileLocation` argument as the third IllegalModelException
+        // argument here, copied verbatim per PORTING.md 2.1 once ported.
+        sources: &["src/introspect/modelfile.ts:326"],
+    },
+    CatalogueEntry {
+        code: "modelfile-resolveimport-failfindimp",
+        template: "Failed to find \"{type}\" in list of imports \"[{imports}]\" for namespace \"{namespace}\".",
+        renderer: Renderer::Globalize,
+        // ModelFile.resolveImport (RUST); not yet called. `imports` is
+        // `JSON.stringify(this.imports)` (3.1).
+        sources: &["src/introspect/modelfile.ts:373"],
+    },
+    CatalogueEntry {
+        code: "modelfile-constructor-unrecmodelelem",
+        template: "Unrecognised model element \"{type}\".",
+        renderer: Renderer::Globalize,
+        // ModelFile.fromAst, called from the ModelFile constructor (HYBRID);
+        // not yet called. Same English text as
+        // `classdeclaration-process-unrecmodelelem` below, but a distinct
+        // `en.json` key (and so a distinct catalogue entry, `code` being
+        // what OD-10 attributes fixtures by): see `catalogue_is_complete`'s
+        // doc comment.
+        sources: &["src/introspect/modelfile.ts:859"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-undefined-properties",
+        template: "Properties of Class \"{class}\" has to be defined.",
+        renderer: Renderer::Globalize,
+        // ClassDeclaration.process (RUST); not yet called.
+        sources: &["src/introspect/classdeclaration.ts:102"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-process-unrecmodelelem",
+        template: "Unrecognised model element \"{type}\".",
+        renderer: Renderer::Globalize,
+        // ClassDeclaration.process (RUST); not yet called. Same English text
+        // as `modelfile-constructor-unrecmodelelem` above; see that entry's
+        // note.
+        sources: &["src/introspect/classdeclaration.ts:130"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-selfextending",
+        template: "Class \"{class}\" cannot extend itself.",
+        renderer: Renderer::Globalize,
+        // ClassDeclaration.validate (RUST); not yet called.
+        sources: &["src/introspect/classdeclaration.ts:217"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-identifiernotproperty",
+        template: "Class \"{class}\" is identified by field \"{idField}\", but does not contain this property.",
+        renderer: Renderer::Globalize,
+        // ClassDeclaration.validate (RUST); not yet called.
+        sources: &["src/introspect/classdeclaration.ts:228"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-identifiernotstring",
+        template: "Class \"{class}\" is identified by field \"{idField}\", but the type of the field is not \"String\".",
+        renderer: Renderer::Globalize,
+        // ClassDeclaration.validate (RUST); not yet called.
+        sources: &["src/introspect/classdeclaration.ts:241"],
+    },
+    CatalogueEntry {
+        code: "instancegenerator-newinstance-noconcreteclass",
+        template: "No concrete extending type for \"{type}\".",
+        renderer: Renderer::Globalize,
+        // InstanceGenerator.findConcreteSubclass (RUST), reached from
+        // newInstance; not yet called. Thrown as a plain `Error`, not
+        // `IllegalModelException` (ErrorKind::Error, table 2.3).
+        sources: &["src/serializer/instancegenerator.ts:204"],
+    },
+    CatalogueEntry {
+        code: "serializer-tojson-notcobject",
+        template: "\"Serializer.toJSON\" only accepts \"Concept\", \"Event\", \"Asset\", \"Participant\" or \"Transaction\".",
+        renderer: Renderer::Globalize,
+        // Serializer.toJSON (HYBRID); not yet called. `Globalize.formatMessage`
+        // (no params), thrown as a plain `Error` (ErrorKind::Error, table 2.3).
+        sources: &["src/serializer.ts:102"],
+    },
+    // ResourceValidator (HYBRID): every `report*` method's key, none called yet.
+    CatalogueEntry {
+        code: "resourcevalidator-fieldtypeviolation",
+        template: "Model violation in the \"{resourceId}\" instance. The field \"{propertyName}\" has a value of \"{value}\" (type of value: \"{typeOfValue}\"). Expected type of value: \"{fieldType}\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:543"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-notresourceorconcept",
+        template: "Model violation in the \"{resourceId}\" instance. Class \"{classFQN}\" has the value of \"{invalidValue}\". Expected a \"Resource\" or a \"Concept\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:561"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-notrelationship",
+        template: "Model violation in the \"{resourceId}\" instance. Class \"{classFQN}\" has a value of \"{invalidValue}\". Expected a \"Relationship\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:577"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-missingrequiredproperty",
+        template: "The instance \"{resourceId}\" is missing the required field \"{fieldName}\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:592"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-emptyidentifier",
+        template: "Instance \"{resourceId}\" has an empty identifier.",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:606"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-invalidenumvalue",
+        template: "Model violation in the \"{resourceId}\" instance. Invalid enum value of \"{value}\" for the field \"{fieldName}\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:620"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-abstractclass",
+        template: "The class \"{className}\" is abstract and should not contain an instance.",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:635"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-undeclaredfield",
+        template: "Instance \"{resourceId}\" has a property named \"{propertyName}\", which is not declared in \"{fullyQualifiedTypeName}\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:650"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-invalidfieldassignment",
+        template: "Instance \"{resourceId}\" has a property \"{propertyName}\" with type \"{objectType}\" that is not derived from \"{fieldType}\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer/resourcevalidator.ts:668"],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",
@@ -175,18 +381,24 @@ pub fn catalogue_entry(code: &str) -> Option<&'static CatalogueEntry> {
 mod tests {
     use super::*;
 
-    /// Every entry is unique, cites its source, and (`"pre-port"` excepted)
-    /// has a golden test in `mod.rs`, named after its code (checked by name,
-    /// PORTING.md 6.3).
+    /// Every entry's `code` is unique, it cites its source, and (`"pre-port"`
+    /// excepted) it has a golden test in `mod.rs`, named after its code
+    /// (checked by name, PORTING.md 6.3).
+    ///
+    /// This does *not* also require every entry's `template` to be unique:
+    /// `en.json` itself gives two different keys
+    /// (`modelfile-constructor-unrecmodelelem`,
+    /// `classdeclaration-process-unrecmodelelem`) the same English text, and
+    /// OD-5 ports each key it scopes in regardless (2.2 step 1: "the
+    /// catalogue key is `<key>`"). `code` is what a fixture is attributed to
+    /// (OD-10), so it is `code`, not `template`, that must not collide.
     #[test]
     fn catalogue_is_complete() {
         let golden_tests_source = include_str!("mod.rs");
         for (i, entry) in CATALOGUE.iter().enumerate() {
             assert!(!entry.sources.is_empty(), "{} cites no source", entry.code);
             assert!(
-                CATALOGUE[..i]
-                    .iter()
-                    .all(|e| e.code != entry.code && e.template != entry.template),
+                CATALOGUE[..i].iter().all(|e| e.code != entry.code),
                 "{} is duplicated",
                 entry.code
             );
