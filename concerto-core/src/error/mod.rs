@@ -625,6 +625,82 @@ mod tests {
         );
     }
 
+    // ---- P2-01 review fix: ResourceId (src/model/resourceid.ts) ----
+
+    #[test]
+    fn golden_resourceid_constructor_missingnamespace() {
+        assert_eq!(
+            contract("resourceid-constructor-missingnamespace", &[]).message(),
+            "Missing namespace"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_constructor_missingtype() {
+        assert_eq!(
+            contract("resourceid-constructor-missingtype", &[]).message(),
+            "Missing type"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_constructor_missingid() {
+        assert_eq!(
+            contract("resourceid-constructor-missingid", &[]).message(),
+            "Missing id"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_parseuri_invalidport() {
+        assert_eq!(
+            contract("resourceid-parseuri-invalidport", &[]).message(),
+            "Invalid port"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_fromuri_invaliduri() {
+        assert_eq!(
+            contract(
+                "resourceid-fromuri-invaliduri",
+                &[(
+                    "uri",
+                    "resource://NOT-A-URI:SUCH-WRONG/org.acme.l1@1.0.0.Person#123"
+                )]
+            )
+            .message(),
+            "Invalid URI: resource://NOT-A-URI:SUCH-WRONG/org.acme.l1@1.0.0.Person#123"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_fromuri_invalidscheme() {
+        assert_eq!(
+            contract(
+                "resourceid-fromuri-invalidscheme",
+                &[("uri", "banana:org.acme.l1@1.0.0.Person#123")]
+            )
+            .message(),
+            "Invalid URI scheme: banana:org.acme.l1@1.0.0.Person#123"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_fromuri_invalidformat() {
+        assert_eq!(
+            contract(
+                "resourceid-fromuri-invalidformat",
+                &[(
+                    "uri",
+                    "resource://USER:PASSWORD@HOSTNAME:1567/org.acme.l1@1.0.0.Person#123"
+                )]
+            )
+            .message(),
+            "Invalid resource URI format: resource://USER:PASSWORD@HOSTNAME:1567/org.acme.l1@1.0.0.Person#123"
+        );
+    }
+
     /// Inline templates are template literals: an inserted value that looks
     /// like another param, or like a `replace` substitution pattern, stays as
     /// it is.

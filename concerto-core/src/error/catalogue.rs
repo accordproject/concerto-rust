@@ -402,6 +402,54 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Globalize,
         sources: &["src/serializer/resourcevalidator.ts:668"],
     },
+    // ---- P2-01 review fix: ResourceId (`src/model/resourceid.ts`), the
+    //      ledger group's SEAM_LEDGER.tsv planned_task P2-01+P4-03 members
+    //      the first P2-01 pass left unported (parseUri, the constructor,
+    //      fromURI, toURI). None of these are en.json/Globalize keys, so
+    //      none is in the OD-5 scope test; each is an inline template
+    //      (2.2 step 2), ported with its unit in this same PR (6.3). ----
+    CatalogueEntry {
+        code: "resourceid-constructor-missingnamespace",
+        template: "Missing namespace",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:122"],
+    },
+    CatalogueEntry {
+        code: "resourceid-constructor-missingtype",
+        template: "Missing type",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:125"],
+    },
+    CatalogueEntry {
+        code: "resourceid-constructor-missingid",
+        template: "Missing id",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:128"],
+    },
+    CatalogueEntry {
+        code: "resourceid-parseuri-invalidport",
+        template: "Invalid port",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:89"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invaliduri",
+        template: "Invalid URI: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:156"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invalidscheme",
+        template: "Invalid URI scheme: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:162"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invalidformat",
+        template: "Invalid resource URI format: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:165"],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",
