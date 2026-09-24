@@ -95,8 +95,10 @@ Mechanical rules. Apply them in order.
    is attached to (a validator reading its `field`), a small trait for that
    element is clearer than a whole `ResolutionContext` (1.4).
    The trial added `model_manager::ValidatedElement` (`default_value()`,
-   `fully_qualified_name()`) with the architect's sign-off on #81; P1-04
-   decides whether it folds into `ResolutionContext` (OD-12).
+   `fully_qualified_name()`) with the architect's sign-off on #81. P1-04
+   kept it separate (OD-12): TS builds a validator while it constructs the
+   element the validator is attached to, before that element is in the arena
+   and has a handle.
 
 ### 1.2 Newtypes over `concerto-metamodel`
 
@@ -163,8 +165,13 @@ Mechanical rules. Apply them in order.
 ### 1.4 `ResolutionContext`: collaborator calls (P1-04)
 
 The Rust engine owns the model graph (plan §3). `ModelManager` keeps its
-declarations and properties in an arena, addressed by the stable `DeclId` and
-`PropId` handles defined in P1-04.
+model files, declarations and properties in an append-only arena, addressed
+by the dense `u32` handles `ModelFileId`, `DeclId` and `PropId`
+(`model_manager.rs`, P1-04). A handle names the same element for the life of
+the manager; loading a model only appends, ids are never reused, and a future
+removal (P1-06's rollback, `deleteModelFile`) must leave a tombstone.
+`ModelManager::generation()` counts mutations. The values of an enum
+declaration get `PropId`s when P2-04 makes them `Property` values.
 
 - **Every ported method that, in TS, calls a collaborator object** (a model
   file, the model manager, or a parent declaration: `this.modelFile.getType(…)`,
@@ -240,10 +247,19 @@ declarations and properties in an arena, addressed by the stable `DeclId` and
   `get_type_name` (`Property.getType`), `is_enum`, `is_map_declaration` and
   `is_scalar_declaration` (the optional calls `?.()`, `None` when the method
   is missing), `get_ast_class` (`decl.ast.$class`) and `get_all_declarations`.
-  Its handle is one associated `Node` type (a `JsValue` in the binding;
-  P1-04 decides the arena's). Optional-chained calls keep their three
-  outcomes: `typeDeclaration?.isEnum()` is `Option<bool>`, `None` being
-  `undefined`.
+  Its handle is one associated `Node` type: a `JsValue` in the binding, and
+  `model_manager::Node` in the arena (a model file, a declaration, a
+  property, or the primitive type name `ModelFile.getType` answers for a
+  primitive). Optional-chained calls keep their three outcomes:
+  `typeDeclaration?.isEnum()` is `Option<bool>`, `None` being `undefined`.
+  A nullish type name is `None` both ways (`get_type_name`, and `get_type`'s
+  argument).
+- **The arena implementation** answers from the loader's model state, so it
+  is at parity with TS only as far as the loader is (the implicit `Concept`
+  super type is P2-03's). A node of a kind whose TS object lacks the method
+  answers V8's `… is not a function` `TypeError`, with the expression the
+  JS-callback context names for the same call; that is what TS raises for a
+  primitive type name returned by `ModelFile.getType` (`'String'.isEnum()`).
 
 ### 1.5 Views: snapshots, and their shape during the flag period (P0-04b)
 
@@ -263,9 +279,10 @@ declarations and properties in an arena, addressed by the stable `DeclId` and
   snapshot filled, so the unchanged TS body *is* the view: no call, no branch.
   A RUST row of this kind needs no view code.
 - **Logic calls hand the snapshot back** (the trial passes the view object
-  and the binding reads its fields; P1-04 replaces that with a `DeclId`/`PropId`
-  handle into the arena, and a `generation()` counter that invalidates cached
-  snapshots on mutation).
+  and the binding reads its fields). The arena now provides the replacement
+  (P1-04): a `DeclId`/`PropId` handle into the arena, passed to JS as a plain
+  number, and a `generation()` counter that invalidates cached snapshots on
+  mutation. The binding switches to them in P4-01.
 - **Heavy work is one coarse call** (validation, `Serializer.fromJSON`/`toJSON`).
 
 **The flag period.** From P4-02 until P5-02 a converted member keeps its TS
@@ -1080,9 +1097,10 @@ A unit is accountable for two sets of fixtures.
     (`ModelFile.fromAst`), without which `system.cto` did not validate and
     9 of the 131 fixtures failed. Otherwise the fixture waits for P2-08, and
     the unit does not meet its native exit condition until then.
-  - The harness needs a stand-in `ResolutionContext` over the pre-port
-    `ModelManager` until P1-04 adds the arena (`isAssignableTo` fixtures pass
-    a model file and a property).
+  - The harness resolves collaborator calls through the arena:
+    `ModelManager` implements `ResolutionContext` (P1-04), and
+    `isAssignableTo` fixtures pass a model file and a property as
+    `Node::ModelFile` and `Node::Property`.
 - **CTO inputs.** 13,006 of the 15,037 fixtures either are
   `ModelManager.addCTOModel` ops or rebuild a model manager whose recipe has
   an `addCTOModel` step (counted with `{"@@oracle":"blob"}` references
@@ -1363,7 +1381,7 @@ named task.
 | OD-9 | How does the native harness rebuild the fixtures whose inputs are CTO text (13,006 of 15,037, section 6.2), when CTO parsing stays in JS? | P1-07 adds a JS generator in `migration/oracle/` that runs the frozen `concerto-cto` 5.0.0 parser (the one the oracle recorded with) over every CTO text in the corpus, fixture recipes and blobs included. It writes a CTO→AST cache keyed by the SHA-256 of the exact CTO text and the parser arguments that affect the AST, storing either the AST or the recorded `ParseException`. The cache is committed next to the corpus and regenerated whenever the corpus is re-recorded. A check fails if any CTO text in the corpus has no cache entry. The native harness replays an `addCTOModel` step as `add_model` with the cached AST, and never parses CTO in Rust. | P1-07 |
 | OD-10 | How are cross-op error fixtures attributed to a unit (section 6.2)? | The P1-07 harness writes an attribution index, `fixture id → catalogue key → src/<file>.ts:<line> → unit`, by matching each error fixture's class and final message against the catalogue (2.2, 2.3). It lists fixtures with no match or several matches as unattributed. The index is regenerated whenever the catalogue changes, and each P2 or P3 PR quotes its unit's slice of it, split into due and deferred (6.2). | P1-07 |
 | OD-11 | How does the shim ship in `dist/`? The trial keeps `src/engine/` out of the declaration build (`tsconfig.build.json` excludes it, and the views `require` it) so that the `.d.ts` snapshot does not move; so `dist/` has no shim, and rust mode runs only from `src/` (ts-node), as the tests and the oracle do. The views load it through `loadEngine` (1.5), never a literal `require('./engine')`, so bundling `dist/` in ts mode is unchanged; `scripts/build-esm.js` honours the exclude too. | P4-02 includes `src/engine/` in the build and regenerates the snapshot once, with the maintainer's sign-off that its only change is the new internal `engine/*.d.ts` files (or teaches the snapshot to skip `src/engine/`). The views' `never`-typed guard keeps every public signature as it is either way. | P4-02, P4-11 |
-| OD-12 | Snapshot pass-back or handles, and one context trait or two? The trial's views hand the JS object back and the binding reads the cached fields; the arena will hand a `DeclId`/`PropId` instead. The trial also added `ValidatedElement` next to `ResolutionContext`. | Keep the snapshot fields as the view's state either way (getters read them, 1.5); P1-04 replaces the pass-back with handles and a `generation()` counter, and decides whether `ValidatedElement` becomes `ResolutionContext` methods on a `Node`. | P1-04 |
+| OD-12 | Snapshot pass-back or handles, and one context trait or two? The trial's views hand the JS object back and the binding reads the cached fields; the arena will hand a `DeclId`/`PropId` instead. The trial also added `ValidatedElement` next to `ResolutionContext`. | Keep the snapshot fields as the view's state either way (getters read them, 1.5); P1-04 replaces the pass-back with handles and a `generation()` counter, and decides whether `ValidatedElement` becomes `ResolutionContext` methods on a `Node`. **Settled in P1-04:** the arena has `ModelFileId`/`DeclId`/`PropId` handles and `generation()`; the binding moves to them in P4-01. `ValidatedElement` stays a separate trait, because a validator is built while its element is constructed, before the element has a handle. | P1-04 |
 
 ---
 

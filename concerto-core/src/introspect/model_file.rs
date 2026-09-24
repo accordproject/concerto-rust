@@ -150,7 +150,14 @@ impl ModelFile {
 
     /// Finds a declaration by its short name.
     pub fn local_declaration(&self, short: &str) -> Option<&Declaration> {
-        self.local_types.get(short).map(|&i| &self.declarations[i])
+        self.local_index(short).map(|i| &self.declarations[i])
+    }
+
+    /// The position in [`ModelFile::declarations`] of the declaration with
+    /// this short name. The model manager's arena addresses a declaration by
+    /// its file and this position.
+    pub(crate) fn local_index(&self, short: &str) -> Option<usize> {
+        self.local_types.get(short).copied()
     }
 
     /// True if this is the built-in `concerto` system namespace.
