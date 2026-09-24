@@ -88,10 +88,29 @@ macro_rules! class_field {
 /// not cover, so each property is kept as a [`Property`] (itself a newtype
 /// over its generated struct) and the generated struct's own `properties` is
 /// left empty.
+///
+/// Two more things are folded in at load time rather than read verbatim from
+/// the AST, both ported from `ClassDeclaration.process`
+/// (src/introspect/classdeclaration.ts):
+///
+/// - `implicit_super_type`: a class whose AST carries no `superType` extends
+///   `Concept` implicitly, unless it is the system model's own `Concept`
+///   declaration (the root of the hierarchy, which has none). [`super_type`]
+///   returns this whenever the AST itself has none, so every other member
+///   that reads it (resolution, `validate`, `toString`) sees the same single
+///   effective super type TS keeps in `this.superType`.
+/// - the `$identifier`/`$timestamp` system fields: [`ClassDeclaration::from_json`]
+///   appends them to `properties` the same way `addIdentifierField`/
+///   `addTimestampField` do, so [`own_properties`] carries them like any
+///   other field from here on.
+///
+/// [`super_type`]: ClassDeclaration::super_type
+/// [`own_properties`]: ClassDeclaration::own_properties
 #[derive(Debug, Clone)]
 pub struct ClassDeclaration {
     node: ClassNode,
     properties: Vec<Property>,
+    implicit_super_type: Option<mm::TypeIdentifier>,
 }
 
 impl ClassDeclaration {
@@ -111,9 +130,16 @@ impl ClassDeclaration {
         class_field!(&self.node, d => d.is_abstract)
     }
 
-    /// The super type this declaration extends, if it extends one.
+    /// The super type this declaration extends. `None` only for the system
+    /// model's own `Concept` declaration, the root of the hierarchy; every
+    /// other class-like declaration has one, whether the AST names it
+    /// explicitly or, when the AST carries no `superType` at all, implicitly
+    /// (the struct doc comment).
+    ///
+    /// TS: after `ClassDeclaration.process` has run, `this.superType`
+    /// (src/introspect/classdeclaration.ts).
     pub fn super_type(&self) -> Option<&mm::TypeIdentifier> {
-        class_field!(&self.node, d => d.super_type.as_ref())
+        class_field!(&self.node, d => d.super_type.as_ref()).or(self.implicit_super_type.as_ref())
     }
 
     /// The properties declared directly on this type. Inherited properties are
@@ -128,15 +154,28 @@ impl ClassDeclaration {
         class_field!(&self.node, d => d.location.as_ref())
     }
 
-    /// True if the type has an identity, whether system-assigned or explicit.
+    /// True if this class declaration's own AST declares an identity,
+    /// whether system-assigned or explicit. Unlike TS's inherited
+    /// `isIdentified()` (src/introspect/classdeclaration.ts), this does not
+    /// walk the super type chain: it answers the same question as TS's own
+    /// `this.idField`, which is what the callers in this crate that gate on
+    /// it need (the `validate()` block this field controls, PORTING.md 2.1).
+    /// A subtype's *inherited* identity is [`ModelManager::identifier_field_name`]
+    /// (crate::model_manager::ModelManager::identifier_field_name).
     pub fn is_identified(&self) -> bool {
         self.identified().is_some()
     }
 
-    /// The name of the field that provides identity, for a type that is
-    /// identified by one of its own fields (`identified by field`). A
-    /// system-identified type (`identified`) or a type with no identity both
-    /// return `None`.
+    /// The name of the field that provides this class's own identity, for a
+    /// type that is identified by one of its own fields (`identified by
+    /// field`). A system-identified type (`identified`) or a type with no
+    /// own identity both return `None`; unlike
+    /// [`ClassDeclaration::is_identified`], never true from inheritance.
+    ///
+    /// TS: `ClassDeclaration.isExplicitlyIdentified` reduces to this exact
+    /// check (`!!this.idField && this.idField !== '$identifier'`): the
+    /// explicit branch always holds a name other than `$identifier`, so the
+    /// two are equivalent.
     pub fn identifier_field_name(&self) -> Option<&str> {
         match self.identified() {
             Some(mm::Identified::IdentifiedBy(by)) => Some(&by.name),
@@ -144,14 +183,47 @@ impl ClassDeclaration {
         }
     }
 
+    /// [`ClassDeclaration::identifier_field_name`], but also giving
+    /// `$identifier` for a system-identified type. This is the per-class
+    /// step [`ModelManager::identifier_field_name`]
+    /// (crate::model_manager::ModelManager::identifier_field_name) walks up
+    /// the super type chain: own explicit or system identity, or `None` to
+    /// keep climbing.
+    pub(crate) fn own_identifier_field_name(&self) -> Option<&str> {
+        match self.identified() {
+            Some(mm::Identified::IdentifiedBy(by)) => Some(&by.name),
+            Some(mm::Identified::Identified) => Some("$identifier"),
+            None => None,
+        }
+    }
+
     fn identified(&self) -> Option<&mm::Identified> {
         class_field!(&self.node, d => d.identified.as_ref())
     }
 
-    /// Reads the declaration fields into the generated struct for `kind`, then
-    /// each property into a [`Property`]. The properties are read from the
-    /// node itself, so the generated struct is given an empty list.
-    fn from_json(kind: ClassKind, value: &serde_json::Value) -> Result<Self> {
+    /// `true` for the system model's own `Concept` declaration: the root of
+    /// the class hierarchy, the one declaration that has no super type at
+    /// all, explicit or implicit.
+    ///
+    /// TS: the exemption in `ClassDeclaration.process`
+    /// (src/introspect/classdeclaration.ts): `this.modelFile.isSystemModelFile()
+    /// && this.name === 'Concept'`.
+    fn is_system_concept(namespace: &str, name: &str) -> bool {
+        is_system_model_namespace(namespace) && name == "Concept"
+    }
+
+    /// Reads the declaration fields into the generated struct for `kind`,
+    /// then each property into a [`Property`]. The properties are read from
+    /// the node itself, so the generated struct is given an empty list, then
+    /// the `$identifier`/`$timestamp` system fields are appended exactly as
+    /// `ClassDeclaration.process`'s `addIdentifierField`/`addTimestampField`
+    /// append them in TS: after the AST's own properties, bypassing the
+    /// per-property `isSystemProperty` guard that rejects a `$`-prefixed name
+    /// from the AST itself. `namespace` is the namespace of the model file
+    /// this declaration is being loaded into, needed for the implicit
+    /// `Concept` super type and to recognise the system model's own
+    /// `Transaction`/`Event` (below).
+    fn from_json(kind: ClassKind, value: &serde_json::Value, namespace: &str) -> Result<Self> {
         let mut fields = value.clone();
         if let Some(object) = fields.as_object_mut() {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
@@ -172,11 +244,78 @@ impl ClassDeclaration {
             }
             ClassKind::Event => ClassNode::Event(serde_json::from_value(fields).map_err(bad)?),
         };
+        let name = class_field!(&node, d => d.name.clone());
+
+        let implicit_super_type = if class_field!(&node, d => d.super_type.is_some())
+            || Self::is_system_concept(namespace, &name)
+        {
+            None
+        } else {
+            Some(mm::TypeIdentifier {
+                _class: qualified_class("TypeIdentifier"),
+                name: "Concept".to_string(),
+                namespace: None,
+                resolved_name: None,
+            })
+        };
+
+        let mut properties = parse_properties(value)?;
+
+        // TS: ClassDeclaration.addIdentifierField, called from `process`
+        // whenever the AST carries an `identified` node (system or
+        // explicit-by-field alike; an explicit `identified by` field is
+        // already in `properties` from the AST, so only the system case adds
+        // one here).
+        if matches!(
+            class_field!(&node, d => d.identified.as_ref()),
+            Some(mm::Identified::Identified)
+        ) {
+            properties.push(Property::String(mm::StringProperty {
+                name: "$identifier".to_string(),
+                is_array: false,
+                is_optional: false,
+                size_validator: None,
+                decorators: None,
+                location: None,
+                default_value: None,
+                validator: None,
+                length_validator: None,
+            }));
+        }
+
+        // TS: ClassDeclaration.addTimestampField, called from `process` only
+        // for the system model's own `Transaction`/`Event` declarations
+        // (`this.fqn === 'concerto@1.0.0.Transaction' || ... === '...Event'`);
+        // every other Transaction/Event inherits the field through
+        // `getProperties()` walking up to one of these two. The check is on
+        // `namespace`/`name` alone, not `kind`: like every system root
+        // declaration, `Transaction` and `Event` are themselves
+        // `ConceptDeclaration` nodes in the metamodel AST (`ClassKind::Concept`
+        // here) — a class's *own* `$class` names the kind it was declared
+        // with (`transaction Payment {}` is a `TransactionDeclaration`), not
+        // what it extends, exactly as TS's own `this.ast.$class` is.
+        if is_system_model_namespace(namespace) && (name == "Transaction" || name == "Event") {
+            properties.push(Property::DateTime(mm::DateTimeProperty {
+                name: "$timestamp".to_string(),
+                is_array: false,
+                is_optional: false,
+                size_validator: None,
+                decorators: None,
+                location: None,
+            }));
+        }
+
         Ok(Self {
             node,
-            properties: parse_properties(value)?,
+            properties,
+            implicit_super_type,
         })
     }
+}
+
+/// TS: `ModelFile.isSystemModelFile` (src/introspect/modelfile.ts).
+fn is_system_model_namespace(namespace: &str) -> bool {
+    namespace.starts_with("concerto@") || namespace == "concerto"
 }
 
 impl Named for ClassDeclaration {
@@ -569,7 +708,7 @@ impl Declaration {
         let kind = get_short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            let class = Self::Class(ClassDeclaration::from_json(class_kind, value)?);
+            let class = Self::Class(ClassDeclaration::from_json(class_kind, value, namespace)?);
             return check_name(class);
         }
 

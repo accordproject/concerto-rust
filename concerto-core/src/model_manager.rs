@@ -620,6 +620,29 @@ impl ModelManager {
                 type_name: get_fully_qualified_name(in_namespace, short),
             })
     }
+    /// The name of the field that gives `fqn` its identity: its own, if it
+    /// declares one (explicit `identified by field`, giving that field's
+    /// name, or system `identified`, giving `$identifier`), otherwise its
+    /// nearest super type's, walking up the chain. `None` if nothing from
+    /// `fqn` up to the root declares an identity.
+    ///
+    /// TS: ClassDeclaration.getIdentifierFieldName
+    /// (src/introspect/classdeclaration.ts) — including its two callers that
+    /// are themselves inherited, `isIdentified` (`!!getIdentifierFieldName()`)
+    /// and `isSystemIdentified` (`getIdentifierFieldName() === '$identifier'`),
+    /// which have no separate Rust method: a caller after either compares
+    /// this result directly, the same way TS's own body does. Contrast
+    /// [`ClassDeclaration::identifier_field_name`] and
+    /// [`ClassDeclaration::is_identified`], which read only `fqn`'s own AST,
+    /// the same as TS's own (non-inherited) `idField`.
+    pub fn identifier_field_name(&self, fqn: &str) -> Result<Option<String>> {
+        Ok(self
+            .super_chain(fqn)?
+            .into_iter()
+            .find_map(|(_, class)| class.own_identifier_field_name())
+            .map(str::to_string))
+    }
+
     /// Every property of a type, gathered by walking from the type up through
     /// all of its super types. Returns an error if the name is not a
     /// concept-like type, a super type cannot be resolved, or the inheritance
@@ -779,9 +802,15 @@ impl ModelManager {
 /// returned. A handle this manager never handed out is an error.
 ///
 /// The answers come from the loader's model state. Where that state is not
-/// yet at parity with TS, so are the answers: the implicit `Concept` super
-/// type (P2-03) is not in [`ResolutionContext::get_all_super_type_declarations`],
-/// and super types resolve as the loader resolves them (P2-03, P2-08).
+/// yet at parity with TS, so are the answers: super types resolve as the
+/// loader resolves them (P2-08). The implicit `Concept` super type (P2-03) is
+/// in every class-like declaration's [`ClassDeclaration::super_type`], so it
+/// is in [`ResolutionContext::get_all_super_type_declarations`] too, for
+/// every [`Declaration::Class`] — but not yet for [`Declaration::Enum`],
+/// which TS's `EnumDeclaration extends ClassDeclaration` also gives an
+/// implicit `Concept` super type; that variant is not part of the
+/// `ClassKind` sum type this port gives `ClassDeclaration` (P1-02), so it
+/// stays a gap for whichever task folds enums into that family.
 impl ResolutionContext for ModelManager {
     type Node = Node;
     type Error = ConcertoError;
@@ -1392,7 +1421,13 @@ mod tests {
             .collect();
         assert_eq!(
             supers,
-            ["org.example@1.0.0.Employee", "org.example@1.0.0.Person"]
+            [
+                "org.example@1.0.0.Employee",
+                "org.example@1.0.0.Person",
+                // `Person` has no `superType` of its own, so it implicitly
+                // extends `Concept` (P2-03, `ClassDeclaration` doc comment).
+                "concerto@1.0.0.Concept"
+            ]
         );
         let declarations = mgr
             .get_all_declarations(&file_node(&mgr, "org.other@1.0.0"))
