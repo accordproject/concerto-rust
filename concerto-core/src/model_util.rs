@@ -33,7 +33,8 @@ static ID_REGEX: LazyLock<regress::Regex> = LazyLock::new(|| {
 const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
 /// `primitiveTypes` in `ModelUtil.isPrimitiveType`, in TS order.
-const PRIMITIVE_TYPES: &[&str] = &["Boolean", "String", "DateTime", "Double", "Integer", "Long"];
+pub(crate) const PRIMITIVE_TYPES: &[&str] =
+    &["Boolean", "String", "DateTime", "Double", "Integer", "Long"];
 
 /// `privateReservedProperties` in `src/modelutil.ts`, in TS order.
 const PRIVATE_RESERVED_PROPERTIES: &[&str] = &[
@@ -371,7 +372,7 @@ pub fn is_assignable_to<C: ResolutionContext>(
         return Ok(is_direct_match);
     }
 
-    let Some(type_declaration) = ctx.get_type(model_file, type_name)? else {
+    let Some(type_declaration) = ctx.get_type(model_file, Some(type_name))? else {
         return Err(ContractError::new(
             ErrorKind::Error,
             "modelutil-isassignableto-cannotfindtype",
@@ -425,7 +426,7 @@ fn field_type_declaration<C: ResolutionContext>(
     let parent = ctx.get_parent(field)?;
     let model_file = ctx.get_model_file(&parent)?;
     let type_name = ctx.get_type_name(field)?;
-    ctx.get_type(&model_file, &type_name)
+    ctx.get_type(&model_file, type_name.as_deref())
 }
 
 /// Returns whether the field's type is an enum, or `None` (JS `undefined`)

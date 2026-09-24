@@ -268,13 +268,9 @@ impl ResolutionContext for JsContext {
     type Node = JsValue;
     type Error = Error;
 
-    fn get_type(&self, model_file: &JsValue, type_name: &str) -> Result<Option<JsValue>> {
-        let found = call(
-            model_file,
-            "getType",
-            &[JsValue::from_str(type_name)],
-            "modelFile.getType",
-        )?;
+    fn get_type(&self, model_file: &JsValue, type_name: Option<&str>) -> Result<Option<JsValue>> {
+        let type_name = type_name.map_or(JsValue::NULL, JsValue::from_str);
+        let found = call(model_file, "getType", &[type_name], "modelFile.getType")?;
         Ok((!nullish(&found)).then_some(found))
     }
 
@@ -323,8 +319,12 @@ impl ResolutionContext for JsContext {
         call(declaration, "getModelFile", &[], "getModelFile")
     }
 
-    fn get_type_name(&self, property: &JsValue) -> Result<String> {
-        js_string(&call(property, "getType", &[], "field.getType")?)
+    fn get_type_name(&self, property: &JsValue) -> Result<Option<String>> {
+        let type_name = call(property, "getType", &[], "field.getType")?;
+        if nullish(&type_name) {
+            return Ok(None);
+        }
+        js_string(&type_name).map(Some)
     }
 
     fn is_enum(&self, declaration: &JsValue) -> Result<bool> {
