@@ -45,11 +45,20 @@ pub const UNOWNED: &str = "unowned";
 /// The owner of code the ledger keeps in TS.
 pub const STAYS_TS: &str = "stays-ts";
 
-/// Plan-owner decisions that take precedence over the ledger, by class.
-/// `Factory`'s ledger rows are TS with no task (D7), but the plan owner
-/// assigned its fixtures to P3-01, which owns the Factory model checks
-/// (#32: "Factory model checks go to Rust").
-const PLAN_OWNER_OVERRIDES: &[(&str, &str)] = &[("Factory", "P3-01")];
+/// Plan-owner decisions that take precedence over the ledger. A key is
+/// either an exact op (`<Class>.<member>`) or a whole class; an exact op
+/// wins over its class.
+///
+/// - `Factory`: its ledger rows are TS with no task (D7), but the plan owner
+///   assigned its fixtures to P3-01, which owns the Factory model checks
+///   (#32: "Factory model checks go to Rust").
+/// - `Serializer.new`: the constructor's ledger row is TS with no task
+///   ("argument checks only"), but the plan owner decided it goes to Rust
+///   under P3-01 as well (PLAN.md 3: the Serializer's per-field checks go to
+///   Rust; P4-10 only adds the fast path, so it consumes rather than owns
+///   them). This is member-level only: `toJSON` and `fromJSON` keep their
+///   ledger owner, `P3-01+P4-10`.
+const PLAN_OWNER_OVERRIDES: &[(&str, &str)] = &[("Factory", "P3-01"), ("Serializer.new", "P3-01")];
 
 #[derive(Default)]
 pub struct Ledger {
@@ -173,7 +182,11 @@ impl Ledger {
     /// its family.
     pub fn owner(&self, op: &str) -> String {
         let (class, member) = op.split_once('.').unwrap_or((op, ""));
-        if let Some((_, owner)) = PLAN_OWNER_OVERRIDES.iter().find(|(c, _)| *c == class) {
+        if let Some((_, owner)) = PLAN_OWNER_OVERRIDES
+            .iter()
+            .find(|(key, _)| *key == op)
+            .or_else(|| PLAN_OWNER_OVERRIDES.iter().find(|(key, _)| *key == class))
+        {
             return (*owner).to_string();
         }
         let mut names = vec![op.to_string()];
