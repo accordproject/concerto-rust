@@ -21,6 +21,13 @@
 //! 4. otherwise the owner is `unowned`, spelled out so that it shows in the
 //!    report instead of a blank.
 //!
+//! Code the ledger keeps in TS (a row classified `TS` with planned task
+//! `-`) is labelled `stays-ts` rather than given an op-family owner or
+//! `unowned`: a member with such a row, and a class all of whose rows are
+//! such rows (`ModelLoader`, `Factory`, `Resource`, `Typed`, `DcsConverter`,
+//! ...). No porting task will add its dispatch entry; the fixture replays
+//! through the WASM adapter, where TS runs it.
+//!
 //! The ledger is read from the checkout the corpus lives in
 //! (`<fixtures>/../../ledger/`); without it only steps 3 and 4 apply.
 
@@ -31,12 +38,22 @@ use std::path::Path;
 /// The owner of something no task in the ledger or PORTING.md names.
 pub const UNOWNED: &str = "unowned";
 
+/// The owner of code the ledger keeps in TS.
+pub const STAYS_TS: &str = "stays-ts";
+
 #[derive(Default)]
 pub struct Ledger {
+    /// `<Class>.<member>` to its planned task, or [`STAYS_TS`].
     members: HashMap<String, String>,
-    /// `<Class>` to the task all its planned members share, `None` when
-    /// they name several.
-    classes: HashMap<String, Option<String>>,
+    /// `<Class>` to its members' owners: the planned tasks, and whether
+    /// any row stays in TS.
+    classes: HashMap<String, ClassOwners>,
+}
+
+#[derive(Default)]
+struct ClassOwners {
+    tasks: std::collections::BTreeSet<String>,
+    stays_ts: bool,
 }
 
 /// The holder `lib/ops.js` (`staticHolder`) calls a module's functions on.
@@ -49,7 +66,8 @@ fn function_holder(file: &str) -> Option<&'static str> {
     }
 }
 
-/// PORTING.md 6.2's op-family owners.
+/// PORTING.md 6.2's op-family owners, for a class the ledger does not
+/// settle (not in it, or its members split across tasks).
 fn family_owner(class: &str) -> Option<&'static str> {
     match class {
         "ModelManager" | "BaseModelManager" | "AstModelManager" | "ModelFile" | "ModelLoader"
@@ -79,12 +97,20 @@ impl Ledger {
         };
         let columns: Vec<&str> = header.split('\t').collect();
         let col = |name: &str| columns.iter().position(|c| *c == name);
-        let (Some(file_col), Some(class_col), Some(member_col), Some(task_col)) = (
+        let (
+            Some(file_col),
+            Some(class_col),
+            Some(member_col),
+            Some(classification_col),
+            Some(task_col),
+        ) = (
             col("file"),
             col("class"),
             col("member"),
+            col("classification"),
             col("planned_task"),
-        ) else {
+        )
+        else {
             return Self::default();
         };
         let mut ledger = Self::default();
@@ -105,7 +131,11 @@ impl Ledger {
             } else {
                 class
             };
-            if class.is_empty() || task.is_empty() || *task == "-" {
+            if class.is_empty() || task.is_empty() {
+                continue;
+            }
+            let stays_ts = *task == "-";
+            if stays_ts && fields.get(classification_col) != Some(&"TS") {
                 continue;
             }
             let member = if *member == "constructor" {
@@ -113,18 +143,16 @@ impl Ledger {
             } else {
                 member
             };
+            let owner = if stays_ts { STAYS_TS } else { task };
             ledger
                 .members
-                .insert(format!("{class}.{member}"), (*task).to_string());
-            ledger
-                .classes
-                .entry((*class).to_string())
-                .and_modify(|shared| {
-                    if shared.as_deref() != Some(*task) {
-                        *shared = None;
-                    }
-                })
-                .or_insert_with(|| Some((*task).to_string()));
+                .insert(format!("{class}.{member}"), owner.to_string());
+            let owners = ledger.classes.entry(class.to_string()).or_default();
+            if stays_ts {
+                owners.stays_ts = true;
+            } else {
+                owners.tasks.insert((*task).to_string());
+            }
         }
         ledger
     }
@@ -142,7 +170,15 @@ impl Ledger {
         names
             .iter()
             .find_map(|name| self.members.get(name).cloned())
-            .or_else(|| self.classes.get(class).cloned().flatten())
+            .or_else(|| {
+                let owners = self.classes.get(class)?;
+                match owners.tasks.len() {
+                    // Every row of the class stays in TS.
+                    0 if owners.stays_ts => Some(STAYS_TS.to_string()),
+                    1 => owners.tasks.first().cloned(),
+                    _ => None,
+                }
+            })
             .or_else(|| family_owner(class).map(str::to_string))
             .unwrap_or_else(|| UNOWNED.to_string())
     }

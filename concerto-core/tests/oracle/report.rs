@@ -22,12 +22,14 @@
 //! - a baselined fixture (passing or failing) is now `unsupported` or a
 //!   harness error: it dropped out of the comparison.
 //!
-//! A baselined failure that passes now is listed as fixed, and a fixture
-//! that passes without being baselined as new; neither fails the run, and
-//! `ORACLE_UPDATE_BASELINE=1` on a full, unfiltered run rewrites the file to
-//! take them in. A baselined fixture that is not in the corpus at all (the
-//! corpus was re-recorded) is listed as missing and does not fail the run.
-//! With `ORACLE_OP`, only baseline entries whose op matches are checked.
+//! A baselined failure that passes now is listed as fixed, a fixture that
+//! passes without being baselined as new, and a baselined fixture that is
+//! not in the corpus at all as missing. On a full, unfiltered run each of
+//! these fails the run too, until `ORACLE_UPDATE_BASELINE=1` rewrites the
+//! file and the delta is committed: otherwise a fixed fixture would stay
+//! `fail:<kind>` in the baseline, and a later change could break it again
+//! with the same kind unnoticed. With `ORACLE_OP` they are only reported,
+//! and only baseline entries whose op matches are checked.
 //!
 //! The baseline stores the failure kind only, not a digest of the message:
 //! the Rust side of a message mismatch is pre-port text that every porting
@@ -285,8 +287,16 @@ impl Recorder {
                 Status::HarnessError
             }
         };
-        self.statuses
+        let previous = self
+            .statuses
             .insert((fixture.op.clone(), fixture.id.clone()), status);
+        assert!(
+            previous.is_none(),
+            "oracle fixture {} {} ({}) appears twice in the corpus",
+            fixture.op,
+            fixture.id,
+            fixture.path.display()
+        );
     }
 
     /// Totals, and the comparison with `baseline` (`(op, id)` pairs).
@@ -395,21 +405,27 @@ pub fn read_baseline(path: &Path) -> Baseline {
     let Ok(text) = fs::read_to_string(path) else {
         return Baseline::new();
     };
-    text.lines()
+    let mut baseline = Baseline::new();
+    for l in text
+        .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .map(|l| {
-            let mut fields = l.split('\t');
-            let (Some(op), Some(id), Some(status), None) =
-                (fields.next(), fields.next(), fields.next(), fields.next())
-            else {
-                panic!("{}: malformed baseline line {l:?}", path.display());
-            };
-            let status = Status::parse(status).unwrap_or_else(|| {
-                panic!("{}: unknown status in baseline line {l:?}", path.display())
-            });
-            ((op.to_string(), id.to_string()), status)
-        })
-        .collect()
+    {
+        let mut fields = l.split('\t');
+        let (Some(op), Some(id), Some(status), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            panic!("{}: malformed baseline line {l:?}", path.display());
+        };
+        let status = Status::parse(status)
+            .unwrap_or_else(|| panic!("{}: unknown status in baseline line {l:?}", path.display()));
+        let previous = baseline.insert((op.to_string(), id.to_string()), status);
+        assert!(
+            previous.is_none(),
+            "{}: {op} {id} is listed twice",
+            path.display()
+        );
+    }
+    baseline
 }
 
 impl Report {
@@ -565,6 +581,15 @@ impl Report {
             "{} oracle fixture(s) regressed against baseline.tsv (see the ERROR regression \
              lines above and the report at the path printed above)",
             self.regressions
+        );
+        assert!(
+            self.filter.is_some() || (self.fixed.is_empty() && self.new_passes.is_empty()),
+            "{} baselined failure(s) now pass and {} passing fixture(s) are not in the baseline \
+             (listed above): record them, or a later change could break them again unnoticed. \
+             Regenerate with ORACLE_UPDATE_BASELINE=1 on a full run and commit the baseline.tsv \
+             delta",
+            self.fixed.len(),
+            self.new_passes.len()
         );
         assert!(
             self.filter.is_some() || self.missing.is_empty(),

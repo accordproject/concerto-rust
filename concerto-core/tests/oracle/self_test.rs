@@ -717,6 +717,21 @@ fn report_against(dir: &std::path::Path, baseline: &report::Baseline) -> report:
     recorder.finish(baseline)
 }
 
+/// [`report_against`] as a run with `ORACLE_OP=ModelUtil.` would record it.
+fn report_filtered(dir: &std::path::Path, baseline: &report::Baseline) -> report::Report {
+    let (fixtures, _) = fixture::load_all(dir);
+    let mut recorder =
+        report::Recorder::new(dir.to_path_buf(), Some("ModelUtil.".into()), Vec::new());
+    for fx in &fixtures {
+        recorder.record(
+            fx,
+            compare::judge(fx, ops::exec(&bare(), &fx.op, &fx.inputs)),
+            &Ledger::default(),
+        );
+    }
+    recorder.finish(baseline)
+}
+
 fn regresses(report: &report::Report) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         report.assert_no_regressions()
@@ -731,12 +746,16 @@ fn entry(id: &str, status: report::Status) -> ((String, String), report::Status)
     )
 }
 
-/// A baselined failure with the same kind does not fail the run, and a
-/// baselined failure that passes now is listed as fixed; a baselined
-/// fixture gone from the corpus is listed as missing and fails a full run.
+/// A run that matches the baseline passes. A baselined failure that passes
+/// now, a pass the baseline does not list, and a baselined fixture gone
+/// from the corpus are listed, and each fails a full run until the baseline
+/// is regenerated; with `ORACLE_OP` they are only reported.
 #[test]
-fn a_run_that_matches_the_baseline_passes() {
-    let dir = scratch_dir("baseline-ok");
+fn a_run_passes_only_when_it_matches_the_baseline_exactly() {
+    use compare::FailKind::ValueMismatch;
+    use report::Status::{Fail, Pass};
+
+    let dir = scratch_dir("baseline-exact");
     write_fixture(
         &dir,
         "ModelUtil.getShortName",
@@ -749,31 +768,67 @@ fn a_run_that_matches_the_baseline_passes() {
         "passes",
         json!({ "inputs": { "args": ["org.acme.Bar"] }, "outcome": { "ok": "Bar" } }),
     );
-    let baseline: report::Baseline = [
-        entry(
-            "known",
-            report::Status::Fail(compare::FailKind::ValueMismatch),
-        ),
-        entry(
-            "passes",
-            report::Status::Fail(compare::FailKind::ValueMismatch),
-        ),
+    let exact: report::Baseline =
+        [entry("known", Fail(ValueMismatch)), entry("passes", Pass)].into();
+    report_against(&dir, &exact).assert_no_regressions();
+
+    // Fixed: the baseline still says it fails.
+    let fixed: report::Baseline = [
+        entry("known", Fail(ValueMismatch)),
+        entry("passes", Fail(ValueMismatch)),
     ]
     .into();
-    let report = report_against(&dir, &baseline);
-    report.assert_no_regressions();
+    let report = report_against(&dir, &fixed);
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["fixed"], json!(["ModelUtil.getShortName\tpasses"]));
+    assert!(
+        regresses(&report),
+        "a fixed fixture must fail a full run until recorded"
+    );
+    report_filtered(&dir, &fixed).assert_no_regressions();
 
-    // A baselined fixture that is not in the corpus fails a full run.
-    let mut stale = baseline.clone();
-    stale.extend([entry("gone", report::Status::Pass)]);
+    // A new pass: the baseline does not list it.
+    let new_pass: report::Baseline = [entry("known", Fail(ValueMismatch))].into();
+    let report = report_against(&dir, &new_pass);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        json["new_passes"],
+        json!(["ModelUtil.getShortName\tpasses"])
+    );
+    assert!(
+        regresses(&report),
+        "an unrecorded pass must fail a full run"
+    );
+    report_filtered(&dir, &new_pass).assert_no_regressions();
+
+    // Missing: a baselined fixture that is not in the corpus.
+    let mut stale = exact.clone();
+    stale.extend([entry("gone", Pass)]);
     let report = report_against(&dir, &stale);
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["missing"], json!(["ModelUtil.getShortName\tgone"]));
     assert!(
         regresses(&report),
         "a stale baseline entry must fail a full run"
+    );
+    report_filtered(&dir, &stale).assert_no_regressions();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A baseline that lists one fixture twice is rejected.
+#[test]
+fn a_baseline_with_a_duplicate_entry_is_rejected() {
+    let dir = scratch_dir("baseline-duplicate");
+    let path = dir.join("baseline.tsv");
+    fs::write(
+        &path,
+        "ModelUtil.getShortName\tx\tpass\nModelUtil.getShortName\tx\tfail:value-mismatch\n",
+    )
+    .unwrap();
+    let caught = std::panic::catch_unwind(|| report::read_baseline(&path));
+    assert!(
+        caught.is_err(),
+        "a duplicate baseline entry must be rejected"
     );
     let _ = fs::remove_dir_all(&dir);
 }
