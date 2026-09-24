@@ -1,117 +1,129 @@
 //! Judges one fixture: compares what `ops::exec` produced against the
-//! fixture's recorded `outcome` (README "Verdicts": `pass`, `fail`,
-//! `harness-error` — this harness adds `unsupported` as its own bucket,
-//! distinct from `fail`, so "not implemented yet" is never counted as a
-//! Rust behavioural divergence).
+//! fixture's recorded `outcome`, as `migration/oracle/lib/judge.js` does
+//! (README "Verdicts": `pass`, `fail`, `harness-error`). This harness adds
+//! `unsupported` as its own bucket, distinct from `fail`, so "not ported
+//! yet" is never counted as a Rust behavioural divergence, nor as a pass.
 
-use super::fixture::{Fixture, Outcome};
-use super::ops::{Dispatch, ExecOutcome};
+use serde_json::Value;
+
+use super::fixture::Fixture;
+use super::ops::Dispatch;
+use super::recipe::Fault;
 
 #[derive(Debug)]
 pub enum Verdict {
-    /// The canonical outcomes matched (README: `outcome is canonical`;
-    /// `serde_json::Value` equality is already key-order independent, which
-    /// is all the canonicalisation the ops this harness runs need — none of
-    /// them mint a `<uuid>` or `<now>`).
+    /// The outcomes are identical: `ok` value and `effects`, or the error's
+    /// class, message, location and component (PORTING.md section 2: "the
+    /// same verdict, message, class and location").
     Pass,
-    /// A real behavioural mismatch: this is what the task's exit condition
-    /// means by "failures ... reported per rule".
+    /// A real behavioural mismatch, or a state divergence while the inputs
+    /// were rebuilt on the Rust engine.
     Fail { detail: String },
-    /// The op, or these particular arguments, are not implemented by this
-    /// harness yet (`ops.rs`'s module doc lists what is). Never asserted
-    /// against — see `report.rs`. `reason` is diagnostic only (surfaced by
-    /// `{:?}`, e.g. in the self-tests' failure messages).
-    #[allow(dead_code)]
+    /// The op, or something these inputs need, has no Rust counterpart yet.
+    /// `reason` says what, and which task owns it.
     Unsupported { reason: String },
+    /// The fixture could not be set up for reasons of the fixture or the
+    /// CTO cache (a dangling reference, a missing cache entry). Never a
+    /// pass: it fails the run (README "Verdicts").
+    HarnessError { detail: String },
 }
 
 pub fn judge(fixture: &Fixture, dispatch: Dispatch) -> Verdict {
     if fixture.env.random {
         // README: "An engine that cannot reproduce that PRNG should compare
-        // such fixtures structurally". This harness does not run any op
-        // that draws from Math.random yet (see ops.rs), so this is a no-op
-        // guard for when one is added.
+        // such fixtures structurally". No op this harness runs draws from
+        // Math.random yet, so none is compared at all.
         return Verdict::Unsupported {
-            reason: "env.random: JS seeded PRNG not reproduced".into(),
+            reason: "env.random: the JS seeded PRNG is not reproduced".into(),
         };
     }
 
-    let outcome = match dispatch {
-        Dispatch::Unsupported(reason) => return Verdict::Unsupported { reason },
+    let actual = match dispatch {
+        Dispatch::Fault(Fault::Unsupported(reason)) => return Verdict::Unsupported { reason },
+        Dispatch::Fault(Fault::Harness(detail)) => return Verdict::HarnessError { detail },
+        Dispatch::Fault(Fault::Divergence(detail)) => return Verdict::Fail { detail },
         Dispatch::Ran(outcome) => outcome,
     };
 
-    match (&fixture.outcome, outcome) {
-        (Outcome::Ok { ok: expected, .. }, ExecOutcome::Ok(actual)) => {
-            if *expected == actual {
-                Verdict::Pass
-            } else {
-                Verdict::Fail {
-                    detail: format!(
-                        "expected ok {} got ok {}",
-                        truncate(&expected.to_string()),
-                        truncate(&actual.to_string())
-                    ),
-                }
-            }
-        }
-        (Outcome::Ok { ok, .. }, ExecOutcome::Err(actual)) => Verdict::Fail {
-            detail: format!(
-                "expected ok {} got error {}: {}",
-                truncate(&ok.to_string()),
-                actual.class,
-                truncate(&actual.message)
-            ),
-        },
-        (Outcome::Err { error }, ExecOutcome::Ok(actual)) => Verdict::Fail {
-            detail: format!(
-                "expected error {}: {} got ok {}",
-                error.class,
-                truncate(&error.message),
-                truncate(&actual.to_string())
-            ),
-        },
-        (Outcome::Err { error: expected }, ExecOutcome::Err(actual)) => {
-            let mut mismatches = Vec::new();
-            if expected.class != actual.class {
-                mismatches.push(format!("class: {} != {}", expected.class, actual.class));
-            }
-            if expected.message != actual.message {
-                mismatches.push(format!(
-                    "message: {:?} != {:?}",
-                    truncate(&expected.message),
-                    truncate(&actual.message)
-                ));
-            }
-            let expected_component = expected.component.as_deref();
-            if expected_component != actual.component {
-                mismatches.push(format!(
-                    "component: {expected_component:?} != {:?}",
-                    actual.component
-                ));
-            }
-            if expected.location != actual.location {
-                mismatches.push(format!(
-                    "location: {:?} != {:?}",
-                    expected.location, actual.location
-                ));
-            }
-            if mismatches.is_empty() {
-                Verdict::Pass
-            } else {
-                Verdict::Fail {
-                    detail: mismatches.join("; "),
-                }
-            }
-        }
+    match first_diff(&fixture.outcome.0, &actual, "$") {
+        None => Verdict::Pass,
+        Some(detail) => Verdict::Fail { detail },
     }
 }
 
-fn truncate(s: &str) -> String {
-    const MAX: usize = 300;
+/// JS equality of two canonical JSON values: object keys in any order, and
+/// numbers compared as the IEEE doubles JS holds (`1` and `1.0` are the same
+/// JS number; `serde_json` keeps them apart).
+fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same(p, q))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))
+        }
+        _ => a == b,
+    }
+}
+
+/// The first place, in sorted key order, where `expected` and `actual`
+/// differ, as `judge.js`'s `firstDiff` reports it; `None` when they are the
+/// same.
+fn first_diff(expected: &Value, actual: &Value, path: &str) -> Option<String> {
+    if same(expected, actual) {
+        return None;
+    }
+    match (expected, actual) {
+        (Value::Object(x), Value::Object(y)) => {
+            let mut keys: Vec<&String> = x.keys().chain(y.keys()).collect();
+            keys.sort();
+            keys.dedup();
+            for key in keys {
+                let (p, q) = (x.get(key), y.get(key));
+                match (p, q) {
+                    (Some(p), Some(q)) => {
+                        if let Some(d) = first_diff(p, q, &format!("{path}.{key}")) {
+                            return Some(d);
+                        }
+                    }
+                    _ => {
+                        return Some(format!(
+                            "{path}.{key}: expected {} got {}",
+                            show(p),
+                            show(q)
+                        ));
+                    }
+                }
+            }
+            None
+        }
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => x
+            .iter()
+            .zip(y)
+            .enumerate()
+            .find_map(|(i, (p, q))| first_diff(p, q, &format!("{path}.{i}"))),
+        _ => Some(format!(
+            "{path}: expected {} got {}",
+            show(Some(expected)),
+            show(Some(actual))
+        )),
+    }
+}
+
+fn show(v: Option<&Value>) -> String {
+    const MAX: usize = 200;
+    let Some(v) = v else {
+        return "(absent)".into();
+    };
+    let s = v.to_string();
     if s.len() <= MAX {
-        s.to_string()
+        s
     } else {
-        format!("{}…", &s[..MAX])
+        let mut end = MAX;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
     }
 }

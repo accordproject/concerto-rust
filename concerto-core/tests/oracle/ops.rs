@@ -1,97 +1,190 @@
 //! The op registry: replays one fixture's `op` against the Rust engine.
 //!
 //! `accordproject/concerto`'s `migration/oracle/lib/ops.js` is the full op
-//! catalogue the oracle records (README "Ops"). This harness (task P1-07)
-//! implements the family that is both pure (needs no `ModelManager` or
-//! other collaborator reconstruction — OD not yet settled for those, see
-//! `decode.rs`) and already ported to Rust per `PORTING.md`: the
-//! `ModelUtil` statics that take only plain-data arguments —
-//! `getShortName`, `getNamespace`, `parseNamespace`,
-//! `importFullyQualifiedNames`, `isPrimitiveType`, `capitalizeFirstLetter`,
-//! `isValidIdentifier`, `getFullyQualifiedName`,
-//! `removeNamespaceVersionFromFullyQualifiedName`, `isSystemProperty`,
-//! `isPrivateSystemProperty`, `isValidMapKey`, `isValidMapValue`; plus
-//! `TypeNotFoundException.new`, the one non-`ModelUtil` op that is equally
-//! receiver-free (task P1-07 review; see its match arm below for why).
+//! catalogue the oracle records (README "Ops"). An op gets a dispatch entry
+//! here when the Rust engine has a counterpart for it; each Phase 2/3 task
+//! adds the entries for the members it ports, in the same PR (PORTING.md
+//! 6.2). Every other op is reported `unsupported`, with the task the seam
+//! ledger plans for it, and never counted as a pass or a fail.
 //!
-//! The other five `ModelUtil` statics (`isAssignableTo`, `isEnum`, `isMap`,
-//! `isScalar`, `isValidMapKeyScalar`) take a model manager collaborator
-//! (`ResolutionContext` in the Rust port) and every other op family needs a
-//! loaded `ModelManager`, a `Factory`/`Serializer` instance, or both: none
-//! of that reconstruction from a fixture's `mm`/`mfref`/`mfnew`/`typed`
-//! encoding is implemented yet (`decode.rs`), so those ops fall through to
-//! [`Dispatch::Unsupported`]. A later task extends this registry rather than
-//! replacing it (the corpus and the comparison machinery in `fixture.rs`,
-//! `compare.rs` and `report.rs` do not change).
+//! Dispatched today:
 //!
-//! **Why `ModelManager` ops (`ModelManager.new`, `.addModel`, `.getType`,
-//! ...) are not simply wired up next, even though `concerto_core::model_manager`
-//! already exists (task P1-07 review):** every one of them needs the fixture's
-//! receiver reconstructed as a real [`concerto_core::model_manager::ModelManager`]
-//! first, and that reconstruction cannot be faithful yet. `ModelManager::new`
-//! preloads only `concerto@1.0.0`; the TS reference's `BaseModelManager`
-//! constructor *unconditionally* also loads `concerto.decorator@1.0.0`
-//! (`addDecoratorModel()`, called before `addRootModel()`, with no option to
-//! skip it — see `packages/concerto-core/src/basemodelmanager.ts`), and
-//! `concerto-core/src/rootmodel.rs`'s own module doc records this as a known
-//! gap: the decorator model "ships alongside [the root model] but is not
-//! preloaded". So a fixture recorded from `new ModelManager()` never matches
-//! a freshly built Rust one: its namespace list and `getAst` snapshot always
-//! carry `concerto.decorator@1.0.0`, which this crate's manager does not yet
-//! have. Decoding the `mm` recipe and comparing anyway would do one of two
-//! dishonest things: quietly drop the decorator namespace from the
-//! comparison to force a pass (exactly the "unsupported never asserted on"
-//! failure mode this review is about, moved into a different corner), or
-//! turn on a comparison this harness knows will fail for essentially every
-//! `ModelManager` fixture, which would fail `cargo test` for a production
-//! gap this task is not the one to close. Closing it belongs to the
-//! `ModelManager`/introspection porting tasks (plan §4 phase 2); once
-//! `ModelManager::new` preloads the decorator model the same way the
-//! reference does, this registry can decode `mm`/`mfref`/`declref` and wire
-//! up the `ModelManager` and introspection op families for real.
+//! - **`ModelUtil`**, all 18 statics (ported by the P0-04b trial). The five
+//!   that take collaborators (`isAssignableTo`, `isEnum`, `isMap`,
+//!   `isScalar`, `isValidMapKeyScalar`) run over a replayed
+//!   [`ModelManager`](concerto_core::model_manager::ModelManager) through
+//!   its `ResolutionContext`, with the model file, declaration and property
+//!   arguments as `Node` handles (PORTING.md 6.2).
+//! - **`TypeNotFoundException.new`**, which needs no receiver.
+//! - **The model manager's load path** (`recipe.rs` has the mapping):
+//!   `ModelManager.new`, `BaseModelManager.new`, `AstModelManager.new`, and
+//!   the ops `addCTOModel`, `addModel`, `addModelFile`, `addModelFiles`,
+//!   `validateModelFiles`, `clearModelFiles`, `fromAst`, which are also the
+//!   recipe steps every other model-manager fixture is rebuilt with; plus
+//!   the queries with a direct Rust counterpart: `getNamespaces`,
+//!   `getAst(false, …)` and `getType` (`get_declaration`). The Rust
+//!   `ModelManager` is still pre-port (P2-08 ports it), so these fixtures
+//!   report its differences from TS as per-rule failures, which is the
+//!   point: they are what P2-08 and the introspection tasks have to close.
+//! - **`ScalarDeclaration`** `toString`, `getType`, `getValidator` and
+//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
+use concerto_core::introspect::Declaration;
+use concerto_core::introspect::scalar::ScalarValidator;
+use concerto_core::model_manager::{ModelManager, Node, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use serde_json::{Value, json};
 
+use super::Harness;
 use super::decode::{self, Unsupported};
 use super::fixture::Inputs;
+use super::recipe::{self, Arg, Fault, Faulty, M, Replayed, Session};
 
 /// An error outcome in the oracle's `outcome.error` shape (README "Fixture
 /// schema"), built from a [`ConcertoError`] the same way the TS reference's
 /// exception constructors would (PORTING.md section 2).
+#[derive(Debug, Clone)]
 pub struct OracleError {
-    pub class: &'static str,
+    pub class: String,
     pub message: String,
     pub location: Option<Value>,
-    pub component: Option<&'static str>,
+    pub component: Option<String>,
 }
 
-/// What running a *supported* op produced.
-pub enum ExecOutcome {
-    Ok(Value),
-    Err(OracleError),
+impl OracleError {
+    /// A `ParseException` recorded in the CTO cache. Rust never raises one
+    /// (PORTING.md 2.3): the harness replays the recorded one. The cache
+    /// keeps `{class, message, location}`; `component` is what
+    /// `ParseException` inherits from concerto-util's `BaseException` when
+    /// concerto-cto passes none (`component || packageJson.name`), unless
+    /// the entry records its own.
+    pub fn from_cached_parse_error(error: &Value) -> Self {
+        Self {
+            class: error
+                .get("class")
+                .and_then(Value::as_str)
+                .unwrap_or("ParseException")
+                .to_string(),
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            location: error
+                .get("location")
+                .filter(|l| !l.is_null())
+                .cloned()
+                .map(restore_location_source),
+            component: Some(
+                error
+                    .get("component")
+                    .and_then(Value::as_str)
+                    .unwrap_or(PARSE_EXCEPTION_COMPONENT)
+                    .to_string(),
+            ),
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        json!({
+            "class": self.class,
+            "message": self.message,
+            "location": self.location.clone().unwrap_or(Value::Null),
+            "component": self.component,
+        })
+    }
 }
+
+/// The cache writes a `ParseException`'s location through `JSON.stringify`,
+/// which drops a key whose value is `undefined`. Peggy's `location()` is
+/// always `{source, start, end}`, and concerto-cto passes no grammar source,
+/// so every recorded `ParseException` location has `source: undefined` (all
+/// 225 in the corpus do): put the key back as the oracle encodes it.
+fn restore_location_source(mut location: Value) -> Value {
+    if let Value::Object(map) = &mut location
+        && map.contains_key("start")
+        && !map.contains_key("source")
+    {
+        map.insert("source".into(), recipe::undefined());
+    }
+    location
+}
+
+/// `@accordproject/concerto-util`'s package name, the default `component`
+/// of every `BaseException` (`baseexception.js`: `component ||
+/// packageJson.name`), which `concerto-cto`'s `ParseException` inherits.
+const PARSE_EXCEPTION_COMPONENT: &str = "@accordproject/concerto-util";
 
 /// The result of dispatching one fixture's op.
 pub enum Dispatch {
-    Ran(ExecOutcome),
-    /// This op, or this fixture's particular arguments, are not implemented
-    /// by the harness yet (see the module doc). Carries a short reason.
-    Unsupported(String),
+    /// The op ran: `{"ok": …}` or `{"error": …}`, in the oracle's outcome
+    /// shape.
+    Ran(Value),
+    Fault(Fault),
 }
 
-/// Runs `op` with `inputs.args` against the Rust engine, if the harness
-/// implements it.
-pub fn exec(op: &str, inputs: &Inputs) -> Dispatch {
+fn ran(outcome: recipe::Outcome) -> Dispatch {
+    Dispatch::Ran(match outcome {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({ "error": error.to_value() }),
+    })
+}
+
+fn from_engine<T>(result: Result<T, ConcertoError>, encode: impl FnOnce(T) -> Value) -> Dispatch {
+    ran(result.map(encode).map_err(|e| to_oracle_error(&e)))
+}
+
+fn unsupported(reason: impl Into<String>) -> Dispatch {
+    Dispatch::Fault(Fault::Unsupported(reason.into()))
+}
+
+fn option_bool(value: Option<bool>) -> Value {
+    value.map_or_else(recipe::undefined, Value::Bool)
+}
+
+/// Runs `op` against the Rust engine, if it has a dispatch entry.
+pub fn exec(h: &Harness, op: &str, inputs: &Inputs) -> Dispatch {
+    if let Some(dispatch) = exec_plain(op, inputs) {
+        return dispatch;
+    }
+    match exec_handles(h, op, inputs) {
+        Ok(dispatch) => dispatch,
+        Err(fault) => Dispatch::Fault(fault),
+    }
+}
+
+/// The ops whose arguments are plain data only. `None` for any other op.
+fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
+    const PLAIN_OPS: [&str; 14] = [
+        "ModelUtil.getShortName",
+        "ModelUtil.getNamespace",
+        "ModelUtil.parseNamespace",
+        "ModelUtil.importFullyQualifiedNames",
+        "ModelUtil.isPrimitiveType",
+        "ModelUtil.capitalizeFirstLetter",
+        "ModelUtil.isValidIdentifier",
+        "ModelUtil.getFullyQualifiedName",
+        "ModelUtil.removeNamespaceVersionFromFullyQualifiedName",
+        "ModelUtil.isSystemProperty",
+        "ModelUtil.isPrivateSystemProperty",
+        "ModelUtil.isValidMapKey",
+        "ModelUtil.isValidMapValue",
+        "TypeNotFoundException.new",
+    ];
+    if !PLAIN_OPS.contains(&op) {
+        return None;
+    }
     let args = match decode::decode_args(&inputs.args) {
         Ok(a) => a,
-        Err(Unsupported(reason)) => return Dispatch::Unsupported(reason),
+        Err(Unsupported(reason)) => return Some(unsupported(reason)),
     };
 
     macro_rules! bad_args {
         () => {
-            return Dispatch::Unsupported(format!("{op}: arguments did not decode for this op"))
+            return Some(unsupported(format!(
+                "{op}: arguments did not decode for this op"
+            )))
         };
     }
 
@@ -192,15 +285,11 @@ pub fn exec(op: &str, inputs: &Inputs) -> Dispatch {
             model_util::is_valid_map_value(value.as_ref()).map(Value::Bool)
         }
         // `new TypeNotFoundException(typeName, message?, component?)`
-        // (src/typenotfoundexception.ts): unlike every other op here, this
-        // constructor does not need a `ModelManager` at all — it is pure
-        // string handling over its own arguments — so it needs none of the
-        // `mm`/`mfref` receiver reconstruction the module doc explains is
-        // not implemented yet. The TS reference does not throw here: the
-        // constructed exception is itself the `ok` value, codec.js encoding
-        // it the same way any other outcome-only `Error` is (`{"@@oracle":
-        // "error", "error": {...}}`), confirmed against a real recorded
-        // fixture (task P1-07 review; `TypeNotFoundException #constructor`).
+        // (src/typenotfoundexception.ts): pure string handling over its own
+        // arguments. The TS reference does not throw here: the constructed
+        // exception is itself the `ok` value, which codec.js encodes as
+        // `{"@@oracle": "error", "error": {...}}` (task P1-07 review;
+        // `TypeNotFoundException #constructor`).
         "TypeNotFoundException.new" => {
             let arg0 = decode::arg(&args, 0);
             let Ok(type_name) = decode::as_str(&arg0) else {
@@ -215,15 +304,10 @@ pub fn exec(op: &str, inputs: &Inputs) -> Dispatch {
                 bad_args!()
             };
             // TS: `if (!message) { message = <default> }` and
-            // `component || '@accordproject/concerto-core'` — both falsy
-            // checks, so an explicit `""` falls back exactly as a missing
-            // argument does.
-            // The `typenotfounderror-defaultmessage` catalogue entry
-            // (`error/catalogue.rs`), rendered by hand: its `render` is
-            // private to `concerto_core::error`, but the template has one
-            // placeholder and no `$`-pattern hazards, so a literal format
-            // matches it byte for byte — the same template `to_oracle_error`
-            // below builds for `ConcertoError::TypeNotFound`.
+            // `component || '@accordproject/concerto-core'`, both falsy
+            // checks. The default is the `typenotfounderror-defaultmessage`
+            // catalogue entry, whose one placeholder has no `$`-pattern
+            // hazards, so this literal format matches it byte for byte.
             let message = message
                 .filter(|m| !m.is_empty())
                 .map(str::to_string)
@@ -232,7 +316,7 @@ pub fn exec(op: &str, inputs: &Inputs) -> Dispatch {
                 .filter(|c| !c.is_empty())
                 .unwrap_or("@accordproject/concerto-core");
             Ok(json!({
-                "@@oracle": "error",
+                M: "error",
                 "error": {
                     "class": "TypeNotFoundException",
                     "message": message,
@@ -241,13 +325,244 @@ pub fn exec(op: &str, inputs: &Inputs) -> Dispatch {
                 }
             }))
         }
-        _ => return Dispatch::Unsupported(format!("op not implemented: {op}")),
+        _ => unreachable!("PLAIN_OPS lists every arm"),
     };
+    Some(from_engine(outcome, |v| v))
+}
 
-    match outcome {
-        Ok(value) => Dispatch::Ran(ExecOutcome::Ok(value)),
-        Err(err) => Dispatch::Ran(ExecOutcome::Err(to_oracle_error(&err))),
+/// Model-manager steps that are also ops (README "Ops").
+const MM_STEP_OPS: [&str; 7] = [
+    "addCTOModel",
+    "addModel",
+    "addModelFile",
+    "addModelFiles",
+    "validateModelFiles",
+    "clearModelFiles",
+    "fromAst",
+];
+
+/// The ops whose inputs hold model managers or their handles.
+fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let (class, member) = op.split_once('.').unwrap_or((op, ""));
+    let dispatched = match (class, member) {
+        ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
+        ("ModelManager", m) => {
+            MM_STEP_OPS.contains(&m) || matches!(m, "getNamespaces" | "getAst" | "getType")
+        }
+        ("ModelUtil", m) => matches!(
+            m,
+            "isAssignableTo" | "isEnum" | "isMap" | "isScalar" | "isValidMapKeyScalar"
+        ),
+        ("ScalarDeclaration", m) => {
+            matches!(
+                m,
+                "toString" | "getType" | "getValidator" | "getDefaultValue"
+            )
+        }
+        _ => false,
+    };
+    if !dispatched {
+        return Ok(unsupported(format!(
+            "{op} is not ported yet{}",
+            h.ledger.owner(op)
+        )));
     }
+
+    let mut session = Session::new(h);
+    let target = match &inputs.target {
+        Some(t) => Some(session.decode(t, None)?),
+        None => None,
+    };
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+
+    if member == "new" {
+        let kind = match class {
+            "ModelManager" => recipe::Kind::ModelManager,
+            "BaseModelManager" => recipe::Kind::BaseModelManager,
+            _ => recipe::Kind::AstModelManager,
+        };
+        let options = match args.first() {
+            None => recipe::undefined(),
+            Some(Arg::Plain(v)) => v.clone(),
+            Some(_) => return Ok(unsupported("model manager options that are not plain data")),
+        };
+        if args.len() > 1 {
+            return Ok(unsupported("a custom processFile argument"));
+        }
+        let r = Replayed::new(kind, &options)?;
+        return Ok(ran(Ok(r.summary())));
+    }
+
+    match class {
+        "ModelManager" => {
+            let Some(Arg::Mm(index)) = target else {
+                return Err(Fault::Unsupported(
+                    "a model manager op whose receiver is not a model manager recipe".into(),
+                ));
+            };
+            if MM_STEP_OPS.contains(&member) {
+                let r = &mut session.pool[index];
+                return Ok(ran(r.apply(h, member, &args)?));
+            }
+            let r = &session.pool[index];
+            Ok(model_manager_query(r, member, &args))
+        }
+        "ModelUtil" => model_util_with_context(&session, member, &args),
+        "ScalarDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ScalarDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Scalar(scalar)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a scalar".into(),
+                ));
+            };
+            Ok(match member {
+                "toString" => from_engine(
+                    r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                    |fqn| {
+                        Value::String(concerto_core::introspect::ScalarDeclaration::to_string(
+                            &fqn,
+                        ))
+                    },
+                ),
+                "getType" => ran(Ok(scalar
+                    .scalar_type()
+                    .map_or(Value::Null, |t| Value::String(t.to_string())))),
+                "getDefaultValue" => {
+                    ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
+                }
+                _ => ran(Ok(match scalar.validator() {
+                    None => Value::Null,
+                    Some(ScalarValidator::Number(_)) => {
+                        json!({ M: "Validator", "ctor": "NumberValidator" })
+                    }
+                    Some(ScalarValidator::String { .. }) => {
+                        json!({ M: "Validator", "ctor": "StringValidator" })
+                    }
+                })),
+            })
+        }
+        _ => unreachable!("`dispatched` lists every class"),
+    }
+}
+
+fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
+    let plain = |i: usize| match args.get(i) {
+        None => Some(recipe::undefined()),
+        Some(Arg::Plain(v)) => Some(v.clone()),
+        Some(_) => None,
+    };
+    match member {
+        "getNamespaces" => ran(Ok(json!(r.namespaces()))),
+        "getAst" => {
+            let (Some(resolve), Some(include)) = (plain(0), plain(1)) else {
+                return unsupported("getAst with non-plain arguments");
+            };
+            if recipe::truthy(&resolve) {
+                return unsupported(
+                    "getAst(resolve = true) needs resolveMetaModel, not ported yet (ledger: P2-08)",
+                );
+            }
+            ran(Ok(r.ast(recipe::truthy(&include))))
+        }
+        "getType" => {
+            let Some(Value::String(fqn)) = plain(0) else {
+                return unsupported("getType with a type name that is not a string");
+            };
+            match r.mm.get_declaration(&fqn) {
+                Err(e) => ran(Err(to_oracle_error(&e))),
+                Ok(_) => {
+                    let id = r.mm.declaration_id(&fqn).expect("get_declaration found it");
+                    ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null)))
+                }
+            }
+        }
+        _ => unreachable!("`dispatched` lists every query"),
+    }
+}
+
+/// The `ModelUtil` statics that take model-manager collaborators.
+fn model_util_with_context(session: &Session, member: &str, args: &[Arg]) -> Faulty<Dispatch> {
+    let prop = |arg: Option<&Arg>| -> Faulty<(usize, Node)> {
+        match arg {
+            Some(Arg::Prop(index, id)) => Ok((*index, Node::Property(*id))),
+            _ => Err(Fault::Unsupported(
+                "a field argument that is not a property of a registered declaration".into(),
+            )),
+        }
+    };
+    match member {
+        "isAssignableTo" => {
+            let Some(Arg::File(file)) = args.first() else {
+                return Err(Fault::Unsupported(
+                    "isAssignableTo with a model file argument that is not a model file".into(),
+                ));
+            };
+            let Some(Arg::Plain(Value::String(type_name))) = args.get(1) else {
+                return Err(Fault::Unsupported(
+                    "isAssignableTo with a type name that is not a string".into(),
+                ));
+            };
+            let (index, property) = prop(args.get(2))?;
+            let r = &session.pool[index];
+            let model_file = recipe::model_file_node(r, file)?;
+            Ok(from_engine(
+                model_util::is_assignable_to(&r.mm, &model_file, type_name, &property),
+                Value::Bool,
+            ))
+        }
+        "isEnum" | "isMap" | "isScalar" => {
+            let (index, field) = prop(args.first())?;
+            let r = &session.pool[index];
+            let result = match member {
+                "isEnum" => model_util::is_enum(&r.mm, &field),
+                "isMap" => model_util::is_map(&r.mm, &field),
+                _ => model_util::is_scalar(&r.mm, &field),
+            };
+            Ok(from_engine(result, option_bool))
+        }
+        "isValidMapKeyScalar" => match args.first() {
+            // `decl?.…`: a nullish declaration never reaches the context.
+            None => Ok(from_engine(
+                model_util::is_valid_map_key_scalar(&fresh_context()?, None),
+                option_bool,
+            )),
+            Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => Ok(from_engine(
+                model_util::is_valid_map_key_scalar(&fresh_context()?, None),
+                option_bool,
+            )),
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[*index];
+                Ok(from_engine(
+                    model_util::is_valid_map_key_scalar(&r.mm, Some(&Node::Declaration(*id))),
+                    option_bool,
+                ))
+            }
+            Some(_) => Err(Fault::Unsupported(
+                "isValidMapKeyScalar with an argument that is not a declaration".into(),
+            )),
+        },
+        _ => unreachable!("`dispatched` lists every ModelUtil collaborator op"),
+    }
+}
+
+/// A context for a call that is given no handle at all
+/// (`isValidMapKeyScalar(undefined)`), which never consults it.
+fn fresh_context() -> Faulty<ModelManager> {
+    ModelManager::new().map_err(|e| {
+        Fault::Divergence(format!(
+            "ModelManager::new failed: {}",
+            to_oracle_error(&e).message
+        ))
+    })
 }
 
 /// `ModelUtil.parseNamespace`'s return value, in the shape TS returns it
@@ -265,17 +580,13 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
             "escapedNamespace": escaped_namespace,
             "version": version,
             // README "Value encoding": a returned handle codec.js does not
-            // model specially (no `mm`/`typed`/... kind fits a node-semver
-            // `SemVer` instance) is recorded as the generic outcome-only
-            // summary `{"@@oracle":"object","ctor":"<constructor name>"}`,
-            // not a deep field-by-field encoding — confirmed against a real
-            // recorded fixture (`ModelUtil.parseNamespace`, task P1-07).
-            // This harness only checks that a `SemVer` was returned at all
-            // when `version` is present; it does not compare node-semver's
-            // own fields (major/minor/patch/prerelease/...), which have no
-            // Rust port to check against yet.
+            // model specially (a node-semver `SemVer`) is recorded as the
+            // generic summary `{"@@oracle":"object","ctor":"<constructor>"}`
+            // (confirmed against a recorded fixture, task P1-07). This
+            // checks that a `SemVer` was returned at all when `version` is
+            // present; node-semver's own fields have no Rust port to check.
             "versionParsed": version_parsed.as_ref().map(|_| json!({
-                "@@oracle": "object",
+                M: "object",
                 "ctor": "SemVer",
             })),
         }),
@@ -286,26 +597,31 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
 /// same fields `ContractError` carries (PORTING.md section 2.1):
 /// `kind.ts_class()` for `class`, [`concerto_core::error::ContractError::final_message`]
 /// for `message` (its doc comment: "Used by the native oracle harness
-/// only"), the AST `location` verbatim, and `component`.
-fn to_oracle_error(err: &ConcertoError) -> OracleError {
+/// only"), the AST `location` verbatim, and `component`. The two pre-port
+/// variants (`TypeNotFound`, `IllegalModel`) carry no catalogue key; they
+/// map to their TS class with their own text, so a fixture that reaches one
+/// fails on its message until the owning task ports the throw site.
+pub fn to_oracle_error(err: &ConcertoError) -> OracleError {
     match err {
         ConcertoError::Contract(ce) => OracleError {
-            class: ce.kind.ts_class(),
+            class: ce.kind.ts_class().to_string(),
             message: ce.final_message(),
             location: ce.location.clone(),
-            component: ce.component(),
+            component: ce.component().map(str::to_string),
         },
         ConcertoError::TypeNotFound { type_name } => OracleError {
-            class: ErrorKind::TypeNotFound.ts_class(),
+            class: ErrorKind::TypeNotFound.ts_class().to_string(),
             message: format!("Type \"{type_name}\" not found."),
             location: None,
-            component: Some("@accordproject/concerto-core"),
+            component: Some("@accordproject/concerto-core".into()),
         },
-        ConcertoError::IllegalModel { message, .. } => OracleError {
-            class: ErrorKind::IllegalModel.ts_class(),
+        ConcertoError::IllegalModel {
+            message, location, ..
+        } => OracleError {
+            class: ErrorKind::IllegalModel.ts_class().to_string(),
             message: message.clone(),
-            location: None,
-            component: Some("@accordproject/concerto-core"),
+            location: location.clone(),
+            component: Some("@accordproject/concerto-core".into()),
         },
     }
 }

@@ -26,3 +26,8 @@ thiserror = { workspace = true }
 # pattern) and ECMAScript Number::toString.
 regress = "0.12"
 ryu-js = "1.0"
+
+[dev-dependencies]
+# The native oracle harness (tests/oracle) keys the P1-07a CTO -> AST cache
+# by SHA-256, as migration/oracle/bin/build-cto-cache.js does.
+sha2 = "0.10"

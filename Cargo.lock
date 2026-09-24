@@ -13,6 +13,7 @@ dependencies = [
  "ryu-js",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

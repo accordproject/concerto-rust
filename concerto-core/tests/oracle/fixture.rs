@@ -16,7 +16,6 @@ use serde_json::Value;
 #[derive(Debug, Deserialize)]
 pub struct Fixture {
     /// Content hash id, unique within the corpus.
-    #[allow(dead_code)]
     pub id: String,
     /// Which of `unit`/`data`/`conformance`/`gaps`/`lifted` recorded it.
     pub source: String,
@@ -42,11 +41,9 @@ pub struct Fixture {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Inputs {
-    /// Present for method ops only. Not read yet: the ops this harness runs
-    /// (`ops.rs`) are all statics with no receiver; a method op family adds
-    /// its use of this field alongside its own decoding support.
+    /// Present for method ops only: the receiver, usually a model manager
+    /// recipe or a handle into one (`recipe.rs`).
     #[serde(default)]
-    #[allow(dead_code)]
     pub target: Option<Value>,
     #[serde(default)]
     pub args: Vec<Value>,
@@ -55,41 +52,34 @@ pub struct Inputs {
 #[derive(Debug, Deserialize, Default)]
 pub struct Env {
     /// True when the op drew from `Math.random` (README "Fixture schema").
-    /// The harness does not yet reproduce the JS seeded PRNG (that lands
-    /// with the Factory/Serializer op families a later task adds), so these
+    /// The harness does not reproduce the JS seeded PRNG (that lands with
+    /// the Factory/Serializer op families a later task adds), so these
     /// fixtures are reported `unsupported` rather than compared value for
     /// value.
     #[serde(default)]
     pub random: bool,
 }
 
-/// `outcome`: either `{"ok": <value>, "effects"?: <value>}` or
-/// `{"error": {...}}`.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum Outcome {
-    Ok {
-        ok: Value,
-        #[serde(default)]
-        #[allow(dead_code)]
-        effects: Option<Value>,
-    },
-    Err {
-        error: ErrorOutcome,
-    },
-}
+/// `outcome`: `{"ok": <value>, "effects"?: <value>}` or `{"error": {class,
+/// message, location, component}}` (README "Fixture schema"), kept as the
+/// canonical JSON the recorder wrote: the harness compares the whole of it,
+/// `effects` included, as `judge.js` does.
+#[derive(Debug)]
+pub struct Outcome(pub Value);
 
-/// `outcome.error`: `{class, message, location, component}` (README
-/// "Fixture schema"), the shape `ContractError` in `concerto-core`'s
-/// `src/error` module also uses (PORTING.md section 2.1).
-#[derive(Debug, Deserialize)]
-pub struct ErrorOutcome {
-    pub class: String,
-    pub message: String,
-    #[serde(default)]
-    pub location: Option<Value>,
-    #[serde(default)]
-    pub component: Option<String>,
+impl<'de> Deserialize<'de> for Outcome {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let well_formed = value
+            .as_object()
+            .is_some_and(|o| o.contains_key("ok") || o.get("error").is_some_and(Value::is_object));
+        if !well_formed {
+            return Err(serde::de::Error::custom(
+                "outcome is neither {ok} nor {error: {...}}",
+            ));
+        }
+        Ok(Self(value))
+    }
 }
 
 /// A fixture file that could not be loaded (malformed JSON, a missing blob,
