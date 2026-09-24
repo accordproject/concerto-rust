@@ -210,8 +210,8 @@ pub struct Replayed {
 /// A model file argument, rebuilt from `mfref` or `mfnew`.
 #[derive(Debug, Clone)]
 pub struct FileArg {
-    ast: Value,
-    file_name: Option<String>,
+    pub(crate) ast: Value,
+    pub(crate) file_name: Option<String>,
     nullish_name: Value,
 }
 

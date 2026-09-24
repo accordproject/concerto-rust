@@ -27,7 +27,17 @@
 //!   report its differences from TS as per-rule failures, which is the
 //!   point: they are what P2-08 and the introspection tasks have to close.
 //! - **`ScalarDeclaration`** `toString`, `getType`, `getValidator` and
-//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`.
+//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`;
+//!   and `new`, over `ScalarDeclaration::validate_new` (P2-05), which
+//!   replays `new ScalarDeclaration(modelFile, ast)` without going through a
+//!   registered `ModelManager` (the receiver is an `mfnew` recipe argument,
+//!   never a `declref`, so it needs no arena handle). `getType`,
+//!   `getValidator`, `getDefaultValue` and `toString` still report
+//!   `unsupported` for a fixture recorded the same way (a bare `mfnew`
+//!   receiver): `declref` has no handle for a declaration that was never
+//!   registered (PORTING.md 6.2), which only a later task (P4-07, jointly
+//!   per the ledger's `planned_task`) can close in general, for every
+//!   declaration kind.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::Declaration;
@@ -376,7 +386,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("ScalarDeclaration", m) => {
             matches!(
                 m,
-                "toString" | "getType" | "getValidator" | "getDefaultValue"
+                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
         _ => false,
@@ -395,6 +405,39 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         .iter()
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
+
+    // `new ScalarDeclaration(modelFile, ast)` (PORTING.md 6.2): the receiver
+    // is built directly from a `ModelFile` recipe argument, never registered
+    // with a model manager, so it never reaches `declref` (which has no
+    // handle for an unregistered declaration; `Fault::Blocked` cites
+    // `ScalarDeclaration.new` for exactly that case elsewhere).
+    if class == "ScalarDeclaration" && member == "new" {
+        let Some(Arg::File(file)) = args.first() else {
+            return Ok(unsupported(
+                "ScalarDeclaration.new with a model file argument that is not a model file",
+            ));
+        };
+        let Some(Arg::Plain(ast)) = args.get(1) else {
+            return Ok(unsupported(
+                "ScalarDeclaration.new with a declaration AST that is not plain data",
+            ));
+        };
+        let namespace = file.ast.get("namespace").and_then(Value::as_str).unwrap_or("");
+        return Ok(from_engine(
+            concerto_core::introspect::ScalarDeclaration::validate_new(
+                namespace,
+                file.file_name.as_deref(),
+                ast,
+            ),
+            |fqn| {
+                json!({
+                    M: "Declaration",
+                    "ctor": "ScalarDeclaration",
+                    "fqn": fqn,
+                })
+            },
+        ));
+    }
 
     if member == "new" {
         let kind = match class {
