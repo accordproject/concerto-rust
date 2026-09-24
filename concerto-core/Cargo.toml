@@ -21,3 +21,7 @@ serde = { workspace = true }
 # OD-3: keep the given AST in its original key order. DV-001
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
+# PORTING.md OD-8: ECMAScript regular expressions (ID_REGEX, node-semver's FULL
+# pattern) and ECMAScript Number::toString.
+regress = "0.12"
+ryu-js = "1.0"

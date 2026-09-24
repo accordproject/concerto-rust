@@ -7,6 +7,7 @@
 //! Everything sits on top of the generated [`concerto_metamodel`] types. We
 //! wrap those in our own enums rather than redefining the schema by hand.
 
+mod ecma;
 pub mod error;
 pub mod introspect;
 pub mod model_manager;

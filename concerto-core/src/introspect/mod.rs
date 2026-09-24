@@ -32,11 +32,14 @@ pub mod declaration;
 pub mod import;
 pub mod model_file;
 pub mod property;
+pub mod scalar;
+pub mod validators;
 
-pub use declaration::{ClassDeclaration, ClassKind, Declaration, ScalarDeclaration};
+pub use declaration::{ClassDeclaration, ClassKind, Declaration};
 pub use import::Import;
 pub use model_file::ModelFile;
 pub use property::Property;
+pub use scalar::ScalarDeclaration;
 
 /// Returns the `$class` discriminator of an AST node, or `""` if it is absent.
 /// The sum types in this module select their variant from this value.
