@@ -37,6 +37,35 @@
 //!   `mfnew` recipe argument, never a `declref`, so it needs no arena
 //!   handle). Every other declaration kind's `declnew` still needs P4-07,
 //!   which closes this in general.
+//! - **DCS (task P2-12)**: `DecoratorManager.falsyOrEqual` and
+//!   `DcsConverter.jsonToYaml`/`yamlToJson` as plain data (`exec_plain`);
+//!   and, through `decorator_manager_op`, `DecoratorManager.decorateModels`,
+//!   `extractDecorators`, `extractVocabularies`, `extractNonVocabDecorators`,
+//!   `validate`, `jsonToYaml`, `yamlToJson`, `migrateTo` and
+//!   `executePropertyCommand` (`concerto_core::dcs`). An argument these
+//!   mutate in TS (the command sets `migrate` rewrites, the options
+//!   `skipValidationAndResolution` sets, `migrateTo`'s command set,
+//!   `executePropertyCommand`'s property) is compared through
+//!   `outcome.effects.args`, as the recorder records it. `decorateModels` and
+//!   the `extract*` statics read `getAst(true, …)` in TS, which resolves the
+//!   metamodel (`BaseModelManager.resolveMetaModel`, not ported: P2-08):
+//!   a fixture whose models that resolution would change is `unsupported`
+//!   for that owner, once every step before it has been compared
+//!   (`resolution_changes_nothing`). A model manager `derived` from one of
+//!   these ops is rebuilt by replaying it (`derive_model_manager`).
+//!   `migrateAndValidate`, `validateCommand`, `canMigrate` and
+//!   `checkForDuplicateDecorators` have no fixtures of their own (the
+//!   recorder only records the outermost call), so they are compared
+//!   through `decorateModels`.
+//! - **`Resource.validate`**, plus the read-only `Typed`/`Identifiable`/
+//!   `Relationship`/`Resource` accessors ([`instance_op`]'s doc has the
+//!   full list), over an oracle `"typed"` receiver decoded into
+//!   [`recipe::DecodedInstance`] (`recipe.rs`'s `Session::typed`, task
+//!   P3-01 review, `accordproject-concerto-rust#56` follow-up).
+//!   `Factory`/`Serializer`/`JSONPopulator`/`JSONGenerator` and every
+//!   receiver-mutating op (`setPropertyValue`, `addArrayValue`,
+//!   `setIdentifier`) are not ported yet, so their fixtures stay
+//!   `unsupported`.
 //! - **`MapDeclaration`** `declarationKind`, `getKey`, `getValue`,
 //!   `isMapDeclaration`, `toString` and `validate`; **`MapKeyType`**/
 //!   **`MapValueType`** `getType`, `getNamespace`, `getParent`, `toString` and
@@ -51,6 +80,7 @@
 //!   `MapDeclaration.validate`) stays `unsupported`, owned by P2-08's
 //!   `ModelFile.new`.
 
+use concerto_core::dcs;
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::declaration::ClassDeclaration;
 use concerto_core::introspect::model_file::ModelFile;
@@ -170,7 +200,24 @@ pub enum Dispatch {
     /// The op ran: `{"ok": …}` or `{"error": …}`, in the oracle's outcome
     /// shape.
     Ran(Value),
+    /// The op ran and threw from a part of the engine another task owns:
+    /// if TS threw too, from that part ([`Attribution`]), and the two errors
+    /// differ, the failure is that owner's (`compare.rs`). Any other
+    /// difference stays the op's own.
+    RanAttributed(Value, Attribution),
     Fault(Fault),
+}
+
+/// Who owns a Rust error that came from another task's code, and the TS
+/// exception classes that code raises: a failure is attributed to
+/// `blocker` only when TS threw one of `ts_error_classes` too (both sides
+/// threw from the same place, and only the error differs). When TS
+/// succeeded, or threw something else, Rust's error is the op's own bug
+/// (a wrong decorated AST, a stand-in rejecting valid input).
+#[derive(Debug)]
+pub struct Attribution {
+    pub blocker: recipe::Blocker,
+    pub ts_error_classes: &'static [&'static str],
 }
 
 fn ran(outcome: recipe::Outcome) -> Dispatch {
@@ -205,7 +252,7 @@ pub fn exec(h: &Harness, op: &str, inputs: &Inputs) -> Dispatch {
 
 /// The ops whose arguments are plain data only. `None` for any other op.
 fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
-    const PLAIN_OPS: [&str; 14] = [
+    const PLAIN_OPS: [&str; 17] = [
         "ModelUtil.getShortName",
         "ModelUtil.getNamespace",
         "ModelUtil.parseNamespace",
@@ -220,6 +267,12 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         "ModelUtil.isValidMapKey",
         "ModelUtil.isValidMapValue",
         "TypeNotFoundException.new",
+        // DCS (task P2-12): the `DecoratorManager`/`DcsConverter` statics
+        // that take and return plain data only and mutate nothing; the other
+        // `DecoratorManager` statics go through `decorator_manager_op`.
+        "DecoratorManager.falsyOrEqual",
+        "DcsConverter.jsonToYaml",
+        "DcsConverter.yamlToJson",
     ];
     if !PLAIN_OPS.contains(&op) {
         return None;
@@ -374,6 +427,40 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
                 }
             }))
         }
+        // `DecoratorManager.falsyOrEqual(test, values)` (`src/decoratormanager.ts`):
+        // `test` is `null`/`undefined`/a string/a string array (a command
+        // target field); `values` is always a string array. TS never
+        // throws here, so the outcome is always `ok`.
+        "DecoratorManager.falsyOrEqual" => {
+            let arg0 = decode::arg(&args, 0);
+            let test = decode::as_value(&arg0).cloned();
+            let arg1 = decode::arg(&args, 1);
+            let Some(Value::Array(values)) = decode::as_value(&arg1) else {
+                bad_args!()
+            };
+            let Some(values): Option<Vec<&str>> = values.iter().map(Value::as_str).collect() else {
+                bad_args!()
+            };
+            Ok(Value::Bool(dcs::falsy_or_equal(test.as_ref(), &values)))
+        }
+        // `DcsConverter.jsonToYaml(dcsJson)` (`src/dcsconverter.ts`, called
+        // through `DecoratorManager.jsonToYaml`'s thin wrapper — the recorder
+        // records at `decoratorManagerStatics`' boundary, `DcsConverter` is
+        // `ops.js`'s own name for the module's directly-recorded statics).
+        "DcsConverter.jsonToYaml" => {
+            let arg0 = decode::arg(&args, 0);
+            let Some(dcs_json) = decode::as_value(&arg0) else {
+                bad_args!()
+            };
+            dcs::json_to_yaml(dcs_json).map(Value::String)
+        }
+        "DcsConverter.yamlToJson" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(yaml_string) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            dcs::yaml_to_json(yaml_string)
+        }
         _ => unreachable!("PLAIN_OPS lists every arm"),
     };
     Some(from_engine(outcome, |v| v))
@@ -399,6 +486,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     // belongs to. Handled separately, ahead of the generic decode.
     if class == "Decorated" && matches!(member, "getDecorator" | "getDecorators") {
         return decorated_op(h, member, inputs);
+    }
+
+    if class == "DecoratorManager" && DECORATOR_MANAGER_OPS.contains(&member) {
+        return decorator_manager_op(h, member, inputs);
     }
 
     let dispatched = match (class, member) {
@@ -492,6 +583,70 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ),
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
+        // P2-08: every `ModelFile` member the oracle corpus reaches
+        // (`filter`, `getConceptDeclarations`, `getMapDeclarations` and
+        // `getExternalImports` have no fixtures, module doc on `ops.rs`).
+        ("ModelFile", m) => matches!(
+            m,
+            "new"
+                | "getAllDeclarations"
+                | "getAssetDeclaration"
+                | "getAssetDeclarations"
+                | "getAst"
+                | "getClassDeclarations"
+                | "getConcertoVersion"
+                | "getDefinitions"
+                | "getEnumDeclarations"
+                | "getEventDeclaration"
+                | "getEventDeclarations"
+                | "getFullyQualifiedTypeName"
+                | "getImportURI"
+                | "getImportedType"
+                | "getImports"
+                | "getModelManager"
+                | "getName"
+                | "getNamespace"
+                | "getParticipantDeclaration"
+                | "getScalarDeclarations"
+                | "getTransactionDeclaration"
+                | "getTransactionDeclarations"
+                | "getType"
+                | "isDefined"
+                | "isExternal"
+                | "isImportedType"
+                | "isLocalType"
+                | "isModelFile"
+                | "isSystemModelFile"
+                | "resolveImport"
+                | "validate"
+        ),
+        ("Introspector", m) => {
+            matches!(
+                m,
+                "getClassDeclaration" | "getClassDeclarations" | "getModelManager"
+            )
+        }
+        // P3-01 review (task `accordproject-concerto-rust#56` follow-up):
+        // the instance ops dispatched over a `"typed"` receiver
+        // ([`instance_op`]'s doc has the full list and its TS source).
+        ("Resource", m) => matches!(
+            m,
+            "validate" | "toString" | "isResource" | "isConcept" | "isIdentifiable" | "instanceOf"
+        ),
+        ("Identifiable", m) => matches!(
+            m,
+            "getIdentifier"
+                | "getFullyQualifiedIdentifier"
+                | "getTimestamp"
+                | "toURI"
+                | "isRelationship"
+                | "isResource"
+        ),
+        ("Relationship", m) => matches!(m, "toString" | "isRelationship" | "fromURI"),
+        ("Typed", m) => matches!(
+            m,
+            "getType" | "getNamespace" | "getFullyQualifiedType" | "getClassDeclaration"
+        ),
         _ => false,
     };
     if !dispatched {
@@ -544,6 +699,15 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 })
             },
         ));
+    }
+
+    // TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08):
+    // args[0] (the model manager) has already been fully replayed by
+    // `session.decode` above, for state-divergence parity, even though the
+    // constructed `ModelFile` does not itself need it for these arguments —
+    // only `getModelManager`/`getType` do, later, through `file.mm_index`.
+    if class == "ModelFile" && member == "new" {
+        return Ok(model_file_new(&args));
     }
 
     if member == "new" {
@@ -912,6 +1076,33 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             Ok(ran(Ok(Value::String(format!(
                 "EnumDeclaration {{id={fqn}}}"
             )))))
+        }
+        "ModelFile" => {
+            let Some(Arg::File(file)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ModelFile op whose receiver is not a model file (mfref/mfnew)".into(),
+                ));
+            };
+            Ok(model_file_op(&session, &file, member, &args))
+        }
+        "Introspector" => {
+            let Some(Arg::Mm(index)) = target else {
+                return Err(Fault::Unsupported(
+                    "an Introspector op whose receiver is not an introspector recipe".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            Ok(introspector_op(r, member, &args))
+        }
+        "Relationship" if member == "fromURI" => Ok(relationship_from_uri(&session, &args)),
+        "Resource" | "Identifiable" | "Relationship" | "Typed" => {
+            let Some(Arg::Typed(index, inst)) = target else {
+                return Err(Fault::Unsupported(format!(
+                    "{class}.{member} with a receiver that is not a typed instance"
+                )));
+            };
+            let r = &session.pool[index];
+            Ok(instance_op(r, &inst, class, member, &args))
         }
         _ => unreachable!("`dispatched` lists every class"),
     }
@@ -1340,6 +1531,320 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
     }
 }
 
+/// TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08),
+/// for a receiver never added to a manager via `addModelFile` (that is
+/// `ModelManager.addModelFile`, already dispatched).
+fn model_file_new(args: &[Arg]) -> Dispatch {
+    // Each constructor argument as plain data, `None` for JS `undefined`.
+    let mut plain = [None, None, None];
+    for (slot, (index, what)) in
+        plain
+            .iter_mut()
+            .zip([(1, "ast"), (2, "definitions"), (3, "fileName")])
+    {
+        match args.get(index) {
+            None => {}
+            Some(Arg::Plain(v)) if recipe::is_undefined(v) => {}
+            Some(Arg::Plain(v)) => *slot = Some(v),
+            Some(_) => {
+                return unsupported(format!(
+                    "ModelFile.new with a {what} argument that is not plain data"
+                ));
+            }
+        }
+    }
+    let [ast, definitions, file_name_arg] = plain;
+    // TS's own argument checks come first (a plain `Error` each).
+    if let Err(e) = ModelFile::check_constructor_arguments(ast, definitions, file_name_arg) {
+        return ran(Err(to_oracle_error(&e)));
+    }
+    let ast = ast.expect("check_constructor_arguments rejects a missing ast");
+    // A falsy non-string `definitions` passed those checks; TS keeps it as
+    // given, but nothing the oracle compares reads it back (the harness's
+    // `getDefinitions` answers only for a string).
+    let definitions = match definitions {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let file_name_value = file_name_arg.cloned().unwrap_or_else(recipe::undefined);
+    let file_name = match &file_name_value {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    };
+    from_engine(
+        ModelFile::from_json_with_definitions(ast, definitions, file_name),
+        |mf| {
+            json!({
+                M: "ModelFile",
+                "namespace": mf.namespace(),
+                "name": mf
+                    .file_name()
+                    .map_or_else(|| file_name_value.clone(), |n| Value::String(n.to_string())),
+                "ast": mf.ast(),
+            })
+        },
+    )
+}
+
+/// The outcome-only `Declaration` summary `{ctor, fqn}` (the same shape
+/// [`Replayed::declaration_summary`] builds from a [`DeclId`]), for a
+/// declaration read straight off a rebuilt [`ModelFile`] — every `ModelFile`
+/// getter that hands back a declaration (`getAssetDeclaration` and its
+/// siblings, `getAllDeclarations` and the other `get*Declarations` lists)
+/// already has it in hand, with no arena lookup needed.
+fn declaration_value(namespace: &str, declaration: &Declaration) -> Value {
+    let ctor = match declaration {
+        Declaration::Class(class) => class.declaration_kind(),
+        Declaration::Enum(_) => "EnumDeclaration",
+        Declaration::Scalar(_) => "ScalarDeclaration",
+        Declaration::Map(_) => "MapDeclaration",
+    };
+    json!({
+        M: "Declaration",
+        "ctor": ctor,
+        "fqn": format!("{namespace}.{}", declaration.name()),
+    })
+}
+
+/// A [`Node`] `ModelFile.getType` resolved to, in its outcome shape: a
+/// primitive's bare name, a declaration's summary, or `null`.
+fn node_type_value(r: &Replayed, node: Option<Node>) -> Value {
+    match node {
+        None => Value::Null,
+        Some(Node::Primitive(name)) => Value::String(name.to_string()),
+        Some(Node::Declaration(id)) => r.declaration_summary(id).unwrap_or(Value::Null),
+        // `ModelFile.getType` never resolves to a model file or a property.
+        Some(_) => Value::Null,
+    }
+}
+
+/// `ModelFile.*` ops (P2-08), other than `new` (handled directly in
+/// `exec_handles`, since the receiver does not exist yet). `file` is the
+/// `mfref`/`mfnew` receiver.
+///
+/// Every getter below runs against `mf`, rebuilt fresh from
+/// `file.ast`/`file.definitions`/`file.file_name`: a `ModelFile` is a pure
+/// function of what it was built from (module doc on
+/// [`concerto_core::introspect::model_file::ModelFile`]), and
+/// `Session::file` already proved this same construction succeeds once,
+/// while decoding the receiver — so rebuilding it here for a second time
+/// gives back an equivalent object. `getModelManager`, `getType` and
+/// `validate` are the three members that need the owning manager for
+/// something beyond that (`getModelManager`/`getType`'s cross-file lookups,
+/// `validate`'s import checks): `file.mm_index`, via `session`.
+///
+/// Every string argument these members take is required to already be a
+/// plain string; TS itself is not always this strict (`isLocalType`,
+/// `isImportedType` and `getType`/`getFullyQualifiedTypeName` degrade
+/// gracefully on a nullish argument, while the `get*Declaration` getters
+/// throw a `TypeError` calling `.startsWith` on one) — the oracle corpus
+/// exercises every one of these members with a real string name only, so
+/// this port does not need to reproduce either behaviour, and instead
+/// reports a non-string argument `unsupported` uniformly.
+fn model_file_op(
+    session: &Session,
+    file: &recipe::FileArg,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    let mf = match ModelFile::from_json_with_definitions(
+        &file.ast,
+        file.definitions.clone(),
+        file.file_name.clone(),
+    ) {
+        Ok(mf) => mf,
+        Err(e) => {
+            return Dispatch::Fault(Fault::Divergence(format!(
+                "state divergence: a model file that decoded successfully failed to rebuild: {}",
+                to_oracle_error(&e).message
+            )));
+        }
+    };
+    let namespace = mf.namespace().to_string();
+    let decl =
+        |d: Option<&Declaration>| d.map_or(Value::Null, |d| declaration_value(&namespace, d));
+    let decls = |ds: Vec<&Declaration>| {
+        Value::Array(
+            ds.into_iter()
+                .map(|d| declaration_value(&namespace, d))
+                .collect(),
+        )
+    };
+    let arg_str = |i: usize| -> Result<Option<&str>, ()> {
+        match args.get(i) {
+            None => Ok(None),
+            Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => Ok(None),
+            Some(Arg::Plain(Value::String(s))) => Ok(Some(s.as_str())),
+            _ => Err(()),
+        }
+    };
+    macro_rules! str_arg {
+        ($i:expr) => {
+            match arg_str($i) {
+                Ok(Some(s)) => s,
+                Ok(None) | Err(()) => {
+                    return unsupported(format!("ModelFile.{member} with a non-string argument"));
+                }
+            }
+        };
+    }
+
+    match member {
+        "getNamespace" => ran(Ok(Value::String(namespace))),
+        "getName" => ran(Ok(mf.file_name().map_or_else(
+            || file.nullish_name.clone(),
+            |n| Value::String(n.to_string()),
+        ))),
+        "getAst" => ran(Ok(mf.ast().clone())),
+        // TS `this.definitions = definitions` (the constructor parameter),
+        // which defaults to JS `undefined` when omitted — never observed as
+        // an explicit `null` in the oracle corpus (module doc above).
+        "getDefinitions" => ran(Ok(mf
+            .definitions()
+            .map_or_else(recipe::undefined, |d| Value::String(d.to_string())))),
+        "getConcertoVersion" => ran(Ok(mf
+            .concerto_version()
+            .map_or(Value::Null, |v| Value::String(v.to_string())))),
+        "isExternal" => ran(Ok(Value::Bool(mf.is_external()))),
+        "isModelFile" => ran(Ok(Value::Bool(true))),
+        "isSystemModelFile" => ran(Ok(Value::Bool(mf.is_system_namespace()))),
+        "getAllDeclarations" => ran(Ok(decls(mf.declarations().iter().collect()))),
+        "getClassDeclarations" => ran(Ok(decls(mf.get_class_declarations()))),
+        "getEnumDeclarations" => ran(Ok(decls(mf.get_enum_declarations()))),
+        "getScalarDeclarations" => ran(Ok(decls(mf.get_scalar_declarations()))),
+        "getAssetDeclarations" => ran(Ok(decls(mf.get_asset_declarations()))),
+        "getTransactionDeclarations" => ran(Ok(decls(mf.get_transaction_declarations()))),
+        "getEventDeclarations" => ran(Ok(decls(mf.get_event_declarations()))),
+        "getAssetDeclaration" => ran(Ok(decl(mf.get_asset_declaration(str_arg!(0))))),
+        "getTransactionDeclaration" => ran(Ok(decl(mf.get_transaction_declaration(str_arg!(0))))),
+        "getEventDeclaration" => ran(Ok(decl(mf.get_event_declaration(str_arg!(0))))),
+        "getParticipantDeclaration" => ran(Ok(decl(mf.get_participant_declaration(str_arg!(0))))),
+        "getImports" => ran(Ok(Value::Array(
+            mf.get_imports().into_iter().map(Value::String).collect(),
+        ))),
+        "getImportURI" => ran(Ok(mf
+            .get_import_uri(str_arg!(0))
+            .map_or(Value::Null, |u| Value::String(u.to_string())))),
+        "isImportedType" => ran(Ok(Value::Bool(mf.is_imported_type(str_arg!(0))))),
+        "isLocalType" => ran(Ok(Value::Bool(mf.is_local_type(str_arg!(0))))),
+        "isDefined" => ran(Ok(Value::Bool(mf.is_defined(str_arg!(0))))),
+        "resolveImport" => from_engine(mf.resolve_import(str_arg!(0)), Value::String),
+        "getImportedType" => from_engine(mf.get_imported_type(str_arg!(0)), Value::String),
+        "getFullyQualifiedTypeName" => ran(Ok(mf
+            .get_fully_qualified_type_name(str_arg!(0))
+            .map_or(Value::Null, Value::String))),
+        "getModelManager" => match registered_file(session, file) {
+            Ok(r) => ran(Ok(r.summary())),
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        "getType" => {
+            let r = match registered_file(session, file) {
+                Ok(r) => r,
+                Err(Fault::Unsupported(reason)) => return unsupported(reason),
+                Err(other) => return Dispatch::Fault(other),
+            };
+            let type_name = match arg_str(0) {
+                Ok(v) => v,
+                Err(()) => {
+                    return unsupported("ModelFile.getType with a type name that is not a string");
+                }
+            };
+            let file_id = r
+                .file_id(&namespace)
+                .expect("registered_file just confirmed this namespace is registered");
+            from_engine(
+                r.mm.get_type(&Node::ModelFile(file_id), type_name),
+                |node| node_type_value(r, node),
+            )
+        }
+        // TS `modelFile.validate()` needs only `this.getModelManager()`, not
+        // that the manager has registered `this`: a file built with `new
+        // ModelFile(mm, ast)` and validated straight away is the common case
+        // (P2-08). `validate_detached_model_file` validates such a file
+        // against its manager without changing it.
+        "validate" => match owning_manager(session, file) {
+            Ok(r) => from_engine(r.mm.validate_detached_model_file(&mf), |()| {
+                recipe::undefined()
+            }),
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        _ => unreachable!("`dispatched` lists every ModelFile member"),
+    }
+}
+
+/// `file`'s owning model manager, only when `file` is genuinely the file
+/// registered there under its namespace — the same check
+/// [`recipe::model_file_node`] makes for a receiver that needs a `Node`
+/// handle. `getModelManager` and `getType` use this: `getType`'s
+/// `ModelManager::resolve_type_name` looks a namespace's file up *through
+/// the manager*, not through `file` directly, so an `mfnew` receiver that
+/// was never added via `addModelFile` would resolve with the wrong verdict
+/// (P2-08 review). `validate` does not need it: it uses
+/// `ModelManager::validate_detached_model_file` through [`owning_manager`].
+fn registered_file<'s>(
+    session: &'s Session,
+    file: &recipe::FileArg,
+) -> Result<&'s Replayed, Fault> {
+    let r = owning_manager(session, file)?;
+    // Discard the `Node`: only its existence (this namespace resolves to
+    // exactly `file`'s own AST) is wanted here.
+    recipe::model_file_node(r, file)?;
+    Ok(r)
+}
+
+/// `file`'s owning model manager (TS `this.getModelManager()`), whether or
+/// not it has registered `file`.
+fn owning_manager<'s>(session: &'s Session, file: &recipe::FileArg) -> Result<&'s Replayed, Fault> {
+    let index = file.mm_index.ok_or_else(|| {
+        Fault::Unsupported(
+            "a ModelFile op needing the owning model manager, decoded without its pool index"
+                .into(),
+        )
+    })?;
+    Ok(&session.pool[index])
+}
+
+/// `Introspector.*` ops (P2-08): a thin wrapper over the receiver's own
+/// `ModelManager` (module doc on `Session::decode`'s `"introspector"` arm) —
+/// `getModelManager` returns it directly, and the other two members
+/// delegate to it exactly as `Introspector`'s TS methods do
+/// (src/introspect/introspector.ts).
+fn introspector_op(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
+    match member {
+        "getModelManager" => ran(Ok(r.summary())),
+        // TS: `getClassDeclarations` concatenates
+        // `modelFile.getAllDeclarations().filter(d => !isMap && !isScalar)`
+        // over `modelManager.getModelFiles()`, i.e. every loaded file but
+        // the system and decorator ones — `ModelManager::class_declarations`
+        // (P2-08 review: fixed to leave those out, matching `EXCLUDE_NS`).
+        "getClassDeclarations" => ran(Ok(Value::Array(
+            r.mm.class_declarations()
+                .filter_map(|id| r.declaration_summary(id))
+                .collect(),
+        ))),
+        // TS: `getClassDeclaration(fqn)` is `this.modelManager.getType(fqn)`
+        // outright — the same lookup `ModelManager.getType`'s own dispatch
+        // (`model_manager_query`) already uses.
+        "getClassDeclaration" => {
+            let Some(Arg::Plain(Value::String(fqn))) = args.first() else {
+                return unsupported(
+                    "Introspector.getClassDeclaration with a type name that is not a string",
+                );
+            };
+            match r.mm.get_declaration(fqn) {
+                Err(e) => ran(Err(to_oracle_error(&e))),
+                Ok(_) => {
+                    let id = r.mm.declaration_id(fqn).expect("get_declaration found it");
+                    ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null)))
+                }
+            }
+        }
+        _ => unreachable!("`dispatched` lists every Introspector member"),
+    }
+}
+
 /// `Property.*` ops (P2-04, issue #48), plus the `Field`-only members
 /// (`getDefaultValue`, `getValidator`, `isTypeScalar`, `getScalarField`):
 /// every member `Field`, `RelationshipDeclaration` and
@@ -1423,6 +1928,226 @@ fn relationship_to_string(r: &Replayed, id: PropId, property: &Property) -> Disp
             ))
         },
     )
+}
+
+/// Dispatches an op whose receiver is a `"typed"` `Resource`,
+/// `ValidatedResource` or `Relationship` (P3-01 review, task
+/// `accordproject-concerto-rust#56` follow-up), decoded into a
+/// [`recipe::DecodedInstance`] by `recipe.rs`'s `Session::typed`. Covers:
+///
+/// - `Resource.validate` (TS `ValidatedResource.validate`,
+///   `src/model/validatedresource.ts`, over
+///   [`concerto_core::instance::validate::validate_instance`], task P3-01's
+///   own port of `ResourceValidator`), `toString`, `isResource`,
+///   `isConcept`, `isIdentifiable` (`src/model/resource.ts`), and
+///   `instanceOf` (inherited from `Typed`);
+/// - `Identifiable.getIdentifier`, `getFullyQualifiedIdentifier`,
+///   `getTimestamp`, `toURI`, `isRelationship`, `isResource`
+///   (`src/model/identifiable.ts`);
+/// - `Relationship.toString`, `isRelationship` (`src/model/relationship.ts`;
+///   the static `fromURI` is [`relationship_from_uri`]);
+/// - `Typed.getType`, `getNamespace`, `getFullyQualifiedType`,
+///   `getClassDeclaration` (`src/model/typed.ts`).
+///
+/// The members left (`setPropertyValue`, `addArrayValue`, `setIdentifier`,
+/// `toJSON`) mutate the receiver or serialize it: they need a
+/// `Serializer`/`Factory` port and an `effects`-comparing receiver, so
+/// `dispatched` (`exec_handles`) does not list them and they stay
+/// `unsupported`, owned by P3-01b (`ledger.rs`, `PLAN_OWNER_OVERRIDES`).
+fn instance_op(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+    class: &str,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    match (class, member) {
+        ("Resource", "validate") => ran(
+            match concerto_core::instance::validate::validate_instance(
+                &r.mm,
+                &inst.wire,
+                &concerto_core::instance::validate::ValidateOptions::default(),
+            ) {
+                Ok(()) => Ok(recipe::undefined()),
+                Err(e) => Err(to_oracle_error(&e)),
+            },
+        ),
+        ("Resource", "toString") => ran(Ok(Value::String(format!(
+            "Resource {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Resource", "isResource") => ran(Ok(Value::Bool(true))),
+        ("Resource", "isConcept") => from_engine(instance_is_concept(r, inst), Value::Bool),
+        ("Resource", "isIdentifiable") => from_engine(r.mm.is_identified(&inst.fqn), Value::Bool),
+        ("Identifiable", "getIdentifier") => ran(Ok(inst
+            .identifier
+            .clone()
+            .map(Value::String)
+            .unwrap_or_else(recipe::undefined))),
+        ("Identifiable", "getFullyQualifiedIdentifier") => {
+            ran(Ok(Value::String(fully_qualified_identifier(inst))))
+        }
+        ("Identifiable", "toURI") => ran(match instance_resource_id(inst) {
+            Ok(id) => Ok(Value::String(id.to_uri())),
+            Err(e) => Err(to_oracle_error(&e)),
+        }),
+        ("Identifiable" | "Relationship", "isRelationship") => {
+            ran(Ok(Value::Bool(inst.ctor == "Relationship")))
+        }
+        ("Identifiable", "isResource") => ran(Ok(Value::Bool(inst.ctor != "Relationship"))),
+        ("Relationship", "toString") => ran(Ok(Value::String(format!(
+            "Relationship {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Typed", "getType") => ran(Ok(Value::String(inst.type_name.clone()))),
+        ("Typed", "getNamespace") => ran(Ok(Value::String(inst.namespace.clone()))),
+        ("Typed", "getFullyQualifiedType") => ran(Ok(Value::String(inst.fqn.clone()))),
+        // TS `Identifiable.getTimestamp`: `return this.$timestamp`, as
+        // recorded (a `dayjs` node, `null` or `undefined`).
+        ("Identifiable", "getTimestamp") => ran(Ok(inst.timestamp.clone())),
+        // TS `Typed.getClassDeclaration`: `return this.$classDeclaration`.
+        ("Typed", "getClassDeclaration") => match inst.class_declaration {
+            Some(id) => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+            None => unregistered_class_declaration(),
+        },
+        ("Resource", "instanceOf") => {
+            let Some(id) = inst.class_declaration else {
+                return unregistered_class_declaration();
+            };
+            let fqt = match args.first() {
+                Some(Arg::Plain(v)) => v.clone(),
+                None => recipe::undefined(),
+                _ => return unsupported("instanceOf with a type name that is not plain data"),
+            };
+            from_engine(instance_of(r, id, &fqt), Value::Bool)
+        }
+        _ => unreachable!("`dispatched` lists every (class, member) this function handles"),
+    }
+}
+
+/// A receiver whose `$classDeclaration` has no Rust handle
+/// ([`recipe::DecodedInstance::class_declaration`]): a declaration never
+/// registered with its model manager.
+fn unregistered_class_declaration() -> Dispatch {
+    Dispatch::Fault(Fault::Blocked(
+        "the receiver's class declaration is not registered with a model manager".into(),
+        recipe::Blocker::Member("ModelFile.new".into()),
+    ))
+}
+
+/// TS `Typed.instanceOf(fqt)` (src/model/typed.ts): whether the receiver's
+/// own `$classDeclaration`, or any declaration up its
+/// `getSuperTypeDeclaration()` chain, has the fully qualified name `fqt`
+/// (compared with `===`, so only a string can match).
+fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoError> {
+    let fqt = fqt.as_str();
+    let mut current = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
+    if fqt == Some(current.as_str()) {
+        return Ok(true);
+    }
+    while let Some(super_id) = r.mm.get_super_type_declaration(&current)? {
+        current =
+            r.mm.get_fully_qualified_name(&Node::Declaration(super_id))?;
+        if fqt == Some(current.as_str()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
+/// defaultType?)` (src/model/relationship.ts): parses the URI
+/// (`ResourceId.fromURI`), looks the type up (`modelManager.getType`), and
+/// builds a `Relationship`. The result is written the way the oracle
+/// encodes a `Typed` value (`codec.js`): `$identifierFieldName` is the
+/// type's identifying field or `$identifier` (`Identifiable`'s
+/// constructor, via `modelFile.getType(fqt)?.getIdentifierFieldName()`,
+/// `null` for a declaration that is not class-like), `setIdentifier` writes
+/// the id under that name, `$timestamp` is `undefined`, and the
+/// `Relationship` constructor adds `$class: 'Relationship'`.
+fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
+    let Some(Arg::Mm(index)) = args.first() else {
+        return unsupported("Relationship.fromURI with a model manager argument that is not one");
+    };
+    let plain = |i: usize| match args.get(i) {
+        None => Some(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => Some(None),
+        Some(Arg::Plain(Value::String(s))) => Some(Some(s.as_str())),
+        _ => None,
+    };
+    let (Some(Some(uri)), Some(default_namespace), Some(default_type)) =
+        (plain(1), plain(2), plain(3))
+    else {
+        return unsupported("Relationship.fromURI with arguments that are not strings");
+    };
+    let r = &session.pool[*index];
+    let built = (|| {
+        let resource_id = concerto_core::instance::resource_id::ResourceId::from_uri(
+            uri,
+            default_namespace,
+            default_type,
+        )?;
+        let fqt =
+            model_util::get_fully_qualified_name(&resource_id.namespace, &resource_id.type_name);
+        let id = r.mm.get_type_declaration(&fqt)?;
+        let fqn = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
+        let identifier_field_name = match r.mm.declaration(id) {
+            Some(Declaration::Class(_) | Declaration::Enum(_)) => {
+                r.mm.identifier_field_name(&fqn)?
+            }
+            _ => None,
+        }
+        .unwrap_or_else(|| "$identifier".to_string());
+        let mut fields = serde_json::Map::new();
+        fields.insert("$class".into(), json!("Relationship"));
+        if identifier_field_name != "$identifier" {
+            fields.insert(identifier_field_name, json!(resource_id.id));
+        }
+        Ok::<_, ConcertoError>(json!({
+            M: "typed",
+            "ctor": "Relationship",
+            "fqn": fqn,
+            "ns": resource_id.namespace,
+            "type": resource_id.type_name,
+            "id": resource_id.id,
+            "timestamp": recipe::undefined(),
+            "fields": fields,
+        }))
+    })();
+    ran(built.map_err(|e| to_oracle_error(&e)))
+}
+
+/// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
+/// fqn + '#' + id : fqn` — `getIdentifier()`'s truthiness check, so an empty
+/// string identifier (like `undefined`/absent) falls back to the bare fqn.
+fn fully_qualified_identifier(inst: &recipe::DecodedInstance) -> String {
+    match inst.identifier.as_deref() {
+        Some(id) if !id.is_empty() => format!("{}#{id}", inst.fqn),
+        _ => inst.fqn.clone(),
+    }
+}
+
+/// TS `Identifiable.toURI`: `new ResourceId(ns, type,
+/// this.getIdentifier()).toURI()` — the `ResourceId` constructor itself
+/// throws when the identifier is empty or absent, exactly as
+/// [`concerto_core::instance::resource_id::ResourceId::new`] does.
+fn instance_resource_id(
+    inst: &recipe::DecodedInstance,
+) -> Result<concerto_core::instance::resource_id::ResourceId, ConcertoError> {
+    concerto_core::instance::resource_id::ResourceId::new(
+        inst.namespace.clone(),
+        inst.type_name.clone(),
+        inst.identifier.clone().unwrap_or_default(),
+    )
+}
+
+/// TS `Resource.isConcept`: `this.getClassDeclaration().isConcept()`.
+fn instance_is_concept(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+) -> Result<bool, ConcertoError> {
+    let decl = r.mm.get_declaration(&inst.fqn)?;
+    Ok(decl.as_class().is_some_and(ClassDeclaration::is_concept))
 }
 
 /// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
@@ -1606,6 +2331,667 @@ fn decorated_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> 
     };
     let found = decorators.iter().find(|d| d.name() == name);
     Ok(ran(Ok(found.map_or(Value::Null, encode_decorator))))
+}
+
+/// The `DecoratorManager` statics (task P2-12) this harness replays beyond
+/// the plain-data `falsyOrEqual` (`exec_plain`).
+const DECORATOR_MANAGER_OPS: [&str; 9] = [
+    "decorateModels",
+    "extractDecorators",
+    "extractVocabularies",
+    "extractNonVocabDecorators",
+    "validate",
+    "jsonToYaml",
+    "yamlToJson",
+    "migrateTo",
+    "executePropertyCommand",
+];
+
+/// An `ok`/`error` outcome plus `effects.args`: the arguments TS mutated,
+/// each recorded with its value after the call (`recorder.js` records an
+/// argument whose plain encoding changed, and only then).
+fn ran_with_effects(
+    outcome: recipe::Outcome,
+    before: &[Option<Value>],
+    after: &[Option<Value>],
+    attributed: Option<Attribution>,
+) -> Dispatch {
+    let mut effects = serde_json::Map::new();
+    for (i, (b, a)) in before.iter().zip(after).enumerate() {
+        if let (Some(b), Some(a)) = (b, a)
+            && b != a
+        {
+            effects.insert(i.to_string(), a.clone());
+        }
+    }
+    let mut out = match outcome {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({ "error": error.to_value() }),
+    };
+    if !effects.is_empty() {
+        out["effects"] = json!({ "args": effects });
+    }
+    attributed_dispatch(out, attributed)
+}
+
+fn attributed_dispatch(outcome: Value, attributed: Option<Attribution>) -> Dispatch {
+    match attributed {
+        Some(attribution) => Dispatch::RanAttributed(outcome, attribution),
+        None => Dispatch::Ran(outcome),
+    }
+}
+
+/// The owner of what `Serializer.fromJSON` does after its `$class` lookup
+/// (populating and validating the instance): P3-01b, which owns the
+/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure` stands in
+/// for it (`concerto_core::dcs`'s module doc) with its own error text and
+/// class, not TS's `ValidationException`.
+const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
+
+/// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
+/// when it is exactly the error the structural stand-in raises for one of
+/// the command sets it checked, and TS threw the `ValidationException` that
+/// resource validation raises: TS reaches the same point with the ported
+/// `$class` and `getType` steps, then fails there.
+fn attribute_stand_in(outcome: &recipe::Outcome, command_sets: &[Value]) -> Option<Attribution> {
+    let Err(error) = outcome else {
+        return None;
+    };
+    command_sets
+        .iter()
+        .find_map(|set| dcs::validate_dcs_structure(set).err())
+        .filter(|stand_in| {
+            let stand_in = to_oracle_error(stand_in);
+            stand_in.class == error.class && stand_in.message == error.message
+        })
+        .map(|_| Attribution {
+            blocker: recipe::Blocker::Owner(RESOURCE_VALIDATION_OWNER.into()),
+            ts_error_classes: &["ValidationException"],
+        })
+}
+
+/// A plain argument, or `None` for JS `undefined` (absent or the
+/// `undefined` marker).
+fn plain_arg(args: &[Arg], index: usize) -> Faulty<Option<Value>> {
+    match args.get(index) {
+        None => Ok(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => Ok(None),
+        Some(Arg::Plain(v)) => Ok(Some(v.clone())),
+        Some(_) => Err(Fault::Unsupported(format!(
+            "a handle where DecoratorManager takes plain data (argument {index})"
+        ))),
+    }
+}
+
+/// `decorateModels`' `options` object as [`dcs::DecorateOptions`]: every
+/// flag read for its JS truthiness, except the two `disable*` flags, whose
+/// explicit `false` `skipValidationAndResolution` rejects (`=== false`).
+fn decorate_options(options: Option<&Value>) -> dcs::DecorateOptions {
+    let get = |key: &str| {
+        options
+            .and_then(|o| o.get(key))
+            .filter(|v| !recipe::is_undefined(v))
+    };
+    let flag = |key: &str| get(key).is_some_and(recipe::truthy);
+    let tri = |key: &str| match get(key) {
+        Some(Value::Bool(false)) => Some(false),
+        Some(v) if recipe::truthy(v) => Some(true),
+        _ => None,
+    };
+    dcs::DecorateOptions {
+        migrate: flag("migrate"),
+        validate: flag("validate"),
+        validate_commands: flag("validateCommands"),
+        default_namespace: get("defaultNamespace").cloned(),
+        skip_validation_and_resolution: flag("skipValidationAndResolution"),
+        disable_metamodel_resolution: tri("disableMetamodelResolution"),
+        disable_metamodel_validation: tri("disableMetamodelValidation"),
+    }
+}
+
+/// `extractDecorators`' (and its two siblings') `options`, spread over
+/// `{removeDecoratorsFromModel: false, locale: 'en'}`.
+fn extract_options(options: Option<&Value>) -> dcs::ExtractOptions {
+    let mut out = dcs::ExtractOptions::default();
+    if let Some(Value::Object(o)) = options {
+        if let Some(v) = o.get("removeDecoratorsFromModel") {
+            out.remove_decorators_from_model = recipe::truthy(v);
+        }
+        if let Some(v) = o.get("locale") {
+            // `locale: ${this.locale}` in the vocabulary text.
+            out.locale = if recipe::is_undefined(v) {
+                "undefined".to_string()
+            } else {
+                match v {
+                    Value::String(s) => s.clone(),
+                    Value::Null => "null".to_string(),
+                    other => other.to_string(),
+                }
+            };
+        }
+    }
+    out
+}
+
+/// Whether `BaseModelManager.resolveMetaModel` (not ported: P2-08/P4-08)
+/// would leave every model of `mm` unchanged, so that a DCS op which reads
+/// `getAst(true, …)` in TS is replayed exactly by one that reads the
+/// unresolved AST. `MetaModelUtil.resolveLocalNames` (concerto-metamodel)
+/// builds a name table from each model's imports, which throws for an
+/// import whose namespace or declaration is not loaded, then only rewrites
+/// super types, object/relationship property and map types, decorator type
+/// references and scalar declarations (it adds their `namespace`). So it is
+/// the identity when every import resolves and no user model holds any of
+/// those nodes, nor any model a decorator type reference. The system models'
+/// own super types are rewritten too, but no DCS op's result carries them:
+/// `fromAst` skips those namespaces, and their decorators have no type
+/// references.
+fn resolution_changes_nothing(mm: &ModelManager) -> bool {
+    const MM: &str = "concerto.metamodel@1.0.0.";
+    fn class_of(v: &Value) -> &str {
+        v.get("$class").and_then(Value::as_str).unwrap_or_default()
+    }
+    fn has_type_reference_decorator(node: &Value) -> bool {
+        node.get("decorators")
+            .and_then(Value::as_array)
+            .is_some_and(|ds| {
+                ds.iter().any(|d| {
+                    d.get("arguments")
+                        .and_then(Value::as_array)
+                        .is_some_and(|args| {
+                            args.iter().any(|a| {
+                                class_of(a) == "concerto.metamodel@1.0.0.DecoratorTypeReference"
+                            })
+                        })
+                })
+            })
+    }
+    let rewritten = |node: &Value| {
+        let class = class_of(node).strip_prefix(MM).unwrap_or_default();
+        matches!(
+            class,
+            "ObjectProperty"
+                | "RelationshipProperty"
+                | "ObjectMapKeyType"
+                | "ObjectMapValueType"
+                | "RelationshipMapValueType"
+                | "StringScalar"
+                | "BooleanScalar"
+                | "DateTimeScalar"
+                | "DoubleScalar"
+                | "LongScalar"
+                | "IntegerScalar"
+        ) || node.get("superType").is_some()
+    };
+    for mf in mm.model_files() {
+        let ast = mf.ast();
+        for imp in ast
+            .get("imports")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(target) = imp
+                .get("namespace")
+                .and_then(Value::as_str)
+                .and_then(|ns| mm.model_file(ns))
+            else {
+                return false;
+            };
+            let declared = |name: &Value| {
+                target
+                    .ast()
+                    .get("declarations")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ds| ds.iter().any(|d| d.get("name") == Some(name)))
+            };
+            let resolves = match class_of(imp).strip_prefix(MM) {
+                Some("ImportType") => imp.get("name").is_some_and(declared),
+                Some("ImportTypes") => imp
+                    .get("types")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ts| ts.iter().all(declared)),
+                _ => true,
+            };
+            if !resolves {
+                return false;
+            }
+        }
+        let system = recipe::is_system_namespace(mf.namespace());
+        let mut nodes = vec![ast];
+        for decl in ast
+            .get("declarations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            nodes.push(decl);
+            nodes.extend(
+                decl.get("properties")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            );
+            nodes.extend(decl.get("key"));
+            nodes.extend(decl.get("value"));
+        }
+        for node in nodes {
+            if has_type_reference_decorator(node) || (!system && rewritten(node)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// `DecoratorExtractor.filterOutDecorators` returns `undefined` when it
+/// strips every decorator (`removeDecoratorsFromModel` with `EXTRACT_ALL`),
+/// and TS assigns that back: the node keeps a `decorators` key whose value
+/// is `undefined`, which the oracle records as the `undefined` marker. A
+/// Rust AST has no `undefined`, so the extractor removes the key instead
+/// (the same nullish spelling `recipe.rs` restores for file names): put the
+/// marker back wherever the source model had a `decorators` key that the
+/// extracted model no longer has.
+fn restore_undefined_decorators(source: &ModelManager, summary: &mut Value) {
+    fn restore(src: &Value, out: &mut Value) {
+        if src.get("decorators").is_some()
+            && let Some(map) = out.as_object_mut()
+            && !map.contains_key("decorators")
+        {
+            map.insert("decorators".into(), recipe::undefined());
+        }
+    }
+    let Some(models) = summary
+        .pointer_mut("/ast/models")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for model in models {
+        let Some(src) = model
+            .get("namespace")
+            .and_then(Value::as_str)
+            .filter(|ns| !recipe::is_system_namespace(ns))
+            .and_then(|ns| source.model_file(ns))
+            .map(ModelFile::ast)
+        else {
+            continue;
+        };
+        restore(src, model);
+        let (Some(src_decls), Some(out_decls)) = (
+            src.get("declarations").and_then(Value::as_array),
+            model.get_mut("declarations").and_then(Value::as_array_mut),
+        ) else {
+            continue;
+        };
+        for (src_decl, out_decl) in src_decls.iter().zip(out_decls.iter_mut()) {
+            restore(src_decl, out_decl);
+            for key in ["key", "value"] {
+                if let (Some(s), Some(o)) = (src_decl.get(key), out_decl.get_mut(key)) {
+                    restore(s, o);
+                }
+            }
+            if let (Some(sp), Some(op)) = (
+                src_decl.get("properties").and_then(Value::as_array),
+                out_decl.get_mut("properties").and_then(Value::as_array_mut),
+            ) {
+                for (s, o) in sp.iter().zip(op.iter_mut()) {
+                    restore(s, o);
+                }
+            }
+        }
+    }
+}
+
+fn blocked_on_resolution(op: &str) -> Fault {
+    Fault::Blocked(
+        format!(
+            "{op} reads getAst(true, …), whose metamodel resolution (resolveMetaModel) is not \
+             ported and would change these models"
+        ),
+        recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
+    )
+}
+
+/// `decorateModels`' `decoratorCommandSet` argument as a list:
+/// `Array.isArray(x) ? x : [x]`, after the `!x || x?.length === 0` early
+/// return (an empty list here). The flag says whether it was a list.
+fn command_sets(arg: Option<&Value>) -> Faulty<(Vec<Value>, bool)> {
+    Ok(match arg {
+        Some(Value::Array(items)) => (items.clone(), true),
+        Some(v) if recipe::truthy(v) => {
+            if !v.is_object() {
+                return Err(Fault::Unsupported(
+                    "decorateModels with a command set that is neither an object nor an array"
+                        .into(),
+                ));
+            }
+            (vec![v.clone()], false)
+        }
+        _ => (Vec::new(), false),
+    })
+}
+
+/// `DecoratorManager.validate`'s optional `modelFiles`: absent, or a list
+/// of model files, each rebuilt as TS's `ModelFile` would be.
+fn model_files_arg(args: &[Arg], index: usize) -> Faulty<Option<Vec<ModelFile>>> {
+    let items = match args.get(index) {
+        None => return Ok(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) || v.is_null() => return Ok(None),
+        Some(Arg::List(items)) => items,
+        Some(_) => {
+            return Err(Fault::Unsupported(
+                "DecoratorManager.validate with modelFiles that are not a list of model files"
+                    .into(),
+            ));
+        }
+    };
+    let file = |item: &Arg| match item {
+        Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone()).map_err(|e| {
+            Fault::Divergence(format!(
+                "input construction failed: new ModelFile: {}",
+                to_oracle_error(&e).message
+            ))
+        }),
+        _ => Err(Fault::Unsupported(
+            "DecoratorManager.validate with a modelFiles entry that is not a model file".into(),
+        )),
+    };
+    items.iter().map(file).collect::<Faulty<Vec<_>>>().map(Some)
+}
+
+/// A model manager a DCS op returned, for a `derived` recipe
+/// (`recipe.rs`). (Merge with P2-08: whether it was validated when built
+/// is no longer tracked; a validating add checks only the new file, as TS
+/// `addModelFile` does, so earlier files' validity does not matter.)
+pub struct DerivedModelManager {
+    pub mm: ModelManager,
+}
+
+/// Replays the op a `derived` model manager recipe was returned by, when
+/// it is a DCS op this harness replays: `decorateModels` (the result
+/// itself) or one of the three `extract*` statics (their `modelManager`).
+/// `None` for any other op. TS only derives a recipe from a call that
+/// succeeded, so a Rust failure here is a state divergence.
+pub fn derive_model_manager(
+    h: &Harness,
+    op: &str,
+    inputs: &Inputs,
+    path: Option<&Value>,
+) -> Faulty<Option<DerivedModelManager>> {
+    let Some(member) = op.strip_prefix("DecoratorManager.").filter(|m| {
+        matches!(
+            *m,
+            "decorateModels"
+                | "validate"
+                | "extractDecorators"
+                | "extractVocabularies"
+                | "extractNonVocabDecorators"
+        )
+    }) else {
+        return Ok(None);
+    };
+    let expected_path =
+        (!matches!(member, "decorateModels" | "validate")).then(|| json!(["modelManager"]));
+    if path.cloned() != expected_path {
+        return Err(Fault::Harness(format!(
+            "a model manager derived from {op} at an unexpected path {path:?}"
+        )));
+    }
+    let failed = |e: ConcertoError| {
+        Fault::Divergence(format!(
+            "state divergence: {op}, which returned this model manager in TS, failed: {}",
+            to_oracle_error(&e).message
+        ))
+    };
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    if member == "validate" {
+        let Some(command_set) = plain_arg(&args, 0)? else {
+            return Err(Fault::Unsupported(
+                "DecoratorManager.validate without a command set".into(),
+            ));
+        };
+        let files = model_files_arg(&args, 1)?;
+        let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
+        let mm = dcs::validate(&command_set, refs.as_deref()).map_err(failed)?;
+        return Ok(Some(DerivedModelManager { mm }));
+    }
+    let Some(Arg::Mm(index)) = args.first() else {
+        return Err(Fault::Unsupported(format!(
+            "{op} with a first argument that is not a model manager recipe"
+        )));
+    };
+    let r = &session.pool[*index];
+    if member == "decorateModels" {
+        let (mut sets, _) = command_sets(plain_arg(&args, 1)?.as_ref())?;
+        let mut options = decorate_options(plain_arg(&args, 2)?.as_ref());
+        let Some(prepared) =
+            dcs::prepare_decoration(&r.mm, &mut sets, &mut options).map_err(failed)?
+        else {
+            return Err(Fault::Harness(format!(
+                "a model manager derived from {op} with no command sets, which returns its input"
+            )));
+        };
+        if options.disable_metamodel_resolution != Some(true) && !resolution_changes_nothing(&r.mm)
+        {
+            return Err(blocked_on_resolution(op));
+        }
+        let mm = dcs::apply_decoration(&r.mm, &prepared, &options).map_err(failed)?;
+        return Ok(Some(DerivedModelManager { mm }));
+    }
+    if !resolution_changes_nothing(&r.mm) {
+        return Err(blocked_on_resolution(op));
+    }
+    let options = extract_options(plain_arg(&args, 1)?.as_ref());
+    let result = match member {
+        "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
+        "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
+        _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+    }
+    .map_err(failed)?;
+    Ok(Some(DerivedModelManager {
+        mm: result.model_manager,
+    }))
+}
+
+/// `DecoratorManager` statics (task P2-12) whose inputs include a model
+/// manager or that mutate a plain argument (`effects`).
+fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let op = format!("DecoratorManager.{member}");
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    let err = |e: ConcertoError| to_oracle_error(&e);
+
+    match member {
+        "decorateModels" => {
+            let Some(Arg::Mm(index)) = args.first() else {
+                return Err(Fault::Unsupported(
+                    "decorateModels with a first argument that is not a model manager recipe"
+                        .into(),
+                ));
+            };
+            let r = &session.pool[*index];
+            let sets_arg = plain_arg(&args, 1)?;
+            let options_arg = plain_arg(&args, 2)?;
+            let (mut sets, is_list) = command_sets(sets_arg.as_ref())?;
+            let mut options = decorate_options(options_arg.as_ref());
+            let prepared = dcs::prepare_decoration(&r.mm, &mut sets, &mut options);
+            let sets_after = sets_arg.as_ref().map(|_| {
+                if is_list {
+                    Value::Array(sets.clone())
+                } else {
+                    sets.first().cloned().unwrap_or(Value::Null)
+                }
+            });
+            let options_after = options_arg.clone().map(|mut o| {
+                if options.skip_validation_and_resolution
+                    && options.disable_metamodel_resolution == Some(true)
+                    && options.disable_metamodel_validation == Some(true)
+                    && let Some(map) = o.as_object_mut()
+                {
+                    map.insert("disableMetamodelResolution".into(), Value::Bool(true));
+                    map.insert("disableMetamodelValidation".into(), Value::Bool(true));
+                }
+                o
+            });
+            let before = [None, sets_arg.clone(), options_arg.clone()];
+            let mut model_validation = None;
+            let after = [None, sets_after, options_after];
+            let outcome = match prepared {
+                Err(e) => Err(err(e)),
+                // TS returns the model manager it was given.
+                Ok(None) => Ok(recipe::summary_of(r.kind, &r.mm)),
+                Ok(Some(prepared)) => {
+                    if options.disable_metamodel_resolution != Some(true)
+                        && !resolution_changes_nothing(&r.mm)
+                    {
+                        return Err(blocked_on_resolution(&op));
+                    }
+                    let applied = dcs::apply_decoration(&r.mm, &prepared, &options);
+                    // An error that goes away when `fromAst`'s final
+                    // `validateModelFiles` is skipped came from model
+                    // validation (`ModelFile.validate`): its text is that
+                    // validator's, when TS failed model validation too
+                    // (an `IllegalModelException`).
+                    if applied.is_err() {
+                        let unvalidated = dcs::DecorateOptions {
+                            disable_metamodel_validation: Some(true),
+                            ..options.clone()
+                        };
+                        if dcs::apply_decoration(&r.mm, &prepared, &unvalidated).is_ok() {
+                            model_validation = Some(Attribution {
+                                blocker: recipe::Blocker::Member("ModelFile.validate".into()),
+                                ts_error_classes: &["IllegalModelException"],
+                            });
+                        }
+                    }
+                    applied
+                        .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                        .map_err(err)
+                }
+            };
+            let attributed = model_validation.or_else(|| attribute_stand_in(&outcome, &sets));
+            Ok(ran_with_effects(outcome, &before, &after, attributed))
+        }
+        "extractDecorators" | "extractVocabularies" | "extractNonVocabDecorators" => {
+            let Some(Arg::Mm(index)) = args.first() else {
+                return Err(Fault::Unsupported(format!(
+                    "{op} with a first argument that is not a model manager recipe"
+                )));
+            };
+            let r = &session.pool[*index];
+            let options = extract_options(plain_arg(&args, 1)?.as_ref());
+            if !resolution_changes_nothing(&r.mm) {
+                return Err(blocked_on_resolution(&op));
+            }
+            let result = match member {
+                "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
+                "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
+                _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+            };
+            Ok(ran(result.map_err(err).map(|res| {
+                let mut summary =
+                    recipe::summary_of(recipe::Kind::ModelManager, &res.model_manager);
+                restore_undefined_decorators(&r.mm, &mut summary);
+                let mut out = serde_json::Map::new();
+                out.insert("modelManager".into(), summary);
+                if member != "extractVocabularies" {
+                    out.insert(
+                        "decoratorCommandSet".into(),
+                        Value::Array(res.decorator_command_set),
+                    );
+                }
+                if member != "extractNonVocabDecorators" {
+                    out.insert(
+                        "vocabularies".into(),
+                        Value::Array(res.vocabularies.into_iter().map(Value::String).collect()),
+                    );
+                }
+                Value::Object(out)
+            })))
+        }
+        "validate" => {
+            let Some(command_set) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.validate without a command set",
+                ));
+            };
+            let files = model_files_arg(&args, 1)?;
+            let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
+            let outcome = dcs::validate(&command_set, refs.as_deref())
+                .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                .map_err(err);
+            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&command_set));
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
+        }
+        "jsonToYaml" => {
+            let Some(json_input) = plain_arg(&args, 0)? else {
+                return Ok(unsupported("DecoratorManager.jsonToYaml without an input"));
+            };
+            let outcome = dcs::validated_json_to_yaml(&json_input)
+                .map(Value::String)
+                .map_err(err);
+            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&json_input));
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
+        }
+        "yamlToJson" => {
+            let Some(Value::String(yaml_input)) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.yamlToJson with a non-string input",
+                ));
+            };
+            let outcome = dcs::validated_yaml_to_json(&yaml_input).map_err(err);
+            // The command set `validate` checked: the converter's output.
+            let converted: Vec<Value> = dcs::yaml_to_json(&yaml_input).into_iter().collect();
+            let attributed = attribute_stand_in(&outcome, &converted);
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
+        }
+        "migrateTo" => {
+            let Some(mut command_set) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.migrateTo without a command set",
+                ));
+            };
+            let before = [Some(command_set.clone())];
+            let outcome = dcs::migrate_to(&mut command_set)
+                .map(|()| command_set.clone())
+                .map_err(err);
+            Ok(ran_with_effects(
+                outcome,
+                &before,
+                &[Some(command_set)],
+                None,
+            ))
+        }
+        "executePropertyCommand" => {
+            let (Some(mut property), Some(command)) = (plain_arg(&args, 0)?, plain_arg(&args, 1)?)
+            else {
+                return Ok(unsupported(
+                    "DecoratorManager.executePropertyCommand without a property and a command",
+                ));
+            };
+            let before = [Some(property.clone()), Some(command.clone())];
+            let outcome = dcs::execute_property_command(&mut property, &command)
+                .map(|()| recipe::undefined())
+                .map_err(err);
+            Ok(ran_with_effects(
+                outcome,
+                &before,
+                &[Some(property), Some(command)],
+                None,
+            ))
+        }
+        _ => unreachable!("DECORATOR_MANAGER_OPS lists every member"),
+    }
 }
 
 /// The namespace a decorated element's model file was loaded under, needed

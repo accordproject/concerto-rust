@@ -77,6 +77,9 @@ pub enum ErrorKind {
     /// concerto-util `BaseException(message, undefined, errorType)`, thrown by
     /// `Validator.reportError`.
     Validator,
+    /// `ValidationException(message)` (table 2.3), thrown by `ResourceValidator`
+    /// (P3-01, `src/serializer/resourcevalidator.ts`, every `report*` method).
+    Validation,
     /// A plain JS `Error(message)`.
     Error,
     /// A JS `TypeError(message)` the V8 engine raises in the TS code.
@@ -91,6 +94,7 @@ impl ErrorKind {
             Self::IllegalModel => "IllegalModelException",
             Self::TypeNotFound => "TypeNotFoundException",
             Self::Validator => "BaseException",
+            Self::Validation => "ValidationException",
             Self::Error => "Error",
             Self::JsTypeError => "TypeError",
         }
@@ -393,6 +397,7 @@ impl ContractError {
             }
             ErrorKind::TypeNotFound
             | ErrorKind::Validator
+            | ErrorKind::Validation
             | ErrorKind::Error
             | ErrorKind::JsTypeError => message,
         }
@@ -404,7 +409,11 @@ impl ContractError {
             ErrorKind::IllegalModel | ErrorKind::TypeNotFound => {
                 Some("@accordproject/concerto-core")
             }
-            ErrorKind::Validator => Some("@accordproject/concerto-util"),
+            // TS: `ValidationException` extends concerto-util's `BaseException`
+            // and passes no explicit `component`, so `BaseException`'s own
+            // default (`@accordproject/concerto-util`) applies, the same as
+            // `ErrorKind::Validator` (table 2.3).
+            ErrorKind::Validator | ErrorKind::Validation => Some("@accordproject/concerto-util"),
             ErrorKind::Error | ErrorKind::JsTypeError => None,
         }
     }
@@ -1455,6 +1464,66 @@ mod tests {
             )
             .message(),
             "Instance \"org.acme.Foo#1\" has a property \"bar\" with type \"org.acme.Baz\" that is not derived from \"org.acme.Bar\"."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_checkmaptype_expectedstring() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-checkmaptype-expectedstring",
+                &[("mapFqn", "org.acme.Foo"), ("value", "42")]
+            )
+            .message(),
+            "Model violation in org.acme.Foo. Expected Type of String but found '42' instead."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_checkmaptype_expecteddatetime() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-checkmaptype-expecteddatetime",
+                &[("mapFqn", "org.acme.Foo"), ("value", "not-a-date")]
+            )
+            .message(),
+            "Model violation in org.acme.Foo. Expected Type of DateTime but found 'not-a-date' instead."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_checkmaptype_expectedboolean() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-checkmaptype-expectedboolean",
+                &[
+                    ("mapFqn", "org.acme.Foo"),
+                    ("type", "string"),
+                    ("value", "true")
+                ]
+            )
+            .message(),
+            "Model violation in org.acme.Foo. Expected Type of Boolean but found string instead, for value 'true'."
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_visitmapdeclaration_notamap() {
+        assert_eq!(
+            contract(
+                "resourcevalidator-visitmapdeclaration-notamap",
+                &[("obj", "\"not-a-map\"")]
+            )
+            .message(),
+            "Expected a Map, but found \"not-a-map\""
+        );
+    }
+
+    #[test]
+    fn golden_resourcevalidator_checkrelationship_notidentifiable() {
+        assert_eq!(
+            contract("resourcevalidator-checkrelationship-notidentifiable", &[]).message(),
+            "Cannot have a relationship to a field that is not identifiable."
         );
     }
 

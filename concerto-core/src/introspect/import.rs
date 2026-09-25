@@ -35,6 +35,14 @@ impl Import {
         }
     }
 
+    /// The URI this import was given (`import ns.Name from 'uri'`), if any.
+    pub fn uri(&self) -> Option<&str> {
+        match self {
+            Self::Type(t) => t.uri.as_deref(),
+            Self::Types(t) => t.uri.as_deref(),
+        }
+    }
+
     /// The names this import pulls in, as they are declared in the source
     /// namespace. An alias renames a type locally but does not change the name
     /// it is declared under, so these are the names to look for over there.
@@ -66,6 +74,15 @@ impl Import {
 
     /// Resolves a short name to its fully-qualified name, but only when this
     /// import names it explicitly.
+    ///
+    /// TS: `ModelFile.fromAst`'s `importShortNames` map (modelfile.ts) sets
+    /// one local name per imported type: the alias when the type has one, the
+    /// declared name otherwise (`this.importShortNames.set(alias ?? type,
+    /// ...)`). An aliased type's *declared* name is never also registered, so
+    /// it does not resolve under it — P2-08 review carry-over (a) from
+    /// P2-04's review (#48): this used to check `t.types` unconditionally
+    /// after the alias check, so an aliased import's original name still
+    /// resolved.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
             Self::Type(t) if t.name == short => {
@@ -73,16 +90,14 @@ impl Import {
             }
             Self::Type(_) => None,
             Self::Types(t) => {
-                if let Some(aliased) = aliases(t)
-                    .iter()
-                    .find(|aliased| aliased.aliased_name == short)
-                {
-                    return Some(get_fully_qualified_name(&t.namespace, &aliased.name));
-                }
-                if t.types.iter().any(|n| n == short) {
-                    return Some(get_fully_qualified_name(&t.namespace, short));
-                }
-                None
+                let aliased = aliases(t);
+                t.types.iter().find_map(|name| {
+                    let local_name = aliased
+                        .iter()
+                        .find(|a| &a.name == name)
+                        .map_or(name.as_str(), |a| a.aliased_name.as_str());
+                    (local_name == short).then(|| get_fully_qualified_name(&t.namespace, name))
+                })
             }
         }
     }
@@ -91,6 +106,18 @@ impl Import {
 /// The aliases of a multi-type import, or none.
 fn aliases(import: &mm::ImportTypes) -> &[mm::AliasedType] {
     import.aliased_types.as_deref().unwrap_or(&[])
+}
+
+impl Import {
+    /// The `aliasedTypes` this import declares, or an empty slice for a
+    /// single-type import (which has no `aliasedTypes` field at all) or a
+    /// multi-type import with none.
+    pub fn aliased_types(&self) -> &[mm::AliasedType] {
+        match self {
+            Self::Type(_) => &[],
+            Self::Types(t) => aliases(t),
+        }
+    }
 }
 
 impl TryFrom<&serde_json::Value> for Import {
@@ -123,12 +150,19 @@ impl TryFrom<&serde_json::Value> for Import {
 
         Ok(match kind {
             // Concerto v4 disallows wildcard imports; reject them up front.
+            //
+            // TS: `ModelFile.fromAst`'s `ImportAll` arm (modelfile.ts) throws
+            // a plain `Error('Wildcard Imports are not permitted.')` — not an
+            // `IllegalModelException` (no model file, no location, no
+            // "clashes"/"unrecognized" catalogue wording), and the message
+            // does not name the namespace.
             "ImportAll" => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("wildcard imports are not allowed: import {namespace}.*"),
-                    file_name: None,
-                    location: None,
-                });
+                return Err(crate::error::ContractError::pre_port(
+                    crate::error::ErrorKind::Error,
+                    "Wildcard Imports are not permitted.".to_string(),
+                    None,
+                )
+                .into());
             }
             "ImportType" => {
                 let name = value
@@ -261,7 +295,12 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.ImportAll",
             "namespace": "org.acme@1.0.0"
         }));
-        assert!(err.unwrap_err().to_string().contains("wildcard"));
+        // TS: `ModelFile.fromAst` throws a plain `Error` with this exact,
+        // hardcoded message (not an `IllegalModelException`).
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Wildcard Imports are not permitted."
+        );
     }
 
     #[test]
@@ -353,6 +392,25 @@ mod tests {
         .unwrap();
         assert!(imp.imported_names().is_empty());
         assert_eq!(imp.resolve("A"), None);
+    }
+
+    #[test]
+    fn an_aliased_type_no_longer_resolves_under_its_declared_name() {
+        // P2-08 review carry-over (a) from P2-04's review (#48).
+        let imp = Import::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.acme@1.0.0",
+            "types": ["A", "B"],
+            "aliasedTypes": [
+                { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "B", "aliasedName": "Bee" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(imp.resolve("Bee").as_deref(), Some("org.acme@1.0.0.B"));
+        // "B" itself is no longer a visible local name once aliased to "Bee".
+        assert_eq!(imp.resolve("B"), None);
+        // The unaliased sibling still resolves under its own name.
+        assert_eq!(imp.resolve("A").as_deref(), Some("org.acme@1.0.0.A"));
     }
 
     #[test]

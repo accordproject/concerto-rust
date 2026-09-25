@@ -22,7 +22,7 @@
 //!
 //! | TS step | Replayed as |
 //! |---|---|
-//! | `addCTOModel`, `addModel` (CTO text or AST), `addModelFile` | `add_model`, then, unless validation is disabled, the new file's validation (below) |
+//! | `addCTOModel`, `addModel` (CTO text or AST), `addModelFile` | `add_model`, then, unless validation is disabled, `validate_model_file` on the new file alone (below) |
 //! | `addModelFiles` | `add_model` per file, then `validate_models` unless validation is disabled; any error restores the files that were there before, as TS does |
 //! | `validateModelFiles` | `validate_models` |
 //! | `clearModelFiles` | a fresh `ModelManager::new()` (TS: `modelFiles = {}`, then the decorator and root models again) |
@@ -30,24 +30,23 @@
 //! | `updateModelFile`, `deleteModelFile`, `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
 //!
 //! **Validation on add.** TS `addModelFile` validates *only the new file*
-//! (`modelFile.validate()`) before registering it. The Rust engine has no
-//! single-file validation yet (`ModelFile.validate` is P2-08's); it only
-//! validates every file (`validate_models`). The two agree exactly when every
-//! file already registered is known to validate on the Rust engine (it was
-//! added with validation, or a later `validateModelFiles` passed): adding a
-//! namespace cannot make another file invalid, so the first error
-//! `validate_models` reports is then the new file's. The harness therefore
-//! replays a validating add as "register, `validate_models`, and on an error
-//! restore the files that were there before" when that holds, and reports the
-//! fixture `unsupported` when it does not, rather than risk blaming the new
-//! file for an older one's error. Removal has no Rust counterpart either, so
+//! (`modelFile.validate()`) before registering it, so a file added earlier
+//! with validation disabled is never re-checked (P2-08: a later
+//! `validateModelFiles` is what rejects it). The harness replays this as
+//! "register, `validate_model_file` on the new file alone, and on an error
+//! restore the files that were there before" — the Rust validation resolves
+//! the file's own namespace through the manager, so it runs once the file is
+//! registered rather than before. Removal has no Rust counterpart, so
 //! restoring rebuilds the manager from the surviving files (all of which
 //! loaded before).
 //!
-//! **Options.** Only `skipLocationNodes` (it selects the cache entry) is
-//! replayed. Any other option with a truthy value changes TS behaviour the
-//! Rust engine does not model yet (`metamodelValidation`, `addMetamodel`,
-//! `decoratorValidation`, ...), so such a recipe is `unsupported`.
+//! **Options.** `skipLocationNodes` (it selects the cache entry) and
+//! `dangerouslyAllowReservedSystemTypeNamesInUserModels` (P2-08:
+//! `ModelManager::set_dangerously_allow_reserved_system_type_names_in_user_models`,
+//! read by `Declaration.validate`) are replayed. Any other option with a
+//! truthy value changes TS behaviour the Rust engine does not model yet
+//! (`metamodelValidation`, `addMetamodel`, `decoratorValidation`, ...), so
+//! such a recipe is `unsupported`.
 //!
 //! # Model files, declarations, properties
 //!
@@ -63,17 +62,23 @@
 //! directly via `new Cls(modelFile, ast)`, never added to `modelFile`) is
 //! rebuilt with `ScalarDeclaration::build_standalone` when `cls` is
 //! `ScalarDeclaration` (P2-05); any other `cls` is `unsupported`, for its own
-//! owner. `validatorref`, `typed`, `factory`, `serializer`,
+//! owner. `validatorref`, `factory`, `serializer`,
 //! `introspector`, `predicate` and `decoratorfactory` have no Rust
-//! counterpart yet: `unsupported`.
+//! counterpart yet: `unsupported`. `typed` (P3-01 review, task
+//! `accordproject-concerto-rust#56` follow-up) is decoded directly into
+//! [`DecodedInstance`] by [`Session::typed`], from the node's own `fields`
+//! object rather than a `Factory`/`JSONPopulator` replay — see
+//! [`Arg::Typed`]'s doc.
 
 use std::collections::HashMap;
 
+use concerto_core::instance::validate::{DAYJS_TAG, RELATIONSHIP_TAG, js_undefined};
 use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
 };
 use concerto_core::model_manager::{DeclId, ModelFileId, ModelManager, Node, PropId};
+use concerto_core::model_util;
 use serde_json::{Value, json};
 
 use super::Harness;
@@ -121,12 +126,13 @@ fn blocked(reason: impl Into<String>, member: impl Into<String>) -> Fault {
 }
 
 /// The TS member an input kind this harness cannot rebuild stands for.
+/// `"typed"` is not listed here any more: [`Session::decode`] now decodes it
+/// directly (P3-01 review), ahead of this fallback.
 fn member_of_kind(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "declnew" => "ScalarDeclaration.new",
         "decoref" => "Decorator.new",
         "validatorref" => "Validator.new",
-        "typed" => "Resource.new",
         "factory" => "Factory.new",
         "serializer" => "Serializer.new",
         "introspector" => "Introspector.new",
@@ -206,13 +212,15 @@ struct Entry {
     ast: Value,
     file_name: Option<String>,
     nullish_name: Value,
-    known_valid: bool,
 }
 
 /// A replayed model manager.
 pub struct Replayed {
     pub kind: Kind,
     skip_location_nodes: Value,
+    /// TS `options.dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// (JS truthiness), set on every manager this recipe builds or rebuilds.
+    allow_reserved_system_type_names: bool,
     files: Vec<Entry>,
     pub mm: ModelManager,
 }
@@ -222,7 +230,17 @@ pub struct Replayed {
 pub struct FileArg {
     pub(crate) ast: Value,
     pub(crate) file_name: Option<String>,
-    nullish_name: Value,
+    pub(crate) nullish_name: Value,
+    /// TS `ModelFile.getDefinitions`: the CTO source text the recipe's own
+    /// `definitions` field carries (`mfnew` only — a manager-registered
+    /// `mfref` never has one, since `ModelManager.add_model` never threads
+    /// one through, P2-08).
+    pub(crate) definitions: Option<String>,
+    /// The owning model manager's index in the session's pool (P2-08:
+    /// `ModelFile.getModelManager`), when this file was decoded at the top
+    /// level rather than mid model-manager-step replay (where the owner may
+    /// still be under construction, with no pool index of its own yet).
+    pub(crate) mm_index: Option<usize>,
 }
 
 /// One decoded argument.
@@ -266,6 +284,69 @@ pub enum Arg {
     Deco(usize, DecoParent, usize),
     /// An array that holds encoded values (a list of model files).
     List(Vec<Arg>),
+    /// A `Resource`, `ValidatedResource` or `Relationship` (`"typed"`,
+    /// README "Value encoding"), decoded into [`DecodedInstance`]: the
+    /// model manager it belongs to (pool index) plus the instance itself.
+    /// P3-01 review (task `accordproject-concerto-rust#56` follow-up):
+    /// `Resource.validate` and the `Identifiable`/`Typed`/`Relationship`
+    /// accessors are dispatched from this.
+    Typed(usize, DecodedInstance),
+}
+
+/// A decoded oracle `"typed"` value: enough of a `Resource`, `ValidatedResource`
+/// or `Relationship` to dispatch `Resource.validate` and the read-only
+/// `Typed`/`Identifiable`/`Relationship` accessors (`ops.rs`), without a
+/// `JSONPopulator`/`Factory` port (`instance/validate.rs`'s module doc
+/// "Scope" — this is the decode side of the same scope decision: it reads
+/// an oracle `"typed"` node's own `fields` object directly, never a `decl`
+/// handle, so it needs no `ModelManager` lookup of its own beyond the one
+/// `mm` index every field that points to another instance already carries).
+///
+/// TS: this is `Resource`/`ValidatedResource`/`Relationship`
+/// (`src/model/resource.ts`, `validatedresource.ts`, `relationship.ts`),
+/// read back from the oracle's own recorded encoding
+/// (`migration/oracle/lib/codec.js`'s `"typed"` kind) rather than rebuilt
+/// through a Rust `Factory`, which does not exist yet.
+///
+/// The one exception is the receiver's own `$classDeclaration`
+/// ([`Self::class_declaration`]), which `Typed.getClassDeclaration` and
+/// `instanceOf` return or walk: [`Session::typed`] resolves the node's `decl`
+/// handle for that, when it is a `declref`.
+#[derive(Debug, Clone)]
+pub struct DecodedInstance {
+    /// `"Resource"`, `"ValidatedResource"` or `"Relationship"`.
+    pub ctor: String,
+    /// TS `$namespace`.
+    pub namespace: String,
+    /// TS `$type` (short name, no namespace).
+    pub type_name: String,
+    /// TS `$namespace + '.' + $type` (`getFullyQualifiedType()`).
+    pub fqn: String,
+    /// TS `$identifierFieldName`. Not yet read by any dispatched op
+    /// ([`super::ops::instance_op`]); kept for a future one (`setIdentifier`,
+    /// say) rather than dropped, the same way [`super::fixture::Fixture`]
+    /// keeps `source_test`.
+    #[allow(dead_code)]
+    pub identifier_field_name: Option<String>,
+    /// TS `$identifier` (`getIdentifier()`/`getFullyQualifiedIdentifier()`).
+    pub identifier: Option<String>,
+    /// TS `$timestamp` (`Identifiable.getTimestamp()`), in the oracle's own
+    /// encoding (a `dayjs` node, `null`, or the `undefined` marker when the
+    /// field was never set).
+    pub timestamp: Value,
+    /// TS `$classDeclaration`, when the node's `decl` is a `declref` this
+    /// session could resolve (only a top-level receiver or argument; a
+    /// nested field value is decoded without a session, so `None`).
+    pub class_declaration: Option<DeclId>,
+    /// The instance in [`crate::instance::validate::validate_instance`]'s
+    /// input shape (module doc "Scope"): for a `Resource`/`ValidatedResource`,
+    /// a `$class`-tagged wire-shaped object with every own (non-system)
+    /// field recursively decoded the same way, `DateTime`/`Relationship`
+    /// values tagged per that module's `DAYJS_TAG`/`RELATIONSHIP_TAG`; for a
+    /// `Relationship`, a `RELATIONSHIP_TAG`-tagged `{"$class": <pointed-at
+    /// fqn>}` object (never a URI string — module doc "Scope" — since this
+    /// is already a *populated* `Relationship`, not wire JSON).
+    pub wire: Value,
 }
 
 /// What a `decoref`'s `parent` names (P2-07).
@@ -340,6 +421,16 @@ impl<'h> Session<'h> {
             },
             "mm" => self.replay(v).map(Arg::Mm),
             "mmref" => self.mmref(v).map(Arg::Mm),
+            // TS `Introspector` (src/introspect/introspector.ts) is a thin
+            // wrapper that stores its `ModelManager` and delegates every
+            // member to it (P2-08): its handle is just that manager's own
+            // pool index, the same `Arg::Mm` a `ModelManager` receiver is.
+            "introspector" => {
+                let mm_node = v
+                    .get("mm")
+                    .ok_or_else(|| Fault::Harness("introspector without mm".into()))?;
+                self.mm_index(mm_node).map(Arg::Mm)
+            }
             "mfref" | "mfnew" => self.file(v, self_mm).map(Arg::File),
             "declref" => {
                 let (mm, id) = self.declref(v)?;
@@ -350,6 +441,7 @@ impl<'h> Session<'h> {
                 Ok(Arg::MapPart(mm, id, is_key))
             }
             "declnew" => self.declnew(v, self_mm),
+            "typed" => self.typed(v),
             "propref" => {
                 let (mm, id) = self.propref(v)?;
                 Ok(Arg::Prop(mm, id))
@@ -394,16 +486,30 @@ impl<'h> Session<'h> {
 
     /// Rebuilds one `mm` recipe on the Rust engine.
     fn replay(&mut self, node: &Value) -> Faulty<usize> {
-        if let Some(derived) = node.get("derived") {
-            let op = derived.get("op").and_then(Value::as_str).unwrap_or("?");
-            return Err(blocked(
-                format!("a model manager derived from {op}, which is not replayed natively"),
-                op,
-            ));
-        }
         let kind = Kind::parse(node.get("kind").and_then(Value::as_str).unwrap_or(""))?;
-        let options = node.get("options").cloned().unwrap_or_else(undefined);
-        let mut r = Replayed::new(kind, &options)?;
+        let mut r = match node.get("derived") {
+            Some(derived) => {
+                let op = derived.get("op").and_then(Value::as_str).unwrap_or("?");
+                let inputs: super::fixture::Inputs =
+                    serde_json::from_value(derived.get("inputs").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| Fault::Harness(format!("derived inputs of {op}: {e}")))?;
+                let Some(derived_mm) =
+                    super::ops::derive_model_manager(self.h, op, &inputs, derived.get("path"))?
+                else {
+                    return Err(blocked(
+                        format!(
+                            "a model manager derived from {op}, which is not replayed natively"
+                        ),
+                        op,
+                    ));
+                };
+                Replayed::from_derived(kind, derived_mm)
+            }
+            None => {
+                let options = node.get("options").cloned().unwrap_or_else(undefined);
+                Replayed::new(kind, &options)?
+            }
+        };
         for step in node
             .get("steps")
             .and_then(Value::as_array)
@@ -471,23 +577,37 @@ impl<'h> Session<'h> {
                 Some(index) => &self.pool[index],
                 None => self_mm.expect("checked above"),
             };
-            return r.file_arg(ns).ok_or_else(|| {
+            let mut file = r.file_arg(ns).ok_or_else(|| {
                 Fault::Divergence(format!(
                     "state divergence: model file {ns} not registered after replay"
                 ))
-            });
+            })?;
+            file.mm_index = owner;
+            return Ok(file);
         }
         let ast = v.get("ast").cloned().unwrap_or(Value::Null);
         let (file_name, nullish_name) =
             nullish_or_string(v.get("fileName").unwrap_or(&undefined()))?;
+        let definitions = match v.get("definitions") {
+            None => None,
+            Some(d) if d.is_null() || is_undefined(d) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => {
+                return Err(Fault::Unsupported(
+                    "a model file's definitions argument that is not a string".into(),
+                ));
+            }
+        };
         // TS `new ModelFile(mm, ast, definitions, fileName)` runs while the
         // input is decoded, so a failure here is "input construction failed".
-        ModelFile::from_json(&ast, file_name.clone())
+        ModelFile::from_json_with_definitions(&ast, definitions.clone(), file_name.clone())
             .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
         Ok(FileArg {
             ast,
             file_name,
             nullish_name,
+            definitions,
+            mm_index: owner,
         })
     }
 
@@ -519,6 +639,40 @@ impl<'h> Session<'h> {
             ScalarDeclaration::build_standalone(namespace, file.file_name.as_deref(), &ast)
                 .map_err(|e| divergence_from(&to_oracle_error(&e), "new ScalarDeclaration"))?;
         Ok(Arg::DeclNew { fqn, processed })
+    }
+
+    /// Decodes an oracle `"typed"` value (README "Value encoding": "a
+    /// Resource, ValidatedResource or Relationship: its handles plus every
+    /// own property in order") into a [`DecodedInstance`] ([`Arg::Typed`]'s
+    /// doc has the rationale for reading `fields` directly rather than the
+    /// `decl`/`mm` handles a full `Factory`/`JSONPopulator` port would use).
+    ///
+    /// `fields` always carries `$namespace`/`$type`/`$identifierFieldName`/
+    /// `$identifier` (recorded straight from the TS instance's own private
+    /// fields, `identifiable.ts`), so those need no `ModelManager` lookup;
+    /// this method resolves only the `mm` handle every instance carries (so
+    /// `Resource.validate` and friends have a real [`ModelManager`] to run
+    /// against) and recurses into the non-system fields via
+    /// [`Self::typed_field_value`], which needs no further `mm` resolution
+    /// of its own (a nested `"typed"`/`"dayjs"` field value carries its own
+    /// data, not a fresh handle to look up).
+    fn typed(&mut self, v: &Value) -> Faulty<Arg> {
+        let mm_node = v
+            .get("mm")
+            .ok_or_else(|| Fault::Harness("typed value without mm".into()))?;
+        let mm_index = self.mm_index(mm_node)?;
+        let mut inst = decode_typed_instance(v)?;
+        // `$classDeclaration`: only a registered declaration has a handle. A
+        // `decl` this session cannot resolve leaves it `None`, which only
+        // the ops that read it (`getClassDeclaration`, `instanceOf`) report.
+        if let Some(decl) = v.get("decl")
+            && decl.get(M).and_then(Value::as_str) == Some("declref")
+            && let Ok((owner, id)) = self.declref(decl)
+            && owner == mm_index
+        {
+            inst.class_declaration = Some(id);
+        }
+        Ok(Arg::Typed(mm_index, inst))
     }
 
     fn declref(&mut self, v: &Value) -> Faulty<(usize, DeclId)> {
@@ -710,19 +864,207 @@ fn contains_marker(v: &Value) -> bool {
     }
 }
 
+/// Decodes an oracle `"typed"` node's `fields` object into a
+/// [`DecodedInstance`] ([`Session::typed`] resolves its `mm` handle first;
+/// this part needs none, see that method's doc).
+fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
+    let ctor = v
+        .get("ctor")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Fault::Harness("typed value without ctor".into()))?
+        .to_string();
+    let fields = v
+        .get("fields")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Fault::Harness("typed value without a fields object".into()))?;
+    let namespace = fields
+        .get("$namespace")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let type_name = fields
+        .get("$type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let fqn = model_util::get_fully_qualified_name(&namespace, &type_name);
+    let identifier_field_name = fields
+        .get("$identifierFieldName")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // TS `getIdentifier()`: `this[this.$identifierFieldName]`, not always
+    // `this.$identifier` (bug fix: a shadowed identifying field, TS's own
+    // wording in `identifiable.ts`, can genuinely diverge from `$identifier`
+    // — for example after `setIdentifier` sets both at construction but a
+    // later direct field write changes only the named one).
+    let identifier = fields
+        .get(identifier_field_name.as_deref().unwrap_or("$identifier"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // `this.$timestamp`: recorded only when the key exists on the instance.
+    let timestamp = fields.get("$timestamp").cloned().unwrap_or_else(undefined);
+
+    if ctor == "Relationship" {
+        // `RELATIONSHIP_TAG`'s doc (`instance/validate.rs`): the wire form
+        // this validator expects for an already-populated `Relationship` is
+        // `{RELATIONSHIP_TAG: true, "$class": <pointed-at fqn>}`, plus its
+        // identifying field under its *own* name (not a URI string), so
+        // that `instance/validate.rs`'s `identifiable_parts` — which looks
+        // an `Identifiable` value's id up by `ModelManager::identifier_field_name`,
+        // the same way for a `Relationship` or a nested `Resource` alike —
+        // finds it.
+        let mut wire = serde_json::Map::new();
+        wire.insert(RELATIONSHIP_TAG.to_string(), Value::Bool(true));
+        wire.insert("$class".to_string(), Value::String(fqn.clone()));
+        if let (Some(id_field), Some(id)) = (&identifier_field_name, &identifier) {
+            wire.insert(id_field.clone(), Value::String(id.clone()));
+        }
+        return Ok(DecodedInstance {
+            ctor,
+            namespace,
+            type_name,
+            fqn,
+            identifier_field_name,
+            identifier,
+            timestamp,
+            class_declaration: None,
+            wire: Value::Object(wire),
+        });
+    }
+
+    // `Resource`/`ValidatedResource`: TS `JSONGenerator.visitClassDeclaration`
+    // writes `$class` plus each of `classDeclaration.getProperties()`'s own
+    // values (module doc on `DecodedInstance::wire`). `getProperties()`
+    // includes a synthetic `$identifier`/`$timestamp` entry for a
+    // system-identified/transaction-or-event type (plan §1.2's "implicit
+    // `Concept` super type and the `$identifier`/`$timestamp` fields" gap;
+    // `instance/validate.rs`'s `get_all_properties` already resolves these),
+    // so `$identifier` and `$timestamp` are kept here too, alongside every
+    // ordinary (non-`$`) field — every *other* `$`-prefixed key is TS's
+    // `isPrivateSystemProperty` list (`modelutil.ts`), never a real Concerto
+    // property (a declared name never starts with `$` in this corpus), so
+    // skipping them is exact, not an approximation.
+    const PRIVATE_ONLY_KEYS: [&str; 9] = [
+        "$modelManager",
+        "$classDeclaration",
+        "$namespace",
+        "$type",
+        "$identifierFieldName",
+        "$validator",
+        "$imports",
+        "$superTypes",
+        "$id",
+    ];
+    let mut wire = serde_json::Map::new();
+    wire.insert("$class".to_string(), Value::String(fqn.clone()));
+    for (key, value) in fields {
+        if PRIVATE_ONLY_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        wire.insert(key.clone(), typed_field_value(value)?);
+    }
+    Ok(DecodedInstance {
+        ctor,
+        namespace,
+        type_name,
+        fqn,
+        identifier_field_name,
+        identifier,
+        timestamp,
+        class_declaration: None,
+        wire: Value::Object(wire),
+    })
+}
+
+/// Decodes one field value found inside an oracle `"typed"` node's `fields`
+/// object (recursively: an array, a nested `"typed"` instance, a `"dayjs"`
+/// timestamp, a `"map"` (a JS `Map`-backed `MapDeclaration` value) or a
+/// `"number"` (`NaN`/`Infinity`/`-Infinity`/`-0`) — every other plain JSON
+/// value needs no decoding.
+fn typed_field_value(v: &Value) -> Faulty<Value> {
+    if let Value::Array(items) = v {
+        return items
+            .iter()
+            .map(typed_field_value)
+            .collect::<Faulty<Vec<_>>>()
+            .map(Value::Array);
+    }
+    let Value::Object(map) = v else {
+        return Ok(v.clone());
+    };
+    let Some(Value::String(kind)) = map.get(M) else {
+        return Ok(v.clone());
+    };
+    match kind.as_str() {
+        // `DAYJS_TAG`'s doc (`instance/validate.rs`): marks a value that
+        // really did go through `JSONPopulator`'s `DateTime` coercion in TS,
+        // as every `"dayjs"`-encoded field here did (it is how the TS
+        // recorder itself found this value, README "Value encoding":
+        // `dayjs | {iso, offset, utc, valid}`) — the ISO string itself is
+        // kept only for readability in a failing assertion, not read by the
+        // validator, which only checks the tag's presence.
+        "dayjs" => {
+            let iso = map.get("iso").and_then(Value::as_str).unwrap_or_default();
+            Ok(json!({ DAYJS_TAG: iso }))
+        }
+        "typed" => Ok(decode_typed_instance(v)?.wire),
+        // A JS `undefined`, kept distinct from `null` (`UNDEFINED_TAG`'s doc,
+        // `instance/validate.rs`): `["a", undefined, "b"]` is reported by
+        // TS as a value `undefined` of type `undefined`, not `null`/`object`.
+        "undefined" => Ok(js_undefined()),
+        // A JS `Map` (a `MapDeclaration` value): `{"@@oracle":"map",
+        // "entries": [[key, value], ...]}` -> the plain object
+        // `visitMapDeclaration`'s `Object.fromEntries(map)` would produce.
+        "map" => {
+            let entries = map
+                .get("entries")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Fault::Harness("map value without entries".into()))?;
+            let mut obj = serde_json::Map::new();
+            for entry in entries {
+                let pair = entry
+                    .as_array()
+                    .ok_or_else(|| Fault::Harness("a map entry that is not [key, value]".into()))?;
+                let key = pair
+                    .first()
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Fault::Harness("a map entry with a non-string key".into()))?;
+                let value = typed_field_value(pair.get(1).unwrap_or(&Value::Null))?;
+                obj.insert(key.to_string(), value);
+            }
+            Ok(Value::Object(obj))
+        }
+        // `{"@@oracle":"number","value":"NaN"|"Infinity"|"-Infinity"|"-0"}`:
+        // a JSON number cannot hold any of these; encoded here as a JSON
+        // string, which is not itself a valid Concerto primitive value for
+        // any field type, so a validator check reaching it correctly
+        // reports a field type violation (never a silent pass) the same way
+        // TS's own `!isFinite(NaN)` does for the numeric kinds.
+        "number" => Ok(map.get("value").cloned().unwrap_or(Value::Null)),
+        other => Err(Fault::Unsupported(format!(
+            "a typed field value of kind {other} is not decoded"
+        ))),
+    }
+}
+
 /// Model manager options that concerto-core 5.0.0 reads on the paths this
 /// harness replays and the Rust engine does not model yet: metamodel
 /// validation (`basemodelmanager.ts` `addModelFile`), adding the metamodel
-/// (constructor), decorator validation (`Decorated.validate`), reserved
-/// system type names (`declaration.ts`) and a custom `RegExp`
-/// (`stringvalidator.ts`).
-const UNMODELLED_OPTIONS: [&str; 5] = [
+/// (constructor), decorator validation (`Decorated.validate`) and a custom
+/// `RegExp` (`stringvalidator.ts`).
+const UNMODELLED_OPTIONS: [&str; 4] = [
     "metamodelValidation",
     "addMetamodel",
     "decoratorValidation",
-    "dangerouslyAllowReservedSystemTypeNamesInUserModels",
     "regExp",
 ];
+
+/// TS `ModelManagerOptions.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+/// read back as `Boolean(modelFile.getModelManager()?.options?.<this>)` by
+/// `Declaration.validate` (declaration.ts) and modelled by the Rust engine
+/// (P2-08).
+const ALLOW_RESERVED_SYSTEM_TYPE_NAMES: &str =
+    "dangerouslyAllowReservedSystemTypeNamesInUserModels";
 
 /// Options concerto-core 5.0.0 never reads on these paths: `strict`,
 /// `enableMapType` and `importAliasing` are v3/v4 flags no 5.0.0 source file
@@ -747,20 +1089,28 @@ fn option_reader(key: &str) -> Option<&'static str> {
         "addMetamodel" => "BaseModelManager.new",
         // `Decorator.validate` reads `mm.getDecoratorValidation()`.
         "decoratorValidation" => "Decorator.validate",
-        // `Declaration.validate` (src/introspect/declaration.ts).
-        "dangerouslyAllowReservedSystemTypeNamesInUserModels" => "Declaration.validate",
         // `StringValidator`'s constructor builds the custom RegExp.
         "regExp" => "StringValidator.new",
         _ => return None,
     })
 }
 
-/// Checks a recipe's options, returning its `skipLocationNodes` (which only
-/// selects the cache entry, i.e. the AST's shape). An unmodelled option with
-/// a truthy value, or an option this harness does not know, is unsupported.
-fn check_options(options: &Value) -> Faulty<Value> {
+/// A recipe's options as the harness replays them: `skipLocationNodes`
+/// (which only selects the cache entry, i.e. the AST's shape) and
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels`.
+struct Options {
+    skip_location_nodes: Value,
+    allow_reserved_system_type_names: bool,
+}
+
+/// Checks a recipe's options. An unmodelled option with a truthy value, or
+/// an option this harness does not know, is unsupported.
+fn check_options(options: &Value) -> Faulty<Options> {
     if is_undefined(options) || options.is_null() {
-        return Ok(Value::Null);
+        return Ok(Options {
+            skip_location_nodes: Value::Null,
+            allow_reserved_system_type_names: false,
+        });
     }
     let Some(map) = options.as_object() else {
         return Err(Fault::Unsupported(
@@ -768,7 +1118,9 @@ fn check_options(options: &Value) -> Faulty<Value> {
         ));
     };
     for (key, value) in map {
-        let inert = key == "skipLocationNodes" || INERT_OPTIONS.contains(&key.as_str());
+        let inert = key == "skipLocationNodes"
+            || key == ALLOW_RESERVED_SYSTEM_TYPE_NAMES
+            || INERT_OPTIONS.contains(&key.as_str());
         if !inert && (truthy(value) || !UNMODELLED_OPTIONS.contains(&key.as_str())) {
             let reason =
                 format!("ModelManager option `{key}` is not modelled by the Rust engine yet");
@@ -778,31 +1130,77 @@ fn check_options(options: &Value) -> Faulty<Value> {
             });
         }
     }
-    Ok(match map.get("skipLocationNodes") {
-        None => Value::Null,
-        Some(v) if is_undefined(v) => Value::Null,
-        Some(v) => v.clone(),
+    Ok(Options {
+        skip_location_nodes: match map.get("skipLocationNodes") {
+            None => Value::Null,
+            Some(v) if is_undefined(v) => Value::Null,
+            Some(v) => v.clone(),
+        },
+        allow_reserved_system_type_names: map
+            .get(ALLOW_RESERVED_SYSTEM_TYPE_NAMES)
+            .is_some_and(truthy),
     })
 }
 
 impl Replayed {
     /// `new ModelManager(options)`.
     pub fn new(kind: Kind, options: &Value) -> Faulty<Self> {
-        let skip_location_nodes = check_options(options)?;
-        let mm = ModelManager::new()
-            .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
+        let Options {
+            skip_location_nodes,
+            allow_reserved_system_type_names,
+        } = check_options(options)?;
+        let mm = Self::fresh_manager(allow_reserved_system_type_names)?;
         Ok(Self {
             kind,
             skip_location_nodes,
+            allow_reserved_system_type_names,
             files: Vec::new(),
             mm,
         })
     }
 
-    /// The Rust manager rebuilt from `files`, all of which loaded before.
-    fn rebuild(&mut self) -> Faulty<()> {
+    /// A model manager another op returned (a `derived` recipe), with its
+    /// user model files as they were loaded: without a file name (`fromAst`
+    /// passes none). Its options are the derived manager's own (merge with
+    /// P2-08: `dangerouslyAllowReservedSystemTypeNamesInUserModels` is
+    /// carried over, so a rebuild keeps it; a validating add checks only the
+    /// new file, so whether the derived manager was validated no longer
+    /// matters here).
+    pub fn from_derived(kind: Kind, derived: super::ops::DerivedModelManager) -> Self {
+        let files = derived
+            .mm
+            .model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .map(|mf| Entry {
+                ast: mf.ast().clone(),
+                file_name: mf.file_name().map(str::to_string),
+                nullish_name: undefined(),
+            })
+            .collect();
+        Self {
+            kind,
+            skip_location_nodes: Value::Null,
+            allow_reserved_system_type_names: derived
+                .mm
+                .dangerously_allow_reserved_system_type_names_in_user_models(),
+            files,
+            mm: derived.mm,
+        }
+    }
+
+    /// `new ModelManager(options)` for this recipe's modelled options.
+    fn fresh_manager(allow_reserved_system_type_names: bool) -> Faulty<ModelManager> {
         let mut mm = ModelManager::new()
             .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
+        mm.set_dangerously_allow_reserved_system_type_names_in_user_models(
+            allow_reserved_system_type_names,
+        );
+        Ok(mm)
+    }
+
+    /// The Rust manager rebuilt from `files`, all of which loaded before.
+    fn rebuild(&mut self) -> Faulty<()> {
+        let mut mm = Self::fresh_manager(self.allow_reserved_system_type_names)?;
         for entry in &self.files {
             mm.add_model(&entry.ast, entry.file_name.clone())
                 .map_err(|e| {
@@ -816,12 +1214,16 @@ impl Replayed {
         Ok(())
     }
 
+    /// `mm_index` is left `None`: this method doesn't know its own index in
+    /// the session's pool, so [`Session::file`] fills it in on the result.
     fn file_arg(&self, ns: &str) -> Option<FileArg> {
         let mf = self.mm.model_file(ns)?;
         Some(FileArg {
             ast: mf.ast().clone(),
             file_name: mf.file_name().map(str::to_string),
             nullish_name: self.nullish_name(ns),
+            definitions: mf.definitions().map(str::to_string),
+            mm_index: None,
         })
     }
 
@@ -844,23 +1246,12 @@ impl Replayed {
     /// The outcome-only `ModelManager` summary (`makeOutputEncoder`):
     /// `{ctor, namespaces, ast: getAst(false, true)}`.
     pub fn summary(&self) -> Value {
-        json!({
-            M: "ModelManager",
-            "ctor": self.kind.ctor(),
-            "namespaces": self.namespaces(),
-            "ast": self.ast(true),
-        })
+        summary_of(self.kind, &self.mm)
     }
 
     /// TS `getAst(false, includeConcertoNamespaces)`.
     pub fn ast(&self, include_concerto_namespaces: bool) -> Value {
-        let models: Vec<Value> = self
-            .mm
-            .model_files()
-            .filter(|mf| include_concerto_namespaces || !EXCLUDE_NS.contains(&mf.namespace()))
-            .map(|mf| mf.ast().clone())
-            .collect();
-        json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
+        ast_of(&self.mm, include_concerto_namespaces)
     }
 
     /// The outcome-only `ModelFile` summary: `{namespace, name, ast}`.
@@ -958,36 +1349,30 @@ impl Replayed {
         if let Err(e) = self.mm.add_model(&file.ast, file.file_name.clone()) {
             return Ok(Err(to_oracle_error(&e)));
         }
-        let before_valid = self.files.iter().all(|e| e.known_valid);
         self.files.push(Entry {
             ast: file.ast,
             file_name: file.file_name,
             nullish_name: file.nullish_name,
-            known_valid: false,
         });
+        let ns = ns.unwrap_or_default();
         if validate {
-            if !before_valid {
-                return Err(blocked(
-                    "validating one added model file needs ModelFile.validate, not ported yet, \
-                     and an earlier file was added without validation",
-                    "ModelFile.validate",
-                ));
-            }
-            if let Err(e) = self.mm.validate_models() {
+            // TS: `modelFile.validate()` — the new file alone (module doc,
+            // "Validation on add").
+            let outcome = match self.mm.model_file(&ns) {
+                Some(mf) => self.mm.validate_model_file(mf),
+                None => {
+                    return Err(Fault::Harness(format!(
+                        "a model file that add_model just loaded is not registered under {ns}"
+                    )));
+                }
+            };
+            if let Err(e) = outcome {
                 self.files.pop();
                 self.rebuild()?;
                 return Ok(Err(to_oracle_error(&e)));
             }
-            self.mark_valid();
         }
-        let ns = ns.unwrap_or_default();
         Ok(Ok(self.model_file_summary(&ns).unwrap_or_else(undefined)))
-    }
-
-    fn mark_valid(&mut self) {
-        for entry in &mut self.files {
-            entry.known_valid = true;
-        }
     }
 
     /// Runs one state-changing call (a recipe step, or a fixture whose op is
@@ -1034,6 +1419,8 @@ impl Replayed {
                         ast,
                         file_name,
                         nullish_name,
+                        definitions: None,
+                        mm_index: None,
                     },
                     validate,
                 )
@@ -1052,10 +1439,7 @@ impl Replayed {
                 self.add_model_files(h, args, validate)
             }
             "validateModelFiles" => match self.mm.validate_models() {
-                Ok(()) => {
-                    self.mark_valid();
-                    Ok(Ok(undefined()))
-                }
+                Ok(()) => Ok(Ok(undefined())),
                 Err(e) => Ok(Err(to_oracle_error(&e))),
             },
             "clearModelFiles" => {
@@ -1082,6 +1466,8 @@ impl Replayed {
                         ast: model.clone(),
                         file_name: None,
                         nullish_name: undefined(),
+                        definitions: None,
+                        mm_index: None,
                     };
                     // `new ModelFile(this, model)`, then `addModelFile(…,
                     // true)`; TS keeps whatever loaded before an error.
@@ -1090,11 +1476,8 @@ impl Replayed {
                     }
                 }
                 let disable = options.get("disableValidation").is_some_and(truthy);
-                if !disable {
-                    if let Err(e) = self.mm.validate_models() {
-                        return Ok(Err(to_oracle_error(&e)));
-                    }
-                    self.mark_valid();
+                if !disable && let Err(e) = self.mm.validate_models() {
+                    return Ok(Err(to_oracle_error(&e)));
                 }
                 Ok(Ok(undefined()))
             }
@@ -1172,15 +1555,11 @@ impl Replayed {
                 ast,
                 file_name,
                 nullish_name,
-                known_valid: false,
             });
             added.push(ns.unwrap_or_default());
         }
-        if validate {
-            if let Err(e) = self.mm.validate_models() {
-                return restore(self, to_oracle_error(&e));
-            }
-            self.mark_valid();
+        if validate && let Err(e) = self.mm.validate_models() {
+            return restore(self, to_oracle_error(&e));
         }
         Ok(Ok(Value::Array(
             added
@@ -1208,8 +1587,38 @@ impl Clone for Arg {
             Self::Validator(m, p, part) => Self::Validator(*m, *p, part.clone()),
             Self::Deco(m, parent, i) => Self::Deco(*m, parent.clone(), *i),
             Self::List(items) => Self::List(items.clone()),
+            Self::Typed(m, inst) => Self::Typed(*m, inst.clone()),
         }
     }
+}
+
+/// Whether `ns` is one of TS `EXCLUDE_NS`, the system namespaces `fromAst`
+/// and `getModelFiles()` leave out.
+pub fn is_system_namespace(ns: &str) -> bool {
+    EXCLUDE_NS.contains(&ns)
+}
+
+/// The outcome-only `ModelManager` summary (`makeOutputEncoder`) of any
+/// Rust model manager, as constructed by `kind`'s TS class:
+/// `{ctor, namespaces, ast: getAst(false, true)}`.
+pub fn summary_of(kind: Kind, mm: &ModelManager) -> Value {
+    let namespaces: Vec<&str> = mm.model_files().map(ModelFile::namespace).collect();
+    json!({
+        M: "ModelManager",
+        "ctor": kind.ctor(),
+        "namespaces": namespaces,
+        "ast": ast_of(mm, true),
+    })
+}
+
+/// TS `getAst(false, includeConcertoNamespaces)` of any Rust model manager.
+pub fn ast_of(mm: &ModelManager, include_concerto_namespaces: bool) -> Value {
+    let models: Vec<Value> = mm
+        .model_files()
+        .filter(|mf| include_concerto_namespaces || !EXCLUDE_NS.contains(&mf.namespace()))
+        .map(|mf| mf.ast().clone())
+        .collect();
+    json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
 }
 
 /// The handle of a model file registered in `r`, as a [`Node`].

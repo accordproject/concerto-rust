@@ -156,7 +156,10 @@ const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 /// default options, `null` on any error). `semver.valid(v)` is
 /// `parse(v)?.version`, which is never empty, so it is truthy exactly when this
 /// returns `Some`.
-fn semver_parse(version: &str) -> Option<SemVer> {
+///
+/// `pub(crate)` so [`crate::semver_range`] can parse the concrete version a
+/// range is tested against, the same way `parseNamespace` does here.
+pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
     // MAX_LENGTH is checked on the untrimmed string, in UTF-16 units.
     if version.encode_utf16().count() > 256 {
         return None;

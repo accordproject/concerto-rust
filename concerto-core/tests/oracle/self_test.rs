@@ -221,6 +221,56 @@ fn passes_a_correct_fixture_for_each_supported_op() {
         }),
     );
 
+    // DCS (task P2-12): `DecoratorManager.falsyOrEqual` and
+    // `DcsConverter.jsonToYaml`/`yamlToJson` (`ops.rs`'s `PLAIN_OPS`).
+    write_fixture(
+        &dir,
+        "DecoratorManager.falsyOrEqual",
+        "falsy-or-equal-array-intersection",
+        json!({
+            "inputs": { "args": [["one", "two"], ["one", "three"]] },
+            "outcome": { "ok": true }
+        }),
+    );
+    write_fixture(
+        &dir,
+        "DcsConverter.jsonToYaml",
+        "json-to-yaml-simple-command-set",
+        json!({
+            "inputs": { "args": [{
+                "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+                "name": "web",
+                "version": "1.0.0",
+                "commands": [{
+                    "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                    "type": "UPSERT",
+                    "target": { "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget", "declaration": "SSN" },
+                    "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Declaration" }
+                }]
+            }] },
+            "outcome": { "ok": "decoratorCommandsVersion: 0.4.0\nname: web\nversion: 1.0.0\ncommands:\n  - action: UPSERT\n    target:\n      declaration: SSN\n    decorator:\n      name: Declaration\n" }
+        }),
+    );
+    write_fixture(
+        &dir,
+        "DcsConverter.yamlToJson",
+        "yaml-to-json-simple-command-set",
+        json!({
+            "inputs": { "args": ["decoratorCommandsVersion: 0.4.0\nname: web\nversion: 1.0.0\ncommands:\n  - action: UPSERT\n    target:\n      declaration: SSN\n    decorator:\n      name: Declaration\n"] },
+            "outcome": { "ok": {
+                "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+                "name": "web",
+                "version": "1.0.0",
+                "commands": [{
+                    "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                    "type": "UPSERT",
+                    "target": { "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget", "declaration": "SSN" },
+                    "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Declaration", "arguments": [] }
+                }]
+            } }
+        }),
+    );
+
     let (fixtures, load_errors) = fixture::load_all(&dir);
     assert!(
         load_errors.is_empty(),
@@ -228,7 +278,7 @@ fn passes_a_correct_fixture_for_each_supported_op() {
     );
     assert_eq!(
         fixtures.len(),
-        17,
+        20,
         "expected one fixture per write_fixture call"
     );
 
@@ -600,7 +650,7 @@ fn a_step_that_replays_with_another_status_is_a_failure() {
     );
     let verdict = judge_one(&with_cache(&cache), &dir);
     match verdict {
-        Verdict::Fail { kind, detail } => {
+        Verdict::Fail { kind, detail, .. } => {
             assert_eq!(kind, compare::FailKind::StateDivergence);
             assert!(detail.contains("state divergence"), "{detail}");
         }
@@ -664,25 +714,32 @@ fn a_dangling_model_manager_reference_is_a_harness_error() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A validating add after a file that was added without validation cannot
-/// be replayed faithfully while single-file validation is not ported
-/// (`recipe.rs`, "Validation on add"): unsupported, not a guess.
+/// A validating add checks the new file alone, as TS `addModelFile`'s
+/// `modelFile.validate()` does (`recipe.rs`, "Validation on add"; P2-08): an
+/// earlier file added with validation disabled is not re-checked, so an
+/// invalid one does not make the later add fail. (Before `ModelFile.validate`
+/// was ported this case was reported unsupported rather than guessed.)
 #[test]
-fn a_validating_add_after_an_unvalidated_one_is_unsupported() {
+fn a_validating_add_after_an_unvalidated_one_checks_only_the_new_file() {
     let dir = scratch_dir("validate-after-unvalidated");
     let cache = scratch_dir("validate-after-unvalidated-cache");
-    write_cache_entry(&cache, CTO, Some("test.cto"), json!({ "ast": test_ast() }));
+    // The first file's `Car.colour` names a type that does not exist, which
+    // only validation reports.
+    let mut invalid = test_ast();
+    invalid["declarations"][1]["properties"][0]["type"]["name"] = json!("Missing");
+    write_cache_entry(&cache, CTO, Some("test.cto"), json!({ "ast": invalid }));
     let other = "namespace other@1.0.0\n";
+    let other_ast = json!({
+        "$class": "concerto.metamodel@1.0.0.Model",
+        "namespace": "other@1.0.0",
+        "imports": [],
+        "declarations": []
+    });
     write_cache_entry(
         &cache,
         other,
         Some("other.cto"),
-        json!({ "ast": {
-            "$class": "concerto.metamodel@1.0.0.Model",
-            "namespace": "other@1.0.0",
-            "imports": [],
-            "declarations": []
-        } }),
+        json!({ "ast": other_ast }),
     );
     write_fixture(
         &dir,
@@ -690,13 +747,18 @@ fn a_validating_add_after_an_unvalidated_one_is_unsupported() {
         "validate-after-unvalidated",
         json!({
             "inputs": { "target": recipe_with_cto("test.cto", true, "ok"), "args": [other, "other.cto"] },
-            "outcome": { "ok": null }
+            "outcome": { "ok": {
+                "@@oracle": "ModelFile",
+                "namespace": "other@1.0.0",
+                "name": "other.cto",
+                "ast": other_ast
+            } }
         }),
     );
     let verdict = judge_one(&with_cache(&cache), &dir);
     assert!(
-        matches!(verdict, Verdict::Unsupported { .. }),
-        "expected Unsupported, got {verdict:?}"
+        matches!(verdict, Verdict::Pass),
+        "expected Pass, got {verdict:?}"
     );
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_dir_all(&cache);
@@ -955,16 +1017,19 @@ fn a_run_with_harness_errors_cannot_write_the_baseline() {
 #[test]
 fn owners_fall_back_to_the_porting_op_families_and_unowned() {
     let ledger = Ledger::default();
-    assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
+    assert_eq!(ledger.owner("Factory.newResource"), "P3-01b");
+    assert_eq!(ledger.owner("Serializer.fromJSON"), "P3-01b");
+    assert_eq!(ledger.owner("Resource.validate"), "P3-01");
+    assert_eq!(ledger.owner("Resource.setPropertyValue"), "P3-01b");
     assert_eq!(ledger.owner("ModelManager.deleteModelFile"), "P2-08");
     assert_eq!(ledger.owner("DecoratorManager.decorateModels"), "P2-12");
     assert_eq!(ledger.owner("Declaration.getName"), "unowned");
 }
 
 /// A plan-owner override beats the ledger: `Factory`'s ledger rows are TS
-/// with no task, yet its fixtures belong to P3-01, and so does the
-/// `Serializer` constructor, while `Serializer.toJSON` keeps its ledger
-/// owner. Other stays-TS classes are unaffected.
+/// with no task, yet its fixtures belong to P3-01b (P3-01's split), and so
+/// does the `Serializer` constructor, while `Serializer.toJSON` keeps its
+/// ledger owner. Other stays-TS classes are unaffected.
 #[test]
 fn plan_owner_overrides_take_precedence_over_the_ledger() {
     let root = std::env::temp_dir().join(format!(
@@ -985,11 +1050,199 @@ fn plan_owner_overrides_take_precedence_over_the_ledger() {
     )
     .unwrap();
     let ledger = Ledger::load(&fixtures);
-    assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
-    assert_eq!(ledger.owner("Factory.new"), "P3-01");
+    assert_eq!(ledger.owner("Factory.newResource"), "P3-01b");
+    assert_eq!(ledger.owner("Factory.new"), "P3-01b");
     assert_eq!(ledger.owner("ModelLoader.loadModelManager"), "stays-ts");
     // A member-level override moves only that member.
-    assert_eq!(ledger.owner("Serializer.new"), "P3-01");
+    assert_eq!(ledger.owner("Serializer.new"), "P3-01b");
     assert_eq!(ledger.owner("Serializer.toJSON"), "P3-01+P4-10");
     let _ = fs::remove_dir_all(&root);
+}
+
+// Failure attribution (`ops::Attribution`, `compare::judge`): a DCS failure
+// is another task's only when TS threw from that task's code too.
+
+/// `test@1.0.0`, one concept with a string property: no type reference, so
+/// metamodel resolution would change nothing and `decorateModels` runs.
+fn dcs_model_manager_recipe() -> serde_json::Value {
+    json!({
+        "@@oracle": "mm", "id": 0, "kind": "ModelManager",
+        "steps": [{
+            "method": "addModelFile",
+            "args": [{
+                "@@oracle": "mfnew", "mm": { "@@oracle": "self" },
+                "ast": {
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "test@1.0.0", "imports": [], "decorators": [],
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                        "name": "Person", "isAbstract": false,
+                        "properties": [{
+                            "$class": "concerto.metamodel@1.0.0.StringProperty",
+                            "name": "name", "isArray": false, "isOptional": false
+                        }]
+                    }]
+                },
+                "definitions": { "@@oracle": "undefined" },
+                "fileName": { "@@oracle": "undefined" }
+            }],
+            "status": "ok", "errorClass": null
+        }]
+    })
+}
+
+/// A command set whose decorator takes a type reference to a namespace
+/// no model declares: the synthetic import `decorateModels` adds for it
+/// fails `fromAst`'s model validation, and only that.
+fn dcs_unknown_type_reference() -> serde_json::Value {
+    json!({
+        "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+        "name": "web", "version": "1.0.0",
+        "commands": [{
+            "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+            "type": "UPSERT",
+            "target": {
+                "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget",
+                "namespace": "test@1.0.0", "declaration": "Person"
+            },
+            "decorator": {
+                "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Info",
+                "arguments": [{
+                    "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
+                    "type": {
+                        "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                        "name": "HR", "namespace": "org.missing@1.0.0"
+                    },
+                    "isArray": false
+                }]
+            }
+        }]
+    })
+}
+
+/// A command set with no `commands`: the structural stand-in for
+/// `Serializer.fromJSON`'s resource validation rejects it.
+fn dcs_without_commands() -> serde_json::Value {
+    json!({
+        "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+        "name": "web", "version": "1.0.0"
+    })
+}
+
+fn ts_error(class: &str, message: &str) -> serde_json::Value {
+    json!({ "error": {
+        "class": class, "message": message, "location": null,
+        "component": if class == "Error" { serde_json::Value::Null } else { json!("@accordproject/concerto-core") }
+    } })
+}
+
+fn judge_dcs(name: &str, op: &str, args: serde_json::Value, outcome: serde_json::Value) -> Verdict {
+    let dir = scratch_dir(name);
+    write_fixture(
+        &dir,
+        op,
+        "attribution",
+        json!({ "inputs": { "args": args }, "outcome": outcome }),
+    );
+    let verdict = judge_one(&bare(), &dir);
+    let _ = fs::remove_dir_all(&dir);
+    verdict
+}
+
+#[test]
+fn a_model_validation_error_where_ts_succeeded_stays_the_ops_own() {
+    let verdict = judge_dcs(
+        "attr-mv-ok",
+        "DecoratorManager.decorateModels",
+        json!([dcs_model_manager_recipe(), dcs_unknown_type_reference()]),
+        json!({ "ok": { "@@oracle": "ModelManager", "ctor": "ModelManager" } }),
+    );
+    match verdict {
+        Verdict::Fail { kind, blocker, .. } => {
+            assert_eq!(kind, compare::FailKind::UnexpectedError);
+            assert!(blocker.is_none(), "attributed to {blocker:?}");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_model_validation_error_where_ts_failed_model_validation_is_attributed() {
+    // Merge with P2-08: the Rust model validation now gives TS's exact text
+    // for this model (the fixture passes as recorded), so the recorded TS
+    // message here is made to differ — as if TS had named a file — to keep
+    // exercising the attribution of a real mismatch.
+    let verdict = judge_dcs(
+        "attr-mv-both",
+        "DecoratorManager.decorateModels",
+        json!([dcs_model_manager_recipe(), dcs_unknown_type_reference()]),
+        ts_error(
+            "IllegalModelException",
+            "Namespace is not defined for type \"org.missing@1.0.0.HR\". File 'x.cto': ",
+        ),
+    );
+    match verdict {
+        Verdict::Fail { kind, blocker, .. } => {
+            assert_eq!(kind, compare::FailKind::MessageMismatch);
+            assert_eq!(
+                blocker,
+                Some(super::recipe::Blocker::Member("ModelFile.validate".into()))
+            );
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_stand_in_rejection_where_ts_accepted_stays_the_ops_own() {
+    let verdict = judge_dcs(
+        "attr-si-ok",
+        "DecoratorManager.validate",
+        json!([dcs_without_commands()]),
+        json!({ "ok": { "@@oracle": "ModelManager", "ctor": "ModelManager" } }),
+    );
+    match verdict {
+        Verdict::Fail { kind, blocker, .. } => {
+            assert_eq!(kind, compare::FailKind::UnexpectedError);
+            assert!(blocker.is_none(), "attributed to {blocker:?}");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_stand_in_rejection_where_ts_threw_a_validation_exception_is_attributed() {
+    let verdict = judge_dcs(
+        "attr-si-both",
+        "DecoratorManager.validate",
+        json!([dcs_without_commands()]),
+        ts_error(
+            "ValidationException",
+            "Instance org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet missing required field commands.",
+        ),
+    );
+    match verdict {
+        Verdict::Fail { kind, blocker, .. } => {
+            assert_eq!(kind, compare::FailKind::ClassMismatch);
+            assert_eq!(
+                blocker,
+                Some(super::recipe::Blocker::Owner("P3-01b".into()))
+            );
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_stand_in_rejection_where_ts_threw_another_class_stays_the_ops_own() {
+    let verdict = judge_dcs(
+        "attr-si-other",
+        "DecoratorManager.validate",
+        json!([dcs_without_commands()]),
+        ts_error("Error", "something else entirely"),
+    );
+    match verdict {
+        Verdict::Fail { blocker, .. } => assert!(blocker.is_none(), "attributed to {blocker:?}"),
+        other => panic!("expected Fail, got {other:?}"),
+    }
 }
