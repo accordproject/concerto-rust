@@ -967,16 +967,19 @@ fn a_run_with_harness_errors_cannot_write_the_baseline() {
 #[test]
 fn owners_fall_back_to_the_porting_op_families_and_unowned() {
     let ledger = Ledger::default();
-    assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
+    assert_eq!(ledger.owner("Factory.newResource"), "P3-01b");
+    assert_eq!(ledger.owner("Serializer.fromJSON"), "P3-01b");
+    assert_eq!(ledger.owner("Resource.validate"), "P3-01");
+    assert_eq!(ledger.owner("Resource.setPropertyValue"), "P3-01b");
     assert_eq!(ledger.owner("ModelManager.deleteModelFile"), "P2-08");
     assert_eq!(ledger.owner("DecoratorManager.decorateModels"), "P2-12");
     assert_eq!(ledger.owner("Declaration.getName"), "unowned");
 }
 
 /// A plan-owner override beats the ledger: `Factory`'s ledger rows are TS
-/// with no task, yet its fixtures belong to P3-01, and so does the
-/// `Serializer` constructor, while `Serializer.toJSON` keeps its ledger
-/// owner. Other stays-TS classes are unaffected.
+/// with no task, yet its fixtures belong to P3-01b (P3-01's split), and so
+/// does the `Serializer` constructor, while `Serializer.toJSON` keeps its
+/// ledger owner. Other stays-TS classes are unaffected.
 #[test]
 fn plan_owner_overrides_take_precedence_over_the_ledger() {
     let root = std::env::temp_dir().join(format!(
@@ -997,11 +1000,11 @@ fn plan_owner_overrides_take_precedence_over_the_ledger() {
     )
     .unwrap();
     let ledger = Ledger::load(&fixtures);
-    assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
-    assert_eq!(ledger.owner("Factory.new"), "P3-01");
+    assert_eq!(ledger.owner("Factory.newResource"), "P3-01b");
+    assert_eq!(ledger.owner("Factory.new"), "P3-01b");
     assert_eq!(ledger.owner("ModelLoader.loadModelManager"), "stays-ts");
     // A member-level override moves only that member.
-    assert_eq!(ledger.owner("Serializer.new"), "P3-01");
+    assert_eq!(ledger.owner("Serializer.new"), "P3-01b");
     assert_eq!(ledger.owner("Serializer.toJSON"), "P3-01+P4-10");
     let _ = fs::remove_dir_all(&root);
 }

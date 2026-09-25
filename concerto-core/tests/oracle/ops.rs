@@ -37,6 +37,28 @@
 //!   `mfnew` recipe argument, never a `declref`, so it needs no arena
 //!   handle). Every other declaration kind's `declnew` still needs P4-07,
 //!   which closes this in general.
+//! - **`Resource.validate`**, plus the read-only `Typed`/`Identifiable`/
+//!   `Relationship`/`Resource` accessors ([`instance_op`]'s doc has the
+//!   full list), over an oracle `"typed"` receiver decoded into
+//!   [`recipe::DecodedInstance`] (`recipe.rs`'s `Session::typed`, task
+//!   P3-01 review, `accordproject-concerto-rust#56` follow-up).
+//!   `Factory`/`Serializer`/`JSONPopulator`/`JSONGenerator` and every
+//!   receiver-mutating op (`setPropertyValue`, `addArrayValue`,
+//!   `setIdentifier`) are not ported yet, so their fixtures stay
+//!   `unsupported`.
+//! - **`MapDeclaration`** `declarationKind`, `getKey`, `getValue`,
+//!   `isMapDeclaration`, `toString` and `validate`; **`MapKeyType`**/
+//!   **`MapValueType`** `getType`, `getNamespace`, `getParent`, `toString` and
+//!   `validate` (P2-06), over a `recipe::Arg::MapPart` handle (`recipe.rs`)
+//!   since this engine reads a map's key and value as plain accessors on
+//!   `MapDeclaration` rather than as their own registered declarations;
+//!   **`ModelManager.getMapDeclarations`**, a generic query any model
+//!   manager already answers (`ClassDeclaration.isMapDeclaration` is
+//!   dispatched with the rest of the `ClassDeclaration` family, P2-03). A
+//!   fixture whose target is an
+//!   unregistered `ModelFile` (`mfnew`, e.g. most of
+//!   `MapDeclaration.validate`) stays `unsupported`, owned by P2-08's
+//!   `ModelFile.new`.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::declaration::ClassDeclaration;
@@ -44,9 +66,12 @@ use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
-use concerto_core::introspect::{Declaration, DeclarationKind, Named, Typed, Validate};
+use concerto_core::introspect::{
+    Declaration, DeclarationKind, MapDeclaration, Named, Typed, Validate,
+};
 use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
+use concerto_core::validation;
 use serde_json::{Value, json};
 
 use super::Harness;
@@ -388,7 +413,11 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     let dispatched = match (class, member) {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
-            MM_STEP_OPS.contains(&m) || matches!(m, "getNamespaces" | "getAst" | "getType")
+            MM_STEP_OPS.contains(&m)
+                || matches!(
+                    m,
+                    "getNamespaces" | "getAst" | "getType" | "getMapDeclarations"
+                )
         }
         ("ModelUtil", m) => matches!(
             m,
@@ -400,6 +429,15 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "new" | "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
+        ("MapDeclaration", m) => matches!(
+            m,
+            "declarationKind"
+                | "getKey"
+                | "getValue"
+                | "isMapDeclaration"
+                | "toString"
+                | "validate"
+        ),
         ("NumberValidator" | "StringValidator", m) => matches!(m, "validate" | "compatibleWith"),
         ("CollectionSizeValidator", m) => {
             matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
@@ -426,6 +464,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 | "toString"
                 | "validate"
         ),
+        ("MapKeyType" | "MapValueType", m) => {
+            matches!(
+                m,
+                "getType" | "getNamespace" | "getParent" | "toString" | "validate"
+            )
+        }
         ("Declaration", m) => matches!(
             m,
             "getFullyQualifiedName" | "getName" | "getNamespace" | "getModelFile"
@@ -500,6 +544,27 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "getClassDeclaration" | "getClassDeclarations" | "getModelManager"
             )
         }
+        // P3-01 review (task `accordproject-concerto-rust#56` follow-up):
+        // the instance ops dispatched over a `"typed"` receiver
+        // ([`instance_op`]'s doc has the full list and its TS source).
+        ("Resource", m) => matches!(
+            m,
+            "validate" | "toString" | "isResource" | "isConcept" | "isIdentifiable" | "instanceOf"
+        ),
+        ("Identifiable", m) => matches!(
+            m,
+            "getIdentifier"
+                | "getFullyQualifiedIdentifier"
+                | "getTimestamp"
+                | "toURI"
+                | "isRelationship"
+                | "isResource"
+        ),
+        ("Relationship", m) => matches!(m, "toString" | "isRelationship" | "fromURI"),
+        ("Typed", m) => matches!(
+            m,
+            "getType" | "getNamespace" | "getFullyQualifiedType" | "getClassDeclaration"
+        ),
         _ => false,
     };
     if !dispatched {
@@ -640,6 +705,82 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "a ScalarDeclaration receiver that is not a declref or declnew".into(),
             )),
         },
+        "MapDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a MapDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a map".into(),
+                ));
+            };
+            Ok(match member {
+                "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
+                "isMapDeclaration" => ran(Ok(Value::Bool(true))),
+                "toString" => from_engine(
+                    r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                    |fqn| Value::String(MapDeclaration::to_string(&fqn)),
+                ),
+                "getKey" => ran(Ok(r.map_part_summary(id, true).unwrap_or(Value::Null))),
+                "getValue" => ran(Ok(r.map_part_summary(id, false).unwrap_or(Value::Null))),
+                _ => {
+                    let Some(namespace) = map_namespace(r, id) else {
+                        return Err(Fault::Divergence(
+                            "state divergence: the map's model file is not registered".into(),
+                        ));
+                    };
+                    let result = validation::validate_map_key(&r.mm, namespace, map)
+                        .and_then(|()| validation::validate_map_value(&r.mm, namespace, map));
+                    from_engine(result, |()| recipe::undefined())
+                }
+            })
+        }
+        "MapKeyType" | "MapValueType" => {
+            let Some(Arg::MapPart(index, id, is_key)) = target else {
+                return Err(Fault::Unsupported(
+                    "a MapKeyType/MapValueType receiver that is not a map part".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a map".into(),
+                ));
+            };
+            let type_name = if is_key {
+                map.key_type_name()
+            } else {
+                map.value_type_name()
+            };
+            let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
+            Ok(match member {
+                "getType" => ran(Ok(Value::String(type_name.to_string()))),
+                "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
+                "getNamespace" => match map_namespace(r, id) {
+                    Some(ns) => ran(Ok(Value::String(ns.to_string()))),
+                    None => Dispatch::Fault(Fault::Divergence(
+                        "state divergence: the map's model file is not registered".into(),
+                    )),
+                },
+                "getParent" => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+                _ => {
+                    let Some(namespace) = map_namespace(r, id) else {
+                        return Err(Fault::Divergence(
+                            "state divergence: the map's model file is not registered".into(),
+                        ));
+                    };
+                    let result = if is_key {
+                        validation::validate_map_key(&r.mm, namespace, map)
+                    } else {
+                        validation::validate_map_value(&r.mm, namespace, map)
+                    };
+                    from_engine(result, |()| recipe::undefined())
+                }
+            })
+        }
         "NumberValidator" => {
             let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
                 return Err(Fault::Unsupported(
@@ -870,6 +1011,16 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             };
             let r = &session.pool[index];
             Ok(introspector_op(r, member, &args))
+        }
+        "Relationship" if member == "fromURI" => Ok(relationship_from_uri(&session, &args)),
+        "Resource" | "Identifiable" | "Relationship" | "Typed" => {
+            let Some(Arg::Typed(index, inst)) = target else {
+                return Err(Fault::Unsupported(format!(
+                    "{class}.{member} with a receiver that is not a typed instance"
+                )));
+            };
+            let r = &session.pool[index];
+            Ok(instance_op(r, &inst, class, member, &args))
         }
         _ => unreachable!("`dispatched` lists every class"),
     }
@@ -1697,6 +1848,266 @@ fn relationship_to_string(r: &Replayed, id: PropId, property: &Property) -> Disp
     )
 }
 
+/// Dispatches an op whose receiver is a `"typed"` `Resource`,
+/// `ValidatedResource` or `Relationship` (P3-01 review, task
+/// `accordproject-concerto-rust#56` follow-up), decoded into a
+/// [`recipe::DecodedInstance`] by `recipe.rs`'s `Session::typed`. Covers:
+///
+/// - `Resource.validate` (TS `ValidatedResource.validate`,
+///   `src/model/validatedresource.ts`, over
+///   [`concerto_core::instance::validate::validate_instance`], task P3-01's
+///   own port of `ResourceValidator`), `toString`, `isResource`,
+///   `isConcept`, `isIdentifiable` (`src/model/resource.ts`), and
+///   `instanceOf` (inherited from `Typed`);
+/// - `Identifiable.getIdentifier`, `getFullyQualifiedIdentifier`,
+///   `getTimestamp`, `toURI`, `isRelationship`, `isResource`
+///   (`src/model/identifiable.ts`);
+/// - `Relationship.toString`, `isRelationship` (`src/model/relationship.ts`;
+///   the static `fromURI` is [`relationship_from_uri`]);
+/// - `Typed.getType`, `getNamespace`, `getFullyQualifiedType`,
+///   `getClassDeclaration` (`src/model/typed.ts`).
+///
+/// The members left (`setPropertyValue`, `addArrayValue`, `setIdentifier`,
+/// `toJSON`) mutate the receiver or serialize it: they need a
+/// `Serializer`/`Factory` port and an `effects`-comparing receiver, so
+/// `dispatched` (`exec_handles`) does not list them and they stay
+/// `unsupported`, owned by P3-01b (`ledger.rs`, `PLAN_OWNER_OVERRIDES`).
+fn instance_op(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+    class: &str,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    match (class, member) {
+        ("Resource", "validate") => ran(
+            match concerto_core::instance::validate::validate_instance(
+                &r.mm,
+                &inst.wire,
+                &concerto_core::instance::validate::ValidateOptions::default(),
+            ) {
+                Ok(()) => Ok(recipe::undefined()),
+                Err(e) => Err(to_oracle_error(&e)),
+            },
+        ),
+        ("Resource", "toString") => ran(Ok(Value::String(format!(
+            "Resource {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Resource", "isResource") => ran(Ok(Value::Bool(true))),
+        ("Resource", "isConcept") => from_engine(instance_is_concept(r, inst), Value::Bool),
+        ("Resource", "isIdentifiable") => from_engine(r.mm.is_identified(&inst.fqn), Value::Bool),
+        ("Identifiable", "getIdentifier") => ran(Ok(inst
+            .identifier
+            .clone()
+            .map(Value::String)
+            .unwrap_or_else(recipe::undefined))),
+        ("Identifiable", "getFullyQualifiedIdentifier") => {
+            ran(Ok(Value::String(fully_qualified_identifier(inst))))
+        }
+        ("Identifiable", "toURI") => ran(match instance_resource_id(inst) {
+            Ok(id) => Ok(Value::String(id.to_uri())),
+            Err(e) => Err(to_oracle_error(&e)),
+        }),
+        ("Identifiable" | "Relationship", "isRelationship") => {
+            ran(Ok(Value::Bool(inst.ctor == "Relationship")))
+        }
+        ("Identifiable", "isResource") => ran(Ok(Value::Bool(inst.ctor != "Relationship"))),
+        ("Relationship", "toString") => ran(Ok(Value::String(format!(
+            "Relationship {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Typed", "getType") => ran(Ok(Value::String(inst.type_name.clone()))),
+        ("Typed", "getNamespace") => ran(Ok(Value::String(inst.namespace.clone()))),
+        ("Typed", "getFullyQualifiedType") => ran(Ok(Value::String(inst.fqn.clone()))),
+        // TS `Identifiable.getTimestamp`: `return this.$timestamp`, as
+        // recorded (a `dayjs` node, `null` or `undefined`).
+        ("Identifiable", "getTimestamp") => ran(Ok(inst.timestamp.clone())),
+        // TS `Typed.getClassDeclaration`: `return this.$classDeclaration`.
+        ("Typed", "getClassDeclaration") => match inst.class_declaration {
+            Some(id) => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+            None => unregistered_class_declaration(),
+        },
+        ("Resource", "instanceOf") => {
+            let Some(id) = inst.class_declaration else {
+                return unregistered_class_declaration();
+            };
+            let fqt = match args.first() {
+                Some(Arg::Plain(v)) => v.clone(),
+                None => recipe::undefined(),
+                _ => return unsupported("instanceOf with a type name that is not plain data"),
+            };
+            from_engine(instance_of(r, id, &fqt), Value::Bool)
+        }
+        _ => unreachable!("`dispatched` lists every (class, member) this function handles"),
+    }
+}
+
+/// A receiver whose `$classDeclaration` has no Rust handle
+/// ([`recipe::DecodedInstance::class_declaration`]): a declaration never
+/// registered with its model manager.
+fn unregistered_class_declaration() -> Dispatch {
+    Dispatch::Fault(Fault::Blocked(
+        "the receiver's class declaration is not registered with a model manager".into(),
+        recipe::Blocker::Member("ModelFile.new".into()),
+    ))
+}
+
+/// TS `Typed.instanceOf(fqt)` (src/model/typed.ts): whether the receiver's
+/// own `$classDeclaration`, or any declaration up its
+/// `getSuperTypeDeclaration()` chain, has the fully qualified name `fqt`
+/// (compared with `===`, so only a string can match).
+fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoError> {
+    let fqt = fqt.as_str();
+    let mut current = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
+    if fqt == Some(current.as_str()) {
+        return Ok(true);
+    }
+    while let Some(super_id) = r.mm.get_super_type_declaration(&current)? {
+        current =
+            r.mm.get_fully_qualified_name(&Node::Declaration(super_id))?;
+        if fqt == Some(current.as_str()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// TS `BaseModelManager.getType(qualifiedName)` (src/basemodelmanager.ts):
+/// the model file of the name's namespace, then that file's
+/// `getType(qualifiedName)`, each with its own `TypeNotFoundException`.
+/// `ModelManager.getType` itself is P2-08's; this is the same composition,
+/// over the ported `ModelFile.getType`, for `Relationship.fromURI`.
+fn base_model_manager_get_type(
+    r: &Replayed,
+    qualified_name: &str,
+) -> Result<DeclId, ConcertoError> {
+    let namespace = model_util::get_namespace(Some(qualified_name))?;
+    let Some(file) = r.mm.model_file_id(namespace) else {
+        return Err(concerto_core::error::ContractError::type_not_found(
+            "modelmanager-gettype-noregisteredns",
+            vec![("type", qualified_name.to_string())],
+            qualified_name.to_string(),
+            None,
+        )
+        .into());
+    };
+    match r
+        .mm
+        .get_type(&Node::ModelFile(file), Some(qualified_name))?
+    {
+        Some(Node::Declaration(id)) => Ok(id),
+        _ => Err(concerto_core::error::ContractError::type_not_found(
+            "modelmanager-gettype-notypeinns",
+            vec![
+                (
+                    "type",
+                    model_util::get_short_name(qualified_name).to_string(),
+                ),
+                ("namespace", namespace.to_string()),
+            ],
+            qualified_name.to_string(),
+            None,
+        )
+        .into()),
+    }
+}
+
+/// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
+/// defaultType?)` (src/model/relationship.ts): parses the URI
+/// (`ResourceId.fromURI`), looks the type up (`modelManager.getType`), and
+/// builds a `Relationship`. The result is written the way the oracle
+/// encodes a `Typed` value (`codec.js`): `$identifierFieldName` is the
+/// type's identifying field or `$identifier` (`Identifiable`'s
+/// constructor, via `modelFile.getType(fqt)?.getIdentifierFieldName()`,
+/// `null` for a declaration that is not class-like), `setIdentifier` writes
+/// the id under that name, `$timestamp` is `undefined`, and the
+/// `Relationship` constructor adds `$class: 'Relationship'`.
+fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
+    let Some(Arg::Mm(index)) = args.first() else {
+        return unsupported("Relationship.fromURI with a model manager argument that is not one");
+    };
+    let plain = |i: usize| match args.get(i) {
+        None => Some(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => Some(None),
+        Some(Arg::Plain(Value::String(s))) => Some(Some(s.as_str())),
+        _ => None,
+    };
+    let (Some(Some(uri)), Some(default_namespace), Some(default_type)) =
+        (plain(1), plain(2), plain(3))
+    else {
+        return unsupported("Relationship.fromURI with arguments that are not strings");
+    };
+    let r = &session.pool[*index];
+    let built = (|| {
+        let resource_id = concerto_core::instance::resource_id::ResourceId::from_uri(
+            uri,
+            default_namespace,
+            default_type,
+        )?;
+        let fqt =
+            model_util::get_fully_qualified_name(&resource_id.namespace, &resource_id.type_name);
+        let id = base_model_manager_get_type(r, &fqt)?;
+        let fqn = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
+        let identifier_field_name = match r.mm.declaration(id) {
+            Some(Declaration::Class(_) | Declaration::Enum(_)) => {
+                r.mm.identifier_field_name(&fqn)?
+            }
+            _ => None,
+        }
+        .unwrap_or_else(|| "$identifier".to_string());
+        let mut fields = serde_json::Map::new();
+        fields.insert("$class".into(), json!("Relationship"));
+        if identifier_field_name != "$identifier" {
+            fields.insert(identifier_field_name, json!(resource_id.id));
+        }
+        Ok::<_, ConcertoError>(json!({
+            M: "typed",
+            "ctor": "Relationship",
+            "fqn": fqn,
+            "ns": resource_id.namespace,
+            "type": resource_id.type_name,
+            "id": resource_id.id,
+            "timestamp": recipe::undefined(),
+            "fields": fields,
+        }))
+    })();
+    ran(built.map_err(|e| to_oracle_error(&e)))
+}
+
+/// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
+/// fqn + '#' + id : fqn` — `getIdentifier()`'s truthiness check, so an empty
+/// string identifier (like `undefined`/absent) falls back to the bare fqn.
+fn fully_qualified_identifier(inst: &recipe::DecodedInstance) -> String {
+    match inst.identifier.as_deref() {
+        Some(id) if !id.is_empty() => format!("{}#{id}", inst.fqn),
+        _ => inst.fqn.clone(),
+    }
+}
+
+/// TS `Identifiable.toURI`: `new ResourceId(ns, type,
+/// this.getIdentifier()).toURI()` — the `ResourceId` constructor itself
+/// throws when the identifier is empty or absent, exactly as
+/// [`concerto_core::instance::resource_id::ResourceId::new`] does.
+fn instance_resource_id(
+    inst: &recipe::DecodedInstance,
+) -> Result<concerto_core::instance::resource_id::ResourceId, ConcertoError> {
+    concerto_core::instance::resource_id::ResourceId::new(
+        inst.namespace.clone(),
+        inst.type_name.clone(),
+        inst.identifier.clone().unwrap_or_default(),
+    )
+}
+
+/// TS `Resource.isConcept`: `this.getClassDeclaration().isConcept()`.
+fn instance_is_concept(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+) -> Result<bool, ConcertoError> {
+    let decl = r.mm.get_declaration(&inst.fqn)?;
+    Ok(decl.as_class().is_some_and(ClassDeclaration::is_concept))
+}
+
 /// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
 /// ? false : this.getParent().getModelFile().getType(this.getType()).isEnum()`.
 fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
@@ -1962,8 +2373,32 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
                 }
             }
         }
+        "getMapDeclarations" => {
+            // TS `BaseModelManager.getMapDeclarations` (basemodelmanager.js):
+            // every model file's map declarations, concatenated in
+            // registration order.
+            let declarations: Vec<Value> =
+                r.mm.model_files()
+                    .flat_map(|mf| {
+                        let file = r.mm.model_file_id(mf.namespace());
+                        file.into_iter().flat_map(|f| r.mm.declaration_ids(f))
+                    })
+                    .filter(|id| matches!(r.mm.declaration(*id), Some(Declaration::Map(_))))
+                    .filter_map(|id| r.declaration_summary(id))
+                    .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
         _ => unreachable!("`dispatched` lists every query"),
     }
+}
+
+/// The namespace of the model file a declaration was loaded into, for the
+/// map-part ops (`MapKeyType`/`MapValueType.getNamespace` and the shared
+/// `validate_map_key`/`validate_map_value` calls, which both need it to
+/// resolve a referenced type).
+fn map_namespace(r: &Replayed, id: DeclId) -> Option<&str> {
+    let file_id = r.mm.model_file_of(id)?;
+    Some(r.mm.file(file_id)?.namespace())
 }
 
 /// The `ModelUtil` statics that take model-manager collaborators.

@@ -573,16 +573,41 @@ fn class_of(node: Option<&Value>) -> Result<Option<&str>> {
     }
 }
 
+/// The key kinds the specification allows: a `String` or `DateTime`, or an
+/// object key naming a scalar over one of those.
+///
+/// The single source for this list: `ModelUtil.isValidMapKey` (below) checks
+/// an AST node's `$class` against it directly, and
+/// `validation::validate_map_key` and `introspect::declaration`'s generated-
+/// union check (`MM_MAP_KEY_KINDS`) both refer to it rather than keeping
+/// their own copies, so the three checks cannot drift apart.
+pub const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
+
+/// The value kinds the specification allows: any primitive, or an object or
+/// relationship value naming a declared type.
+///
+/// TS: `ModelUtil.isValidMapValue` (src/modelutil.ts) lists the same eight
+/// kinds, including `RelationshipMapValueType`. The single source for this
+/// list, for the same reason as [`MAP_KEY_KINDS`].
+pub const MAP_VALUE_KINDS: &[&str] = &[
+    "BooleanMapValueType",
+    "DateTimeMapValueType",
+    "DoubleMapValueType",
+    "IntegerMapValueType",
+    "LongMapValueType",
+    "StringMapValueType",
+    "ObjectMapValueType",
+    "RelationshipMapValueType",
+];
+
 /// Returns true if the map key AST node is a valid map key type.
 ///
 /// TS: ModelUtil.isValidMapKey (src/modelutil.ts)
 pub fn is_valid_map_key(key: Option<&Value>) -> Result<bool> {
     let class = class_of(key)?;
-    Ok(
-        ["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"]
-            .iter()
-            .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())),
-    )
+    Ok(MAP_KEY_KINDS
+        .iter()
+        .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
 }
 
 /// Returns whether the declaration is a String or DateTime scalar, keeping the
@@ -621,18 +646,9 @@ pub fn is_valid_map_key_scalar<C: ResolutionContext>(
 /// TS: ModelUtil.isValidMapValue (src/modelutil.ts)
 pub fn is_valid_map_value(value: Option<&Value>) -> Result<bool> {
     let class = class_of(value)?;
-    Ok([
-        "BooleanMapValueType",
-        "DateTimeMapValueType",
-        "StringMapValueType",
-        "IntegerMapValueType",
-        "LongMapValueType",
-        "DoubleMapValueType",
-        "ObjectMapValueType",
-        "RelationshipMapValueType",
-    ]
-    .iter()
-    .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
+    Ok(MAP_VALUE_KINDS
+        .iter()
+        .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
 }
 
 #[cfg(test)]
