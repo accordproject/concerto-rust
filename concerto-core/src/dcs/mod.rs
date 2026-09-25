@@ -30,8 +30,8 @@
 //! ASTs (`metamodel.json`, `dcsmodel.json`; CTO stays in JS), and
 //! [`validate_command`] runs against it as in TS. Of `Serializer.fromJSON`,
 //! only its first two steps are ported (the `$class` check and `getType`,
-//! with TS's errors): no `Serializer`/`ResourceValidator` exists in this
-//! crate yet (P3-01/P4-10). [`validate_dcs_structure`] stands in for the
+//! with TS's errors): the rest of `Serializer.fromJSON` is not ported yet
+//! (P3-01b). [`validate_dcs_structure`] stands in for the
 //! rest, checking the command set against `DCS_MODEL`'s shape directly
 //! (required/optional fields, the `CommandType`/`MapElement` enums). It
 //! rejects what the schema check exists to reject, but with its own error
@@ -1053,8 +1053,8 @@ const DCS_MODEL_AST_JSON: &str = include_str!("dcsmodel.json");
 /// metamodel, added and validated as the constructor's `addModelFile` does.
 ///
 /// `metamodelValidation` (each added model's AST checked with
-/// `Serializer.fromJSON` against the metamodel) is not run: no `Serializer`
-/// exists in this crate yet (P3-01/P4-10).
+/// `Serializer.fromJSON` against the metamodel) is not run:
+/// `Serializer.fromJSON` is not ported yet (P3-01b).
 fn new_validation_model_manager() -> Result<ModelManager> {
     let mut model_manager = ModelManager::new()?;
     let metamodel: Value =
@@ -1089,8 +1089,8 @@ fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()
 /// (`src/serializer.ts`) runs them — an instance with no `$class` is
 /// rejected, then `$class` is resolved with `getType` — so an instance of an
 /// unknown type fails as TS fails. The rest, populating and validating a
-/// resource from the JSON, needs the `Serializer`, `JSONPopulator` and
-/// `ResourceValidator`, none of which this crate has yet (P3-01/P4-10):
+/// resource from the JSON, is the rest of `Serializer.fromJSON` (its
+/// `JSONPopulator` walk and validation), not ported yet (P3-01b):
 /// [`validate_dcs_structure`] stands in for it (module doc).
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
     let class = js_read(Some(instance), "$class")?;

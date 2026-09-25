@@ -20,7 +20,16 @@ pub enum Verdict {
     /// A real behavioural mismatch, or a state divergence while the inputs
     /// were rebuilt on the Rust engine. `kind` is what differs, the part the
     /// baseline records (`report.rs`); `detail` is the full first difference.
-    Fail { kind: FailKind, detail: String },
+    ///
+    /// `blocker` names who owns the difference when it is not the op's own
+    /// owner: set when the dispatch attributed its outcome to a gap in
+    /// another task's code (`Dispatch::RanAttributed`), resolved like an
+    /// unsupported fixture's blocker (`report.rs`).
+    Fail {
+        kind: FailKind,
+        detail: String,
+        blocker: Option<Blocker>,
+    },
     /// The op, or something these inputs need, has no Rust counterpart yet.
     /// `reason` says what; `blocker` names what blocks it when that is not
     /// the op itself, for its owner (`ledger.rs`).
@@ -66,15 +75,22 @@ pub fn judge(fixture: &Fixture, dispatch: Dispatch) -> Verdict {
             } else {
                 FailKind::StateDivergence
             };
-            return Verdict::Fail { kind, detail };
+            return Verdict::Fail {
+                kind,
+                detail,
+                blocker: None,
+            };
         }
-        Dispatch::Ran(outcome) => outcome,
+        Dispatch::Ran(outcome) => (outcome, None),
+        Dispatch::RanAttributed(outcome, blocker) => (outcome, Some(blocker)),
     };
+    let (actual, blocker) = actual;
 
     match first_diff(&fixture.outcome.0, &actual, "$") {
         None => Verdict::Pass,
         Some(detail) => Verdict::Fail {
             kind: FailKind::of_diff(&detail),
+            blocker,
             detail,
         },
     }

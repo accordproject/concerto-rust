@@ -200,6 +200,10 @@ pub enum Dispatch {
     /// The op ran: `{"ok": …}` or `{"error": …}`, in the oracle's outcome
     /// shape.
     Ran(Value),
+    /// The op ran, but its outcome rests on a part of the engine another
+    /// task owns and has not ported to TS parity yet: if it differs from
+    /// TS, the failure is attributed to that owner rather than the op's.
+    RanAttributed(Value, recipe::Blocker),
     Fault(Fault),
 }
 
@@ -1994,6 +1998,7 @@ fn ran_with_effects(
     outcome: recipe::Outcome,
     before: &[Option<Value>],
     after: &[Option<Value>],
+    attributed: Option<recipe::Blocker>,
 ) -> Dispatch {
     let mut effects = serde_json::Map::new();
     for (i, (b, a)) in before.iter().zip(after).enumerate() {
@@ -2010,7 +2015,42 @@ fn ran_with_effects(
     if !effects.is_empty() {
         out["effects"] = json!({ "args": effects });
     }
-    Dispatch::Ran(out)
+    attributed_dispatch(out, attributed)
+}
+
+fn attributed_dispatch(outcome: Value, attributed: Option<recipe::Blocker>) -> Dispatch {
+    match attributed {
+        Some(blocker) => Dispatch::RanAttributed(outcome, blocker),
+        None => Dispatch::Ran(outcome),
+    }
+}
+
+/// The owner of what `Serializer.fromJSON` does after its `$class` lookup
+/// (populating and validating the instance): P3-01b, which owns the
+/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure` stands in
+/// for it (`concerto_core::dcs`'s module doc) with its own error text and
+/// class, not TS's `ValidationException`.
+const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
+
+/// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
+/// when it is exactly the error the structural stand-in raises for one of
+/// the command sets it checked: TS reaches the same point with the ported
+/// `$class` and `getType` steps, then fails (or not) in `ResourceValidator`.
+fn attribute_stand_in(
+    outcome: &recipe::Outcome,
+    command_sets: &[Value],
+) -> Option<recipe::Blocker> {
+    let Err(error) = outcome else {
+        return None;
+    };
+    command_sets
+        .iter()
+        .find_map(|set| dcs::validate_dcs_structure(set).err())
+        .filter(|stand_in| {
+            let stand_in = to_oracle_error(stand_in);
+            stand_in.class == error.class && stand_in.message == error.message
+        })
+        .map(|_| recipe::Blocker::Owner(RESOURCE_VALIDATION_OWNER.into()))
 }
 
 /// A plain argument, or `None` for JS `undefined` (absent or the
@@ -2409,6 +2449,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 o
             });
             let before = [None, sets_arg.clone(), options_arg.clone()];
+            let mut model_validation = None;
             let after = [None, sets_after, options_after];
             let outcome = match prepared {
                 Err(e) => Err(err(e)),
@@ -2420,12 +2461,28 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                     {
                         return Err(blocked_on_resolution(&op));
                     }
-                    dcs::apply_decoration(&r.mm, &prepared, &options)
+                    let applied = dcs::apply_decoration(&r.mm, &prepared, &options);
+                    // An error that goes away when `fromAst`'s final
+                    // `validateModelFiles` is skipped came from model
+                    // validation (`ModelFile.validate`), not from the DCS
+                    // engine: its text is that validator's.
+                    if applied.is_err() {
+                        let unvalidated = dcs::DecorateOptions {
+                            disable_metamodel_validation: Some(true),
+                            ..options.clone()
+                        };
+                        if dcs::apply_decoration(&r.mm, &prepared, &unvalidated).is_ok() {
+                            model_validation =
+                                Some(recipe::Blocker::Member("ModelFile.validate".into()));
+                        }
+                    }
+                    applied
                         .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
                         .map_err(err)
                 }
             };
-            Ok(ran_with_effects(outcome, &before, &after))
+            let attributed = model_validation.or_else(|| attribute_stand_in(&outcome, &sets));
+            Ok(ran_with_effects(outcome, &before, &after, attributed))
         }
         "extractDecorators" | "extractVocabularies" | "extractNonVocabDecorators" => {
             let Some(Arg::Mm(index)) = args.first() else {
@@ -2499,19 +2556,21 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 }
             };
             let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
-            Ok(from_engine(
-                dcs::validate(&command_set, refs.as_deref()),
-                |mm| recipe::summary_of(recipe::Kind::ModelManager, &mm),
-            ))
+            let outcome = dcs::validate(&command_set, refs.as_deref())
+                .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                .map_err(err);
+            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&command_set));
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
         }
         "jsonToYaml" => {
             let Some(json_input) = plain_arg(&args, 0)? else {
                 return Ok(unsupported("DecoratorManager.jsonToYaml without an input"));
             };
-            Ok(from_engine(
-                dcs::validated_json_to_yaml(&json_input),
-                Value::String,
-            ))
+            let outcome = dcs::validated_json_to_yaml(&json_input)
+                .map(Value::String)
+                .map_err(err);
+            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&json_input));
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
         }
         "yamlToJson" => {
             let Some(Value::String(yaml_input)) = plain_arg(&args, 0)? else {
@@ -2519,7 +2578,11 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                     "DecoratorManager.yamlToJson with a non-string input",
                 ));
             };
-            Ok(from_engine(dcs::validated_yaml_to_json(&yaml_input), |v| v))
+            let outcome = dcs::validated_yaml_to_json(&yaml_input).map_err(err);
+            // The command set `validate` checked: the converter's output.
+            let converted: Vec<Value> = dcs::yaml_to_json(&yaml_input).into_iter().collect();
+            let attributed = attribute_stand_in(&outcome, &converted);
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
         }
         "migrateTo" => {
             let Some(mut command_set) = plain_arg(&args, 0)? else {
@@ -2531,7 +2594,12 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             let outcome = dcs::migrate_to(&mut command_set)
                 .map(|()| command_set.clone())
                 .map_err(err);
-            Ok(ran_with_effects(outcome, &before, &[Some(command_set)]))
+            Ok(ran_with_effects(
+                outcome,
+                &before,
+                &[Some(command_set)],
+                None,
+            ))
         }
         "executePropertyCommand" => {
             let (Some(mut property), Some(command)) = (plain_arg(&args, 0)?, plain_arg(&args, 1)?)
@@ -2548,6 +2616,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 outcome,
                 &before,
                 &[Some(property), Some(command)],
+                None,
             ))
         }
         _ => unreachable!("DECORATOR_MANAGER_OPS lists every member"),

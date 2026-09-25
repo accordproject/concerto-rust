@@ -650,7 +650,7 @@ fn a_step_that_replays_with_another_status_is_a_failure() {
     );
     let verdict = judge_one(&with_cache(&cache), &dir);
     match verdict {
-        Verdict::Fail { kind, detail } => {
+        Verdict::Fail { kind, detail, .. } => {
             assert_eq!(kind, compare::FailKind::StateDivergence);
             assert!(detail.contains("state divergence"), "{detail}");
         }

@@ -12,9 +12,10 @@
 //! `test/data/decoratorcommands/`.
 //!
 //! Where TS reads a map's key or value decorators through
-//! `MapDeclaration.key`/`.value` (`MapKeyType`/`MapValueType`, whose views
-//! this crate does not have yet), these tests read the same decorators from
-//! the decorated model file's AST, which is what those views are built from.
+//! `MapDeclaration.key`/`.value` (`MapKeyType`/`MapValueType`, which have no
+//! decorator accessors in this crate yet), these tests read the same
+//! decorators from the decorated model file's AST, which is what those
+//! elements are built from.
 //!
 //! Not ported, from the `#extractDecorators` group (21 `it`s, 18 ported):
 //!
