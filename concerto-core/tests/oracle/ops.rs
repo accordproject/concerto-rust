@@ -470,7 +470,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
 }
 
 /// Model-manager steps that are also ops (README "Ops").
-const MM_STEP_OPS: [&str; 7] = [
+const MM_STEP_OPS: [&str; 9] = [
     "addCTOModel",
     "addModel",
     "addModelFile",
@@ -478,6 +478,28 @@ const MM_STEP_OPS: [&str; 7] = [
     "validateModelFiles",
     "clearModelFiles",
     "fromAst",
+    "updateModelFile",
+    "deleteModelFile",
+];
+
+/// `ModelManager` queries [`model_manager_query`] dispatches (P2-08b, plus
+/// the pre-existing `getNamespaces`/`getAst`/`getType`/`getMapDeclarations`
+/// handled inline in `exec_handles`); `filter` and `validateModelFile` are
+/// dispatched separately (they need, respectively, a decoded `Arg::Predicate`
+/// and the `Harness`, for the CTO cache, neither of which
+/// `model_manager_query` has).
+const MM_QUERY_OPS: [&str; 11] = [
+    "getModels",
+    "resolveType",
+    "derivesFrom",
+    "isAssignableTo",
+    "getAssignableConcreteTypes",
+    "getAssetDeclarations",
+    "getTransactionDeclarations",
+    "getEventDeclarations",
+    "getParticipantDeclarations",
+    "getConceptDeclarations",
+    "getEnumDeclarations",
 ];
 
 /// The ops whose inputs hold model managers or their handles.
@@ -506,9 +528,15 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
             MM_STEP_OPS.contains(&m)
+                || MM_QUERY_OPS.contains(&m)
                 || matches!(
                     m,
-                    "getNamespaces" | "getAst" | "getType" | "getMapDeclarations"
+                    "getNamespaces"
+                        | "getAst"
+                        | "getType"
+                        | "getMapDeclarations"
+                        | "validateModelFile"
+                        | "filter"
                 )
         }
         ("ModelUtil", m) => matches!(
@@ -745,6 +773,13 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     "a model manager op whose receiver is not a model manager recipe".into(),
                 ));
             };
+            if member == "validateModelFile" {
+                return Ok(validate_model_file_op(h, &session, index, &args));
+            }
+            if member == "filter" {
+                let r = &session.pool[index];
+                return Ok(model_manager_filter_op(r, &args));
+            }
             if MM_STEP_OPS.contains(&member) {
                 let r = &mut session.pool[index];
                 return Ok(ran(r.apply(h, member, &args)?));
@@ -3068,7 +3103,168 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
                     .collect();
             ran(Ok(Value::Array(declarations)))
         }
+        // P2-08b: `BaseModelManager.getModels(options)`.
+        "getModels" => {
+            let Some(options) = plain(0) else {
+                return unsupported("getModels with options that are not plain data");
+            };
+            let include_external = options
+                .get("includeExternalModels")
+                .is_none_or(recipe::truthy);
+            let models: Vec<Value> =
+                r.mm.get_models(include_external)
+                    .into_iter()
+                    .map(|(name, content)| {
+                        json!({
+                            "name": name,
+                            "content": content.map_or(Value::Null, Value::String),
+                        })
+                    })
+                    .collect();
+            ran(Ok(Value::Array(models)))
+        }
+        // P2-08b: `BaseModelManager.resolveType(context, type)`.
+        "resolveType" => {
+            let (Some(Value::String(context)), Some(Value::String(type_name))) =
+                (plain(0), plain(1))
+            else {
+                return unsupported("resolveType with an argument that is not a string");
+            };
+            match r.mm.resolve_type(&context, &type_name) {
+                Ok(resolved) => ran(Ok(Value::String(resolved))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
+        }
+        // P2-08b: `BaseModelManager.derivesFrom(fqt1, fqt2)`.
+        "derivesFrom" => {
+            let (Some(Value::String(fqt1)), Some(Value::String(fqt2))) = (plain(0), plain(1))
+            else {
+                return unsupported("derivesFrom with an argument that is not a string");
+            };
+            match r.mm.derives_from(&fqt1, &fqt2) {
+                Ok(result) => ran(Ok(Value::Bool(result))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
+        }
+        // P2-08b: `BaseModelManager.isAssignableTo(fqn, baseFqn)` — not to be
+        // confused with `ModelUtil.isAssignableTo`, dispatched separately
+        // through `model_util_with_context` (module doc).
+        "isAssignableTo" => {
+            let (Some(Value::String(fqn)), Some(Value::String(base_fqn))) = (plain(0), plain(1))
+            else {
+                return unsupported("isAssignableTo with an argument that is not a string");
+            };
+            ran(Ok(Value::Bool(r.mm.is_type_assignable_to(&fqn, &base_fqn))))
+        }
+        // P2-08b: `BaseModelManager.getAssignableConcreteTypes(baseFqn)`.
+        "getAssignableConcreteTypes" => {
+            let Some(Value::String(base_fqn)) = plain(0) else {
+                return unsupported(
+                    "getAssignableConcreteTypes with a base type that is not a string",
+                );
+            };
+            let declarations: Vec<Value> =
+                r.mm.get_assignable_concrete_types(&base_fqn)
+                    .into_iter()
+                    .filter_map(|id| r.declaration_summary(id))
+                    .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
+        // P2-08b: the `BaseModelManager.get<Kind>Declarations()` family.
+        "getAssetDeclarations"
+        | "getTransactionDeclarations"
+        | "getEventDeclarations"
+        | "getParticipantDeclarations"
+        | "getConceptDeclarations"
+        | "getEnumDeclarations" => {
+            let ids = match member {
+                "getAssetDeclarations" => r.mm.get_asset_declarations(),
+                "getTransactionDeclarations" => r.mm.get_transaction_declarations(),
+                "getEventDeclarations" => r.mm.get_event_declarations(),
+                "getParticipantDeclarations" => r.mm.get_participant_declarations(),
+                "getConceptDeclarations" => r.mm.get_concept_declarations(),
+                _ => r.mm.get_enum_declarations(),
+            };
+            let declarations: Vec<Value> = ids
+                .into_iter()
+                .filter_map(|id| r.declaration_summary(id))
+                .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
         _ => unreachable!("`dispatched` lists every query"),
+    }
+}
+
+/// `BaseModelManager.validateModelFile(modelFile, fileName)` (P2-08b): `r`
+/// is `index`'s own pool entry, the receiver `this` — used only for the
+/// string overload's `processFile`; the model-file overload validates
+/// against *that file's own* owning manager instead
+/// ([`owning_manager`]'s doc, shared with `ModelFile.validate`), which TS's
+/// `modelFile.validate()` reaches without ever consulting `this`.
+fn validate_model_file_op(h: &Harness, session: &Session, index: usize, args: &[Arg]) -> Dispatch {
+    match args.first() {
+        Some(Arg::File(file)) => match owning_manager(session, file) {
+            Ok(owner) => {
+                let mf = match ModelFile::from_json_with_definitions(
+                    &file.ast,
+                    file.definitions.clone(),
+                    file.file_name.clone(),
+                ) {
+                    Ok(mf) => mf,
+                    Err(e) => {
+                        return Dispatch::Fault(Fault::Divergence(format!(
+                            "state divergence: a model file that decoded successfully failed to rebuild: {}",
+                            to_oracle_error(&e).message
+                        )));
+                    }
+                };
+                from_engine(owner.mm.validate_detached_model_file(&mf), |()| {
+                    recipe::undefined()
+                })
+            }
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        Some(Arg::Plain(Value::String(cto))) => {
+            let file_name_value = match args.get(1) {
+                None => recipe::undefined(),
+                Some(Arg::Plain(v)) => v.clone(),
+                Some(_) => {
+                    return unsupported(
+                        "validateModelFile with a file name that is not plain data",
+                    );
+                }
+            };
+            let r = &session.pool[index];
+            match r.validate_model_file_text(h, cto, &file_name_value) {
+                Ok(outcome) => ran(outcome),
+                Err(fault) => Dispatch::Fault(fault),
+            }
+        }
+        _ => unsupported("validateModelFile with an argument that is not a string or model file"),
+    }
+}
+
+/// `BaseModelManager.filter(predicate, options)` (P2-08b): `predicate` is
+/// the oracle's `"fqn-in"` encoding, already decoded into
+/// [`Arg::Predicate`]; `options.disableValidation` is the only option this
+/// engine reads (`ModelManager::filter`'s doc).
+fn model_manager_filter_op(r: &Replayed, args: &[Arg]) -> Dispatch {
+    let Some(Arg::Predicate(names)) = args.first() else {
+        return unsupported("filter with a predicate this harness does not decode");
+    };
+    let disable_validation = match args.get(1) {
+        None => false,
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => false,
+        Some(Arg::Plain(v)) => v.get("disableValidation").is_some_and(recipe::truthy),
+        Some(_) => return unsupported("filter with options that are not plain data"),
+    };
+    match r
+        .mm
+        .filter(|fqn| names.iter().any(|n| n == fqn), disable_validation)
+    {
+        Ok(mm) => ran(Ok(recipe::summary_of(recipe::Kind::BaseModelManager, &mm))),
+        Err(e) => ran(Err(to_oracle_error(&e))),
     }
 }
 

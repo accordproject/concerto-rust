@@ -299,15 +299,31 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "modelmanager-resolvetype-nonsfortype",
         template: "No registered namespace for type \"{type}\" in \"{context}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.resolveType (RUST); not yet called.
+        // BaseModelManager.resolveType (RUST, P2-08b).
         sources: &["src/basemodelmanager.ts:591"],
     },
     CatalogueEntry {
         code: "modelmanager-resolvetype-notypeinnsforcontext",
         template: "No type \"{type}\" in namespace \"{namespace}\" for \"{context}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.resolveType (RUST); not yet called.
+        // BaseModelManager.resolveType (RUST, P2-08b).
         sources: &["src/basemodelmanager.ts:602"],
+    },
+    CatalogueEntry {
+        code: "basemodelmanager-updatemodelfile-notfound",
+        template: "Model file for namespace {namespace} not found",
+        renderer: Renderer::Inline,
+        // BaseModelManager.updateModelFile (HYBRID, P2-08b): a plain
+        // `Error`, not a Globalize call.
+        sources: &["src/basemodelmanager.ts:353"],
+    },
+    CatalogueEntry {
+        code: "basemodelmanager-deletemodelfile-notfound",
+        template: "Model file does not exist",
+        renderer: Renderer::Inline,
+        // BaseModelManager.deleteModelFile (RUST, P2-08b): a plain `Error`,
+        // not a Globalize call.
+        sources: &["src/basemodelmanager.ts:372"],
     },
     CatalogueEntry {
         code: "modelmanager-gettype-notypeinns",

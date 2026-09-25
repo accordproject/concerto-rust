@@ -981,6 +981,26 @@ mod tests {
     }
 
     #[test]
+    fn golden_basemodelmanager_updatemodelfile_notfound() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-updatemodelfile-notfound",
+                &[("namespace", "org.acme@1.0.0")]
+            )
+            .message(),
+            "Model file for namespace org.acme@1.0.0 not found"
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_deletemodelfile_notfound() {
+        assert_eq!(
+            contract("basemodelmanager-deletemodelfile-notfound", &[]).message(),
+            "Model file does not exist"
+        );
+    }
+
+    #[test]
     fn golden_modelmanager_gettype_notypeinns() {
         assert_eq!(
             contract(
