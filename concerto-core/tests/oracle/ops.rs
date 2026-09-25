@@ -2363,16 +2363,21 @@ fn attributed_dispatch(outcome: Value, attributed: Option<Attribution>) -> Dispa
 
 /// The owner of what `Serializer.fromJSON` does after its `$class` lookup
 /// (populating and validating the instance): P3-01b, which owns the
-/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure` stands in
-/// for it (`concerto_core::dcs`'s module doc) with its own error text and
-/// class, not TS's `ValidationException`.
+/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure`
+/// used to stand in for it (`concerto_core::dcs`'s module doc) with its own
+/// error text and class, not TS's `ValidationException`; `dcs::from_json_against`
+/// now runs the real, ported `Serializer::from_json` instead, so this
+/// attribution is no longer reachable from current production output — it
+/// stays only so a fixture recorded against the pre-P3-01b stand-in still
+/// gets attributed rather than misread as a fresh divergence.
 const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
 
 /// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
 /// when it is exactly the error the structural stand-in raises for one of
 /// the command sets it checked, and TS threw the `ValidationException` that
 /// resource validation raises: TS reaches the same point with the ported
-/// `$class` and `getType` steps, then fails there.
+/// `$class` and `getType` steps, then fails there. [`RESOURCE_VALIDATION_OWNER`]'s
+/// doc comment covers why this rarely matches any more.
 fn attribute_stand_in(outcome: &recipe::Outcome, command_sets: &[Value]) -> Option<Attribution> {
     let Err(error) = outcome else {
         return None;

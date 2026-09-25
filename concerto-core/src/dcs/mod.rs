@@ -29,13 +29,14 @@
 //! manager is built here the same way, from the metamodel and `DCS_MODEL`
 //! ASTs (`metamodel.json`, `dcsmodel.json`; CTO stays in JS), and
 //! [`validate_command`] runs against it as in TS. Of `Serializer.fromJSON`,
-//! only its first two steps are ported (the `$class` check and `getType`,
-//! with TS's errors): the rest of `Serializer.fromJSON` is not ported yet
-//! (P3-01b). [`validate_dcs_structure`] stands in for the
-//! rest, checking the command set against `DCS_MODEL`'s shape directly
-//! (required/optional fields, the `CommandType`/`MapElement` enums). It
-//! rejects what the schema check exists to reject, but with its own error
-//! text and class, not the `ValidationException` TS raises.
+//! the `$class` check and `getType` are hand-ported here to keep TS's own
+//! errors for a missing or non-string `$class`
+//! ([`from_json_against`]); the rest — the `JSONPopulator` walk and the
+//! `ResourceValidator` pass — now runs as the real, ported
+//! `Serializer::from_json` (P3-01b, `src/instance/serializer.rs`), raising
+//! the same `ValidationException`-style errors TS does.
+//! [`validate_dcs_structure`] used to stand in for that; nothing here still
+//! calls it (kept for its own unit tests).
 //!
 //! **Metamodel resolution.** `decorateModels` and the `extract*` statics read
 //! `modelManager.getAst(true, …)`, which runs `BaseModelManager.resolveMetaModel`
@@ -1082,16 +1083,43 @@ fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()
     Ok(())
 }
 
+/// `Factory.newId`/the `dayjs.utc()` clock `Serializer.fromJSON` reads while
+/// building and validating a decorator command set instance
+/// ([`from_json_against`]). Neither is reachable in practice: no
+/// declaration in `DCS_MODEL` is system-identified or timestamped, so this
+/// exists only to satisfy [`crate::instance::InstanceEnv`].
+struct DcsInstanceEnv;
+
+impl crate::instance::InstanceEnv for DcsInstanceEnv {
+    fn new_id(&mut self) -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("dcs-unused-id-{n:016x}")
+    }
+
+    fn now_ms(&mut self) -> f64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_millis() as f64)
+    }
+}
+
 /// `serializer.fromJSON(decoratorCommandSet)` over the validation model
 /// manager, as `DecoratorManager.validate`/`migrateAndValidate` call it.
 ///
-/// Its first two steps are ported as `Serializer.fromJSON`
-/// (`src/serializer.ts`) runs them — an instance with no `$class` is
-/// rejected, then `$class` is resolved with `getType` — so an instance of an
-/// unknown type fails as TS fails. The rest, populating and validating a
-/// resource from the JSON, is the rest of `Serializer.fromJSON` (its
-/// `JSONPopulator` walk and validation), not ported yet (P3-01b):
-/// [`validate_dcs_structure`] stands in for it (module doc).
+/// Its first two steps are hand-ported here rather than left to
+/// `Serializer.fromJSON` (`src/serializer.ts`) itself — an instance with no
+/// `$class` is rejected, then a truthy non-string `$class` fails the way
+/// `ModelUtil.getNamespace`'s `fqn.lastIndexOf('.')` does, which
+/// `Serializer::from_json` does not itself reproduce — so an instance of an
+/// unknown type fails as TS fails ([`get_type`], TS's own `getType` call).
+/// The rest, populating and validating a resource from the JSON, now runs
+/// as the rest of `Serializer.fromJSON` does: its `JSONPopulator` walk and
+/// `ResourceValidator` pass, ported in full by P3-01b
+/// (`src/instance/serializer.rs`). [`validate_dcs_structure`] used to stand
+/// in for that; it is kept only for its own unit tests below, and is no
+/// longer reachable from here.
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
     let class = js_read(Some(instance), "$class")?;
     let class = match class {
@@ -1115,7 +1143,13 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
     };
     get_type(model_manager, class)?;
-    validate_dcs_structure(instance)
+    let serializer = crate::instance::Serializer::new(true, true, None)
+        .expect("Serializer::new with a truthy factory and model manager cannot fail");
+    let json_instance = crate::instance::JsValue::from_json(instance);
+    let mut env = DcsInstanceEnv;
+    serializer
+        .from_json(model_manager, &json_instance, None, &mut env)
+        .map(|_| ())
 }
 
 /// `BaseModelManager.getType(qualifiedName)` (`src/basemodelmanager.ts`),

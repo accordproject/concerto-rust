@@ -1133,9 +1133,18 @@ fn dcs_without_commands() -> serde_json::Value {
 }
 
 fn ts_error(class: &str, message: &str) -> serde_json::Value {
+    let component = match class {
+        "Error" => serde_json::Value::Null,
+        // `ValidationException` extends concerto-util's `BaseException` and
+        // passes no explicit component (`ContractError::component`,
+        // `ErrorKind::Validation`), so `BaseException`'s own default
+        // applies, unlike every other class here (`@accordproject/concerto-core`).
+        "ValidationException" => json!("@accordproject/concerto-util"),
+        _ => json!("@accordproject/concerto-core"),
+    };
     json!({ "error": {
         "class": class, "message": message, "location": null,
-        "component": if class == "Error" { serde_json::Value::Null } else { json!("@accordproject/concerto-core") }
+        "component": component
     } })
 }
 
@@ -1214,7 +1223,17 @@ fn a_stand_in_rejection_where_ts_accepted_stays_the_ops_own() {
 }
 
 #[test]
-fn a_stand_in_rejection_where_ts_threw_a_validation_exception_is_attributed() {
+fn a_dcs_resource_validation_error_is_no_longer_attributed_to_the_stand_in() {
+    // Before P3-01b landed, `dcs::from_json_against` fell back to
+    // `validate_dcs_structure`'s hand-written stand-in for a command set
+    // missing `commands`, and `attribute_stand_in` (ops.rs) treated the
+    // resulting mismatch — its own `Error` class and text, not TS's
+    // `ValidationException` — as belonging to P3-01b
+    // (accordproject/concerto-rust#124). `from_json_against` now runs the
+    // real, ported `Serializer::from_json` (src/instance/serializer.rs)
+    // instead, so the class and component already match TS; only the exact
+    // wording of a hand-crafted fixture message can still differ, which is
+    // not itself a P3-01b gap, so nothing is attributed any more.
     let verdict = judge_dcs(
         "attr-si-both",
         "DecoratorManager.validate",
@@ -1226,11 +1245,8 @@ fn a_stand_in_rejection_where_ts_threw_a_validation_exception_is_attributed() {
     );
     match verdict {
         Verdict::Fail { kind, blocker, .. } => {
-            assert_eq!(kind, compare::FailKind::ClassMismatch);
-            assert_eq!(
-                blocker,
-                Some(super::recipe::Blocker::Owner("P3-01b".into()))
-            );
+            assert_eq!(kind, compare::FailKind::MessageMismatch);
+            assert_eq!(blocker, None, "attributed to {blocker:?}");
         }
         other => panic!("expected Fail, got {other:?}"),
     }
