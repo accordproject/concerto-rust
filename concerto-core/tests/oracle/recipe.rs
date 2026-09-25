@@ -43,13 +43,16 @@
 //! restoring rebuilds the manager from the surviving files (all of which
 //! loaded before).
 //!
-//! **Options.** `skipLocationNodes` (it selects the cache entry) and
+//! **Options.** `skipLocationNodes` (it selects the cache entry),
 //! `dangerouslyAllowReservedSystemTypeNamesInUserModels` (P2-08:
 //! `ModelManager::set_dangerously_allow_reserved_system_type_names_in_user_models`,
-//! read by `Declaration.validate`) are replayed. Any other option with a
-//! truthy value changes TS behaviour the Rust engine does not model yet
-//! (`metamodelValidation`, `addMetamodel`, `decoratorValidation`, ...), so
-//! such a recipe is `unsupported`.
+//! read by `Declaration.validate`) and `decoratorValidation` (P2-08b:
+//! `ModelManager::set_decorator_validation`, read by `Decorator.validate`;
+//! P2-09b gave the harness its own recognised key for it, having previously
+//! rejected it outright) are replayed. Any other option with a truthy value
+//! changes TS behaviour the Rust engine does not model yet
+//! (`metamodelValidation`, `addMetamodel`, `regExp`), so such a recipe is
+//! `unsupported`.
 //!
 //! # Model files, declarations, properties
 //!
@@ -86,7 +89,7 @@ use concerto_core::instance::validate::{
 };
 use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
-    Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
+    Declaration, DeclarationKind, DecoratorValidationOptions, ModelFile, Named, ScalarDeclaration,
 };
 use concerto_core::model_manager::{
     DeclId, ModelFileId, ModelFileSource, ModelManager, Node, PropId,
@@ -240,6 +243,9 @@ pub struct Replayed {
     /// TS `options.dangerouslyAllowReservedSystemTypeNamesInUserModels`
     /// (JS truthiness), set on every manager this recipe builds or rebuilds.
     allow_reserved_system_type_names: bool,
+    /// TS `options.decoratorValidation` (P2-09b), set on every manager this
+    /// recipe builds or rebuilds.
+    decorator_validation: DecoratorValidationOptions,
     files: Vec<Entry>,
     pub mm: ModelManager,
 }
@@ -1264,14 +1270,12 @@ fn typed_field_value(v: &Value) -> Faulty<Value> {
 /// Model manager options that concerto-core 5.0.0 reads on the paths this
 /// harness replays and the Rust engine does not model yet: metamodel
 /// validation (`basemodelmanager.ts` `addModelFile`), adding the metamodel
-/// (constructor), decorator validation (`Decorated.validate`) and a custom
-/// `RegExp` (`stringvalidator.ts`).
-const UNMODELLED_OPTIONS: [&str; 4] = [
-    "metamodelValidation",
-    "addMetamodel",
-    "decoratorValidation",
-    "regExp",
-];
+/// (constructor) and a custom `RegExp` (`stringvalidator.ts`).
+/// `decoratorValidation` (`Decorated.validate`) used to be here too; the
+/// engine has modelled it since P2-08b (`ModelManager::set_decorator_validation`),
+/// so P2-09b moved it to its own recognised key below, alongside
+/// `ALLOW_RESERVED_SYSTEM_TYPE_NAMES`.
+const UNMODELLED_OPTIONS: [&str; 3] = ["metamodelValidation", "addMetamodel", "regExp"];
 
 /// TS `ModelManagerOptions.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
 /// read back as `Boolean(modelFile.getModelManager()?.options?.<this>)` by
@@ -1279,6 +1283,14 @@ const UNMODELLED_OPTIONS: [&str; 4] = [
 /// (P2-08).
 const ALLOW_RESERVED_SYSTEM_TYPE_NAMES: &str =
     "dangerouslyAllowReservedSystemTypeNamesInUserModels";
+
+/// TS `ModelManagerOptions.decoratorValidation`
+/// (`{missingDecorator?, invalidDecorator?}`), read by `Decorator.validate`
+/// (introspect/decorator.ts) and modelled by the Rust engine since P2-08b
+/// (`ModelManager::set_decorator_validation`/`DecoratorValidationOptions`).
+/// P2-09b: the harness used to reject this option outright (it was in
+/// `UNMODELLED_OPTIONS`) even though the engine already replays it.
+const DECORATOR_VALIDATION: &str = "decoratorValidation";
 
 /// Options concerto-core 5.0.0 never reads on these paths: `strict`,
 /// `enableMapType` and `importAliasing` are v3/v4 flags no 5.0.0 source file
@@ -1301,20 +1313,45 @@ fn option_reader(key: &str) -> Option<&'static str> {
         "metamodelValidation" => "BaseModelManager.validateAst",
         // The constructor adds the metamodel file.
         "addMetamodel" => "BaseModelManager.new",
-        // `Decorator.validate` reads `mm.getDecoratorValidation()`.
-        "decoratorValidation" => "Decorator.validate",
         // `StringValidator`'s constructor builds the custom RegExp.
         "regExp" => "StringValidator.new",
         _ => return None,
     })
 }
 
+/// TS `ModelManagerOptions.decoratorValidation`: an object with optional
+/// `missingDecorator`/`invalidDecorator` strings. Only the exact string
+/// `"error"` ever throws (`Decorator::validate`'s doc comment); any other
+/// value, including a non-string one, only logs — and this port has no
+/// logger (`Decorator::handle`), so it is silently unobservable either way.
+/// Decoding a non-string field as absent is therefore exact for every
+/// fixture this harness can see: whether the check runs at all
+/// (`DecoratorValidationOptions::is_enabled`) never changes what is
+/// observable, only a throw (string `"error"`) does.
+fn decode_decorator_validation(value: &Value) -> Faulty<DecoratorValidationOptions> {
+    let Some(map) = value.as_object() else {
+        return Err(Fault::Unsupported(
+            "decoratorValidation option that is not an object".into(),
+        ));
+    };
+    let field = |key: &str| match map.get(key) {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    Ok(DecoratorValidationOptions {
+        missing_decorator: field("missingDecorator"),
+        invalid_decorator: field("invalidDecorator"),
+    })
+}
+
 /// A recipe's options as the harness replays them: `skipLocationNodes`
-/// (which only selects the cache entry, i.e. the AST's shape) and
-/// `dangerouslyAllowReservedSystemTypeNamesInUserModels`.
+/// (which only selects the cache entry, i.e. the AST's shape),
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels` and
+/// `decoratorValidation`.
 struct Options {
     skip_location_nodes: Value,
     allow_reserved_system_type_names: bool,
+    decorator_validation: DecoratorValidationOptions,
 }
 
 /// Checks a recipe's options. An unmodelled option with a truthy value, or
@@ -1324,6 +1361,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
         return Ok(Options {
             skip_location_nodes: Value::Null,
             allow_reserved_system_type_names: false,
+            decorator_validation: DecoratorValidationOptions::default(),
         });
     }
     let Some(map) = options.as_object() else {
@@ -1334,6 +1372,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
     for (key, value) in map {
         let inert = key == "skipLocationNodes"
             || key == ALLOW_RESERVED_SYSTEM_TYPE_NAMES
+            || key == DECORATOR_VALIDATION
             || INERT_OPTIONS.contains(&key.as_str());
         if !inert && (truthy(value) || !UNMODELLED_OPTIONS.contains(&key.as_str())) {
             let reason =
@@ -1353,6 +1392,11 @@ fn check_options(options: &Value) -> Faulty<Options> {
         allow_reserved_system_type_names: map
             .get(ALLOW_RESERVED_SYSTEM_TYPE_NAMES)
             .is_some_and(truthy),
+        decorator_validation: match map.get(DECORATOR_VALIDATION) {
+            None => DecoratorValidationOptions::default(),
+            Some(v) if is_undefined(v) || v.is_null() => DecoratorValidationOptions::default(),
+            Some(v) => decode_decorator_validation(v)?,
+        },
     })
 }
 
@@ -1362,13 +1406,18 @@ impl Replayed {
         let Options {
             skip_location_nodes,
             allow_reserved_system_type_names,
+            decorator_validation,
         } = check_options(options)?;
-        let mm = Self::fresh_manager(allow_reserved_system_type_names)?;
+        let mm = Self::fresh_manager(
+            allow_reserved_system_type_names,
+            decorator_validation.clone(),
+        )?;
         Ok(Self {
             kind,
             options: options.clone(),
             skip_location_nodes,
             allow_reserved_system_type_names,
+            decorator_validation,
             files: Vec::new(),
             mm,
         })
@@ -1380,7 +1429,10 @@ impl Replayed {
     /// P2-08: `dangerouslyAllowReservedSystemTypeNamesInUserModels` is
     /// carried over, so a rebuild keeps it; a validating add checks only the
     /// new file, so whether the derived manager was validated no longer
-    /// matters here).
+    /// matters here). `decoratorValidation` is read back the same way
+    /// (P2-09b): the engine's own derivation (e.g. `dcs/mod.rs`) already
+    /// carries it onto the returned manager, so `derived.mm` is the source
+    /// of truth, not a re-decode of `options`.
     pub fn from_derived(kind: Kind, derived: super::ops::DerivedModelManager) -> Self {
         let files = derived
             .mm
@@ -1404,15 +1456,20 @@ impl Replayed {
             allow_reserved_system_type_names: derived
                 .mm
                 .dangerously_allow_reserved_system_type_names_in_user_models(),
+            decorator_validation: derived.mm.decorator_validation().clone(),
             files,
             mm: derived.mm,
         }
     }
 
     /// `new ModelManager(options)` for this recipe's modelled options.
-    fn fresh_manager(allow_reserved_system_type_names: bool) -> Faulty<ModelManager> {
+    fn fresh_manager(
+        allow_reserved_system_type_names: bool,
+        decorator_validation: DecoratorValidationOptions,
+    ) -> Faulty<ModelManager> {
         let mut mm = ModelManager::new()
             .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
+        mm.set_decorator_validation(decorator_validation);
         mm.set_dangerously_allow_reserved_system_type_names_in_user_models(
             allow_reserved_system_type_names,
         );
@@ -1421,7 +1478,10 @@ impl Replayed {
 
     /// The Rust manager rebuilt from `files`, all of which loaded before.
     fn rebuild(&mut self) -> Faulty<()> {
-        let mut mm = Self::fresh_manager(self.allow_reserved_system_type_names)?;
+        let mut mm = Self::fresh_manager(
+            self.allow_reserved_system_type_names,
+            self.decorator_validation.clone(),
+        )?;
         for entry in &self.files {
             mm.add_model_with_definitions(
                 &entry.ast,
@@ -1455,8 +1515,12 @@ impl Replayed {
             options: self.options.clone(),
             skip_location_nodes: self.skip_location_nodes.clone(),
             allow_reserved_system_type_names: self.allow_reserved_system_type_names,
+            decorator_validation: self.decorator_validation.clone(),
             files: self.files.clone(),
-            mm: Self::fresh_manager(self.allow_reserved_system_type_names)?,
+            mm: Self::fresh_manager(
+                self.allow_reserved_system_type_names,
+                self.decorator_validation.clone(),
+            )?,
         };
         let entry = Entry {
             ast: file.ast.clone(),
@@ -1584,17 +1648,31 @@ impl Replayed {
     fn process_file(&self, h: &Harness, input: &Value, file_name: &Value) -> Faulty<Outcome> {
         match self.kind {
             Kind::ModelManager => {
-                let Value::String(cto) = input else {
-                    // TS parses `String(input)`; build-cto-cache.js collects
-                    // string arguments only, so the cache has no entry for it.
-                    return Err(Fault::Blocked(
-                        "a ModelManager given a non-string model input, which TS parses as \
-                         String(input): the P1-07a CTO cache collects string inputs only"
-                            .into(),
-                        Blocker::Owner("P1-07a".into()),
-                    ));
+                let cto = match input {
+                    Value::String(s) => s.clone(),
+                    // TS: `ctoProcessFile`'s `typeof data === 'string' ?
+                    // data : String(data)`. A JSON object decoded from a
+                    // fixture is always a plain object with no custom
+                    // `toString`/`Symbol.toPrimitive`, so `String()` on one
+                    // is always the fixed literal `"[object Object]"` — the
+                    // only non-string shape `addModel`'s `modelInput` takes
+                    // in the corpus today (`build-cto-cache.js`'s own
+                    // `jsToString`, P2-09b). Any other JSON kind (a number,
+                    // boolean, array, ...) is left unsupported rather than
+                    // guessed at: nothing in the corpus exercises `String()`
+                    // on one here, and their JS coercions are not this
+                    // simple (an array, for one, stringifies each element
+                    // and joins with commas).
+                    Value::Object(_) => "[object Object]".to_string(),
+                    _ => {
+                        return Err(Fault::Unsupported(
+                            "a ModelManager given a non-string, non-object model input, whose \
+                             String(input) coercion this harness does not (yet) replicate"
+                                .into(),
+                        ));
+                    }
                 };
-                self.cto_ast(h, cto, file_name.as_str())
+                self.cto_ast(h, &cto, file_name.as_str())
             }
             Kind::BaseModelManager | Kind::AstModelManager => Ok(Ok(input.clone())),
         }

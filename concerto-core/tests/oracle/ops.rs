@@ -103,7 +103,7 @@ use concerto_core::validation;
 use serde_json::{Value, json};
 
 use super::Harness;
-use super::decode::{self, Unsupported};
+use super::decode::{self, Decoded, Unsupported};
 use super::fixture::Inputs;
 use super::recipe::{self, Arg, Fault, Faulty, M, Replayed, Session};
 
@@ -344,23 +344,58 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         }
         "ModelUtil.isValidIdentifier" => {
             let arg0 = decode::arg(&args, 0);
-            let Ok(name) = decode::as_str(&arg0) else {
-                bad_args!()
+            // TS: `ID_REGEX.test(name as string)` — `RegExp.prototype.test`
+            // coerces its argument with `String()`, so a missing name
+            // becomes the string `"undefined"` and an explicit `null`
+            // becomes `"null"`; both are valid identifiers (DV-002,
+            // ts-bug). P2-09b: this harness used to require an already
+            // decoded string and reported these two nullish fixtures as
+            // unsupported instead of replaying DV-002.
+            let name = match &arg0 {
+                Decoded::Undefined => "undefined",
+                Decoded::Value(Value::Null) => "null",
+                _ => {
+                    let Ok(name) = decode::as_str(&arg0) else {
+                        bad_args!()
+                    };
+                    name
+                }
             };
             Ok(Value::Bool(model_util::is_valid_identifier(name)))
         }
         "ModelUtil.getFullyQualifiedName" => {
             let arg0 = decode::arg(&args, 0);
             let arg1 = decode::arg(&args, 1);
-            let Ok(ns) = decode::as_str(&arg0) else {
-                bad_args!()
+            // TS returns `type` unchanged when `namespace` is falsy (so an
+            // absent `type` stays absent rather than becoming the string
+            // `"undefined"`); only the truthy-`namespace` branch builds
+            // `` `${namespace}.${type}` ``, which needs both arguments
+            // decoded as strings. P2-09b: a nullish `namespace` (and so a
+            // nullish `type`, the only case the corpus records) used to
+            // make this op unsupported instead of taking the untouched
+            // branch.
+            let namespace_falsy = match &arg0 {
+                Decoded::Undefined => true,
+                Decoded::Value(Value::Null) => true,
+                Decoded::Value(Value::String(s)) => s.is_empty(),
+                _ => false,
             };
-            let Ok(type_name) = decode::as_str(&arg1) else {
-                bad_args!()
-            };
-            Ok(Value::String(model_util::get_fully_qualified_name(
-                ns, type_name,
-            )))
+            if namespace_falsy {
+                Ok(match &arg1 {
+                    Decoded::Undefined => recipe::undefined(),
+                    Decoded::Value(v) => v.clone(),
+                })
+            } else {
+                let Ok(ns) = decode::as_str(&arg0) else {
+                    bad_args!()
+                };
+                let Ok(type_name) = decode::as_str(&arg1) else {
+                    bad_args!()
+                };
+                Ok(Value::String(model_util::get_fully_qualified_name(
+                    ns, type_name,
+                )))
+            }
         }
         "ModelUtil.removeNamespaceVersionFromFullyQualifiedName" => {
             let arg0 = decode::arg(&args, 0);
@@ -371,10 +406,18 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         }
         "ModelUtil.isSystemProperty" => {
             let arg0 = decode::arg(&args, 0);
-            let Ok(name) = decode::as_str(&arg0) else {
-                bad_args!()
+            // TS: `reservedProperties.includes(propertyName)` — `Array.includes`
+            // is a strict-equality (no-coercion) check against an array of
+            // strings, so any non-string argument (a number, `undefined`,
+            // `null`, ...) can never match and is trivially `false`. P2-09b:
+            // this harness used to require an already decoded string and
+            // reported a non-string argument as unsupported instead of
+            // replaying that trivial `false`.
+            let is_system = match &arg0 {
+                Decoded::Value(Value::String(name)) => model_util::is_system_property(name),
+                _ => false,
             };
-            Ok(Value::Bool(model_util::is_system_property(name)))
+            Ok(Value::Bool(is_system))
         }
         "ModelUtil.isPrivateSystemProperty" => {
             let arg0 = decode::arg(&args, 0);
@@ -2339,6 +2382,15 @@ fn field_validator_summary(property: &Property) -> Value {
 /// its `{ctor, fqn}` summary the same way a `getProperty` result is encoded;
 /// its `fqn` is identical to the original field's own (same parent, same
 /// name), since neither changes.
+///
+/// There is no library counterpart to call for the unboxing itself (P2-09b
+/// gap audit: `Field.getScalarField` "stays in the converted TS view", none
+/// of `introspect/field.rs`/`scalar.rs` builds a synthetic `Field`), so the
+/// AST surgery below is still this harness's own. What *is* engine surface —
+/// [`ScalarDeclaration::scalar_type`] (TS `ScalarDeclaration.getType`,
+/// ledger RUST P2-05) — now supplies the `*Property` class instead of a
+/// second, harness-owned table that duplicated it by pattern-matching the
+/// scalar's `$class` string.
 fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
     match is_type_scalar(r, id, property) {
         Ok(true) => {}
@@ -2373,28 +2425,22 @@ fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
             )));
         }
     };
-    let scalar_class = scalar_ast.get("$class").and_then(Value::as_str);
-    let property_class = match scalar_class {
-        Some("concerto.metamodel@1.0.0.BooleanScalar") => {
-            "concerto.metamodel@1.0.0.BooleanProperty"
-        }
-        Some("concerto.metamodel@1.0.0.IntegerScalar") => {
-            "concerto.metamodel@1.0.0.IntegerProperty"
-        }
-        Some("concerto.metamodel@1.0.0.LongScalar") => "concerto.metamodel@1.0.0.LongProperty",
-        Some("concerto.metamodel@1.0.0.DoubleScalar") => "concerto.metamodel@1.0.0.DoubleProperty",
-        Some("concerto.metamodel@1.0.0.StringScalar") => "concerto.metamodel@1.0.0.StringProperty",
-        Some("concerto.metamodel@1.0.0.DateTimeScalar") => {
-            "concerto.metamodel@1.0.0.DateTimeProperty"
-        }
-        other => {
+    // `ScalarDeclaration::scalar_type` (the engine's own primitive-type
+    // resolution, not a harness re-derivation) names the six primitives
+    // TS's `Field.getScalarField` recognises; each maps to its `*Property`
+    // metamodel class by name, the same correspondence the metamodel itself
+    // draws between e.g. `StringScalar` and `StringProperty`.
+    let property_class = match scalar.scalar_type() {
+        Some(primitive) => format!("concerto.metamodel@1.0.0.{primitive}Property"),
+        None => {
             return Dispatch::Fault(Fault::Divergence(format!(
-                "state divergence: getScalarField's resolved type has an unrecognized scalar $class {other:?}"
+                "state divergence: getScalarField's resolved type has an unrecognized scalar $class {:?}",
+                scalar_ast.get("$class").and_then(Value::as_str)
             )));
         }
     };
     let mut field_ast = scalar_ast;
-    field_ast["$class"] = Value::String(property_class.to_string());
+    field_ast["$class"] = Value::String(property_class);
     field_ast["name"] = Value::String(property.name().to_string());
     field_ast["isArray"] = Value::Bool(property.is_array());
     let synthetic = match Property::try_from(&field_ast) {
