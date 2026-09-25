@@ -23,31 +23,71 @@
 //!   with the P1-05 `{kind, code, params, location}` shape, structured, not
 //!   a `String`).
 //!
-//! # Scope: the wire JSON, not a typed `Resource`
+//! # Scope: a typed value, not raw wire JSON
 //!
 //! TS's `ResourceValidator` runs over an in-memory `Resource`, already
 //! populated by `JSONPopulator`: primitive fields hold JS values, a
-//! `DateTime` field holds a `dayjs` object (`checkItem` tests
-//! `typeof obj.isBefore === 'function'`), and a relationship holds a
-//! `Relationship` instance. Rust has no such runtime object, and building
-//! one (a full `JSONPopulator` port) is out of this task's scope (the
-//! issue's `ResourceValidator`/`JSONPopulator` reference is for parity of
-//! **checks and messages**, not for porting `JSONPopulator`'s coercion step
-//! itself). This port instead validates the **wire JSON** a resource
-//! serializes to and deserializes from (`Serializer.toJSON`/`fromJSON`'s
-//! own shape, and what `concerto-validate-rs` already worked over): a
-//! `DateTime` value is the ISO 8601 string (or epoch-millisecond number)
-//! `JSONPopulator` would accept, and a relationship value is the resource
-//! URI string `Relationship.toJSON()` produces. For every input this
-//! matters for, the verdict coincides with running `JSONPopulator` then
-//! `ResourceValidator` in TS: a value `JSONPopulator` would coerce
-//! successfully is exactly a value this validator accepts, and a value it
-//! would reject reaches the matching `resourcevalidator-fieldtypeviolation`
-//! (etc.) message here too. This is a scope decision about *what runs*
-//! (`JSONPopulator` is not ported here at all), not a behavioural
-//! divergence from a ported TS member, so it is documented here rather than
-//! in `DIVERGENCES.md` (PORTING.md 7.3, which is for a *ported* member's own
-//! faithfully-kept quirk).
+//! `DateTime` field holds a `dayjs` object (`checkItem` tests `typeof obj
+//! === 'object' && typeof obj.isBefore === 'function'`, which does **not**
+//! itself re-validate the date's shape — an invalid-but-still-a-`Dayjs`
+//! value passes this check in TS too), and a relationship field holds a
+//! `Relationship` instance (`obj instanceof Relationship`). Rust has no such
+//! runtime object, and building one (a full `JSONPopulator` port, which owns
+//! the actual coercion: string → `Dayjs`, URI → `Relationship`) is out of
+//! *this module's* scope (the issue's `ResourceValidator`/`JSONPopulator`
+//! reference is for parity of **checks and messages** in each of the two
+//! ported members; `JSONPopulator` itself is a separate porting task, not
+//! yet done). What this module accepts is therefore a `Value` shaped like
+//! wire JSON (`$class`-tagged, primitive fields as plain JSON) but with two
+//! reserved markers standing in for the two non-JSON runtime types
+//! `JSONPopulator` would have produced, so this validator's checks are
+//! `instanceof`-shaped, not shape/parse-shaped, exactly like TS's own
+//! post-population checks:
+//!
+//! - [`DAYJS_TAG`] (`"$$dayjs"`) on an object marks an already-coerced
+//!   `DateTime` value (its doc comment has the detail);
+//! - [`RELATIONSHIP_TAG`] (`"$$relationship"`) on an object marks an
+//!   already-coerced `Relationship` value, carrying the pointed-at type as
+//!   `$class` (its doc comment on [`check_relationship`] has the detail).
+//!
+//! A caller that already has real wire JSON (a `DateTime` as an ISO string,
+//! a relationship as a URI string) is expected to coerce it into this shape
+//! first — the native oracle harness's `tests/oracle/recipe.rs` does exactly
+//! that when it replays an oracle `"typed"` fixture, which is how
+//! [`validate_instance`] is exercised against real `Resource.validate`
+//! fixtures (task P3-01 review) without a `JSONPopulator` port. This is a
+//! scope decision about *what runs* (`JSONPopulator`'s own coercion is not
+//! ported here), not a behavioural divergence from a ported TS member, so it
+//! is documented here rather than in `DIVERGENCES.md` (PORTING.md 7.3, which
+//! is for a *ported* member's own faithfully-kept quirk). It does mean an
+//! untagged `DateTime`/relationship value — one that was never run through
+//! the coercion step this module does not implement — is always rejected
+//! here as a field type violation, which is the *correct*, TS-faithful
+//! verdict for that case (an uncoerced value on a `Resource` field is
+//! exactly what `checkItem`'s `instanceof`-style check rejects in TS too),
+//! not an approximation of it.
+//!
+//! # Known gaps (oracle-verified: `cargo test --test oracle
+//! ORACLE_OP=Resource.validate`, 70/73 pass, 1 unsupported, 2 fail)
+//!
+//! Two `gaps` fixtures still fail, both narrow and left for a future task
+//! rather than chased further here:
+//!
+//! - `d444ebcf0cf5a3c23e5ee6dd` expects a `TypeError` ("obj.getFullyQualifiedType
+//!   is not a function"): a hand-built TS `Resource` with a relationship
+//!   field holding a plain value with no `Identifiable` methods at all,
+//!   which fails TS's `obj instanceof Relationship`/`instanceof Resource`
+//!   checks in `checkRelationship` in a way this port's tagged-value scheme
+//!   (a value is either `$class`-tagged or not) cannot reproduce: there is
+//!   no "an object shaped like neither, but which TS's dynamic method
+//!   lookup still fails on differently" case to encode.
+//! - `642d743981a69328b04f1e33` gets the right verdict
+//!   (`ValidationException`) with the right *shape* of message, but not the
+//!   right words: a JS `undefined` array *element* (distinct from `null`,
+//!   `["a", undefined, "b"]`) is collapsed into this module's single `null`
+//!   representation on the way in (`tests/oracle/recipe.rs`'s
+//!   `typed_field_value`), so the reported value/type read `"null"`/
+//!   `"object"` here instead of TS's `"undefined"`/`"undefined"`.
 //!
 //! # Walk
 //!
@@ -66,7 +106,6 @@ use serde_json::Value;
 
 use crate::ecma;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::instance::resource_id::ResourceId;
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::{CollectionSizeValidator, NumberValidator, StringValidator};
 use crate::introspect::{Declaration, FullyQualified, Named, Property, Typed};
@@ -149,16 +188,6 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
     };
     let own_fqn = own_fqn.to_string();
 
-    // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier
-    // = obj.getFullyQualifiedIdentifier(); }` — a Resource is Identifiable
-    // exactly when its own type is identified.
-    if p.mm.is_identified(&own_fqn).unwrap_or(false)
-        && let Ok(Some(own_id_field)) = p.mm.identifier_field_name(&own_fqn)
-    {
-        let id = obj.get(&own_id_field).and_then(Value::as_str).unwrap_or("");
-        p.root_resource_identifier = format!("{own_fqn}#{id}");
-    }
-
     // `toBeAssignedClassDeclaration = modelManager.getType(obj.getFullyQualifiedType())`
     // — bug fix (nested/abstract `$class` unchecked): every object's own
     // `$class`, at any depth, is resolved and checked here, not only the
@@ -180,6 +209,25 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
     };
     let identifier_field_name = p.mm.identifier_field_name(&to_be_assigned_fqn)?;
 
+    // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
+    // obj.getFullyQualifiedIdentifier(); }`. Every `obj` reaching this point
+    // is a `Resource`, and every `Resource` extends `Identifiable`
+    // unconditionally in TS (`resource.ts`) — this does *not* depend on
+    // whether `own_fqn`'s declared type happens to have an identifier field
+    // (bug fix, found from the P3-01 review's oracle evidence: the previous
+    // version gated this on [`ModelManager::is_identified`], so a non-identified
+    // nested concept never updated `rootResourceIdentifier` on the way down,
+    // unlike TS). `getFullyQualifiedIdentifier()`'s own truthiness check on
+    // `getIdentifier()` (`identifiable.ts`) is what decides whether the
+    // `#id` suffix appears — [`fully_qualified_identifier`] carries that
+    // part faithfully (an absent or empty identifier both fall back to the
+    // bare fqn, exactly as a falsy `""`/`undefined` would in TS).
+    let own_id_field = identifier_field_name
+        .clone()
+        .unwrap_or_else(|| "$identifier".to_string());
+    let own_id = obj.get(&own_id_field).and_then(Value::as_str);
+    p.root_resource_identifier = fully_qualified_identifier(&own_fqn, own_id);
+
     // `if(toBeAssignedClassDeclaration.isAbstract())` — bug fix (abstract
     // `$class` unchecked): this now runs for every nested object, not only
     // the root.
@@ -199,15 +247,23 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
         if all_properties.iter().any(|(_, prop)| prop.name() == key) {
             continue;
         }
+        // `reportUndeclaredField(obj.getIdentifier(), ...)`: the *bare*
+        // identifier value, not `getFullyQualifiedIdentifier()` (bug fix,
+        // found from the P3-01 review's oracle evidence: the previous
+        // version wrongly formatted this as `fqn#id`). `obj.getIdentifier()`
+        // can genuinely be JS `undefined` (never set), which `${...}`
+        // interpolates as the literal word `undefined` ([`js_id_display`]),
+        // not an empty string.
         let resource_id = if declared_is_identified && key != "$identifier" {
             let id = identifier_field_name
                 .as_deref()
                 .and_then(|f| obj.get(f))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            format!("{to_be_assigned_fqn}#{id}")
+                .and_then(Value::as_str);
+            js_id_display(id)
         } else {
-            p.current_identifier.clone().unwrap_or_default()
+            p.current_identifier
+                .clone()
+                .unwrap_or_else(|| "undefined".to_string())
         };
         return Err(undeclared_field(&resource_id, key, &to_be_assigned_fqn));
     }
@@ -256,6 +312,67 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
 /// just `Value::Null`.
 fn is_js_null(value: &Value) -> bool {
     value.is_null()
+}
+
+/// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
+/// fqn + '#' + id : fqn` — `getIdentifier()`'s own truthiness check, so an
+/// absent identifier and an empty-string one (both falsy in JS) fall back to
+/// the bare fqn alike.
+fn fully_qualified_identifier(fqn: &str, id: Option<&str>) -> String {
+    match id {
+        Some(id) if !id.is_empty() => format!("{fqn}#{id}"),
+        _ => fqn.to_string(),
+    }
+}
+
+/// The JS `${value}` template-literal spelling of a possibly-absent string:
+/// `undefined` (the literal six-letter word, not an empty string) when the
+/// value was never set at all, distinct from an explicit empty string. Used
+/// wherever TS interpolates a value that can genuinely be `undefined` (as
+/// opposed to [`fully_qualified_identifier`]'s falsy-id check, which folds
+/// `undefined` and `""` together).
+fn js_id_display(id: Option<&str>) -> String {
+    id.map(str::to_string)
+        .unwrap_or_else(|| "undefined".to_string())
+}
+
+/// Whether `value` stands for a real TS `Identifiable` (a `Resource` or
+/// `Relationship`) in this port's tagged-value scheme (module doc "Scope"):
+/// a `$class`-tagged object — never a bare [`DAYJS_TAG`]-tagged value, which
+/// stands for a `Dayjs`, not an `Identifiable`. Returns `(fqn,
+/// fully_qualified_identifier)`, resolving the identifier field TS's own
+/// `getIdentifier()` would read (`p.mm.identifier_field_name`) and reading
+/// its value straight off `value` — a nested Resource's wire form always
+/// carries its own identifying field as an ordinary property, and a
+/// `RELATIONSHIP_TAG`-tagged value carries it under that same key
+/// (`tests/oracle/recipe.rs`'s `decode_typed_instance`).
+fn identifiable_parts(p: &Params, value: &Value) -> Option<(String, String)> {
+    let obj = value.as_object()?;
+    let fqn = obj.get("$class")?.as_str()?.to_string();
+    let id_field =
+        p.mm.identifier_field_name(&fqn)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "$identifier".to_string());
+    let id = obj.get(&id_field).and_then(Value::as_str);
+    let fqi = fully_qualified_identifier(&fqn, id);
+    Some((fqn, fqi))
+}
+
+/// TS `Resource.prototype.toString`/`Relationship.prototype.toString`:
+/// `'Resource {id=' + this.getFullyQualifiedIdentifier() + '}'` (or
+/// `'Relationship {...}'`), read off [`identifiable_parts`].
+fn identifiable_to_string(p: &Params, value: &Value) -> Option<String> {
+    let (_, fqi) = identifiable_parts(p, value)?;
+    let ctor = if value
+        .as_object()
+        .is_some_and(|o| o.contains_key(RELATIONSHIP_TAG))
+    {
+        "Relationship"
+    } else {
+        "Resource"
+    };
+    Some(format!("{ctor} {{id={fqi}}}"))
 }
 
 /// Whether a property carries a non-null AST `defaultValue`
@@ -551,29 +668,71 @@ fn primitive_type_matches(type_name: &str, value: &Value) -> bool {
         "String" => value.is_string(),
         "Long" | "Integer" | "Double" => value.as_f64().is_some_and(f64::is_finite),
         "Boolean" => value.is_boolean(),
-        "DateTime" => is_valid_datetime(value),
+        "DateTime" => is_populated_datetime(value),
         _ => false,
     }
 }
 
-/// `dayjs.utc(value).isValid()`, as far as a wire JSON value can spell a
-/// `DateTime`: an ISO 8601 date/date-time string, or a finite epoch-millisecond
-/// number (both of which `dayjs.utc` also accepts). A full `dayjs` port is
-/// out of this task's scope (module doc "Scope"), so this is a documented
-/// simplification, not a `ts-bug` (DIVERGENCES.md is for a divergence in a
-/// *ported* member, PORTING.md 7.3): no calendar-correctness check
-/// (`2024-02-30`) is applied, which matches `dayjs`'s own lenient
-/// day-overflow behaviour more often than not, but not always.
-fn is_valid_datetime(value: &Value) -> bool {
+/// A `DateTime` value that has already gone through `JSONPopulator`'s
+/// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
+/// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
+/// when it decodes an oracle `"typed"` receiver into this validator's wire
+/// form, so `is_populated_datetime` below can tell a real (possibly
+/// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
+/// mirroring TS's own post-population check, `typeof obj === 'object' &&
+/// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
+/// does *not* itself re-validate the date's shape or calendar range: a
+/// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
+/// accepts it at this point regardless (`dayjs.isValid()` is never called
+/// here). A bare `Value::String`/`Value::Number` reaching this check was
+/// never coerced, so it is always rejected here, exactly as a raw string
+/// left on a `Resource` field (for example by `setPropertyValue`, bypassing
+/// `JSONPopulator`) would be in TS.
+pub const DAYJS_TAG: &str = "$$dayjs";
+
+/// A value that has already been populated as a `Relationship` instance
+/// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
+/// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
+/// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
+pub const RELATIONSHIP_TAG: &str = "$$relationship";
+
+/// TS `typeof obj === 'object' && typeof obj.isBefore === 'function'`
+/// (resourcevalidator.ts `checkItem`): true exactly when `value` is a
+/// [`DAYJS_TAG`]-tagged object, i.e. reached this check as an already-typed
+/// `Dayjs` (see the constant's doc). Used for a class declaration's own
+/// `DateTime` fields (and scalar fields whose base type is `DateTime`),
+/// which is what `Resource`'s properties always hold post-population.
+fn is_populated_datetime(value: &Value) -> bool {
+    value.as_object().is_some_and(|o| o.contains_key(DAYJS_TAG))
+}
+
+/// TS `dayjs.utc(value).isValid()` (`checkMapType`, resourcevalidator.ts:156):
+/// unlike a class declaration's own fields, a `MapDeclaration`'s primitive
+/// values are *not* run through `JSONPopulator.convertToObject` (module doc
+/// on `visitMapDeclaration`/`processMapType`: only non-primitive map values
+/// are converted), so a `DateTime`-valued map entry really is still the raw
+/// wire value here, and TS really does re-parse it with `dayjs.utc` at this
+/// point. `dayjs.utc(string)` (no explicit format) first tries dayjs core's
+/// own lenient `REGEX_PARSE`, which requires only a four-digit year and
+/// accepts any digits (with any separators) after it -- out-of-range
+/// month/day/hour/minute/second values are *not* rejected there, they
+/// overflow-normalise the same way `Date.UTC` does with excess numeric
+/// constructor arguments, so `.isValid()` stays true; a string that
+/// `REGEX_PARSE` does not match falls back to native `Date` parsing, which
+/// this port cannot reproduce exactly. This is therefore a best-effort,
+/// *not byte-verified*, approximation of `dayjs`'s real leniency (documented
+/// here rather than silently passed off as exact, PORTING.md 7.2): a
+/// four-digit year, optionally followed by more digits/separators, is
+/// accepted without further range checking; anything else (including the
+/// native-`Date`-parsing fallback's own accepted formats, e.g. `"May 1,
+/// 2020"`) is rejected, which is stricter than TS in that one corner.
+fn parses_as_dayjs(value: &Value) -> bool {
     match value {
+        Value::Number(_) => value.as_f64().is_some_and(f64::is_finite),
         Value::String(s) => {
-            let re = regress::Regex::new(
-                r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$",
-            )
-            .expect("static pattern");
+            let re = regress::Regex::new(r"^\d{4}([^0-9].*)?$").expect("static pattern");
             re.find(s).is_some()
         }
-        Value::Number(_) => value.as_f64().is_some_and(f64::is_finite),
         _ => false,
     }
 }
@@ -655,10 +814,27 @@ fn check_object_item(
     // field's own declared type. Since every candidate here is a plain JSON
     // object (never a `Relationship`), the object's own `$class`, if it has
     // one, always takes over — `visit_class_declaration` re-resolves and
-    // re-checks it (abstract, assignability of nothing further needed here,
-    // since the recursive call itself validates the object against its own
-    // resolved type).
-    let _ = declared_class_fqn; // used only to select this branch; the recursive call resolves its own `$class`.
+    // re-checks it (abstract; assignability is handled just below, since
+    // `visit_class_declaration`'s recursive call validates the object
+    // against its *own* resolved type, never against the field's declared
+    // one).
+    //
+    // `if(obj instanceof Identifiable) { ... isAssignableTo check ... }`
+    // (bug fix, found from the P3-01 review's oracle evidence: this branch
+    // was missing entirely). Every `$class`-tagged object reaching this
+    // point is `Identifiable` (`Resource` extends it unconditionally in TS,
+    // module doc "Scope"), so the check always runs, exactly the way it
+    // does for a value that happens to have an identifier field and one
+    // that does not alike — TS's own `instanceof` check does not
+    // distinguish them either.
+    if let Some(own_fqn) = value
+        .as_object()
+        .and_then(|o| o.get("$class"))
+        .and_then(Value::as_str)
+        && !p.mm.is_assignable_to(own_fqn, declared_class_fqn)?
+    {
+        return Err(invalid_field_assignment(p, owner_fqn, property, own_fqn));
+    }
     visit_class_declaration(
         p,
         owner_fqn_for_object(property, declared_class_fqn).as_str(),
@@ -766,16 +942,15 @@ fn check_relationship(
     type_id: &mm::TypeIdentifier,
     value: &Value,
 ) -> Result<()> {
-    // `obj instanceof Relationship`: the wire form (module doc "Scope") is a
-    // resource URI string.
-    let uri_target = value
-        .as_str()
-        .and_then(|s| ResourceId::from_uri(s, None, None).ok());
+    // `obj instanceof Relationship`: a [`RELATIONSHIP_TAG`]-tagged object
+    // (see its doc), carrying the pointed-at type as `$class`.
+    let obj = value.as_object();
+    let is_relationship_instance = obj.is_some_and(|o| o.contains_key(RELATIONSHIP_TAG));
     // `obj instanceof Resource && (convertResourcesToRelationships ||
-    // permitResourcesForRelationships)`: a nested object standing in for
-    // the relationship.
-    let resource_target = value
-        .as_object()
+    // permitResourcesForRelationships)`: a nested (untagged) object standing
+    // in for the relationship.
+    let resource_target = obj
+        .filter(|_| !is_relationship_instance)
         .filter(|_| {
             p.options.convert_resources_to_relationships
                 || p.options.permit_resources_for_relationships
@@ -783,12 +958,16 @@ fn check_relationship(
         .and_then(|obj| obj.get("$class"))
         .and_then(Value::as_str);
 
-    let target_fqn = match (&uri_target, resource_target) {
-        (Some(id), _) => model_util::get_fully_qualified_name(&id.namespace, &id.type_name),
-        (None, Some(class)) => class.to_string(),
-        (None, None) => {
-            return Err(not_relationship_violation(p, owner_fqn, property, value));
-        }
+    let target_fqn = match (is_relationship_instance, resource_target) {
+        (true, _) => obj
+            .and_then(|o| o.get("$class"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        (false, Some(class)) => Some(class.to_string()),
+        (false, None) => None,
+    };
+    let Some(target_fqn) = target_fqn else {
+        return Err(not_relationship_violation(p, owner_fqn, property, value));
     };
 
     let relationship_type =
@@ -951,7 +1130,7 @@ fn check_map_type(
             )
             .into());
         }
-        "DateTime" if !is_valid_datetime(value) => {
+        "DateTime" if !parses_as_dayjs(value) => {
             return Err(ContractError::new(
                 ErrorKind::Error,
                 "resourcevalidator-checkmaptype-expecteddatetime",
@@ -1131,8 +1310,14 @@ fn js_to_string_element(value: &Value) -> String {
 
 /// The `value` param `reportFieldTypeViolation` passes: `JSON.stringify`
 /// for a truthy value, the raw JS `ToString` for a falsy one (2.1: "Where TS
-/// calls JSON.stringify(value) first ... the param is that JSON text").
+/// calls JSON.stringify(value) first ... the param is that JSON text"). A
+/// [`DAYJS_TAG`]-tagged value is a `Dayjs` instance, which defines its own
+/// `toJSON()` (the ISO string) that `JSON.stringify` calls, so it is
+/// stringified as that quoted string, not as the tag object's own JSON.
 fn field_value_param(value: &Value) -> String {
+    if let Some(iso) = value.as_object().and_then(|o| o.get(DAYJS_TAG)) {
+        return serde_json::to_string(iso).unwrap_or_else(|_| iso.to_string());
+    }
     if ecma::is_truthy(value) {
         serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
     } else {
@@ -1148,11 +1333,18 @@ fn field_type_violation(
     value: &Value,
 ) -> ConcertoError {
     let is_array = if property.is_array() { "[]" } else { "" };
-    // `value instanceof Identifiable`: never true here (module doc "Scope":
-    // the wire JSON has no runtime `Identifiable`); a nested object that
-    // reaches this point is reported by its plain JSON text/typeof instead,
-    // which is the closest faithful stand-in.
     let _ = owner_fqn;
+    // `if(value instanceof Identifiable) { typeOfValue =
+    // value.getFullyQualifiedType(); value = value.getFullyQualifiedIdentifier(); }`
+    // (bug fix, found from the P3-01 review's oracle evidence: this
+    // `Identifiable` case is TS-reachable — a `Resource`/`Relationship`
+    // reaching this point is exactly [`identifiable_parts`]'s tagged-value
+    // scheme, module doc "Scope" — so it is no longer treated as
+    // unreachable and JSON-stringified).
+    let (value_param, type_of_value) = match identifiable_parts(p, value) {
+        Some((fqn, fqi)) => (fqi, fqn),
+        None => (field_value_param(value), js_typeof(value).to_string()),
+    };
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-fieldtypeviolation",
@@ -1163,8 +1355,8 @@ fn field_type_violation(
                 "fieldType",
                 format!("{}{is_array}", property.type_name().unwrap_or_default()),
             ),
-            ("value", field_value_param(value)),
-            ("typeOfValue", js_typeof(value).to_string()),
+            ("value", value_param),
+            ("typeOfValue", type_of_value),
         ],
     )
     .into()
@@ -1194,13 +1386,21 @@ fn not_relationship_violation(
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
     let class_fqn = model_util::get_fully_qualified_name(namespace, type_name);
+    // `value.toString()`: a nested Resource or (wrongly, per this check)
+    // Relationship-shaped value that reaches here is `Identifiable`, whose
+    // own `toString()` is `'Resource {id=...}'`/`'Relationship {id=...}'`
+    // (bug fix, found from the P3-01 review's oracle evidence: this case is
+    // TS-reachable — it is exactly what a permitted-resource-in-place check
+    // failing, or a plain object with no `convertResourcesToRelationships`,
+    // produces), never the generic `[object Object]` fallback.
+    let invalid_value = identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value));
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-notrelationship",
         vec![
             ("resourceId", p.root_resource_identifier.clone()),
             ("classFQN", class_fqn),
-            ("invalidValue", js_to_string(value)),
+            ("invalidValue", invalid_value),
         ],
     )
     .into()
@@ -1553,9 +1753,41 @@ mod tests {
         let mgr = fixture();
         let vehicle = json!({
             "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 9_007_199_254_740_991_i64,
-            "purchasedAt": "2020-01-01T00:00:00.000Z"
+            "purchasedAt": { "$$dayjs": "2020-01-01T00:00:00.000Z" }
         });
         validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
+    }
+
+    /// A `Dayjs` instance is still a `Dayjs` instance even when the string it
+    /// was built from was nonsense (module doc "Scope", [`DAYJS_TAG`]'s
+    /// doc): TS's `checkItem` never re-validates it, so this passes.
+    #[test]
+    fn a_populated_datetime_passes_even_when_its_own_string_is_nonsense() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "purchasedAt": { "$$dayjs": "not-a-date" }
+        });
+        validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
+    }
+
+    /// A raw (un-coerced) string on a `DateTime` field is always a field
+    /// type violation post-population (module doc "Scope"): TS's
+    /// `JSONPopulator` is what turns a wire string into a `Dayjs`, and
+    /// `ResourceValidator` only ever sees the result.
+    #[test]
+    fn an_uncoerced_string_on_a_datetime_field_is_a_field_type_violation() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "purchasedAt": "2020-01-01T00:00:00.000Z"
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert!(err.to_string().contains("\"purchasedAt\""), "{err}");
     }
 
     #[test]
@@ -1576,7 +1808,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_iso_string_for_a_datetime_field_is_rejected() {
+    fn a_non_object_value_on_a_datetime_field_is_rejected() {
         let mgr = fixture();
         let vehicle = json!({
             "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
@@ -1617,17 +1849,37 @@ mod tests {
     // ---- Relationships ----
 
     #[test]
-    fn a_relationship_uri_to_an_identified_type_passes() {
+    fn a_populated_relationship_to_an_identified_type_passes() {
+        let mgr = fixture();
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
+            "vehicle": { "$$relationship": true, "$class": "org.acme@1.0.0.Vehicle" }
+        });
+        validate_instance(&mgr, &owner, &ValidateOptions::default()).unwrap();
+    }
+
+    /// A raw wire URI string on a relationship field is a field type
+    /// violation post-population, the same way an un-coerced `DateTime`
+    /// string is (module doc "Scope"): `JSONPopulator.visitRelationshipDeclaration`
+    /// is what turns a URI string into a `Relationship`, via
+    /// `Relationship.fromURI`; `ResourceValidator` only ever sees the
+    /// result.
+    #[test]
+    fn an_uncoerced_relationship_uri_string_is_rejected() {
         let mgr = fixture();
         let owner = json!({
             "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
             "vehicle": "resource:org.acme@1.0.0.Vehicle#ABC12"
         });
-        validate_instance(&mgr, &owner, &ValidateOptions::default()).unwrap();
+        let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
+        assert!(
+            err.to_string().contains("Expected a \"Relationship\""),
+            "{err}"
+        );
     }
 
     #[test]
-    fn a_plain_string_that_is_not_a_relationship_uri_is_rejected() {
+    fn a_plain_string_that_is_not_a_relationship_is_rejected() {
         let mgr = fixture();
         let owner =
             json!({ "$class": "org.acme@1.0.0.Owner", "ownerId": "O1", "vehicle": "not a uri" });

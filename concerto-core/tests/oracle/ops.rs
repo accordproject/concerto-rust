@@ -37,6 +37,15 @@
 //!   `mfnew` recipe argument, never a `declref`, so it needs no arena
 //!   handle). Every other declaration kind's `declnew` still needs P4-07,
 //!   which closes this in general.
+//! - **`Resource.validate`**, plus the read-only `Typed`/`Identifiable`/
+//!   `Relationship`/`Resource` accessors ([`instance_op`]'s doc has the
+//!   full list), over an oracle `"typed"` receiver decoded into
+//!   [`recipe::DecodedInstance`] (`recipe.rs`'s `Session::typed`, task
+//!   P3-01 review, `accordproject-concerto-rust#56` follow-up).
+//!   `Factory`/`Serializer`/`JSONPopulator`/`JSONGenerator` and every
+//!   receiver-mutating op (`setPropertyValue`, `addArrayValue`,
+//!   `setIdentifier`) are not ported yet, so their fixtures stay
+//!   `unsupported`.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::declaration::ClassDeclaration;
@@ -457,6 +466,23 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ),
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
+        // P3-01 review (task `accordproject-concerto-rust#56` follow-up):
+        // the instance ops dispatched over a `"typed"` receiver
+        // ([`instance_op`]'s doc has the full list and its TS source).
+        ("Resource", m) => matches!(
+            m,
+            "validate" | "toString" | "isResource" | "isConcept" | "isIdentifiable"
+        ),
+        ("Identifiable", m) => matches!(
+            m,
+            "getIdentifier"
+                | "getFullyQualifiedIdentifier"
+                | "toURI"
+                | "isRelationship"
+                | "isResource"
+        ),
+        ("Relationship", m) => matches!(m, "toString" | "isRelationship"),
+        ("Typed", m) => matches!(m, "getType" | "getNamespace" | "getFullyQualifiedType"),
         _ => false,
     };
     if !dispatched {
@@ -801,6 +827,15 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             Ok(ran(Ok(Value::String(format!(
                 "EnumDeclaration {{id={fqn}}}"
             )))))
+        }
+        "Resource" | "Identifiable" | "Relationship" | "Typed" => {
+            let Some(Arg::Typed(index, inst)) = target else {
+                return Err(Fault::Unsupported(format!(
+                    "{class}.{member} with a receiver that is not a typed instance"
+                )));
+            };
+            let r = &session.pool[index];
+            Ok(instance_op(r, &inst, class, member))
         }
         _ => unreachable!("`dispatched` lists every class"),
     }
@@ -1312,6 +1347,112 @@ fn relationship_to_string(r: &Replayed, id: PropId, property: &Property) -> Disp
             ))
         },
     )
+}
+
+/// Dispatches an op whose receiver is a `"typed"` `Resource`,
+/// `ValidatedResource` or `Relationship` (P3-01 review, task
+/// `accordproject-concerto-rust#56` follow-up), decoded into a
+/// [`recipe::DecodedInstance`] by `recipe.rs`'s `Session::typed`. Covers:
+///
+/// - `Resource.validate` (TS `ValidatedResource.validate`,
+///   `src/model/validatedresource.ts`, over
+///   [`concerto_core::instance::validate::validate_instance`], task P3-01's
+///   own port of `ResourceValidator`), `toString`, `isResource`,
+///   `isConcept`, `isIdentifiable` (`src/model/resource.ts`);
+/// - `Identifiable.getIdentifier`, `getFullyQualifiedIdentifier`, `toURI`,
+///   `isRelationship`, `isResource` (`src/model/identifiable.ts`);
+/// - `Relationship.toString`, `isRelationship` (`src/model/relationship.ts`);
+/// - `Typed.getType`, `getNamespace`, `getFullyQualifiedType`
+///   (`src/model/typed.ts`).
+///
+/// Every other member of these four classes (`setPropertyValue`,
+/// `addArrayValue`, `setIdentifier`, `instanceOf`, `toJSON`,
+/// `getClassDeclaration`, `Relationship.fromURI`, …) needs either a
+/// `Factory`/`JSONPopulator` port or an `effects`-comparing receiver
+/// mutation this harness does not yet support, so `dispatched`
+/// (`exec_handles`) does not list them: they stay `unsupported`.
+fn instance_op(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+    class: &str,
+    member: &str,
+) -> Dispatch {
+    match (class, member) {
+        ("Resource", "validate") => ran(
+            match concerto_core::instance::validate::validate_instance(
+                &r.mm,
+                &inst.wire,
+                &concerto_core::instance::validate::ValidateOptions::default(),
+            ) {
+                Ok(()) => Ok(recipe::undefined()),
+                Err(e) => Err(to_oracle_error(&e)),
+            },
+        ),
+        ("Resource", "toString") => ran(Ok(Value::String(format!(
+            "Resource {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Resource", "isResource") => ran(Ok(Value::Bool(true))),
+        ("Resource", "isConcept") => from_engine(instance_is_concept(r, inst), Value::Bool),
+        ("Resource", "isIdentifiable") => from_engine(r.mm.is_identified(&inst.fqn), Value::Bool),
+        ("Identifiable", "getIdentifier") => ran(Ok(inst
+            .identifier
+            .clone()
+            .map(Value::String)
+            .unwrap_or_else(recipe::undefined))),
+        ("Identifiable", "getFullyQualifiedIdentifier") => {
+            ran(Ok(Value::String(fully_qualified_identifier(inst))))
+        }
+        ("Identifiable", "toURI") => ran(match instance_resource_id(inst) {
+            Ok(id) => Ok(Value::String(id.to_uri())),
+            Err(e) => Err(to_oracle_error(&e)),
+        }),
+        ("Identifiable" | "Relationship", "isRelationship") => {
+            ran(Ok(Value::Bool(inst.ctor == "Relationship")))
+        }
+        ("Identifiable", "isResource") => ran(Ok(Value::Bool(inst.ctor != "Relationship"))),
+        ("Relationship", "toString") => ran(Ok(Value::String(format!(
+            "Relationship {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Typed", "getType") => ran(Ok(Value::String(inst.type_name.clone()))),
+        ("Typed", "getNamespace") => ran(Ok(Value::String(inst.namespace.clone()))),
+        ("Typed", "getFullyQualifiedType") => ran(Ok(Value::String(inst.fqn.clone()))),
+        _ => unreachable!("`dispatched` lists every (class, member) this function handles"),
+    }
+}
+
+/// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
+/// fqn + '#' + id : fqn` — `getIdentifier()`'s truthiness check, so an empty
+/// string identifier (like `undefined`/absent) falls back to the bare fqn.
+fn fully_qualified_identifier(inst: &recipe::DecodedInstance) -> String {
+    match inst.identifier.as_deref() {
+        Some(id) if !id.is_empty() => format!("{}#{id}", inst.fqn),
+        _ => inst.fqn.clone(),
+    }
+}
+
+/// TS `Identifiable.toURI`: `new ResourceId(ns, type,
+/// this.getIdentifier()).toURI()` — the `ResourceId` constructor itself
+/// throws when the identifier is empty or absent, exactly as
+/// [`concerto_core::instance::resource_id::ResourceId::new`] does.
+fn instance_resource_id(
+    inst: &recipe::DecodedInstance,
+) -> Result<concerto_core::instance::resource_id::ResourceId, ConcertoError> {
+    concerto_core::instance::resource_id::ResourceId::new(
+        inst.namespace.clone(),
+        inst.type_name.clone(),
+        inst.identifier.clone().unwrap_or_default(),
+    )
+}
+
+/// TS `Resource.isConcept`: `this.getClassDeclaration().isConcept()`.
+fn instance_is_concept(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+) -> Result<bool, ConcertoError> {
+    let decl = r.mm.get_declaration(&inst.fqn)?;
+    Ok(decl.as_class().is_some_and(ClassDeclaration::is_concept))
 }
 
 /// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
