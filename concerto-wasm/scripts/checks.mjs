@@ -181,6 +181,34 @@ export function runChecks(engine) {
     assert(engine.modelUtilGetShortName('org.example@1.0.0.Person') === 'Person', 'getShortName');
   });
 
+  // P4-10 (accordproject/concerto-rust#69): a JS double crosses the
+  // Serializer bindings exactly. Without serde_json's `float_roundtrip`
+  // these came back 1 ULP off (989.9951327998888, 477.9526988316292).
+  check('doubles cross the serializer bindings exactly', () => {
+    const samples = [989.9951327998887, 477.95269883162916, 0.1, 5e-324, 1.7976931348623157e308];
+    let seed = 0x2545f491;
+    for (let i = 0; i < 2000; i += 1) {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      samples.push((seed / 0x100000000) * 10 ** ((i % 40) - 20));
+    }
+    for (const n of samples) {
+      const back = JSON.parse(engine.populatorConvertPrimitive('Double', JSON.stringify(n), 'null', '$'));
+      assert(Object.is(back, n), `populatorConvertPrimitive(${n}) returned ${back}`);
+      const out = JSON.parse(engine.generatorConvertPrimitive('Double', JSON.stringify(n), 'null'));
+      assert(Object.is(out, n), `generatorConvertPrimitive(${n}) returned ${out}`);
+    }
+    const mmd = new engine.ModelManagerHandle();
+    mmd.addModel(JSON.stringify(MODEL));
+    const env = { newId: () => 'id', nowMs: () => 0 };
+    const doc = { $class: 'org.example@1.0.0.Employee', name: 'n', salary: 989.9951327998887 };
+    const built = JSON.parse(mmd.serializerFromJson(JSON.stringify(doc), 'null', env));
+    assert(Object.is(built.fields.salary, 989.9951327998887), `serializerFromJson salary ${built.fields.salary}`);
+    const json = JSON.parse(mmd.serializerToJson(JSON.stringify(built), 'null'));
+    assert(Object.is(json.salary, 989.9951327998887), `serializerToJson salary ${json.salary}`);
+    mmd.free();
+    return { samples: samples.length };
+  });
+
   check('init() resolves on a loaded module', () => {
     assert(typeof engine.init === 'function', 'init is exported');
   });
