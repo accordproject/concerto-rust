@@ -770,7 +770,9 @@ impl ModelManager {
     ///
     /// 1. The version check ([`crate::instance::metamodel::check_version`]):
     ///    a `MetamodelException` when the AST's `$class` names another
-    ///    metamodel version. Nothing is added.
+    ///    metamodel version (or none: "version null"), and `getNamespace`'s
+    ///    own `Error`/`TypeError` when `$class` is missing or not a string.
+    ///    Nothing is added.
     /// 2. Unless this manager already holds `concerto.metamodel@1.0.0`, the
     ///    cached metamodel file is registered without validation
     ///    (`this.addModelFile(this.metamodelModelFile, undefined,
