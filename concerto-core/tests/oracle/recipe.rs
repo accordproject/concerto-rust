@@ -29,6 +29,7 @@
 //! | `fromAst` | `clearModelFiles`, `add_model` per non-system model, then `validate_models` unless disabled |
 //! | `updateModelFile` | [`ModelManager::update_model_file`] (P2-08b) |
 //! | `deleteModelFile` | [`ModelManager::delete_model_file`] (P2-08b) |
+//! | `updateExternalModels` (an op only) | [`ModelManager::update_external_models`] over the recorded download (P2-08b, [`Replayed::update_external_models`]) |
 //! | `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
 //!
 //! **Validation on add.** TS `addModelFile` validates *only the new file*
@@ -56,7 +57,10 @@
 //! with `ModelFile::from_json` (TS `new ModelFile(mm, ast, definitions,
 //! fileName)`), a failure being "input construction failed" (a failure).
 //! `declref` and `propref` become [`Node`] handles by position, checked by
-//! name as `codec.js` checks them. `decoref` (P2-07) becomes a
+//! name as `codec.js` checks them; a `declref` into an `mfnew` (other than
+//! a map, P2-06b's `Arg::DeclDetached`) is a handle into a copy of its
+//! manager with that file registered in place of its namespace's, unvalidated
+//! (P2-08b, `Session::detached_owner`). `decoref` (P2-07) becomes a
 //! [`DecoParent`] plus its position, resolved against its parent's processed
 //! decorators at dispatch time (`ops.rs`); its `parent` must itself be a
 //! `declref`, `propref` or `mfref`. A map key/value `propref` (one with a
@@ -282,9 +286,10 @@ pub enum Arg {
     /// A `MapDeclaration` reached from a `ModelFile` built directly
     /// (`mfnew`) and never registered: `declref`'s `mf` is `mfnew` rather
     /// than `mfref`, so there is no arena `DeclId` for it (P2-06b, closing
-    /// "ModelFile.new" for `MapDeclaration`/`MapKeyType`/`MapValueType` —
-    /// every other declaration kind on an `mfnew` receiver is still
-    /// unsupported, `declref`'s doc comment). Carries the built `ModelFile`,
+    /// "ModelFile.new" for `MapDeclaration`/`MapKeyType`/`MapValueType`;
+    /// every other declaration kind on an `mfnew` receiver gets an
+    /// [`Arg::Decl`] into a copy of its manager instead, P2-08b,
+    /// `Session::detached_owner`). Carries the built `ModelFile`,
     /// its position in [`concerto_core::introspect::ModelFile::declarations`],
     /// and the owning model manager's pool index (for the cross-file
     /// resolution `ModelManager::validate_detached_declaration` needs).
@@ -767,10 +772,13 @@ impl<'h> Session<'h> {
         let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
         let index = usize::try_from(index).unwrap_or(usize::MAX);
 
-        if mf.get(M).and_then(Value::as_str) != Some("mfref") {
-            // Only a `MapDeclaration` on an unregistered file is wired yet
-            // (P2-06b): every other declaration kind built this way still
-            // has no Rust handle, owned by `ModelFile.new`.
+        let registered_as = if mf.get(M).and_then(Value::as_str) == Some("mfref") {
+            None
+        } else {
+            // A `MapDeclaration` on an unregistered file (`mfnew`) is read
+            // straight out of its `ModelFile` (P2-06b); every other kind
+            // gets a handle in a copy of its manager (P2-08b,
+            // `detached_owner`).
             let is_map = mf
                 .get("ast")
                 .and_then(|ast| ast.get("declarations"))
@@ -779,35 +787,23 @@ impl<'h> Session<'h> {
                 .and_then(|d| d.get("$class"))
                 .and_then(Value::as_str)
                 .is_some_and(|c| c.ends_with(".MapDeclaration"));
-            if !is_map {
-                return Err(blocked(
-                    "a declaration of a model file that is not registered (mfnew) has no Rust handle",
-                    "ModelFile.new",
-                ));
+            if is_map {
+                return self.detached_map(mf, index, name);
             }
-            let file_arg = self.file(mf, None)?;
-            let built = ModelFile::from_json_with_definitions(
-                &file_arg.ast,
-                file_arg.definitions.clone(),
-                file_arg.file_name.clone(),
-            )
-            .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
-            if built.declarations().get(index).map(Named::name) != Some(name) {
-                return Err(Fault::Divergence(
-                    "state divergence: declaration not found in an unregistered ModelFile".into(),
-                ));
+            Some(self.detached_owner(mf)?)
+        };
+        let (owner, ns) = match registered_as {
+            Some(owner_and_ns) => owner_and_ns,
+            None => {
+                let owner = self.mm_index(
+                    mf.get("mm")
+                        .ok_or_else(|| Fault::Harness("mfref without mm".into()))?,
+                )?;
+                let ns = mf.get("ns").and_then(Value::as_str).unwrap_or_default();
+                (owner, ns.to_string())
             }
-            return Ok(DeclTarget::Detached {
-                mm_index: file_arg.mm_index,
-                file: built,
-                index,
-            });
-        }
-        let owner = self.mm_index(
-            mf.get("mm")
-                .ok_or_else(|| Fault::Harness("mfref without mm".into()))?,
-        )?;
-        let ns = mf.get("ns").and_then(Value::as_str).unwrap_or_default();
+        };
+        let ns = ns.as_str();
         let mm = &self.pool[owner].mm;
         let not_found =
             || Fault::Divergence(format!("state divergence: declaration {name} not found"));
@@ -821,6 +817,63 @@ impl<'h> Session<'h> {
             Some(d) if d.name() == name => Ok(DeclTarget::Registered(owner, id)),
             _ => Err(not_found()),
         }
+    }
+
+    /// P2-06b's `MapDeclaration` of an `mfnew` model file, read directly out
+    /// of the built `ModelFile` ([`DeclTarget::Detached`]).
+    fn detached_map(&mut self, mf: &Value, index: usize, name: &str) -> Faulty<DeclTarget> {
+        let file_arg = self.file(mf, None)?;
+        let built = ModelFile::from_json_with_definitions(
+            &file_arg.ast,
+            file_arg.definitions.clone(),
+            file_arg.file_name.clone(),
+        )
+        .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
+        if built.declarations().get(index).map(Named::name) != Some(name) {
+            return Err(Fault::Divergence(
+                "state divergence: declaration not found in an unregistered ModelFile".into(),
+            ));
+        }
+        Ok(DeclTarget::Detached {
+            mm_index: file_arg.mm_index,
+            file: built,
+            index,
+        })
+    }
+
+    /// The Rust owner of a non-map declaration of an `mfnew` model file:
+    /// TS's `new ModelFile(mm, ast, …)`, never registered with `mm`. The
+    /// arena hands out handles only for a registered file, so the file is
+    /// registered, unvalidated, into a copy of `mm` pushed onto the pool
+    /// ([`Replayed::with_detached_file`]); `mm` itself stays as TS leaves
+    /// it. TS resolves such a file's own names through the file and its
+    /// imports through `mm`, which the copy answers the same way. An
+    /// `mfnew` inside a step, or of a system namespace, stays unsupported.
+    fn detached_owner(&mut self, mf: &Value) -> Faulty<(usize, String)> {
+        if mf.get("mm").and_then(|m| m.get(M)).and_then(Value::as_str) == Some("self") {
+            return Err(blocked(
+                "a declaration of an unregistered model file (mfnew) inside a model manager step",
+                "ModelFile.new",
+            ));
+        }
+        let file = self.file(mf, None)?;
+        let owner = file
+            .mm_index
+            .ok_or_else(|| Fault::Harness("an mfnew without its model manager".into()))?;
+        let ns = file
+            .ast
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(copy) = self.pool[owner].with_detached_file(&file)? else {
+            return Err(blocked(
+                "a declaration of an unregistered model file (mfnew) of a system namespace",
+                "ModelFile.new",
+            ));
+        };
+        self.pool.push(copy);
+        Ok((self.pool.len() - 1, ns))
     }
 
     /// A `MapKeyType`/`MapValueType` target: `{decl: <declref>, part: "key" |
@@ -960,6 +1013,21 @@ impl<'h> Session<'h> {
                     }
                 };
                 Ok((owner, DecoParent::Decl(id)))
+            }
+            // A map's key or value (`{decl, part}`, P2-06): the engine's
+            // `MapDeclaration` does not read its key's or value's decorators
+            // (its doc comment), which `MapKeyType.process`/
+            // `MapValueType.process` do in TS.
+            Some("propref") if v.get("part").is_some() => {
+                let member = match v.get("part").and_then(Value::as_str) {
+                    Some("value") => "MapValueType.process",
+                    _ => "MapKeyType.process",
+                };
+                Err(blocked(
+                    "the decorators of a map's key or value, which the Rust MapDeclaration does \
+                     not read",
+                    member,
+                ))
             }
             Some("propref") => {
                 let (owner, id) = self.propref(v)?;
@@ -1369,6 +1437,43 @@ impl Replayed {
         }
         self.mm = mm;
         Ok(())
+    }
+
+    /// A copy of this manager with `file` (an `mfnew`,
+    /// `Session::detached_owner`) registered without validation: in place of
+    /// the file this manager has under the same namespace, if any (TS
+    /// resolves the detached file's own names through the file itself, never
+    /// through the registered one), and last otherwise. `None` for a system
+    /// namespace, which the copy cannot re-register.
+    fn with_detached_file(&self, file: &FileArg) -> Faulty<Option<Self>> {
+        let ns = file.ast.get("namespace").and_then(Value::as_str);
+        if ns.is_none_or(is_system_namespace) {
+            return Ok(None);
+        }
+        let mut copy = Self {
+            kind: self.kind,
+            options: self.options.clone(),
+            skip_location_nodes: self.skip_location_nodes.clone(),
+            allow_reserved_system_type_names: self.allow_reserved_system_type_names,
+            files: self.files.clone(),
+            mm: Self::fresh_manager(self.allow_reserved_system_type_names)?,
+        };
+        let entry = Entry {
+            ast: file.ast.clone(),
+            file_name: file.file_name.clone(),
+            nullish_name: file.nullish_name.clone(),
+            definitions: file.definitions.clone(),
+        };
+        match copy
+            .files
+            .iter_mut()
+            .find(|e| e.ast.get("namespace").and_then(Value::as_str) == ns)
+        {
+            Some(existing) => *existing = entry,
+            None => copy.files.push(entry),
+        }
+        copy.rebuild()?;
+        Ok(Some(copy))
     }
 
     /// `mm_index` is left `None`: this method doesn't know its own index in

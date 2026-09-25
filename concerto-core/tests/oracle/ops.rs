@@ -24,7 +24,9 @@
 //!   the queries with a direct Rust counterpart: `getNamespaces`,
 //!   `getAst` (both `resolve` values, `ModelManager::get_ast`, P2-08b) and
 //!   `getType` (`get_declaration`); `resolveMetaModel`
-//!   (`ModelManager::resolve_meta_model`, P2-08b) has its own fixtures too.
+//!   (`ModelManager::resolve_meta_model`, P2-08b) has its own fixtures too,
+//!   and `updateExternalModels` (P2-08b) replays the recorded download and
+//!   compares the receiver as `effects.target`.
 //!   The Rust
 //!   `ModelManager` is still pre-port (P2-08 ports it), so these fixtures
 //!   report its differences from TS as per-rule failures, which is the
@@ -80,10 +82,10 @@
 //!   **`ModelManager.getMapDeclarations`**, a generic query any model
 //!   manager already answers (`ClassDeclaration.isMapDeclaration` is
 //!   dispatched with the rest of the `ClassDeclaration` family, P2-03). A
-//!   fixture whose target is an
-//!   unregistered `ModelFile` (`mfnew`, e.g. most of
-//!   `MapDeclaration.validate`) stays `unsupported`, owned by P2-08's
-//!   `ModelFile.new`.
+//!   map of an unregistered `ModelFile` (`mfnew`, e.g. most of
+//!   `MapDeclaration.validate`) is read from that file directly (P2-06b);
+//!   any other declaration of one is a handle into a copy of its manager
+//!   (P2-08b, `recipe.rs`).
 
 use concerto_core::dcs;
 use concerto_core::error::{ConcertoError, ErrorKind};
