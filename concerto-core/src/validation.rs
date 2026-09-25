@@ -118,10 +118,32 @@ impl ModelManager {
     /// constructed with no model file at all in TS, so it has no `File
     /// '<name>'` suffix.
     pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
+        self.validate_model_file_with_import_scope(model_file, self)
+    }
+
+    /// [`ModelManager::validate_model_file`], checking `model_file`'s own
+    /// `getImports()` loop against `import_scope` rather than against
+    /// `self`. The two differ only for
+    /// [`ModelManager::validate_detached_model_file`]'s scratch branch
+    /// (P2-08d, accordproject/concerto-rust#151): every check here but `check_imports` needs
+    /// `model_file` registered in `self` to resolve its own local types
+    /// (TS bypasses the manager for those, `this.getModelFile().getType`,
+    /// so a scratch registration is a Rust-only accommodation, that
+    /// function's doc comment); `check_imports`'s `this.getModelManager()
+    /// .getModelFile(importNamespace)` is the one lookup in
+    /// `ModelFile.validate()` TS actually routes through the manager, and
+    /// it must see the manager exactly as it stood when TS calls
+    /// `.validate()` — which, for every caller of `validate_detached_model_file`,
+    /// never yet holds `model_file`'s own namespace.
+    fn validate_model_file_with_import_scope(
+        &self,
+        model_file: &ModelFile,
+        import_scope: &ModelManager,
+    ) -> Result<()> {
         let attach = |e| attach_model_file(e, model_file);
         check_unique_decorators(model_file, None).map_err(attach)?;
         validate_decorators(self, model_file.namespace(), model_file, None).map_err(attach)?;
-        check_imports(self, model_file).map_err(attach)?;
+        check_imports(import_scope, model_file).map_err(attach)?;
         check_unique_declaration_names(model_file)?;
         for declaration in model_file.declarations() {
             declaration
@@ -144,6 +166,14 @@ impl ModelManager {
     /// while every import still resolves through the same files `self`
     /// holds. `self` itself is never changed (P2-08).
     ///
+    /// The scratch branch's `check_imports` step is the one exception
+    /// (P2-08d, accordproject/concerto-rust#151): it runs against `self`, not the scratch, because
+    /// `model_file` is never genuinely registered under its own namespace
+    /// at the point TS calls `.validate()` here — a self-import (an
+    /// `import` statement naming `model_file`'s own namespace) must fail
+    /// "namespace is not defined" the same way any other not-yet-loaded
+    /// namespace does, not resolve to `model_file` itself.
+    ///
     /// One divergence remains, and no oracle fixture reaches it: a file
     /// *another* file's declarations reach back into during this pass (an
     /// imported super type whose own super type lives in `model_file`'s
@@ -161,7 +191,9 @@ impl ModelManager {
         let registered = scratch
             .model_file(model_file.namespace())
             .expect("with_model_file_registered registers the file under its namespace");
-        scratch.validate_model_file(registered)
+        // P2-08d (#151): `import_scope: self`, not `scratch` — see the doc comment
+        // above and on `validate_model_file_with_import_scope`.
+        scratch.validate_model_file_with_import_scope(registered, self)
     }
 
     /// TS `declaration.validate()` called directly on one declaration of a
@@ -1352,6 +1384,7 @@ fn undeclared_type_error(
 mod tests {
     use crate::error::{ConcertoError, ErrorKind};
     use crate::introspect::Named;
+    use crate::introspect::model_file::ModelFile;
     use crate::model_manager::ModelManager;
     use crate::validation::{validate_map_key, validate_map_value};
 
@@ -1994,6 +2027,39 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("clashes")
+        );
+    }
+
+    #[test]
+    fn importing_from_the_files_own_namespace_is_not_yet_defined_before_it_is_registered() {
+        // TS `addModelFile` validates a file *before* registering it, so at
+        // that point `this.modelFiles` has no entry for the file's own
+        // namespace yet: `this.getModelManager().getModelFile(importNamespace)`
+        // cannot find it, so a self-import fails "namespace is not defined"
+        // here, unlike the already-registered case above, which reaches the
+        // declarations loop and clashes instead (P2-08d,
+        // accordproject/concerto-rust#151, oracle fixture
+        // `conformance/ModelManager.addCTOModel/c1b2125619408b3b8b968ce8`).
+        let manager = ModelManager::new().unwrap();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.example@1.0.0", "name": "LocalType" }
+                ],
+                "declarations": [concept(serde_json::json!({ "name": "LocalType" }))]
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            manager
+                .validate_detached_model_file(&mf)
+                .unwrap_err()
+                .to_string(),
+            "Namespace is not defined for type \"org.example@1.0.0.LocalType\"."
         );
     }
 
