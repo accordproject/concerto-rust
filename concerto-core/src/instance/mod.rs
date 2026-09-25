@@ -18,13 +18,17 @@
 //! `Resource` family that change or check an instance) and [`serializer`]
 //! (`Serializer`, option B's whole-document calls). [`deserialize`] is task
 //! P3-02 (`accordproject/concerto-rust#57`): accordproject/concerto#1273's
-//! `DeserializeOptions` and `STRICT_VALIDATE_OPTIONS`. [`metamodel`] is task
-//! P3-04 (`accordproject/concerto-rust#59`): `BaseModelManager.validateAst`,
+//! `DeserializeOptions` and `STRICT_VALIDATE_OPTIONS`. [`diagnostic`] is task
+//! P3-03 (`accordproject/concerto-rust#58`): accordproject/concerto#1239's
+//! `Diagnostic`/`ValidationResult` foundation — a Rust-only collect-all
+//! validation mode alongside [`validate`]'s first-error walk. [`metamodel`] is
+//! task P3-04 (`accordproject/concerto-rust#59`): `BaseModelManager.validateAst`,
 //! rebuilt on [`validate`] with [`deserialize::STRICT_VALIDATE_OPTIONS`] as
 //! its default strictness.
 
 pub mod dayjs;
 pub mod deserialize;
+pub mod diagnostic;
 pub mod factory;
 pub mod generator;
 pub mod metamodel;
@@ -37,6 +41,7 @@ pub mod validate;
 pub mod value;
 
 pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
+pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, ValidationResult};
 pub use factory::InstanceEnv;
 pub use metamodel::{METAMODEL_NAMESPACE, validate_ast, validate_metamodel};
 pub use serializer::{Serializer, SerializerOptions};
