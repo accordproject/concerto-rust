@@ -41,6 +41,16 @@ fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
     class.location().and_then(crate::error::location_value)
 }
 
+/// An enum's own AST `location` (TS: `this.ast.location` inside
+/// `Declaration.validate`, reached through `EnumDeclaration`'s inherited
+/// `ClassDeclaration.validate` — `this` there is the enum itself, the same
+/// as [`class_location`] for a class-like declaration).
+fn enum_location(
+    enm: &crate::introspect::declaration::EnumDeclaration,
+) -> Option<serde_json::Value> {
+    enm.location().and_then(crate::error::location_value)
+}
+
 /// A property's own AST `location` (TS: `this.ast.location` inside
 /// `Property.validate`/`Decorated.validate`, property.ts/decorated.ts —
 /// `this` there is the property, not its owning class). P2-08 review
@@ -108,10 +118,32 @@ impl ModelManager {
     /// constructed with no model file at all in TS, so it has no `File
     /// '<name>'` suffix.
     pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
+        self.validate_model_file_with_import_scope(model_file, self)
+    }
+
+    /// [`ModelManager::validate_model_file`], checking `model_file`'s own
+    /// `getImports()` loop against `import_scope` rather than against
+    /// `self`. The two differ only for
+    /// [`ModelManager::validate_detached_model_file`]'s scratch branch
+    /// (P2-08d, accordproject/concerto-rust#151): every check here but `check_imports` needs
+    /// `model_file` registered in `self` to resolve its own local types
+    /// (TS bypasses the manager for those, `this.getModelFile().getType`,
+    /// so a scratch registration is a Rust-only accommodation, that
+    /// function's doc comment); `check_imports`'s `this.getModelManager()
+    /// .getModelFile(importNamespace)` is the one lookup in
+    /// `ModelFile.validate()` TS actually routes through the manager, and
+    /// it must see the manager exactly as it stood when TS calls
+    /// `.validate()` — which, for every caller of `validate_detached_model_file`,
+    /// never yet holds `model_file`'s own namespace.
+    fn validate_model_file_with_import_scope(
+        &self,
+        model_file: &ModelFile,
+        import_scope: &ModelManager,
+    ) -> Result<()> {
         let attach = |e| attach_model_file(e, model_file);
         check_unique_decorators(model_file, None).map_err(attach)?;
         validate_decorators(self, model_file.namespace(), model_file, None).map_err(attach)?;
-        check_imports(self, model_file).map_err(attach)?;
+        check_imports(import_scope, model_file).map_err(attach)?;
         check_unique_declaration_names(model_file)?;
         for declaration in model_file.declarations() {
             declaration
@@ -134,6 +166,14 @@ impl ModelManager {
     /// while every import still resolves through the same files `self`
     /// holds. `self` itself is never changed (P2-08).
     ///
+    /// The scratch branch's `check_imports` step is the one exception
+    /// (P2-08d, accordproject/concerto-rust#151): it runs against `self`, not the scratch, because
+    /// `model_file` is never genuinely registered under its own namespace
+    /// at the point TS calls `.validate()` here — a self-import (an
+    /// `import` statement naming `model_file`'s own namespace) must fail
+    /// "namespace is not defined" the same way any other not-yet-loaded
+    /// namespace does, not resolve to `model_file` itself.
+    ///
     /// One divergence remains, and no oracle fixture reaches it: a file
     /// *another* file's declarations reach back into during this pass (an
     /// imported super type whose own super type lives in `model_file`'s
@@ -151,7 +191,9 @@ impl ModelManager {
         let registered = scratch
             .model_file(model_file.namespace())
             .expect("with_model_file_registered registers the file under its namespace");
-        scratch.validate_model_file(registered)
+        // P2-08d (#151): `import_scope: self`, not `scratch` — see the doc comment
+        // above and on `validate_model_file_with_import_scope`.
+        scratch.validate_model_file_with_import_scope(registered, self)
     }
 
     /// TS `declaration.validate()` called directly on one declaration of a
@@ -374,7 +416,7 @@ impl Validate for Declaration {
                 // before anything class-specific (P2-08).
                 check_unique_decorators(enm, None)?;
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
-                check_import_clash(manager, namespace, enm.name(), None)?;
+                check_import_clash(manager, namespace, enm.name(), enum_location(enm))?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
                 // check, inherited unchanged by `EnumDeclaration` — run in
                 // the same position relative to the decorator checks above
@@ -422,9 +464,19 @@ impl Validate for ClassDeclaration {
         check_import_clash(manager, namespace, self.name(), class_location(self))?;
         check_super_type(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
-        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
+        // TS: the `if (this.idField)` identity block — `check_identifier`'s
+        // not-a-property/not-a-string/optional checks, then
+        // `check_identity_matches_super`'s super-type redeclare check — runs
+        // before the "we also have to check fields defined in super
+        // classes" duplicate-name loop (classdeclaration.ts `validate`).
+        // Reordered (P2-08c review): a system-identified subclass of an
+        // explicitly-identified super type used to reach the duplicate-name
+        // loop first, misreporting the redeclare as two same-named
+        // `$identifier` fields (its own, and the implicit `Asset`/etc. root
+        // super type's own system identifier) instead of naming the conflict.
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
+        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
         check_unique_decorators(self, class_location(self))?;
         validate_decorators(manager, namespace, self, Some(&fqn))?;
         // TS: `for (field of this.getProperties())` — every property, own
@@ -744,6 +796,27 @@ fn check_property_type(
         // succeeds, so the size-validator check is all that is left.
         return check_size_validator_target(&owner_fqn, property, false);
     };
+
+    if type_identifier.name.is_empty() {
+        // TS: `this.type` is falsy for an empty-string type name exactly as
+        // it is for `null`/`undefined` (`ObjectProperty`'s `this.ast.type ?
+        // this.ast.type.name : null`, `RelationshipProperty`'s unconditional
+        // `this.ast.type.name`), so `Property.validate`'s `if(this.type)`
+        // guard skips `resolveType` entirely — no "undeclared type" is ever
+        // raised for it. `RelationshipDeclaration.validate` then makes its
+        // own `if(!this.getType())` check straight after `super.validate`
+        // (relationshipdeclaration.ts): a relationship with no type is
+        // rejected there; any other property kind is silently accepted, the
+        // same as a genuinely absent `type` node.
+        if property.is_relationship() {
+            return Err(catalogue_error(
+                "relationshipdeclaration-validate-notype",
+                vec![],
+                property_location(property),
+            ));
+        }
+        return check_size_validator_target(&owner_fqn, property, false);
+    }
 
     if is_primitive_type(&type_identifier.name) {
         // TS: `resolveType` succeeds for a primitive, then `Property.validate`
@@ -1118,7 +1191,16 @@ pub fn validate_map_key(
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
             .and_then(Typed::type_name);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
-            return Err(failed(
+            // TS: `MapKeyType.validate` throws `new
+            // IllegalModelException(message)` with no `modelFile` argument
+            // (mapkeytype.ts) — unlike a construction-time check, this
+            // message never gets a `File '<name>': ` suffix. [`failed`]'s
+            // default `model_file: None` would let
+            // [`ModelManager::validate_model_file`]'s generic
+            // [`attach_model_file`] stamp one on anyway, so it is marked
+            // `Some(None)` ("no file, and already decided") here instead.
+            let mut err = ContractError::pre_port(
+                ErrorKind::IllegalModel,
                 format!(
                     "Scalar must be one of StringScalar, DateTimeScalar in context of \
                      MapKeyType. Invalid Scalar: {}, for MapDeclaration {}",
@@ -1126,7 +1208,9 @@ pub fn validate_map_key(
                     map.name()
                 ),
                 None,
-            ));
+            );
+            err.model_file = Some(None);
+            return Err(err.into());
         }
     }
     Ok(())
@@ -1197,14 +1281,23 @@ pub fn validate_map_value(
         let declared = resolve(manager, namespace, &value.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok());
         let Some(declared) = declared else {
-            return Err(failed(
-                format!(
-                    "Undeclared type {} referenced by the value of map {}",
-                    value.name,
-                    map.name()
-                ),
-                None,
-            ));
+            // TS: `MapValueType.validate` reads `this.modelFile.getType(...)`
+            // (which returns `null` for an undeclared type, `ModelFile.getType`,
+            // modelfile.ts) straight into `decl.isMapDeclaration?.()`: the
+            // `?.` guards only the *call*, not the `.isMapDeclaration`
+            // property read on `decl` itself, so V8 throws `TypeError: Cannot
+            // read properties of null (reading 'isMapDeclaration')` rather
+            // than the graceful "undeclared type" message this port used to
+            // raise. Ported as TS has it (a `ts-bug` divergence).
+            return Err(ContractError::new(
+                ErrorKind::JsTypeError,
+                "engine-typeerror-readproperties",
+                vec![
+                    ("value", "null".to_string()),
+                    ("property", "isMapDeclaration".to_string()),
+                ],
+            )
+            .into());
         };
         if declared.is_map_declaration() {
             return Err(failed(
@@ -1289,24 +1382,29 @@ fn undeclared_type_error(
 
 #[cfg(test)]
 mod tests {
-    use crate::error::ConcertoError;
+    use crate::error::{ConcertoError, ErrorKind};
     use crate::introspect::Named;
+    use crate::introspect::model_file::ModelFile;
     use crate::model_manager::ModelManager;
     use crate::validation::{validate_map_key, validate_map_value};
 
     /// Loads `org.example@1.0.0` with the given declarations and validates it.
     fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
-        manager
-            .add_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "namespace": "org.example@1.0.0",
-                    "declarations": declarations
-                }),
-                None,
-            )
-            .unwrap();
+        // A malformed `MapDeclaration` (an out-of-set key/value kind, a
+        // missing key or value node, ...) is now rejected at construction
+        // time (`Declaration::try_from`, TS `MapDeclaration.process`), the
+        // same as TS — before `validate_models` below ever runs — so this
+        // no longer `.unwrap()`s: a caller whose declarations are malformed
+        // that way sees the `add_model` error itself, not a panic.
+        manager.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": declarations
+            }),
+            None,
+        )?;
         manager.validate_models()
     }
 
@@ -1933,6 +2031,39 @@ mod tests {
     }
 
     #[test]
+    fn importing_from_the_files_own_namespace_is_not_yet_defined_before_it_is_registered() {
+        // TS `addModelFile` validates a file *before* registering it, so at
+        // that point `this.modelFiles` has no entry for the file's own
+        // namespace yet: `this.getModelManager().getModelFile(importNamespace)`
+        // cannot find it, so a self-import fails "namespace is not defined"
+        // here, unlike the already-registered case above, which reaches the
+        // declarations loop and clashes instead (P2-08d,
+        // accordproject/concerto-rust#151, oracle fixture
+        // `conformance/ModelManager.addCTOModel/c1b2125619408b3b8b968ce8`).
+        let manager = ModelManager::new().unwrap();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.example@1.0.0", "name": "LocalType" }
+                ],
+                "declarations": [concept(serde_json::json!({ "name": "LocalType" }))]
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            manager
+                .validate_detached_model_file(&mf)
+                .unwrap_err()
+                .to_string(),
+            "Namespace is not defined for type \"org.example@1.0.0.LocalType\"."
+        );
+    }
+
+    #[test]
     fn an_aliased_import_clashes_under_its_alias() {
         // `import org.common.{Address as Location}` occupies Location, not Address.
         let imports = serde_json::json!([
@@ -2449,22 +2580,36 @@ mod tests {
     #[test]
     fn a_map_key_kind_outside_the_allowed_set_is_rejected() {
         // Only String, DateTime and object keys exist; anything else is not a
-        // key the specification allows.
+        // key the specification allows. TS `MapDeclaration.process`
+        // (`ModelUtil.isValidMapKey`) rejects this at construction, before
+        // `validate_models` is ever reached.
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapKeyType")
+        );
     }
 
     #[test]
-    fn a_map_value_must_name_a_declared_type() {
+    fn an_undeclared_map_value_type_is_a_type_error() {
+        // TS: `MapValueType.validate` reads an undeclared type's `null` from
+        // `this.modelFile.getType(...)` straight into `decl.isMapDeclaration`
+        // with no null guard on the property read (DV-014, mapvaluetype.ts):
+        // a `TypeError`, not the `IllegalModelException` this port raised
+        // before that fix.
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let err = validate(map_with(
             key.clone(),
             object_type("Missing", "ObjectMapValueType"),
         ));
-        assert!(err.unwrap_err().to_string().contains("Undeclared type"));
+        assert!(matches!(
+            err.unwrap_err(),
+            ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+        ));
 
         assert!(validate(map_with(key, object_type("Item", "ObjectMapValueType"))).is_ok());
     }
@@ -2964,7 +3109,7 @@ mod tests {
     // instead (doc comment on `MapVariant`); the missing side loads with an
     // empty kind, which is not in the allowed set either way.
     #[test]
-    fn map_missing_its_key_field_is_rejected_at_validate() {
+    fn map_missing_its_key_field_is_rejected_at_construction() {
         let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
         let mut node = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
@@ -2972,11 +3117,15 @@ mod tests {
             "value": value
         });
         let err = validate(serde_json::json!([node.take()]));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain Key & Value properties")
+        );
     }
 
     #[test]
-    fn map_missing_its_value_field_is_rejected_at_validate() {
+    fn map_missing_its_value_field_is_rejected_at_construction() {
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let node = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
@@ -2984,29 +3133,43 @@ mod tests {
             "key": key
         });
         let err = validate(serde_json::json!([node]));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain Key & Value properties")
+        );
     }
 
     // TS: `#constructor` "should throw if invalid $class provided for Map
     // Key" / "... for Map Value": a `$class` the metamodel does not declare
     // at all falls back to [`MapVariant::Untyped`] and is rejected by the
-    // same kind-membership check as any other unsupported kind.
+    // same kind-membership check as any other unsupported kind, now at
+    // construction time (TS `MapDeclaration.process`), not at
+    // `validate_models`.
     #[test]
-    fn map_key_with_an_unknown_class_is_rejected_at_validate() {
+    fn map_key_with_an_unknown_class_is_rejected_at_construction() {
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapKeyType")
+        );
     }
 
     #[test]
-    fn map_value_with_an_unknown_class_is_rejected_at_validate() {
+    fn map_value_with_an_unknown_class_is_rejected_at_construction() {
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapValueType")
+        );
     }
 
     // TS: "should throw if ast contains illegal Map Value Property" (an
@@ -3018,7 +3181,11 @@ mod tests {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.EnumMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapValueType")
+        );
     }
 
     // TS: "should throw if ast contains illegal Map Key Type - Enum" (an
@@ -3031,7 +3198,11 @@ mod tests {
             object_type("States", "EnumMapKeyType"),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapKeyType")
+        );
     }
 
     // TS: "should throw if ast contains illegal Map Key Type - Scalar
@@ -3188,7 +3359,7 @@ mod tests {
         assert!(
             err.unwrap_err()
                 .to_string()
-                .contains("must contain property 'type'")
+                .contains("must contain property '$class' and property 'name'")
         );
     }
 

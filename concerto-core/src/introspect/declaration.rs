@@ -531,6 +531,20 @@ impl ClassDeclaration {
             )));
         }
 
+        // TS: each property's own `NumberValidator`/`StringValidator`/
+        // `CollectionSizeValidator` construction, part of `Property.process`/
+        // `Field.process` (property.ts, field.ts) — deferred to here, in AST
+        // order, rather than run from `Property::try_from`
+        // ([`Property::check_bound_validators`]'s doc comment), since only
+        // this scope has the namespace and class name the error messages
+        // need. The two synthesized system fields above never carry a
+        // validator, so checking every property here (not just the AST's
+        // own) is a no-op for them.
+        let fqn = get_fully_qualified_name(namespace, &name);
+        for property in &properties {
+            property.check_bound_validators(&fqn)?;
+        }
+
         Ok(Self {
             node,
             properties,
@@ -945,11 +959,70 @@ impl MapDeclaration {
             None => return Err(bad(serde_json::Error::missing_field("name"))),
         };
 
-        let key_kind = node_kind(value.get("key"));
-        let key_type = type_reference(value.get("key"));
-        let value_kind = node_kind(value.get("value"));
-        let value_type = type_reference(value.get("value"));
+        // TS `MapDeclaration.process` (src/introspect/mapdeclaration.ts): a
+        // missing key or value node, an invalid `MapKeyType`, or an invalid
+        // `MapValueType` is an `IllegalModelException` naming this map, not a
+        // silent fallback to the untyped representation below.
+        // Built through `ContractError::pre_port`, not the raw `IllegalModel`
+        // variant, so [`crate::error::ContractError::final_message`] applies
+        // the `IllegalModelException` constructor's own trailing
+        // `" " + suffix` (PORTING.md 2.1) — empty here (no file, no
+        // location), but still present, exactly as every TS
+        // `IllegalModelException` message ends in a space.
+        let illegal_model = |message: String| -> ConcertoError {
+            ContractError::pre_port(ErrorKind::IllegalModel, message, None).into()
+        };
+        let key_node = value.get("key").filter(|v| !v.is_null());
+        let value_node = value.get("value").filter(|v| !v.is_null());
+        if key_node.is_none() || value_node.is_none() {
+            return Err(illegal_model(format!(
+                "MapDeclaration must contain Key & Value properties {name}"
+            )));
+        }
+
+        let key_kind = node_kind(Some(key_node.unwrap()));
+        let key_type = type_reference(Some(key_node.unwrap()));
+        let value_kind = node_kind(Some(value_node.unwrap()));
+        let value_type = type_reference(Some(value_node.unwrap()));
         let decorators = parse_decorators(value);
+
+        if !MAP_KEY_KINDS.contains(&key_kind.as_str()) {
+            return Err(illegal_model(format!(
+                "MapDeclaration must contain valid MapKeyType  {name}"
+            )));
+        }
+        if !MAP_VALUE_KINDS.contains(&value_kind.as_str()) {
+            return Err(illegal_model(format!(
+                "MapDeclaration must contain valid MapValueType, for MapDeclaration {name}"
+            )));
+        }
+
+        // TS `MapValueType.processType` (src/introspect/mapvaluetype.ts): an
+        // `ObjectMapValueType`/`RelationshipMapValueType` node must carry a
+        // well-formed `type` (a `TypeIdentifier` with `$class` and `name`).
+        if value_kind == "ObjectMapValueType" || value_kind == "RelationshipMapValueType" {
+            let value_node = value_node.unwrap();
+            let type_node = value_node.get("type").filter(|v| !v.is_null());
+            let Some(type_node) = type_node else {
+                return Err(illegal_model(format!(
+                    "ObjectMapValueType must contain property 'type', for MapDeclaration named {name}"
+                )));
+            };
+            let class_field = type_node.get("$class");
+            let name_field = type_node.get("name");
+            if class_field.is_none() || name_field.is_none() {
+                return Err(illegal_model(format!(
+                    "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named {name}"
+                )));
+            }
+            if class_field.and_then(|c| c.as_str())
+                != Some("concerto.metamodel@1.0.0.TypeIdentifier")
+            {
+                return Err(illegal_model(format!(
+                    "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named {name}"
+                )));
+            }
+        }
 
         if let Some(variant) = typed_map(value, &key_kind, &value_kind).map(MapVariant::Typed) {
             let candidate = Self {
@@ -1645,54 +1718,48 @@ mod tests {
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
     }
 
+    // TS `MapDeclaration.process` (mapdeclaration.ts): `ModelUtil.isValidMapKey`
+    // rejects a key kind the metamodel's key union does not declare at
+    // construction time, before the map ever loads — not deferred to
+    // semantic validation the way an untyped fallback would suggest.
     #[test]
-    fn a_map_with_an_unrecognised_key_kind_still_loads() {
-        let m = decl(serde_json::json!({
+    fn a_map_with_an_unrecognised_key_kind_is_rejected_at_construction() {
+        let err = Declaration::try_from(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
             "name": "Lookup",
             "key": { "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" },
             "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
-        }));
-        let map = m.as_map().expect("map declaration");
-        assert!(!map.is_typed());
-        assert_eq!(map.name(), "Lookup");
-        assert_eq!(map.key_kind(), "IntegerMapKeyType");
-        assert_eq!(map.value_kind(), "StringMapValueType");
-        assert!(map.key_type().is_none());
+        }))
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("MapDeclaration must contain valid MapKeyType  Lookup")
+        );
     }
 
     #[test]
-    fn a_map_with_an_unrecognised_key_kind_keeps_its_value_type() {
-        let d = decl(map_to_nope(
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
-            serde_json::json!({}),
-        ));
-        let map = d.as_map().unwrap();
-        assert!(!map.is_typed());
-        assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
-    }
-
-    #[test]
-    fn a_map_with_no_key_loads_with_an_empty_key_kind() {
+    fn a_map_with_no_key_is_rejected_at_construction() {
         let mut node = map_to_nope(string_key(), serde_json::json!({}));
         node.as_object_mut().unwrap().remove("key");
-        let d = decl(node);
-        let map = d.as_map().unwrap();
-        assert_eq!(map.key_kind(), "");
-        assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
+        let err = Declaration::try_from(&node).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("MapDeclaration must contain Key & Value properties M")
+        );
     }
 
     #[test]
-    fn an_object_map_value_with_no_type_loads_with_none() {
-        let d = decl(serde_json::json!({
+    fn an_object_map_value_with_no_type_is_rejected_at_construction() {
+        let err = Declaration::try_from(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
             "name": "M",
             "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
             "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }
-        }));
-        let map = d.as_map().unwrap();
-        assert_eq!(map.value_kind(), "ObjectMapValueType");
-        assert!(map.value_type().is_none());
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains(
+            "ObjectMapValueType must contain property 'type', for MapDeclaration named M"
+        ));
     }
 
     #[test]

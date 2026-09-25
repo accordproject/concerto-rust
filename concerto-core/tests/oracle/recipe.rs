@@ -33,15 +33,19 @@
 //! | `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
 //!
 //! **Validation on add.** TS `addModelFile` validates *only the new file*
-//! (`modelFile.validate()`) before registering it, so a file added earlier
+//! (`modelFile.validate()`) *before* registering it, so a file added earlier
 //! with validation disabled is never re-checked (P2-08: a later
-//! `validateModelFiles` is what rejects it). The harness replays this as
-//! "register, `validate_model_file` on the new file alone, and on an error
-//! restore the files that were there before" — the Rust validation resolves
-//! the file's own namespace through the manager, so it runs once the file is
-//! registered rather than before. Removal has no Rust counterpart, so
-//! restoring rebuilds the manager from the surviving files (all of which
-//! loaded before).
+//! `validateModelFiles` is what rejects it), and a self-import cannot yet
+//! resolve through the manager (P2-08d, accordproject/concerto-rust#151).
+//! The harness replays this as "validate the new file with
+//! [`ModelManager::validate_detached_model_file`] against the manager as it
+//! stands (before registering), then register" — matching TS's own order,
+//! including its duplicate-namespace check firing first regardless of
+//! validation (`add_model_with_definitions`'s own check, unconditional).
+//! Validation failing leaves the manager untouched, since nothing is
+//! registered yet; removal has no Rust counterpart, so a later step that
+//! must undo a registered file still rebuilds the manager from the
+//! surviving files (all of which loaded before).
 //!
 //! **Options.** `skipLocationNodes` (it selects the cache entry),
 //! `dangerouslyAllowReservedSystemTypeNamesInUserModels` (P2-08:
@@ -1662,7 +1666,10 @@ impl Replayed {
                     // guessed at: nothing in the corpus exercises `String()`
                     // on one here, and their JS coercions are not this
                     // simple (an array, for one, stringifies each element
-                    // and joins with commas).
+                    // and joins with commas). A missing argument arrives as
+                    // the `{"@@oracle":"undefined"}` marker, which is
+                    // `String(undefined)`, `"undefined"`, as in `jsToString`.
+                    v if is_undefined(v) => "undefined".to_string(),
                     Value::Object(_) => "[object Object]".to_string(),
                     _ => {
                         return Err(Fault::Unsupported(
@@ -1680,12 +1687,47 @@ impl Replayed {
 
     /// TS `addModelFile(modelFile, cto, fileName, disableValidation)` for a
     /// model file built from `ast` (see the module doc for validation).
+    ///
+    /// **Validation on add, corrected (P2-08d, accordproject/concerto-rust#151).**
+    /// TS validates the new file *before* registering it
+    /// (`if (!this.modelFiles[ns]) { if (!disableValidation) { modelFile.validate(); }
+    /// this.modelFiles[ns] = modelFile; } else { this._throwAlreadyExists(...); }`),
+    /// so a duplicate namespace is rejected first, exactly as it is here
+    /// (`add_model_with_definitions`'s own check, below, unconditionally),
+    /// and — only for a genuinely new namespace — `modelFile.validate()`
+    /// runs while `this.modelFiles` still lacks this file's own namespace:
+    /// an import naming it (a self-import) cannot resolve. Replayed the
+    /// same way, via [`ModelManager::validate_detached_model_file`], which
+    /// checks `getImports()` against `self.mm` as it stands here (not yet
+    /// holding this namespace) while still resolving the file's own local
+    /// types, the same as `self.mm.validate_model_file` would once
+    /// registered (that function's doc comment). A namespace already
+    /// registered skips straight to `add_model_with_definitions`, which
+    /// raises TS's `_throwAlreadyExists` for it, matching TS's order.
     fn add_file(&mut self, file: FileArg, validate: bool) -> Faulty<Outcome> {
         let ns = file
             .ast
             .get("namespace")
             .and_then(Value::as_str)
             .map(str::to_string);
+        if validate {
+            let already_registered = ns
+                .as_deref()
+                .is_some_and(|ns| self.mm.model_file(ns).is_some());
+            if !already_registered {
+                let mf = match ModelFile::from_json_with_definitions(
+                    &file.ast,
+                    file.definitions.clone(),
+                    file.file_name.clone(),
+                ) {
+                    Ok(mf) => mf,
+                    Err(e) => return Ok(Err(to_oracle_error(&e))),
+                };
+                if let Err(e) = self.mm.validate_detached_model_file(&mf) {
+                    return Ok(Err(to_oracle_error(&e)));
+                }
+            }
+        }
         if let Err(e) = self.mm.add_model_with_definitions(
             &file.ast,
             file.definitions.clone(),
@@ -1700,23 +1742,6 @@ impl Replayed {
             definitions: file.definitions,
         });
         let ns = ns.unwrap_or_default();
-        if validate {
-            // TS: `modelFile.validate()` — the new file alone (module doc,
-            // "Validation on add").
-            let outcome = match self.mm.model_file(&ns) {
-                Some(mf) => self.mm.validate_model_file(mf),
-                None => {
-                    return Err(Fault::Harness(format!(
-                        "a model file that add_model just loaded is not registered under {ns}"
-                    )));
-                }
-            };
-            if let Err(e) = outcome {
-                self.files.pop();
-                self.rebuild()?;
-                return Ok(Err(to_oracle_error(&e)));
-            }
-        }
         Ok(Ok(self.model_file_summary(&ns).unwrap_or_else(undefined)))
     }
 
@@ -1829,8 +1854,8 @@ impl Replayed {
     ///   `handleJobError` as `Failed to load model file. Job: <url> Details:
     ///   Error: <message>`;
     /// - a 2xx body is `processFile('@' + host + path with / as ., body)`,
-    ///   through the P1-07a CTO cache, whose builder does not collect `net`
-    ///   bodies: a body with no entry is `unsupported` for P1-07a. A
+    ///   through the CTO cache, whose builder collects every 2xx `net` body
+    ///   (P2-09b): a body with no entry is a harness error (a stale cache). A
     ///   downloaded model with external imports of its own (the recursive
     ///   walk) is `unsupported`.
     ///
@@ -1914,14 +1939,11 @@ impl Replayed {
                         "updateExternalModels downloading a model that fails to parse".into(),
                     ));
                 }
-                Err(_) => {
-                    return Err(Fault::Blocked(
+                Err(e) => {
+                    return Err(Fault::Harness(format!(
                         "updateExternalModels: the downloaded CTO (a recorded `net` response \
-                         body) has no CTO cache entry; the P1-07a cache builder does not collect \
-                         `net` bodies"
-                            .into(),
-                        Blocker::Owner("P1-07a".into()),
-                    ));
+                         body) has no CTO cache entry: {e}"
+                    )));
                 }
             };
             if external_import_uris(&ast).next().is_some() {
@@ -2010,9 +2032,9 @@ impl Replayed {
                 // when it was not already one (`String(data)`) — and
                 // `addModel(modelInput, cto, ...)`'s own `finalCto = cto ||
                 // definitions` prefers an explicit `cto` argument over that.
-                // `process_file` already restricts `Kind::ModelManager` to a
-                // string `input` (module doc, "CTO text"), so that coercion
-                // never actually changes the value here; the other two
+                // For a non-string `Kind::ModelManager` input `process_file`
+                // coerces as `String()` does, and that text never parses as
+                // CTO, so the call throws before `definitions` is read; the other two
                 // kinds pass their `input` straight through as the AST, with
                 // no CTO text to keep, so they get `None`.
                 let explicit_cto = (method == "addModel")
@@ -2189,8 +2211,9 @@ impl Replayed {
                     }
                     let (file_name, nullish_name) = nullish_or_string(&file_name_value)?;
                     // `ctoProcessFile`'s `definitions: content` (P2-08b,
-                    // `add_model_with_definitions`'s doc); `process_file`
-                    // restricts a `Kind::ModelManager` input to a string.
+                    // `add_model_with_definitions`'s doc). A non-string
+                    // `Kind::ModelManager` input never parses (see
+                    // `process_file`), so only a string needs its text kept.
                     let definitions = match (self.kind, input) {
                         (Kind::ModelManager, Value::String(s)) => Some(s.clone()),
                         _ => None,

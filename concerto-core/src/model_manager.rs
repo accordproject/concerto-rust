@@ -1159,7 +1159,11 @@ impl ModelManager {
     /// as fully-qualified names.
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
-    /// by `EnumDeclaration`.
+    /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
+    /// `super_chain`, so it returns the same `ErrorKind::JsRangeError`
+    /// DV-013 documents for `getProperties`/`getProperty`/
+    /// `getIdentifierFieldName` — unobserved by any fixture, accepted on
+    /// accordproject/concerto-rust#151.
     pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         Ok(self
             .super_chain(fqn)?
@@ -1251,6 +1255,11 @@ impl ModelManager {
 
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
+    ///
+    /// On a cyclic inheritance chain this walks `super_chain`, so it returns
+    /// the same `ErrorKind::JsRangeError` DV-013 documents for
+    /// `getProperties`/`getProperty`/`getIdentifierFieldName` — unobserved by
+    /// any fixture, accepted on accordproject/concerto-rust#151.
     pub fn is_assignable_to(&self, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
         if sub_fqn == super_fqn {
             return Ok(true);
@@ -1289,7 +1298,19 @@ impl ModelManager {
                 .into());
             }
 
-            let class = ClassLike::from_declaration(self.get_declaration(&current)?)
+            // TS resolves each step of the chain the same way `getType`
+            // does (`this.modelManager.getType(this.superType)`,
+            // `ClassDeclaration.getSuperTypeDeclaration`), so an
+            // unregistered super-type namespace raises `getType`'s own
+            // `TypeNotFoundException` ("Namespace is not defined for type
+            // ...") rather than the internal, non-catalogued lookup
+            // `get_declaration` uses for exact-FQN handle resolution
+            // elsewhere in this file.
+            let decl_id = self.get_type_declaration(&current)?;
+            let declaration = self
+                .declaration(decl_id)
+                .ok_or_else(|| unknown(Node::Declaration(decl_id)))?;
+            let class = ClassLike::from_declaration(declaration)
                 .ok_or_else(|| not_a_class_like(&current))?;
 
             let next = self.super_type_fqn(&class, namespace_of(&current))?;
@@ -4097,6 +4118,57 @@ mod tests {
             assert_eq!(c.kind, ErrorKind::JsRangeError);
             assert_eq!(c.message(), "Maximum call stack size exceeded");
             assert_eq!(c.location, None);
+        }
+    }
+
+    #[test]
+    fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
+        // TS `ClassDeclaration._resolveSuperType`, for an *imported* super
+        // type, resolves it through
+        // `this.modelFile.getModelManager().getType(fqnSuper)`
+        // (`BaseModelManager.getType`), whose own unregistered-namespace
+        // check raises "Namespace is not defined for type ...". `super_chain`
+        // used to re-look-up each step's declaration with
+        // `ModelManager::get_declaration` — an internal, un-catalogued,
+        // exact-FQN lookup meant for stale-handle detection (its own doc
+        // comment) — which raised a bare `TypeNotFoundException` instead.
+        // Walking through `get_type_declaration` (P2-08d,
+        // accordproject/concerto-rust#151, oracle fixture
+        // `unit/ClassDeclaration.getIdentifierFieldName/557a5087518a8343fade9b97`)
+        // reuses the same catalogue entry `BaseModelManager.getType` does.
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme.l2@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.acme.l1@1.0.0", "name": "Base" }
+                ],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                      "name": "Vehicle", "isAbstract": false, "properties": [],
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" } }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        // `org.acme.l1@1.0.0` (the import's target) is never added.
+        for err in [
+            mgr.identifier_field_name("org.acme.l2@1.0.0.Vehicle")
+                .unwrap_err(),
+            mgr.get_all_properties("org.acme.l2@1.0.0.Vehicle")
+                .unwrap_err(),
+        ] {
+            let ConcertoError::Contract(c) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(c.kind, ErrorKind::TypeNotFound);
+            assert_eq!(
+                c.message(),
+                "Namespace is not defined for type \"org.acme.l1@1.0.0.Base\"."
+            );
         }
     }
 }

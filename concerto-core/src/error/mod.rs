@@ -1360,6 +1360,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn golden_property_process_noname() {
+        assert_eq!(
+            contract(
+                "property-process-noname",
+                &[(
+                    "ast",
+                    "{\"$class\":\"concerto.metamodel@1.0.0.StringProperty\"}"
+                )]
+            )
+            .message(),
+            "No name for type {\"$class\":\"concerto.metamodel@1.0.0.StringProperty\"}"
+        );
+    }
+
     // TS: `Property.validate`'s own inline template
     // (src/introspect/property.ts:161), checked against the frozen TS 5.0.0
     // reference.
@@ -1419,6 +1434,29 @@ mod tests {
             )
             .message(),
             "Relationship bar must be to a class that has an identifier, but this is to org.acme@1.0.0.Concept"
+        );
+    }
+
+    // TS: `Field.getScalarField`'s own inline templates
+    // (src/introspect/field.ts:186,215), checked against the frozen TS
+    // 5.0.0 reference (#154).
+    #[test]
+    fn golden_field_getscalarfield_notscalar() {
+        assert_eq!(
+            contract("field-getscalarfield-notscalar", &[("name", "bar")]).message(),
+            "Field bar is not a scalar property."
+        );
+    }
+
+    #[test]
+    fn golden_field_getscalarfield_unrecognizedtype() {
+        assert_eq!(
+            contract(
+                "field-getscalarfield-unrecognizedtype",
+                &[("class", "concerto.metamodel@1.0.0.MapScalar")]
+            )
+            .message(),
+            "Unrecognized scalar type concerto.metamodel@1.0.0.MapScalar"
         );
     }
 

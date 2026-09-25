@@ -1267,6 +1267,76 @@ pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
     })
 }
 
+/// TS: `Field.getScalarField`, after the `this.scalarField` cache check
+/// (still done by the view, since the cached instance stays a JS object) —
+/// the P2-09 partial audit found this still TS although the ledger says
+/// RUST (#154). `ModelFile` and `ModelManager` are not yet Rust-backed
+/// (P2-08), so `isTypeScalar()`'s own collaborator calls
+/// (`modelFile.resolveType`, `modelFile.getType`) are reached the same way
+/// `propertyValidate` reaches them: only the branching around them, and the
+/// scalar-to-property `$class` mapping (`field::scalar_to_field_ast`), run
+/// in Rust. Returns the synthetic field's AST; the view still builds the
+/// `Field` instance from it and sets `array` from `this.isArray()`, exactly
+/// as the TS body's `new Field(this.getParent(), fieldAst)` and
+/// `this.scalarField.array = this.isArray()` do.
+#[wasm_bindgen(js_name = fieldGetScalarField)]
+pub fn field_get_scalar_field(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        // `isTypeScalar()`.
+        let is_primitive = call(&view, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
+        let resolved_type = if is_primitive {
+            None
+        } else {
+            let parent = call(&view, "getParent", &[], "this.getParent")?;
+            let model_file = call(&parent, "getModelFile", &[], "parent.getModelFile")?;
+            let fqn = js_string(&call(
+                &view,
+                "getFullyQualifiedName",
+                &[],
+                "this.getFullyQualifiedName",
+            )?)?;
+            let property_type = call(&view, "getType", &[], "this.getType")?;
+            call(
+                &model_file,
+                "resolveType",
+                &[
+                    JsValue::from_str(&format!("property {fqn}")),
+                    property_type.clone(),
+                ],
+                "modelFile.resolveType",
+            )?;
+            Some(call(
+                &model_file,
+                "getType",
+                &[property_type],
+                "modelFile.getType",
+            )?)
+        };
+        // `type.isScalarDeclaration?.()`: `undefined` (no such method) reads
+        // as falsy, same as `call_optional`'s `None`; `resolved_type` is
+        // `None` when `isPrimitive()` was true, which is also not scalar.
+        let not_scalar = |view: &JsValue| -> Result<Error> {
+            let name = js_string(&get(view, "name")?)?;
+            Ok(plain_error(
+                "field-getscalarfield-notscalar",
+                vec![("name", name)],
+            ))
+        };
+        let Some(resolved) = resolved_type else {
+            return Err(not_scalar(&view)?);
+        };
+        let is_type_scalar =
+            call_optional(&resolved, "isScalarDeclaration")?.is_some_and(|v| v.is_truthy());
+        if !is_type_scalar {
+            return Err(not_scalar(&view)?);
+        }
+        let scalar_ast = to_json(&get(&resolved, "ast")?)?.unwrap_or(Value::Null);
+        let field_name = to_json(&get(&get(&view, "ast")?, "name")?)?.unwrap_or(Value::Null);
+        let field_ast = field::scalar_to_field_ast::<Error>(&scalar_ast, field_name)?;
+        Ok(to_js(&field_ast))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // RelationshipDeclaration (src/introspect/relationshipdeclaration.ts) — P4-07
 // ---------------------------------------------------------------------------
