@@ -95,9 +95,9 @@ fn class_declarations_and_properties_carry_their_decorators() {
     let class = concept.as_class().unwrap();
     let names = |decorated: &dyn Decorated| -> Vec<String> {
         decorated
-            .decorators()
+            .get_decorators()
             .iter()
-            .map(|d| d.name.clone())
+            .map(|d| d.name().to_string())
             .collect()
     };
     assert_eq!(names(class), ["Term", "Hidden"]);

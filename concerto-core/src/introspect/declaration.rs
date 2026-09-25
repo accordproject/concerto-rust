@@ -14,10 +14,11 @@ use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, Result};
+use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::{
-    DeclarationKind, Decorated, HasValidators, Named, Typed, declared_class, qualified_class,
+    DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
 };
 use crate::model_util::{get_fully_qualified_name, get_short_name, is_valid_identifier};
 
@@ -92,6 +93,7 @@ macro_rules! class_field {
 pub struct ClassDeclaration {
     node: ClassNode,
     properties: Vec<Property>,
+    decorators: Vec<Decorator>,
 }
 
 impl ClassDeclaration {
@@ -175,7 +177,15 @@ impl ClassDeclaration {
         Ok(Self {
             node,
             properties: parse_properties(value)?,
+            decorators: parse_decorators(value),
         })
+    }
+
+    /// The decorators attached to this declaration.
+    ///
+    /// TS: `Decorated.getDecorators` (src/introspect/decorated.ts).
+    pub fn decorators(&self) -> &[Decorator] {
+        &self.decorators
     }
 }
 
@@ -183,12 +193,6 @@ impl Named for ClassDeclaration {
     /// The declaration's short name (without namespace).
     fn name(&self) -> &str {
         class_field!(&self.node, d => &d.name)
-    }
-}
-
-impl Decorated for ClassDeclaration {
-    fn decorators(&self) -> &[mm::Decorator] {
-        class_field!(&self.node, d => d.decorators.as_deref().unwrap_or(&[]))
     }
 }
 
@@ -264,10 +268,17 @@ pub enum Declaration {
 }
 
 /// An enumeration declaration: a newtype over the generated
-/// [`mm::EnumDeclaration`].
+/// [`mm::EnumDeclaration`], plus its processed decorators (module doc on
+/// [`WithDecorators`]).
 #[derive(Debug, Clone, Named, DeclarationKind)]
 #[concerto(kind = "EnumDeclaration")]
-pub struct EnumDeclaration(mm::EnumDeclaration);
+pub struct EnumDeclaration(WithDecorators<mm::EnumDeclaration>);
+
+impl crate::introspect::Decorated for EnumDeclaration {
+    fn get_decorators(&self) -> &[Decorator] {
+        self.0.decorators()
+    }
+}
 
 /// The key kinds the generated [`mm::MapKeyType`] union declares.
 const MM_MAP_KEY_KINDS: [&str; 3] = ["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
@@ -574,13 +585,14 @@ impl Declaration {
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => Self::Enum(EnumDeclaration(
+            "EnumDeclaration" => Self::Enum(EnumDeclaration(WithDecorators::new(
                 serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
                     message: format!("invalid EnumDeclaration: {e}"),
                     file_name: None,
                     location: None,
                 })?,
-            )),
+                parse_decorators(value),
+            ))),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)

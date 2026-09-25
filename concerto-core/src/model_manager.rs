@@ -265,6 +265,10 @@ pub struct ModelManager {
     declarations: Vec<DeclSlot>,
     properties: Vec<PropSlot>,
     generation: u64,
+    /// TS `ModelManagerOptions.decoratorValidation`, `DEFAULT_DECORATOR_VALIDATION`
+    /// by default (both fields `None`): see
+    /// [`crate::introspect::decorator::DecoratorValidationOptions`].
+    decorator_validation: crate::introspect::decorator::DecoratorValidationOptions,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -493,6 +497,24 @@ impl ModelManager {
     /// A counter that every mutation of the manager increases. A snapshot of
     /// an element taken at one generation is current while the generation is
     /// unchanged.
+    /// TS: `BaseModelManager.getDecoratorValidation`.
+    pub fn decorator_validation(
+        &self,
+    ) -> &crate::introspect::decorator::DecoratorValidationOptions {
+        &self.decorator_validation
+    }
+
+    /// Sets the decorator validation options, matching the TS constructor's
+    /// `options.decoratorValidation` (there is no separate TS setter; the
+    /// port exposes one so a manager already built can still opt in, as this
+    /// crate's own tests do).
+    pub fn set_decorator_validation(
+        &mut self,
+        options: crate::introspect::decorator::DecoratorValidationOptions,
+    ) {
+        self.decorator_validation = options;
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -693,7 +715,18 @@ impl ModelManager {
             return Ok(None);
         };
         if let Some(ns) = &ti.namespace {
-            return Ok(Some(get_fully_qualified_name(ns, &ti.name)));
+            // P2-07: a resolved metamodel AST (`ModelManager.resolveMetaModel`,
+            // which the CTO parser runs implicitly) keeps `name` as the
+            // identifier *written in the source*, which is the local alias
+            // when the super type was imported under one (`Child as Kid`),
+            // and puts the type's own declared short name in `resolvedName`
+            // instead. `resolvedName` is the accurate one to qualify with
+            // `namespace` here; `name` is only the fallback for an AST this
+            // typed field cannot represent (OD-3 does not cover this case, so
+            // this is not a re-read of raw JSON, just picking the right typed
+            // field).
+            let short = ti.resolved_name.as_deref().unwrap_or(&ti.name);
+            return Ok(Some(get_fully_qualified_name(ns, short)));
         }
         if let Some(resolved) = &ti.resolved_name {
             return Ok(Some(resolved.clone()));
