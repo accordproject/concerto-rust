@@ -506,6 +506,15 @@ impl Fields {
 /// is `NaN` (the rest of V8's legacy parser is not ported; DIVERGENCES.md
 /// DV-009).
 fn date_parse(s: &str) -> f64 {
+    // V8's date tokenizer treats U+0000 as end of input, so `new
+    // Date(string)` parses only the part before the first NUL and ignores
+    // whatever follows it (DV-009; accordproject/concerto-rust#169). Mirror
+    // that here, ahead of both the ECMAScript date time string format match
+    // and the legacy numeric-date fallback below.
+    let s = match s.find('\u{0}') {
+        Some(i) => &s[..i],
+        None => s,
+    };
     let re = regress::Regex::new(
         r"^([+-]\d{6}|\d{4})(?:-(\d{2})(?:-(\d{2}))?)?(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(Z|z|[+-]\d{2}:?\d{2})?$",
     )
@@ -698,6 +707,34 @@ mod tests {
             Dayjs::utc_parse("2021-01-01T00:00:00Z").format_json(),
             "2021-01-01T00:00:00.000Z"
         );
+    }
+
+    /// DV-009 / accordproject/concerto-rust#169 (P5-05 fuzz cluster T1c): an
+    /// embedded NUL truncates `new Date(string)`'s input, as V8's date
+    /// tokenizer does, instead of failing the whole parse.
+    #[test]
+    fn embedded_nul_truncates_like_v8() {
+        let iso = |s: &str| Dayjs::utc_parse(s).to_iso_string();
+        assert_eq!(
+            iso("1970-01-01T00:00:00.000+00:00\u{0}").as_deref(),
+            Some("1970-01-01T00:00:00.000Z")
+        );
+        assert_eq!(
+            iso("1970-01-01T00:00:00.000Z\u{0}").as_deref(),
+            Some("1970-01-01T00:00:00.000Z")
+        );
+        // Anything after the NUL is ignored, exactly as it is by V8.
+        assert_eq!(
+            iso("1970-01-01T00:00:00.000+00:00\u{0}junk").as_deref(),
+            Some("1970-01-01T00:00:00.000Z")
+        );
+        assert_eq!(
+            iso("1970-01-01\u{0}").as_deref(),
+            Some("1970-01-01T00:00:00.000Z")
+        );
+        // A control character other than NUL gets no special treatment: it
+        // fails to parse in both TS and Rust.
+        assert!(!Dayjs::utc_parse("1970-01-01T00:00:00.000+00:00\u{1}").is_valid());
     }
 
     #[test]
