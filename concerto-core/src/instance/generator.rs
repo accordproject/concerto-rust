@@ -375,7 +375,6 @@ fn typed_stack_found(obj: &JsValue) -> Result<String> {
     })
 }
 
-/// The generator's options from the serializer's merged options.
 /// The generator's options from the serializer's merged options. `pub`
 /// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
 /// `GeneratorOptions` for [`convert_primitive`].

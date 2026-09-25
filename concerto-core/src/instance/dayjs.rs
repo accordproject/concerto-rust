@@ -598,10 +598,14 @@ mod tests {
     #[test]
     fn epoch_ms_round_trips_with_an_offset() {
         let utc = Dayjs::utc_parse("2021-01-01T10:00:00Z");
-        assert_eq!(utc.epoch_ms(), utc.utc_offset_set(&UtcOffset::Number(0.0)).epoch_ms());
+        assert_eq!(
+            utc.epoch_ms(),
+            utc.utc_offset_set(&UtcOffset::Number(0.0)).epoch_ms()
+        );
         let shifted = utc.utc_offset_set(&UtcOffset::Number(60.0));
         assert_eq!(shifted.epoch_ms(), utc.epoch_ms());
-        let rebuilt = Dayjs::utc_from_number(shifted.epoch_ms()).utc_offset_set(&UtcOffset::Number(60.0));
+        let rebuilt =
+            Dayjs::utc_from_number(shifted.epoch_ms()).utc_offset_set(&UtcOffset::Number(60.0));
         assert_eq!(rebuilt, shifted);
         assert!(Dayjs::utc_invalid().epoch_ms().is_nan());
     }

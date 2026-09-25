@@ -121,13 +121,18 @@ pub fn convert_primitive(
 /// (a check the wire codec cannot cross, so the TS shell still makes it);
 /// every other TS branch is `typeof`/`isFinite` on the value alone, with no
 /// declaration lookup, so it is safe to call from the TS shell per field.
+/// A type name the TS switch has no `case` for is valid (`invalid` stays
+/// `false`).
 pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
     match type_name {
         "String" => matches!(value, JsValue::String(_)),
         "Long" | "Integer" | "Double" => matches!(value, JsValue::Number(n) if n.is_finite()),
         "Boolean" => matches!(value, JsValue::Bool(_)),
         "DateTime" => matches!(value, JsValue::DateTime(_)),
-        _ => false,
+        // TS: `let invalid = false;` and no `default:` arm, so any other
+        // type name (an enum, or a primitive the switch does not list) is
+        // valid here.
+        _ => true,
     }
 }
 
@@ -707,5 +712,35 @@ pub fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOption
             JsValue::Number(0.0)
         },
         strict_qualified_date_times: get("strictQualifiedDateTimes") == JsValue::Bool(true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ResourceValidator.checkItem`'s switch has no `default:` arm and
+    /// starts from `invalid = false`, so a type name it does not list is
+    /// valid (P4-10 review).
+    #[test]
+    fn primitive_field_valid_matches_the_ts_switch() {
+        assert!(primitive_field_valid(
+            "String",
+            &JsValue::String("x".into())
+        ));
+        assert!(!primitive_field_valid("String", &JsValue::Number(1.0)));
+        assert!(primitive_field_valid("Double", &JsValue::Number(1.5)));
+        assert!(!primitive_field_valid("Double", &JsValue::Number(f64::NAN)));
+        assert!(!primitive_field_valid(
+            "Integer",
+            &JsValue::Number(f64::INFINITY)
+        ));
+        assert!(primitive_field_valid("Boolean", &JsValue::Bool(false)));
+        assert!(!primitive_field_valid(
+            "DateTime",
+            &JsValue::String("x".into())
+        ));
+        assert!(primitive_field_valid("Unknown", &JsValue::Number(1.0)));
+        assert!(primitive_field_valid("Unknown", &JsValue::Null));
     }
 }

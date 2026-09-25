@@ -3065,15 +3065,15 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
                     .ok_or_else(|| wire_error("a wire map without entries".to_string()))?;
                 let mut decoded = Vec::with_capacity(entries.len());
                 for entry in entries {
-                    let pair = entry
-                        .as_array()
-                        .ok_or_else(|| wire_error("a wire map entry that is not a pair".to_string()))?;
+                    let pair = entry.as_array().ok_or_else(|| {
+                        wire_error("a wire map entry that is not a pair".to_string())
+                    })?;
                     let key = pair
                         .first()
                         .ok_or_else(|| wire_error("a wire map entry without a key".to_string()))?;
-                    let value = pair
-                        .get(1)
-                        .ok_or_else(|| wire_error("a wire map entry without a value".to_string()))?;
+                    let value = pair.get(1).ok_or_else(|| {
+                        wire_error("a wire map entry without a value".to_string())
+                    })?;
                     decoded.push((decode_wire(key)?, decode_wire(value)?));
                 }
                 Ok(CoreValue::Map(decoded))
@@ -3160,8 +3160,11 @@ fn encode_wire_dayjs(d: &Dayjs) -> Value {
 /// An [`Instance`] in [`WIRE_TAG`]'s `"typed"` encoding (module doc): every
 /// own property, `fields`, plus its class and TS constructor.
 fn encode_wire_instance(i: &Instance) -> Value {
-    let fields: serde_json::Map<String, Value> =
-        i.props.iter().map(|(k, v)| (k.clone(), encode_wire(v))).collect();
+    let fields: serde_json::Map<String, Value> = i
+        .props
+        .iter()
+        .map(|(k, v)| (k.clone(), encode_wire(v)))
+        .collect();
     json!({
         WIRE_TAG: "typed",
         "ctor": i.kind.ctor(),
@@ -3179,9 +3182,11 @@ fn encode_wire(v: &CoreValue) -> Value {
         CoreValue::Number(n) => encode_wire_number(*n),
         CoreValue::String(s) => Value::String(s.clone()),
         CoreValue::Array(items) => Value::Array(items.iter().map(encode_wire).collect()),
-        CoreValue::Object(map) => {
-            Value::Object(map.iter().map(|(k, x)| (k.clone(), encode_wire(x))).collect())
-        }
+        CoreValue::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, x)| (k.clone(), encode_wire(x)))
+                .collect(),
+        ),
         CoreValue::Map(entries) => json!({
             WIRE_TAG: "map",
             "entries": entries
@@ -3442,7 +3447,8 @@ impl ModelManagerHandle {
             let options = decode_wire_options(options_text)?;
             let serializer = Serializer::new(true, true, options.as_ref())?;
             let mut js_env = JsInstanceEnv { env };
-            let resource = serializer.from_json(&self.manager, &object, options.as_ref(), &mut js_env)?;
+            let resource =
+                serializer.from_json(&self.manager, &object, options.as_ref(), &mut js_env)?;
             snapshot(&encode_wire_instance(&resource))
         })
     }
@@ -3575,5 +3581,103 @@ impl ModelManagerHandle {
             .get("declarations")
             .and_then(|declarations| declarations.get(index))
             .ok_or_else(missing)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Host-side tests of the pure wire codec (no `js_sys` call is reached on
+    // these paths): `cargo test` from concerto-wasm/.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// `decode_wire`, which must succeed (`Error` has no `Debug`).
+    fn decoded(value: &Value) -> CoreValue {
+        match decode_wire(value) {
+            Ok(v) => v,
+            Err(_) => panic!("decode_wire failed on {value}"),
+        }
+    }
+
+    /// The number `decode_wire` reads from `text`, the JSON a view's
+    /// `JSON.stringify` wrote.
+    fn wire_number(text: &str) -> f64 {
+        let value: Value = serde_json::from_str(text).unwrap();
+        match decoded(&value) {
+            CoreValue::Number(n) => n,
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
+    /// P4-10 review: without serde_json's `float_roundtrip` feature these
+    /// two doubles came back 1 ULP off (…888 and …2917).
+    #[test]
+    fn decode_wire_keeps_doubles_exact() {
+        for n in [989.9951327998887_f64, 477.95269883162916_f64] {
+            let text = serde_json::to_string(&n).unwrap();
+            assert_eq!(wire_number(&text).to_bits(), n.to_bits(), "{text}");
+        }
+        assert_eq!(
+            wire_number("989.9951327998887").to_bits(),
+            989.9951327998887_f64.to_bits()
+        );
+        assert_eq!(
+            wire_number("477.95269883162916").to_bits(),
+            477.95269883162916_f64.to_bits()
+        );
+    }
+
+    /// A deterministic pseudo-random sample of finite doubles (xorshift64
+    /// over raw bit patterns, so every exponent range is hit): each one
+    /// written in shortest round-trip form (what JS `JSON.stringify` writes,
+    /// and what `serde_json`/ryu writes too) decodes to the same bits, and
+    /// encodes back to the same text.
+    #[test]
+    fn decode_wire_round_trips_a_random_sample_of_doubles() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut checked = 0;
+        while checked < 200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let n = f64::from_bits(state);
+            if !n.is_finite() {
+                continue;
+            }
+            let text = serde_json::to_string(&n).unwrap();
+            let back = wire_number(&text);
+            if n == 0.0 {
+                // `-0` crosses as a tagged wire number, never plain JSON.
+                assert_eq!(back, 0.0);
+            } else {
+                assert_eq!(back.to_bits(), n.to_bits(), "{text}");
+                assert_eq!(
+                    serde_json::to_string(&encode_wire(&CoreValue::Number(back))).unwrap(),
+                    text
+                );
+            }
+            checked += 1;
+        }
+    }
+
+    /// The same doubles inside a document, as `serializerFromJson` and the
+    /// per-field bindings decode it.
+    #[test]
+    fn decode_wire_keeps_nested_doubles_exact() {
+        let value: Value = serde_json::from_str(
+            r#"{"$class":"org.x@1.0.0.T","d":989.9951327998887,"ds":[477.95269883162916]}"#,
+        )
+        .unwrap();
+        let CoreValue::Object(map) = decoded(&value) else {
+            panic!("expected an object");
+        };
+        assert_eq!(map.get("d"), Some(&CoreValue::Number(989.9951327998887)));
+        assert_eq!(
+            map.get("ds"),
+            Some(&CoreValue::Array(vec![CoreValue::Number(
+                477.95269883162916
+            )]))
+        );
     }
 }
