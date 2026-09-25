@@ -68,7 +68,10 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
         .into());
     }
 
-    let class = ast.get("$class").and_then(Value::as_str).unwrap_or_default();
+    let class = ast
+        .get("$class")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let short = get_short_name(class);
     let object_or_relationship_type = || {
         ast.get("type")
