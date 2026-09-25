@@ -708,6 +708,34 @@ mod tests {
         );
     }
 
+    /// P2-04 (plan §1.2's "enum ... reserved values" gap; issue #48): an
+    /// enum value may not take a reserved (system) property name either,
+    /// the same check every other property kind gets above.
+    ///
+    /// Checked against the frozen TS 5.0.0 reference
+    /// (`migration/oracle/reference`): `ModelManager.addCTOModel` on
+    ///
+    /// ```cto
+    /// namespace org.acme.enumreserved@1.0.0
+    /// enum Status {
+    ///   o $identifier
+    /// }
+    /// ```
+    ///
+    /// raises `IllegalModelException: Invalid field name '$identifier'`,
+    /// matching this test verbatim.
+    #[test]
+    fn a_reserved_name_is_rejected_on_an_enum_value() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.EnumProperty",
+            "name": "$identifier"
+        }));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "illegal model: Invalid field name '$identifier'"
+        );
+    }
+
     #[test]
     fn a_malformed_property_is_reported_under_its_own_kind() {
         let err = Property::try_from(&serde_json::json!({

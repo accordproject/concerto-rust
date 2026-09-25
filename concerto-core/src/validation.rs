@@ -123,6 +123,13 @@ impl Validate for Declaration {
                 let fqn = get_fully_qualified_name(namespace, enm.name());
                 check_unique_decorators(enm, None)?;
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
+                // TS: `ClassDeclaration.validate`'s duplicate-field-name
+                // check, inherited unchanged by `EnumDeclaration` — run in
+                // the same position relative to the decorator checks above
+                // and the per-value checks below as TS's single `validate()`
+                // body runs it relative to its own two neighbours (P2-04,
+                // closing the "enum duplicate values" gap of plan §1.2).
+                check_unique_field_names(manager, enm.name(), None, &fqn)?;
                 for value in enm.values() {
                     check_unique_decorators(value, None)?;
                     validate_decorators(
@@ -147,7 +154,7 @@ impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         check_super_type(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
-        check_unique_field_names(manager, self, &fqn)?;
+        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_decorators(self, class_location(self))?;
@@ -278,9 +285,19 @@ fn check_super_type(
 
 /// No field name may appear twice once inherited fields are included, so a
 /// subtype cannot silently redeclare a field from a super type.
+///
+/// TS: `ClassDeclaration.validate`'s `uniquePropertyNames` loop
+/// (classdeclaration.ts), inherited unchanged by `EnumDeclaration` — an
+/// enum's values are properties too (`getProperties()`), so two values of
+/// the same name in one enum are rejected exactly the way two same-named
+/// fields on a class are, with the same message and catalogue code
+/// (`declaration_name`/`location` let both callers share this one check;
+/// see [`ClassDeclaration::validate`] and the `Declaration::Enum` arm of
+/// [`Validate for Declaration`]).
 fn check_unique_field_names(
     manager: &ModelManager,
-    class: &ClassDeclaration,
+    declaration_name: &str,
+    location: Option<serde_json::Value>,
     fqn: &str,
 ) -> Result<()> {
     let mut seen = HashSet::new();
@@ -289,10 +306,10 @@ fn check_unique_field_names(
             return Err(catalogue_error(
                 "classdeclaration-validate-duplicatefieldname",
                 vec![
-                    ("class", class.name().to_string()),
+                    ("class", declaration_name.to_string()),
                     ("fieldName", property.name().to_string()),
                 ],
-                class_location(class),
+                location,
             ));
         }
     }
@@ -1386,6 +1403,52 @@ mod tests {
             err.unwrap_err().to_string(),
             "Class \"FancyOrder\" has more than one field named \"$identifier\"."
         );
+    }
+
+    /// P2-04 (plan §1.2's "enum duplicate ... values" gap; issue #48):
+    /// `EnumDeclaration` inherits `ClassDeclaration.validate` unchanged, so
+    /// two values of the same name in one enum are rejected exactly like two
+    /// same-named fields on a class — same catalogue code, same message.
+    /// Checked against the frozen TS 5.0.0 reference
+    /// (`migration/oracle/reference`): `ModelManager.addCTOModel` on
+    ///
+    /// ```cto
+    /// namespace org.acme.enumdup@1.0.0
+    /// enum Status {
+    ///   o ACTIVE
+    ///   o ACTIVE
+    /// }
+    /// ```
+    ///
+    /// raises `IllegalModelException: Class "Status" has more than one field
+    /// named "ACTIVE".`, matching this test verbatim.
+    #[test]
+    fn duplicate_enum_value_name_is_rejected() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Status",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" },
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" }
+            ]
+        }]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Class \"Status\" has more than one field named \"ACTIVE\"."
+        );
+    }
+
+    /// The non-duplicate case: distinct enum value names load and validate
+    /// cleanly, the same as the reference.
+    #[test]
+    fn distinct_enum_value_names_pass() {
+        let ok = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Status",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" },
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "INACTIVE" }
+            ]
+        }]));
+        assert!(ok.is_ok());
     }
 
     /// TS: introspect/classdeclaration.js "#validation validation of super
