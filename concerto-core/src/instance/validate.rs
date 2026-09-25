@@ -67,27 +67,22 @@
 //! exactly what `checkItem`'s `instanceof`-style check rejects in TS too),
 //! not an approximation of it.
 //!
-//! # Known gaps (oracle-verified: `cargo test --test oracle
-//! ORACLE_OP=Resource.validate`, 70/73 pass, 1 unsupported, 2 fail)
+//! A third marker, [`UNDEFINED_TAG`] ([`js_undefined`]), stands for a JS
+//! `undefined` held *inside* a value, such as an array element
+//! (`["a", undefined, "b"]`) or a map value. JSON has no `undefined`, and
+//! `null` is a different JS value (`typeof null` is `'object'`,
+//! `${null}` is `null`), so collapsing one into the other changes the
+//! words TS reports (`checkItem` reports an `undefined` item as a field type
+//! violation of value `undefined`, type `undefined`).
 //!
-//! Two `gaps` fixtures still fail, both narrow and left for a future task
-//! rather than chased further here:
+//! # JS engine errors
 //!
-//! - `d444ebcf0cf5a3c23e5ee6dd` expects a `TypeError` ("obj.getFullyQualifiedType
-//!   is not a function"): a hand-built TS `Resource` with a relationship
-//!   field holding a plain value with no `Identifiable` methods at all,
-//!   which fails TS's `obj instanceof Relationship`/`instanceof Resource`
-//!   checks in `checkRelationship` in a way this port's tagged-value scheme
-//!   (a value is either `$class`-tagged or not) cannot reproduce: there is
-//!   no "an object shaped like neither, but which TS's dynamic method
-//!   lookup still fails on differently" case to encode.
-//! - `642d743981a69328b04f1e33` gets the right verdict
-//!   (`ValidationException`) with the right *shape* of message, but not the
-//!   right words: a JS `undefined` array *element* (distinct from `null`,
-//!   `["a", undefined, "b"]`) is collapsed into this module's single `null`
-//!   representation on the way in (`tests/oracle/recipe.rs`'s
-//!   `typed_field_value`), so the reported value/type read `"null"`/
-//!   `"object"` here instead of TS's `"undefined"`/`"undefined"`.
+//! Where TS calls a method that its argument may not have, the V8
+//! `TypeError` is part of the behaviour and is ported (PORTING.md 2.2 step
+//! 3): `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()`,
+//! and `reportNotResouceViolation`/`reportNotRelationshipViolation` call
+//! `value.toString()`, on whatever value reached them (DV-008,
+//! [`invalid_field_assignment_shape`], [`js_method_receiver_error`]).
 //!
 //! # Walk
 //!
@@ -179,8 +174,9 @@ pub fn validate_instance(
 /// in scope (the field's declared type, or the root's own type), which may
 /// differ from `value`'s own, more specific `$class`.
 fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) -> Result<()> {
-    // `obj instanceof Resource`.
-    let Some(obj) = value.as_object() else {
+    // `obj instanceof Resource`: a `Relationship` ([`RELATIONSHIP_TAG`]) is
+    // `Identifiable` but not a `Resource`.
+    let Some(obj) = as_js_object(value).filter(|o| !o.contains_key(RELATIONSHIP_TAG)) else {
         return Err(not_resource_violation(p, declared_fqn, value));
     };
     let Some(own_fqn) = obj.get("$class").and_then(Value::as_str) else {
@@ -308,10 +304,10 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
     Ok(())
 }
 
-/// `Util.isNull`: `undefined` or `null`. JSON has no `undefined`, so this is
-/// just `Value::Null`.
+/// `Util.isNull`: `undefined` or `null` ([`UNDEFINED_TAG`] stands for
+/// `undefined`).
 fn is_js_null(value: &Value) -> bool {
-    value.is_null()
+    value.is_null() || is_js_undefined(value)
 }
 
 /// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
@@ -506,6 +502,12 @@ fn visit_field(
     value: &Value,
     kind: &Kind,
 ) -> Result<()> {
+    // `if (dataType === 'undefined' || dataType === 'symbol')`. Not reached
+    // from `visit_class_declaration`, which skips an `undefined` field
+    // (`Util.isNull`), but ported as TS has it.
+    if is_js_undefined(value) {
+        return Err(field_type_violation(p, owner_fqn, property, value));
+    }
     if let Kind::Enum(enum_fqn) = kind {
         return check_enum(p, owner_fqn, property, enum_fqn, value);
     }
@@ -517,7 +519,7 @@ fn visit_field(
     // `if(field.getSizeValidator() && obj instanceof Map)`: only reachable
     // when the field's own declared type is itself a map (`Kind::MapTyped`).
     if let (Some(sv), Kind::MapTyped(_)) = (property.size_validator(), kind)
-        && let Some(obj) = value.as_object()
+        && let Some(obj) = as_js_object(value)
     {
         let elem = FieldElement::new(p.mm, owner_fqn, property);
         CollectionSizeValidator::new(&elem, sv)?.validate(
@@ -552,10 +554,10 @@ fn check_enum(
             )?;
         }
         for item in items {
-            visit_enum_declaration(p, property, enum_fqn, item)?;
+            visit_enum_declaration(p, enum_fqn, item)?;
         }
     } else {
-        visit_enum_declaration(p, property, enum_fqn, value)?;
+        visit_enum_declaration(p, enum_fqn, value)?;
     }
     Ok(())
 }
@@ -594,6 +596,12 @@ fn check_item(
     kind: &Kind,
     value: &Value,
 ) -> Result<()> {
+    // `if (dataType === 'undefined' || dataType === 'symbol')`: an
+    // `undefined` array element (`["a", undefined, "b"]`) is reported here,
+    // with value and type both `undefined`.
+    if is_js_undefined(value) {
+        return Err(field_type_violation(p, owner_fqn, property, value));
+    }
     match kind {
         Kind::Primitive => check_primitive_item(p, owner_fqn, property, value),
         Kind::Scalar(scalar_fqn) => check_scalar_item(p, owner_fqn, property, scalar_fqn, value),
@@ -695,6 +703,70 @@ pub const DAYJS_TAG: &str = "$$dayjs";
 /// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
 /// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
 pub const RELATIONSHIP_TAG: &str = "$$relationship";
+
+/// A JS `undefined` held inside a value: an array element or a map value
+/// (module doc "Scope"). The value is the one-key object
+/// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
+/// `undefined`, and writing `null` instead would change what TS reports:
+/// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
+/// where `null` gives `'object'` and `null`.
+pub const UNDEFINED_TAG: &str = "$$undefined";
+
+/// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+pub fn js_undefined() -> Value {
+    serde_json::json!({ UNDEFINED_TAG: true })
+}
+
+/// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+pub fn is_js_undefined(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
+}
+
+/// `value` as a JS object, which a JS `undefined` ([`UNDEFINED_TAG`]) is not.
+fn as_js_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    if is_js_undefined(value) {
+        None
+    } else {
+        value.as_object()
+    }
+}
+
+/// `JSON.stringify(value)`: `None` for a top-level `undefined` (which
+/// `JSON.stringify` returns as `undefined`, not a string); an `undefined`
+/// array element is written as `null` and an `undefined` object member is
+/// left out, as `JSON.stringify` does.
+fn js_json_stringify(value: &Value) -> Option<String> {
+    fn plain(value: &Value) -> Value {
+        match value {
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .map(|item| {
+                        if is_js_undefined(item) {
+                            Value::Null
+                        } else {
+                            plain(item)
+                        }
+                    })
+                    .collect(),
+            ),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .filter(|(_, v)| !is_js_undefined(v))
+                    .map(|(k, v)| (k.clone(), plain(v)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    if is_js_undefined(value) {
+        return None;
+    }
+    let plain = plain(value);
+    Some(serde_json::to_string(&plain).unwrap_or_else(|_| plain.to_string()))
+}
 
 /// TS `typeof obj === 'object' && typeof obj.isBefore === 'function'`
 /// (resourcevalidator.ts `checkItem`): true exactly when `value` is a
@@ -871,12 +943,13 @@ fn retarget_not_resource(
 // ---------------------------------------------------------------------
 
 /// TS: `ResourceValidator.visitEnumDeclaration` (resourcevalidator.ts:94).
-fn visit_enum_declaration(
-    p: &Params,
-    property: &Property,
-    enum_fqn: &str,
-    value: &Value,
-) -> Result<()> {
+///
+/// TS passes the *enum declaration* as `reportInvalidEnumValue`'s `field`
+/// argument, so the message's `fieldName` is the enum's own short name
+/// (`enumDeclaration.getName()`, e.g. `Color`), not the name of the property
+/// holding the value; and `value` is the raw `obj`, which the formatter's
+/// `String.prototype.replace` converts with `String()` (`1`, `undefined`).
+fn visit_enum_declaration(p: &Params, enum_fqn: &str, value: &Value) -> Result<()> {
     let decl = p.mm.get_declaration(enum_fqn)?;
     let Declaration::Enum(enum_decl) = decl else {
         return Err(ContractError::pre_port(
@@ -886,12 +959,14 @@ fn visit_enum_declaration(
         )
         .into());
     };
-    let obj = value.as_str().unwrap_or_default();
-    let found = enum_decl.values().iter().any(|v| v.name() == obj);
+    // `property.getName() === obj`: only a string can match.
+    let found = value
+        .as_str()
+        .is_some_and(|obj| enum_decl.values().iter().any(|v| v.name() == obj));
     if !found {
         return Err(invalid_enum_value(
             &p.root_resource_identifier,
-            property,
+            enum_decl.name(),
             value,
         ));
     }
@@ -944,7 +1019,7 @@ fn check_relationship(
 ) -> Result<()> {
     // `obj instanceof Relationship`: a [`RELATIONSHIP_TAG`]-tagged object
     // (see its doc), carrying the pointed-at type as `$class`.
-    let obj = value.as_object();
+    let obj = as_js_object(value);
     let is_relationship_instance = obj.is_some_and(|o| o.contains_key(RELATIONSHIP_TAG));
     // `obj instanceof Resource && (convertResourcesToRelationships ||
     // permitResourcesForRelationships)`: a nested (untagged) object standing
@@ -1006,13 +1081,15 @@ fn check_relationship(
 
 /// TS: `ResourceValidator.visitMapDeclaration` (resourcevalidator.ts:178).
 fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result<()> {
-    let Some(obj) = value.as_object() else {
+    let Some(obj) = as_js_object(value) else {
+        // `'Expected a Map, but found ' + JSON.stringify(obj)`:
+        // `JSON.stringify(undefined)` is `undefined`, which `+` spells out.
         return Err(ContractError::new(
             ErrorKind::Error,
             "resourcevalidator-visitmapdeclaration-notamap",
             vec![(
                 "obj",
-                serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+                js_json_stringify(value).unwrap_or_else(|| "undefined".to_string()),
             )],
         )
         .into());
@@ -1125,7 +1202,7 @@ fn check_map_type(
                 "resourcevalidator-checkmaptype-expectedstring",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
-                    ("value", ecma::to_js_string(value)),
+                    ("value", js_to_string(value)),
                 ],
             )
             .into());
@@ -1136,7 +1213,7 @@ fn check_map_type(
                 "resourcevalidator-checkmaptype-expecteddatetime",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
-                    ("value", ecma::to_js_string(value)),
+                    ("value", js_to_string(value)),
                 ],
             )
             .into());
@@ -1148,7 +1225,7 @@ fn check_map_type(
                 vec![
                     ("mapFqn", map_fqn.to_string()),
                     ("type", js_typeof(value).to_string()),
-                    ("value", ecma::to_js_string(value)),
+                    ("value", js_to_string(value)),
                 ],
             )
             .into());
@@ -1175,40 +1252,11 @@ fn kind_primitive_name(kind: &str) -> String {
         .to_string()
 }
 
-/// A map key/value's resolved declaration is an enum: check the value the
-/// same way [`visit_enum_declaration`] does, without a `Property` in scope
-/// (a map has none) — TS's own `enumDeclaration.accept(this, parameters)`
-/// reads no `Property` either; `visitEnumDeclaration`'s `reportInvalidEnumValue`
-/// call needs `field.getName()` only for its message, which a map key/value
-/// has no equivalent of, so this reports the map's own name instead (the
-/// nearest faithful stand-in; not a TS-reachable message, since TS's
-/// `checkMapType` never itself raises an enum-mismatch error for a map — it
-/// only ever delegates to `visitEnumDeclaration`, whose own report call
-/// TS reaches the exact same way here).
+/// A map key/value's resolved declaration is an enum: `thing.accept(this,
+/// parameters)` dispatches to `visitEnumDeclaration`, the same as for a
+/// field ([`visit_enum_declaration`]).
 fn visit_enum_declaration_value(p: &Params, enum_fqn: &str, value: &Value) -> Result<()> {
-    let decl = p.mm.get_declaration(enum_fqn)?;
-    let Declaration::Enum(enum_decl) = decl else {
-        return Err(ContractError::pre_port(
-            ErrorKind::Error,
-            format!("'{enum_fqn}' is not an enum declaration"),
-            None,
-        )
-        .into());
-    };
-    let obj = value.as_str().unwrap_or_default();
-    if enum_decl.values().iter().any(|v| v.name() == obj) {
-        return Ok(());
-    }
-    Err(ContractError::new(
-        ErrorKind::Validation,
-        "resourcevalidator-invalidenumvalue",
-        vec![
-            ("resourceId", p.root_resource_identifier.clone()),
-            ("value", obj.to_string()),
-            ("fieldName", enum_fqn.to_string()),
-        ],
-    )
-    .into())
+    visit_enum_declaration(p, enum_fqn, value)
 }
 
 // ---------------------------------------------------------------------
@@ -1273,6 +1321,9 @@ impl ValidatedElement for FieldElement<'_> {
 // ---------------------------------------------------------------------
 
 fn js_typeof(value: &Value) -> &'static str {
+    if is_js_undefined(value) {
+        return "undefined";
+    }
     match value {
         Value::String(_) => "string",
         Value::Number(_) => "number",
@@ -1288,6 +1339,9 @@ fn js_typeof(value: &Value) -> &'static str {
 /// `Array.prototype.toString` joins with `,`; a plain object's default
 /// `toString` is `[object Object]`.
 fn js_to_string(value: &Value) -> String {
+    if is_js_undefined(value) {
+        return "undefined".to_string();
+    }
     match value {
         Value::Array(items) => items
             .iter()
@@ -1301,7 +1355,7 @@ fn js_to_string(value: &Value) -> String {
 
 /// An array element's `toString`: `null`/`undefined` join as `""`.
 fn js_to_string_element(value: &Value) -> String {
-    if value.is_null() {
+    if is_js_null(value) {
         String::new()
     } else {
         js_to_string(value)
@@ -1318,8 +1372,12 @@ fn field_value_param(value: &Value) -> String {
     if let Some(iso) = value.as_object().and_then(|o| o.get(DAYJS_TAG)) {
         return serde_json::to_string(iso).unwrap_or_else(|_| iso.to_string());
     }
+    if is_js_undefined(value) {
+        // Falsy: left as `undefined`, which the formatter spells out.
+        return "undefined".to_string();
+    }
     if ecma::is_truthy(value) {
-        serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+        js_json_stringify(value).unwrap_or_else(|| "undefined".to_string())
     } else {
         ecma::to_js_string(value)
     }
@@ -1363,15 +1421,51 @@ fn field_type_violation(
 }
 
 /// TS: `ResourceValidator.reportNotResouceViolation` (resourcevalidator.ts:560).
+/// `value.toString()` is a V8 `TypeError` for a `null` or `undefined` value
+/// (DV-008), and `'Relationship {id=...}'` for a `Relationship`.
 fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> ConcertoError {
+    if is_js_null(value) {
+        // DV-008
+        return js_method_receiver_error(value, "value.toString", "toString");
+    }
+    let invalid_value = identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value));
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-notresourceorconcept",
         vec![
             ("resourceId", p.root_resource_identifier.clone()),
             ("classFQN", class_fqn.to_string()),
-            ("invalidValue", js_to_string(value)),
+            ("invalidValue", invalid_value),
         ],
+    )
+    .into()
+}
+
+/// V8's `TypeError` for `expression()`, a call of `method` on `value`,
+/// when `value` has no such method (PORTING.md 2.2 step 3): `Cannot read
+/// properties of null (reading 'method')` when `value` is `null` or
+/// `undefined`, and `expression is not a function` otherwise.
+fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> ConcertoError {
+    if is_js_null(value) {
+        let receiver = if is_js_undefined(value) {
+            "undefined"
+        } else {
+            "null"
+        };
+        return ContractError::new(
+            ErrorKind::JsTypeError,
+            "engine-typeerror-readproperties",
+            vec![
+                ("value", receiver.to_string()),
+                ("property", method.to_string()),
+            ],
+        )
+        .into();
+    }
+    ContractError::new(
+        ErrorKind::JsTypeError,
+        "engine-typeerror-notafunction",
+        vec![("expression", expression.to_string())],
     )
     .into()
 }
@@ -1383,6 +1477,10 @@ fn not_relationship_violation(
     property: &Property,
     value: &Value,
 ) -> ConcertoError {
+    if is_js_null(value) {
+        // DV-008: `value.toString()` on `null`/`undefined`.
+        return js_method_receiver_error(value, "value.toString", "toString");
+    }
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
     let class_fqn = model_util::get_fully_qualified_name(namespace, type_name);
@@ -1430,14 +1528,16 @@ fn empty_identifier(resource_id: &str) -> ConcertoError {
 }
 
 /// TS: `ResourceValidator.reportInvalidEnumValue` (resourcevalidator.ts:619).
-fn invalid_enum_value(resource_id: &str, property: &Property, value: &Value) -> ConcertoError {
+/// `field_name` is the `field.getName()` TS reads, which is the enum
+/// declaration's name ([`visit_enum_declaration`]).
+fn invalid_enum_value(resource_id: &str, field_name: &str, value: &Value) -> ConcertoError {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-invalidenumvalue",
         vec![
             ("resourceId", resource_id.to_string()),
-            ("value", value.as_str().unwrap_or_default().to_string()),
-            ("fieldName", property.name().to_string()),
+            ("value", js_to_string(value)),
+            ("fieldName", field_name.to_string()),
         ],
     )
     .into()
@@ -1496,15 +1596,25 @@ fn invalid_field_assignment(
 /// Same report as [`invalid_field_assignment`], for the shape mismatch at
 /// the top of `visitRelationshipDeclaration` (`!(obj instanceof Array)`),
 /// which TS reports through the same `reportInvalidFieldAssignment` call
-/// (resourcevalidator.ts:468), naming the field's own declared type as
-/// `objectType` since no candidate value was resolved yet.
+/// (resourcevalidator.ts:468). That call reads `objectType:
+/// obj.getFullyQualifiedType()` off the non-array value itself: an
+/// `Identifiable` (a single `Relationship` or `Resource` on an array field)
+/// answers its own type, and any other value has no such method, so V8
+/// throws a `TypeError` instead of the `ValidationException` (DV-008;
+/// fixture `d444ebcf0cf5a3c23e5ee6dd`, a string on a `--> Car[]` field).
 fn invalid_field_assignment_shape(
     p: &Params,
     owner_fqn: &str,
     property: &Property,
     value: &Value,
 ) -> ConcertoError {
-    invalid_field_assignment(p, owner_fqn, property, &js_to_string(value))
+    match identifiable_parts(p, value) {
+        Some((object_type, _)) => invalid_field_assignment(p, owner_fqn, property, &object_type),
+        // DV-008
+        None => {
+            js_method_receiver_error(value, "obj.getFullyQualifiedType", "getFullyQualifiedType")
+        }
+    }
 }
 
 /// Remaps the generic [`ConcertoError::TypeNotFound`]
@@ -1607,6 +1717,8 @@ mod tests {
                       "properties": [
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "ownerId", "isArray": false, "isOptional": false },
                         { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "vehicle", "isArray": false, "isOptional": true,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Vehicle" } },
+                        { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "vehicles", "isArray": true, "isOptional": true,
                           "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Vehicle" } }
                       ] },
                     { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "VIN",
@@ -1831,6 +1943,10 @@ mod tests {
         validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
     }
 
+    /// TS passes the enum declaration as `reportInvalidEnumValue`'s
+    /// `field`, so the message names the enum type (`Color`), not the
+    /// property (`color`); the corpus records the same wording (for example
+    /// `Invalid enum value of "Purple" for the field "Color".`).
     #[test]
     fn an_invalid_enum_value_is_rejected() {
         let mgr = fixture();
@@ -1842,7 +1958,7 @@ mod tests {
         ));
         assert_eq!(
             err.to_string(),
-            "Model violation in the \"org.acme@1.0.0.Vehicle#ABC12\" instance. Invalid enum value of \"PURPLE\" for the field \"color\"."
+            "Model violation in the \"org.acme@1.0.0.Vehicle#ABC12\" instance. Invalid enum value of \"PURPLE\" for the field \"Color\"."
         );
     }
 
@@ -2047,5 +2163,147 @@ mod tests {
             permit_resources_for_relationships: false,
         };
         validate_instance(&mgr, &owner, &options).unwrap();
+    }
+
+    /// The TS class and message of a failure, as the oracle records them.
+    fn class_and_message(err: &ConcertoError) -> (&'static str, String) {
+        let ConcertoError::Contract(contract) = err else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        (contract.kind.ts_class(), err.to_string())
+    }
+
+    // ---- A JS `undefined` is not `null` (fixture 642d743981a69328b04f1e33) ----
+
+    /// `checkItem` reports an `undefined` array element with value and type
+    /// both `undefined` (a `null` one would read `null`/`object`).
+    #[test]
+    fn an_undefined_array_element_is_reported_as_undefined() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "tags": ["a", js_undefined(), "b"]
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(
+            class_and_message(&err),
+            (
+                "ValidationException",
+                "Model violation in the \"org.acme@1.0.0.Vehicle#ABC12\" instance. The field \"tags\" has a value of \"undefined\" (type of value: \"undefined\"). Expected type of value: \"String[]\".".to_string()
+            )
+        );
+    }
+
+    /// An `undefined` field is `Util.isNull`, so an optional one is skipped.
+    #[test]
+    fn an_undefined_optional_field_is_skipped() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "tags": js_undefined()
+        });
+        validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
+    }
+
+    /// `JSON.stringify([1, undefined])` is `[1,null]`.
+    #[test]
+    fn an_undefined_element_inside_a_reported_value_is_stringified_as_null() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12",
+            "mileage": [1, js_undefined()]
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert!(
+            err.to_string()
+                .contains("has a value of \"[1,null]\" (type of value: \"object\")"),
+            "{err}"
+        );
+    }
+
+    // ---- DV-008: V8 TypeErrors from `report*` (fixture d444ebcf0cf5a3c23e5ee6dd) ----
+
+    /// `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()` on
+    /// a string that reached a relationship array field.
+    #[test]
+    fn a_non_array_non_identifiable_value_on_a_relationship_array_is_a_type_error() {
+        let mgr = fixture();
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
+            "vehicles": "not-an-array"
+        });
+        let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
+        assert_eq!(
+            class_and_message(&err),
+            (
+                "TypeError",
+                "obj.getFullyQualifiedType is not a function".to_string()
+            )
+        );
+    }
+
+    /// A single `Relationship` on a relationship array field does have
+    /// `getFullyQualifiedType()`, so TS reports the field assignment.
+    #[test]
+    fn a_single_relationship_on_a_relationship_array_is_an_invalid_field_assignment() {
+        let mgr = fixture();
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
+            "vehicles": { "$$relationship": true, "$class": "org.acme@1.0.0.Vehicle", "vin": "V1" }
+        });
+        let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
+        let (class, message) = class_and_message(&err);
+        assert_eq!(class, "ValidationException");
+        assert!(
+            message.contains("org.acme@1.0.0.Vehicle")
+                && message.contains("org.acme@1.0.0.Vehicle[]"),
+            "{message}"
+        );
+    }
+
+    /// `reportNotRelationshipViolation` calls `value.toString()` on a `null`
+    /// array element.
+    #[test]
+    fn a_null_relationship_array_element_is_a_type_error() {
+        let mgr = fixture();
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
+            "vehicles": [null]
+        });
+        let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
+        assert_eq!(
+            class_and_message(&err),
+            (
+                "TypeError",
+                "Cannot read properties of null (reading 'toString')".to_string()
+            )
+        );
+    }
+
+    /// `reportInvalidEnumValue`'s value goes through `String()`: a number is
+    /// written as its digits, not dropped.
+    #[test]
+    fn a_numeric_enum_value_is_reported_by_its_string_form() {
+        let mgr = fixture();
+        let vehicle =
+            json!({ "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1, "color": 1 });
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert!(
+            err.to_string()
+                .contains("Invalid enum value of \"1\" for the field \"Color\"."),
+            "{err}"
+        );
     }
 }

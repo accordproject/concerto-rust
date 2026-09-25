@@ -72,7 +72,7 @@
 
 use std::collections::HashMap;
 
-use concerto_core::instance::validate::{DAYJS_TAG, RELATIONSHIP_TAG};
+use concerto_core::instance::validate::{DAYJS_TAG, RELATIONSHIP_TAG, js_undefined};
 use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
@@ -286,6 +286,11 @@ pub enum Arg {
 /// read back from the oracle's own recorded encoding
 /// (`migration/oracle/lib/codec.js`'s `"typed"` kind) rather than rebuilt
 /// through a Rust `Factory`, which does not exist yet.
+///
+/// The one exception is the receiver's own `$classDeclaration`
+/// ([`Self::class_declaration`]), which `Typed.getClassDeclaration` and
+/// `instanceOf` return or walk: [`Session::typed`] resolves the node's `decl`
+/// handle for that, when it is a `declref`.
 #[derive(Debug, Clone)]
 pub struct DecodedInstance {
     /// `"Resource"`, `"ValidatedResource"` or `"Relationship"`.
@@ -304,6 +309,14 @@ pub struct DecodedInstance {
     pub identifier_field_name: Option<String>,
     /// TS `$identifier` (`getIdentifier()`/`getFullyQualifiedIdentifier()`).
     pub identifier: Option<String>,
+    /// TS `$timestamp` (`Identifiable.getTimestamp()`), in the oracle's own
+    /// encoding (a `dayjs` node, `null`, or the `undefined` marker when the
+    /// field was never set).
+    pub timestamp: Value,
+    /// TS `$classDeclaration`, when the node's `decl` is a `declref` this
+    /// session could resolve (only a top-level receiver or argument; a
+    /// nested field value is decoded without a session, so `None`).
+    pub class_declaration: Option<DeclId>,
     /// The instance in [`crate::instance::validate::validate_instance`]'s
     /// input shape (module doc "Scope"): for a `Resource`/`ValidatedResource`,
     /// a `$class`-tagged wire-shaped object with every own (non-system)
@@ -585,7 +598,17 @@ impl<'h> Session<'h> {
             .get("mm")
             .ok_or_else(|| Fault::Harness("typed value without mm".into()))?;
         let mm_index = self.mm_index(mm_node)?;
-        let inst = decode_typed_instance(v)?;
+        let mut inst = decode_typed_instance(v)?;
+        // `$classDeclaration`: only a registered declaration has a handle. A
+        // `decl` this session cannot resolve leaves it `None`, which only
+        // the ops that read it (`getClassDeclaration`, `instanceOf`) report.
+        if let Some(decl) = v.get("decl")
+            && decl.get(M).and_then(Value::as_str) == Some("declref")
+            && let Ok((owner, id)) = self.declref(decl)
+            && owner == mm_index
+        {
+            inst.class_declaration = Some(id);
+        }
         Ok(Arg::Typed(mm_index, inst))
     }
 
@@ -788,6 +811,8 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
         .get(identifier_field_name.as_deref().unwrap_or("$identifier"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    // `this.$timestamp`: recorded only when the key exists on the instance.
+    let timestamp = fields.get("$timestamp").cloned().unwrap_or_else(undefined);
 
     if ctor == "Relationship" {
         // `RELATIONSHIP_TAG`'s doc (`instance/validate.rs`): the wire form
@@ -811,6 +836,8 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
             fqn,
             identifier_field_name,
             identifier,
+            timestamp,
+            class_declaration: None,
             wire: Value::Object(wire),
         });
     }
@@ -853,6 +880,8 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
         fqn,
         identifier_field_name,
         identifier,
+        timestamp,
+        class_declaration: None,
         wire: Value::Object(wire),
     })
 }
@@ -889,7 +918,10 @@ fn typed_field_value(v: &Value) -> Faulty<Value> {
             Ok(json!({ DAYJS_TAG: iso }))
         }
         "typed" => Ok(decode_typed_instance(v)?.wire),
-        "undefined" => Ok(Value::Null),
+        // A JS `undefined`, kept distinct from `null` (`UNDEFINED_TAG`'s doc,
+        // `instance/validate.rs`): `["a", undefined, "b"]` is reported by
+        // TS as a value `undefined` of type `undefined`, not `null`/`object`.
+        "undefined" => Ok(js_undefined()),
         // A JS `Map` (a `MapDeclaration` value): `{"@@oracle":"map",
         // "entries": [[key, value], ...]}` -> the plain object
         // `visitMapDeclaration`'s `Object.fromEntries(map)` would produce.
