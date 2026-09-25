@@ -1,0 +1,69 @@
+{
+  "$class": "concerto.metamodel@1.0.0.Model",
+  "decorators": [],
+  "namespace": "test@1.0.0",
+  "imports": [],
+  "declarations": [
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Person",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "firstName",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Custom"
+            }
+          ]
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "lastName",
+          "isArray": false,
+          "isOptional": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "bio",
+          "isArray": false,
+          "isOptional": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "address1",
+          "isArray": false,
+          "isOptional": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "address2",
+          "isArray": false,
+          "isOptional": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "city",
+          "isArray": false,
+          "isOptional": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "country",
+          "isArray": false,
+          "isOptional": false
+        }
+      ],
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Editable"
+        }
+      ]
+    }
+  ]
+}

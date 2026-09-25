@@ -486,16 +486,30 @@ impl<'h> Session<'h> {
 
     /// Rebuilds one `mm` recipe on the Rust engine.
     fn replay(&mut self, node: &Value) -> Faulty<usize> {
-        if let Some(derived) = node.get("derived") {
-            let op = derived.get("op").and_then(Value::as_str).unwrap_or("?");
-            return Err(blocked(
-                format!("a model manager derived from {op}, which is not replayed natively"),
-                op,
-            ));
-        }
         let kind = Kind::parse(node.get("kind").and_then(Value::as_str).unwrap_or(""))?;
-        let options = node.get("options").cloned().unwrap_or_else(undefined);
-        let mut r = Replayed::new(kind, &options)?;
+        let mut r = match node.get("derived") {
+            Some(derived) => {
+                let op = derived.get("op").and_then(Value::as_str).unwrap_or("?");
+                let inputs: super::fixture::Inputs =
+                    serde_json::from_value(derived.get("inputs").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| Fault::Harness(format!("derived inputs of {op}: {e}")))?;
+                let Some(derived_mm) =
+                    super::ops::derive_model_manager(self.h, op, &inputs, derived.get("path"))?
+                else {
+                    return Err(blocked(
+                        format!(
+                            "a model manager derived from {op}, which is not replayed natively"
+                        ),
+                        op,
+                    ));
+                };
+                Replayed::from_derived(kind, derived_mm)
+            }
+            None => {
+                let options = node.get("options").cloned().unwrap_or_else(undefined);
+                Replayed::new(kind, &options)?
+            }
+        };
         for step in node
             .get("steps")
             .and_then(Value::as_array)
@@ -1145,6 +1159,35 @@ impl Replayed {
         })
     }
 
+    /// A model manager another op returned (a `derived` recipe), with its
+    /// user model files as they were loaded: without a file name (`fromAst`
+    /// passes none). Its options are the derived manager's own (merge with
+    /// P2-08: `dangerouslyAllowReservedSystemTypeNamesInUserModels` is
+    /// carried over, so a rebuild keeps it; a validating add checks only the
+    /// new file, so whether the derived manager was validated no longer
+    /// matters here).
+    pub fn from_derived(kind: Kind, derived: super::ops::DerivedModelManager) -> Self {
+        let files = derived
+            .mm
+            .model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .map(|mf| Entry {
+                ast: mf.ast().clone(),
+                file_name: mf.file_name().map(str::to_string),
+                nullish_name: undefined(),
+            })
+            .collect();
+        Self {
+            kind,
+            skip_location_nodes: Value::Null,
+            allow_reserved_system_type_names: derived
+                .mm
+                .dangerously_allow_reserved_system_type_names_in_user_models(),
+            files,
+            mm: derived.mm,
+        }
+    }
+
     /// `new ModelManager(options)` for this recipe's modelled options.
     fn fresh_manager(allow_reserved_system_type_names: bool) -> Faulty<ModelManager> {
         let mut mm = ModelManager::new()
@@ -1203,23 +1246,12 @@ impl Replayed {
     /// The outcome-only `ModelManager` summary (`makeOutputEncoder`):
     /// `{ctor, namespaces, ast: getAst(false, true)}`.
     pub fn summary(&self) -> Value {
-        json!({
-            M: "ModelManager",
-            "ctor": self.kind.ctor(),
-            "namespaces": self.namespaces(),
-            "ast": self.ast(true),
-        })
+        summary_of(self.kind, &self.mm)
     }
 
     /// TS `getAst(false, includeConcertoNamespaces)`.
     pub fn ast(&self, include_concerto_namespaces: bool) -> Value {
-        let models: Vec<Value> = self
-            .mm
-            .model_files()
-            .filter(|mf| include_concerto_namespaces || !EXCLUDE_NS.contains(&mf.namespace()))
-            .map(|mf| mf.ast().clone())
-            .collect();
-        json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
+        ast_of(&self.mm, include_concerto_namespaces)
     }
 
     /// The outcome-only `ModelFile` summary: `{namespace, name, ast}`.
@@ -1558,6 +1590,35 @@ impl Clone for Arg {
             Self::Typed(m, inst) => Self::Typed(*m, inst.clone()),
         }
     }
+}
+
+/// Whether `ns` is one of TS `EXCLUDE_NS`, the system namespaces `fromAst`
+/// and `getModelFiles()` leave out.
+pub fn is_system_namespace(ns: &str) -> bool {
+    EXCLUDE_NS.contains(&ns)
+}
+
+/// The outcome-only `ModelManager` summary (`makeOutputEncoder`) of any
+/// Rust model manager, as constructed by `kind`'s TS class:
+/// `{ctor, namespaces, ast: getAst(false, true)}`.
+pub fn summary_of(kind: Kind, mm: &ModelManager) -> Value {
+    let namespaces: Vec<&str> = mm.model_files().map(ModelFile::namespace).collect();
+    json!({
+        M: "ModelManager",
+        "ctor": kind.ctor(),
+        "namespaces": namespaces,
+        "ast": ast_of(mm, true),
+    })
+}
+
+/// TS `getAst(false, includeConcertoNamespaces)` of any Rust model manager.
+pub fn ast_of(mm: &ModelManager, include_concerto_namespaces: bool) -> Value {
+    let models: Vec<Value> = mm
+        .model_files()
+        .filter(|mf| include_concerto_namespaces || !EXCLUDE_NS.contains(&mf.namespace()))
+        .map(|mf| mf.ast().clone())
+        .collect();
+    json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
 }
 
 /// The handle of a model file registered in `r`, as a [`Node`].

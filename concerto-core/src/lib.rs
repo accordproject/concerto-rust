@@ -15,6 +15,7 @@ extern crate self as concerto_core;
 /// `concerto-macros` crate.
 pub use concerto_macros as derive;
 
+pub mod dcs;
 mod ecma;
 pub mod error;
 pub mod instance;

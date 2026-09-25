@@ -55,7 +55,11 @@ use crate::rootmodel::{decorator_model_ast, root_model_ast};
 /// decorator model. The match is on the exact namespace string.
 ///
 /// TS: `EXCLUDE_NS` (src/basemodelmanager.ts).
-const EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
+///
+/// `pub(crate)` so [`crate::dcs::decorate_models`] can reuse it for its own
+/// `getAst`-shaped model collection (P2-12) rather than duplicating the
+/// namespace list.
+pub(crate) const EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
 
 /// The namespace part of a fully-qualified name, `""` when there is none.
 fn namespace_of(fqn: &str) -> &str {
