@@ -247,6 +247,22 @@ impl TryFrom<&serde_json::Value> for Property {
                 location: None,
             });
         }
+        // TS `Property.process` (property.ts): `ModelUtil.isValidIdentifier`
+        // treats a nullish `ast.name` as valid (DV-002: `String(undefined)`/
+        // `String(null)` are valid identifiers), so it is the very next
+        // check, `if (!this.name)`, that rejects it — with a plain `Error`,
+        // not an `IllegalModelException`, before the `$class` switch (and so
+        // before any deserialization into the concrete property struct,
+        // which would otherwise fail first on the missing `name` field with
+        // an unrelated message).
+        if value.get("name").is_none_or(|n| n.is_null()) {
+            return Err(ContractError::new(
+                ErrorKind::Error,
+                "property-process-noname",
+                vec![("ast", value.to_string())],
+            )
+            .into());
+        }
         // Concerto keeps a set of property names for itself, so a model may
         // not declare a field with one of them.
         if let Some(name) = value.get("name").and_then(|n| n.as_str())
@@ -267,6 +283,34 @@ impl TryFrom<&serde_json::Value> for Property {
             file_name: None,
             location: None,
         };
+
+        // TS `Property.process`'s `ObjectProperty` arm (property.ts):
+        // `this.type = this.ast.type ? this.ast.type.name : null` — a
+        // missing (or `null`) `type` node is not an error, unlike every
+        // other check on this path; `RelationshipProperty`'s own arm has no
+        // such guard (`this.ast.type.name` unconditionally), so this is
+        // `ObjectProperty` only. `mm::ObjectProperty::type_` has no `Option`
+        // (the generated struct always requires it), so a placeholder empty
+        // `TypeIdentifier` stands in for TS's `null`: [`Property::type_identifier`]
+        // then reads an empty name, which every other check on this path
+        // already treats the same as "no type" (TS's own `this.type` is
+        // equally falsy for `""` and `null`).
+        let value = if kind == "ObjectProperty" && value.get("type").is_none_or(|t| t.is_null()) {
+            let mut patched = value.clone();
+            if let Some(map) = patched.as_object_mut() {
+                map.insert(
+                    "type".into(),
+                    serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                        "name": ""
+                    }),
+                );
+            }
+            std::borrow::Cow::Owned(patched)
+        } else {
+            std::borrow::Cow::Borrowed(value)
+        };
+        let value = value.as_ref();
 
         let decorators = parse_decorators(value);
         let property = match kind {

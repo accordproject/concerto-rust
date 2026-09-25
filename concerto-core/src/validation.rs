@@ -45,6 +45,16 @@ fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
     class.location().and_then(crate::error::location_value)
 }
 
+/// An enum's own AST `location` (TS: `this.ast.location` inside
+/// `Declaration.validate`, reached through `EnumDeclaration`'s inherited
+/// `ClassDeclaration.validate` — `this` there is the enum itself, the same
+/// as [`class_location`] for a class-like declaration).
+fn enum_location(
+    enm: &crate::introspect::declaration::EnumDeclaration,
+) -> Option<serde_json::Value> {
+    enm.location().and_then(crate::error::location_value)
+}
+
 /// A property's own AST `location` (TS: `this.ast.location` inside
 /// `Property.validate`/`Decorated.validate`, property.ts/decorated.ts —
 /// `this` there is the property, not its owning class). P2-08 review
@@ -378,7 +388,7 @@ impl Validate for Declaration {
                 // before anything class-specific (P2-08).
                 check_unique_decorators(enm, None)?;
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
-                check_import_clash(manager, namespace, enm.name(), None)?;
+                check_import_clash(manager, namespace, enm.name(), enum_location(enm))?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
                 // check, inherited unchanged by `EnumDeclaration` — run in
                 // the same position relative to the decorator checks above
@@ -758,6 +768,27 @@ fn check_property_type(
         // succeeds, so the size-validator check is all that is left.
         return check_size_validator_target(&owner_fqn, property, false);
     };
+
+    if type_identifier.name.is_empty() {
+        // TS: `this.type` is falsy for an empty-string type name exactly as
+        // it is for `null`/`undefined` (`ObjectProperty`'s `this.ast.type ?
+        // this.ast.type.name : null`, `RelationshipProperty`'s unconditional
+        // `this.ast.type.name`), so `Property.validate`'s `if(this.type)`
+        // guard skips `resolveType` entirely — no "undeclared type" is ever
+        // raised for it. `RelationshipDeclaration.validate` then makes its
+        // own `if(!this.getType())` check straight after `super.validate`
+        // (relationshipdeclaration.ts): a relationship with no type is
+        // rejected there; any other property kind is silently accepted, the
+        // same as a genuinely absent `type` node.
+        if property.is_relationship() {
+            return Err(catalogue_error(
+                "relationshipdeclaration-validate-notype",
+                vec![],
+                property_location(property),
+            ));
+        }
+        return check_size_validator_target(&owner_fqn, property, false);
+    }
 
     if is_primitive_type(&type_identifier.name) {
         // TS: `resolveType` succeeds for a primitive, then `Property.validate`
@@ -1331,16 +1362,20 @@ mod tests {
     /// Loads `org.example@1.0.0` with the given declarations and validates it.
     fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
-        manager
-            .add_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "namespace": "org.example@1.0.0",
-                    "declarations": declarations
-                }),
-                None,
-            )
-            .unwrap();
+        // A malformed `MapDeclaration` (an out-of-set key/value kind, a
+        // missing key or value node, ...) is now rejected at construction
+        // time (`Declaration::try_from`, TS `MapDeclaration.process`), the
+        // same as TS — before `validate_models` below ever runs — so this
+        // no longer `.unwrap()`s: a caller whose declarations are malformed
+        // that way sees the `add_model` error itself, not a panic.
+        manager.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": declarations
+            }),
+            None,
+        )?;
         manager.validate_models()
     }
 
@@ -2483,12 +2518,18 @@ mod tests {
     #[test]
     fn a_map_key_kind_outside_the_allowed_set_is_rejected() {
         // Only String, DateTime and object keys exist; anything else is not a
-        // key the specification allows.
+        // key the specification allows. TS `MapDeclaration.process`
+        // (`ModelUtil.isValidMapKey`) rejects this at construction, before
+        // `validate_models` is ever reached.
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapKeyType")
+        );
     }
 
     #[test]
@@ -3006,7 +3047,7 @@ mod tests {
     // instead (doc comment on `MapVariant`); the missing side loads with an
     // empty kind, which is not in the allowed set either way.
     #[test]
-    fn map_missing_its_key_field_is_rejected_at_validate() {
+    fn map_missing_its_key_field_is_rejected_at_construction() {
         let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
         let mut node = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
@@ -3014,11 +3055,15 @@ mod tests {
             "value": value
         });
         let err = validate(serde_json::json!([node.take()]));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain Key & Value properties")
+        );
     }
 
     #[test]
-    fn map_missing_its_value_field_is_rejected_at_validate() {
+    fn map_missing_its_value_field_is_rejected_at_construction() {
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let node = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
@@ -3026,29 +3071,43 @@ mod tests {
             "key": key
         });
         let err = validate(serde_json::json!([node]));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain Key & Value properties")
+        );
     }
 
     // TS: `#constructor` "should throw if invalid $class provided for Map
     // Key" / "... for Map Value": a `$class` the metamodel does not declare
     // at all falls back to [`MapVariant::Untyped`] and is rejected by the
-    // same kind-membership check as any other unsupported kind.
+    // same kind-membership check as any other unsupported kind, now at
+    // construction time (TS `MapDeclaration.process`), not at
+    // `validate_models`.
     #[test]
-    fn map_key_with_an_unknown_class_is_rejected_at_validate() {
+    fn map_key_with_an_unknown_class_is_rejected_at_construction() {
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapKeyType")
+        );
     }
 
     #[test]
-    fn map_value_with_an_unknown_class_is_rejected_at_validate() {
+    fn map_value_with_an_unknown_class_is_rejected_at_construction() {
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapValueType")
+        );
     }
 
     // TS: "should throw if ast contains illegal Map Value Property" (an
@@ -3060,7 +3119,11 @@ mod tests {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.EnumMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapValueType")
+        );
     }
 
     // TS: "should throw if ast contains illegal Map Key Type - Enum" (an
@@ -3073,7 +3136,11 @@ mod tests {
             object_type("States", "EnumMapKeyType"),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("MapDeclaration must contain valid MapKeyType")
+        );
     }
 
     // TS: "should throw if ast contains illegal Map Key Type - Scalar
@@ -3230,7 +3297,7 @@ mod tests {
         assert!(
             err.unwrap_err()
                 .to_string()
-                .contains("must contain property 'type'")
+                .contains("must contain property '$class' and property 'name'")
         );
     }
 

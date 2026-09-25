@@ -1206,6 +1206,10 @@ impl ModelManager {
 
         loop {
             if !visited.insert(current.clone()) {
+                // DV-014: TS has no explicit cycle check here and recurses
+                // until V8's call stack overflows (`RangeError: Maximum call
+                // stack size exceeded`); this `visited` set is Rust's own
+                // stand-in, deliberately not ported as TS has it.
                 return Err(ConcertoError::IllegalModel {
                     message: format!("circular inheritance detected at {current}"),
                     file_name: None,
@@ -1646,6 +1650,42 @@ mod tests {
         assert!(
             mgr.property_default_value(PropId::from_index(u32::MAX))
                 .is_none()
+        );
+    }
+
+    /// DV-014 (`DIVERGENCES.md`): TS has no explicit cycle guard on the
+    /// class inheritance walk and recurses until V8's call stack overflows
+    /// (`RangeError: Maximum call stack size exceeded`, oracle fixtures
+    /// `d85b28076a8ece00c558322c`, `343223828152dd93cffd4c24`,
+    /// `b25d9dd5f7e2162ef0a0b2ee`, `ce4c72b99abd76dea938c762`); Rust's
+    /// `super_chain` detects the repeat explicitly instead, asserted here.
+    #[test]
+    fn a_circular_super_type_chain_is_an_illegal_model_not_a_stack_overflow() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.invalid.circular@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "A", "isAbstract": false,
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "B" },
+                      "properties": [] },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "B", "isAbstract": false,
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "A" },
+                      "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        let err = mgr
+            .identifier_field_name("org.invalid.circular@1.0.0.A")
+            .unwrap_err();
+        assert!(
+            matches!(&err, ConcertoError::IllegalModel { message, .. }
+                if message.starts_with("circular inheritance detected at")),
+            "unexpected error: {err:?}"
         );
     }
 
