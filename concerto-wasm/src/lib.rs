@@ -1157,6 +1157,184 @@ pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result
 }
 
 // ---------------------------------------------------------------------------
+// ClassDeclaration family (src/introspect/classdeclaration.ts,
+// assetdeclaration.ts, conceptdeclaration.ts, participantdeclaration.ts,
+// transactiondeclaration.ts, eventdeclaration.ts, enumdeclaration.ts) — P4-06
+//
+// The model graph these views meet is still TS (ModelFile/ModelManager are
+// not Rust-backed until P4-08; PORTING.md 1.4), so every member that needs a
+// collaborator (`getModelFile().getType(...)`, the model manager's `getType`)
+// keeps that call in TS; only the pure decision at the end of each such
+// member — which needs no collaborator — is bound here, the same grain
+// Declaration/Decorated (P4-05) used for `modelUtilIsValidIdentifier` and
+// `decoratedFindDuplicateName`.
+// ---------------------------------------------------------------------------
+
+/// The metamodel `$class`'s short name: the text after the last `.`.
+fn short_class(ast_class: &str) -> &str {
+    ast_class.rsplit('.').next().unwrap_or(ast_class)
+}
+
+/// TS: `ClassDeclaration.process`, the superType/idField decision made
+/// before the `ast.properties` loop (the loop itself builds `Field`/
+/// `RelationshipDeclaration`/`EnumValueDeclaration` views, kept in TS;
+/// Property views are P4-07). Returns `{superType, idField,
+/// addIdentifierField, addTimestampField}`:
+/// - `superType`: `this.ast.superType.name` when the AST names one;
+///   otherwise `null` only for the system model's own `Concept` declaration,
+///   else the implicit `'Concept'` (TS: the `this.modelFile.isSystemModelFile()
+///   && this.name === 'Concept'` exemption).
+/// - `idField`/`addIdentifierField`: mirrors the `this.ast.identified` match;
+///   `addIdentifierField` tells the view to still call its own
+///   `addIdentifierField()` (it pushes a real `Field` view).
+/// - `addTimestampField`: `this.fqn` is the system `Transaction` or `Event`.
+#[wasm_bindgen(js_name = classDeclarationProcess)]
+pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<JsValue, JsValue> {
+    let body = || -> Result<JsValue> {
+        let ast = get(&declaration, "ast")?;
+
+        let explicit_super_type = get(&ast, "superType")?;
+        let super_type = if !nullish(&explicit_super_type) {
+            Some(receiver(
+                &get(&explicit_super_type, "name")?,
+                "this.ast.superType.name",
+                "toString",
+            )?)
+        } else {
+            let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
+            let is_system_model_file = call(
+                &model_file,
+                "isSystemModelFile",
+                &[],
+                "this.modelFile.isSystemModelFile",
+            )?
+            .is_truthy();
+            let name = receiver(&get(&declaration, "name")?, "this.name", "toString")?;
+            if is_system_model_file && name == "Concept" {
+                None
+            } else {
+                Some("Concept".to_string())
+            }
+        };
+
+        let identified = get(&ast, "identified")?;
+        let (id_field, add_identifier_field) = if nullish(&identified) {
+            (None, false)
+        } else {
+            let identified_class = receiver(
+                &get(&identified, "$class")?,
+                "this.ast.identified.$class",
+                "toString",
+            )?;
+            if short_class(&identified_class) == "IdentifiedBy" {
+                let field_name = receiver(
+                    &get(&identified, "name")?,
+                    "this.ast.identified.name",
+                    "toString",
+                )?;
+                (Some(field_name), false)
+            } else {
+                (Some("$identifier".to_string()), true)
+            }
+        };
+
+        let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
+        let add_timestamp_field =
+            fqn == "concerto@1.0.0.Transaction" || fqn == "concerto@1.0.0.Event";
+
+        Ok(to_js(&json!({
+            "superType": super_type,
+            "idField": id_field,
+            "addIdentifierField": add_identifier_field,
+            "addTimestampField": add_timestamp_field,
+        })))
+    };
+    body().map_err(|e| {
+        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
+    })
+}
+
+/// TS: the kind-compatibility check in `ClassDeclaration._resolveSuperType`:
+/// `classDecl.declarationKind() !== 'ConceptDeclaration' &&
+/// this.declarationKind() !== classDecl.declarationKind()`, negated (`true`
+/// when compatible). `child_kind`/`super_kind` are each side's
+/// `declarationKind()` string; resolving `classDecl` itself stays TS (a
+/// `getModelFile()`/model manager collaborator call).
+#[wasm_bindgen(js_name = classDeclarationKindsCompatible)]
+pub fn class_declaration_kinds_compatible(
+    child_kind: JsValue,
+    super_kind: JsValue,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        let child_kind = js_string(&child_kind)?;
+        let super_kind = js_string(&super_kind)?;
+        Ok(super_kind == "ConceptDeclaration" || child_kind == super_kind)
+    })
+}
+
+/// TS: the super-type identifier redeclaration check in
+/// `ClassDeclaration.validate` (the block guarded by `superType.isIdentified()`,
+/// which the caller checks before calling this): `true` when the super type's
+/// existing identifier cannot be redeclared. Resolving `superType` itself
+/// (`getModelFile().getType(this.superType)`) stays TS.
+#[wasm_bindgen(js_name = classDeclarationIdentifierRedeclareConflict)]
+pub fn class_declaration_identifier_redeclare_conflict(
+    child_is_system_identified: bool,
+    super_is_system_identified: bool,
+    super_is_explicitly_identified: bool,
+) -> bool {
+    if child_is_system_identified {
+        !super_is_system_identified
+    } else {
+        super_is_explicitly_identified
+    }
+}
+
+/// TS: `ClassDeclaration.toString`. `super_type_name` is the raw (unqualified)
+/// name `this.superType` holds (an explicit AST name or the implicit
+/// `'Concept'`), never a resolved FQN; a `ClassDeclaration` receiver is never
+/// an enum (`EnumDeclaration` overrides `toString`), matching
+/// [`ClassDeclaration::to_string`]'s hardcoded `enum=false`.
+#[wasm_bindgen(js_name = classDeclarationToString)]
+pub fn class_declaration_to_string(
+    fqn: JsValue,
+    super_type_name: JsValue,
+    is_abstract: bool,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let fqn = js_string(&fqn)?;
+        let super_type_name = if nullish(&super_type_name) {
+            None
+        } else {
+            Some(js_string(&super_type_name)?)
+        };
+        Ok(concerto_core::ClassDeclaration::to_string(
+            &fqn,
+            super_type_name.as_deref(),
+            is_abstract,
+        ))
+    })
+}
+
+/// TS: `ClassDeclaration.isAsset`/`isParticipant`/`isTransaction`/`isEvent`/
+/// `isConcept`/`isEnum`/`isMapDeclaration`: each compares `this.type` (the
+/// AST's own `$class`, already set by `process()`) against one metamodel
+/// `$class`. `kind_type` is the receiver's `this.type`; `want` is the
+/// metamodel short name to compare against (`"AssetDeclaration"`, …).
+#[wasm_bindgen(js_name = classDeclarationIsKind)]
+pub fn class_declaration_is_kind(
+    kind_type: JsValue,
+    want: JsValue,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        let kind_type = js_string(&kind_type)?;
+        let want = js_string(&want)?;
+        Ok(short_class(&kind_type) == want)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Decorator, Decorated (src/introspect/decorator.ts, decorated.ts) — P4-05
 // ---------------------------------------------------------------------------
 
