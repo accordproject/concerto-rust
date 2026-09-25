@@ -962,8 +962,9 @@ fn owners_fall_back_to_the_porting_op_families_and_unowned() {
 }
 
 /// A plan-owner override beats the ledger: `Factory`'s ledger rows are TS
-/// with no task, yet its fixtures belong to P3-01. Other stays-TS classes
-/// are unaffected.
+/// with no task, yet its fixtures belong to P3-01, and so does the
+/// `Serializer` constructor, while `Serializer.toJSON` keeps its ledger
+/// owner. Other stays-TS classes are unaffected.
 #[test]
 fn plan_owner_overrides_take_precedence_over_the_ledger() {
     let root = std::env::temp_dir().join(format!(
@@ -978,12 +979,17 @@ fn plan_owner_overrides_take_precedence_over_the_ledger() {
         ledger_dir.join("SEAM_LEDGER.tsv"),
         "file\tclass\tmember\tclassification\tplanned_task\n\
          src/factory.ts\tFactory\tnewResource\tTS\t-\n\
-         src/modelloader.ts\tModelLoader\tloadModelManager\tTS\t-\n",
+         src/modelloader.ts\tModelLoader\tloadModelManager\tTS\t-\n\
+         src/serializer.ts\tSerializer\tconstructor\tTS\t-\n\
+         src/serializer.ts\tSerializer\ttoJSON\tHYBRID\tP3-01+P4-10\n",
     )
     .unwrap();
     let ledger = Ledger::load(&fixtures);
     assert_eq!(ledger.owner("Factory.newResource"), "P3-01");
     assert_eq!(ledger.owner("Factory.new"), "P3-01");
     assert_eq!(ledger.owner("ModelLoader.loadModelManager"), "stays-ts");
+    // A member-level override moves only that member.
+    assert_eq!(ledger.owner("Serializer.new"), "P3-01");
+    assert_eq!(ledger.owner("Serializer.toJSON"), "P3-01+P4-10");
     let _ = fs::remove_dir_all(&root);
 }

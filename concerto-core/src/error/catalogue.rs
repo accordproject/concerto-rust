@@ -405,6 +405,24 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         // the line-oriented grep this module doc used to give missed it.
         sources: &["src/introspect/classdeclaration.ts:278"],
     },
+    // ---- P2-03 additions (ClassDeclaration.getNestedProperty's own two
+    //      inline templates; #47) ----
+    CatalogueEntry {
+        code: "classdeclaration-getnestedproperty-doesnotexist",
+        template: "Property {propertyName} does not exist on {fqn}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/classdeclaration.ts:586"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-getnestedproperty-primitiveorenum",
+        template: "Property {propertyName} is a primitive or enum. Invalid property path: {propertyPath}",
+        renderer: Renderer::Inline,
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // at the throw site in model_manager.rs): the one throw in
+        // `getNestedProperty` that TS does not build through
+        // `IllegalModelException`.
+        sources: &["src/introspect/classdeclaration.ts:593"],
+    },
     CatalogueEntry {
         code: "instancegenerator-newinstance-noconcreteclass",
         template: "No concrete extending type for \"{type}\".",
@@ -476,6 +494,54 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         template: "Instance \"{resourceId}\" has a property \"{propertyName}\" with type \"{objectType}\" that is not derived from \"{fieldType}\".",
         renderer: Renderer::Globalize,
         sources: &["src/serializer/resourcevalidator.ts:668"],
+    },
+    // ---- P2-01 review fix: ResourceId (`src/model/resourceid.ts`), the
+    //      ledger group's SEAM_LEDGER.tsv planned_task P2-01+P4-03 members
+    //      the first P2-01 pass left unported (parseUri, the constructor,
+    //      fromURI, toURI). None of these are en.json/Globalize keys, so
+    //      none is in the OD-5 scope test; each is an inline template
+    //      (2.2 step 2), ported with its unit in this same PR (6.3). ----
+    CatalogueEntry {
+        code: "resourceid-constructor-missingnamespace",
+        template: "Missing namespace",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:122"],
+    },
+    CatalogueEntry {
+        code: "resourceid-constructor-missingtype",
+        template: "Missing type",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:125"],
+    },
+    CatalogueEntry {
+        code: "resourceid-constructor-missingid",
+        template: "Missing id",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:128"],
+    },
+    CatalogueEntry {
+        code: "resourceid-parseuri-invalidport",
+        template: "Invalid port",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:89"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invaliduri",
+        template: "Invalid URI: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:156"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invalidscheme",
+        template: "Invalid URI scheme: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:162"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invalidformat",
+        template: "Invalid resource URI format: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:165"],
     },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {

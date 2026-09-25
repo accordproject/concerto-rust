@@ -14,33 +14,36 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::derive::Named;
 use crate::error::{ConcertoError, Result};
+use crate::introspect::decorator::{Decorated, Decorator, WithDecorators, parse_decorators};
 use crate::introspect::{
-    Decorated, HasValidators, Named, Typed, check_domain, check_length, check_pattern, check_size,
+    HasValidators, Named, Typed, check_domain, check_length, check_pattern, check_size,
     declared_class,
 };
 use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
 
-/// A single property of a concept-like or enum declaration.
+/// A single property of a concept-like or enum declaration. Each variant also
+/// carries its processed decorators (module doc on
+/// [`crate::introspect::decorator::WithDecorators`]).
 #[derive(Debug, Clone, Named)]
 pub enum Property {
     /// A `Boolean` primitive field.
-    Boolean(mm::BooleanProperty),
+    Boolean(WithDecorators<mm::BooleanProperty>),
     /// A `String` primitive field (may carry regex/length validators).
-    String(mm::StringProperty),
+    String(WithDecorators<mm::StringProperty>),
     /// An `Integer` primitive field (may carry a domain validator).
-    Integer(mm::IntegerProperty),
+    Integer(WithDecorators<mm::IntegerProperty>),
     /// A `Long` primitive field (may carry a domain validator).
-    Long(mm::LongProperty),
+    Long(WithDecorators<mm::LongProperty>),
     /// A `Double` primitive field (may carry a domain validator).
-    Double(mm::DoubleProperty),
+    Double(WithDecorators<mm::DoubleProperty>),
     /// A `DateTime` primitive field.
-    DateTime(mm::DateTimeProperty),
+    DateTime(WithDecorators<mm::DateTimeProperty>),
     /// A field whose type is another declared concept/scalar.
-    Object(mm::ObjectProperty),
+    Object(WithDecorators<mm::ObjectProperty>),
     /// A relationship reference to an identifiable declaration.
-    Relationship(mm::RelationshipProperty),
+    Relationship(WithDecorators<mm::RelationshipProperty>),
     /// A value member of an enum declaration.
-    Enum(mm::EnumProperty),
+    Enum(WithDecorators<mm::EnumProperty>),
 }
 
 /// Picks the same field out of whichever generated struct a [`Property`]
@@ -131,12 +134,8 @@ impl Typed for Property {
 }
 
 impl Decorated for Property {
-    fn decorators(&self) -> &[mm::Decorator] {
-        property_field!(
-            self,
-            p => p.decorators.as_deref().unwrap_or(&[]),
-            p => p.decorators.as_deref().unwrap_or(&[])
-        )
+    fn get_decorators(&self) -> &[Decorator] {
+        property_field!(self, p => p.decorators(), p => p.decorators())
     }
 }
 
@@ -173,20 +172,44 @@ impl TryFrom<&serde_json::Value> for Property {
             location: None,
         };
 
+        let decorators = parse_decorators(value);
         let property = match kind {
-            "BooleanProperty" => Self::Boolean(serde_json::from_value(value.clone()).map_err(bad)?),
-            "StringProperty" => Self::String(serde_json::from_value(value.clone()).map_err(bad)?),
-            "IntegerProperty" => Self::Integer(serde_json::from_value(value.clone()).map_err(bad)?),
-            "LongProperty" => Self::Long(serde_json::from_value(value.clone()).map_err(bad)?),
-            "DoubleProperty" => Self::Double(serde_json::from_value(value.clone()).map_err(bad)?),
-            "DateTimeProperty" => {
-                Self::DateTime(serde_json::from_value(value.clone()).map_err(bad)?)
-            }
-            "ObjectProperty" => Self::Object(serde_json::from_value(value.clone()).map_err(bad)?),
-            "RelationshipProperty" => {
-                Self::Relationship(serde_json::from_value(value.clone()).map_err(bad)?)
-            }
-            "EnumProperty" => Self::Enum(serde_json::from_value(value.clone()).map_err(bad)?),
+            "BooleanProperty" => Self::Boolean(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "StringProperty" => Self::String(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "IntegerProperty" => Self::Integer(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "LongProperty" => Self::Long(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "DoubleProperty" => Self::Double(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "DateTimeProperty" => Self::DateTime(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "ObjectProperty" => Self::Object(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "RelationshipProperty" => Self::Relationship(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
+            "EnumProperty" => Self::Enum(WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(bad)?,
+                decorators,
+            )),
             other => {
                 return Err(ConcertoError::IllegalModel {
                     message: format!("unknown property type: {other}"),

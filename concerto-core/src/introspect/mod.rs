@@ -42,7 +42,9 @@ mod traits;
 pub mod validators;
 
 pub use declaration::{ClassDeclaration, ClassKind, Declaration};
-pub use decorator::Decorated;
+pub use decorator::{
+    Decorated, Decorator, DecoratorArgument, DecoratorValidationOptions, TypeReferenceArgument,
+};
 pub use import::Import;
 pub use model_file::ModelFile;
 pub use property::Property;
