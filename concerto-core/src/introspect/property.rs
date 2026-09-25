@@ -112,6 +112,17 @@ impl Property {
     pub fn size_validator(&self) -> Option<&mm::CollectionSizeValidator> {
         property_field!(self, p => p.size_validator.as_ref(), _ => None)
     }
+
+    /// This property's own AST `location`, if the node carried one. Every
+    /// generated property struct (including `EnumProperty`) has a `location`
+    /// field, so — unlike `Decorator`, which still has none (7.2) — a
+    /// property can report its own location rather than borrowing its owning
+    /// class's the way validation used to (P2-08 review carry-over (c) from
+    /// P2-04's review, #48: TS `Property.validate`/`Decorated.validate` throw
+    /// with `this.ast.location`, the property's own).
+    pub fn location(&self) -> Option<&mm::Range> {
+        property_field!(self, p => p.location.as_ref(), p => p.location.as_ref())
+    }
 }
 
 impl Typed for Property {

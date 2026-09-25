@@ -287,6 +287,16 @@ pub struct ModelManager {
     /// by default (both fields `None`): see
     /// [`crate::introspect::decorator::DecoratorValidationOptions`].
     decorator_validation: crate::introspect::decorator::DecoratorValidationOptions,
+    /// TS `ModelManagerOptions.dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// (`basemodelmanager.ts`), read back as `modelFile.getModelManager()
+    /// ?.options?.dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// (`Declaration.validate`, declaration.ts). `false` (JS `undefined`,
+    /// falsy) by default: a transitional escape hatch that lets a user model
+    /// redeclare a name it also imports from the system namespace, so long as
+    /// the imported name resolves to one of the five reserved system
+    /// declarations (`Concept`, `Asset`, `Participant`, `Transaction`,
+    /// `Event`).
+    dangerously_allow_reserved_system_type_names_in_user_models: bool,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -614,6 +624,20 @@ impl ModelManager {
         self.decorator_validation = options;
     }
 
+    /// TS: `modelFile.getModelManager()?.options?.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+    /// coerced with `Boolean(...)` (`Declaration.validate`, declaration.ts).
+    pub fn dangerously_allow_reserved_system_type_names_in_user_models(&self) -> bool {
+        self.dangerously_allow_reserved_system_type_names_in_user_models
+    }
+
+    /// Sets the escape hatch above, matching the TS constructor's
+    /// `options.dangerouslyAllowReservedSystemTypeNamesInUserModels` (there is
+    /// no separate TS setter; the port exposes one the same way
+    /// [`Self::set_decorator_validation`] does).
+    pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.dangerously_allow_reserved_system_type_names_in_user_models = allow;
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -668,6 +692,25 @@ impl ModelManager {
             .get(file.slot())
             .map_or(0..0, |slot| slot.declarations.clone())
             .map(DeclId)
+    }
+
+    /// Every concept-like declaration across every loaded model file (the
+    /// decorator and root models included, as TS's own `getModelFiles()`
+    /// does), in file order and then declaration order — a map or scalar
+    /// declaration is left out.
+    ///
+    /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
+    /// `modelFile.getAllDeclarations().filter(d =>
+    /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
+    /// over every loaded model file.
+    pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
+        self.files
+            .iter()
+            .flat_map(|file| file.declarations.clone().map(DeclId))
+            .filter(move |id| {
+                self.declaration(*id)
+                    .is_some_and(|d| !d.is_map_declaration() && !d.is_scalar_declaration())
+            })
     }
 
     /// The handles of a class declaration's own properties, in the order they
@@ -1946,6 +1989,57 @@ mod tests {
                 "org.example@1.0.0"
             ]
         );
+    }
+
+    /// TS: `Introspector.getClassDeclarations` (test/introspect/introspector.js).
+    #[test]
+    fn class_declarations_span_every_loaded_model_file_and_include_enums() {
+        let mgr = manager();
+        let names: Vec<&str> = mgr
+            .class_declarations()
+            .map(|id| mgr.declaration(id).unwrap().name())
+            .collect();
+        // Every user declaration, including the enum `Color` — TS's
+        // `!isMapDeclaration?.() && !isScalarDeclaration?.()` leaves an enum
+        // in, only a map or scalar out.
+        for name in ["Person", "Employee", "Manager", "Color"] {
+            assert!(names.contains(&name), "{name} missing from {names:?}");
+        }
+        // The built-in system and decorator models load first, so their own
+        // class-like declarations (e.g. `Concept`) are included too — TS's
+        // `Introspector.getClassDeclarations` iterates every loaded model
+        // file, system ones included.
+        assert!(names.contains(&"Concept"));
+    }
+
+    /// A map or scalar declaration is left out of `class_declarations`, the
+    /// same way `Introspector.getClassDeclarations` leaves them out of TS's
+    /// `instanceof ClassDeclaration` filter.
+    #[test]
+    fn class_declarations_exclude_maps_and_scalars() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.mapscalar@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Postcode" },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Person",
+                      "isAbstract": false, "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = mgr
+            .class_declarations()
+            .map(|id| mgr.declaration(id).unwrap().name())
+            .filter(|n| ["Postcode", "Lookup", "Person"].contains(n))
+            .collect();
+        assert_eq!(names, ["Person"]);
     }
 
     /// `child@1.0.0.Child { o Integer age }`, imported into `parent@1.0.0` as
