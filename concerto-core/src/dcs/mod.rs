@@ -42,6 +42,9 @@
 //! `modelManager.getAst(true, …)`, which runs `BaseModelManager.resolveMetaModel`
 //! over every model. That is `BaseModelManager`'s (P2-08/P4-08) and is not
 //! ported, so this port reads the unresolved AST; see [`decorate_models`].
+//! In rust mode the concerto-wasm bindings are handed ASTs the TS
+//! ModelManager has already resolved (concerto `src/engine/views.ts`), so
+//! resolution still runs there, once, as it does in ts mode.
 pub mod dcsconverter;
 #[cfg(test)]
 mod decoratormanager_tests;

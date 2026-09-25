@@ -3608,7 +3608,7 @@ impl ModelManagerHandle {
 
 /// `new ModelManager()` (`src/modelmanager.ts`), then `models` (a JSON
 /// array of model ASTs, none of them the system ones — a view reads them
-/// off `ModelManager.getAst(false, false).models`, or a per-file
+/// off `ModelManager.getAst(resolve, false).models`, or a per-file
 /// `getModelFiles(false).map(mf => mf.getAst())`) added the way
 /// `fromAst`/`add_model` do (P4-09).
 fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
@@ -3813,10 +3813,14 @@ pub fn decorator_manager_execute_property_command(
 /// TS: `DecoratorManager.decorateModels`, after the view's own early return
 /// (an empty `decoratorCommandSet` returns `modelManager` itself, never
 /// reaching this binding) and its `Array.isArray` normalisation. `models`
-/// is `modelManager.getAst(false, true).models` (no metamodel resolution:
-/// `dcs::decorate_models`'s doc comment); the result is the new manager's
-/// own AST, for the view's `new ModelManager({decoratorValidation}).fromAst(
-/// decoratedAst, { disableValidation })`.
+/// is `modelManager.getAst(!options.disableMetamodelResolution, false).models`,
+/// read by the view's shim (concerto `src/engine/views.ts`
+/// `decoratorManagerDecorateModels`): metamodel resolution is not ported
+/// (`dcs::decorate_models`'s doc comment), so the TS ModelManager resolves
+/// before the call, as the ts-mode body does, and the system namespaces are
+/// left out, the native manager carrying its own. The result is the new
+/// manager's own AST, for the shim's `new ModelManager({decoratorValidation})
+/// .fromAst(decoratedAst, { disableValidation })`.
 #[wasm_bindgen(js_name = decoratorManagerDecorateModels)]
 pub fn decorator_manager_decorate_models(
     models: JsValue,
@@ -3840,9 +3844,9 @@ pub fn decorator_manager_decorate_models(
 }
 
 /// TS: `DecoratorManager.extractDecorators`. `models` is
-/// `modelManager.getAst(false, true).models` (system namespaces included,
-/// as TS's own `getAst(true, true)` call does before metamodel resolution;
-/// see [`decorator_manager_decorate_models`]).
+/// `modelManager.getAst(true, false).models`: resolved on the TS side, as
+/// the ts-mode body's own `getAst(true, true)` is, with the system
+/// namespaces left out (see [`decorator_manager_decorate_models`]).
 #[wasm_bindgen(js_name = decoratorManagerExtractDecorators)]
 pub fn decorator_manager_extract_decorators(
     models: JsValue,
@@ -3859,7 +3863,8 @@ pub fn decorator_manager_extract_decorators(
 }
 
 /// TS: `DecoratorManager.extractVocabularies`. `models` is
-/// `modelManager.getAst(false, true).models` (system namespaces included).
+/// `modelManager.getAst(true, false).models` (see
+/// [`decorator_manager_extract_decorators`]).
 #[wasm_bindgen(js_name = decoratorManagerExtractVocabularies)]
 pub fn decorator_manager_extract_vocabularies(
     models: JsValue,
@@ -3876,8 +3881,9 @@ pub fn decorator_manager_extract_vocabularies(
 }
 
 /// TS: `DecoratorManager.extractNonVocabDecorators`. `models` is
-/// `modelManager.getAst(false).models` (system namespaces *not* included,
-/// matching TS's own `getAst(true)` call — the one-argument overload).
+/// `modelManager.getAst(true, false).models`, resolved on the TS side and
+/// without the system namespaces, matching the ts-mode body's own
+/// `getAst(true)` call (the one-argument overload).
 #[wasm_bindgen(js_name = decoratorManagerExtractNonVocabDecorators)]
 pub fn decorator_manager_extract_non_vocab_decorators(
     models: JsValue,
