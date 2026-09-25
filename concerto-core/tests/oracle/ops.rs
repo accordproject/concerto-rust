@@ -57,7 +57,9 @@ use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
-use concerto_core::introspect::{Declaration, DeclarationKind, MapDeclaration, Named, Typed, Validate};
+use concerto_core::introspect::{
+    Declaration, DeclarationKind, MapDeclaration, Named, Typed, Validate,
+};
 use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use concerto_core::validation;
