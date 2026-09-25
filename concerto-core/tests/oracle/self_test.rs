@@ -1062,6 +1062,111 @@ fn plan_owner_overrides_take_precedence_over_the_ledger() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// Fail-loud ledger lookup (accordproject/concerto-rust#132): a missing or
+// unreadable ledger must fail the run rather than silently degrade owner
+// attribution to `unowned`. `Ledger::load_with` takes the two env vars
+// (`CONCERTO_ORACLE_LEDGER`, `CONCERTO_ORACLE_NO_LEDGER`) as plain
+// arguments so these tests exercise the real logic without mutating
+// process-wide env state that other tests (and `main.rs`'s own
+// `replays_the_oracle_corpus`) read concurrently.
+
+/// No `migration/ledger/SEAM_LEDGER.tsv` next to the fixtures, and no
+/// opt-out: the run must fail loudly rather than fall back to `unowned`.
+#[test]
+fn a_missing_ledger_panics_without_the_opt_out() {
+    let root = scratch_dir("ledger-missing");
+    let fixtures = root.join("migration").join("oracle").join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    // No `migration/ledger/` directory at all.
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Ledger::load_with(&fixtures, None, false)
+    }));
+    let err = caught
+        .err()
+        .expect("a missing ledger must panic, not silently fall back");
+    let message = err
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default();
+    assert!(
+        message.contains("no seam ledger found"),
+        "panic message should say the ledger was not found, got: {message}"
+    );
+    assert!(
+        message.contains("SEAM_LEDGER.tsv"),
+        "panic message should name the path it tried, got: {message}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The same missing ledger, with `CONCERTO_ORACLE_NO_LEDGER=1`'s effect
+/// (`opt_out: true`): the run continues with the degraded fallback
+/// (op-family owners and `unowned` only) instead of panicking.
+#[test]
+fn a_missing_ledger_with_the_opt_out_falls_back_instead_of_panicking() {
+    let root = scratch_dir("ledger-missing-opt-out");
+    let fixtures = root.join("migration").join("oracle").join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let ledger = Ledger::load_with(&fixtures, None, true);
+    // Falls back to the same PORTING.md op-family / unowned lookup as
+    // `Ledger::default()`.
+    assert_eq!(ledger.owner("ModelManager.deleteModelFile"), "P2-08");
+    assert_eq!(ledger.owner("Declaration.getName"), "unowned");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A ledger header missing a required column (here, `planned_task`) is
+/// unusable, and is treated the same as a missing ledger: it panics without
+/// the opt-out.
+#[test]
+fn a_malformed_ledger_header_panics_without_the_opt_out() {
+    let root = scratch_dir("ledger-malformed");
+    let fixtures = root.join("migration").join("oracle").join("fixtures");
+    let ledger_dir = root.join("migration").join("ledger");
+    fs::create_dir_all(&fixtures).unwrap();
+    fs::create_dir_all(&ledger_dir).unwrap();
+    fs::write(
+        ledger_dir.join("SEAM_LEDGER.tsv"),
+        "file\tclass\tmember\tclassification\n\
+         src/factory.ts\tFactory\tnewResource\tTS\n",
+    )
+    .unwrap();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Ledger::load_with(&fixtures, None, false)
+    }));
+    assert!(
+        caught.is_err(),
+        "a ledger header missing a required column must panic, not silently fall back"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// `CONCERTO_ORACLE_LEDGER` points directly at a ledger TSV that lives
+/// somewhere other than `<fixtures>/../../ledger/SEAM_LEDGER.tsv`, and is
+/// used as is.
+#[test]
+fn concerto_oracle_ledger_points_at_the_ledger_directly() {
+    let root = scratch_dir("ledger-configured-path");
+    // Deliberately not next to any `fixtures` directory, and not even named
+    // `SEAM_LEDGER.tsv`, to prove the configured path is used verbatim.
+    let ledger_path = root.join("elsewhere").join("my-ledger.tsv");
+    fs::create_dir_all(ledger_path.parent().unwrap()).unwrap();
+    fs::write(
+        &ledger_path,
+        "file\tclass\tmember\tclassification\tplanned_task\n\
+         src/modelmanager.ts\tModelManager\tdeleteModelFile\tRUST\tP2-08\n",
+    )
+    .unwrap();
+    // A `fixtures_dir` with no ledger reachable from it at all: only the
+    // configured path can supply the ledger here.
+    let fixtures = root.join("migration").join("oracle").join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let ledger = Ledger::load_with(&fixtures, Some(&ledger_path), false);
+    assert_eq!(ledger.owner("ModelManager.deleteModelFile"), "P2-08");
+    let _ = fs::remove_dir_all(&root);
+}
+
 // Failure attribution (`ops::Attribution`, `compare::judge`): a DCS failure
 // is another task's only when TS threw from that task's code too.
 
