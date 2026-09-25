@@ -40,11 +40,12 @@
 //!
 //! **Metamodel resolution.** `decorateModels` and the `extract*` statics read
 //! `modelManager.getAst(true, …)`, which runs `BaseModelManager.resolveMetaModel`
-//! over every model. That is `BaseModelManager`'s (P2-08/P4-08) and is not
-//! ported, so this port reads the unresolved AST; see [`decorate_models`].
-//! In rust mode the concerto-wasm bindings are handed ASTs the TS
-//! ModelManager has already resolved (concerto `src/engine/views.ts`), so
-//! resolution still runs there, once, as it does in ts mode.
+//! over every model; so does this port, through [`ModelManager::get_ast`]
+//! (P2-08b). In rust mode the concerto-wasm bindings are handed ASTs the TS
+//! ModelManager has already resolved (concerto `src/engine/views.ts`), and
+//! Rust then resolves them again here. That second pass is idempotent: every
+//! type reference already carries the namespace it resolves to, so the
+//! result is the same as resolving once, as in ts mode.
 pub mod dcsconverter;
 #[cfg(test)]
 mod decoratormanager_tests;
@@ -1313,14 +1314,11 @@ pub struct DecorateOptions {
 /// unvalidated as they were, rather than `model_manager` itself (TS returns
 /// the same instance; a caller that only reads it back cannot tell).
 ///
-/// **Metamodel resolution is not ported.** Unless
-/// `disableMetamodelResolution`, TS decorates `getAst(true, true)`, whose
-/// every model `BaseModelManager.resolveMetaModel` has run over (adding the
-/// resolved `namespace` to each type reference, super type and scalar); this
-/// port decorates `getAst(false, true)` either way, since `resolveMetaModel`
-/// belongs to `BaseModelManager` (P2-08/P4-08). The two agree whenever
-/// resolution changes nothing, and otherwise differ only in those resolved
-/// `namespace` fields.
+/// Unless `disableMetamodelResolution` is truthy, the models decorated are
+/// `getAst(true, true)`'s, every one run through
+/// `BaseModelManager.resolveMetaModel` ([`ModelManager::get_ast`]), which
+/// adds the resolved `namespace` to each type reference, super type and
+/// scalar, and fails as TS does for an import that does not resolve.
 pub fn decorate_models(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
@@ -1425,10 +1423,9 @@ pub fn apply_decoration(
     prepared: &PreparedDecoration,
     options: &DecorateOptions,
 ) -> Result<ModelManager> {
-    let mut models: Vec<Value> = model_manager
-        .model_files()
-        .map(|mf| mf.ast().clone())
-        .collect();
+    // `options?.disableMetamodelResolution ? getAst(false, true) : getAst(true, true)`.
+    let resolve = options.disable_metamodel_resolution != Some(true);
+    let mut models = models_of(model_manager.get_ast(resolve, true)?);
     for model in models.iter_mut() {
         decorate_model(model, &prepared.decorator_imports, &prepared.maps)?;
     }
@@ -1696,25 +1693,15 @@ impl Default for ExtractOptions {
     }
 }
 
-/// `modelManager.getAst(true, include_concerto_namespaces)`, less the
-/// metamodel resolution (see [`decorate_models`]' doc comment: TS resolves
-/// here too, and `resolveMetaModel` belongs to `BaseModelManager`).
-fn source_ast(model_manager: &ModelManager, include_concerto_namespaces: bool) -> Value {
-    let models: Vec<Value> = model_manager
-        .model_files()
-        .filter(|mf| {
-            include_concerto_namespaces
-                || !crate::model_manager::EXCLUDE_NS.contains(&mf.namespace())
-        })
-        .map(|mf| mf.ast().clone())
-        .collect();
-    let mut m = Map::new();
-    m.insert(
-        "$class".to_string(),
-        Value::String(format!("{META_MODEL_NAMESPACE}.Models")),
-    );
-    m.insert("models".to_string(), Value::Array(models));
-    Value::Object(m)
+/// The `models` of a [`ModelManager::get_ast`] envelope.
+fn models_of(ast: Value) -> Vec<Value> {
+    match ast {
+        Value::Object(mut m) => match m.remove("models") {
+            Some(Value::Array(models)) => models,
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }
 
 /// `DecoratorManager.extractDecorators(modelManager, options)`
@@ -1728,7 +1715,7 @@ pub fn extract_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        source_ast(model_manager, true),
+        model_manager.get_ast(true, true)?,
         extractor::Action::ExtractAll,
     )
     .extract()
@@ -1746,7 +1733,7 @@ pub fn extract_vocabularies(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        source_ast(model_manager, true),
+        model_manager.get_ast(true, true)?,
         extractor::Action::ExtractVocab,
     )
     .extract()
@@ -1764,7 +1751,7 @@ pub fn extract_non_vocab_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        source_ast(model_manager, false),
+        model_manager.get_ast(true, false)?,
         extractor::Action::ExtractNonVocab,
     )
     .extract()

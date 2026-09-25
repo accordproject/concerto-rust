@@ -230,6 +230,12 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["V8 (property read on null or undefined)"],
     },
     CatalogueEntry {
+        code: "engine-rangeerror-maxcallstack",
+        template: "Maximum call stack size exceeded",
+        renderer: Renderer::Inline,
+        sources: &["V8 (stack overflow at a TS recursion point, PORTING.md 2.5)"],
+    },
+    CatalogueEntry {
         code: "engine-typeerror-notafunction",
         template: "{expression} is not a function",
         renderer: Renderer::Inline,
@@ -299,15 +305,66 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "modelmanager-resolvetype-nonsfortype",
         template: "No registered namespace for type \"{type}\" in \"{context}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.resolveType (RUST); not yet called.
+        // BaseModelManager.resolveType (RUST, P2-08b).
         sources: &["src/basemodelmanager.ts:591"],
     },
     CatalogueEntry {
         code: "modelmanager-resolvetype-notypeinnsforcontext",
         template: "No type \"{type}\" in namespace \"{namespace}\" for \"{context}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.resolveType (RUST); not yet called.
+        // BaseModelManager.resolveType (RUST, P2-08b).
         sources: &["src/basemodelmanager.ts:602"],
+    },
+    CatalogueEntry {
+        code: "basemodelmanager-updatemodelfile-notfound",
+        template: "Model file for namespace {namespace} not found",
+        renderer: Renderer::Inline,
+        // BaseModelManager.updateModelFile (HYBRID, P2-08b): a plain
+        // `Error`, not a Globalize call.
+        sources: &["src/basemodelmanager.ts:353"],
+    },
+    CatalogueEntry {
+        code: "basemodelmanager-deletemodelfile-notfound",
+        template: "Model file does not exist",
+        renderer: Renderer::Inline,
+        // BaseModelManager.deleteModelFile (RUST, P2-08b): a plain `Error`,
+        // not a Globalize call.
+        sources: &["src/basemodelmanager.ts:372"],
+    },
+    CatalogueEntry {
+        code: "basemodelmanager-throwalreadyexists",
+        template: "Namespace {namespace}{prefix} is already declared{postfix}",
+        renderer: Renderer::Inline,
+        // BaseModelManager._throwAlreadyExists (RUST, P2-08b): a plain
+        // `Error`. `prefix`/`postfix` are pre-formatted (" specified in
+        // file {name}" / " in file {name}"), empty when that model file has
+        // no name, since `Renderer::Inline` does no conditional logic.
+        sources: &["src/basemodelmanager.ts:226"],
+    },
+    CatalogueEntry {
+        code: "metamodelutil-createnametable-declarationnotfound",
+        template: "Declaration {name} in namespace {namespace} not found",
+        renderer: Renderer::Inline,
+        // MetaModelUtil.createNameTable (RUST, P2-08b): a plain `Error`,
+        // reached through BaseModelManager.resolveMetaModel/getAst(true, …).
+        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:75,90"],
+    },
+    CatalogueEntry {
+        code: "metamodelutil-resolvename-notfound",
+        template: "Name {name} not found",
+        renderer: Renderer::Inline,
+        // MetaModelUtil.resolveName (RUST, P2-08b): a plain `Error`, reached
+        // through BaseModelManager.resolveMetaModel/getAst(true, …).
+        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:117"],
+    },
+    CatalogueEntry {
+        code: "metamodelutil-resolvetypenames-unrecognizedclass",
+        template: "Unrecognized $class {class}",
+        renderer: Renderer::Inline,
+        // MetaModelUtil.resolveTypeNames (RUST, P2-08b): a plain `Error`,
+        // only reachable for a node with no (or an empty) `$class` — no
+        // corpus fixture reaches it, ported for fidelity with the reference.
+        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:196"],
     },
     CatalogueEntry {
         code: "modelmanager-gettype-notypeinns",

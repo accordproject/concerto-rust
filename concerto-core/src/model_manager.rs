@@ -43,7 +43,7 @@ use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, EnumDeclaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
-use crate::introspect::{FullyQualified, Named, Typed};
+use crate::introspect::{DeclarationKind, FullyQualified, Named, Typed};
 use crate::model_util::{
     self, PRIMITIVE_TYPES, get_fully_qualified_name, get_namespace, get_short_name,
     is_primitive_type,
@@ -279,6 +279,19 @@ struct PropSlot {
     index: usize,
 }
 
+/// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
+/// `FileLoader` returns it, before it becomes a [`ModelFile`] —
+/// [`ModelManager::update_external_models`]' input.
+#[derive(Debug, Clone)]
+pub struct ModelFileSource {
+    /// The model's metamodel AST.
+    pub ast: Value,
+    /// Its CTO source text, when it has one.
+    pub definitions: Option<String>,
+    /// Its file name (a downloaded file's starts with `@`).
+    pub file_name: Option<String>,
+}
+
 /// Owns a set of model files and resolves types across them.
 #[derive(Debug, Default)]
 pub struct ModelManager {
@@ -433,6 +446,40 @@ fn not_a_class_like(fqn: &str) -> ConcertoError {
     }
 }
 
+/// TS `BaseModelManager._throwAlreadyExists(modelFile)` (basemodelmanager.ts):
+/// a plain `Error`, thrown for a model file whose namespace is already
+/// registered — never the `duplicate namespace: …` `IllegalModelException`
+/// this port raised before (P2-08b review). `existing` is the model file
+/// already holding `namespace`; `new_file_name` is the incoming file's own
+/// name, when TS's caller has one to pass (`addModelFile`'s `modelFile`
+/// always does; `add_models`/`insert_models`' own per-model `file_name`
+/// argument might not).
+fn already_exists(
+    namespace: &str,
+    new_file_name: Option<&str>,
+    existing: &ModelFile,
+) -> ConcertoError {
+    fn named(name: Option<&str>) -> Option<&str> {
+        name.filter(|n| !n.is_empty())
+    }
+    let prefix = named(new_file_name)
+        .map(|n| format!(" specified in file {n}"))
+        .unwrap_or_default();
+    let postfix = named(existing.file_name())
+        .map(|n| format!(" in file {n}"))
+        .unwrap_or_default();
+    ContractError::new(
+        ErrorKind::Error,
+        "basemodelmanager-throwalreadyexists",
+        vec![
+            ("namespace", namespace.to_string()),
+            ("prefix", prefix),
+            ("postfix", postfix),
+        ],
+    )
+    .into()
+}
+
 impl ModelManager {
     /// A fresh manager with both system models already loaded: the decorator
     /// model, then the root model.
@@ -473,13 +520,33 @@ impl ModelManager {
         value: &serde_json::Value,
         file_name: Option<String>,
     ) -> Result<()> {
-        let mf = ModelFile::from_json(value, file_name)?;
-        if self.namespaces.contains_key(mf.namespace()) {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("duplicate namespace: {}", mf.namespace()),
-                file_name: mf.file_name().map(str::to_string),
-                location: None,
-            });
+        self.add_model_with_definitions(value, None, file_name)
+    }
+
+    /// [`ModelManager::add_model`], keeping `definitions` — the CTO source
+    /// text, when the caller has it — as TS's `ModelFile.getDefinitions()`
+    /// does. `add_model` is this with `definitions: None`, which is every
+    /// call site but the oracle harness's own `addCTOModel`/`addModel`
+    /// replay (P2-08b, `ModelManager::get_models`'s only consumer so far):
+    /// TS's own `ctoProcessFile` always sets `definitions` to the input CTO
+    /// text (coerced to a string when it was not already one), so a model
+    /// loaded any other way in this port — a hand-built AST, `fromAst`, the
+    /// decorator and root models — has none either, matching TS's
+    /// `AstModelManager`/`astProcessFile`, whose `definitions` stays
+    /// `undefined`.
+    pub fn add_model_with_definitions(
+        &mut self,
+        value: &serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<()> {
+        let mf = ModelFile::from_json_with_definitions(value, definitions, file_name)?;
+        if let Some(existing) = self
+            .namespaces
+            .get(mf.namespace())
+            .and_then(|id| self.file(*id))
+        {
+            return Err(already_exists(mf.namespace(), mf.file_name(), existing));
         }
         self.insert(mf)?;
         Ok(())
@@ -523,12 +590,12 @@ impl ModelManager {
         let mut result = Ok(Vec::new());
         for (value, file_name) in models {
             let outcome = ModelFile::from_json(value, file_name).and_then(|mf| {
-                if self.namespaces.contains_key(mf.namespace()) {
-                    return Err(ConcertoError::IllegalModel {
-                        message: format!("duplicate namespace: {}", mf.namespace()),
-                        file_name: mf.file_name().map(str::to_string),
-                        location: None,
-                    });
+                if let Some(existing) = self
+                    .namespaces
+                    .get(mf.namespace())
+                    .and_then(|id| self.file(*id))
+                {
+                    return Err(already_exists(mf.namespace(), mf.file_name(), existing));
                 }
                 self.insert(mf)
             });
@@ -942,7 +1009,7 @@ impl ModelManager {
     /// .getFullyQualifiedName()`) — an inherited property's is its super
     /// type's, not `fqn`'s own. Returns an error if the name is not a
     /// concept-like or enum type, a super type cannot be resolved, or the
-    /// inheritance chain is circular.
+    /// inheritance chain is circular (V8's `RangeError`, DV-013).
     ///
     /// TS: `ClassDeclaration.getProperties` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
@@ -1199,6 +1266,13 @@ impl ModelManager {
 
     /// Walks a class's inheritance chain, handing back each
     /// `(full-name, declaration)` pair from the type up to its root.
+    ///
+    /// TS walks this chain by recursion (`ClassDeclaration.getProperties`,
+    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so a
+    /// cyclic chain overflows V8's stack. This walk is a loop with a
+    /// visited set (PORTING.md 2.5 rule 1) and, when it meets a declaration
+    /// again, returns the `RangeError` V8 raises (rule 2), after the same
+    /// earlier checks: a missing or non-class super type still fails first.
     fn super_chain(&self, fqn: &str) -> Result<Vec<(String, ClassLike<'_>)>> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
@@ -1206,11 +1280,13 @@ impl ModelManager {
 
         loop {
             if !visited.insert(current.clone()) {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("circular inheritance detected at {current}"),
-                    file_name: None,
-                    location: None,
-                });
+                // DV-013: TS has no cycle check here and overflows the stack.
+                return Err(ContractError::new(
+                    ErrorKind::JsRangeError,
+                    "engine-rangeerror-maxcallstack",
+                    Vec::new(),
+                )
+                .into());
             }
 
             let class = ClassLike::from_declaration(self.get_declaration(&current)?)
@@ -1329,6 +1405,450 @@ impl ModelManager {
             .ast()
             .get("declarations")?
             .get(slot.index)
+    }
+
+    /// TS `BaseModelManager.resolveType(context, type)` (basemodelmanager.ts,
+    /// `private`): a primitive type name passes through unchanged; otherwise
+    /// `type` must name a registered namespace, and within it a type local
+    /// to that namespace's own file (an imported name is rejected, even when
+    /// it resolves). `context` is free text for the error message only (TS
+    /// passes call-site descriptions such as a property's fully qualified
+    /// name).
+    pub fn resolve_type(&self, context: &str, type_name: &str) -> Result<String> {
+        if is_primitive_type(type_name) {
+            return Ok(type_name.to_string());
+        }
+        let namespace = get_namespace(Some(type_name))?;
+        let Some(model_file) = self.model_file(namespace) else {
+            return Err(ContractError::new(
+                ErrorKind::IllegalModel,
+                "modelmanager-resolvetype-nonsfortype",
+                vec![
+                    ("type", type_name.to_string()),
+                    ("context", context.to_string()),
+                ],
+            )
+            .into());
+        };
+        if model_file.is_local_type(type_name) {
+            return Ok(type_name.to_string());
+        }
+        Err(ContractError::new(
+            ErrorKind::IllegalModel,
+            "modelmanager-resolvetype-notypeinnsforcontext",
+            vec![
+                ("context", context.to_string()),
+                ("type", type_name.to_string()),
+                ("namespace", model_file.namespace().to_string()),
+            ],
+        )
+        .into())
+    }
+
+    /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)` (basemodelmanager.ts):
+    /// `fqt1` must resolve (`this.getType(fqt1)`, propagated verbatim —
+    /// [`ModelManager::get_type_declaration`] is the same lookup `getType`
+    /// dispatches to); then true when `fqt1` and `fqt2` are the same type, or
+    /// `fqt1` transitively extends it. [`ModelManager::is_assignable_to`]
+    /// already walks exactly this chain (including the implicit `Concept`
+    /// super type, P2-03), so this reuses it once `fqt1`'s own resolution is
+    /// confirmed with `getType`'s error surface — `is_assignable_to`'s own
+    /// lookup raises a different one ([`ConcertoError::TypeNotFound`], not
+    /// the catalogued `IllegalModelException` `getType` raises).
+    pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> Result<bool> {
+        self.get_type_declaration(fqt1)?;
+        self.is_assignable_to(fqt1, fqt2)
+    }
+
+    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`
+    /// (basemodelmanager.ts). This is a different method from
+    /// [`ModelManager::is_assignable_to`] — TS itself gives `ModelManager`
+    /// two unrelated `isAssignableTo`s, `ModelUtil`'s own static
+    /// ([`crate::model_util::is_assignable_to`]) and this one: `fqn` must
+    /// resolve to a *concrete* (non-abstract) type before
+    /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
+    /// `false` even against itself — and a lookup failure is caught, not
+    /// propagated.
+    pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
+        let Ok(id) = self.get_type_declaration(fqn) else {
+            return false;
+        };
+        if self
+            .declaration(id)
+            .and_then(Declaration::as_class)
+            .is_some_and(|class| class.is_abstract())
+        {
+            return false;
+        }
+        self.derives_from(fqn, base_fqn).unwrap_or(false)
+    }
+
+    /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`
+    /// (basemodelmanager.ts): every concrete (non-abstract) declaration
+    /// assignable to `baseFqn`, `baseFqn` itself included when it is
+    /// concrete; empty when `baseFqn` is not in the model (TS catches
+    /// `getType`'s error and returns `[]`).
+    pub fn get_assignable_concrete_types(&self, base_fqn: &str) -> Vec<DeclId> {
+        let Ok(names) = self.get_assignable_class_declarations(base_fqn) else {
+            return Vec::new();
+        };
+        names
+            .into_iter()
+            .filter_map(|fqn| self.declaration_id(&fqn))
+            .filter(|id| {
+                !self
+                    .declaration(*id)
+                    .and_then(Declaration::as_class)
+                    .is_some_and(|class| class.is_abstract())
+            })
+            .collect()
+    }
+
+    /// TS `getFileNameFromIdentifier` (basemodelmanager.ts, module-private):
+    /// the last non-empty `/`- or `\`-delimited segment of `file_identifier`
+    /// once its trailing separators are stripped; `file_identifier` itself
+    /// when that leaves nothing.
+    fn file_name_from_identifier(file_identifier: &str) -> String {
+        let trimmed = file_identifier.trim_end_matches(['/', '\\']);
+        trimmed
+            .rsplit(['/', '\\'])
+            .find(|segment| !segment.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| file_identifier.to_string())
+    }
+
+    /// TS `BaseModelManager.getModels(options)` (basemodelmanager.ts): every
+    /// registered model file but the root and decorator models
+    /// (`this.getModelFiles()`'s default excludes [`EXCLUDE_NS`]), as a
+    /// `(name, content)` pair — `content` is `None` exactly where TS's
+    /// `file.definitions` is `undefined`. `include_external_models` is TS's
+    /// `options.includeExternalModels` (`true` by default there; the oracle
+    /// harness always passes it explicitly).
+    pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
+        self.model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .filter(|mf| include_external_models || !mf.is_external())
+            .map(|mf| {
+                let name = match mf.file_name() {
+                    None | Some("UNKNOWN") | Some("") => format!("{}.cto", mf.namespace()),
+                    Some(identifier) => Self::file_name_from_identifier(identifier),
+                };
+                (name, mf.definitions().map(str::to_string))
+            })
+            .collect()
+    }
+
+    /// TS `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`
+    /// (basemodelmanager.ts): every registered model file's own AST
+    /// ([`ModelFile::ast`]), in [`ModelManager::model_files`] order, wrapped
+    /// in the metamodel's `Models` envelope; a system namespace
+    /// ([`EXCLUDE_NS`]) is left out unless `include_concerto_namespaces`.
+    /// `resolve` runs each model through [`ModelManager::resolve_meta_model`]
+    /// first — the only way this can fail, the same as TS's uncaught throw
+    /// from `resolveMetaModel`.
+    pub fn get_ast(&self, resolve: bool, include_concerto_namespaces: bool) -> Result<Value> {
+        let mut models = Vec::new();
+        for mf in self.model_files() {
+            if !include_concerto_namespaces && EXCLUDE_NS.contains(&mf.namespace()) {
+                continue;
+            }
+            models.push(if resolve {
+                self.resolve_meta_model(mf.ast())?
+            } else {
+                mf.ast().clone()
+            });
+        }
+        Ok(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Models",
+            "models": models,
+        }))
+    }
+
+    /// TS `BaseModelManager.resolveMetaModel(metaModel)` (basemodelmanager.ts):
+    /// `meta_model` (typically one of this manager's own model files' AST,
+    /// but any well-formed metamodel `Model` node) with every type name it
+    /// holds resolved to its declaring namespace, against this manager's own
+    /// currently-registered models (`this.getAst(false, true)`) — a port of
+    /// `@accordproject/concerto-metamodel`'s `MetaModelUtil.resolveLocalNames`
+    /// (`metamodel_util`, below this `impl` block), the only consumer this
+    /// manager has for it.
+    pub fn resolve_meta_model(&self, meta_model: &Value) -> Result<Value> {
+        let prior_models = self.get_ast(false, true)?;
+        metamodel_util::resolve_local_names(&prior_models, meta_model)
+    }
+
+    /// TS `BaseModelManager.get<Kind>Declarations()` (basemodelmanager.ts,
+    /// six near-identical methods, each `this.getModelFiles().reduce((prev,
+    /// cur) => prev.concat(cur.get<Kind>Declarations()), [])`): every
+    /// non-system, non-decorator model file's own declarations whose
+    /// constructor name is `ctor` — matched exactly on `$class`, never by
+    /// inheritance, the same way every other `{ctor, fqn}` summary in this
+    /// port already does (P2-08 review) — concatenated in registration
+    /// order.
+    fn declarations_by_ctor(&self, ctor: &str) -> Vec<DeclId> {
+        self.model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .flat_map(|mf| {
+                let file = self.model_file_id(mf.namespace());
+                file.into_iter().flat_map(|f| self.declaration_ids(f))
+            })
+            .filter(|id| {
+                self.declaration(*id).is_some_and(|d| match d {
+                    Declaration::Class(class) => class.declaration_kind() == ctor,
+                    Declaration::Enum(_) => ctor == "EnumDeclaration",
+                    Declaration::Scalar(_) => ctor == "ScalarDeclaration",
+                    Declaration::Map(_) => ctor == "MapDeclaration",
+                })
+            })
+            .collect()
+    }
+
+    /// TS `BaseModelManager.getAssetDeclarations()`.
+    pub fn get_asset_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("AssetDeclaration")
+    }
+
+    /// TS `BaseModelManager.getTransactionDeclarations()`.
+    pub fn get_transaction_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("TransactionDeclaration")
+    }
+
+    /// TS `BaseModelManager.getEventDeclarations()`.
+    pub fn get_event_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("EventDeclaration")
+    }
+
+    /// TS `BaseModelManager.getParticipantDeclarations()`.
+    pub fn get_participant_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("ParticipantDeclaration")
+    }
+
+    /// TS `BaseModelManager.getConceptDeclarations()`.
+    pub fn get_concept_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("ConceptDeclaration")
+    }
+
+    /// TS `BaseModelManager.getEnumDeclarations()`.
+    pub fn get_enum_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("EnumDeclaration")
+    }
+
+    /// TS `BaseModelManager.filter(predicate, options)` (basemodelmanager.ts):
+    /// a scratch manager holding every registered model file's declarations
+    /// for which `keep_fqn` is true, filtering each file's own imports the
+    /// same way ([`crate::introspect::model_file::ModelFile::filter`]'s
+    /// module doc); a file with nothing left is dropped. `predicate` is a
+    /// `Declaration -> bool` in TS, keyed here by fully-qualified name
+    /// instead, since that is all the oracle's own `predicate` encoding
+    /// carries (`tests/oracle/ops.rs`). The root model is skipped exactly as
+    /// TS's `modelFile.isSystemModelFile()` check does — the decorator model
+    /// is *not* skipped, because TS does not skip it either, so it is
+    /// filtered like any other file (which in practice always empties it,
+    /// since `keep_fqn` never names one of its own declarations in the
+    /// corpus). The result always starts from a fresh `BaseModelManager`
+    /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
+    /// never the receiver's own kind. `disable_validation` is TS's
+    /// `options?.disableValidation`; unless set, the filtered files are
+    /// validated once, together (TS: `modelManager.addModelFiles(...)`).
+    pub fn filter(
+        &self,
+        keep_fqn: impl Fn(&str) -> bool,
+        disable_validation: bool,
+    ) -> Result<Self> {
+        let mut result = Self::new()?;
+        result.decorator_validation = self.decorator_validation.clone();
+        result.dangerously_allow_reserved_system_type_names_in_user_models =
+            self.dangerously_allow_reserved_system_type_names_in_user_models;
+
+        // `ModelFile::filter`'s predicate carries no namespace of its own
+        // (its doc): it is called both on the file being filtered *and*,
+        // for that file's own imports, on a *different* file's declarations
+        // (`source_manager.model_file(ns).get_local_type(...)`). A `decl ->
+        // bool` predicate built from one file's namespace alone would ask
+        // `keep_fqn` about the wrong fully-qualified name for every
+        // cross-file (import) check, silently dropping every import that
+        // should stay. So the fully-qualified check runs once, up front,
+        // over every file's own real namespace, and this instead keeps by
+        // *identity*: every declaration the predicate is ever handed here is
+        // a reference into `self`'s own arena (`self` is `source_manager`
+        // below), so a declaration kept by an earlier file is still
+        // recognised when it is reached again through another file's
+        // imports.
+        let keep_fqn = &keep_fqn;
+        let kept: std::collections::HashSet<*const Declaration> = self
+            .model_files()
+            .flat_map(|mf| {
+                let namespace = mf.namespace();
+                mf.declarations().iter().filter_map(move |decl| {
+                    keep_fqn(&get_fully_qualified_name(namespace, decl.name()))
+                        .then_some(decl as *const Declaration)
+                })
+            })
+            .collect();
+
+        let mut filtered_files = Vec::new();
+        for model_file in self.model_files() {
+            if model_file.is_system_namespace() {
+                continue;
+            }
+            let filtered =
+                model_file.filter(|decl| kept.contains(&(decl as *const Declaration)), self)?;
+            if let Some(f) = filtered {
+                filtered_files.push(f);
+            }
+        }
+        result.insert_models(filtered_files, !disable_validation)?;
+        Ok(result)
+    }
+
+    /// TS `updateModelFile(modelFile, fileName, disableValidation)`'s
+    /// registration step, for an already-parsed `model_file` (the oracle
+    /// harness's own CTO -> AST step handles the string overload; CTO
+    /// parsing stays out of Rust's scope, plan §1.1). TS requires the
+    /// namespace to already be registered, a plain `Error`
+    /// (`basemodelmanager-updatemodelfile-notfound`); everything past that
+    /// matches [`ModelManager::with_model_file_registered`], which already
+    /// builds exactly the scratch copy TS's own registration
+    /// (`this.modelFiles[ns] = modelFile`) produces. Never mutates `self`:
+    /// on any error the caller simply does not adopt the result, the same
+    /// way TS's own catch leaves `this` unchanged.
+    pub fn update_model_file(&self, model_file: ModelFile, validate: bool) -> Result<Self> {
+        let namespace = model_file.namespace().to_string();
+        if self.model_file(&namespace).is_none() {
+            return Err(ContractError::new(
+                ErrorKind::Error,
+                "basemodelmanager-updatemodelfile-notfound",
+                vec![("namespace", namespace)],
+            )
+            .into());
+        }
+        let updated = self.with_model_file_registered(&model_file)?;
+        if validate {
+            let mf = updated
+                .model_file(&namespace)
+                .expect("with_model_file_registered registers the file under its namespace");
+            updated.validate_model_file(mf)?;
+        }
+        Ok(updated)
+    }
+
+    /// TS `deleteModelFile(namespace)` (basemodelmanager.ts): the manager
+    /// with every registered model file but `namespace`'s, or a plain
+    /// `Error` (`basemodelmanager-deletemodelfile-notfound`) when it holds
+    /// none. `deleteModelFile` has no arena-level tombstone yet (module doc,
+    /// "any future removal ... is a different shape"), so this rebuilds a
+    /// fresh manager from the survivors, the same way
+    /// [`ModelManager::with_model_file_registered`]'s own scratch copy does.
+    pub fn delete_model_file(&self, namespace: &str) -> Result<Self> {
+        if self.model_file(namespace).is_none() {
+            return Err(ContractError::new(
+                ErrorKind::Error,
+                "basemodelmanager-deletemodelfile-notfound",
+                Vec::new(),
+            )
+            .into());
+        }
+        let mut scratch = Self {
+            decorator_validation: self.decorator_validation.clone(),
+            dangerously_allow_reserved_system_type_names_in_user_models: self
+                .dangerously_allow_reserved_system_type_names_in_user_models,
+            ..Self::default()
+        };
+        for existing in self.model_files() {
+            if existing.namespace() != namespace {
+                scratch.insert(existing.clone())?;
+            }
+        }
+        Ok(scratch)
+    }
+
+    /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
+    /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
+    /// stays in JS). `external_models` is what
+    /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
+    /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
+    /// then registered without validation — `updateModelFile(mf, name,
+    /// true)` when its namespace is already registered (by `self` or an
+    /// earlier download in the same batch), `addModelFile(mf, null, name,
+    /// true)` otherwise — and finally every registered model file is
+    /// validated (`validateModelFiles`). The model files are returned in the
+    /// same order, as TS's `externalModelFiles`.
+    ///
+    /// Any error leaves `self` exactly as it was, as TS's `catch` restores
+    /// `this.modelFiles` before rethrowing.
+    pub fn update_external_models(
+        &mut self,
+        external_models: impl IntoIterator<Item = ModelFileSource>,
+    ) -> Result<Vec<ModelFile>> {
+        let mut updated: Option<Self> = None;
+        let mut registered = Vec::new();
+        for source in external_models {
+            let current = updated.as_ref().unwrap_or(self);
+            let mf = ModelFile::from_json_with_definitions(
+                &source.ast,
+                source.definitions,
+                source.file_name,
+            )?;
+            let next = if current.model_file(mf.namespace()).is_some() {
+                current.update_model_file(mf.clone(), false)?
+            } else {
+                // `addModelFile`'s already-exists check cannot fire here.
+                current.with_model_file_registered(&mf)?
+            };
+            updated = Some(next);
+            registered.push(mf);
+        }
+        updated.as_ref().unwrap_or(self).validate_models()?;
+        if let Some(updated) = updated {
+            *self = updated;
+        }
+        Ok(registered)
+    }
+
+    /// The rollback core of [`ModelManager::add_models`] and
+    /// [`ModelManager::filter`]: inserts every already-built `files` in
+    /// order, then, unless `validate` is false, runs
+    /// [`ModelManager::validate_models`] once over the whole manager; either
+    /// failure undoes every insert this call made, exactly as `add_models`
+    /// does for its own AST-building version of the same loop.
+    fn insert_models(&mut self, files: Vec<ModelFile>, validate: bool) -> Result<()> {
+        let files_len = self.files.len();
+        let declarations_len = self.declarations.len();
+        let properties_len = self.properties.len();
+        let namespaces_snapshot = self.namespaces.clone();
+        let generation = self.generation;
+
+        let mut result: Result<()> = Ok(());
+        for mf in files {
+            if let Some(existing) = self
+                .namespaces
+                .get(mf.namespace())
+                .and_then(|id| self.file(*id))
+            {
+                result = Err(already_exists(mf.namespace(), mf.file_name(), existing));
+                break;
+            }
+            if let Err(err) = self.insert(mf) {
+                result = Err(err);
+                break;
+            }
+        }
+        if result.is_ok()
+            && validate
+            && let Err(err) = self.validate_models()
+        {
+            result = Err(err);
+        }
+
+        if let Err(err) = result {
+            self.files.truncate(files_len);
+            self.declarations.truncate(declarations_len);
+            self.properties.truncate(properties_len);
+            self.namespaces = namespaces_snapshot;
+            self.generation = generation;
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
@@ -1551,6 +2071,413 @@ impl ResolutionContext for ModelManager {
             return Err(unknown(*model_file));
         }
         Ok(self.declaration_ids(id).map(Node::Declaration).collect())
+    }
+}
+
+/// A port of `@accordproject/concerto-metamodel@3.17.0`'s
+/// `lib/metamodelutil.js` `resolveLocalNames` and its private helpers — the
+/// only part of that package [`ModelManager::resolve_meta_model`] needs.
+/// Every function here is a line-for-line port: it walks the same plain
+/// metamodel-AST [`Value`] shape [`ModelFile::ast`] already stores (no typed
+/// `mm::*` struct, the same divergence `crate::dcs` documents for the same
+/// AST), and raises the same plain JS `Error`/`TypeError` TS does, through
+/// the catalogue (`metamodelutil-*`, `engine-typeerror-readproperties`).
+mod metamodel_util {
+    use std::collections::HashMap;
+
+    use serde_json::Value;
+
+    use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+
+    /// The metamodel's own namespace, short for the five reserved
+    /// declarations `createNameTable` seeds the table with.
+    const CONCERTO_NS: &str = "concerto@1.0.0";
+
+    /// The metamodel's namespace prefix, stripped from a node's `$class` to
+    /// get the short name the `switch` in `resolveTypeNames` matches on.
+    const MM_NS: &str = "concerto.metamodel@1.0.0.";
+
+    /// One `createNameTable` entry: the namespace and (possibly aliased)
+    /// local name a bare name resolves to.
+    struct ResolvedName {
+        namespace: String,
+        name: String,
+        resolved_name: Option<String>,
+    }
+
+    /// TS `findNamespace`: the model in `prior_models` (`getAst(false,
+    /// true)`'s `{$class, models}` shape) whose namespace is `namespace`, if
+    /// one is registered.
+    fn find_namespace<'a>(prior_models: &'a Value, namespace: &str) -> Option<&'a Value> {
+        prior_models
+            .get("models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|model| model.get("namespace").and_then(Value::as_str) == Some(namespace))
+    }
+
+    /// TS `findDeclaration`: `model`'s own declaration named `name`, if any.
+    fn find_declaration<'a>(model: &'a Value, name: &str) -> Option<&'a Value> {
+        model
+            .get("declarations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|decl| decl.get("name").and_then(Value::as_str) == Some(name))
+    }
+
+    /// TS: `Declaration ${imp.name} in namespace ${namespace} not found`.
+    fn declaration_not_found(name: &str, namespace: &str) -> ConcertoError {
+        ContractError::new(
+            ErrorKind::Error,
+            "metamodelutil-createnametable-declarationnotfound",
+            vec![
+                ("name", name.to_string()),
+                ("namespace", namespace.to_string()),
+            ],
+        )
+        .into()
+    }
+
+    /// TS: `Name ${name} not found`.
+    fn name_not_found(name: &str) -> ConcertoError {
+        ContractError::new(
+            ErrorKind::Error,
+            "metamodelutil-resolvename-notfound",
+            vec![("name", name.to_string())],
+        )
+        .into()
+    }
+
+    /// TS: `Unrecognized $class ${String(metaModel.$class)}`.
+    fn unrecognized_class(rendered: String) -> ConcertoError {
+        ContractError::new(
+            ErrorKind::Error,
+            "metamodelutil-resolvetypenames-unrecognizedclass",
+            vec![("class", rendered)],
+        )
+        .into()
+    }
+
+    /// A JS `TypeError` for reading `.declarations` of `undefined`: TS's
+    /// `findNamespace` returns `undefined` for an import whose namespace is
+    /// not (yet) registered, and every `createNameTable` branch reads
+    /// straight off that result without an existence check.
+    fn undefined_declarations() -> ConcertoError {
+        ContractError::new(
+            ErrorKind::JsTypeError,
+            "engine-typeerror-readproperties",
+            vec![
+                ("value", "undefined".to_string()),
+                ("property", "declarations".to_string()),
+            ],
+        )
+        .into()
+    }
+
+    /// TS `createNameTable`: a bare-name -> (namespace, name[, resolvedName])
+    /// table for `meta_model`, seeded with the five reserved
+    /// `concerto@1.0.0` declarations, then every name `meta_model` imports —
+    /// in import order, a later import overriding an earlier one — and
+    /// finally every name `meta_model` declares itself (overriding its own
+    /// imports), the same override order as TS's two `forEach` loops.
+    fn create_name_table(
+        prior_models: &Value,
+        meta_model: &Value,
+    ) -> Result<HashMap<String, ResolvedName>> {
+        let mut table: HashMap<String, ResolvedName> =
+            ["Concept", "Asset", "Participant", "Transaction", "Event"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        ResolvedName {
+                            namespace: CONCERTO_NS.to_string(),
+                            name: name.to_string(),
+                            resolved_name: None,
+                        },
+                    )
+                })
+                .collect();
+
+        for imp in meta_model
+            .get("imports")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let namespace = imp
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let model_file = find_namespace(prior_models, namespace);
+            let class = imp
+                .get("$class")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match class.strip_prefix(MM_NS) {
+                Some("ImportType") => {
+                    let model_file = model_file.ok_or_else(undefined_declarations)?;
+                    let name = imp.get("name").and_then(Value::as_str).unwrap_or_default();
+                    if find_declaration(model_file, name).is_none() {
+                        return Err(declaration_not_found(name, namespace));
+                    }
+                    table.insert(
+                        name.to_string(),
+                        ResolvedName {
+                            namespace: namespace.to_string(),
+                            name: name.to_string(),
+                            resolved_name: None,
+                        },
+                    );
+                }
+                Some("ImportTypes") => {
+                    // TS only reads `modelFile.declarations` inside
+                    // `imp.types.forEach`, so an import of no types from an
+                    // unregistered namespace does not throw.
+                    let aliases: HashMap<&str, &str> = imp
+                        .get("aliasedTypes")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|a| {
+                            Some((
+                                a.get("name").and_then(Value::as_str)?,
+                                a.get("aliasedName").and_then(Value::as_str)?,
+                            ))
+                        })
+                        .collect();
+                    for ty in imp
+                        .get("types")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(ty) = ty.as_str() else { continue };
+                        let model_file = model_file.ok_or_else(undefined_declarations)?;
+                        if find_declaration(model_file, ty).is_none() {
+                            return Err(declaration_not_found(ty, namespace));
+                        }
+                        let local_name = aliases.get(ty).copied().unwrap_or(ty);
+                        let entry = if local_name != ty {
+                            ResolvedName {
+                                namespace: namespace.to_string(),
+                                name: local_name.to_string(),
+                                resolved_name: Some(ty.to_string()),
+                            }
+                        } else {
+                            ResolvedName {
+                                namespace: namespace.to_string(),
+                                name: ty.to_string(),
+                                resolved_name: None,
+                            }
+                        };
+                        table.insert(local_name.to_string(), entry);
+                    }
+                }
+                _ => {
+                    // TS's `else` branch: `ImportAll` (and anything else),
+                    // every one of the target model's own declarations.
+                    let model_file = model_file.ok_or_else(undefined_declarations)?;
+                    for decl in model_file
+                        .get("declarations")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(name) = decl.get("name").and_then(Value::as_str) {
+                            table.insert(
+                                name.to_string(),
+                                ResolvedName {
+                                    namespace: namespace.to_string(),
+                                    name: name.to_string(),
+                                    resolved_name: None,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let own_namespace = meta_model
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        for decl in meta_model
+            .get("declarations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = decl.get("name").and_then(Value::as_str) {
+                table.insert(
+                    name.to_string(),
+                    ResolvedName {
+                        namespace: own_namespace.to_string(),
+                        name: name.to_string(),
+                        resolved_name: None,
+                    },
+                );
+            }
+        }
+
+        Ok(table)
+    }
+
+    /// Sets a `TypeIdentifier`-shaped `node`'s `namespace` (and `name`, and
+    /// `resolvedName` when the table entry carries one) from `table[name]`,
+    /// the shared tail of TS's `superType` case and its `.type` group
+    /// (`metaModel.superType.namespace = resolveName(name, table);
+    /// metaModel.superType.name = table[name].name; if (table[name]?.resolvedName)
+    /// …`): `table[name].name` always equals `name` itself (every
+    /// `createNameTable` branch keys an entry under its own `name`), so
+    /// re-reading the table after the (no-op) name reassignment, as TS does,
+    /// is the same as reading it once.
+    fn set_resolved_type_identifier(
+        node: &mut Value,
+        name: &str,
+        table: &HashMap<String, ResolvedName>,
+    ) -> Result<()> {
+        let entry = table.get(name).ok_or_else(|| name_not_found(name))?;
+        let Some(map) = node.as_object_mut() else {
+            return Ok(());
+        };
+        map.insert("namespace".into(), Value::String(entry.namespace.clone()));
+        map.insert("name".into(), Value::String(entry.name.clone()));
+        if let Some(resolved) = &entry.resolved_name {
+            map.insert("resolvedName".into(), Value::String(resolved.clone()));
+        }
+        Ok(())
+    }
+
+    /// TS `resolveTypeNames`: mutates `node` (and everything it holds) in
+    /// place, adding the fully-qualified `namespace` (and `resolvedName`,
+    /// where the name table has one) next to every type name `node` or one
+    /// of its descendants carries — a super type, an object/relationship
+    /// property's or map key/value's `type`, a decorator type reference
+    /// argument, and a scalar declaration's own name.
+    fn resolve_type_names(node: &mut Value, table: &HashMap<String, ResolvedName>) -> Result<()> {
+        // Any element can carry a decorator (including a primitive field),
+        // so resolve those first, exactly as TS does before its `switch`.
+        if let Some(decorators) = node.get_mut("decorators").and_then(Value::as_array_mut) {
+            for decorator in decorators.iter_mut() {
+                resolve_type_names(decorator, table)?;
+            }
+        }
+
+        let class_value = node.get("$class");
+        let class_str = class_value
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        // TS: `if (!metaModel.$class) throw ...` — only a missing, `null`,
+        // non-string or empty `$class` is falsy; anything else truthy that
+        // matches no `case` below falls through `default` as a no-op.
+        let Some(class_str) = class_str else {
+            let rendered = match class_value {
+                None => "undefined".to_string(),
+                Some(Value::Null) => "null".to_string(),
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+            };
+            return Err(unrecognized_class(rendered));
+        };
+        let Some(short) = class_str.strip_prefix(MM_NS) else {
+            return Ok(());
+        };
+
+        match short {
+            "Model" => {
+                if let Some(decls) = node.get_mut("declarations").and_then(Value::as_array_mut) {
+                    for decl in decls.iter_mut() {
+                        resolve_type_names(decl, table)?;
+                    }
+                }
+            }
+            "EnumDeclaration"
+            | "AssetDeclaration"
+            | "ConceptDeclaration"
+            | "EventDeclaration"
+            | "TransactionDeclaration"
+            | "ParticipantDeclaration" => {
+                if let Some(super_type) = node.get_mut("superType") {
+                    let name = super_type
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if let Some(name) = name {
+                        set_resolved_type_identifier(super_type, &name, table)?;
+                    }
+                }
+                if let Some(props) = node.get_mut("properties").and_then(Value::as_array_mut) {
+                    for property in props.iter_mut() {
+                        resolve_type_names(property, table)?;
+                    }
+                }
+            }
+            "MapDeclaration" => {
+                if let Some(key) = node.get_mut("key") {
+                    resolve_type_names(key, table)?;
+                }
+                if let Some(value) = node.get_mut("value") {
+                    resolve_type_names(value, table)?;
+                }
+            }
+            "Decorator" => {
+                if let Some(args) = node.get_mut("arguments").and_then(Value::as_array_mut) {
+                    for argument in args.iter_mut() {
+                        resolve_type_names(argument, table)?;
+                    }
+                }
+            }
+            "ObjectProperty"
+            | "RelationshipProperty"
+            | "DecoratorTypeReference"
+            | "ObjectMapKeyType"
+            | "ObjectMapValueType"
+            | "RelationshipMapValueType" => {
+                if let Some(type_node) = node.get_mut("type") {
+                    let name = type_node
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if let Some(name) = name {
+                        set_resolved_type_identifier(type_node, &name, table)?;
+                    }
+                }
+            }
+            "StringScalar" | "BooleanScalar" | "DateTimeScalar" | "DoubleScalar" | "LongScalar"
+            | "IntegerScalar" => {
+                let name = node.get("name").and_then(Value::as_str).map(str::to_string);
+                if let Some(name) = name {
+                    let namespace = table
+                        .get(&name)
+                        .map(|entry| entry.namespace.clone())
+                        .ok_or_else(|| name_not_found(&name))?;
+                    if let Some(map) = node.as_object_mut() {
+                        map.insert("namespace".into(), Value::String(namespace));
+                        map.insert("name".into(), Value::String(name));
+                    }
+                }
+            }
+            // Every other `$class` (primitive properties and map key/value
+            // types, decorator literals, …) needs no name resolution: TS's
+            // `default` case is a no-op once `metaModel.$class` is truthy,
+            // which every well-formed node here already established.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// TS `resolveLocalNames`: `meta_model` with every type name it holds
+    /// resolved to its declaring namespace, against `prior_models`
+    /// (`ModelManager.getAst(false, true)`'s shape).
+    pub(super) fn resolve_local_names(prior_models: &Value, meta_model: &Value) -> Result<Value> {
+        let table = create_name_table(prior_models, meta_model)?;
+        let mut result = meta_model.clone();
+        resolve_type_names(&mut result, &table)?;
+        Ok(result)
     }
 }
 
@@ -1885,6 +2812,55 @@ mod tests {
         assert!(mgr.add_model(&model, None).is_err());
     }
 
+    /// TS `_throwAlreadyExists`: a plain `Error`, never the `IllegalModel`
+    /// this port raised before (P2-08b review) — with both files' names in
+    /// the message when both have one.
+    #[test]
+    fn duplicate_namespace_names_both_files() {
+        let mut mgr = ModelManager::new().unwrap();
+        let model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.x@1.0.0", "declarations": []
+        });
+        mgr.add_model(&model, Some("old.cto".into())).unwrap();
+        let err = mgr.add_model(&model, Some("new.cto".into())).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Namespace org.x@1.0.0 specified in file new.cto is already declared in file old.cto"
+        );
+    }
+
+    /// Neither file has a name: both optional clauses drop out.
+    #[test]
+    fn duplicate_namespace_without_file_names() {
+        let mut mgr = ModelManager::new().unwrap();
+        let model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.x@1.0.0", "declarations": []
+        });
+        mgr.add_model(&model, None).unwrap();
+        let err = mgr.add_model(&model, None).unwrap_err();
+        assert_eq!(err.to_string(), "Namespace org.x@1.0.0 is already declared");
+    }
+
+    /// [`ModelManager::add_models`] hits the same duplicate-namespace check.
+    #[test]
+    fn add_models_rejects_a_duplicate_namespace_with_the_ts_message() {
+        let mut mgr = ModelManager::new().unwrap();
+        let model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.x@1.0.0", "declarations": []
+        });
+        mgr.add_model(&model, Some("old.cto".into())).unwrap();
+        let err = mgr
+            .add_models([(&model, Some("new.cto".to_string()))])
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Namespace org.x@1.0.0 specified in file new.cto is already declared in file old.cto"
+        );
+    }
+
     #[test]
     fn resolves_by_exact_fqn_only() {
         let mgr = manager();
@@ -1975,6 +2951,197 @@ mod tests {
                           "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" } },
                         { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "colour", "isArray": false, "isOptional": false,
                           "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Color" } },
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "label", "isArray": false, "isOptional": false }
+                      ] },
+                    { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Email" }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        mgr
+    }
+
+    #[test]
+    fn get_ast_unresolved_leaves_type_names_bare() {
+        let mgr = manager_with_imports();
+        let ast = mgr.get_ast(false, false).unwrap();
+        let models = ast.get("models").and_then(Value::as_array).unwrap();
+        assert_eq!(models.len(), 2, "the system namespaces are excluded");
+        let other = models
+            .iter()
+            .find(|m| m.get("namespace").and_then(Value::as_str) == Some("org.other@1.0.0"))
+            .unwrap();
+        let lead_type = other.pointer("/declarations/0/properties/0/type").unwrap();
+        assert_eq!(
+            lead_type.get("name").and_then(Value::as_str),
+            Some("Person")
+        );
+        assert!(lead_type.get("namespace").is_none());
+    }
+
+    #[test]
+    fn get_ast_resolved_adds_the_declaring_namespace() {
+        let mgr = manager_with_clean_import();
+        let ast = mgr.get_ast(true, false).unwrap();
+        let models = ast.get("models").and_then(Value::as_array).unwrap();
+        let clean = models
+            .iter()
+            .find(|m| m.get("namespace").and_then(Value::as_str) == Some("org.clean@1.0.0"))
+            .unwrap();
+        // `Team.lead: Person` — imported (unaliased) from `org.example@1.0.0`.
+        let lead_type = clean.pointer("/declarations/0/properties/0/type").unwrap();
+        assert_eq!(
+            lead_type.get("namespace").and_then(Value::as_str),
+            Some("org.example@1.0.0")
+        );
+        assert_eq!(
+            lead_type.get("name").and_then(Value::as_str),
+            Some("Person")
+        );
+        assert!(lead_type.get("resolvedName").is_none());
+        // `Team.label: String` — a primitive, untouched.
+        let label = clean.pointer("/declarations/0/properties/1").unwrap();
+        assert_eq!(label.get("namespace"), None);
+    }
+
+    /// `Email` (`org.clean@1.0.0`) is a `StringScalar`, whose own case
+    /// resolves `namespace`/`name` on the node itself, not under `.type`.
+    #[test]
+    fn get_ast_resolved_resolves_a_scalar_declarations_own_name() {
+        let mgr = manager_with_clean_import();
+        let resolved = mgr
+            .resolve_meta_model(mgr.model_file("org.clean@1.0.0").unwrap().ast())
+            .unwrap();
+        let email = resolved
+            .get("declarations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .find(|d| d.get("name").and_then(Value::as_str) == Some("Email"))
+            .unwrap();
+        assert_eq!(
+            email.get("namespace").and_then(Value::as_str),
+            Some("org.clean@1.0.0")
+        );
+    }
+
+    /// `Manager` is imported from `org.example@1.0.0` via `ImportTypes`;
+    /// resolving a super type that names it adds that namespace.
+    #[test]
+    fn resolve_meta_model_resolves_an_imported_super_type() {
+        let mgr = manager_with_imports();
+        let model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.super@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.example@1.0.0", "name": "Manager" }
+            ],
+            "declarations": [
+                { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Lead", "isAbstract": false,
+                  "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Manager" },
+                  "properties": [] }
+            ]
+        });
+        let resolved = mgr.resolve_meta_model(&model).unwrap();
+        let super_type = resolved.pointer("/declarations/0/superType").unwrap();
+        assert_eq!(
+            super_type.get("namespace").and_then(Value::as_str),
+            Some("org.example@1.0.0")
+        );
+    }
+
+    /// TS `resolveName`: a plain `Error`, "Name {name} not found", for a
+    /// type that resolves to no import and no local declaration.
+    #[test]
+    fn resolve_meta_model_rejects_an_unresolvable_name() {
+        let mgr = manager_with_imports();
+        let model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.broken@1.0.0",
+            "declarations": [
+                { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Orphan", "isAbstract": false,
+                  "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" },
+                  "properties": [] }
+            ]
+        });
+        let err = mgr.resolve_meta_model(&model).unwrap_err();
+        assert_eq!(err.to_string(), "Name Ghost not found");
+    }
+
+    /// TS `createNameTable`'s `ImportType` branch: a plain `Error`, when the
+    /// imported declaration itself is not in the target namespace.
+    #[test]
+    fn resolve_meta_model_rejects_an_import_of_an_undeclared_type() {
+        let mgr = manager_with_imports();
+        let model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.broken@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.example@1.0.0", "name": "Nope" }
+            ],
+            "declarations": []
+        });
+        let err = mgr.resolve_meta_model(&model).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Declaration Nope in namespace org.example@1.0.0 not found"
+        );
+    }
+
+    /// TS's `createNameTable` only reads the target model inside
+    /// `imp.types.forEach`, so an `ImportTypes` of no types from a namespace
+    /// that is not registered resolves; one naming a type is a `TypeError`.
+    #[test]
+    fn resolve_meta_model_accepts_an_empty_import_types_from_an_unknown_namespace() {
+        let mgr = manager();
+        let model = |types: serde_json::Value| {
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.lonely@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                      "namespace": "org.missing@1.0.0", "types": types }
+                ],
+                "declarations": []
+            })
+        };
+        assert_eq!(
+            mgr.resolve_meta_model(&model(serde_json::json!([])))
+                .unwrap(),
+            model(serde_json::json!([]))
+        );
+        let err = mgr
+            .resolve_meta_model(&model(serde_json::json!(["Thing"])))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ConcertoError::Contract(ref c) if c.kind == ErrorKind::JsTypeError
+        ));
+    }
+
+    /// [`manager`] plus `org.clean@1.0.0`, which imports `Person` from it
+    /// and declares a concept and a scalar — [`manager_with_imports`]
+    /// without its deliberately unresolvable import, for tests that resolve
+    /// a whole model's metamodel ([`ModelManager::resolve_meta_model`]
+    /// walks every import, not just the ones a lookup happens to reach).
+    fn manager_with_clean_import() -> ModelManager {
+        let mut mgr = manager();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.clean@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.example@1.0.0", "name": "Person" }
+                ],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Team", "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "lead", "isArray": false, "isOptional": false,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" } },
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "label", "isArray": false, "isOptional": false }
                       ] },
                     { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Email" }
@@ -2561,5 +3728,375 @@ mod tests {
         // still validate, alongside the two the batch added.
         assert!(mgr.get_declaration("org.example@1.0.0.Manager").is_ok());
         assert!(mgr.validate_models().is_ok());
+    }
+
+    // P2-08b: BaseModelManager.resolveType, derivesFrom, isAssignableTo,
+    // getAssignableConcreteTypes, getModels, the get<Kind>Declarations
+    // family, filter, updateModelFile and deleteModelFile.
+
+    #[test]
+    fn resolve_type_passes_primitives_through() {
+        let mgr = manager();
+        assert_eq!(
+            mgr.resolve_type("ctx", "String").unwrap(),
+            "String".to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_type_resolves_a_local_type() {
+        let mgr = manager();
+        assert_eq!(
+            mgr.resolve_type("ctx", "org.example@1.0.0.Employee")
+                .unwrap(),
+            "org.example@1.0.0.Employee"
+        );
+    }
+
+    #[test]
+    fn resolve_type_rejects_an_unregistered_namespace() {
+        let mgr = manager();
+        let err = mgr
+            .resolve_type("org.example@1.0.0.Person", "org.nope@1.0.0.Foo")
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No registered namespace for type \"org.nope@1.0.0.Foo\" in \"org.example@1.0.0.Person\"."
+        );
+    }
+
+    #[test]
+    fn resolve_type_rejects_an_imported_name() {
+        let mgr = manager_with_imports();
+        // `Person` is imported into `org.other@1.0.0`, not declared there.
+        let err = mgr
+            .resolve_type("ctx", "org.other@1.0.0.Person")
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No type \"org.other@1.0.0.Person\" in namespace \"org.other@1.0.0\" for \"ctx\"."
+        );
+    }
+
+    #[test]
+    fn derives_from_is_true_for_the_same_type() {
+        let mgr = manager();
+        assert!(
+            mgr.derives_from("org.example@1.0.0.Employee", "org.example@1.0.0.Employee")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn derives_from_walks_the_super_chain() {
+        let mgr = manager();
+        assert!(
+            mgr.derives_from("org.example@1.0.0.Manager", "org.example@1.0.0.Person")
+                .unwrap()
+        );
+        assert!(
+            mgr.derives_from("org.example@1.0.0.Manager", "concerto@1.0.0.Concept")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn derives_from_is_false_for_the_wrong_direction() {
+        let mgr = manager();
+        assert!(
+            !mgr.derives_from("org.example@1.0.0.Person", "org.example@1.0.0.Manager")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn derives_from_propagates_gettype_s_error() {
+        let mgr = manager();
+        assert!(
+            mgr.derives_from("org.example@1.0.0.Nope", "org.example@1.0.0.Person")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn base_manager_is_assignable_to_matches_ts_including_the_abstract_check() {
+        let mut mgr = manager();
+        // Person has no explicit `isAbstract`; make an abstract type to
+        // exercise the "false even against itself" branch TS's own test
+        // covers (`isAssignableTo should return false when fqn is abstract`).
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.abs@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Base", "isAbstract": true, "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        assert!(!mgr.is_type_assignable_to("org.abs@1.0.0.Base", "org.abs@1.0.0.Base"));
+        assert!(
+            mgr.is_type_assignable_to("org.example@1.0.0.Employee", "org.example@1.0.0.Employee")
+        );
+        assert!(
+            mgr.is_type_assignable_to("org.example@1.0.0.Employee", "org.example@1.0.0.Person")
+        );
+        assert!(
+            !mgr.is_type_assignable_to("org.example@1.0.0.Person", "org.example@1.0.0.Employee")
+        );
+        assert!(!mgr.is_type_assignable_to("org.example@1.0.0.Nope", "org.example@1.0.0.Person"));
+    }
+
+    #[test]
+    fn get_assignable_concrete_types_leaves_out_the_abstract_base_and_absent_types() {
+        let mut mgr = manager();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.abs2@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Base", "isAbstract": true, "properties": [] },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Child", "isAbstract": false,
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" }, "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        let names: Vec<String> = mgr
+            .get_assignable_concrete_types("org.abs2@1.0.0.Base")
+            .into_iter()
+            .filter_map(|id| mgr.declaration(id).map(|d| d.name().to_string()))
+            .collect();
+        assert_eq!(names, vec!["Child".to_string()]);
+        assert!(
+            mgr.get_assignable_concrete_types("org.abs2@1.0.0.Nope")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn get_models_excludes_system_and_decorator_models() {
+        let mgr = manager();
+        let models = mgr.get_models(true);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].0, "org.example@1.0.0.cto");
+    }
+
+    #[test]
+    fn get_models_names_a_file_from_its_file_name() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.named@1.0.0", "declarations": []
+            }),
+            Some("https://example.org/models/".to_string()),
+        )
+        .unwrap();
+        let models = mgr.get_models(true);
+        assert_eq!(models, vec![("models".to_string(), None)]);
+    }
+
+    #[test]
+    fn get_concept_declarations_excludes_the_system_concepts() {
+        let mgr = manager();
+        let names: Vec<String> = mgr
+            .get_concept_declarations()
+            .into_iter()
+            .filter_map(|id| mgr.declaration(id).map(|d| d.name().to_string()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Person".to_string(),
+                "Employee".to_string(),
+                "Manager".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_keeps_only_matching_declarations_and_the_system_models() {
+        let mgr = manager();
+        let kept = mgr
+            .filter(|fqn| fqn == "org.example@1.0.0.Person", false)
+            .unwrap();
+        assert!(kept.model_file("org.example@1.0.0").is_some());
+        assert!(kept.get_declaration("org.example@1.0.0.Person").is_ok());
+        assert!(kept.get_declaration("org.example@1.0.0.Employee").is_err());
+        assert!(kept.model_file("concerto@1.0.0").is_some());
+        assert!(kept.model_file("concerto.decorator@1.0.0").is_some());
+    }
+
+    #[test]
+    fn filter_drops_a_file_left_with_no_declarations() {
+        let mgr = manager();
+        let kept = mgr.filter(|_| false, true).unwrap();
+        assert!(kept.model_file("org.example@1.0.0").is_none());
+    }
+
+    #[test]
+    fn update_model_file_replaces_the_registered_file() {
+        let mgr = manager();
+        let replacement = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Only", "isAbstract": false, "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let updated = mgr.update_model_file(replacement, true).unwrap();
+        assert!(updated.get_declaration("org.example@1.0.0.Only").is_ok());
+        assert!(updated.get_declaration("org.example@1.0.0.Person").is_err());
+        // `mgr` itself is untouched.
+        assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
+    }
+
+    #[test]
+    fn update_model_file_rejects_an_unregistered_namespace() {
+        let mgr = manager();
+        let fresh = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.new@1.0.0", "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+        let err = mgr.update_model_file(fresh, true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Model file for namespace org.new@1.0.0 not found"
+        );
+    }
+
+    #[test]
+    fn delete_model_file_removes_the_namespace() {
+        let mgr = manager();
+        let deleted = mgr.delete_model_file("org.example@1.0.0").unwrap();
+        assert!(deleted.model_file("org.example@1.0.0").is_none());
+        assert!(mgr.model_file("org.example@1.0.0").is_some());
+    }
+
+    #[test]
+    fn delete_model_file_rejects_an_absent_namespace() {
+        let mgr = manager();
+        let err = mgr.delete_model_file("org.nope@1.0.0").unwrap_err();
+        assert_eq!(err.to_string(), "Model file does not exist");
+    }
+
+    /// A downloaded `org.ext@1.0.0` declaring `E` (and `extra` when given),
+    /// as `updateExternalModels`' downloader returns it.
+    fn external(declarations: serde_json::Value) -> ModelFileSource {
+        ModelFileSource {
+            ast: serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.ext@1.0.0",
+                "declarations": declarations
+            }),
+            definitions: Some("namespace org.ext@1.0.0".into()),
+            file_name: Some("@example.com.ext.cto".into()),
+        }
+    }
+
+    fn concept(name: &str) -> serde_json::Value {
+        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": name, "isAbstract": false, "properties": [] })
+    }
+
+    #[test]
+    fn update_external_models_adds_then_updates_a_namespace() {
+        let mut mgr = manager();
+        let added = mgr
+            .update_external_models([external(serde_json::json!([concept("E")]))])
+            .unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].file_name(), Some("@example.com.ext.cto"));
+        assert!(mgr.get_declaration("org.ext@1.0.0.E").is_ok());
+        assert!(mgr.model_file("org.ext@1.0.0").unwrap().is_external());
+
+        // The same namespace again replaces it, in place.
+        mgr.update_external_models([external(serde_json::json!([concept("F")]))])
+            .unwrap();
+        assert!(mgr.get_declaration("org.ext@1.0.0.F").is_ok());
+        assert!(mgr.get_declaration("org.ext@1.0.0.E").is_err());
+        assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
+    }
+
+    #[test]
+    fn update_external_models_with_nothing_downloaded_still_validates() {
+        let mut mgr = manager();
+        assert!(mgr.update_external_models([]).unwrap().is_empty());
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.bad@1.0.0",
+                "declarations": [{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "B", "isAbstract": false,
+                    "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" },
+                    "properties": [] }]
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(mgr.update_external_models([]).is_err());
+    }
+
+    #[test]
+    fn update_external_models_rolls_back_when_validation_fails() {
+        let mut mgr = manager();
+        let broken = serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "E", "isAbstract": false,
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" },
+            "properties": [] }]);
+        assert!(
+            mgr.update_external_models([
+                external(serde_json::json!([concept("E")])),
+                external(broken)
+            ])
+            .is_err()
+        );
+        assert!(mgr.model_file("org.ext@1.0.0").is_none());
+        assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
+    }
+
+    /// PORTING.md 2.5 / DV-013: a cyclic chain is V8's stack-overflow
+    /// `RangeError`, as TS's unguarded recursion fails, not a cycle error.
+    #[test]
+    fn circular_inheritance_is_a_range_error() {
+        let concept = |name: &str, sup: &str| {
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": name, "isAbstract": false, "properties": [],
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup } })
+        };
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.cycle@1.0.0",
+                "declarations": [concept("A", "C"), concept("B", "A"), concept("C", "B")]
+            }),
+            None,
+        )
+        .unwrap();
+        for err in [
+            mgr.get_all_properties("org.cycle@1.0.0.A").unwrap_err(),
+            mgr.validate_models().unwrap_err(),
+        ] {
+            let ConcertoError::Contract(c) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(c.kind, ErrorKind::JsRangeError);
+            assert_eq!(c.message(), "Maximum call stack size exceeded");
+            assert_eq!(c.location, None);
+        }
     }
 }
