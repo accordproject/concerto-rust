@@ -1785,6 +1785,54 @@ fn remap_type_not_found(err: ConcertoError, fqn: &str, _hint: &str) -> ConcertoE
 
 use crate::instance::diagnostic::{Diagnostic, DiagnosticCode, ValidationResult};
 
+/// Checks that `value`'s own `$class` (when present) is assignable to
+/// `declared_fqn`. [`visit_class_declaration`]/[`collect_class`] both walk
+/// by `value`'s own `$class`, regardless of what `declared_fqn` says (module
+/// doc): the right behaviour for `Resource.validate`, which always validates
+/// a resource against its own type, but not for
+/// [`ClassDeclaration::validate_instance`]/`validate_instance_or_throw`
+/// (crate::introspect::declaration::ClassDeclaration), whose whole point is
+/// to validate against the declaration they were called on. Returns `Ok(())`
+/// when `value` carries no `$class` (or isn't shaped like a Resource at
+/// all): the ordinary walk that follows already reports that case
+/// correctly, so there's nothing extra to check here; likewise `Ok(())` when
+/// `declared_fqn` itself is `value`'s own `$class`, so a
+/// [`ModelManager::validate_instance_or_throw`](crate::model_manager::ModelManager::validate_instance_or_throw)
+/// call (which always passes `value`'s own `$class` as `declared_fqn`) never
+/// pays for this check.
+fn check_assignable_to_declaration(
+    mm: &ModelManager,
+    declared_fqn: &str,
+    value: &Value,
+) -> Result<()> {
+    let Some(own_fqn) = value
+        .as_object()
+        .and_then(|o| o.get("$class"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    if own_fqn == declared_fqn {
+        return Ok(());
+    }
+    match mm.is_assignable_to(own_fqn, declared_fqn) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ContractError::pre_port(
+            ErrorKind::Validation,
+            format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
+            None,
+        )
+        .into()),
+        Err(_) => Err(ContractError::type_not_found(
+            "typenotfounderror-defaultmessage",
+            Vec::new(),
+            own_fqn.to_string(),
+            None,
+        )
+        .into()),
+    }
+}
+
 /// [`validate_instance_from`], but validated against `declared_fqn` instead
 /// of `value`'s own `$class` — what [`ClassDeclaration::validate_instance_or_throw`]
 /// (crate::introspect::declaration::ClassDeclaration::validate_instance_or_throw)
@@ -1796,6 +1844,7 @@ pub(crate) fn validate_instance_against(
     value: &Value,
     options: &ValidateOptions,
 ) -> Result<()> {
+    check_assignable_to_declaration(mm, declared_fqn, value)?;
     let mut params = Params {
         mm,
         options,
@@ -1887,6 +1936,39 @@ pub(crate) fn collect_diagnostics(
     value: &Value,
     options: &ValidateOptions,
 ) -> ValidationResult {
+    // Same declared-vs-own-`$class` check [`check_assignable_to_declaration`]
+    // makes for the first-error walk: [`collect_class`] otherwise walks by
+    // `value`'s own `$class` regardless of `declared_fqn` (its own doc
+    // comment), so a `ClassDeclaration::validate_instance` call would
+    // silently validate a mismatched type as if it matched. Built inline
+    // (rather than through [`classify_error`]) so the diagnostic keeps the
+    // same [`DiagnosticCode`] [`collect_class_property_item`]'s own
+    // assignability check uses for the same kind of mismatch, one level
+    // down the tree.
+    if let Some(own_fqn) = value
+        .as_object()
+        .and_then(|o| o.get("$class"))
+        .and_then(Value::as_str)
+        && own_fqn != declared_fqn
+    {
+        match mm.is_assignable_to(own_fqn, declared_fqn) {
+            Ok(true) => {}
+            Ok(false) => {
+                return ValidationResult::new(vec![Diagnostic::error(
+                    String::new(),
+                    DiagnosticCode::NotAssignable,
+                    format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
+                )]);
+            }
+            Err(_) => {
+                return ValidationResult::new(vec![Diagnostic::error(
+                    String::new(),
+                    DiagnosticCode::TypeNotFound,
+                    format!("type not found: {own_fqn}"),
+                )]);
+            }
+        }
+    }
     let mut collector = Collector {
         mm,
         options,
@@ -2076,6 +2158,19 @@ fn collect_property(
             );
             return;
         };
+        // Mirrors `check_array`'s size check (the first-error walk): a
+        // class-typed array property can carry a `sizeValidator` too, and
+        // collect-all must not silently skip it just because it recurses
+        // into elements directly instead of going through
+        // `validate_property_value`.
+        if let Some(sv) = property.size_validator() {
+            let elem = FieldElement::new(c.mm, owner_fqn, property);
+            if let Ok(validator) = CollectionSizeValidator::new(&elem, sv)
+                && let Err(e) = validator.validate(&elem, None, items.len() as f64)
+            {
+                c.push_error(pointer.to_string(), e);
+            }
+        }
         for (i, item) in items.iter().enumerate() {
             collect_class_property_item(c, &class_fqn, item, &format!("{pointer}/{i}"));
         }
@@ -2218,11 +2313,19 @@ mod tests {
                       ] },
                     { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "VIN",
                       "validator": { "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "^[A-Z0-9]{5}$", "flags": "" } },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Item",
+                      "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "name", "isArray": false, "isOptional": false }
+                      ] },
                     { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Garage",
                       "isAbstract": false,
                       "properties": [
                         { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "vinField", "isArray": false, "isOptional": false,
-                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "VIN" } }
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "VIN" } },
+                        { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "items", "isArray": true, "isOptional": true,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Item" },
+                          "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 2 } }
                       ] },
                     { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "StringMap",
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
@@ -3130,5 +3233,76 @@ mod tests {
             &ValidateOptions::default(),
         ));
         assert!(err.to_string().contains("identifier"), "{err}");
+    }
+
+    /// Review finding (P3-03): `collect_property`'s class-typed-array branch
+    /// (`collect_class_property_item` per element) must not skip the
+    /// `sizeValidator` check `check_array` runs for the first-error walk —
+    /// otherwise the two modes disagree on whether an over-size array of
+    /// class-typed elements is valid.
+    #[test]
+    fn collect_all_reports_a_class_typed_array_over_its_max_size() {
+        let mgr = fixture();
+        let garage = json!({
+            "$class": "org.acme@1.0.0.Garage", "vinField": "ABC12",
+            "items": [
+                { "$class": "org.acme@1.0.0.Item", "name": "a" },
+                { "$class": "org.acme@1.0.0.Item", "name": "b" },
+                { "$class": "org.acme@1.0.0.Item", "name": "c" }
+            ]
+        });
+
+        // First-error already catches this (it goes through `check_array`).
+        let err = err_of(validate_instance(&mgr, &garage, &ValidateOptions::default()));
+        assert!(err.to_string().contains("items"), "{err}");
+
+        // Collect-all must agree: this is not a valid instance.
+        let result = collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Garage",
+            &garage,
+            &ValidateOptions::default(),
+        );
+        assert!(!result.is_valid(), "{result:?}");
+        let codes: Vec<DiagnosticCode> = result.diagnostics().iter().map(|d| d.code).collect();
+        assert!(
+            codes.contains(&DiagnosticCode::ValidatorFailure),
+            "{codes:?}"
+        );
+    }
+
+    /// Review finding (P3-03): `ClassDeclaration::validate_instance`/
+    /// `validate_instance_or_throw` must check the value's own `$class`
+    /// against the declaration's own `fqn`, not silently validate whatever
+    /// `value` claims to be (which is what `collect_class`/
+    /// `visit_class_declaration` do on their own, module doc). Unlike
+    /// `class_declaration_entry_points_validate_against_their_own_fqn`
+    /// above, this uses a value whose own `$class` differs from `fqn`, so it
+    /// can actually distinguish the two behaviours.
+    #[test]
+    fn class_declaration_entry_points_reject_a_value_not_assignable_to_their_fqn() {
+        let mgr = fixture();
+        let dog_fqn = "org.acme@1.0.0.Dog";
+        let dog_decl = mgr
+            .get_declaration(dog_fqn)
+            .expect("Dog is in the fixture")
+            .as_class()
+            .expect("Dog is a class-like declaration");
+        // A `Base` instance (unrelated to `Dog`/`Animal`), passed against
+        // `Dog`'s own fqn.
+        let base_instance = json!({ "$class": "org.acme@1.0.0.Base", "a": "x" });
+
+        let result =
+            dog_decl.validate_instance(&mgr, dog_fqn, &base_instance, &ValidateOptions::default());
+        assert!(!result.is_valid(), "{result:?}");
+        assert_eq!(diag_of(result).code, DiagnosticCode::NotAssignable);
+
+        let err = err_of(dog_decl.validate_instance_or_throw(
+            &mgr,
+            dog_fqn,
+            &base_instance,
+            &ValidateOptions::default(),
+        ));
+        assert!(err.to_string().contains("not assignable"), "{err}");
     }
 }
