@@ -120,6 +120,22 @@ pub struct ClassDeclaration {
     decorators: Vec<Decorator>,
 }
 
+/// [`ClassDeclaration::process_decision`]'s result: the `superType`/`idField`
+/// decision `ClassDeclaration.process` (src/introspect/classdeclaration.ts)
+/// makes before its `ast.properties` loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessDecision {
+    /// TS: `this.superType`, once `process()` has set it.
+    pub super_type: Option<String>,
+    /// TS: `this.idField`, once `process()` has set it.
+    pub id_field: Option<String>,
+    /// Whether the view must still call its own `addIdentifierField()`
+    /// (pushes a real `Field` view; kept in TS, P4-07).
+    pub add_identifier_field: bool,
+    /// Whether the view must still call its own `addTimestampField()`.
+    pub add_timestamp_field: bool,
+}
+
 impl ClassDeclaration {
     /// The kind of class-like declaration this is.
     pub fn kind(&self) -> ClassKind {
@@ -297,6 +313,97 @@ impl ClassDeclaration {
     /// && this.name === 'Concept'`.
     fn is_system_concept(namespace: &str, name: &str) -> bool {
         is_system_model_namespace(namespace) && name == "Concept"
+    }
+
+    /// TS: the kind-compatibility check in `ClassDeclaration._resolveSuperType`
+    /// (src/introspect/classdeclaration.ts): `classDecl.declarationKind() !==
+    /// 'ConceptDeclaration' && this.declarationKind() !== classDecl.declarationKind()`,
+    /// negated (`true` when compatible — a subtype may always extend a
+    /// concept, and otherwise both sides must be the same kind). Each side is
+    /// the receiver's own `declarationKind()` string
+    /// ([`DeclarationKind::declaration_kind`]); resolving the super type
+    /// declaration itself is a collaborator call the binding still makes.
+    pub fn kinds_compatible(child_kind: &str, super_kind: &str) -> bool {
+        super_kind == "ConceptDeclaration" || child_kind == super_kind
+    }
+
+    /// TS: the super-type identifier redeclaration check in
+    /// `ClassDeclaration.validate` (src/introspect/classdeclaration.ts), the
+    /// block guarded by `superType.isIdentified()` (the caller checks that
+    /// before calling this): `true` when the super type's existing
+    /// identifier cannot be redeclared. Resolving `superType` itself is a
+    /// collaborator call the binding still makes.
+    pub fn identifier_redeclare_conflict(
+        child_is_system_identified: bool,
+        super_is_system_identified: bool,
+        super_is_explicitly_identified: bool,
+    ) -> bool {
+        if child_is_system_identified {
+            !super_is_system_identified
+        } else {
+            super_is_explicitly_identified
+        }
+    }
+
+    /// TS: `ClassDeclaration.isAsset`/`isParticipant`/`isTransaction`/
+    /// `isEvent`/`isConcept`/`isEnum`/`isMapDeclaration`
+    /// (src/introspect/classdeclaration.ts): each compares `this.type` (the
+    /// AST's own `$class`, already set by `process()`) against one metamodel
+    /// `$class`'s short name. `ast_class` is the receiver's `this.type`;
+    /// `want` is the metamodel short name to compare against
+    /// (`"AssetDeclaration"`, …).
+    pub fn is_kind(ast_class: &str, want: &str) -> bool {
+        get_short_name(ast_class) == want
+    }
+
+    /// The `superType`/`idField` decision `ClassDeclaration.process` makes
+    /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
+    /// the loop itself builds `Field`/`RelationshipDeclaration`/
+    /// `EnumValueDeclaration` views, kept in TS). `explicit_super_type` is
+    /// `this.ast.superType.name`, when the AST names one. `identified_class`
+    /// is `this.ast.identified.$class`; `identified_name` is
+    /// `this.ast.identified.name` (only meaningful for an explicit
+    /// `IdentifiedBy`). `fqn` is `this.fqn`, read once `this.name` and
+    /// `this.modelFile` are set (`Declaration.process` runs first).
+    pub fn process_decision(
+        explicit_super_type: Option<&str>,
+        is_system_model_file: bool,
+        name: &str,
+        identified_class: Option<&str>,
+        identified_name: Option<&str>,
+        fqn: &str,
+    ) -> ProcessDecision {
+        let super_type = match explicit_super_type {
+            Some(t) => Some(t.to_string()),
+            None if Self::is_system_concept_file(is_system_model_file, name) => None,
+            None => Some("Concept".to_string()),
+        };
+
+        let (id_field, add_identifier_field) = match identified_class {
+            None => (None, false),
+            Some(class) if get_short_name(class) == "IdentifiedBy" => {
+                (identified_name.map(str::to_string), false)
+            }
+            Some(_) => (Some("$identifier".to_string()), true),
+        };
+
+        let add_timestamp_field =
+            fqn == "concerto@1.0.0.Transaction" || fqn == "concerto@1.0.0.Event";
+
+        ProcessDecision {
+            super_type,
+            id_field,
+            add_identifier_field,
+            add_timestamp_field,
+        }
+    }
+
+    /// `process_decision`'s own exemption test: unlike [`Self::is_system_concept`]
+    /// (which also needs the namespace, not available to the binding at this
+    /// point), the caller already knows whether its model file is the system
+    /// model file.
+    fn is_system_concept_file(is_system_model_file: bool, name: &str) -> bool {
+        is_system_model_file && name == "Concept"
     }
 
     /// Reads the declaration fields into the generated struct for `kind`,
@@ -586,6 +693,14 @@ impl EnumDeclaration {
     /// The enum's values, each carrying its own processed decorators.
     pub fn values(&self) -> &[Property] {
         &self.values
+    }
+
+    /// The string representation TS's `EnumDeclaration.toString`
+    /// (src/introspect/enumdeclaration.ts) builds: `'EnumDeclaration {id=' +
+    /// this.getFullyQualifiedName() + '}'`, an override of
+    /// [`ClassDeclaration::to_string`] with no super type or abstract flag.
+    pub fn to_string(fqn: &str) -> String {
+        format!("EnumDeclaration {{id={fqn}}}")
     }
 
     /// The enum's values.

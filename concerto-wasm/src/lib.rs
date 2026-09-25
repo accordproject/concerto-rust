@@ -1162,12 +1162,23 @@ pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result
 // transactiondeclaration.ts, eventdeclaration.ts, enumdeclaration.ts) — P4-06
 //
 // The model graph these views meet is still TS (ModelFile/ModelManager are
-// not Rust-backed until P4-08; PORTING.md 1.4), so every member that needs a
-// collaborator (`getModelFile().getType(...)`, the model manager's `getType`)
-// keeps that call in TS; only the pure decision at the end of each such
-// member — which needs no collaborator — is bound here, the same grain
-// Declaration/Decorated (P4-05) used for `modelUtilIsValidIdentifier` and
-// `decoratedFindDuplicateName`.
+// not Rust-backed until P4-08; PORTING.md 1.4), so every ported member that
+// needs a collaborator (`getModelFile().getType(...)`, the model manager's
+// `getType`) reaches it through the JS-callback context (PORTING.md 1.4,
+// "until the arena owns the graph, every collaborator call goes through the
+// JS-callback context"): the member's own algorithm is ported here, and each
+// collaborator call it makes is a plain call back onto the JS object it was
+// given, via the `get`/`call` helpers (not the generic `ResolutionContext`
+// trait — the exact TS collaborator sequence, e.g. `_resolveSuperType`'s
+// `isImportedType`/`resolveImport` branch, matters more here than a shape
+// shared with the arena implementation). A member whose *only* pure content
+// is a small decision at the end (`classDeclarationProcess`'s superType/
+// idField choice, the kind-compatibility and identifier-redeclare checks) has
+// that decision itself pulled into `concerto_core::ClassDeclaration` as a
+// plain function, so the binding stays a collaborator-calling wrapper around
+// real core logic rather than a reimplementation of it (the grain
+// Declaration/Decorated, P4-05, used for `modelUtilIsValidIdentifier` and
+// `decoratedFindDuplicateName`).
 // ---------------------------------------------------------------------------
 
 /// The metamodel `$class`'s short name: the text after the last `.`.
@@ -1194,59 +1205,69 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         let ast = get(&declaration, "ast")?;
 
         let explicit_super_type = get(&ast, "superType")?;
-        let super_type = if !nullish(&explicit_super_type) {
+        let explicit_super_type = if !nullish(&explicit_super_type) {
             Some(receiver(
                 &get(&explicit_super_type, "name")?,
                 "this.ast.superType.name",
                 "toString",
             )?)
         } else {
+            None
+        };
+        let is_system_model_file = if explicit_super_type.is_none() {
             let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
-            let is_system_model_file = call(
+            call(
                 &model_file,
                 "isSystemModelFile",
                 &[],
                 "this.modelFile.isSystemModelFile",
             )?
-            .is_truthy();
-            let name = receiver(&get(&declaration, "name")?, "this.name", "toString")?;
-            if is_system_model_file && name == "Concept" {
-                None
-            } else {
-                Some("Concept".to_string())
-            }
+            .is_truthy()
+        } else {
+            // TS never evaluates `this.modelFile.isSystemModelFile()` on this
+            // branch (short-circuited by `this.ast.superType`); no collaborator
+            // call to make.
+            false
         };
+        let name = receiver(&get(&declaration, "name")?, "this.name", "toString")?;
 
         let identified = get(&ast, "identified")?;
-        let (id_field, add_identifier_field) = if nullish(&identified) {
-            (None, false)
+        let (identified_class, identified_name) = if nullish(&identified) {
+            (None, None)
         } else {
             let identified_class = receiver(
                 &get(&identified, "$class")?,
                 "this.ast.identified.$class",
                 "toString",
             )?;
-            if short_class(&identified_class) == "IdentifiedBy" {
-                let field_name = receiver(
+            let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
+                Some(receiver(
                     &get(&identified, "name")?,
                     "this.ast.identified.name",
                     "toString",
-                )?;
-                (Some(field_name), false)
+                )?)
             } else {
-                (Some("$identifier".to_string()), true)
-            }
+                None
+            };
+            (Some(identified_class), identified_name)
         };
 
         let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
-        let add_timestamp_field =
-            fqn == "concerto@1.0.0.Transaction" || fqn == "concerto@1.0.0.Event";
+
+        let decision = concerto_core::ClassDeclaration::process_decision(
+            explicit_super_type.as_deref(),
+            is_system_model_file,
+            &name,
+            identified_class.as_deref(),
+            identified_name.as_deref(),
+            &fqn,
+        );
 
         Ok(to_js(&json!({
-            "superType": super_type,
-            "idField": id_field,
-            "addIdentifierField": add_identifier_field,
-            "addTimestampField": add_timestamp_field,
+            "superType": decision.super_type,
+            "idField": decision.id_field,
+            "addIdentifierField": decision.add_identifier_field,
+            "addTimestampField": decision.add_timestamp_field,
         })))
     };
     body().map_err(|e| {
@@ -1269,7 +1290,10 @@ pub fn class_declaration_kinds_compatible(
     run(|| {
         let child_kind = js_string(&child_kind)?;
         let super_kind = js_string(&super_kind)?;
-        Ok(super_kind == "ConceptDeclaration" || child_kind == super_kind)
+        Ok(concerto_core::ClassDeclaration::kinds_compatible(
+            &child_kind,
+            &super_kind,
+        ))
     })
 }
 
@@ -1284,11 +1308,11 @@ pub fn class_declaration_identifier_redeclare_conflict(
     super_is_system_identified: bool,
     super_is_explicitly_identified: bool,
 ) -> bool {
-    if child_is_system_identified {
-        !super_is_system_identified
-    } else {
-        super_is_explicitly_identified
-    }
+    concerto_core::ClassDeclaration::identifier_redeclare_conflict(
+        child_is_system_identified,
+        super_is_system_identified,
+        super_is_explicitly_identified,
+    )
 }
 
 /// TS: `ClassDeclaration.toString`. `super_type_name` is the raw (unqualified)
@@ -1317,6 +1341,16 @@ pub fn class_declaration_to_string(
     })
 }
 
+/// TS: `EnumDeclaration.toString` (src/introspect/enumdeclaration.ts): the
+/// override with no super type or abstract flag.
+#[wasm_bindgen(js_name = enumDeclarationToString)]
+pub fn enum_declaration_to_string(fqn: JsValue) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let fqn = js_string(&fqn)?;
+        Ok(concerto_core::introspect::declaration::EnumDeclaration::to_string(&fqn))
+    })
+}
+
 /// TS: `ClassDeclaration.isAsset`/`isParticipant`/`isTransaction`/`isEvent`/
 /// `isConcept`/`isEnum`/`isMapDeclaration`: each compares `this.type` (the
 /// AST's own `$class`, already set by `process()`) against one metamodel
@@ -1330,7 +1364,339 @@ pub fn class_declaration_is_kind(
     run(|| {
         let kind_type = js_string(&kind_type)?;
         let want = js_string(&want)?;
-        Ok(short_class(&kind_type) == want)
+        Ok(concerto_core::ClassDeclaration::is_kind(&kind_type, &want))
+    })
+}
+
+/// `target[name] = value`, the write-back `_resolveSuperType` makes onto its
+/// own `this.superTypeDeclaration` field (a real field, not a getter — TS
+/// reads it directly as a cache in `getSuperTypeDeclaration`).
+fn set_property(target: &JsValue, name: &str, value: &JsValue) -> Result<()> {
+    Reflect::set(target, &JsValue::from_str(name), value).map_err(Error::Js)?;
+    Ok(())
+}
+
+/// A real `IllegalModelException`, decorated with `model_file`/`location`
+/// exactly as `new IllegalModelException(message, modelFile, location)`
+/// would (`engine/errors.ts`'s `IllegalModel` factory applies the same
+/// decoration to `message` unconditionally): `model_file: Some(None)` marks
+/// the error as one TS passes a model file to, so [`throw`] attaches the
+/// caller's own JS model file object to the payload. `code` stays
+/// `"pre-port"` (`message` is TS's own un-templated string concatenation,
+/// not a catalogue entry).
+fn illegal_model_error(message: String, location: Option<Value>) -> Error {
+    ContractError {
+        kind: ErrorKind::IllegalModel,
+        code: "pre-port",
+        params: vec![("message", message)],
+        location,
+        model_file: Some(None),
+        validator: None,
+    }
+    .into()
+}
+
+/// `declaration.ast.location`, as JSON (`None` when nullish).
+fn ast_location(declaration: &JsValue) -> Result<Option<Value>> {
+    to_json(&get(&get(declaration, "ast")?, "location")?)
+}
+
+/// TS: the `classDecl = ...` resolution duplicated in
+/// `ClassDeclaration._resolveSuperType`, `.getProperty` and `.getProperties`
+/// (src/introspect/classdeclaration.ts): `this.getModelFile().isImportedType(name)`
+/// ? `this.modelFile.getModelManager().getType(this.getModelFile().resolveImport(name))`
+/// : `this.getModelFile().getType(name)`. `type_name` is the JS string being
+/// resolved (`this.superType`, in every caller here); the result may be
+/// nullish, exactly as `ModelFile.getType`/`ModelManager.getType` can answer.
+fn resolve_named_type(declaration: &JsValue, type_name: &JsValue) -> Result<JsValue> {
+    let model_file = call(declaration, "getModelFile", &[], "this.getModelFile")?;
+    let is_imported = call(
+        &model_file,
+        "isImportedType",
+        std::slice::from_ref(type_name),
+        "this.getModelFile().isImportedType",
+    )?
+    .is_truthy();
+    if is_imported {
+        let fqn_super = call(
+            &model_file,
+            "resolveImport",
+            std::slice::from_ref(type_name),
+            "this.getModelFile().resolveImport",
+        )?;
+        let own_model_file = get(declaration, "modelFile")?;
+        let manager = call(
+            &own_model_file,
+            "getModelManager",
+            &[],
+            "this.modelFile.getModelManager",
+        )?;
+        call(
+            &manager,
+            "getType",
+            &[fqn_super],
+            "this.modelFile.getModelManager().getType",
+        )
+    } else {
+        call(
+            &model_file,
+            "getType",
+            std::slice::from_ref(type_name),
+            "this.getModelFile().getType",
+        )
+    }
+}
+
+/// TS: `ClassDeclaration._resolveSuperType`. Resolves `this.superType`
+/// through [`resolve_named_type`], throws the same `IllegalModelException`
+/// TS does when it cannot find the super type or the two kinds are
+/// incompatible ([`concerto_core::ClassDeclaration::kinds_compatible`]), and
+/// caches the result onto `this.superTypeDeclaration` before returning it —
+/// the same field `getSuperTypeDeclaration` reads back as a cache.
+#[wasm_bindgen(js_name = classDeclarationResolveSuperType)]
+pub fn class_declaration_resolve_super_type(
+    declaration: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    let body = || -> Result<JsValue> {
+        let super_type = get(&declaration, "superType")?;
+        if !super_type.is_truthy() {
+            return Ok(JsValue::NULL);
+        }
+        set_property(&declaration, "superTypeDeclaration", &JsValue::NULL)?;
+
+        let class_decl = resolve_named_type(&declaration, &super_type)?;
+        if nullish(&class_decl) {
+            let super_type_name = js_string(&super_type)?;
+            return Err(illegal_model_error(
+                format!("Could not find super type {super_type_name}"),
+                ast_location(&declaration)?,
+            ));
+        }
+
+        let child_kind = js_string(&call(
+            &declaration,
+            "declarationKind",
+            &[],
+            "this.declarationKind",
+        )?)?;
+        let super_kind = js_string(&call(
+            &class_decl,
+            "declarationKind",
+            &[],
+            "classDecl.declarationKind",
+        )?)?;
+        if !concerto_core::ClassDeclaration::kinds_compatible(&child_kind, &super_kind) {
+            let child_name = js_string(&call(&declaration, "getName", &[], "this.getName")?)?;
+            let super_name = js_string(&call(&class_decl, "getName", &[], "classDecl.getName")?)?;
+            return Err(illegal_model_error(
+                format!("{child_kind} ({child_name}) cannot extend {super_kind} ({super_name})"),
+                ast_location(&declaration)?,
+            ));
+        }
+
+        set_property(&declaration, "superTypeDeclaration", &class_decl)?;
+        Ok(class_decl)
+    };
+    body().map_err(|e| {
+        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
+    })
+}
+
+/// TS: `ClassDeclaration.getSuperTypeDeclaration`: the branch is pure field
+/// reads; the fallback calls back `this._resolveSuperType()` (a collaborator
+/// call — that method resolves and validates the super type).
+#[wasm_bindgen(js_name = classDeclarationGetSuperTypeDeclaration)]
+pub fn class_declaration_get_super_type_declaration(
+    declaration: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        if !get(&declaration, "superType")?.is_truthy() {
+            return Ok(JsValue::NULL);
+        }
+        let cached = get(&declaration, "superTypeDeclaration")?;
+        if cached.is_truthy() {
+            return Ok(cached);
+        }
+        call(
+            &declaration,
+            "_resolveSuperType",
+            &[],
+            "this._resolveSuperType",
+        )
+    })
+}
+
+/// TS: `ClassDeclaration.getSuperType`: `this.getSuperTypeDeclaration()`,
+/// then `getFullyQualifiedName()` on the result if there is one.
+#[wasm_bindgen(js_name = classDeclarationGetSuperType)]
+pub fn class_declaration_get_super_type(
+    declaration: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let super_type_decl = call(
+            &declaration,
+            "getSuperTypeDeclaration",
+            &[],
+            "this.getSuperTypeDeclaration",
+        )?;
+        if !super_type_decl.is_truthy() {
+            return Ok(JsValue::NULL);
+        }
+        call(
+            &super_type_decl,
+            "getFullyQualifiedName",
+            &[],
+            "superTypeDeclaration.getFullyQualifiedName",
+        )
+    })
+}
+
+/// TS: `ClassDeclaration.getAllSuperTypeDeclarations`: repeats
+/// `type = type.getSuperTypeDeclaration()` from `this`, collecting every
+/// non-null result.
+#[wasm_bindgen(js_name = classDeclarationGetAllSuperTypeDeclarations)]
+pub fn class_declaration_get_all_super_type_declarations(
+    declaration: JsValue,
+) -> std::result::Result<Array, JsValue> {
+    run(|| {
+        let results = Array::new();
+        let mut current = declaration;
+        loop {
+            let next = call(
+                &current,
+                "getSuperTypeDeclaration",
+                &[],
+                "type.getSuperTypeDeclaration",
+            )?;
+            if !next.is_truthy() {
+                break;
+            }
+            results.push(&next);
+            current = next;
+        }
+        Ok(results)
+    })
+}
+
+/// TS: `ClassDeclaration.getIdentifierFieldName`: `this.idField` if set,
+/// otherwise the super type's own answer, found through `getLocalType` (or,
+/// failing that, the model manager). A `null` super type resolution reaches
+/// the same unguarded `classDecl.getIdentifierFieldName()` call TS makes
+/// (and the same host `TypeError` `call` raises for it).
+#[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldName)]
+pub fn class_declaration_get_identifier_field_name(
+    declaration: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let id_field = get(&declaration, "idField")?;
+        if id_field.is_truthy() {
+            return Ok(id_field);
+        }
+        let super_type = call(&declaration, "getSuperType", &[], "this.getSuperType")?;
+        if !super_type.is_truthy() {
+            return Ok(JsValue::NULL);
+        }
+        let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
+        let mut class_decl = call(
+            &model_file,
+            "getLocalType",
+            std::slice::from_ref(&super_type),
+            "this.getModelFile().getLocalType",
+        )?;
+        if !class_decl.is_truthy() {
+            let own_model_file = get(&declaration, "modelFile")?;
+            let manager = call(
+                &own_model_file,
+                "getModelManager",
+                &[],
+                "this.modelFile.getModelManager",
+            )?;
+            class_decl = call(
+                &manager,
+                "getType",
+                &[super_type],
+                "this.modelFile.getModelManager().getType",
+            )?;
+        }
+        call(
+            &class_decl,
+            "getIdentifierFieldName",
+            &[],
+            "classDecl.getIdentifierFieldName",
+        )
+    })
+}
+
+/// TS: `ClassDeclaration.getProperty`: the receiver's own property if it has
+/// one, otherwise the super type's answer (through [`resolve_named_type`]).
+/// A `null` super type resolution reaches the same unguarded
+/// `classDecl.getProperty(name)` call TS makes.
+#[wasm_bindgen(js_name = classDeclarationGetProperty)]
+pub fn class_declaration_get_property(
+    declaration: JsValue,
+    name: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let own = call(
+            &declaration,
+            "getOwnProperty",
+            std::slice::from_ref(&name),
+            "this.getOwnProperty",
+        )?;
+        if !nullish(&own) {
+            return Ok(own);
+        }
+        let super_type = get(&declaration, "superType")?;
+        if !super_type.is_truthy() {
+            return Ok(JsValue::NULL);
+        }
+        let class_decl = resolve_named_type(&declaration, &super_type)?;
+        call(&class_decl, "getProperty", &[name], "classDecl.getProperty")
+    })
+}
+
+/// TS: `ClassDeclaration.getProperties`: the receiver's own properties, plus
+/// (when it has a super type) the super type's own answer, found through
+/// [`resolve_named_type`] — unlike `getProperty`, TS itself guards this
+/// resolution with the same "Could not find super type" `IllegalModelException`
+/// `_resolveSuperType` raises.
+#[wasm_bindgen(js_name = classDeclarationGetProperties)]
+pub fn class_declaration_get_properties(
+    declaration: JsValue,
+) -> std::result::Result<Array, JsValue> {
+    let body = || -> Result<Array> {
+        let own = call(&declaration, "getOwnProperties", &[], "this.getOwnProperties")?;
+        let result = Array::new();
+        for property in Array::from(&own).iter() {
+            result.push(&property);
+        }
+        let super_type = get(&declaration, "superType")?;
+        if !super_type.is_truthy() {
+            return Ok(result);
+        }
+        let class_decl = resolve_named_type(&declaration, &super_type)?;
+        if nullish(&class_decl) {
+            let super_type_name = js_string(&super_type)?;
+            return Err(illegal_model_error(
+                format!("Could not find super type {super_type_name}"),
+                ast_location(&declaration)?,
+            ));
+        }
+        let inherited = call(
+            &class_decl,
+            "getProperties",
+            &[],
+            "classDecl.getProperties",
+        )?;
+        for property in Array::from(&inherited).iter() {
+            result.push(&property);
+        }
+        Ok(result)
+    };
+    body().map_err(|e| {
+        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
     })
 }
 
