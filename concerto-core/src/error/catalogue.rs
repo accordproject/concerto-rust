@@ -136,6 +136,81 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "src/introspect/numbervalidator.ts:115",
         ],
     },
+    // ---- P2-02 additions (StringValidator, CollectionSizeValidator) ----
+    CatalogueEntry {
+        code: "stringvalidator-constructor-invalidlength",
+        template: "Invalid string length, minLength and-or maxLength must be specified.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:65"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-constructor-negativelength",
+        template: "minLength and-or maxLength must be positive integers.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:67"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-constructor-mingreaterthanmax",
+        template: "minLength must be less than or equal to maxLength.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:71"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-constructor-invalidregex",
+        // Not a TS template: the message is whatever the regex engine threw
+        // (V8 in TS, `regress` here), passed through verbatim (OD-4).
+        template: "{message}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:84"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-validate-belowminlength",
+        template: "The string length of '{value}' should be at least {minLength} characters.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:104"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-validate-abovemaxlength",
+        template: "The string length of '{value}' should not exceed {maxLength} characters.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:107"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-validate-regexmismatch",
+        template: "Value '{value}' failed to match validation regex: {regex}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:111"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-constructor-nosize",
+        template: "Invalid collection size, minSize and/or maxSize must be specified.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:50"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-constructor-negativesize",
+        template: "minSize and/or maxSize must be positive integers.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:52"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-constructor-mingreaterthanmax",
+        template: "minSize must be less than or equal to maxSize.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:56"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-validate-belowminsize",
+        template: "Collection must contain at least {minSize} elements.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:69"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-validate-abovemaxsize",
+        template: "Collection must contain no more than {maxSize} elements.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:71"],
+    },
     CatalogueEntry {
         code: "scalardeclaration-process-primitivename",
         template: "Invalid scalar name '{scalarName}'. Name conflicts with primitive type.",

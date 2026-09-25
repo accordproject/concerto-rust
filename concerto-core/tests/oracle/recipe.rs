@@ -230,6 +230,13 @@ pub enum Arg {
     SelfMm,
     Decl(usize, DeclId),
     Prop(usize, PropId),
+    /// A validator reached through a property (`validatorref` with a
+    /// `propref` owner): the property's model manager pool index, the
+    /// property itself, and which validator it names (`"validator"`, the
+    /// regex/length or numeric-domain one; `"size"`, the collection-size
+    /// one) — `ops.rs` rebuilds the actual validator from these, since no
+    /// production `Property`/`Field` API returns one yet (P2-04/P2-05).
+    Validator(usize, PropId, String),
     /// A decorator: the pool index of its model manager, which of its
     /// declaration/property/model-file's decorators it is, and its position
     /// (P2-07).
@@ -318,6 +325,10 @@ impl<'h> Session<'h> {
             "propref" => {
                 let (mm, id) = self.propref(v)?;
                 Ok(Arg::Prop(mm, id))
+            }
+            "validatorref" => {
+                let (mm, id, part) = self.validatorref(v)?;
+                Ok(Arg::Validator(mm, id, part))
             }
             "decoref" => {
                 let (mm, parent, index) = self.decoref(v)?;
@@ -529,6 +540,30 @@ impl<'h> Session<'h> {
         }
     }
 
+    /// A `validatorref`: which validator (`part`) of which property
+    /// (`owner`, a `propref`). A `declref`-owned `validatorref` (a scalar
+    /// declaration's own validator) has no fixture in the corpus today and
+    /// is reported the same way any other unhandled `@@oracle` kind is.
+    fn validatorref(&mut self, v: &Value) -> Faulty<(usize, PropId, String)> {
+        let part = v
+            .get("part")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Fault::Harness("validatorref without part".into()))?
+            .to_string();
+        let owner = v
+            .get("owner")
+            .ok_or_else(|| Fault::Harness("validatorref without owner".into()))?;
+        match owner.get(M).and_then(Value::as_str) {
+            Some("propref") => {
+                let (mm, id) = self.propref(owner)?;
+                Ok((mm, id, part))
+            }
+            _ => Err(blocked(
+                "a validator whose owner is not a property has no Rust handle yet",
+                "Validator.new",
+            )),
+        }
+    }
     /// A `decoref`: `{parent, index}`, `parent` being a `declref`, `propref`
     /// or `mfref` (P2-07).
     fn decoref(&mut self, v: &Value) -> Faulty<(usize, DecoParent, usize)> {
@@ -1075,6 +1110,7 @@ impl Clone for Arg {
             Self::SelfMm => Self::SelfMm,
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
+            Self::Validator(m, p, part) => Self::Validator(*m, *p, part.clone()),
             Self::Deco(m, parent, i) => Self::Deco(*m, parent.clone(), *i),
             Self::List(items) => Self::List(items.clone()),
         }

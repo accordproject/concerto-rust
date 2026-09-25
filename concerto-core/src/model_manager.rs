@@ -179,6 +179,13 @@ pub trait ResolutionContext {
 pub trait ValidatedElement: FullyQualified {
     /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
     fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
+
+    /// TS: `field.getName()`. `StringValidator` and `CollectionSizeValidator`
+    /// (unlike `NumberValidator`) pass this as the identifier of every error
+    /// their constructor reports, and `StringValidator` passes it again as
+    /// the identifier for the `defaultValue` check it runs at load time
+    /// (P2-02).
+    fn name(&self) -> std::result::Result<String, Self::Error>;
 }
 
 /// Declares a handle type: a dense `u32` index into one of the arena's
