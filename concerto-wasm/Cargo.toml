@@ -32,7 +32,10 @@ accordproject-concerto-metamodel = { path = "../concerto-metamodel" }
 # Pinned: wasm-bindgen-cli must be exactly this version (spike REPORT §5).
 wasm-bindgen = "=0.2.128"
 js-sys = "0.3"
-serde_json = "1.0"
+# `float_roundtrip`: see the root Cargo.toml's `[workspace.dependencies]
+# serde_json` (P4-10): the fast path parses every JS number the view
+# `JSON.stringify`s, and must get back the exact same double.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
 [lints.clippy]
 # A panic on the boundary path poisons the object it happened in (spike
