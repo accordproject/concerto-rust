@@ -126,6 +126,13 @@ impl Dayjs {
         !self.time.is_nan()
     }
 
+    /// `valueOf()`, exposed for the Serializer fast path across the WASM
+    /// boundary (PORTING.md 3.3: "On the fast path Rust receives and
+    /// returns (epoch ms, utcOffset minutes)"). `NaN` for an invalid date.
+    pub fn epoch_ms(&self) -> f64 {
+        self.value_of()
+    }
+
     /// `isUTC()`.
     pub fn is_utc(&self) -> bool {
         self.utc
@@ -584,6 +591,20 @@ fn legacy_numeric_date(s: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `epoch_ms()` round-trips through `utc_from_number`/`utc_offset_set`,
+    /// the pair the Serializer fast path's wire codec (P4-10) crosses the
+    /// WASM boundary with, and is `NaN` for an invalid date.
+    #[test]
+    fn epoch_ms_round_trips_with_an_offset() {
+        let utc = Dayjs::utc_parse("2021-01-01T10:00:00Z");
+        assert_eq!(utc.epoch_ms(), utc.utc_offset_set(&UtcOffset::Number(0.0)).epoch_ms());
+        let shifted = utc.utc_offset_set(&UtcOffset::Number(60.0));
+        assert_eq!(shifted.epoch_ms(), utc.epoch_ms());
+        let rebuilt = Dayjs::utc_from_number(shifted.epoch_ms()).utc_offset_set(&UtcOffset::Number(60.0));
+        assert_eq!(rebuilt, shifted);
+        assert!(Dayjs::utc_invalid().epoch_ms().is_nan());
+    }
 
     #[test]
     fn utc_parse_regex_path_and_iso() {
