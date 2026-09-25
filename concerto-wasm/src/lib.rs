@@ -119,6 +119,7 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::IllegalModel => "IllegalModel",
         ErrorKind::TypeNotFound => "TypeNotFound",
         ErrorKind::Validator => "Validator",
+        ErrorKind::Validation => "Validation",
         ErrorKind::Error => "Error",
         ErrorKind::JsTypeError => "JsTypeError",
     }

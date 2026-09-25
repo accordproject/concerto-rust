@@ -495,6 +495,43 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Globalize,
         sources: &["src/serializer/resourcevalidator.ts:668"],
     },
+    // ---- P3-01: ResourceValidator's own inline templates (plain `Error`,
+    //      ErrorKind::Error — never `ValidationException`, table 2.3), 2.2
+    //      step 2. Each `${expr}` becomes a named `{param}`. ----
+    CatalogueEntry {
+        code: "resourcevalidator-checkmaptype-expectedstring",
+        template: "Model violation in {mapFqn}. Expected Type of String but found '{value}' instead.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/resourcevalidator.ts:152"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-checkmaptype-expecteddatetime",
+        template: "Model violation in {mapFqn}. Expected Type of DateTime but found '{value}' instead.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/resourcevalidator.ts:157"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-checkmaptype-expectedboolean",
+        template: "Model violation in {mapFqn}. Expected Type of Boolean but found {type} instead, for value '{value}'.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/resourcevalidator.ts:163"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-visitmapdeclaration-notamap",
+        // TS: `'Expected a Map, but found ' + JSON.stringify(obj)`: a string
+        // concatenation, so `{obj}` is the caller's own `JSON.stringify`
+        // text (2.1: "Where TS calls JSON.stringify(value) first ... the
+        // param is that JSON text").
+        template: "Expected a Map, but found {obj}",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/resourcevalidator.ts:183"],
+    },
+    CatalogueEntry {
+        code: "resourcevalidator-checkrelationship-notidentifiable",
+        template: "Cannot have a relationship to a field that is not identifiable.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/resourcevalidator.ts:503"],
+    },
     // ---- P2-01 review fix: ResourceId (`src/model/resourceid.ts`), the
     //      ledger group's SEAM_LEDGER.tsv planned_task P2-01+P4-03 members
     //      the first P2-01 pass left unported (parseUri, the constructor,
