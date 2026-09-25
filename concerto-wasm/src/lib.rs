@@ -3557,28 +3557,52 @@ impl ModelManagerHandle {
     /// so a mirrored model file's `getModels()` content matches the TS
     /// `ModelFile.getDefinitions()` it was loaded from (P4-08). Additive:
     /// [`Self::add_model`] is unchanged and still passes `definitions: None`.
+    ///
+    /// `validate` mirrors TS `BaseModelManager.addModelFile`'s
+    /// `!disableValidation`: when true, the new file is checked with
+    /// [`ModelManager::validate_detached_model_file`] — against the manager
+    /// as it stands, before the file is registered — exactly as the oracle
+    /// harness's own `addModelFile`/`addModel` recipe step does
+    /// (`tests/oracle/recipe.rs`), which is also how the reference decides
+    /// these fixtures. Before this (P4-08a, accordproject/concerto-rust#173),
+    /// this binding never validated at all — regardless of `validate` — so a
+    /// model with, say, a missing identifier field, a declared type clashing
+    /// with an import, or an undeclared referenced type was silently
+    /// registered instead of rejected. The unconditional duplicate-namespace
+    /// check (`ModelManager::add_model_with_definitions`'s own) still fires
+    /// first regardless of `validate`, as TS's does.
     #[wasm_bindgen(js_name = addModelWithDefinitions)]
     pub fn add_model_with_definitions(
         &mut self,
         ast: &str,
         definitions: Option<String>,
         file_name: Option<String>,
+        validate: bool,
     ) -> std::result::Result<u32, JsValue> {
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            self.manager
-                .add_model_with_definitions(&value, definitions, file_name)?;
             let namespace = value
                 .get("namespace")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_string();
+            if validate && self.manager.model_file(&namespace).is_none() {
+                let candidate = ModelFile::from_json_with_definitions(
+                    &value,
+                    definitions.clone(),
+                    file_name.clone(),
+                )?;
+                self.manager.validate_detached_model_file(&candidate)?;
+            }
             self.manager
-                .model_file_id(namespace)
+                .add_model_with_definitions(&value, definitions, file_name)?;
+            self.manager
+                .model_file_id(&namespace)
                 .map(ModelFileId::index)
                 .ok_or_else(|| {
                     ConcertoError::TypeNotFound {
-                        type_name: namespace.to_string(),
+                        type_name: namespace,
                     }
                     .into()
                 })
