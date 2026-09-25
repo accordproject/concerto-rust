@@ -12,10 +12,11 @@
 use indexmap::IndexMap;
 
 use super::dayjs::{Dayjs, UtcOffset};
+use super::deserialize::DeserializeOptions;
 use super::factory::{self, InstanceEnv};
 use super::model::{self, Field, FieldType, TypeRef};
 use super::value::{Instance, JsValue};
-use crate::error::{ContractError, ErrorKind, Result};
+use crate::error::{ContractError, DetailCode, ErrorKind, Result, ValidationDetail};
 use crate::introspect::Declaration;
 use crate::model_manager::ModelManager;
 use crate::{ConcertoError, model_util};
@@ -29,6 +30,8 @@ pub struct PopulatorOptions {
     pub utc_offset: JsValue,
     /// `strictQualifiedDateTimes`.
     pub strict_qualified_date_times: bool,
+    /// `rejectUnknownKeys` and `rejectRequiredNull` (accordproject/concerto#1273).
+    pub deserialize: DeserializeOptions,
 }
 
 /// The visitor's state: its options and `parameters`.
@@ -46,6 +49,94 @@ fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> Concer
 
 fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
     ContractError::new(ErrorKind::Error, code, params).into()
+}
+
+/// TS: `JSONPopulator.convertToObject`'s primitive-type switch alone (task
+/// P4-10, accordproject/concerto-rust#69): the part that needs no
+/// declaration lookup, so the TS visitor shell can call it per field
+/// directly (via the concerto-wasm binding), keeping its own recursion and
+/// `jsonStack`/`resourceStack` handling -- and so the tests that spy on
+/// `visitX` still see the same calls, in the same order, that they always
+/// did.
+pub fn convert_primitive(
+    type_name: &str,
+    json: &JsValue,
+    options: &PopulatorOptions,
+    path: &str,
+) -> Result<JsValue> {
+    let wrong_type = || {
+        validation(
+            "jsonpopulator-converttoobject-wrongtype",
+            vec![("path", path.to_string()), ("type", type_name.to_string())],
+        )
+    };
+    Ok(match type_name {
+        "DateTime" => {
+            let result = match json {
+                JsValue::DateTime(d) => d.clone(),
+                JsValue::String(s) => {
+                    if !options.strict_qualified_date_times {
+                        Dayjs::utc_parse(s).utc_offset_set(&utc_offset_input(&options.utc_offset))
+                    } else if strict_qualified_date_time(s) {
+                        Dayjs::utc_parse(s)
+                    } else {
+                        return Err(validation(
+                            "jsonpopulator-converttoobject-datetimeformat",
+                            vec![("path", path.to_string()), ("type", type_name.to_string())],
+                        ));
+                    }
+                }
+                _ => return Err(wrong_type()),
+            };
+            if !result.is_valid() {
+                return Err(wrong_type());
+            }
+            JsValue::DateTime(result)
+        }
+        "Integer" | "Long" => match json {
+            // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
+            JsValue::Number(n) if n.trunc() == *n => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        "Double" => match json {
+            JsValue::Number(_) => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        "Boolean" => match json {
+            JsValue::Bool(_) => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        "String" => match json {
+            JsValue::String(_) => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        // Everything else should be an enumerated value.
+        _ => json.clone(),
+    })
+}
+
+/// TS `ResourceValidator.checkItem`'s primitive `switch(field.getType())`
+/// (task P4-10, accordproject/concerto-rust#69, resourcevalidator.ts:397):
+/// whether `value` (already coerced by [`convert_primitive`], as a real
+/// Resource's field value always is by the time it reaches `checkItem`) is
+/// valid for the declared primitive type `type_name`. `checkItem` reports
+/// `dataType === 'undefined' || dataType === 'symbol'` before this switch
+/// (a check the wire codec cannot cross, so the TS shell still makes it);
+/// every other TS branch is `typeof`/`isFinite` on the value alone, with no
+/// declaration lookup, so it is safe to call from the TS shell per field.
+/// A type name the TS switch has no `case` for is valid (`invalid` stays
+/// `false`).
+pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
+    match type_name {
+        "String" => matches!(value, JsValue::String(_)),
+        "Long" | "Integer" | "Double" => matches!(value, JsValue::Number(n) if n.is_finite()),
+        "Boolean" => matches!(value, JsValue::Bool(_)),
+        "DateTime" => matches!(value, JsValue::DateTime(_)),
+        // TS: `let invalid = false;` and no `default:` arm, so any other
+        // type name (an enum, or a primitive the switch does not list) is
+        // valid here.
+        _ => true,
+    }
 }
 
 /// V8's `TypeError: Cannot read properties of <value> (reading '<property>')`.
@@ -267,7 +358,14 @@ impl<'a> Populator<'a> {
         mut resource: Instance,
     ) -> Result<Instance> {
         let properties = get_assignable_properties(json, class_declaration)?;
+        let options = self.options.deserialize;
+        if options.reject_unknown_keys {
+            self.reject_unknown_keys(json, class_declaration)?;
+        }
         validate_properties(&properties, class_declaration)?;
+        if options.reject_required_null {
+            self.reject_required_null(json, class_declaration)?;
+        }
         for property in properties {
             let value = get_property(json, &property)?;
             if value != JsValue::Null {
@@ -282,6 +380,82 @@ impl<'a> Populator<'a> {
             }
         }
         Ok(resource)
+    }
+
+    /// `rejectUnknownKeys` (accordproject/concerto#1273): every key that is
+    /// not a system property and that the declaration does not declare,
+    /// whatever its value (`null` included), in one error with one
+    /// `UNKNOWN_PROPERTY` detail per key.
+    fn reject_unknown_keys(&self, json: &JsValue, class_declaration: &TypeRef) -> Result<()> {
+        let expected: Vec<String> = class_declaration
+            .properties("classDeclaration.getProperties")?
+            .iter()
+            .map(|(_, p)| crate::Named::name(p).to_string())
+            .collect();
+        let unknown: Vec<String> = object_keys(json)?
+            .into_iter()
+            .filter(|p| !model_util::is_system_property(p) && !expected.contains(p))
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let path = self.path_text();
+        let mut error = ContractError::new(
+            ErrorKind::Validation,
+            "jsonpopulator-rejectunknownkeys-unknownproperties",
+            vec![
+                ("fqn", class_declaration.fqn()),
+                ("properties", unknown.join(", ")),
+            ],
+        );
+        error.details = unknown
+            .iter()
+            .map(|property| ValidationDetail {
+                path: format!("{path}.{property}"),
+                code: DetailCode::UnknownProperty,
+                expected: None,
+                actual: None,
+            })
+            .collect();
+        Err(error.into())
+    }
+
+    /// `rejectRequiredNull` (accordproject/concerto#1273): the first
+    /// declared, required property (in the document's key order) whose value
+    /// is `null` fails at once with its path and declared type, and a
+    /// `TYPE_VIOLATION` detail.
+    fn reject_required_null(&self, json: &JsValue, class_declaration: &TypeRef) -> Result<()> {
+        for key in object_keys(json)? {
+            if model_util::is_system_property(&key) || get_property(json, &key)? != JsValue::Null {
+                continue;
+            }
+            let Some((_, property)) = class_declaration.property(&key)? else {
+                continue;
+            };
+            if property.is_optional() {
+                continue;
+            }
+            let path = format!("{}.{key}", self.path_text());
+            let mut type_name = crate::introspect::Typed::type_name(&property)
+                .unwrap_or_default()
+                .to_string();
+            if property.is_array() {
+                type_name.push_str("[]");
+            }
+            let mut error = ContractError::new(
+                ErrorKind::Validation,
+                "jsonpopulator-rejectrequirednull-requirednull",
+                vec![("path", path.clone()), ("type", type_name.clone())],
+            );
+            error.details = vec![ValidationDetail {
+                path,
+                code: DetailCode::TypeViolation,
+                expected: Some(type_name),
+                actual: Some("null".to_string()),
+            }];
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// TS `classProperty.accept(this, parameters)`, through `visit`: a
@@ -450,60 +624,13 @@ impl<'a> Populator<'a> {
         self.accept_declaration(&declaration, json_item, sub_resource)
     }
 
-    /// TS: JSONPopulator.convertToObject.
+    /// TS: JSONPopulator.convertToObject. The primitive-type switch itself
+    /// has no dependency on `self.mm`/`self.env` (only on the field's type
+    /// name, the options and the current path), so it is [`convert_primitive`],
+    /// a free function the concerto-wasm binding (P4-10, jsonpopulator.ts)
+    /// calls directly per field, without needing a live `Populator`.
     fn convert_to_object(&mut self, field: &Field, json: &JsValue) -> Result<JsValue> {
-        let path = self.path_text();
-        let type_name = field.type_name();
-        let wrong_type = || {
-            validation(
-                "jsonpopulator-converttoobject-wrongtype",
-                vec![("path", path.clone()), ("type", type_name.clone())],
-            )
-        };
-        Ok(match type_name.as_str() {
-            "DateTime" => {
-                let result = match json {
-                    JsValue::DateTime(d) => d.clone(),
-                    JsValue::String(s) => {
-                        if !self.options.strict_qualified_date_times {
-                            Dayjs::utc_parse(s)
-                                .utc_offset_set(&utc_offset_input(&self.options.utc_offset))
-                        } else if strict_qualified_date_time(s) {
-                            Dayjs::utc_parse(s)
-                        } else {
-                            return Err(validation(
-                                "jsonpopulator-converttoobject-datetimeformat",
-                                vec![("path", path.clone()), ("type", type_name.clone())],
-                            ));
-                        }
-                    }
-                    _ => return Err(wrong_type()),
-                };
-                if !result.is_valid() {
-                    return Err(wrong_type());
-                }
-                JsValue::DateTime(result)
-            }
-            "Integer" | "Long" => match json {
-                // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
-                JsValue::Number(n) if n.trunc() == *n => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            "Double" => match json {
-                JsValue::Number(_) => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            "Boolean" => match json {
-                JsValue::Bool(_) => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            "String" => match json {
-                JsValue::String(_) => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            // Everything else should be an enumerated value.
-            _ => json.clone(),
-        })
+        convert_primitive(&field.type_name(), json, self.options, &self.path_text())
     }
 
     /// TS: JSONPopulator.visitRelationshipDeclaration.
@@ -655,8 +782,11 @@ fn strict_qualified_date_time(s: &str) -> bool {
     re.find(s).is_some()
 }
 
-/// The populator's options from the serializer's merged options.
-pub(crate) fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOptions {
+/// The populator's options from the serializer's merged options. `pub`
+/// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
+/// `PopulatorOptions` for [`convert_primitive`] from the options object the
+/// TS visitor shell already has.
+pub fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOptions {
     let get = |key: &str| options.get(key).cloned().unwrap_or(JsValue::Undefined);
     let utc_offset = get("utcOffset");
     PopulatorOptions {
@@ -668,5 +798,36 @@ pub(crate) fn populator_options(options: &IndexMap<String, JsValue>) -> Populato
             JsValue::Number(0.0)
         },
         strict_qualified_date_times: get("strictQualifiedDateTimes") == JsValue::Bool(true),
+        deserialize: DeserializeOptions::from_serializer_options(options),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ResourceValidator.checkItem`'s switch has no `default:` arm and
+    /// starts from `invalid = false`, so a type name it does not list is
+    /// valid (P4-10 review).
+    #[test]
+    fn primitive_field_valid_matches_the_ts_switch() {
+        assert!(primitive_field_valid(
+            "String",
+            &JsValue::String("x".into())
+        ));
+        assert!(!primitive_field_valid("String", &JsValue::Number(1.0)));
+        assert!(primitive_field_valid("Double", &JsValue::Number(1.5)));
+        assert!(!primitive_field_valid("Double", &JsValue::Number(f64::NAN)));
+        assert!(!primitive_field_valid(
+            "Integer",
+            &JsValue::Number(f64::INFINITY)
+        ));
+        assert!(primitive_field_valid("Boolean", &JsValue::Bool(false)));
+        assert!(!primitive_field_valid(
+            "DateTime",
+            &JsValue::String("x".into())
+        ));
+        assert!(primitive_field_valid("Unknown", &JsValue::Number(1.0)));
+        assert!(primitive_field_valid("Unknown", &JsValue::Null));
     }
 }

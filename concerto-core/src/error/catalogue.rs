@@ -776,6 +776,20 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["src/serializer/jsonpopulator.ts:93"],
     },
     CatalogueEntry {
+        code: "jsonpopulator-rejectunknownkeys-unknownproperties",
+        template: "Unexpected properties for type {fqn}: {properties}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "accordproject/concerto#1273 rejectUnknownKeys (no TS call site; the text of jsonpopulator-validateproperties-unexpectedproperties)",
+        ],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-rejectrequirednull-requirednull",
+        template: "Expected value at path `{path}` to be of type `{type}`, but got null",
+        renderer: Renderer::Inline,
+        sources: &["accordproject/concerto#1273 rejectRequiredNull (no TS call site)"],
+    },
+    CatalogueEntry {
         code: "jsonpopulator-visitfield-notarray",
         template: "Expected value at path `{path}` to be an array of type `{type}`",
         renderer: Renderer::Inline,
@@ -879,6 +893,25 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &[
             "V8 (JSON.stringify of a cyclic object), src/serializer/jsonpopulator.ts:124, src/serializer/jsongenerator.ts:72",
         ],
+    },
+    // ---- P3-04 (BaseModelManager.validateAst, concerto_core::instance::metamodel) ----
+    CatalogueEntry {
+        code: "basemodelmanager-validateast-versionmismatch",
+        template: "Model file version {modelFileVersion} does not match metamodel version {metamodelVersion}",
+        renderer: Renderer::Inline,
+        sources: &["src/basemodelmanager.ts:283"],
+    },
+    CatalogueEntry {
+        // `throw new MetamodelException(error.message)`: the underlying
+        // `Serializer.fromJSON` error's own already-constructed `.message`,
+        // passed through unchanged (not an inline template with its own
+        // wording; the single `{message}` placeholder is a verbatim
+        // pass-through, ported faithfully through `Renderer::Inline` since
+        // the substitution never re-scans).
+        code: "basemodelmanager-validateast-wrapped",
+        template: "{message}",
+        renderer: Renderer::Inline,
+        sources: &["src/basemodelmanager.ts:296"],
     },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
