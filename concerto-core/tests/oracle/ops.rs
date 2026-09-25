@@ -27,17 +27,16 @@
 //!   report its differences from TS as per-rule failures, which is the
 //!   point: they are what P2-08 and the introspection tasks have to close.
 //! - **`ScalarDeclaration`** `toString`, `getType`, `getValidator` and
-//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`;
-//!   and `new`, over `ScalarDeclaration::validate_new` (P2-05), which
-//!   replays `new ScalarDeclaration(modelFile, ast)` without going through a
-//!   registered `ModelManager` (the receiver is an `mfnew` recipe argument,
-//!   never a `declref`, so it needs no arena handle). `getType`,
-//!   `getValidator`, `getDefaultValue` and `toString` still report
-//!   `unsupported` for a fixture recorded the same way (a bare `mfnew`
-//!   receiver): `declref` has no handle for a declaration that was never
-//!   registered (PORTING.md 6.2), which only a later task (P4-07, jointly
-//!   per the ledger's `planned_task`) can close in general, for every
-//!   declaration kind.
+//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`,
+//!   for a receiver loaded into a registered `ModelManager` (a `declref`
+//!   handle) *and* for one built directly with `new ScalarDeclaration(modelFile,
+//!   ast)` and never added to its model file (a `declnew` recipe, rebuilt by
+//!   `ScalarDeclaration::build_standalone`, `recipe.rs`); and `new` itself,
+//!   over the same `build_standalone` (P2-05), which replays the constructor
+//!   without going through a registered `ModelManager` (the receiver is an
+//!   `mfnew` recipe argument, never a `declref`, so it needs no arena
+//!   handle). Every other declaration kind's `declnew` still needs P4-07,
+//!   which closes this in general.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::Declaration;
@@ -472,45 +471,66 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             Ok(model_manager_query(r, member, &args))
         }
         "ModelUtil" => model_util_with_context(&session, member, &args),
-        "ScalarDeclaration" => {
-            let Some(Arg::Decl(index, id)) = target else {
-                return Err(Fault::Unsupported(
-                    "a ScalarDeclaration receiver that is not a declref".into(),
-                ));
-            };
-            let r = &session.pool[index];
-            let Some(Declaration::Scalar(scalar)) = r.mm.declaration(id) else {
-                return Err(Fault::Divergence(
-                    "state divergence: the declaration did not load as a scalar".into(),
-                ));
-            };
-            Ok(match member {
-                "toString" => from_engine(
-                    r.mm.get_fully_qualified_name(&Node::Declaration(id)),
-                    |fqn| {
-                        Value::String(concerto_core::introspect::ScalarDeclaration::to_string(
-                            &fqn,
-                        ))
-                    },
-                ),
-                "getType" => ran(Ok(scalar
-                    .scalar_type()
+        "ScalarDeclaration" => match target {
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Scalar(scalar)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a scalar".into(),
+                    ));
+                };
+                Ok(match member {
+                    "toString" => from_engine(
+                        r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                        |fqn| {
+                            Value::String(concerto_core::introspect::ScalarDeclaration::to_string(
+                                &fqn,
+                            ))
+                        },
+                    ),
+                    "getType" => ran(Ok(scalar
+                        .scalar_type()
+                        .map_or(Value::Null, |t| Value::String(t.to_string())))),
+                    "getDefaultValue" => {
+                        ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
+                    }
+                    _ => ran(Ok(scalar_validator_summary(scalar.validator()))),
+                })
+            }
+            // `new ScalarDeclaration(modelFile, ast)`, never added to
+            // `modelFile`: `recipe.rs`'s `declnew` decoding already ran
+            // `ScalarDeclaration::build_standalone` (the receiver's
+            // construction), so the four getters below just read its result.
+            Some(Arg::DeclNew { fqn, processed }) => Ok(match member {
+                "toString" => ran(Ok(Value::String(
+                    concerto_core::introspect::ScalarDeclaration::to_string(&fqn),
+                ))),
+                "getType" => ran(Ok(processed
+                    .scalar_type
                     .map_or(Value::Null, |t| Value::String(t.to_string())))),
-                "getDefaultValue" => {
-                    ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
-                }
-                _ => ran(Ok(match scalar.validator() {
-                    None => Value::Null,
-                    Some(ScalarValidator::Number(_)) => {
-                        json!({ M: "Validator", "ctor": "NumberValidator" })
-                    }
-                    Some(ScalarValidator::String { .. }) => {
-                        json!({ M: "Validator", "ctor": "StringValidator" })
-                    }
-                })),
-            })
-        }
+                "getDefaultValue" => ran(Ok(processed.default_value.unwrap_or(Value::Null))),
+                _ => ran(Ok(scalar_validator_summary(processed.validator.as_ref()))),
+            }),
+            _ => Err(Fault::Unsupported(
+                "a ScalarDeclaration receiver that is not a declref or declnew".into(),
+            )),
+        },
         _ => unreachable!("`dispatched` lists every class"),
+    }
+}
+
+/// The oracle's summary of `ScalarDeclaration.getValidator`'s result, shared
+/// by a `declref` receiver's loaded [`ScalarValidator`] and a `declnew`
+/// receiver's [`ProcessedScalar`](concerto_core::introspect::scalar::ProcessedScalar) one.
+fn scalar_validator_summary(validator: Option<&ScalarValidator>) -> Value {
+    match validator {
+        None => Value::Null,
+        Some(ScalarValidator::Number(_)) => {
+            json!({ M: "Validator", "ctor": "NumberValidator" })
+        }
+        Some(ScalarValidator::String { .. }) => {
+            json!({ M: "Validator", "ctor": "StringValidator" })
+        }
     }
 }
 

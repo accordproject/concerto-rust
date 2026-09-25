@@ -186,6 +186,21 @@ impl ScalarDeclaration {
         file_name: Option<&str>,
         ast: &Value,
     ) -> crate::error::Result<String> {
+        Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
+    }
+
+    /// The same construction as [`ScalarDeclaration::validate_new`], but
+    /// returning what [`ScalarDeclaration::process`] computed as well as the
+    /// fully qualified name, for callers that need `getType`, `getValidator`
+    /// or `getDefaultValue` on a scalar built this way (the oracle harness's
+    /// `declnew` fixtures: a later call on a `new ScalarDeclaration(modelFile,
+    /// ast)` receiver never added to its model file, so it re-encodes the
+    /// same recipe rather than a `declref`).
+    pub fn build_standalone(
+        namespace: &str,
+        file_name: Option<&str>,
+        ast: &Value,
+    ) -> crate::error::Result<(String, ProcessedScalar)> {
         let name = ast.get("name").and_then(Value::as_str).unwrap_or_default();
         let fqn = crate::model_util::get_fully_qualified_name(namespace, name);
         let processed =
@@ -211,7 +226,7 @@ impl ScalarDeclaration {
                 check_length(name, &serde_json::from_value(v.clone()).map_err(bad)?)?;
             }
         }
-        Ok(fqn)
+        Ok((fqn, processed))
     }
 
     /// The generated metamodel node.
