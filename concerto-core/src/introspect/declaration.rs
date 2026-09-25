@@ -90,15 +90,20 @@ macro_rules! class_field {
 /// left empty.
 ///
 /// Two more things are folded in at load time rather than read verbatim from
-/// the AST, both ported from `ClassDeclaration.process`
-/// (src/introspect/classdeclaration.ts):
+/// the AST:
 ///
 /// - `implicit_super_type`: a class whose AST carries no `superType` extends
-///   `Concept` implicitly, unless it is the system model's own `Concept`
-///   declaration (the root of the hierarchy, which has none). [`super_type`]
-///   returns this whenever the AST itself has none, so every other member
-///   that reads it (resolution, `validate`, `toString`) sees the same single
-///   effective super type TS keeps in `this.superType`.
+///   one implicitly, unless it is the system model's own `Concept`
+///   declaration (the root of the hierarchy, which has none). Which type is
+///   *not* uniformly `Concept` (TS: `ModelFile.fromAst`,
+///   src/introspect/modelfile.ts, not `ClassDeclaration.process`): an
+///   `Asset`/`Participant`/`Transaction`/`Event`-kind class defaults to its
+///   own kind (an asset with no `extends` implicitly extends `Asset`, and so
+///   on); only a `Concept`-kind class (or an enum, [`EnumDeclaration`]) falls
+///   back to `Concept` itself. [`super_type`] returns this whenever the AST
+///   itself has none, so every other member that reads it (resolution,
+///   `validate`, `toString`) sees the same single effective super type TS
+///   keeps in `this.superType`.
 /// - the `$identifier`/`$timestamp` system fields: [`ClassDeclaration::from_json`]
 ///   appends them to `properties` the same way `addIdentifierField`/
 ///   `addTimestampField` do, so [`own_properties`] carries them like any
@@ -201,6 +206,86 @@ impl ClassDeclaration {
         class_field!(&self.node, d => d.identified.as_ref())
     }
 
+    /// `true` if this class declaration's own AST declares an *explicit*
+    /// identifier (`identified by field`, never the system `identified`).
+    /// Never true from inheritance, matching [`ClassDeclaration::identifier_field_name`].
+    ///
+    /// TS: `ClassDeclaration.isExplicitlyIdentified` (src/introspect/classdeclaration.ts):
+    /// `!!this.idField && this.idField !== '$identifier'`, which
+    /// [`ClassDeclaration::identifier_field_name`]'s own doc comment already
+    /// notes reduces to this exact check.
+    pub fn is_explicitly_identified(&self) -> bool {
+        self.identifier_field_name().is_some()
+    }
+
+    /// `true` if this class is the definition of an asset.
+    ///
+    /// TS: `ClassDeclaration.isAsset` (src/introspect/classdeclaration.ts):
+    /// `this.type === AssetDeclaration $class`.
+    pub fn is_asset(&self) -> bool {
+        matches!(self.kind(), ClassKind::Asset)
+    }
+
+    /// `true` if this class is the definition of a participant.
+    ///
+    /// TS: `ClassDeclaration.isParticipant`.
+    pub fn is_participant(&self) -> bool {
+        matches!(self.kind(), ClassKind::Participant)
+    }
+
+    /// `true` if this class is the definition of a transaction.
+    ///
+    /// TS: `ClassDeclaration.isTransaction`.
+    pub fn is_transaction(&self) -> bool {
+        matches!(self.kind(), ClassKind::Transaction)
+    }
+
+    /// `true` if this class is the definition of an event.
+    ///
+    /// TS: `ClassDeclaration.isEvent`.
+    pub fn is_event(&self) -> bool {
+        matches!(self.kind(), ClassKind::Event)
+    }
+
+    /// `true` if this class is the definition of a concept.
+    ///
+    /// TS: `ClassDeclaration.isConcept`.
+    pub fn is_concept(&self) -> bool {
+        matches!(self.kind(), ClassKind::Concept)
+    }
+
+    /// `false`: a Rust [`ClassDeclaration`] is one of the five concept-like
+    /// kinds and is never an enum (enums are [`Declaration::Enum`]).
+    ///
+    /// TS: `ClassDeclaration.isEnum` (src/introspect/classdeclaration.ts):
+    /// `this.type === EnumDeclaration $class`, which is never true for one of
+    /// these five kinds; `EnumDeclaration` inherits the method unchanged, so
+    /// the oracle also records `true` results under this op, for an actual
+    /// `EnumDeclaration` receiver — those are `Declaration::is_enum_declaration`
+    /// instead (same check, TS's `this.type` and Rust's variant tag agree).
+    pub fn is_enum(&self) -> bool {
+        false
+    }
+
+    /// `false`: never true for one of the five concept-like kinds, for the
+    /// same reason as [`ClassDeclaration::is_enum`].
+    ///
+    /// TS: `ClassDeclaration.isMapDeclaration`.
+    pub fn is_map_declaration(&self) -> bool {
+        false
+    }
+
+    /// The string representation TS's `ClassDeclaration.toString`
+    /// (src/introspect/classdeclaration.ts) builds: `super_type_name` is the
+    /// raw (unqualified) name TS keeps in `this.superType` — the AST's own
+    /// `superType.name`, or the implicit `'Concept'` — never a resolved FQN.
+    pub fn to_string(fqn: &str, super_type_name: Option<&str>, is_abstract: bool) -> String {
+        let super_part = super_type_name.map_or_else(String::new, |n| format!(" super={n}"));
+        // `EnumDeclaration` overrides `toString`, so a `ClassDeclaration`
+        // receiver is never an enum here (`is_enum` above).
+        format!("ClassDeclaration {{id={fqn}{super_part} enum=false abstract={is_abstract}}}")
+    }
+
     /// `true` for the system model's own `Concept` declaration: the root of
     /// the class hierarchy, the one declaration that has no super type at
     /// all, explicit or implicit.
@@ -251,9 +336,32 @@ impl ClassDeclaration {
         {
             None
         } else {
+            // TS: not `ClassDeclaration.process`'s own implicit-`Concept`
+            // fallback (which only ever fires for a `ConceptDeclaration`, an
+            // `EnumDeclaration`, or a scalar/map — none of those wrapped
+            // here — because every other kind's AST already has a
+            // `superType` by the time `process` sees it). `ModelFile.fromAst`
+            // (src/introspect/modelfile.ts) injects it first, per kind, for
+            // exactly the four identified kinds: an `AssetDeclaration` with
+            // no `superType` defaults to `Asset`, a `TransactionDeclaration`
+            // to `Transaction`, an `EventDeclaration` to `Event`, a
+            // `ParticipantDeclaration` to `Participant` — never the generic
+            // `Concept` — so `ClassDeclaration.process`'s own fallback
+            // always finds `this.ast.superType` already set for these four
+            // and takes its *other* branch (`this.superType =
+            // this.ast.superType.name`), not this one. Only `kind ==
+            // ClassKind::Concept` reaches `process`'s own fallback, unset by
+            // `fromAst` (its `case ConceptDeclaration` injects nothing).
+            let implicit_name = match kind {
+                ClassKind::Concept => "Concept",
+                ClassKind::Asset => "Asset",
+                ClassKind::Participant => "Participant",
+                ClassKind::Transaction => "Transaction",
+                ClassKind::Event => "Event",
+            };
             Some(mm::TypeIdentifier {
                 _class: qualified_class("TypeIdentifier"),
-                name: "Concept".to_string(),
+                name: implicit_name.to_string(),
                 namespace: None,
                 resolved_name: None,
             })
@@ -404,9 +512,106 @@ pub enum Declaration {
 
 /// An enumeration declaration: a newtype over the generated
 /// [`mm::EnumDeclaration`].
-#[derive(Debug, Clone, Named, DeclarationKind)]
+///
+/// TS's `EnumDeclaration extends ClassDeclaration`
+/// (src/introspect/enumdeclaration.ts) and overrides only `toString` and
+/// `declarationKind`; every other `ClassDeclaration` member — identity,
+/// properties, the implicit `Concept` super type, `isAbstract` and so on —
+/// reaches an enum unchanged. The methods below give this type the same
+/// answers [`ClassDeclaration`] gives, over the metamodel's narrower
+/// `EnumDeclaration` AST shape (no `isAbstract`, `identified` or `superType`
+/// field at all: the grammar never writes them for an enum), so a caller that
+/// needs a class-like fact from either kind can read it the same way (see
+/// `model_manager::ClassLike`).
+#[derive(Debug, Clone, DeclarationKind)]
 #[concerto(kind = "EnumDeclaration")]
-pub struct EnumDeclaration(mm::EnumDeclaration);
+pub struct EnumDeclaration {
+    node: mm::EnumDeclaration,
+    /// Each of `node.properties`, wrapped the same way a class declaration's
+    /// `EnumProperty` fields are (`Property::Enum`), computed once at load
+    /// time so [`EnumDeclaration::own_properties`] can hand out `&Property`s
+    /// the arena's `PropId`s address, the same way
+    /// [`ClassDeclaration::own_properties`] does.
+    ///
+    /// TS: `ClassDeclaration.getOwnProperties`, inherited unchanged.
+    properties: Vec<Property>,
+}
+
+impl Named for EnumDeclaration {
+    fn name(&self) -> &str {
+        &self.node.name
+    }
+}
+
+impl EnumDeclaration {
+    fn from_json(value: &serde_json::Value) -> Result<Self> {
+        let node: mm::EnumDeclaration =
+            serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
+                message: format!("invalid EnumDeclaration: {e}"),
+                file_name: None,
+                location: None,
+            })?;
+        let properties = node
+            .properties
+            .iter()
+            .cloned()
+            .map(Property::Enum)
+            .collect();
+        Ok(Self { node, properties })
+    }
+
+    /// The enum's values.
+    ///
+    /// TS: `ClassDeclaration.getOwnProperties`, inherited unchanged.
+    pub fn own_properties(&self) -> &[Property] {
+        &self.properties
+    }
+
+    /// `false`: the metamodel's `EnumDeclaration` AST carries no `isAbstract`
+    /// field, so TS's `this.abstract` (set only when `this.ast.isAbstract` is
+    /// truthy) is never set for one.
+    ///
+    /// TS: `ClassDeclaration.isAbstract`, inherited unchanged.
+    pub fn is_abstract(&self) -> bool {
+        false
+    }
+
+    /// `None`: the metamodel's `EnumDeclaration` AST carries no `identified`
+    /// field, so TS's `this.idField` is never set for one — its identity, like
+    /// every class-like declaration's, can still come from its super type
+    /// (`ModelManager::identifier_field_name` walks past this).
+    ///
+    /// TS: `ClassDeclaration.getIdentifierFieldName`'s own (non-inherited)
+    /// step, `this.idField`, inherited unchanged.
+    pub fn own_identifier_field_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// The source location, if the AST carried one.
+    pub fn location(&self) -> Option<&mm::Range> {
+        self.node.location.as_ref()
+    }
+
+    /// The implicit `Concept` super type every enum has: the metamodel's
+    /// `EnumDeclaration` AST carries no `superType` field at all (unlike
+    /// [`ClassDeclaration`], whose AST shape allows one), so TS's
+    /// `this.ast.superType` is always falsy for one and `ClassDeclaration.process`
+    /// always takes its implicit branch (`this.superType = 'Concept'`) —
+    /// never the system-root exemption, which only ever applies to the system
+    /// model's own `Concept` declaration, itself a [`ClassDeclaration`], never
+    /// an enum.
+    ///
+    /// TS: `ClassDeclaration.process`'s implicit super type, inherited
+    /// unchanged (src/introspect/classdeclaration.ts).
+    pub fn implicit_super_type(&self) -> mm::TypeIdentifier {
+        mm::TypeIdentifier {
+            _class: qualified_class("TypeIdentifier"),
+            name: "Concept".to_string(),
+            namespace: None,
+            resolved_name: None,
+        }
+    }
+}
 
 /// The key kinds the generated [`mm::MapKeyType`] union declares.
 const MM_MAP_KEY_KINDS: [&str; 3] = ["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
@@ -713,13 +918,7 @@ impl Declaration {
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => Self::Enum(EnumDeclaration(
-                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                    message: format!("invalid EnumDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
-                })?,
-            )),
+            "EnumDeclaration" => Self::Enum(EnumDeclaration::from_json(value)?),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)

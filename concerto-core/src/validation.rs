@@ -189,13 +189,8 @@ fn check_super_type(
         ));
     }
 
-    let super_declaration = resolve(
-        manager,
-        namespace,
-        &super_type.name,
-        super_type.namespace.as_deref(),
-    )
-    .and_then(|fqn| manager.get_declaration(&fqn).ok());
+    let super_declaration = resolve(manager, namespace, &super_type.name)
+        .and_then(|fqn| manager.get_declaration(&fqn).ok());
     let Some(super_declaration) = super_declaration else {
         // TS: `_resolveSuperType`'s hardcoded string, not a catalogue
         // template (Globalize is never called on this path).
@@ -237,8 +232,8 @@ fn check_unique_field_names(
     fqn: &str,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for property in manager.get_all_properties(fqn)? {
-        if !seen.insert(property.name()) {
+    for (_, property) in manager.get_all_properties(fqn)? {
+        if !seen.insert(property.name().to_string()) {
             return Err(catalogue_error(
                 "classdeclaration-validate-duplicatefieldname",
                 vec![
@@ -267,10 +262,10 @@ fn check_identifier(
         return Ok(());
     };
     let fqn = get_fully_qualified_name(namespace, class.name());
-    let field = manager
+    let (_, field) = manager
         .get_all_properties(&fqn)?
         .into_iter()
-        .find(|property| property.name() == field_name)
+        .find(|(_, property)| property.name() == field_name)
         .ok_or_else(|| {
             catalogue_error(
                 "classdeclaration-validate-identifiernotproperty",
@@ -290,7 +285,7 @@ fn check_identifier(
             class_location(class),
         ));
     }
-    if !is_string_typed(manager, namespace, field) {
+    if !is_string_typed(manager, namespace, &field) {
         return Err(catalogue_error(
             "classdeclaration-validate-identifiernotstring",
             vec![
@@ -312,14 +307,9 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
     let Some(type_identifier) = field.type_identifier() else {
         return false;
     };
-    resolve(
-        manager,
-        namespace,
-        &type_identifier.name,
-        type_identifier.namespace.as_deref(),
-    )
-    .and_then(|fqn| manager.get_declaration(&fqn).ok())
-    .is_some_and(|declaration| declaration.type_name() == Some("String"))
+    resolve(manager, namespace, &type_identifier.name)
+        .and_then(|fqn| manager.get_declaration(&fqn).ok())
+        .is_some_and(|declaration| declaration.type_name() == Some("String"))
 }
 
 /// Object and relationship properties must point at a declared type; a
@@ -348,12 +338,7 @@ fn check_property_type(
         ));
     }
 
-    let target_fqn = resolve(
-        manager,
-        namespace,
-        &type_identifier.name,
-        type_identifier.namespace.as_deref(),
-    );
+    let target_fqn = resolve(manager, namespace, &type_identifier.name);
     let target = target_fqn
         .as_deref()
         .and_then(|fqn| manager.get_declaration(fqn).ok());
@@ -405,24 +390,30 @@ fn check_property_type(
     Ok(())
 }
 
-/// Resolves a referenced type to a fully-qualified name. A reference that
-/// carries its own namespace is qualified directly; otherwise it is resolved
-/// through the imports and local declarations of `namespace`.
-fn resolve(
-    manager: &ModelManager,
-    namespace: &str,
-    name: &str,
-    reference_namespace: Option<&str>,
-) -> Option<String> {
-    match reference_namespace {
-        Some(ns) => Some(get_fully_qualified_name(ns, name)),
-        // The error is discarded (`.ok()`) by every caller: they use `None`
-        // to mean "does not resolve" and build their own message (`failed`,
-        // below), so the location `resolve_type_name` would attach to its
-        // own error never surfaces. Passing `None` here is exact, not a
-        // shortcut.
-        None => manager.resolve_type_name(namespace, name, None).ok(),
-    }
+/// Resolves a `TypeIdentifier`'s `name` to a fully-qualified name, through
+/// the imports and local declarations of `namespace`.
+fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String> {
+    // TS: every `TypeIdentifier` consumer in the reference — `this.superType
+    // = this.ast.superType.name` (`ClassDeclaration.process`), `this.type =
+    // this.ast.type.name` (`Property.process`, `MapKeyType.process`,
+    // `MapValueType.process`) — keeps only `name`, discarding `namespace`
+    // (and `resolvedName`) outright, then resolves that bare name through
+    // the declaring namespace's own imports (`isImportedType`/
+    // `resolveImport`) or local declarations, never by qualifying `name`
+    // with `ti.namespace` directly. That distinction matters for an aliased
+    // import's `TypeIdentifier`: its `namespace` is the *target*'s (the
+    // import's own `namespace`), while `name` is the local alias, not the
+    // target's own declared name — qualifying `name` with that `namespace`
+    // directly would build `{target namespace}.{alias}`, a name nothing
+    // declares; the alias only resolves correctly by going through the
+    // import list ([`ModelManager::resolve_type_name`], PORTING.md 6.2),
+    // which every caller here now always does.
+    //
+    // The error is discarded (`.ok()`) by every caller: they use `None` to
+    // mean "does not resolve" and build their own message (`failed`,
+    // below), so the location `resolve_type_name` would attach to its own
+    // error never surfaces. Passing `None` here is exact, not a shortcut.
+    manager.resolve_type_name(namespace, name, None).ok()
 }
 
 /// A file may not import two versions of one namespace, since a short name
@@ -489,12 +480,7 @@ fn check_identity_matches_super(
     let Some(super_type) = class.super_type() else {
         return Ok(());
     };
-    let Some(super_fqn) = resolve(
-        manager,
-        namespace,
-        &super_type.name,
-        super_type.namespace.as_deref(),
-    ) else {
+    let Some(super_fqn) = resolve(manager, namespace, &super_type.name) else {
         // An unresolved super type is reported by `check_super_type`.
         return Ok(());
     };
@@ -583,7 +569,7 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
 
     // An object key names a scalar, which has to be over a String or DateTime.
     if let Some(key) = map.key_type() {
-        let scalar = resolve(manager, namespace, &key.name, key.namespace.as_deref())
+        let scalar = resolve(manager, namespace, &key.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
             .and_then(Typed::type_name);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
@@ -599,7 +585,7 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
 
     // An object value names a concept or a scalar, and it has to be declared.
     if let Some(value) = map.value_type() {
-        let declared = resolve(manager, namespace, &value.name, value.namespace.as_deref())
+        let declared = resolve(manager, namespace, &value.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok());
         let Some(declared) = declared else {
             return Err(failed(
@@ -812,13 +798,17 @@ mod tests {
 
     #[test]
     fn relationship_to_identified_class_passes() {
+        // A concept (not an asset/participant/transaction/event): the
+        // implicit super type here is `Concept` itself (no properties of its
+        // own to collide with), unlike the four identified kinds, which
+        // implicitly extend their own system kind (P2-03) and so would
+        // already carry a `$identifier` of their own — this test is about
+        // the relationship check, not that.
         let err = validate(serde_json::json!([
-            {
-                "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
-                "name": "Vehicle", "isAbstract": false,
+            concept(serde_json::json!({
+                "name": "Vehicle",
                 "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
-                "properties": []
-            },
+            })),
             concept(serde_json::json!({
                 "name": "Order",
                 "properties": [
@@ -1277,7 +1267,7 @@ mod tests {
         let properties = manager
             .get_all_properties("org.example@1.0.0.Order")
             .unwrap();
-        let names: Vec<&str> = properties.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["price", "$identifier"]);
         assert_eq!(
             manager
@@ -1325,7 +1315,7 @@ mod tests {
         let properties = manager
             .get_all_properties("org.example@1.0.0.Order")
             .unwrap();
-        let names: Vec<&str> = properties.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["sku", "price", "$identifier"]);
         assert_eq!(
             manager
@@ -1364,12 +1354,10 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let names: Vec<&str> = manager
+        let properties = manager
             .get_all_properties("org.example@1.0.0.Payment")
-            .unwrap()
-            .iter()
-            .map(|p| p.name())
-            .collect();
+            .unwrap();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["amount", "$timestamp"]);
     }
 

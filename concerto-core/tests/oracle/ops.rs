@@ -30,9 +30,12 @@
 //!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
-use concerto_core::introspect::Declaration;
+use concerto_core::introspect::declaration::ClassDeclaration;
+use concerto_core::introspect::model_file::ModelFile;
+use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
-use concerto_core::model_manager::{ModelManager, Node, ResolutionContext};
+use concerto_core::introspect::{Declaration, Named, Validate};
+use concerto_core::model_manager::{DeclId, ModelManager, Node, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use serde_json::{Value, json};
 
@@ -379,6 +382,32 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
+        ("ClassDeclaration", m) => matches!(
+            m,
+            "isAbstract"
+                | "isIdentified"
+                | "isSystemIdentified"
+                | "isExplicitlyIdentified"
+                | "getIdentifierFieldName"
+                | "getOwnProperties"
+                | "getProperties"
+                | "getProperty"
+                | "getSuperType"
+                | "getSuperTypeDeclaration"
+                | "getAllSuperTypeDeclarations"
+                | "getAssignableClassDeclarations"
+                | "getDirectSubclasses"
+                | "getNestedProperty"
+                | "isEnum"
+                | "isEvent"
+                | "isMapDeclaration"
+                | "toString"
+                | "validate"
+        ),
+        ("Declaration", m) => matches!(
+            m,
+            "getFullyQualifiedName" | "getName" | "getNamespace" | "getModelFile"
+        ),
         _ => false,
     };
     if !dispatched {
@@ -467,7 +496,257 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 })),
             })
         }
+        "ClassDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ClassDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(declaration) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration handle does not resolve".into(),
+                ));
+            };
+            if !matches!(declaration, Declaration::Class(_) | Declaration::Enum(_)) {
+                // TS: every one of these members is defined on
+                // `ClassDeclaration`, inherited unchanged by `EnumDeclaration`
+                // (module doc); a scalar or map declaration has no such
+                // method at all — not a fixture this op family owns.
+                return Ok(unsupported(
+                    "ClassDeclaration op on a receiver that is neither class-like nor an enum",
+                ));
+            }
+            let fqn =
+                r.mm.get_fully_qualified_name(&Node::Declaration(id))
+                    .expect("a resolved declref always names a loaded declaration");
+            Ok(class_declaration_op(r, id, &fqn, member, &args))
+        }
+        "Declaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Declaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            Ok(declaration_op(r, id, member))
+        }
         _ => unreachable!("`dispatched` lists every class"),
+    }
+}
+
+/// The `ctor` an oracle `Property` summary carries for `p` (README "Value
+/// encoding", `codec.js`'s `encodable.js`): the TS class that would have
+/// constructed it, from its own kind (a property's kind, unlike a
+/// declaration's, never needs a receiver's model file to tell, PORTING.md
+/// 6.2).
+fn property_ctor(p: &Property) -> &'static str {
+    if p.is_enum_value() {
+        "EnumValueDeclaration"
+    } else if p.is_relationship() {
+        "RelationshipDeclaration"
+    } else {
+        "Field"
+    }
+}
+
+/// The outcome-only `Property` summary (`makeOutputEncoder`): `{ctor, fqn}`.
+/// `owner_fqn` is the fully-qualified name of the declaration that actually
+/// declares `p` — its `Property.getParent().getFullyQualifiedName()` — which
+/// for an inherited property is its super type's, not the type the walk
+/// started from ([`ModelManager::get_all_properties`]'s doc comment).
+fn property_summary(owner_fqn: &str, p: &Property) -> Value {
+    json!({
+        M: "Property",
+        "ctor": property_ctor(p),
+        "fqn": format!("{owner_fqn}.{}", p.name()),
+    })
+}
+
+/// Every fully-qualified super type name `get_all_super_type_names` (or
+/// `get_assignable_class_declarations`/`get_direct_subclasses`) gives, each
+/// resolved back to its declaration and encoded the outcome-only way
+/// (`declaration_summary`).
+fn declaration_summaries(r: &Replayed, fqns: &[String]) -> Value {
+    Value::Array(
+        fqns.iter()
+            .map(|fqn| {
+                let id =
+                    r.mm.declaration_id(fqn)
+                        .expect("a name this manager's own walk produced is always loaded");
+                r.declaration_summary(id)
+                    .expect("declaration_id just resolved it")
+            })
+            .collect(),
+    )
+}
+
+/// `ClassDeclaration.*`/`EnumDeclaration`-inherited ops (module doc): every
+/// member TS defines once on `ClassDeclaration`, which `EnumDeclaration`
+/// (src/introspect/enumdeclaration.ts) inherits unchanged except `toString`
+/// and `declarationKind` — so `fqn` here may equally be a concept-like
+/// declaration or an enum (`exec_handles`'s own gate on `declaration`).
+fn class_declaration_op(
+    r: &Replayed,
+    id: DeclId,
+    fqn: &str,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    let declaration =
+        r.mm.declaration(id)
+            .expect("the caller just resolved this handle");
+    let arg_str = |i: usize| match args.get(i) {
+        Some(Arg::Plain(Value::String(s))) => Some(s.as_str()),
+        _ => None,
+    };
+    match member {
+        "isAbstract" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_abstract(),
+                Declaration::Enum(e) => e.is_abstract(),
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "isIdentified" => from_engine(r.mm.is_identified(fqn), Value::Bool),
+        "isSystemIdentified" => from_engine(r.mm.is_system_identified(fqn), Value::Bool),
+        "isExplicitlyIdentified" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_explicitly_identified(),
+                // An enum's AST never carries `identified` (own_identifier_field_name).
+                Declaration::Enum(_) => false,
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "getIdentifierFieldName" => from_engine(r.mm.identifier_field_name(fqn), |name| {
+            name.map_or(Value::Null, Value::String)
+        }),
+        "getOwnProperties" => from_engine(r.mm.get_own_properties(fqn), |props| {
+            Value::Array(props.iter().map(|p| property_summary(fqn, p)).collect())
+        }),
+        "getProperties" => from_engine(r.mm.get_all_properties(fqn), |props| {
+            Value::Array(
+                props
+                    .iter()
+                    .map(|(owner, p)| property_summary(owner, p))
+                    .collect(),
+            )
+        }),
+        "getProperty" => {
+            let Some(name) = arg_str(0) else {
+                return unsupported("getProperty with a name that is not a string");
+            };
+            from_engine(r.mm.get_property(fqn, name), |found| {
+                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, &p))
+            })
+        }
+        "getSuperType" => from_engine(r.mm.get_super_type(fqn), |name| {
+            name.map_or(Value::Null, Value::String)
+        }),
+        "getSuperTypeDeclaration" => from_engine(r.mm.get_super_type_declaration(fqn), |found| {
+            found
+                .and_then(|id| r.declaration_summary(id))
+                .unwrap_or(Value::Null)
+        }),
+        "getAllSuperTypeDeclarations" => from_engine(r.mm.get_all_super_type_names(fqn), |names| {
+            declaration_summaries(r, &names)
+        }),
+        "getAssignableClassDeclarations" => {
+            from_engine(r.mm.get_assignable_class_declarations(fqn), |names| {
+                declaration_summaries(r, &names)
+            })
+        }
+        "getDirectSubclasses" => from_engine(r.mm.get_direct_subclasses(fqn), |names| {
+            declaration_summaries(r, &names)
+        }),
+        "getNestedProperty" => {
+            let Some(path) = arg_str(0) else {
+                return unsupported("getNestedProperty with a path that is not a string");
+            };
+            from_engine(r.mm.get_nested_property(fqn, path), |(owner, p)| {
+                property_summary(&owner, &p)
+            })
+        }
+        "isEnum" => ran(Ok(Value::Bool(declaration.is_enum_declaration()))),
+        "isEvent" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_event(),
+                Declaration::Enum(_) => false,
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "isMapDeclaration" => ran(Ok(Value::Bool(declaration.is_map_declaration()))),
+        "toString" => {
+            let Declaration::Class(class) = declaration else {
+                // `EnumDeclaration` overrides `toString` (module doc): the
+                // oracle records that override as its own op
+                // (`EnumDeclaration.toString`), never reaching here.
+                return unsupported("ClassDeclaration.toString on an enum receiver");
+            };
+            let super_name = class.super_type().map(|ti| ti.name.as_str());
+            ran(Ok(Value::String(ClassDeclaration::to_string(
+                fqn,
+                super_name,
+                class.is_abstract(),
+            ))))
+        }
+        "validate" => {
+            let namespace =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+                    .expect("a resolved declref's declaration always has a model file");
+            // TS: `validate()` returns nothing (`undefined`), never `null`.
+            from_engine(declaration.validate(&r.mm, namespace), |()| {
+                recipe::undefined()
+            })
+        }
+        _ => unreachable!("`dispatched` lists every ClassDeclaration member"),
+    }
+}
+
+/// `Declaration.*` ops that reach every kind of declaration unchanged
+/// (module doc): none of them is overridden anywhere in the hierarchy.
+fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
+    let Some(declaration) = r.mm.declaration(id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the declaration handle does not resolve".into(),
+        ));
+    };
+    match member {
+        "getFullyQualifiedName" => from_engine(
+            r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+            Value::String,
+        ),
+        "getName" => ran(Ok(Value::String(declaration.name().to_string()))),
+        "getNamespace" => {
+            let Some(namespace) =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the declaration's model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(Value::String(namespace.to_string())))
+        }
+        "getModelFile" => {
+            let Some(namespace) =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the declaration's model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(r.model_file_summary(namespace).unwrap_or(Value::Null)))
+        }
+        _ => unreachable!("`dispatched` lists every Declaration member"),
     }
 }
 
