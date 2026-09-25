@@ -820,6 +820,25 @@ pub fn is_js_undefined(value: &Value) -> bool {
 }
 
 /// `value` as a JS object, which a JS `undefined` ([`UNDEFINED_TAG`]) is not.
+///
+/// Provably unreachable through any caller (P5-06: cargo-mutants found the
+/// `||`->`&&` mutant survived; this is the proof, not a repeat of the
+/// assertion): [`is_js_undefined`] and [`special_number`] each require the
+/// object to have *exactly one* key — [`UNDEFINED_TAG`] or [`NUMBER_TAG`]
+/// respectively — and those are two different keys, so no `Value` can
+/// satisfy both at once. Under the `&&` mutant the combined condition is
+/// therefore always `false`, for every possible `value`, making the mutant
+/// equivalent to `value.as_object()` alone (never explicitly `None` for a
+/// tagged value). This still cannot be observed at any of this function's
+/// three call sites ([`visit_class_declaration`] x2, [`check_relationship`]):
+/// each one reads only `$class` or [`RELATIONSHIP_TAG`] off the returned
+/// map, and every legitimately single-key-tagged `value` — the *only* shape
+/// this mutant's `false` can ever differ on — has neither, by the same
+/// single-key argument, so `obj.get("$class")`/`o.contains_key(
+/// RELATIONSHIP_TAG)` fail identically whether `obj` is `None` (the real
+/// rejection) or `Some(&{one untagged-relevant key})` (the mutant, holding
+/// the value's own single tag key back unused) — every caller's error path
+/// reports the same original `value` regardless, never `obj` itself.
 fn as_js_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
     if is_js_undefined(value) || special_number(value).is_some() {
         None
@@ -2299,7 +2318,35 @@ mod tests {
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "tags", "isArray": true, "isOptional": true,
                           "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 3 } },
                         { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "rating", "isArray": false, "isOptional": true,
-                          "validator": { "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": 0, "upper": 5 } }
+                          "validator": { "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": 0, "upper": 5 } },
+                        // Array-of-enum (P5-06: `check_enum`'s own
+                        // `property.is_array()` guard, at the top of the
+                        // function, had no test with an *array* enum
+                        // property anywhere in this fixture — every
+                        // existing enum test uses `color`, which is not an
+                        // array).
+                        { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "colors", "isArray": true, "isOptional": true,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Color" } },
+                        // A String field with its own (non-scalar)
+                        // `validator`, no `length_validator` alongside it
+                        // (P5-06: `check_primitive_item`'s `sp.validator
+                        // .is_some() || sp.length_validator.is_some()`
+                        // guard — every existing `String` field, including
+                        // `vin`, carries neither, and the only other
+                        // `StringValidator` exercise in this module is via
+                        // a scalar, `VIN`, which runs through
+                        // `check_scalar_item`, not `check_primitive_item`,
+                        // so a validator on the *property* itself, alone,
+                        // was never reached).
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "code", "isArray": false, "isOptional": true,
+                          "validator": { "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "^[A-Z]+$", "flags": "" } },
+                        // No `Double` property existed anywhere in this
+                        // fixture (P5-06: cargo-mutants found
+                        // `check_primitive_item`'s `Property::Double(dp)`
+                        // match arm survived — deleting it falls through to
+                        // the trailing `_ => unreachable!()`, which nothing
+                        // exercised).
+                        { "$class": "concerto.metamodel@1.0.0.DoubleProperty", "name": "weight", "isArray": false, "isOptional": true }
                       ] },
                     { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Owner",
                       "isAbstract": false,
@@ -2447,6 +2494,100 @@ mod tests {
             "expected the undefined-identifier placeholder, got: {err}"
         );
         assert!(err.to_string().contains("\"extra\""), "{err}");
+    }
+
+    /// [`visit_class_declaration`]'s undeclared-field `resource_id`
+    /// computation (P5-06: cargo-mutants found the `&&`->`||` and
+    /// `!=`->`==` mutants at this line both survived). `key !=
+    /// "$identifier"` is, on its own, always true at this point (an actual
+    /// `"$identifier"` key is filtered out as a system property earlier in
+    /// the same loop, so this branch never reaches it) — the `!=` mutant's
+    /// `==` is thus always false there. Both mutants are made observable by
+    /// giving the `&&`'s *other* operand (`declared_is_identified`) a true
+    /// and a false case with genuinely different `resource_id` outputs:
+    /// `inner` is nested inside an already-identified `Outer` (so
+    /// `p.current_identifier` is `Some("Outer#O1")` by the time it is
+    /// visited) but is itself declared as the *identified* `Inner`, so the
+    /// real `js_id_display`-based id (`"I1"`) differs from the `&&`/`==`
+    /// mutants' `current_identifier` fallback (`"Outer#O1"`); `loose` is
+    /// declared as the *unidentified* `Loose` and visited after `inner`
+    /// (properties are walked in declaration order), so by then the real
+    /// fallback is `p.current_identifier` as `inner` itself left it,
+    /// `"Inner#I1"` (every *identified* object visited overwrites it, `inner`
+    /// included — not only `Outer`) — still a value the `||` mutant's
+    /// wrongly-taken `js_id_display` branch cannot produce (`"undefined"`,
+    /// since an unidentified type has
+    /// no identifier field to read).
+    #[test]
+    fn an_undeclared_field_s_reported_resource_id_depends_on_whether_the_declared_type_is_identified()
+     {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.nest@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Inner",
+                      "isAbstract": false,
+                      "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "iid" },
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "iid",
+                          "isArray": false, "isOptional": false }
+                      ] },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Loose",
+                      "isAbstract": false, "properties": [] },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Outer",
+                      "isAbstract": false,
+                      "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "oid" },
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "oid",
+                          "isArray": false, "isOptional": false },
+                        { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "inner",
+                          "isArray": false, "isOptional": false,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Inner" } },
+                        { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "loose",
+                          "isArray": false, "isOptional": false,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Loose" } }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        let with_bad_inner = json!({
+            "$class": "org.nest@1.0.0.Outer", "oid": "O1",
+            "inner": { "$class": "org.nest@1.0.0.Inner", "iid": "I1", "bogus": "nope" },
+            "loose": { "$class": "org.nest@1.0.0.Loose" }
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &with_bad_inner,
+            &ValidateOptions::default(),
+        ));
+        assert!(err.to_string().contains("\"I1\""), "{err}");
+
+        // `p.current_identifier` is set (and left set) by every *identified*
+        // object the walk visits, `inner` included — since properties are
+        // visited in declaration order (`oid`, `inner`, `loose`) and `inner`
+        // is processed first and is itself identified, it is `"Inner#I1"`,
+        // not `"Outer#O1"`, that is on `p.current_identifier` by the time
+        // `loose` is reached below.
+        let with_bad_loose = json!({
+            "$class": "org.nest@1.0.0.Outer", "oid": "O1",
+            "inner": { "$class": "org.nest@1.0.0.Inner", "iid": "I1" },
+            "loose": { "$class": "org.nest@1.0.0.Loose", "bogus2": "nope" }
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &with_bad_loose,
+            &ValidateOptions::default(),
+        ));
+        assert!(
+            err.to_string()
+                .contains("\"org.nest@1.0.0.Inner#I1\""),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2804,6 +2945,132 @@ mod tests {
             &ValidateOptions::default(),
         ));
         assert!(err.to_string().contains("upper bound"), "{err}");
+    }
+
+    /// [`check_enum`]'s `property.is_array() && !value.is_array()` guard
+    /// (P5-06: cargo-mutants found the `&&`->`||` and `delete !` mutants at
+    /// this line survived): a valid *array* of enum values, which no
+    /// existing test builds (every other enum test uses the non-array
+    /// `color`). Under either mutant, `property.is_array()` (`true`) alone
+    /// already makes the guard true, wrongly reporting a field type
+    /// violation on this well-formed array.
+    #[test]
+    fn an_array_of_valid_enum_values_passes() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "colors": ["RED", "GREEN"]
+        });
+        validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
+    }
+
+    /// [`check_primitive_item`]'s `sp.validator.is_some() ||
+    /// sp.length_validator.is_some()` guard (P5-06: cargo-mutants found the
+    /// `||`->`&&` mutant survived): `code` carries a `validator` but no
+    /// `length_validator`, so the real `||` runs `StringValidator` (and
+    /// rejects a value its regex does not match) while the `&&` mutant
+    /// would skip it (`length_validator` is `None`) and wrongly accept.
+    #[test]
+    fn a_string_field_s_own_validator_runs_without_a_length_validator_alongside_it() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "code": "not-uppercase"
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert!(err.to_string().contains("code"), "{err}");
+    }
+
+    /// [`check_primitive_item`]'s `Property::Double(dp)` match arm (P5-06:
+    /// cargo-mutants found deleting it survived): no `Double` property
+    /// existed anywhere in this fixture, so a deleted arm's fallthrough to
+    /// `_ => unreachable!()` was never exercised.
+    #[test]
+    fn a_double_field_passes() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "weight": 12.5
+        });
+        validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
+    }
+
+    /// [`property_has_default_value`] (P5-06: cargo-mutants found the
+    /// `-> false` mutant survived): every existing "missing required
+    /// property" test omits a property with *no* default value, so the
+    /// `true` branch (skip, rather than report missing) is never actually
+    /// reached. `d` here has both `isOptional: false` and a `defaultValue`.
+    #[test]
+    fn a_missing_required_property_with_a_default_value_is_accepted() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme.defaults@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Defaulted",
+                      "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "d",
+                          "isArray": false, "isOptional": false, "defaultValue": "fallback" }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let value = json!({ "$class": "org.acme.defaults@1.0.0.Defaulted" });
+        validate_instance(&mgr, &value, &ValidateOptions::default())
+            .expect("a required property with a default value may be omitted");
+    }
+
+    /// [`fully_qualified_identifier`]'s `!id.is_empty()` match guard (P5-06:
+    /// cargo-mutants found the guard-true, guard-false and `delete !`
+    /// mutants all survived): direct unit coverage of the pure function,
+    /// distinguishing a present-but-empty id (falls back to the bare fqn,
+    /// same as `None`) from a genuinely present one.
+    #[test]
+    fn fully_qualified_identifier_falls_back_to_the_bare_fqn_only_for_an_absent_or_empty_id() {
+        assert_eq!(fully_qualified_identifier("ns.Foo", None), "ns.Foo");
+        assert_eq!(fully_qualified_identifier("ns.Foo", Some("")), "ns.Foo");
+        assert_eq!(fully_qualified_identifier("ns.Foo", Some("42")), "ns.Foo#42");
+    }
+
+    /// [`identifiable_to_string`] (P5-06: cargo-mutants found all three
+    /// `-> None`/`Some(...)` mutants survived) and, incidentally,
+    /// [`visit_class_declaration`]'s `!o.contains_key(RELATIONSHIP_TAG)`
+    /// filter (the `delete !` mutant there): every existing enum/invalid-
+    /// value test passes a plain string or number, for which
+    /// `identifiable_to_string` already returns `None` (falls through to
+    /// `js_to_string`) — never a `$class`-tagged value, so its `Some(...)`
+    /// arm was never exercised. Assigning a `$$relationship`-tagged value to
+    /// `pet` (a plain `Object`-typed, non-relationship property) hits
+    /// exactly that arm: `visit_class_declaration` rejects it as "not a
+    /// Resource" (a `Relationship` is `Identifiable`, never a `Resource`,
+    /// module doc "Scope"), and the reported invalid value is
+    /// `identifiable_to_string`'s `"Relationship {id=...}"` form.
+    #[test]
+    fn a_relationship_tagged_value_on_a_plain_object_property_reports_its_relationship_string_form()
+     {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "pet": { "$$relationship": true, "$class": "org.acme@1.0.0.Dog" }
+        });
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert!(
+            err.to_string()
+                .contains("Relationship {id=org.acme@1.0.0.Dog}"),
+            "{err}"
+        );
     }
 
     // ---- Wrong shape at the root (not a Resource / not a relationship) ----

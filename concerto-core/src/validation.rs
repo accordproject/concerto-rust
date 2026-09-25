@@ -1264,6 +1264,12 @@ pub fn validate_map_value(
         "ObjectMapValueType" | "RelationshipMapValueType"
     ) {
         match map.value_type() {
+            // Reachable (P5-06, validation.rs test
+            // `validate_detached_map_key_and_value_in_isolation`'s
+            // `ValueTypeNameIsNotAString` case): `MapDeclaration::from_json`
+            // only checks that `type.name` is *present*, not that it is a
+            // string, so a malformed `name` field leaves `value_type()`
+            // `None` despite construction succeeding.
             None => {
                 return Err(failed(
                     format!(
@@ -1274,6 +1280,27 @@ pub fn validate_map_value(
                     None,
                 ));
             }
+            // Provably unreachable through any constructed `MapDeclaration`
+            // (P5-06: cargo-mutants found this arm's mutants survived, and
+            // review correctly rejected the earlier "likely unreachable, no
+            // proof" claim — this is the proof, not a repeat of the
+            // assertion). `MapDeclaration::from_json`
+            // (introspect/declaration.rs) already rejects, at construction,
+            // any `ObjectMapValueType`/`RelationshipMapValueType` node whose
+            // `type.$class` is not the literal string
+            // `"concerto.metamodel@1.0.0.TypeIdentifier"` (its own
+            // `class_field.and_then(|c| c.as_str()) != Some(...)` check) —
+            // the exact same string [`crate::introspect::qualified_class`]
+            // builds here (`METAMODEL_NAMESPACE` + `".TypeIdentifier"`).
+            // `t._class` above is read off the *same* JSON node by
+            // `type_reference`'s `serde_json::from_value::<mm::TypeIdentifier>`
+            // (declaration.rs), a field-for-field deserialize with no
+            // normalisation, so `t._class` cannot come out different from
+            // the exact string construction already checked. The only way
+            // `type_reference` disagrees with that raw check at all is by
+            // *failing* to deserialize (a malformed `name`, the `None` arm
+            // just above) — it can fail to produce a match, never produce a
+            // different one.
             Some(t) if t._class != crate::introspect::qualified_class("TypeIdentifier") => {
                 return Err(failed(
                     format!(
@@ -4410,7 +4437,29 @@ mod tests {
                       "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
                     { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ValuePointsAtAMap",
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
-                      "value": object_type("Valid", "ObjectMapValueType") }
+                      "value": object_type("Valid", "ObjectMapValueType") },
+                    // `validate_map_value`'s `None => ...` arm (P5-06:
+                    // cargo-mutants found this survived, and the earlier
+                    // partial sweep called it "likely unreachable" with no
+                    // proof — it is reachable, through this exact shape).
+                    // `MapDeclaration::from_json`'s own construction-time
+                    // check (declaration.rs) only verifies that the value
+                    // node's `type.name` field is *present*
+                    // (`type_node.get("name")`, a `serde_json::Value`
+                    // presence check), never that it is a *string* — while
+                    // `map.value_type()` comes from `type_reference`
+                    // (declaration.rs), which deserializes that same node
+                    // straight into the generated `mm::TypeIdentifier`
+                    // (`name: String`) and discards any deserialize failure
+                    // as `None` (`.ok()`). A `name` present but of the wrong
+                    // JSON type — a number here — therefore passes
+                    // construction (both `$class` and `name` are "present")
+                    // but still leaves `value_type` `None`, reaching this
+                    // arm for real.
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ValueTypeNameIsNotAString",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": 42 } } }
                 ]
             }),
             None,
@@ -4450,8 +4499,127 @@ mod tests {
                 .contains("MapDeclaration as Map Type Value is not supported")
         );
 
+        // `validate_map_value`'s `None` arm, reached for real (see the
+        // declaration's own doc comment above): a `type.name` present but
+        // not a string slips past construction yet still leaves
+        // `value_type()` `None`.
+        assert!(
+            manager
+                .validate_detached_map_value(&mf, 5)
+                .unwrap_err()
+                .to_string()
+                .contains("must contain property 'type' with a 'name'")
+        );
+
         // Not a map at all: `detached_map`'s own bound, same message shape
         // as the out-of-bounds case.
         assert!(manager.validate_detached_map_key(&mf, 1).is_err());
+    }
+
+    /// `check_property_type`'s `owner_ns == namespace` guard (P5-06:
+    /// cargo-mutants found this `==` -> `!=` mutant survived): reachable and
+    /// observable, contrary to the review comment on the earlier partial
+    /// sweep that called it equivalent without proof.
+    ///
+    /// Reached only through [`validate_property`]'s inherited, non-primitive
+    /// branch (`owner_ns != namespace`), which calls `check_property_type`
+    /// with `namespace = context_ns` (the property's *type*'s own
+    /// namespace) rather than the class actually being validated — so this
+    /// guard's `namespace` argument is `context_ns`, not the original
+    /// `namespace` a naive read of the call site might assume.
+    ///
+    /// Made observable by exploiting `ModelFile::resolve_local_type`'s
+    /// "imports are checked before local declarations" order (its own doc
+    /// comment) together with the five reserved system type names every
+    /// non-system file implicitly imports: `ns_x` declares its own `Concept`
+    /// under `dangerouslyAllowReservedSystemTypeNamesInUserModels`, and
+    /// `ns_a`'s `Base` explicitly imports *that* `Concept` for its `rel`
+    /// relationship. Resolving the bare name `"Concept"` therefore gives two
+    /// different answers depending on which file's import table is
+    /// consulted:
+    /// - from `ns_a` (`owner_ns`, the declaring file) — `ns_a`'s own explicit
+    ///   import wins: `ns_x.Concept` (identified, since `ns_x` declares it
+    ///   `identified by cid`);
+    /// - from `ns_x` (`context_ns`/`namespace`, `Concept`'s own declaring
+    ///   file) — resolving `"Concept"` *there* hits `ns_x`'s own implicit
+    ///   built-in import first (imports precede locals), landing on the
+    ///   *system* `Concept`, which is never identified
+    ///   ([`crate::rootmodel::tests::asset_and_participant_are_identified`]).
+    ///
+    /// Real code's `else` branch (`owner_ns != namespace`, the case here)
+    /// re-resolves through `owner_ns` and so lands on the identified
+    /// `ns_x.Concept`, passing the relationship's identifiable check. The
+    /// `==`-`!=` mutant instead takes the `if` branch, keeping the
+    /// TOP-resolved *system* `Concept` (unidentified), which fails it — this
+    /// is reached only when `ns_b.Sub` (a different namespace again) inherits
+    /// `Base.rel` and is validated, so `Sub`'s own validation exercises the
+    /// inherited/cross-namespace path the direct `ns_a.Base` validation
+    /// (`owner_ns == namespace` there) does not.
+    #[test]
+    fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_the_type_s_own_file()
+     {
+        let mut manager = ModelManager::new().unwrap();
+        manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "ns.x@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                        "name": "Concept",
+                        "isAbstract": false,
+                        "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "cid" },
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "cid",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "ns.a@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "ns.x@1.0.0", "name": "Concept" }
+                    ],
+                    "declarations": [concept(serde_json::json!({
+                        "name": "Base",
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "rel",
+                              "isArray": false, "isOptional": true,
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Concept" } }
+                        ]
+                    }))]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "ns.b@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "ns.a@1.0.0", "name": "Base" }
+                    ],
+                    "declarations": [concept(serde_json::json!({
+                        "name": "Sub",
+                        "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" }
+                    }))]
+                }),
+                None,
+            )
+            .unwrap();
+        // `Base`'s own, direct validation (`owner_ns == namespace`, the
+        // trivial branch) already passes — it is `Sub`'s inherited
+        // validation below that exercises the guard.
+        manager.validate_models().unwrap();
     }
 }
