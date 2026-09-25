@@ -27,7 +27,16 @@
 //!   report its differences from TS as per-rule failures, which is the
 //!   point: they are what P2-08 and the introspection tasks have to close.
 //! - **`ScalarDeclaration`** `toString`, `getType`, `getValidator` and
-//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`.
+//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`,
+//!   for a receiver loaded into a registered `ModelManager` (a `declref`
+//!   handle) *and* for one built directly with `new ScalarDeclaration(modelFile,
+//!   ast)` and never added to its model file (a `declnew` recipe, rebuilt by
+//!   `ScalarDeclaration::build_standalone`, `recipe.rs`); and `new` itself,
+//!   over the same `build_standalone` (P2-05), which replays the constructor
+//!   without going through a registered `ModelManager` (the receiver is an
+//!   `mfnew` recipe argument, never a `declref`, so it needs no arena
+//!   handle). Every other declaration kind's `declnew` still needs P4-07,
+//!   which closes this in general.
 //! - **`MapDeclaration`** `declarationKind`, `getKey`, `getValue`,
 //!   `isMapDeclaration`, `toString` and `validate`; **`MapKeyType`**/
 //!   **`MapValueType`** `getType`, `getNamespace`, `getParent`, `toString` and
@@ -406,7 +415,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("ScalarDeclaration", m) => {
             matches!(
                 m,
-                "toString" | "getType" | "getValidator" | "getDefaultValue"
+                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
         ("MapDeclaration", m) => matches!(
@@ -472,6 +481,43 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
 
+    // `new ScalarDeclaration(modelFile, ast)` (PORTING.md 6.2): the receiver
+    // is built directly from a `ModelFile` recipe argument, never registered
+    // with a model manager, so it never reaches `declref` (which has no
+    // handle for an unregistered declaration; `Fault::Blocked` cites
+    // `ScalarDeclaration.new` for exactly that case elsewhere).
+    if class == "ScalarDeclaration" && member == "new" {
+        let Some(Arg::File(file)) = args.first() else {
+            return Ok(unsupported(
+                "ScalarDeclaration.new with a model file argument that is not a model file",
+            ));
+        };
+        let Some(Arg::Plain(ast)) = args.get(1) else {
+            return Ok(unsupported(
+                "ScalarDeclaration.new with a declaration AST that is not plain data",
+            ));
+        };
+        let namespace = file
+            .ast
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return Ok(from_engine(
+            concerto_core::introspect::ScalarDeclaration::validate_new(
+                namespace,
+                file.file_name.as_deref(),
+                ast,
+            ),
+            |fqn| {
+                json!({
+                    M: "Declaration",
+                    "ctor": "ScalarDeclaration",
+                    "fqn": fqn,
+                })
+            },
+        ));
+    }
+
     if member == "new" {
         let kind = match class {
             "ModelManager" => recipe::Kind::ModelManager,
@@ -505,44 +551,50 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             Ok(model_manager_query(r, member, &args))
         }
         "ModelUtil" => model_util_with_context(&session, member, &args),
-        "ScalarDeclaration" => {
-            let Some(Arg::Decl(index, id)) = target else {
-                return Err(Fault::Unsupported(
-                    "a ScalarDeclaration receiver that is not a declref".into(),
-                ));
-            };
-            let r = &session.pool[index];
-            let Some(Declaration::Scalar(scalar)) = r.mm.declaration(id) else {
-                return Err(Fault::Divergence(
-                    "state divergence: the declaration did not load as a scalar".into(),
-                ));
-            };
-            Ok(match member {
-                "toString" => from_engine(
-                    r.mm.get_fully_qualified_name(&Node::Declaration(id)),
-                    |fqn| {
-                        Value::String(concerto_core::introspect::ScalarDeclaration::to_string(
-                            &fqn,
-                        ))
-                    },
-                ),
-                "getType" => ran(Ok(scalar
-                    .scalar_type()
+        "ScalarDeclaration" => match target {
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Scalar(scalar)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a scalar".into(),
+                    ));
+                };
+                Ok(match member {
+                    "toString" => from_engine(
+                        r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                        |fqn| {
+                            Value::String(concerto_core::introspect::ScalarDeclaration::to_string(
+                                &fqn,
+                            ))
+                        },
+                    ),
+                    "getType" => ran(Ok(scalar
+                        .scalar_type()
+                        .map_or(Value::Null, |t| Value::String(t.to_string())))),
+                    "getDefaultValue" => {
+                        ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
+                    }
+                    _ => ran(Ok(scalar_validator_summary(scalar.validator()))),
+                })
+            }
+            // `new ScalarDeclaration(modelFile, ast)`, never added to
+            // `modelFile`: `recipe.rs`'s `declnew` decoding already ran
+            // `ScalarDeclaration::build_standalone` (the receiver's
+            // construction), so the four getters below just read its result.
+            Some(Arg::DeclNew { fqn, processed }) => Ok(match member {
+                "toString" => ran(Ok(Value::String(
+                    concerto_core::introspect::ScalarDeclaration::to_string(&fqn),
+                ))),
+                "getType" => ran(Ok(processed
+                    .scalar_type
                     .map_or(Value::Null, |t| Value::String(t.to_string())))),
-                "getDefaultValue" => {
-                    ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
-                }
-                _ => ran(Ok(match scalar.validator() {
-                    None => Value::Null,
-                    Some(ScalarValidator::Number(_)) => {
-                        json!({ M: "Validator", "ctor": "NumberValidator" })
-                    }
-                    Some(ScalarValidator::String { .. }) => {
-                        json!({ M: "Validator", "ctor": "StringValidator" })
-                    }
-                })),
-            })
-        }
+                "getDefaultValue" => ran(Ok(processed.default_value.unwrap_or(Value::Null))),
+                _ => ran(Ok(scalar_validator_summary(processed.validator.as_ref()))),
+            }),
+            _ => Err(Fault::Unsupported(
+                "a ScalarDeclaration receiver that is not a declref or declnew".into(),
+            )),
+        },
         "MapDeclaration" => {
             let Some(Arg::Decl(index, id)) = target else {
                 return Err(Fault::Unsupported(
@@ -770,6 +822,21 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             })
         }
         _ => unreachable!("`dispatched` lists every class"),
+    }
+}
+
+/// The oracle's summary of `ScalarDeclaration.getValidator`'s result, shared
+/// by a `declref` receiver's loaded [`ScalarValidator`] and a `declnew`
+/// receiver's [`ProcessedScalar`](concerto_core::introspect::scalar::ProcessedScalar) one.
+fn scalar_validator_summary(validator: Option<&ScalarValidator>) -> Value {
+    match validator {
+        None => Value::Null,
+        Some(ScalarValidator::Number(_)) => {
+            json!({ M: "Validator", "ctor": "NumberValidator" })
+        }
+        Some(ScalarValidator::String { .. }) => {
+            json!({ M: "Validator", "ctor": "StringValidator" })
+        }
     }
 }
 
