@@ -894,6 +894,25 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "V8 (JSON.stringify of a cyclic object), src/serializer/jsonpopulator.ts:124, src/serializer/jsongenerator.ts:72",
         ],
     },
+    // ---- P3-04 (BaseModelManager.validateAst, concerto_core::instance::metamodel) ----
+    CatalogueEntry {
+        code: "basemodelmanager-validateast-versionmismatch",
+        template: "Model file version {modelFileVersion} does not match metamodel version {metamodelVersion}",
+        renderer: Renderer::Inline,
+        sources: &["src/basemodelmanager.ts:283"],
+    },
+    CatalogueEntry {
+        // `throw new MetamodelException(error.message)`: the underlying
+        // `Serializer.fromJSON` error's own already-constructed `.message`,
+        // passed through unchanged (not an inline template with its own
+        // wording; the single `{message}` placeholder is a verbatim
+        // pass-through, ported faithfully through `Renderer::Inline` since
+        // the substitution never re-scans).
+        code: "basemodelmanager-validateast-wrapped",
+        template: "{message}",
+        renderer: Renderer::Inline,
+        sources: &["src/basemodelmanager.ts:296"],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",
