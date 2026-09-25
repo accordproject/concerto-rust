@@ -247,7 +247,7 @@ fn load_scalar(
     let fqn = get_fully_qualified_name(namespace, name);
     let processed =
         ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
-    let scalar = ScalarDeclaration::new(node, processed);
+    let scalar = ScalarDeclaration::new(node, processed, parse_decorators(value));
     scalar.check_validators()?;
     Ok(scalar)
 }
@@ -267,16 +267,43 @@ pub enum Declaration {
     Map(MapDeclaration),
 }
 
-/// An enumeration declaration: a newtype over the generated
-/// [`mm::EnumDeclaration`], plus its processed decorators (module doc on
-/// [`WithDecorators`]).
-#[derive(Debug, Clone, Named, DeclarationKind)]
-#[concerto(kind = "EnumDeclaration")]
-pub struct EnumDeclaration(WithDecorators<mm::EnumDeclaration>);
+/// An enumeration declaration: the generated [`mm::EnumDeclaration`] plus its
+/// processed decorators (module doc on [`WithDecorators`]), and its values
+/// read as [`Property`] rather than the generated `mm::EnumProperty` list
+/// the node itself still carries — the same reason [`ClassDeclaration`] keeps
+/// its own `properties` apart from its generated node (module doc there):
+/// [`Property`] is what carries each value's own processed decorators, and
+/// TS `Decorated.validate`'s duplicate-decorator and `decoratorValidation`
+/// checks run over an enum's values exactly as they do over a class's
+/// properties (PORTING.md; [`crate::validation`]).
+#[derive(Debug, Clone)]
+pub struct EnumDeclaration {
+    inner: WithDecorators<mm::EnumDeclaration>,
+    values: Vec<Property>,
+}
+
+impl Named for EnumDeclaration {
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+}
+
+impl DeclarationKind for EnumDeclaration {
+    fn declaration_kind(&self) -> &'static str {
+        "EnumDeclaration"
+    }
+}
 
 impl crate::introspect::Decorated for EnumDeclaration {
     fn get_decorators(&self) -> &[Decorator] {
-        self.0.decorators()
+        self.inner.decorators()
+    }
+}
+
+impl EnumDeclaration {
+    /// The enum's values, each carrying its own processed decorators.
+    pub fn values(&self) -> &[Property] {
+        &self.values
     }
 }
 
@@ -298,15 +325,17 @@ const MM_MAP_VALUE_KINDS: [&str; 8] = [
 /// A map declaration.
 ///
 /// A map is read for its name, and for the kind (the `$class` short name) and
-/// the referenced `type`, if any, of its key and of its value. The map's own
-/// decorators and location, and those of its key and value, are not read.
+/// the referenced `type`, if any, of its key and of its value, plus its own
+/// processed decorators (`Decorated.getDecorators()` is faithful for a map).
+/// The map's own location, and the location and decorators of its key and
+/// value, are not read.
 ///
-/// [`MapDeclaration::Typed`] is a newtype over the generated
+/// [`MapVariant::Typed`] is a newtype over the generated
 /// [`mm::MapDeclaration`]. It is used whenever that struct can hold all four
-/// of those facts; a malformed `decorators` or `location` is left out of it,
-/// because it is not read.
+/// key/value facts; a malformed `decorators` or `location` on the key or
+/// value node is left out of it, because neither is read.
 ///
-/// [`MapDeclaration::Untyped`] keeps the four facts as read from the node. It
+/// [`MapVariant::Untyped`] keeps the four facts as read from the node. It
 /// is used only when the key or the value (or both) is something
 /// `mm::MapKeyType` or `mm::MapValueType` cannot represent:
 ///
@@ -319,10 +348,9 @@ const MM_MAP_VALUE_KINDS: [&str; 8] = [
 /// Either way, a key or value kind the specification does not allow reaches
 /// semantic validation, which reports it, and a referenced type is checked
 /// there whichever variant holds it.
-#[derive(Debug, Clone, Named, DeclarationKind)]
-#[concerto(kind = "MapDeclaration")]
+#[derive(Debug, Clone, Named)]
 #[allow(clippy::large_enum_variant)]
-pub enum MapDeclaration {
+enum MapVariant {
     /// The key and value are both representable by the generated union types.
     Typed(mm::MapDeclaration),
     /// The key or value is not representable by the generated union types.
@@ -340,25 +368,58 @@ pub enum MapDeclaration {
     },
 }
 
+/// A map declaration: the [`MapVariant`] read from its key and value nodes,
+/// plus its processed decorators (module doc on
+/// [`crate::introspect::decorator::WithDecorators`]; kept as a plain field
+/// here rather than that wrapper, since a map is not a newtype over one
+/// generated node — `MapVariant::Untyped` is not a generated node at all).
+///
+/// TS `MapDeclaration.getDecorators()` reads the same real decorators as any
+/// other declaration; nothing about the key/value fallback above extends to
+/// them.
+#[derive(Debug, Clone)]
+pub struct MapDeclaration {
+    variant: MapVariant,
+    decorators: Vec<Decorator>,
+}
+
+impl Named for MapDeclaration {
+    fn name(&self) -> &str {
+        self.variant.name()
+    }
+}
+
+impl DeclarationKind for MapDeclaration {
+    fn declaration_kind(&self) -> &'static str {
+        "MapDeclaration"
+    }
+}
+
+impl crate::introspect::Decorated for MapDeclaration {
+    fn get_decorators(&self) -> &[Decorator] {
+        &self.decorators
+    }
+}
+
 impl MapDeclaration {
     /// The metamodel `$class` short name of the key node, such as
     /// `StringMapKeyType`.
     pub fn key_kind(&self) -> &str {
-        match self {
-            Self::Typed(m) => match &m.key {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.key {
                 mm::MapKeyType::StringMapKeyType(_) => "StringMapKeyType",
                 mm::MapKeyType::DateTimeMapKeyType(_) => "DateTimeMapKeyType",
                 mm::MapKeyType::ObjectMapKeyType(_) => "ObjectMapKeyType",
             },
-            Self::Untyped { key_kind, .. } => key_kind,
+            MapVariant::Untyped { key_kind, .. } => key_kind,
         }
     }
 
     /// The metamodel `$class` short name of the value node, such as
     /// `ObjectMapValueType`.
     pub fn value_kind(&self) -> &str {
-        match self {
-            Self::Typed(m) => match &m.value {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.value {
                 mm::MapValueType::BooleanMapValueType(_) => "BooleanMapValueType",
                 mm::MapValueType::DateTimeMapValueType(_) => "DateTimeMapValueType",
                 mm::MapValueType::StringMapValueType(_) => "StringMapValueType",
@@ -368,31 +429,38 @@ impl MapDeclaration {
                 mm::MapValueType::ObjectMapValueType(_) => "ObjectMapValueType",
                 mm::MapValueType::RelationshipMapValueType(_) => "RelationshipMapValueType",
             },
-            Self::Untyped { value_kind, .. } => value_kind,
+            MapVariant::Untyped { value_kind, .. } => value_kind,
         }
     }
 
     /// The type the key refers to, for a key that is not a primitive.
     pub fn key_type(&self) -> Option<&mm::TypeIdentifier> {
-        match self {
-            Self::Typed(m) => match &m.key {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.key {
                 mm::MapKeyType::ObjectMapKeyType(k) => Some(&k.type_),
                 _ => None,
             },
-            Self::Untyped { key_type, .. } => key_type.as_ref(),
+            MapVariant::Untyped { key_type, .. } => key_type.as_ref(),
         }
     }
 
     /// The type the value refers to, for a value that is not a primitive.
     pub fn value_type(&self) -> Option<&mm::TypeIdentifier> {
-        match self {
-            Self::Typed(m) => match &m.value {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.value {
                 mm::MapValueType::ObjectMapValueType(v) => Some(&v.type_),
                 mm::MapValueType::RelationshipMapValueType(v) => Some(&v.type_),
                 _ => None,
             },
-            Self::Untyped { value_type, .. } => value_type.as_ref(),
+            MapVariant::Untyped { value_type, .. } => value_type.as_ref(),
         }
+    }
+
+    /// Whether this map's key and value were both representable by the
+    /// generated union types (used only by this module's own tests).
+    #[cfg(test)]
+    fn is_typed(&self) -> bool {
+        matches!(self.variant, MapVariant::Typed(_))
     }
 
     fn from_json(value: &serde_json::Value) -> Result<Self> {
@@ -410,19 +478,28 @@ impl MapDeclaration {
         let key_type = type_reference(value.get("key"));
         let value_kind = node_kind(value.get("value"));
         let value_type = type_reference(value.get("value"));
+        let decorators = parse_decorators(value);
 
-        if let Some(typed) = typed_map(value, &key_kind, &value_kind).map(Self::Typed)
-            && typed.key_type().is_some() == key_type.is_some()
-            && typed.value_type().is_some() == value_type.is_some()
-        {
-            return Ok(typed);
+        if let Some(variant) = typed_map(value, &key_kind, &value_kind).map(MapVariant::Typed) {
+            let candidate = Self {
+                variant,
+                decorators: decorators.clone(),
+            };
+            if candidate.key_type().is_some() == key_type.is_some()
+                && candidate.value_type().is_some() == value_type.is_some()
+            {
+                return Ok(candidate);
+            }
         }
-        Ok(Self::Untyped {
-            name,
-            key_kind,
-            key_type,
-            value_kind,
-            value_type,
+        Ok(Self {
+            variant: MapVariant::Untyped {
+                name,
+                key_kind,
+                key_type,
+                value_kind,
+                value_type,
+            },
+            decorators,
         })
     }
 }
@@ -585,14 +662,19 @@ impl Declaration {
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => Self::Enum(EnumDeclaration(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                    message: format!("invalid EnumDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
-                })?,
-                parse_decorators(value),
-            ))),
+            "EnumDeclaration" => Self::Enum(EnumDeclaration {
+                inner: WithDecorators::new(
+                    serde_json::from_value(value.clone()).map_err(|e| {
+                        ConcertoError::IllegalModel {
+                            message: format!("invalid EnumDeclaration: {e}"),
+                            file_name: None,
+                            location: None,
+                        }
+                    })?,
+                    parse_decorators(value),
+                ),
+                values: parse_properties(value)?,
+            }),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)
@@ -903,7 +985,7 @@ mod tests {
     fn a_well_formed_map_is_typed() {
         let d = decl(map_to_nope(string_key(), serde_json::json!({})));
         let map = d.as_map().unwrap();
-        assert!(matches!(map, MapDeclaration::Typed(_)));
+        assert!(map.is_typed());
         assert_eq!(map.key_kind(), "StringMapKeyType");
         assert_eq!(map.value_kind(), "ObjectMapValueType");
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
@@ -917,7 +999,7 @@ mod tests {
         ] {
             let d = decl(map_to_nope(string_key(), extra.clone()));
             let map = d.as_map().unwrap();
-            assert!(matches!(map, MapDeclaration::Typed(_)), "{extra}");
+            assert!(map.is_typed(), "{extra}");
             assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
         }
     }
@@ -929,7 +1011,7 @@ mod tests {
             serde_json::json!({}),
         ));
         let map = d.as_map().unwrap();
-        assert!(matches!(map, MapDeclaration::Typed(_)));
+        assert!(map.is_typed());
         assert_eq!(map.key_kind(), "StringMapKeyType");
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
     }
@@ -943,7 +1025,7 @@ mod tests {
             "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
         }));
         let map = m.as_map().expect("map declaration");
-        assert!(matches!(map, MapDeclaration::Untyped { .. }));
+        assert!(!map.is_typed());
         assert_eq!(map.name(), "Lookup");
         assert_eq!(map.key_kind(), "IntegerMapKeyType");
         assert_eq!(map.value_kind(), "StringMapValueType");
@@ -957,7 +1039,7 @@ mod tests {
             serde_json::json!({}),
         ));
         let map = d.as_map().unwrap();
-        assert!(matches!(map, MapDeclaration::Untyped { .. }));
+        assert!(!map.is_typed());
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
     }
 

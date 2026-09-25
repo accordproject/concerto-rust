@@ -577,15 +577,13 @@ impl Decorated for ClassDeclaration {
 }
 
 impl Decorated for crate::introspect::declaration::Declaration {
-    /// A scalar's or a map's decorators are not read (module doc): a scalar
-    /// declaration has no processed decorators yet, and a map's own doc
-    /// comment already records the same choice for its `location`.
     fn get_decorators(&self) -> &[Decorator] {
         use crate::introspect::declaration::Declaration;
         match self {
             Declaration::Class(class) => class.get_decorators(),
             Declaration::Enum(enm) => enm.get_decorators(),
-            Declaration::Scalar(_) | Declaration::Map(_) => &[],
+            Declaration::Scalar(scalar) => scalar.get_decorators(),
+            Declaration::Map(map) => map.get_decorators(),
         }
     }
 }
