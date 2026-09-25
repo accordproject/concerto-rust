@@ -58,22 +58,28 @@
 //! name as `codec.js` checks them. `decoref` (P2-07) becomes a
 //! [`DecoParent`] plus its position, resolved against its parent's processed
 //! decorators at dispatch time (`ops.rs`); its `parent` must itself be a
-//! `declref`, `propref` or `mfref`. A `declnew` (a declaration built
+//! `declref`, `propref` or `mfref`. A map key/value `propref` (one with a
+//! `part`) becomes an [`Arg::MapPart`] (P2-06). A `declnew` (a declaration built
 //! directly via `new Cls(modelFile, ast)`, never added to `modelFile`) is
 //! rebuilt with `ScalarDeclaration::build_standalone` when `cls` is
 //! `ScalarDeclaration` (P2-05); any other `cls` is `unsupported`, for its own
-//! owner. Map key/value `propref`s, `validatorref`, `typed`, `factory`,
-//! `serializer`,
+//! owner. `validatorref`, `factory`, `serializer`,
 //! `introspector`, `predicate` and `decoratorfactory` have no Rust
-//! counterpart yet: `unsupported`.
+//! counterpart yet: `unsupported`. `typed` (P3-01 review, task
+//! `accordproject-concerto-rust#56` follow-up) is decoded directly into
+//! [`DecodedInstance`] by [`Session::typed`], from the node's own `fields`
+//! object rather than a `Factory`/`JSONPopulator` replay — see
+//! [`Arg::Typed`]'s doc.
 
 use std::collections::HashMap;
 
+use concerto_core::instance::validate::{DAYJS_TAG, RELATIONSHIP_TAG, js_undefined};
 use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
 };
 use concerto_core::model_manager::{DeclId, ModelFileId, ModelManager, Node, PropId};
+use concerto_core::model_util;
 use serde_json::{Value, json};
 
 use super::Harness;
@@ -121,12 +127,13 @@ fn blocked(reason: impl Into<String>, member: impl Into<String>) -> Fault {
 }
 
 /// The TS member an input kind this harness cannot rebuild stands for.
+/// `"typed"` is not listed here any more: [`Session::decode`] now decodes it
+/// directly (P3-01 review), ahead of this fallback.
 fn member_of_kind(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "declnew" => "ScalarDeclaration.new",
         "decoref" => "Decorator.new",
         "validatorref" => "Validator.new",
-        "typed" => "Resource.new",
         "factory" => "Factory.new",
         "serializer" => "Serializer.new",
         "introspector" => "Introspector.new",
@@ -237,6 +244,15 @@ pub enum Arg {
     SelfMm,
     Decl(usize, DeclId),
     Prop(usize, PropId),
+    /// A `MapKeyType` (`is_key = true`) or `MapValueType` (`is_key = false`)
+    /// belonging to the `MapDeclaration` at `(pool index, DeclId)`. TS gives
+    /// these their own class, but this engine reads a map's key and value as
+    /// plain accessors on `MapDeclaration` (README "Ops";
+    /// `introspect::declaration::MapDeclaration`), so there is no separate
+    /// handle to register — the recorder's `propref` with a `part` field
+    /// (`"key"` or `"value"`) decodes straight to this variant instead of a
+    /// `PropId`.
+    MapPart(usize, DeclId, bool),
     /// A declaration built directly via `new` (`declnew`), never added to its
     /// model file: `ScalarDeclaration::build_standalone`'s result, computed
     /// eagerly here as TS runs the constructor while decoding the receiver.
@@ -257,6 +273,69 @@ pub enum Arg {
     Deco(usize, DecoParent, usize),
     /// An array that holds encoded values (a list of model files).
     List(Vec<Arg>),
+    /// A `Resource`, `ValidatedResource` or `Relationship` (`"typed"`,
+    /// README "Value encoding"), decoded into [`DecodedInstance`]: the
+    /// model manager it belongs to (pool index) plus the instance itself.
+    /// P3-01 review (task `accordproject-concerto-rust#56` follow-up):
+    /// `Resource.validate` and the `Identifiable`/`Typed`/`Relationship`
+    /// accessors are dispatched from this.
+    Typed(usize, DecodedInstance),
+}
+
+/// A decoded oracle `"typed"` value: enough of a `Resource`, `ValidatedResource`
+/// or `Relationship` to dispatch `Resource.validate` and the read-only
+/// `Typed`/`Identifiable`/`Relationship` accessors (`ops.rs`), without a
+/// `JSONPopulator`/`Factory` port (`instance/validate.rs`'s module doc
+/// "Scope" — this is the decode side of the same scope decision: it reads
+/// an oracle `"typed"` node's own `fields` object directly, never a `decl`
+/// handle, so it needs no `ModelManager` lookup of its own beyond the one
+/// `mm` index every field that points to another instance already carries).
+///
+/// TS: this is `Resource`/`ValidatedResource`/`Relationship`
+/// (`src/model/resource.ts`, `validatedresource.ts`, `relationship.ts`),
+/// read back from the oracle's own recorded encoding
+/// (`migration/oracle/lib/codec.js`'s `"typed"` kind) rather than rebuilt
+/// through a Rust `Factory`, which does not exist yet.
+///
+/// The one exception is the receiver's own `$classDeclaration`
+/// ([`Self::class_declaration`]), which `Typed.getClassDeclaration` and
+/// `instanceOf` return or walk: [`Session::typed`] resolves the node's `decl`
+/// handle for that, when it is a `declref`.
+#[derive(Debug, Clone)]
+pub struct DecodedInstance {
+    /// `"Resource"`, `"ValidatedResource"` or `"Relationship"`.
+    pub ctor: String,
+    /// TS `$namespace`.
+    pub namespace: String,
+    /// TS `$type` (short name, no namespace).
+    pub type_name: String,
+    /// TS `$namespace + '.' + $type` (`getFullyQualifiedType()`).
+    pub fqn: String,
+    /// TS `$identifierFieldName`. Not yet read by any dispatched op
+    /// ([`super::ops::instance_op`]); kept for a future one (`setIdentifier`,
+    /// say) rather than dropped, the same way [`super::fixture::Fixture`]
+    /// keeps `source_test`.
+    #[allow(dead_code)]
+    pub identifier_field_name: Option<String>,
+    /// TS `$identifier` (`getIdentifier()`/`getFullyQualifiedIdentifier()`).
+    pub identifier: Option<String>,
+    /// TS `$timestamp` (`Identifiable.getTimestamp()`), in the oracle's own
+    /// encoding (a `dayjs` node, `null`, or the `undefined` marker when the
+    /// field was never set).
+    pub timestamp: Value,
+    /// TS `$classDeclaration`, when the node's `decl` is a `declref` this
+    /// session could resolve (only a top-level receiver or argument; a
+    /// nested field value is decoded without a session, so `None`).
+    pub class_declaration: Option<DeclId>,
+    /// The instance in [`crate::instance::validate::validate_instance`]'s
+    /// input shape (module doc "Scope"): for a `Resource`/`ValidatedResource`,
+    /// a `$class`-tagged wire-shaped object with every own (non-system)
+    /// field recursively decoded the same way, `DateTime`/`Relationship`
+    /// values tagged per that module's `DAYJS_TAG`/`RELATIONSHIP_TAG`; for a
+    /// `Relationship`, a `RELATIONSHIP_TAG`-tagged `{"$class": <pointed-at
+    /// fqn>}` object (never a URI string — module doc "Scope" — since this
+    /// is already a *populated* `Relationship`, not wire JSON).
+    pub wire: Value,
 }
 
 /// What a `decoref`'s `parent` names (P2-07).
@@ -336,7 +415,12 @@ impl<'h> Session<'h> {
                 let (mm, id) = self.declref(v)?;
                 Ok(Arg::Decl(mm, id))
             }
+            "propref" if v.get("part").and_then(Value::as_str).is_some() => {
+                let (mm, id, is_key) = self.map_part(v)?;
+                Ok(Arg::MapPart(mm, id, is_key))
+            }
             "declnew" => self.declnew(v, self_mm),
+            "typed" => self.typed(v),
             "propref" => {
                 let (mm, id) = self.propref(v)?;
                 Ok(Arg::Prop(mm, id))
@@ -522,6 +606,40 @@ impl<'h> Session<'h> {
         Ok(Arg::DeclNew { fqn, processed })
     }
 
+    /// Decodes an oracle `"typed"` value (README "Value encoding": "a
+    /// Resource, ValidatedResource or Relationship: its handles plus every
+    /// own property in order") into a [`DecodedInstance`] ([`Arg::Typed`]'s
+    /// doc has the rationale for reading `fields` directly rather than the
+    /// `decl`/`mm` handles a full `Factory`/`JSONPopulator` port would use).
+    ///
+    /// `fields` always carries `$namespace`/`$type`/`$identifierFieldName`/
+    /// `$identifier` (recorded straight from the TS instance's own private
+    /// fields, `identifiable.ts`), so those need no `ModelManager` lookup;
+    /// this method resolves only the `mm` handle every instance carries (so
+    /// `Resource.validate` and friends have a real [`ModelManager`] to run
+    /// against) and recurses into the non-system fields via
+    /// [`Self::typed_field_value`], which needs no further `mm` resolution
+    /// of its own (a nested `"typed"`/`"dayjs"` field value carries its own
+    /// data, not a fresh handle to look up).
+    fn typed(&mut self, v: &Value) -> Faulty<Arg> {
+        let mm_node = v
+            .get("mm")
+            .ok_or_else(|| Fault::Harness("typed value without mm".into()))?;
+        let mm_index = self.mm_index(mm_node)?;
+        let mut inst = decode_typed_instance(v)?;
+        // `$classDeclaration`: only a registered declaration has a handle. A
+        // `decl` this session cannot resolve leaves it `None`, which only
+        // the ops that read it (`getClassDeclaration`, `instanceOf`) report.
+        if let Some(decl) = v.get("decl")
+            && decl.get(M).and_then(Value::as_str) == Some("declref")
+            && let Ok((owner, id)) = self.declref(decl)
+            && owner == mm_index
+        {
+            inst.class_declaration = Some(id);
+        }
+        Ok(Arg::Typed(mm_index, inst))
+    }
+
     fn declref(&mut self, v: &Value) -> Faulty<(usize, DeclId)> {
         let mf = v
             .get("mf")
@@ -557,13 +675,40 @@ impl<'h> Session<'h> {
         }
     }
 
-    fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
-        if v.get("part").and_then(Value::as_str).is_some() {
+    /// A `MapKeyType`/`MapValueType` target: `{decl: <declref>, part: "key" |
+    /// "value"}` (`migration/oracle/lib/codec.js`). The referenced
+    /// declaration is checked to be a `MapDeclaration` here, once, rather
+    /// than by every op that takes an [`Arg::MapPart`].
+    fn map_part(&mut self, v: &Value) -> Faulty<(usize, DeclId, bool)> {
+        let part = v.get("part").and_then(Value::as_str).unwrap_or_default();
+        let is_key = match part {
+            "key" => true,
+            "value" => false,
+            other => {
+                return Err(Fault::Unsupported(format!(
+                    "a map part that is neither \"key\" nor \"value\": {other:?}"
+                )));
+            }
+        };
+        let decl = v
+            .get("decl")
+            .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
+        if decl.get(M).and_then(Value::as_str) != Some("declref") {
             return Err(blocked(
-                "a map key or value type has no Rust handle yet (MapKeyType/MapValueType)",
-                "MapKeyType.new",
+                "a map key or value of a declaration that is not in its model file (declnew)",
+                "MapDeclaration.new",
             ));
         }
+        let (owner, id) = self.declref(decl)?;
+        match self.pool[owner].mm.declaration(id) {
+            Some(Declaration::Map(_)) => Ok((owner, id, is_key)),
+            _ => Err(Fault::Divergence(
+                "state divergence: the declaration did not load as a map".into(),
+            )),
+        }
+    }
+
+    fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
         let decl = v
             .get("decl")
             .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
@@ -681,6 +826,189 @@ fn contains_marker(v: &Value) -> bool {
             .values()
             .any(|x| x.get(M).is_some() || contains_marker(x)),
         _ => false,
+    }
+}
+
+/// Decodes an oracle `"typed"` node's `fields` object into a
+/// [`DecodedInstance`] ([`Session::typed`] resolves its `mm` handle first;
+/// this part needs none, see that method's doc).
+fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
+    let ctor = v
+        .get("ctor")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Fault::Harness("typed value without ctor".into()))?
+        .to_string();
+    let fields = v
+        .get("fields")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Fault::Harness("typed value without a fields object".into()))?;
+    let namespace = fields
+        .get("$namespace")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let type_name = fields
+        .get("$type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let fqn = model_util::get_fully_qualified_name(&namespace, &type_name);
+    let identifier_field_name = fields
+        .get("$identifierFieldName")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // TS `getIdentifier()`: `this[this.$identifierFieldName]`, not always
+    // `this.$identifier` (bug fix: a shadowed identifying field, TS's own
+    // wording in `identifiable.ts`, can genuinely diverge from `$identifier`
+    // — for example after `setIdentifier` sets both at construction but a
+    // later direct field write changes only the named one).
+    let identifier = fields
+        .get(identifier_field_name.as_deref().unwrap_or("$identifier"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // `this.$timestamp`: recorded only when the key exists on the instance.
+    let timestamp = fields.get("$timestamp").cloned().unwrap_or_else(undefined);
+
+    if ctor == "Relationship" {
+        // `RELATIONSHIP_TAG`'s doc (`instance/validate.rs`): the wire form
+        // this validator expects for an already-populated `Relationship` is
+        // `{RELATIONSHIP_TAG: true, "$class": <pointed-at fqn>}`, plus its
+        // identifying field under its *own* name (not a URI string), so
+        // that `instance/validate.rs`'s `identifiable_parts` — which looks
+        // an `Identifiable` value's id up by `ModelManager::identifier_field_name`,
+        // the same way for a `Relationship` or a nested `Resource` alike —
+        // finds it.
+        let mut wire = serde_json::Map::new();
+        wire.insert(RELATIONSHIP_TAG.to_string(), Value::Bool(true));
+        wire.insert("$class".to_string(), Value::String(fqn.clone()));
+        if let (Some(id_field), Some(id)) = (&identifier_field_name, &identifier) {
+            wire.insert(id_field.clone(), Value::String(id.clone()));
+        }
+        return Ok(DecodedInstance {
+            ctor,
+            namespace,
+            type_name,
+            fqn,
+            identifier_field_name,
+            identifier,
+            timestamp,
+            class_declaration: None,
+            wire: Value::Object(wire),
+        });
+    }
+
+    // `Resource`/`ValidatedResource`: TS `JSONGenerator.visitClassDeclaration`
+    // writes `$class` plus each of `classDeclaration.getProperties()`'s own
+    // values (module doc on `DecodedInstance::wire`). `getProperties()`
+    // includes a synthetic `$identifier`/`$timestamp` entry for a
+    // system-identified/transaction-or-event type (plan §1.2's "implicit
+    // `Concept` super type and the `$identifier`/`$timestamp` fields" gap;
+    // `instance/validate.rs`'s `get_all_properties` already resolves these),
+    // so `$identifier` and `$timestamp` are kept here too, alongside every
+    // ordinary (non-`$`) field — every *other* `$`-prefixed key is TS's
+    // `isPrivateSystemProperty` list (`modelutil.ts`), never a real Concerto
+    // property (a declared name never starts with `$` in this corpus), so
+    // skipping them is exact, not an approximation.
+    const PRIVATE_ONLY_KEYS: [&str; 9] = [
+        "$modelManager",
+        "$classDeclaration",
+        "$namespace",
+        "$type",
+        "$identifierFieldName",
+        "$validator",
+        "$imports",
+        "$superTypes",
+        "$id",
+    ];
+    let mut wire = serde_json::Map::new();
+    wire.insert("$class".to_string(), Value::String(fqn.clone()));
+    for (key, value) in fields {
+        if PRIVATE_ONLY_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        wire.insert(key.clone(), typed_field_value(value)?);
+    }
+    Ok(DecodedInstance {
+        ctor,
+        namespace,
+        type_name,
+        fqn,
+        identifier_field_name,
+        identifier,
+        timestamp,
+        class_declaration: None,
+        wire: Value::Object(wire),
+    })
+}
+
+/// Decodes one field value found inside an oracle `"typed"` node's `fields`
+/// object (recursively: an array, a nested `"typed"` instance, a `"dayjs"`
+/// timestamp, a `"map"` (a JS `Map`-backed `MapDeclaration` value) or a
+/// `"number"` (`NaN`/`Infinity`/`-Infinity`/`-0`) — every other plain JSON
+/// value needs no decoding.
+fn typed_field_value(v: &Value) -> Faulty<Value> {
+    if let Value::Array(items) = v {
+        return items
+            .iter()
+            .map(typed_field_value)
+            .collect::<Faulty<Vec<_>>>()
+            .map(Value::Array);
+    }
+    let Value::Object(map) = v else {
+        return Ok(v.clone());
+    };
+    let Some(Value::String(kind)) = map.get(M) else {
+        return Ok(v.clone());
+    };
+    match kind.as_str() {
+        // `DAYJS_TAG`'s doc (`instance/validate.rs`): marks a value that
+        // really did go through `JSONPopulator`'s `DateTime` coercion in TS,
+        // as every `"dayjs"`-encoded field here did (it is how the TS
+        // recorder itself found this value, README "Value encoding":
+        // `dayjs | {iso, offset, utc, valid}`) — the ISO string itself is
+        // kept only for readability in a failing assertion, not read by the
+        // validator, which only checks the tag's presence.
+        "dayjs" => {
+            let iso = map.get("iso").and_then(Value::as_str).unwrap_or_default();
+            Ok(json!({ DAYJS_TAG: iso }))
+        }
+        "typed" => Ok(decode_typed_instance(v)?.wire),
+        // A JS `undefined`, kept distinct from `null` (`UNDEFINED_TAG`'s doc,
+        // `instance/validate.rs`): `["a", undefined, "b"]` is reported by
+        // TS as a value `undefined` of type `undefined`, not `null`/`object`.
+        "undefined" => Ok(js_undefined()),
+        // A JS `Map` (a `MapDeclaration` value): `{"@@oracle":"map",
+        // "entries": [[key, value], ...]}` -> the plain object
+        // `visitMapDeclaration`'s `Object.fromEntries(map)` would produce.
+        "map" => {
+            let entries = map
+                .get("entries")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Fault::Harness("map value without entries".into()))?;
+            let mut obj = serde_json::Map::new();
+            for entry in entries {
+                let pair = entry
+                    .as_array()
+                    .ok_or_else(|| Fault::Harness("a map entry that is not [key, value]".into()))?;
+                let key = pair
+                    .first()
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Fault::Harness("a map entry with a non-string key".into()))?;
+                let value = typed_field_value(pair.get(1).unwrap_or(&Value::Null))?;
+                obj.insert(key.to_string(), value);
+            }
+            Ok(Value::Object(obj))
+        }
+        // `{"@@oracle":"number","value":"NaN"|"Infinity"|"-Infinity"|"-0"}`:
+        // a JSON number cannot hold any of these; encoded here as a JSON
+        // string, which is not itself a valid Concerto primitive value for
+        // any field type, so a validator check reaching it correctly
+        // reports a field type violation (never a silent pass) the same way
+        // TS's own `!isFinite(NaN)` does for the numeric kinds.
+        "number" => Ok(map.get("value").cloned().unwrap_or(Value::Null)),
+        other => Err(Fault::Unsupported(format!(
+            "a typed field value of kind {other} is not decoded"
+        ))),
     }
 }
 
@@ -874,6 +1202,21 @@ impl Replayed {
             M: "Declaration",
             "ctor": ctor,
             "fqn": format!("{}.{}", file.namespace(), declaration.name()),
+        }))
+    }
+
+    /// The outcome-only `MapKeyType`/`MapValueType` summary
+    /// (`makeOutputEncoder`'s generic `Property` shape, confirmed against a
+    /// recorded `MapDeclaration.getKey`/`getValue` fixture): `{ctor, type}`,
+    /// `type` being `MapKeyType.getType`/`MapValueType.getType`'s result.
+    pub fn map_part_summary(&self, id: DeclId, is_key: bool) -> Option<Value> {
+        let Declaration::Map(map) = self.mm.declaration(id)? else {
+            return None;
+        };
+        Some(json!({
+            M: "Property",
+            "ctor": if is_key { "MapKeyType" } else { "MapValueType" },
+            "type": if is_key { map.key_type_name() } else { map.value_type_name() },
         }))
     }
 
@@ -1171,6 +1514,7 @@ impl Clone for Arg {
             Self::SelfMm => Self::SelfMm,
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
+            Self::MapPart(m, d, is_key) => Self::MapPart(*m, *d, *is_key),
             Self::DeclNew { fqn, processed } => Self::DeclNew {
                 fqn: fqn.clone(),
                 processed: processed.clone(),
@@ -1178,6 +1522,7 @@ impl Clone for Arg {
             Self::Validator(m, p, part) => Self::Validator(*m, *p, part.clone()),
             Self::Deco(m, parent, i) => Self::Deco(*m, parent.clone(), *i),
             Self::List(items) => Self::List(items.clone()),
+            Self::Typed(m, inst) => Self::Typed(*m, inst.clone()),
         }
     }
 }

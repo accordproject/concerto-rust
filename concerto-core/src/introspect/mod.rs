@@ -41,7 +41,7 @@ pub mod scalar;
 mod traits;
 pub mod validators;
 
-pub use declaration::{ClassDeclaration, ClassKind, Declaration};
+pub use declaration::{ClassDeclaration, ClassKind, Declaration, MapDeclaration};
 pub use decorator::{
     Decorated, Decorator, DecoratorArgument, DecoratorValidationOptions, TypeReferenceArgument,
 };

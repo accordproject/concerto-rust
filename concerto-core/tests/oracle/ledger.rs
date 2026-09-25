@@ -17,7 +17,9 @@
 //! 3. in PORTING.md 6.2's op families: "P2-08 for the `ModelManager` and
 //!    `ModelFile` ops, P2-12 for the `DecoratorManager` ops, P3-01 for
 //!    `Serializer` and the `Factory` checks" (the instance classes
-//!    `Resource`, `Typed`, … go with `Serializer`/`Factory`);
+//!    `Resource`, `Typed`, … go with `Serializer`/`Factory`). Since P3-01
+//!    was split, `Serializer` and `Factory` are P3-01b's and the instance
+//!    classes stay with P3-01 (P3-01a);
 //! 4. otherwise the owner is `unowned`, spelled out so that it shows in the
 //!    report instead of a blank.
 //!
@@ -51,14 +53,27 @@ pub const STAYS_TS: &str = "stays-ts";
 ///
 /// - `Factory`: its ledger rows are TS with no task (D7), but the plan owner
 ///   assigned its fixtures to P3-01, which owns the Factory model checks
-///   (#32: "Factory model checks go to Rust").
+///   (#32: "Factory model checks go to Rust"). P3-01 was then split
+///   (accordproject/concerto-rust#56, rescoped 2026-09-25): the Factory and
+///   Serializer oracle wiring moved to P3-01b (#124).
 /// - `Serializer.new`: the constructor's ledger row is TS with no task
 ///   ("argument checks only"), but the plan owner decided it goes to Rust
-///   under P3-01 as well (PLAN.md 3: the Serializer's per-field checks go to
-///   Rust; P4-10 only adds the fast path, so it consumes rather than owns
-///   them). This is member-level only: `toJSON` and `fromJSON` keep their
-///   ledger owner, `P3-01+P4-10`.
-const PLAN_OWNER_OVERRIDES: &[(&str, &str)] = &[("Factory", "P3-01"), ("Serializer.new", "P3-01")];
+///   (PLAN.md 3: the Serializer's per-field checks go to Rust; P4-10 only
+///   adds the fast path, so it consumes rather than owns them), under
+///   P3-01b since the split. This is member-level only: `toJSON` and
+///   `fromJSON` keep their ledger owner, `P3-01+P4-10`.
+/// - The `Resource`/`Identifiable` members that mutate the instance
+///   (`setPropertyValue`, `addArrayValue`, `setIdentifier`) or serialize it
+///   (`Resource.toJSON`, `getSerializer().toJSON(this)`): P3-01b too, by the
+///   same split. The rest of those classes stay with P3-01 (P3-01a).
+const PLAN_OWNER_OVERRIDES: &[(&str, &str)] = &[
+    ("Factory", "P3-01b"),
+    ("Serializer.new", "P3-01b"),
+    ("Resource.setPropertyValue", "P3-01b"),
+    ("Resource.addArrayValue", "P3-01b"),
+    ("Resource.toJSON", "P3-01b"),
+    ("Identifiable.setIdentifier", "P3-01b"),
+];
 
 #[derive(Default)]
 pub struct Ledger {
@@ -92,8 +107,12 @@ fn family_owner(class: &str) -> Option<&'static str> {
         "ModelManager" | "BaseModelManager" | "AstModelManager" | "ModelFile" | "ModelLoader"
         | "Introspector" => Some("P2-08"),
         "DecoratorManager" => Some("P2-12"),
-        "Serializer" | "Factory" | "Resource" | "ValidatedResource" | "Typed" | "Identifiable"
-        | "Relationship" => Some("P3-01"),
+        // P3-01 was split (accordproject/concerto-rust#56, rescoped
+        // 2026-09-25): the Serializer and Factory wiring is P3-01b (#124).
+        "Serializer" | "Factory" => Some("P3-01b"),
+        "Resource" | "ValidatedResource" | "Typed" | "Identifiable" | "Relationship" => {
+            Some("P3-01")
+        }
         _ => None,
     }
 }
