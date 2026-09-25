@@ -543,6 +543,16 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/model/resourceid.ts:165"],
     },
+    // ---- P2-04 additions (Property.getFullyQualifiedTypeName's own inline
+    //      template; #48) ----
+    CatalogueEntry {
+        code: "property-getfullyqualifiedtypename-notfound",
+        template: "Failed to find fully qualified type name for property {name} with type {type}",
+        renderer: Renderer::Inline,
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // at the throw site in model_manager.rs).
+        sources: &["src/introspect/property.ts:218"],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",

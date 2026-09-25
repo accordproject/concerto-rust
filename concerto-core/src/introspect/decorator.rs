@@ -43,8 +43,12 @@ use crate::model_util::is_primitive_type;
 pub struct TypeReferenceArgument {
     /// The referenced type's short name.
     pub name: String,
-    /// Whether the reference is to an array of the type.
-    pub array: bool,
+    /// Whether the reference is to an array of the type: `None` when the
+    /// AST node's `isArray` is itself missing (TS: `array: thing.isArray`,
+    /// with no default — the pushed argument's `array` is `undefined`, not
+    /// `false`, and the oracle records that distinction; P4-05 found this
+    /// while wiring `Decorator.process` to a WASM binding).
+    pub array: Option<bool>,
 }
 
 /// One value a decorator can be given.
@@ -452,12 +456,14 @@ fn json_stringify(arg: &DecoratorArgument) -> String {
         DecoratorArgument::String(s) => format!("{s:?}"),
         DecoratorArgument::Number(n) => number_to_string(*n),
         DecoratorArgument::Boolean(b) => b.to_string(),
-        DecoratorArgument::TypeReference(t) => {
-            format!(
+        // `JSON.stringify` omits a property whose value is `undefined`.
+        DecoratorArgument::TypeReference(t) => match t.array {
+            Some(array) => format!(
                 r#"{{"type":"Identifier","name":{:?},"array":{}}}"#,
-                t.name, t.array
-            )
-        }
+                t.name, array
+            ),
+            None => format!(r#"{{"type":"Identifier","name":{:?}}}"#, t.name),
+        },
     }
 }
 
@@ -473,10 +479,7 @@ fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
     let class = node.get("$class").and_then(Value::as_str).unwrap_or("");
     if class == qualified_class("DecoratorTypeReference") || class == "DecoratorTypeReference" {
         let type_name = node.get("type")?.get("name")?.as_str()?.to_string();
-        let array = node
-            .get("isArray")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let array = node.get("isArray").and_then(Value::as_bool);
         return Some(DecoratorArgument::TypeReference(TypeReferenceArgument {
             name: type_name,
             array,
@@ -695,7 +698,7 @@ mod tests {
             non_array.arguments(),
             &[DecoratorArgument::TypeReference(TypeReferenceArgument {
                 name: "MyConcept".into(),
-                array: false
+                array: Some(false)
             })]
         );
 
@@ -707,7 +710,7 @@ mod tests {
             array.arguments(),
             &[DecoratorArgument::TypeReference(TypeReferenceArgument {
                 name: "MyConcept".into(),
-                array: true
+                array: Some(true)
             })]
         );
 
@@ -733,7 +736,7 @@ mod tests {
             d.arguments(),
             &[DecoratorArgument::TypeReference(TypeReferenceArgument {
                 name: "String".into(),
-                array: false
+                array: Some(false)
             })]
         );
     }

@@ -29,6 +29,12 @@ jobs:
         run: rustup component add clippy && cargo clippy -p accordproject-concerto-core --no-deps --all-targets -- -D warnings
       - name: Build
         run: cargo build --verbose --workspace --all-targets
+      # This job has no oracle fixture corpus (it lives, generated, in an
+      # accordproject/concerto checkout), and the oracle harness fails when it
+      # finds none. Opt out explicitly: `replays_the_oracle_corpus` is then
+      # reported as ignored, never as a pass (concerto-core/tests/oracle/main.rs).
       - name: Test
         run: cargo test --workspace
+        env:
+          CONCERTO_ORACLE_SKIP: "1"
 
