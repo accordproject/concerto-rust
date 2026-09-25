@@ -417,7 +417,8 @@ fn validate_property(
         )
         .into());
     };
-    manager.get_declaration(&type_fqn)?;
+    // TS `modelManager.getType(typeFqn)`, with its own two errors.
+    manager.get_type_declaration(&type_fqn)?;
     let context_ns = get_namespace(Some(&type_fqn))?;
     check_property_type(manager, context_ns, owner_ns, owner_name, class, property).map_err(|e| {
         match manager.model_file(context_ns) {
@@ -3591,5 +3592,65 @@ mod tests {
         let registered = manager.model_file("org.b@1.0.0").unwrap();
         assert!(manager.validate_model_file(registered).is_ok());
         assert!(manager.validate_models().is_ok());
+    }
+
+    /// TS `ClassDeclaration.validate` looks an inherited, other-namespace
+    /// property's type up with `modelManager.getType(typeFqn)`, whose two
+    /// `TypeNotFoundException`s differ by whether the type's namespace is
+    /// loaded at all (P2-08 review).
+    #[test]
+    fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() {
+        let run = |load_c: bool| {
+            let mut manager = ModelManager::new().unwrap();
+            if load_c {
+                manager
+                    .add_model(
+                        &serde_json::json!({
+                            "$class": "concerto.metamodel@1.0.0.Model",
+                            "namespace": "org.c@1.0.0",
+                            "declarations": []
+                        }),
+                        None,
+                    )
+                    .unwrap();
+            }
+            manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "namespace": "org.a@1.0.0",
+                        "imports": [
+                            { "$class": "concerto.metamodel@1.0.0.ImportType",
+                              "namespace": "org.c@1.0.0", "name": "Cc" }
+                        ],
+                        "declarations": [concept(serde_json::json!({
+                            "name": "X", "isAbstract": true, "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "c",
+                                  "isArray": false, "isOptional": false,
+                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Cc" } }
+                            ]
+                        }))]
+                    }),
+                    None,
+                )
+                .unwrap();
+            let (_, b) = inherited_property_files(serde_json::json!({}));
+            manager.add_model(&b, Some("b.cto".into())).unwrap();
+            let file = manager.model_file("org.b@1.0.0").unwrap();
+            let err = manager.validate_model_file(file).unwrap_err();
+            let ConcertoError::Contract(err) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(err.kind, crate::error::ErrorKind::TypeNotFound);
+            err.final_message()
+        };
+        assert_eq!(
+            run(false),
+            "Namespace is not defined for type \"org.c@1.0.0.Cc\"."
+        );
+        assert_eq!(
+            run(true),
+            "Type \"Cc\" is not defined in namespace \"org.c@1.0.0\"."
+        );
     }
 }

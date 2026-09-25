@@ -1973,46 +1973,6 @@ fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoEr
     Ok(false)
 }
 
-/// TS `BaseModelManager.getType(qualifiedName)` (src/basemodelmanager.ts):
-/// the model file of the name's namespace, then that file's
-/// `getType(qualifiedName)`, each with its own `TypeNotFoundException`.
-/// `ModelManager.getType` itself is P2-08's; this is the same composition,
-/// over the ported `ModelFile.getType`, for `Relationship.fromURI`.
-fn base_model_manager_get_type(
-    r: &Replayed,
-    qualified_name: &str,
-) -> Result<DeclId, ConcertoError> {
-    let namespace = model_util::get_namespace(Some(qualified_name))?;
-    let Some(file) = r.mm.model_file_id(namespace) else {
-        return Err(concerto_core::error::ContractError::type_not_found(
-            "modelmanager-gettype-noregisteredns",
-            vec![("type", qualified_name.to_string())],
-            qualified_name.to_string(),
-            None,
-        )
-        .into());
-    };
-    match r
-        .mm
-        .get_type(&Node::ModelFile(file), Some(qualified_name))?
-    {
-        Some(Node::Declaration(id)) => Ok(id),
-        _ => Err(concerto_core::error::ContractError::type_not_found(
-            "modelmanager-gettype-notypeinns",
-            vec![
-                (
-                    "type",
-                    model_util::get_short_name(qualified_name).to_string(),
-                ),
-                ("namespace", namespace.to_string()),
-            ],
-            qualified_name.to_string(),
-            None,
-        )
-        .into()),
-    }
-}
-
 /// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
 /// defaultType?)` (src/model/relationship.ts): parses the URI
 /// (`ResourceId.fromURI`), looks the type up (`modelManager.getType`), and
@@ -2047,7 +2007,7 @@ fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
         )?;
         let fqt =
             model_util::get_fully_qualified_name(&resource_id.namespace, &resource_id.type_name);
-        let id = base_model_manager_get_type(r, &fqt)?;
+        let id = r.mm.get_type_declaration(&fqt)?;
         let fqn = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
         let identifier_field_name = match r.mm.declaration(id) {
             Some(Declaration::Class(_) | Declaration::Enum(_)) => {

@@ -794,6 +794,38 @@ impl ModelManager {
             .filter(|v| !v.is_null())
     }
 
+    /// TS `BaseModelManager.getType(qualifiedName)` (basemodelmanager.ts):
+    /// the model file registered under the name's namespace, then that
+    /// file's own `getType(qualifiedName)`, each failure its own
+    /// `TypeNotFoundException` — `Namespace is not defined for type "<fqn>".`
+    /// when no file holds the namespace, `Type "<short>" is not defined in
+    /// namespace "<ns>".` when the file has no such type (P2-08 review).
+    pub fn get_type_declaration(&self, qualified_name: &str) -> Result<DeclId> {
+        let namespace = get_namespace(Some(qualified_name))?;
+        let Some(file) = self.model_file_id(namespace) else {
+            return Err(ContractError::type_not_found(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", qualified_name.to_string())],
+                qualified_name.to_string(),
+                None,
+            )
+            .into());
+        };
+        match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(qualified_name))? {
+            Some(Node::Declaration(id)) => Ok(id),
+            _ => Err(ContractError::type_not_found(
+                "modelmanager-gettype-notypeinns",
+                vec![
+                    ("type", get_short_name(qualified_name).to_string()),
+                    ("namespace", namespace.to_string()),
+                ],
+                qualified_name.to_string(),
+                None,
+            )
+            .into()),
+        }
+    }
+
     /// Looks up a declaration by its fully-qualified name.
     ///
     /// Namespace versions are mandatory in Concerto v4, so the lookup is
