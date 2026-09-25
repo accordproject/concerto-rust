@@ -654,6 +654,19 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/introspect/property.ts:86"],
     },
+    // ---- P2-08c additions (Property.process's own inline template for a
+    //      nullish name; #144) ----
+    CatalogueEntry {
+        code: "property-process-noname",
+        template: "No name for type {ast}",
+        renderer: Renderer::Inline,
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // at the throw site).
+        sources: &[
+            "src/introspect/property.ts:124",
+            "src/introspect/property.ts:137",
+        ],
+    },
     // ---- P4-07 additions (Property.validate, RelationshipDeclaration.validate
     //      and MapDeclaration/MapKeyType/MapValueType's own inline templates; #66) ----
     CatalogueEntry {

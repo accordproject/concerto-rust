@@ -83,7 +83,14 @@ impl ModelFile {
             })?
             .to_string();
 
-        let version = split_versioned_namespace(&namespace)?.1;
+        // TS: `ModelFile.fromAst`'s own namespace handling (modelfile.ts) —
+        // `ModelUtil.parseNamespace` (which accepts an unversioned namespace,
+        // DV-003), a check that every dot-separated part of the name is a
+        // valid identifier, and then, for a non-system model file only, a
+        // version requirement (P2-08). `is_system` is computed here rather
+        // than reused from below, since TS's own version needs it first.
+        let is_system_namespace = namespace.starts_with("concerto@") || namespace == "concerto";
+        let version = parse_namespace_version(&namespace, is_system_namespace, &file_name)?;
 
         let mut imports = match value.get("imports") {
             None => Vec::new(),
@@ -104,7 +111,7 @@ impl ModelFile {
         // TS: ModelFile.fromAst (src/introspect/modelfile.ts), the built-in
         // import; ported here because the trial's oracle fixtures load models
         // that use them (P0-04b).
-        let is_system = namespace.starts_with("concerto@") || namespace == "concerto";
+        let is_system = is_system_namespace;
         if !is_system {
             imports.push(Import::try_from(&built_in_import())?);
         }
@@ -726,6 +733,52 @@ const CONCERTO_CORE_VERSION: &str = "5.0.0";
 /// throw this way rather than as an `IllegalModelException`.
 fn plain_error(message: String) -> ConcertoError {
     ContractError::pre_port(ErrorKind::Error, message, None).into()
+}
+
+/// `ModelFile.fromAst`'s own namespace handling (modelfile.ts, P2-08): parses
+/// `namespace` with `ModelUtil.parseNamespace` (`model_util::parse_namespace`,
+/// which accepts an unversioned namespace and returns `version: None`,
+/// DV-003), rejects a namespace whose name has a part that is not a valid
+/// identifier (`IllegalModelException`, `this` and `this.ast.location` in TS —
+/// no oracle fixture reaches this branch, and `ModelFile` keeps no AST
+/// `location` in this port (validation.rs review comment), so only the file
+/// name is attached here), then — for a non-system model file only —
+/// requires a version, with the same plain `Error` TS's own hardcoded
+/// message uses. Returns the version (`""` for none, as every unversioned
+/// caller here is a system model file).
+fn parse_namespace_version(
+    namespace: &str,
+    is_system: bool,
+    file_name: &Option<String>,
+) -> Result<String> {
+    let (name, version) = match model_util::parse_namespace(Some(namespace), false)? {
+        model_util::ParsedNamespace::Full { name, version, .. } => (name, version),
+        model_util::ParsedNamespace::NameOnly { name } => (name, None),
+    };
+    for part in name.split('.') {
+        if !is_valid_identifier(part) {
+            // `ContractError` (not the bare `ConcertoError::IllegalModel`
+            // pre-port variant), so the oracle harness's `final_message`
+            // decorates it exactly as `IllegalModelException`'s constructor
+            // does (`to_oracle_error`'s doc comment): a trailing space always,
+            // and `File '<name>': ` when TS's `this` (passed here, unlike
+            // `plain_error`, below) has one.
+            let mut err = ContractError::pre_port(
+                ErrorKind::IllegalModel,
+                format!("Invalid namespace part '{part}'"),
+                None,
+            );
+            err.model_file = Some(file_name.clone());
+            return Err(err.into());
+        }
+    }
+    if version.is_none() && !is_system {
+        return Err(plain_error(format!(
+            "Cannot create a ModelFile with an unversioned namespace: {namespace}. All \
+             models must specify a version (e.g., @1.0.0)."
+        )));
+    }
+    Ok(version.unwrap_or_default())
 }
 
 /// Splits a namespace like `org.example@1.0.0` into its name and version,
