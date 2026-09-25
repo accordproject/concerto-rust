@@ -1162,6 +1162,157 @@ mod tests {
     }
 
     #[test]
+    fn golden_property_process_invalidname() {
+        assert_eq!(
+            contract("property-process-invalidname", &[("name", "1bad")]).message(),
+            "Invalid property name '1bad'"
+        );
+    }
+
+    // TS: `Property.validate`'s own inline template
+    // (src/introspect/property.ts:161), checked against the frozen TS 5.0.0
+    // reference.
+    #[test]
+    fn golden_property_validate_sizevalidator() {
+        assert_eq!(
+            contract(
+                "property-validate-sizevalidator",
+                &[("fqn", "org.acme@1.0.0.Foo.bar")]
+            )
+            .message(),
+            "size validator can only be applied to array or map properties: org.acme@1.0.0.Foo.bar"
+        );
+    }
+
+    // TS: `RelationshipDeclaration.validate`'s own inline templates
+    // (src/introspect/relationshipdeclaration.ts:54,61,80,86), checked
+    // against the frozen TS 5.0.0 reference.
+    #[test]
+    fn golden_relationshipdeclaration_validate_notype() {
+        assert_eq!(
+            contract("relationshipdeclaration-validate-notype", &[]).message(),
+            "Relationship must have a type"
+        );
+    }
+
+    #[test]
+    fn golden_relationshipdeclaration_validate_primitivetype() {
+        assert_eq!(
+            contract(
+                "relationshipdeclaration-validate-primitivetype",
+                &[("name", "bar"), ("type", "String")]
+            )
+            .message(),
+            "Relationship bar cannot be to the primitive type String"
+        );
+    }
+
+    #[test]
+    fn golden_relationshipdeclaration_validate_missingtype() {
+        assert_eq!(
+            contract(
+                "relationshipdeclaration-validate-missingtype",
+                &[("name", "bar"), ("type", "org.acme@1.0.0.Missing")]
+            )
+            .message(),
+            "Relationship bar points to a missing type org.acme@1.0.0.Missing"
+        );
+    }
+
+    #[test]
+    fn golden_relationshipdeclaration_validate_notidentified() {
+        assert_eq!(
+            contract(
+                "relationshipdeclaration-validate-notidentified",
+                &[("name", "bar"), ("type", "org.acme@1.0.0.Concept")]
+            )
+            .message(),
+            "Relationship bar must be to a class that has an identifier, but this is to org.acme@1.0.0.Concept"
+        );
+    }
+
+    // TS: `MapDeclaration.process`'s own inline templates
+    // (src/introspect/mapdeclaration.ts:63,67,71), checked against the
+    // frozen TS 5.0.0 reference.
+    #[test]
+    fn golden_mapdeclaration_process_missingkeyvalue() {
+        assert_eq!(
+            contract("mapdeclaration-process-missingkeyvalue", &[("name", "Foo")]).message(),
+            "MapDeclaration must contain Key & Value properties Foo"
+        );
+    }
+
+    #[test]
+    fn golden_mapdeclaration_process_invalidkey() {
+        assert_eq!(
+            contract("mapdeclaration-process-invalidkey", &[("name", "Foo")]).message(),
+            "MapDeclaration must contain valid MapKeyType  Foo"
+        );
+    }
+
+    #[test]
+    fn golden_mapdeclaration_process_invalidvalue() {
+        assert_eq!(
+            contract("mapdeclaration-process-invalidvalue", &[("name", "Foo")]).message(),
+            "MapDeclaration must contain valid MapValueType, for MapDeclaration Foo"
+        );
+    }
+
+    // TS: `MapKeyType.validate`'s own inline template
+    // (src/introspect/mapkeytype.ts:78), checked against the frozen TS
+    // 5.0.0 reference.
+    #[test]
+    fn golden_mapkeytype_validate_invalidscalar() {
+        assert_eq!(
+            contract(
+                "mapkeytype-validate-invalidscalar",
+                &[("type", "org.acme@1.0.0.Foo"), ("name", "Bar")]
+            )
+            .message(),
+            "Scalar must be one of StringScalar, DateTimeScalar in context of MapKeyType. Invalid Scalar: org.acme@1.0.0.Foo, for MapDeclaration Bar"
+        );
+    }
+
+    // TS: `MapValueType.validate`/`processType`'s own inline templates
+    // (src/introspect/mapvaluetype.ts:78,98,103,108), checked against the
+    // frozen TS 5.0.0 reference.
+    #[test]
+    fn golden_mapvaluetype_validate_mapnotsupported() {
+        assert_eq!(
+            contract(
+                "mapvaluetype-validate-mapnotsupported",
+                &[("type", "org.acme@1.0.0.Foo")]
+            )
+            .message(),
+            "MapDeclaration as Map Type Value is not supported: org.acme@1.0.0.Foo"
+        );
+    }
+
+    #[test]
+    fn golden_mapvaluetype_process_missingtype() {
+        assert_eq!(
+            contract("mapvaluetype-process-missingtype", &[("name", "Foo")]).message(),
+            "ObjectMapValueType must contain property 'type', for MapDeclaration named Foo"
+        );
+    }
+
+    #[test]
+    fn golden_mapvaluetype_process_malformedtype() {
+        assert_eq!(
+            contract("mapvaluetype-process-malformedtype", &[("name", "Foo")]).message(),
+            "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named Foo"
+        );
+    }
+
+    #[test]
+    fn golden_mapvaluetype_process_invalidtypeclass() {
+        assert_eq!(
+            contract("mapvaluetype-process-invalidtypeclass", &[("name", "Foo")]).message(),
+            "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named Foo"
+        );
+    }
+
+    #[test]
     fn golden_instancegenerator_newinstance_noconcreteclass() {
         assert_eq!(
             contract(

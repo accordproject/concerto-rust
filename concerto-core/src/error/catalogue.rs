@@ -590,6 +590,93 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         // at the throw site in model_manager.rs).
         sources: &["src/introspect/property.ts:218"],
     },
+    // ---- P4-07 additions (Property.process's own inline template; #66) ----
+    CatalogueEntry {
+        code: "property-process-invalidname",
+        template: "Invalid property name '{name}'",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/property.ts:86"],
+    },
+    // ---- P4-07 additions (Property.validate, RelationshipDeclaration.validate
+    //      and MapDeclaration/MapKeyType/MapValueType's own inline templates; #66) ----
+    CatalogueEntry {
+        code: "property-validate-sizevalidator",
+        template: "size validator can only be applied to array or map properties: {fqn}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/property.ts:161"],
+    },
+    CatalogueEntry {
+        code: "relationshipdeclaration-validate-notype",
+        template: "Relationship must have a type",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/relationshipdeclaration.ts:54"],
+    },
+    CatalogueEntry {
+        code: "relationshipdeclaration-validate-primitivetype",
+        template: "Relationship {name} cannot be to the primitive type {type}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/relationshipdeclaration.ts:61"],
+    },
+    CatalogueEntry {
+        code: "relationshipdeclaration-validate-missingtype",
+        template: "Relationship {name} points to a missing type {type}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/relationshipdeclaration.ts:80"],
+    },
+    CatalogueEntry {
+        code: "relationshipdeclaration-validate-notidentified",
+        template: "Relationship {name} must be to a class that has an identifier, but this is to {type}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/relationshipdeclaration.ts:86"],
+    },
+    CatalogueEntry {
+        code: "mapdeclaration-process-missingkeyvalue",
+        template: "MapDeclaration must contain Key & Value properties {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapdeclaration.ts:63"],
+    },
+    CatalogueEntry {
+        code: "mapdeclaration-process-invalidkey",
+        template: "MapDeclaration must contain valid MapKeyType  {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapdeclaration.ts:67"],
+    },
+    CatalogueEntry {
+        code: "mapdeclaration-process-invalidvalue",
+        template: "MapDeclaration must contain valid MapValueType, for MapDeclaration {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapdeclaration.ts:71"],
+    },
+    CatalogueEntry {
+        code: "mapkeytype-validate-invalidscalar",
+        template: "Scalar must be one of StringScalar, DateTimeScalar in context of MapKeyType. Invalid Scalar: {type}, for MapDeclaration {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapkeytype.ts:78"],
+    },
+    CatalogueEntry {
+        code: "mapvaluetype-validate-mapnotsupported",
+        template: "MapDeclaration as Map Type Value is not supported: {type}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapvaluetype.ts:78"],
+    },
+    CatalogueEntry {
+        code: "mapvaluetype-process-missingtype",
+        template: "ObjectMapValueType must contain property 'type', for MapDeclaration named {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapvaluetype.ts:98"],
+    },
+    CatalogueEntry {
+        code: "mapvaluetype-process-malformedtype",
+        template: "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapvaluetype.ts:103"],
+    },
+    CatalogueEntry {
+        code: "mapvaluetype-process-invalidtypeclass",
+        template: "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/mapvaluetype.ts:108"],
+    },
     // ---- P3-01b additions (Serializer, Factory, JSONPopulator, JSONGenerator
     //      and the Resource-mutating members; accordproject/concerto-rust#124) ----
     CatalogueEntry {

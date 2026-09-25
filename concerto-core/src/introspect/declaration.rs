@@ -132,7 +132,8 @@ pub struct ProcessDecision {
     /// TS: `this.idField`, once `process()` has set it.
     pub id_field: Option<String>,
     /// Whether the view must still call its own `addIdentifierField()`
-    /// (pushes a real `Field` view; kept in TS, P4-07).
+    /// (pushes a real `Field` view, constructed in TS; since P4-07 that
+    /// view's `process` delegates to the Rust `fieldProcess` binding).
     pub add_identifier_field: bool,
     /// Whether the view must still call its own `addTimestampField()`.
     pub add_timestamp_field: bool,
