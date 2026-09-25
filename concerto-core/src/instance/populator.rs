@@ -48,6 +48,89 @@ fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Conce
     ContractError::new(ErrorKind::Error, code, params).into()
 }
 
+/// TS: `JSONPopulator.convertToObject`'s primitive-type switch alone (task
+/// P4-10, accordproject/concerto-rust#69): the part that needs no
+/// declaration lookup, so the TS visitor shell can call it per field
+/// directly (via the concerto-wasm binding), keeping its own recursion and
+/// `jsonStack`/`resourceStack` handling -- and so the tests that spy on
+/// `visitX` still see the same calls, in the same order, that they always
+/// did.
+pub fn convert_primitive(
+    type_name: &str,
+    json: &JsValue,
+    options: &PopulatorOptions,
+    path: &str,
+) -> Result<JsValue> {
+    let wrong_type = || {
+        validation(
+            "jsonpopulator-converttoobject-wrongtype",
+            vec![("path", path.to_string()), ("type", type_name.to_string())],
+        )
+    };
+    Ok(match type_name {
+        "DateTime" => {
+            let result = match json {
+                JsValue::DateTime(d) => d.clone(),
+                JsValue::String(s) => {
+                    if !options.strict_qualified_date_times {
+                        Dayjs::utc_parse(s).utc_offset_set(&utc_offset_input(&options.utc_offset))
+                    } else if strict_qualified_date_time(s) {
+                        Dayjs::utc_parse(s)
+                    } else {
+                        return Err(validation(
+                            "jsonpopulator-converttoobject-datetimeformat",
+                            vec![("path", path.to_string()), ("type", type_name.to_string())],
+                        ));
+                    }
+                }
+                _ => return Err(wrong_type()),
+            };
+            if !result.is_valid() {
+                return Err(wrong_type());
+            }
+            JsValue::DateTime(result)
+        }
+        "Integer" | "Long" => match json {
+            // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
+            JsValue::Number(n) if n.trunc() == *n => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        "Double" => match json {
+            JsValue::Number(_) => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        "Boolean" => match json {
+            JsValue::Bool(_) => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        "String" => match json {
+            JsValue::String(_) => json.clone(),
+            _ => return Err(wrong_type()),
+        },
+        // Everything else should be an enumerated value.
+        _ => json.clone(),
+    })
+}
+
+/// TS `ResourceValidator.checkItem`'s primitive `switch(field.getType())`
+/// (task P4-10, accordproject/concerto-rust#69, resourcevalidator.ts:397):
+/// whether `value` (already coerced by [`convert_primitive`], as a real
+/// Resource's field value always is by the time it reaches `checkItem`) is
+/// valid for the declared primitive type `type_name`. `checkItem` reports
+/// `dataType === 'undefined' || dataType === 'symbol'` before this switch
+/// (a check the wire codec cannot cross, so the TS shell still makes it);
+/// every other TS branch is `typeof`/`isFinite` on the value alone, with no
+/// declaration lookup, so it is safe to call from the TS shell per field.
+pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
+    match type_name {
+        "String" => matches!(value, JsValue::String(_)),
+        "Long" | "Integer" | "Double" => matches!(value, JsValue::Number(n) if n.is_finite()),
+        "Boolean" => matches!(value, JsValue::Bool(_)),
+        "DateTime" => matches!(value, JsValue::DateTime(_)),
+        _ => false,
+    }
+}
+
 /// V8's `TypeError: Cannot read properties of <value> (reading '<property>')`.
 pub(crate) fn read_properties_error(value: &JsValue, property: &str) -> ConcertoError {
     ContractError::new(
@@ -450,60 +533,13 @@ impl<'a> Populator<'a> {
         self.accept_declaration(&declaration, json_item, sub_resource)
     }
 
-    /// TS: JSONPopulator.convertToObject.
+    /// TS: JSONPopulator.convertToObject. The primitive-type switch itself
+    /// has no dependency on `self.mm`/`self.env` (only on the field's type
+    /// name, the options and the current path), so it is [`convert_primitive`],
+    /// a free function the concerto-wasm binding (P4-10, jsonpopulator.ts)
+    /// calls directly per field, without needing a live `Populator`.
     fn convert_to_object(&mut self, field: &Field, json: &JsValue) -> Result<JsValue> {
-        let path = self.path_text();
-        let type_name = field.type_name();
-        let wrong_type = || {
-            validation(
-                "jsonpopulator-converttoobject-wrongtype",
-                vec![("path", path.clone()), ("type", type_name.clone())],
-            )
-        };
-        Ok(match type_name.as_str() {
-            "DateTime" => {
-                let result = match json {
-                    JsValue::DateTime(d) => d.clone(),
-                    JsValue::String(s) => {
-                        if !self.options.strict_qualified_date_times {
-                            Dayjs::utc_parse(s)
-                                .utc_offset_set(&utc_offset_input(&self.options.utc_offset))
-                        } else if strict_qualified_date_time(s) {
-                            Dayjs::utc_parse(s)
-                        } else {
-                            return Err(validation(
-                                "jsonpopulator-converttoobject-datetimeformat",
-                                vec![("path", path.clone()), ("type", type_name.clone())],
-                            ));
-                        }
-                    }
-                    _ => return Err(wrong_type()),
-                };
-                if !result.is_valid() {
-                    return Err(wrong_type());
-                }
-                JsValue::DateTime(result)
-            }
-            "Integer" | "Long" => match json {
-                // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
-                JsValue::Number(n) if n.trunc() == *n => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            "Double" => match json {
-                JsValue::Number(_) => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            "Boolean" => match json {
-                JsValue::Bool(_) => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            "String" => match json {
-                JsValue::String(_) => json.clone(),
-                _ => return Err(wrong_type()),
-            },
-            // Everything else should be an enumerated value.
-            _ => json.clone(),
-        })
+        convert_primitive(&field.type_name(), json, self.options, &self.path_text())
     }
 
     /// TS: JSONPopulator.visitRelationshipDeclaration.
@@ -655,8 +691,11 @@ fn strict_qualified_date_time(s: &str) -> bool {
     re.find(s).is_some()
 }
 
-/// The populator's options from the serializer's merged options.
-pub(crate) fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOptions {
+/// The populator's options from the serializer's merged options. `pub`
+/// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
+/// `PopulatorOptions` for [`convert_primitive`] from the options object the
+/// TS visitor shell already has.
+pub fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOptions {
     let get = |key: &str| options.get(key).cloned().unwrap_or(JsValue::Undefined);
     let utc_offset = get("utcOffset");
     PopulatorOptions {

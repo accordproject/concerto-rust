@@ -37,6 +37,30 @@ fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Conce
     ContractError::new(ErrorKind::Error, code, params).into()
 }
 
+/// TS: `JSONGenerator.convertToJSON`'s body (task P4-10,
+/// accordproject/concerto-rust#69): no dependency on the model manager, so
+/// the TS visitor shell can call it per field directly.
+pub fn convert_primitive(
+    type_name: &str,
+    obj: &JsValue,
+    options: &GeneratorOptions,
+) -> Result<JsValue> {
+    if type_name == "DateTime" {
+        let JsValue::DateTime(d) = obj else {
+            return Err(method_error(obj, "obj.utc", "utc"));
+        };
+        let offset = match &options.utc_offset {
+            JsValue::String(s) => UtcOffset::String(s.clone()),
+            JsValue::Number(n) => UtcOffset::Number(*n),
+            JsValue::Bool(b) => UtcOffset::Number(f64::from(u8::from(*b))),
+            _ => UtcOffset::Number(f64::NAN),
+        };
+        let with_offset = d.to_utc().utc_offset_set(&offset);
+        return Ok(JsValue::String(with_offset.format_json()));
+    }
+    Ok(obj.clone())
+}
+
 /// The visitor's state.
 pub(crate) struct Generator<'a> {
     mm: &'a ModelManager,
@@ -270,22 +294,11 @@ impl<'a> Generator<'a> {
         }
     }
 
-    /// TS: JSONGenerator.convertToJSON.
+    /// TS: JSONGenerator.convertToJSON. No dependency on `self.mm`, so it is
+    /// [`convert_primitive`], a free function the concerto-wasm binding
+    /// (P4-10, jsongenerator.ts) calls directly per field.
     fn convert_to_json(&mut self, field: &Field, obj: &JsValue) -> Result<JsValue> {
-        if field.type_name() == "DateTime" {
-            let JsValue::DateTime(d) = obj else {
-                return Err(method_error(obj, "obj.utc", "utc"));
-            };
-            let offset = match &self.options.utc_offset {
-                JsValue::String(s) => UtcOffset::String(s.clone()),
-                JsValue::Number(n) => UtcOffset::Number(*n),
-                JsValue::Bool(b) => UtcOffset::Number(f64::from(u8::from(*b))),
-                _ => UtcOffset::Number(f64::NAN),
-            };
-            let with_offset = d.to_utc().utc_offset_set(&offset);
-            return Ok(JsValue::String(with_offset.format_json()));
-        }
-        Ok(obj.clone())
+        convert_primitive(&field.type_name(), obj, self.options)
     }
 
     /// TS: JSONGenerator.visitRelationshipDeclaration.
@@ -363,7 +376,10 @@ fn typed_stack_found(obj: &JsValue) -> Result<String> {
 }
 
 /// The generator's options from the serializer's merged options.
-pub(crate) fn generator_options(options: &IndexMap<String, JsValue>) -> GeneratorOptions {
+/// The generator's options from the serializer's merged options. `pub`
+/// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
+/// `GeneratorOptions` for [`convert_primitive`].
+pub fn generator_options(options: &IndexMap<String, JsValue>) -> GeneratorOptions {
     let is_true = |key: &str| options.get(key) == Some(&JsValue::Bool(true));
     let utc_offset = options
         .get("utcOffset")

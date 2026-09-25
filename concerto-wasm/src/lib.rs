@@ -53,6 +53,7 @@ use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::instance::{
     Instance, InstanceEnv, InstanceKind, JsValue as CoreValue, Serializer, SerializerOptions,
 };
+use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
 use concerto_core::introspect::field;
@@ -3466,6 +3467,82 @@ impl ModelManagerHandle {
             snapshot(&encode_wire(&result))
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// JSONPopulator / JSONGenerator / ResourceValidator per-field delegation
+// (task P4-10, accordproject/concerto-rust#69)
+//
+// The visitor shells (jsonpopulator.ts, jsongenerator.ts,
+// resourcevalidator.ts) stay in TS -- white-box tests spy on their
+// `visitX` methods -- but the leaf per-field check or coercion each calls
+// (`convertToObject`, `convertToJSON`, `checkItem`'s primitive switch) is
+// pure: it needs only the field's declared type name, the JSON value at
+// that path, and the serializer's merged options, none of which needs a
+// live `ModelManagerHandle`. So these are free functions, not methods on
+// `ModelManagerHandle`, and reuse the same wire codec as the whole-document
+// fast path above.
+
+/// `JSONPopulator.convertToObject` (task P4-10): `json_text` is the wire
+/// encoding (module doc on `decode_wire`) of the value at `path`,
+/// `options_text` the serializer's merged options or `"null"`. Returns the
+/// coerced value's wire encoding, or throws the same `ValidationException`
+/// TS would for that path and type.
+#[wasm_bindgen(js_name = populatorConvertPrimitive)]
+pub fn populator_convert_primitive(
+    type_name: &str,
+    json_text: &str,
+    options_text: &str,
+    path: &str,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let json_value: Value = serde_json::from_str(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = decode_wire(&json_value)?;
+        let options = decode_wire_options(options_text)?.unwrap_or_default();
+        let popt = populator::populator_options(&options);
+        let result = populator::convert_primitive(type_name, &value, &popt, path)?;
+        snapshot(&encode_wire(&result))
+    })
+}
+
+/// `JSONGenerator.convertToJSON` (task P4-10): the counterpart of
+/// [`populator_convert_primitive`], for `Serializer.toJSON`'s visitor path.
+#[wasm_bindgen(js_name = generatorConvertPrimitive)]
+pub fn generator_convert_primitive(
+    type_name: &str,
+    json_text: &str,
+    options_text: &str,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let json_value: Value = serde_json::from_str(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = decode_wire(&json_value)?;
+        let options = decode_wire_options(options_text)?.unwrap_or_default();
+        let gopt = generator::generator_options(&options);
+        let result = generator::convert_primitive(type_name, &value, &gopt)?;
+        snapshot(&encode_wire(&result))
+    })
+}
+
+/// `ResourceValidator.checkItem`'s primitive-type switch (task P4-10,
+/// resourcevalidator.ts:397): whether `json_text`'s value (already coerced
+/// by the populator, as a real field value always is here) is valid for
+/// the declared primitive `type_name`. A pure predicate -- the TS shell
+/// still does its own `reportFieldTypeViolation` (needs `rootResourceIdentifier`
+/// and the `Field`, neither of which crosses this call), and still makes
+/// the `undefined`/`symbol` check the wire codec cannot cross.
+#[wasm_bindgen(js_name = resourceValidatorPrimitiveValid)]
+pub fn resource_validator_primitive_valid(
+    type_name: &str,
+    json_text: &str,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        let json_value: Value = serde_json::from_str(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = decode_wire(&json_value)?;
+        Ok(populator::primitive_field_valid(type_name, &value))
+    })
 }
 
 impl ModelManagerHandle {
