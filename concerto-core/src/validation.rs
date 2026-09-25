@@ -426,9 +426,19 @@ impl Validate for ClassDeclaration {
         check_import_clash(manager, namespace, self.name(), class_location(self))?;
         check_super_type(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
-        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
+        // TS: the `if (this.idField)` identity block — `check_identifier`'s
+        // not-a-property/not-a-string/optional checks, then
+        // `check_identity_matches_super`'s super-type redeclare check — runs
+        // before the "we also have to check fields defined in super
+        // classes" duplicate-name loop (classdeclaration.ts `validate`).
+        // Reordered (P2-08c review): a system-identified subclass of an
+        // explicitly-identified super type used to reach the duplicate-name
+        // loop first, misreporting the redeclare as two same-named
+        // `$identifier` fields (its own, and the implicit `Asset`/etc. root
+        // super type's own system identifier) instead of naming the conflict.
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
+        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
         check_unique_decorators(self, class_location(self))?;
         validate_decorators(manager, namespace, self, Some(&fqn))?;
         // TS: `for (field of this.getProperties())` — every property, own
@@ -1122,7 +1132,16 @@ pub fn validate_map_key(
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
             .and_then(Typed::type_name);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
-            return Err(failed(
+            // TS: `MapKeyType.validate` throws `new
+            // IllegalModelException(message)` with no `modelFile` argument
+            // (mapkeytype.ts) — unlike a construction-time check, this
+            // message never gets a `File '<name>': ` suffix. [`failed`]'s
+            // default `model_file: None` would let
+            // [`ModelManager::validate_model_file`]'s generic
+            // [`attach_model_file`] stamp one on anyway, so it is marked
+            // `Some(None)` ("no file, and already decided") here instead.
+            let mut err = ContractError::pre_port(
+                ErrorKind::IllegalModel,
                 format!(
                     "Scalar must be one of StringScalar, DateTimeScalar in context of \
                      MapKeyType. Invalid Scalar: {}, for MapDeclaration {}",
@@ -1130,7 +1149,9 @@ pub fn validate_map_key(
                     map.name()
                 ),
                 None,
-            ));
+            );
+            err.model_file = Some(None);
+            return Err(err.into());
         }
     }
     Ok(())
@@ -1201,14 +1222,23 @@ pub fn validate_map_value(
         let declared = resolve(manager, namespace, &value.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok());
         let Some(declared) = declared else {
-            return Err(failed(
-                format!(
-                    "Undeclared type {} referenced by the value of map {}",
-                    value.name,
-                    map.name()
-                ),
-                None,
-            ));
+            // TS: `MapValueType.validate` reads `this.modelFile.getType(...)`
+            // (which returns `null` for an undeclared type, `ModelFile.getType`,
+            // modelfile.ts) straight into `decl.isMapDeclaration?.()`: the
+            // `?.` guards only the *call*, not the `.isMapDeclaration`
+            // property read on `decl` itself, so V8 throws `TypeError: Cannot
+            // read properties of null (reading 'isMapDeclaration')` rather
+            // than the graceful "undeclared type" message this port used to
+            // raise. Ported as TS has it (a `ts-bug` divergence).
+            return Err(ContractError::new(
+                ErrorKind::JsTypeError,
+                "engine-typeerror-readproperties",
+                vec![
+                    ("value", "null".to_string()),
+                    ("property", "isMapDeclaration".to_string()),
+                ],
+            )
+            .into());
         };
         if declared.is_map_declaration() {
             return Err(failed(
@@ -1293,7 +1323,7 @@ fn undeclared_type_error(
 
 #[cfg(test)]
 mod tests {
-    use crate::error::ConcertoError;
+    use crate::error::{ConcertoError, ErrorKind};
     use crate::introspect::Named;
     use crate::model_manager::ModelManager;
     use crate::validation::{validate_map_key, validate_map_value};
@@ -2462,13 +2492,21 @@ mod tests {
     }
 
     #[test]
-    fn a_map_value_must_name_a_declared_type() {
+    fn an_undeclared_map_value_type_is_a_type_error() {
+        // TS: `MapValueType.validate` reads an undeclared type's `null` from
+        // `this.modelFile.getType(...)` straight into `decl.isMapDeclaration`
+        // with no null guard on the property read (DV-013, mapvaluetype.ts):
+        // a `TypeError`, not the `IllegalModelException` this port raised
+        // before that fix.
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let err = validate(map_with(
             key.clone(),
             object_type("Missing", "ObjectMapValueType"),
         ));
-        assert!(err.unwrap_err().to_string().contains("Undeclared type"));
+        assert!(matches!(
+            err.unwrap_err(),
+            ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+        ));
 
         assert!(validate(map_with(key, object_type("Item", "ObjectMapValueType"))).is_ok());
     }

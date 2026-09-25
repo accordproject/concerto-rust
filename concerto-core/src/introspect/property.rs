@@ -16,10 +16,8 @@ use serde_json::Value;
 use crate::derive::Named;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::decorator::{Decorated, Decorator, WithDecorators, parse_decorators};
-use crate::introspect::{
-    HasValidators, Named, Typed, check_domain, check_length, check_pattern, check_size,
-    declared_class,
-};
+use crate::introspect::validators;
+use crate::introspect::{FullyQualified, Named, Typed, declared_class};
 use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
 
 /// What `Property.process` computes, after `super.process()` (which belongs
@@ -308,24 +306,77 @@ impl TryFrom<&serde_json::Value> for Property {
                 serde_json::from_value(value.clone()).map_err(bad)?,
                 decorators,
             )),
-            other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown property type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
+            _ => {
+                // TS: `ClassDeclaration.process`'s own `properties` loop
+                // (classdeclaration.ts), not `Property`'s constructor —
+                // `this.modelFile`/`this.ast.location` there are the
+                // *class's*, which `try_from` has no way to reach (the
+                // module doc on [`BoundElement`]), so this carries neither.
+                return Err(ContractError::new(
+                    ErrorKind::IllegalModel,
+                    "classdeclaration-process-unrecmodelelem",
+                    vec![("type", class.to_string())],
+                )
+                .into());
             }
         };
         if !is_valid_identifier(property.name()) {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("invalid identifier: {}", property.name()),
-                file_name: None,
-                location: None,
-            });
+            // TS: `Property.process` (property.ts) — `this.getModelFile()`
+            // and `this.ast.location`; `try_from` has no model file in
+            // scope (the module doc on [`BoundElement`]), so only the
+            // location, which is this property's own AST node, is set here.
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "property-process-invalidname",
+                vec![("name", property.name().to_string())],
+            );
+            err.location = value.get("location").cloned();
+            return Err(err.into());
         }
-        property.check_validators()?;
         Ok(property)
     }
+}
+
+/// The property as the element its own validator is attached to, once the
+/// fully qualified name is known — TS: `this` (`Property`/`Field`), whose
+/// `getFullyQualifiedName()` needs the owning class and namespace that
+/// [`Property::try_from`] (and so [`parse_properties`](super::declaration))
+/// never has. [`Property::check_bound_validators`] builds this once that
+/// context is known.
+struct BoundElement<'a> {
+    fqn: &'a str,
+    name: &'a str,
+    default_value: Option<Value>,
+}
+
+impl FullyQualified for BoundElement<'_> {
+    type Error = ConcertoError;
+
+    fn fully_qualified_name(&self) -> Result<String> {
+        Ok(self.fqn.to_string())
+    }
+}
+
+impl crate::model_manager::ValidatedElement for BoundElement<'_> {
+    fn default_value(&self) -> Result<Option<Value>> {
+        Ok(self.default_value.clone())
+    }
+
+    fn name(&self) -> Result<String> {
+        Ok(self.name.to_string())
+    }
+}
+
+/// Converts a generated numeric domain validator struct (`IntegerDomainValidator`,
+/// `LongDomainValidator` or `DoubleDomainValidator` — all three share the same
+/// `{$class, lower, upper}` shape) to the raw JSON [`validators::NumberValidator::new`]
+/// reads, the same shape [`ScalarDeclaration::process`](super::scalar::ScalarDeclaration::process)
+/// and [`field::process`](super::field::process) read straight from the AST.
+fn domain_validator_json<T: serde::Serialize>(validator: &T) -> Value {
+    // Infallible: every field of these generated structs serializes (no
+    // floating `NaN`/`Infinity`, which `serde_json` alone cannot represent —
+    // OD-3's widened numeric AST fields never hold one).
+    serde_json::to_value(validator).unwrap_or(Value::Null)
 }
 
 impl Property {
@@ -337,55 +388,81 @@ impl Property {
     /// resolved — `check_property_type` in [`crate::validation`] (P2-08: a
     /// `ModelFile` with such a property must still construct).
     fn check_size_validator(
+        fqn: &str,
         name: &str,
-        validator: &Option<mm::CollectionSizeValidator>,
+        validator: Option<&mm::CollectionSizeValidator>,
     ) -> Result<()> {
-        if let Some(v) = validator {
-            check_size(name, v)?;
-        }
+        let Some(v) = validator else { return Ok(()) };
+        let element = BoundElement {
+            fqn,
+            name,
+            default_value: None,
+        };
+        validators::CollectionSizeValidator::new(&element, v)?;
         Ok(())
     }
-}
 
-impl HasValidators for Property {
-    /// Checks the validators this property carries: a numeric range, a string
-    /// length, a regular expression, and a collection size. These are part of
-    /// the property's own declaration, so they are checked while loading
-    /// rather than left to the validation pass.
-    fn check_validators(&self) -> Result<()> {
+    /// Rebuilds and discards this property's own numeric, string and
+    /// collection-size validators, purely to surface the `BaseException`
+    /// their constructors raise (through `Validator.reportError`,
+    /// `ErrorKind::Validator`, PORTING.md 2.1) for a bound out of order, a
+    /// negative size, an uncompilable regex, or a default value outside the
+    /// validator's own range — `Property::try_from` itself has no
+    /// [`FullyQualified`] context to build these messages with (the module
+    /// doc on [`BoundElement`]), so this is called once that context is
+    /// known, from `ClassDeclaration::from_json`
+    /// (`super::declaration::ClassDeclaration`), never from `try_from`
+    /// itself: a property whose validator does not check out must still
+    /// *parse*, exactly as TS's own two-phase load (parse, then
+    /// `ClassDeclaration.process`'s validator construction) does.
+    ///
+    /// TS: `Property.process`/`Field.process` (property.ts, field.ts) build
+    /// the size validator (any non-enum property) first, then, for a
+    /// non-array Integer/Long/Double/String, its own domain or
+    /// length-and-regex validator — the same order as this method's own
+    /// `match`.
+    pub fn check_bound_validators(&self, class_fqn: &str) -> Result<()> {
+        let name = self.name().to_string();
+        // TS: `Validator.getFieldOrScalarDeclaration().getFullyQualifiedName()`
+        // — a property's own, `<namespace>.<Class>.<property>` (property.ts
+        // `getFullyQualifiedName`), not its owning class's.
+        let fqn = format!("{class_fqn}.{name}");
+        let fqn = fqn.as_str();
+        Self::check_size_validator(fqn, &name, self.size_validator())?;
+        let element = |default_value: Option<Value>| BoundElement {
+            fqn,
+            name: &name,
+            default_value,
+        };
         match self {
-            Self::String(p) => {
-                if let Some(validator) = &p.validator {
-                    check_pattern(&p.name, validator)?;
-                }
-                if let Some(validator) = &p.length_validator {
-                    check_length(&p.name, validator)?;
-                }
-                Self::check_size_validator(&p.name, &p.size_validator)
+            Self::String(p) if p.validator.is_some() || p.length_validator.is_some() => {
+                let default_value = p.default_value.clone().map(Value::String);
+                validators::StringValidator::new(
+                    &element(default_value),
+                    p.validator.as_ref(),
+                    p.length_validator.as_ref(),
+                )?;
+                Ok(())
             }
-            Self::Integer(p) => {
-                if let Some(validator) = &p.validator {
-                    check_domain(&p.name, validator.lower, validator.upper)?;
-                }
-                Self::check_size_validator(&p.name, &p.size_validator)
+            Self::Integer(p) if p.validator.is_some() => {
+                let ast = domain_validator_json(p.validator.as_ref().unwrap());
+                let default_value = p.default_value.map(Value::from);
+                validators::NumberValidator::new(&element(default_value), &ast)?;
+                Ok(())
             }
-            Self::Long(p) => {
-                if let Some(validator) = &p.validator {
-                    check_domain(&p.name, validator.lower, validator.upper)?;
-                }
-                Self::check_size_validator(&p.name, &p.size_validator)
+            Self::Long(p) if p.validator.is_some() => {
+                let ast = domain_validator_json(p.validator.as_ref().unwrap());
+                let default_value = p.default_value.map(Value::from);
+                validators::NumberValidator::new(&element(default_value), &ast)?;
+                Ok(())
             }
-            Self::Double(p) => {
-                if let Some(validator) = &p.validator {
-                    check_domain(&p.name, validator.lower, validator.upper)?;
-                }
-                Self::check_size_validator(&p.name, &p.size_validator)
+            Self::Double(p) if p.validator.is_some() => {
+                let ast = domain_validator_json(p.validator.as_ref().unwrap());
+                let default_value = p.default_value.map(Value::from);
+                validators::NumberValidator::new(&element(default_value), &ast)?;
+                Ok(())
             }
-            Self::Boolean(p) => Self::check_size_validator(&p.name, &p.size_validator),
-            Self::DateTime(p) => Self::check_size_validator(&p.name, &p.size_validator),
-            Self::Object(p) => Self::check_size_validator(&p.name, &p.size_validator),
-            Self::Relationship(p) => Self::check_size_validator(&p.name, &p.size_validator),
-            Self::Enum(_) => Ok(()),
+            _ => Ok(()),
         }
     }
 }
@@ -573,7 +650,11 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": "1bad", "isArray": false, "isOptional": false
         }));
-        assert!(err.unwrap_err().to_string().contains("invalid identifier"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("Invalid property name '1bad'")
+        );
     }
 
     /// A `String` property carrying the given regex validator.
@@ -592,7 +673,8 @@ mod tests {
     fn a_regex_validator_must_compile() {
         assert!(Property::try_from(&matching(r"^.+@.+\..+$")).is_ok());
         for pattern in ["*invalid", "[unclosed", "(unclosed"] {
-            let err = Property::try_from(&matching(pattern));
+            let p = Property::try_from(&matching(pattern)).expect("construction accepts it");
+            let err = p.check_bound_validators("test@1.0.0.Box");
             assert!(
                 err.unwrap_err().to_string().contains("regular expression"),
                 "{pattern} should be rejected"
@@ -602,7 +684,9 @@ mod tests {
 
     #[test]
     fn range_lower_above_upper_is_rejected() {
-        let err = Property::try_from(&ranged(Some(10.0), Some(5.0)));
+        let p =
+            Property::try_from(&ranged(Some(10.0), Some(5.0))).expect("construction accepts it");
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("Lower bound"));
     }
 
@@ -615,8 +699,9 @@ mod tests {
 
     #[test]
     fn range_without_either_bound_is_rejected() {
-        let err = Property::try_from(&ranged(None, None));
-        assert!(err.unwrap_err().to_string().contains("Invalid range"));
+        let p = Property::try_from(&ranged(None, None)).expect("construction accepts it");
+        let err = p.check_bound_validators("test@1.0.0.Box");
+        assert!(err.unwrap_err().to_string().contains("lower and-or upper"));
     }
 
     /// OD-3: an Integer domain bound that overflows `i32` loads and
@@ -676,13 +761,15 @@ mod tests {
 
     #[test]
     fn negative_string_length_is_rejected() {
-        let err = Property::try_from(&sized(Some(-1), Some(5)));
+        let p = Property::try_from(&sized(Some(-1), Some(5))).expect("construction accepts it");
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
     #[test]
     fn string_length_min_above_max_is_rejected() {
-        let err = Property::try_from(&sized(Some(10), Some(5)));
+        let p = Property::try_from(&sized(Some(10), Some(5))).expect("construction accepts it");
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("minLength"));
     }
 
@@ -730,7 +817,9 @@ mod tests {
 
     #[test]
     fn size_validator_min_above_max_is_rejected() {
-        let err = Property::try_from(&collection_sized(true, Some(10), Some(2)));
+        let p = Property::try_from(&collection_sized(true, Some(10), Some(2)))
+            .expect("construction accepts it");
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(
             err.unwrap_err()
                 .to_string()
@@ -740,7 +829,9 @@ mod tests {
 
     #[test]
     fn size_validator_negative_bounds_rejected() {
-        let err = Property::try_from(&collection_sized(true, Some(-1), Some(5)));
+        let p = Property::try_from(&collection_sized(true, Some(-1), Some(5)))
+            .expect("construction accepts it");
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
@@ -810,7 +901,7 @@ mod tests {
         }));
         assert_eq!(
             err.unwrap_err().to_string(),
-            "illegal model: unknown property type: MysteryProperty"
+            "Unrecognised model element \"concerto.metamodel@1.0.0.MysteryProperty\"."
         );
     }
 

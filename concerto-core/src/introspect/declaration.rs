@@ -531,6 +531,20 @@ impl ClassDeclaration {
             )));
         }
 
+        // TS: each property's own `NumberValidator`/`StringValidator`/
+        // `CollectionSizeValidator` construction, part of `Property.process`/
+        // `Field.process` (property.ts, field.ts) — deferred to here, in AST
+        // order, rather than run from `Property::try_from`
+        // ([`Property::check_bound_validators`]'s doc comment), since only
+        // this scope has the namespace and class name the error messages
+        // need. The two synthesized system fields above never carry a
+        // validator, so checking every property here (not just the AST's
+        // own) is a no-op for them.
+        let fqn = get_fully_qualified_name(namespace, &name);
+        for property in &properties {
+            property.check_bound_validators(&fqn)?;
+        }
+
         Ok(Self {
             node,
             properties,
