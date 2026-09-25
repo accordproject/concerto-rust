@@ -3335,6 +3335,21 @@ impl ModelManagerHandle {
         })
     }
 
+    /// TS `ModelManager`'s `dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// option (`ModelManager::set_dangerously_allow_reserved_system_type_names_in_user_models`).
+    /// Additive: [`Self::new`] takes no options and leaves this `false`, so
+    /// every existing caller is unaffected. A view must call this before
+    /// [`Self::add_model_with_definitions`] validates a model that relies on
+    /// it — otherwise that call's `ModelManager::validate_detached_model_file`
+    /// check (P4-08a, accordproject/concerto-rust#173) runs with the option
+    /// off, unlike native `add_model(s)`, and rejects a system type name the
+    /// caller meant to allow.
+    #[wasm_bindgen(js_name = setDangerouslyAllowReservedSystemTypeNamesInUserModels)]
+    pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.manager
+            .set_dangerously_allow_reserved_system_type_names_in_user_models(allow);
+    }
+
     /// Loads a model from its JSON AST, passed as JSON text (the view calls
     /// `JSON.stringify(ast)`: spike REPORT §3), and returns the handle of its
     /// model file. Malformed JSON throws a JS `SyntaxError`.
@@ -3589,6 +3604,146 @@ impl ModelManagerHandle {
             let serializer = Serializer::new(true, true, options.as_ref())?;
             let result = serializer.to_json(&self.manager, &resource, options.as_ref())?;
             snapshot(&encode_wire(&result))
+        })
+    }
+
+    /// Loads a model from its JSON AST, as [`Self::add_model`] does, but
+    /// also keeps `definitions` (the CTO source text, when the caller has
+    /// it) exactly as [`ModelManager::add_model_with_definitions`] does —
+    /// so a mirrored model file's `getModels()` content matches the TS
+    /// `ModelFile.getDefinitions()` it was loaded from (P4-08). Additive:
+    /// [`Self::add_model`] is unchanged and still passes `definitions: None`.
+    ///
+    /// `validate` mirrors TS `BaseModelManager.addModelFile`'s
+    /// `!disableValidation`: when true, the new file is checked with
+    /// [`ModelManager::validate_detached_model_file`] — against the manager
+    /// as it stands, before the file is registered — exactly as the oracle
+    /// harness's own `addModelFile`/`addModel` recipe step does
+    /// (`tests/oracle/recipe.rs`), which is also how the reference decides
+    /// these fixtures. Before this (P4-08a, accordproject/concerto-rust#173),
+    /// this binding never validated at all — regardless of `validate` — so a
+    /// model with, say, a missing identifier field, a declared type clashing
+    /// with an import, or an undeclared referenced type was silently
+    /// registered instead of rejected. The unconditional duplicate-namespace
+    /// check (`ModelManager::add_model_with_definitions`'s own) still fires
+    /// first regardless of `validate`, as TS's does.
+    #[wasm_bindgen(js_name = addModelWithDefinitions)]
+    pub fn add_model_with_definitions(
+        &mut self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+        validate: bool,
+    ) -> std::result::Result<u32, JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let namespace = value
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if validate && self.manager.model_file(&namespace).is_none() {
+                let candidate = ModelFile::from_json_with_definitions(
+                    &value,
+                    definitions.clone(),
+                    file_name.clone(),
+                )?;
+                self.manager.validate_detached_model_file(&candidate)?;
+            }
+            self.manager
+                .add_model_with_definitions(&value, definitions, file_name)?;
+            self.manager
+                .model_file_id(&namespace)
+                .map(ModelFileId::index)
+                .ok_or_else(|| {
+                    ConcertoError::TypeNotFound {
+                        type_name: namespace,
+                    }
+                    .into()
+                })
+        })
+    }
+
+    /// TS `BaseModelManager.resolveType(context, type)` (P4-08): delegates
+    /// to [`ModelManager::resolve_type`], which the manager mirrors from
+    /// every model the view has mirrored in with [`Self::add_model`]/
+    /// [`Self::add_model_with_definitions`].
+    #[wasm_bindgen(js_name = resolveType)]
+    pub fn resolve_type(
+        &self,
+        context: &str,
+        type_name: &str,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| Ok(self.manager.resolve_type(context, type_name)?))
+    }
+
+    /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)` (P4-08).
+    #[wasm_bindgen(js_name = derivesFrom)]
+    pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> std::result::Result<bool, JsValue> {
+        run(|| Ok(self.manager.derives_from(fqt1, fqt2)?))
+    }
+
+    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)` (P4-08).
+    #[wasm_bindgen(js_name = isAssignableTo)]
+    pub fn is_assignable_to_type(&self, fqn: &str, base_fqn: &str) -> bool {
+        self.manager.is_type_assignable_to(fqn, base_fqn)
+    }
+
+    /// TS `BaseModelManager.getNamespaces()` (P4-08): every registered
+    /// model file's namespace, the system models included, in load order --
+    /// matching `Object.keys(this.modelFiles)`, since TS inserts the
+    /// decorator and root models into `this.modelFiles` in its constructor
+    /// exactly as [`ModelManager::new`] mirrors them here.
+    #[wasm_bindgen(js_name = getNamespaces)]
+    pub fn get_namespaces(&self) -> Vec<String> {
+        self.manager
+            .model_files()
+            .map(|file| file.namespace().to_string())
+            .collect()
+    }
+
+    /// Mirrors TS `BaseModelManager.updateModelFile` (P4-08): rebuilds the
+    /// model file for `ast`'s namespace from its JSON AST (as
+    /// [`Self::add_model_with_definitions`] does), replacing whatever was
+    /// registered there. `validate` is TS's `!disableValidation`. Returns
+    /// the (possibly unchanged) handle of that namespace's model file.
+    #[wasm_bindgen(js_name = updateModelFile)]
+    pub fn update_model_file(
+        &mut self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+        validate: bool,
+    ) -> std::result::Result<u32, JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let model_file = concerto_core::ModelFile::from_json_with_definitions(
+                &value,
+                definitions,
+                file_name,
+            )?;
+            let namespace = model_file.namespace().to_string();
+            self.manager = self.manager.update_model_file(model_file, validate)?;
+            self.manager
+                .model_file_id(&namespace)
+                .map(ModelFileId::index)
+                .ok_or_else(|| {
+                    ConcertoError::TypeNotFound {
+                        type_name: namespace,
+                    }
+                    .into()
+                })
+        })
+    }
+
+    /// Mirrors TS `BaseModelManager.deleteModelFile(namespace)` (P4-08).
+    #[wasm_bindgen(js_name = deleteModelFile)]
+    pub fn delete_model_file(&mut self, namespace: &str) -> std::result::Result<(), JsValue> {
+        run(|| {
+            self.manager = self.manager.delete_model_file(namespace)?;
+            Ok(())
         })
     }
 
