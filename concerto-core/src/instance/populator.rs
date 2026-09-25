@@ -585,6 +585,7 @@ impl<'a> Populator<'a> {
         if !type_name.is_truthy() {
             type_name = JsValue::String(field.fully_qualified_type_name());
         }
+        // DV-015: see instance/serializer.rs from_json.
         let Some(type_name) = type_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::Error,
@@ -725,6 +726,7 @@ impl<'a> Populator<'a> {
                 ],
             ));
         }
+        // DV-015: see instance/serializer.rs from_json.
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::Error,

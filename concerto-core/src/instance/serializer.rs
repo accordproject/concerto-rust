@@ -96,6 +96,10 @@ impl Serializer {
         if !class_name.is_truthy() {
             return Err(plain_error("serializer-fromjson-noclass"));
         }
+        // DV-015: TS has no type check here and either crashes in
+        // `ModelUtil.getShortName`/`getNamespace` or, for an array, resolves
+        // it to a `TypeNotFoundException`; kept as an explicit rejection
+        // (maintainer-accepted, accordproject/concerto-rust#156).
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::Error,
@@ -783,12 +787,8 @@ mod tests {
             "$class": "org.acme@1.0.0.Car", "vin": "A",
             "address": { "$class": true, "city": "Paris" }
         });
-        let error = message(serializer().from_json(
-            &model(),
-            &JsValue::from_json(&json),
-            None,
-            &mut Env,
-        ));
+        let error =
+            message(serializer().from_json(&model(), &JsValue::from_json(&json), None, &mut Env));
         assert_eq!(error, "a $class that is not a string: true");
     }
 
