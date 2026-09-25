@@ -16,9 +16,12 @@
 //! #32 point 4 moves to Rust), [`populator`] (`JSONPopulator`),
 //! [`generator`] (`JSONGenerator`), [`resource`] (the members of the
 //! `Resource` family that change or check an instance) and [`serializer`]
-//! (`Serializer`, option B's whole-document calls).
+//! (`Serializer`, option B's whole-document calls). [`deserialize`] is task
+//! P3-02 (`accordproject/concerto-rust#57`): accordproject/concerto#1273's
+//! `DeserializeOptions` and `STRICT_VALIDATE_OPTIONS`.
 
 pub mod dayjs;
+pub mod deserialize;
 pub mod factory;
 pub mod generator;
 pub(crate) mod model;
@@ -29,6 +32,7 @@ pub mod serializer;
 pub mod validate;
 pub mod value;
 
+pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
 pub use factory::InstanceEnv;
 pub use serializer::{Serializer, SerializerOptions};
 pub use validate::{ValidateOptions, validate_instance};

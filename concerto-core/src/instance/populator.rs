@@ -12,10 +12,11 @@
 use indexmap::IndexMap;
 
 use super::dayjs::{Dayjs, UtcOffset};
+use super::deserialize::DeserializeOptions;
 use super::factory::{self, InstanceEnv};
 use super::model::{self, Field, FieldType, TypeRef};
 use super::value::{Instance, JsValue};
-use crate::error::{ContractError, ErrorKind, Result};
+use crate::error::{ContractError, DetailCode, ErrorKind, Result, ValidationDetail};
 use crate::introspect::Declaration;
 use crate::model_manager::ModelManager;
 use crate::{ConcertoError, model_util};
@@ -29,6 +30,8 @@ pub struct PopulatorOptions {
     pub utc_offset: JsValue,
     /// `strictQualifiedDateTimes`.
     pub strict_qualified_date_times: bool,
+    /// `rejectUnknownKeys` and `rejectRequiredNull` (accordproject/concerto#1273).
+    pub deserialize: DeserializeOptions,
 }
 
 /// The visitor's state: its options and `parameters`.
@@ -267,7 +270,14 @@ impl<'a> Populator<'a> {
         mut resource: Instance,
     ) -> Result<Instance> {
         let properties = get_assignable_properties(json, class_declaration)?;
+        let options = self.options.deserialize;
+        if options.reject_unknown_keys {
+            self.reject_unknown_keys(json, class_declaration)?;
+        }
         validate_properties(&properties, class_declaration)?;
+        if options.reject_required_null {
+            self.reject_required_null(json, class_declaration)?;
+        }
         for property in properties {
             let value = get_property(json, &property)?;
             if value != JsValue::Null {
@@ -282,6 +292,82 @@ impl<'a> Populator<'a> {
             }
         }
         Ok(resource)
+    }
+
+    /// `rejectUnknownKeys` (accordproject/concerto#1273): every key that is
+    /// not a system property and that the declaration does not declare,
+    /// whatever its value (`null` included), in one error with one
+    /// `UNKNOWN_PROPERTY` detail per key.
+    fn reject_unknown_keys(&self, json: &JsValue, class_declaration: &TypeRef) -> Result<()> {
+        let expected: Vec<String> = class_declaration
+            .properties("classDeclaration.getProperties")?
+            .iter()
+            .map(|(_, p)| crate::Named::name(p).to_string())
+            .collect();
+        let unknown: Vec<String> = object_keys(json)?
+            .into_iter()
+            .filter(|p| !model_util::is_system_property(p) && !expected.contains(p))
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let path = self.path_text();
+        let mut error = ContractError::new(
+            ErrorKind::Validation,
+            "jsonpopulator-rejectunknownkeys-unknownproperties",
+            vec![
+                ("fqn", class_declaration.fqn()),
+                ("properties", unknown.join(", ")),
+            ],
+        );
+        error.details = unknown
+            .iter()
+            .map(|property| ValidationDetail {
+                path: format!("{path}.{property}"),
+                code: DetailCode::UnknownProperty,
+                expected: None,
+                actual: None,
+            })
+            .collect();
+        Err(error.into())
+    }
+
+    /// `rejectRequiredNull` (accordproject/concerto#1273): the first
+    /// declared, required property (in the document's key order) whose value
+    /// is `null` fails at once with its path and declared type, and a
+    /// `TYPE_VIOLATION` detail.
+    fn reject_required_null(&self, json: &JsValue, class_declaration: &TypeRef) -> Result<()> {
+        for key in object_keys(json)? {
+            if model_util::is_system_property(&key) || get_property(json, &key)? != JsValue::Null {
+                continue;
+            }
+            let Some((_, property)) = class_declaration.property(&key)? else {
+                continue;
+            };
+            if property.is_optional() {
+                continue;
+            }
+            let path = format!("{}.{key}", self.path_text());
+            let mut type_name = crate::introspect::Typed::type_name(&property)
+                .unwrap_or_default()
+                .to_string();
+            if property.is_array() {
+                type_name.push_str("[]");
+            }
+            let mut error = ContractError::new(
+                ErrorKind::Validation,
+                "jsonpopulator-rejectrequirednull-requirednull",
+                vec![("path", path.clone()), ("type", type_name.clone())],
+            );
+            error.details = vec![ValidationDetail {
+                path,
+                code: DetailCode::TypeViolation,
+                expected: Some(type_name),
+                actual: Some("null".to_string()),
+            }];
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// TS `classProperty.accept(this, parameters)`, through `visit`: a
@@ -668,5 +754,6 @@ pub(crate) fn populator_options(options: &IndexMap<String, JsValue>) -> Populato
             JsValue::Number(0.0)
         },
         strict_qualified_date_times: get("strictQualifiedDateTimes") == JsValue::Bool(true),
+        deserialize: DeserializeOptions::from_serializer_options(options),
     }
 }
