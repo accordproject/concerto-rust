@@ -188,6 +188,11 @@ fn type_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error 
     ContractError::new(ErrorKind::JsTypeError, code, params).into()
 }
 
+/// A catalogue `Error`, built the same way `type_error` builds a `TypeError`.
+fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
+    ContractError::new(ErrorKind::Error, code, params).into()
+}
+
 /// JS `String(value)`.
 fn js_string(value: &JsValue) -> Result<String> {
     if let Some(s) = value.as_string() {
@@ -624,7 +629,18 @@ pub fn resource_id_from_uri(
     legacy_type: JsValue,
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
-        let uri = js_string(&uri)?;
+        // TS's private `parseUri` calls `uri.match(...)`, which throws a
+        // `TypeError` for a non-string `uri`; `fromURI` catches that and
+        // reports it as the same "Invalid URI" error a malformed string
+        // produces, keyed on `String(uri)`. A non-string `uri` must not be
+        // silently coerced into a valid id (PORTING.md 1.4 / P4-03 review).
+        let uri = uri.as_string().ok_or_else(|| {
+            js_string(&uri)
+                .map(|rendered| {
+                    plain_error("resourceid-fromuri-invaliduri", vec![("uri", rendered)])
+                })
+                .unwrap_or_else(|e| e)
+        })?;
         let legacy_namespace = if nullish(&legacy_namespace) {
             None
         } else {
