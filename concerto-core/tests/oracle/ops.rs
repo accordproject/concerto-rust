@@ -22,7 +22,12 @@
 //!   `validateModelFiles`, `clearModelFiles`, `fromAst`, which are also the
 //!   recipe steps every other model-manager fixture is rebuilt with; plus
 //!   the queries with a direct Rust counterpart: `getNamespaces`,
-//!   `getAst(false, …)` and `getType` (`get_declaration`). The Rust
+//!   `getAst` (both `resolve` values, `ModelManager::get_ast`, P2-08b) and
+//!   `getType` (`get_declaration`); `resolveMetaModel`
+//!   (`ModelManager::resolve_meta_model`, P2-08b) has its own fixtures too,
+//!   and `updateExternalModels` (P2-08b) replays the recorded download and
+//!   compares the receiver as `effects.target`.
+//!   The Rust
 //!   `ModelManager` is still pre-port (P2-08 ports it), so these fixtures
 //!   report its differences from TS as per-rule failures, which is the
 //!   point: they are what P2-08 and the introspection tasks have to close.
@@ -48,11 +53,10 @@
 //!   `executePropertyCommand`'s property) is compared through
 //!   `outcome.effects.args`, as the recorder records it. `decorateModels` and
 //!   the `extract*` statics read `getAst(true, …)` in TS, which resolves the
-//!   metamodel (`BaseModelManager.resolveMetaModel`, not ported: P2-08):
-//!   a fixture whose models that resolution would change is `unsupported`
-//!   for that owner, once every step before it has been compared
-//!   (`resolution_changes_nothing`). A model manager `derived` from one of
-//!   these ops is rebuilt by replaying it (`derive_model_manager`).
+//!   metamodel (`BaseModelManager.resolveMetaModel`); `concerto_core::dcs`
+//!   does the same through `ModelManager::get_ast` (P2-08b). A model manager
+//!   `derived` from one of these ops is rebuilt by replaying it
+//!   (`derive_model_manager`).
 //!   `migrateAndValidate`, `validateCommand`, `canMigrate` and
 //!   `checkForDuplicateDecorators` have no fixtures of their own (the
 //!   recorder only records the outermost call), so they are compared
@@ -78,10 +82,10 @@
 //!   **`ModelManager.getMapDeclarations`**, a generic query any model
 //!   manager already answers (`ClassDeclaration.isMapDeclaration` is
 //!   dispatched with the rest of the `ClassDeclaration` family, P2-03). A
-//!   fixture whose target is an
-//!   unregistered `ModelFile` (`mfnew`, e.g. most of
-//!   `MapDeclaration.validate`) stays `unsupported`, owned by P2-08's
-//!   `ModelFile.new`.
+//!   map of an unregistered `ModelFile` (`mfnew`, e.g. most of
+//!   `MapDeclaration.validate`) is read from that file directly (P2-06b);
+//!   any other declaration of one is a handle into a copy of its manager
+//!   (P2-08b, `recipe.rs`).
 
 use concerto_core::dcs;
 use concerto_core::error::{ConcertoError, ErrorKind};
@@ -470,7 +474,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
 }
 
 /// Model-manager steps that are also ops (README "Ops").
-const MM_STEP_OPS: [&str; 7] = [
+const MM_STEP_OPS: [&str; 9] = [
     "addCTOModel",
     "addModel",
     "addModelFile",
@@ -478,6 +482,28 @@ const MM_STEP_OPS: [&str; 7] = [
     "validateModelFiles",
     "clearModelFiles",
     "fromAst",
+    "updateModelFile",
+    "deleteModelFile",
+];
+
+/// `ModelManager` queries [`model_manager_query`] dispatches (P2-08b, plus
+/// the pre-existing `getNamespaces`/`getAst`/`getType`/`getMapDeclarations`
+/// handled inline in `exec_handles`); `filter` and `validateModelFile` are
+/// dispatched separately (they need, respectively, a decoded `Arg::Predicate`
+/// and the `Harness`, for the CTO cache, neither of which
+/// `model_manager_query` has).
+const MM_QUERY_OPS: [&str; 11] = [
+    "getModels",
+    "resolveType",
+    "derivesFrom",
+    "isAssignableTo",
+    "getAssignableConcreteTypes",
+    "getAssetDeclarations",
+    "getTransactionDeclarations",
+    "getEventDeclarations",
+    "getParticipantDeclarations",
+    "getConceptDeclarations",
+    "getEnumDeclarations",
 ];
 
 /// The ops whose inputs hold model managers or their handles.
@@ -506,9 +532,17 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
             MM_STEP_OPS.contains(&m)
+                || MM_QUERY_OPS.contains(&m)
                 || matches!(
                     m,
-                    "getNamespaces" | "getAst" | "getType" | "getMapDeclarations"
+                    "getNamespaces"
+                        | "getAst"
+                        | "getType"
+                        | "getMapDeclarations"
+                        | "validateModelFile"
+                        | "filter"
+                        | "resolveMetaModel"
+                        | "updateExternalModels"
                 )
         }
         ("ModelUtil", m) => matches!(
@@ -745,6 +779,24 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     "a model manager op whose receiver is not a model manager recipe".into(),
                 ));
             };
+            if member == "validateModelFile" {
+                return Ok(validate_model_file_op(h, &session, index, &args));
+            }
+            if member == "filter" {
+                let r = &session.pool[index];
+                return Ok(model_manager_filter_op(r, &args));
+            }
+            if member == "updateExternalModels" {
+                // The receiver changes (or is restored): TS records it as
+                // `effects.target`.
+                let r = &mut session.pool[index];
+                let outcome = r.update_external_models(h, &args, inputs.net.as_ref())?;
+                let Dispatch::Ran(mut out) = ran(outcome) else {
+                    unreachable!("`ran` always runs")
+                };
+                out["effects"] = json!({ "target": r.summary() });
+                return Ok(Dispatch::Ran(out));
+            }
             if MM_STEP_OPS.contains(&member) {
                 let r = &mut session.pool[index];
                 return Ok(ran(r.apply(h, member, &args)?));
@@ -2444,16 +2496,21 @@ fn attributed_dispatch(outcome: Value, attributed: Option<Attribution>) -> Dispa
 
 /// The owner of what `Serializer.fromJSON` does after its `$class` lookup
 /// (populating and validating the instance): P3-01b, which owns the
-/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure` stands in
-/// for it (`concerto_core::dcs`'s module doc) with its own error text and
-/// class, not TS's `ValidationException`.
+/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure`
+/// used to stand in for it (`concerto_core::dcs`'s module doc) with its own
+/// error text and class, not TS's `ValidationException`; `dcs::from_json_against`
+/// now runs the real, ported `Serializer::from_json` instead, so this
+/// attribution is no longer reachable from current production output — it
+/// stays only so a fixture recorded against the pre-P3-01b stand-in still
+/// gets attributed rather than misread as a fresh divergence.
 const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
 
 /// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
 /// when it is exactly the error the structural stand-in raises for one of
 /// the command sets it checked, and TS threw the `ValidationException` that
 /// resource validation raises: TS reaches the same point with the ported
-/// `$class` and `getType` steps, then fails there.
+/// `$class` and `getType` steps, then fails there. [`RESOURCE_VALIDATION_OWNER`]'s
+/// doc comment covers why this rarely matches any more.
 fn attribute_stand_in(outcome: &recipe::Outcome, command_sets: &[Value]) -> Option<Attribution> {
     let Err(error) = outcome else {
         return None;
@@ -2534,117 +2591,6 @@ fn extract_options(options: Option<&Value>) -> dcs::ExtractOptions {
     out
 }
 
-/// Whether `BaseModelManager.resolveMetaModel` (not ported: P2-08/P4-08)
-/// would leave every model of `mm` unchanged, so that a DCS op which reads
-/// `getAst(true, …)` in TS is replayed exactly by one that reads the
-/// unresolved AST. `MetaModelUtil.resolveLocalNames` (concerto-metamodel)
-/// builds a name table from each model's imports, which throws for an
-/// import whose namespace or declaration is not loaded, then only rewrites
-/// super types, object/relationship property and map types, decorator type
-/// references and scalar declarations (it adds their `namespace`). So it is
-/// the identity when every import resolves and no user model holds any of
-/// those nodes, nor any model a decorator type reference. The system models'
-/// own super types are rewritten too, but no DCS op's result carries them:
-/// `fromAst` skips those namespaces, and their decorators have no type
-/// references.
-fn resolution_changes_nothing(mm: &ModelManager) -> bool {
-    const MM: &str = "concerto.metamodel@1.0.0.";
-    fn class_of(v: &Value) -> &str {
-        v.get("$class").and_then(Value::as_str).unwrap_or_default()
-    }
-    fn has_type_reference_decorator(node: &Value) -> bool {
-        node.get("decorators")
-            .and_then(Value::as_array)
-            .is_some_and(|ds| {
-                ds.iter().any(|d| {
-                    d.get("arguments")
-                        .and_then(Value::as_array)
-                        .is_some_and(|args| {
-                            args.iter().any(|a| {
-                                class_of(a) == "concerto.metamodel@1.0.0.DecoratorTypeReference"
-                            })
-                        })
-                })
-            })
-    }
-    let rewritten = |node: &Value| {
-        let class = class_of(node).strip_prefix(MM).unwrap_or_default();
-        matches!(
-            class,
-            "ObjectProperty"
-                | "RelationshipProperty"
-                | "ObjectMapKeyType"
-                | "ObjectMapValueType"
-                | "RelationshipMapValueType"
-                | "StringScalar"
-                | "BooleanScalar"
-                | "DateTimeScalar"
-                | "DoubleScalar"
-                | "LongScalar"
-                | "IntegerScalar"
-        ) || node.get("superType").is_some()
-    };
-    for mf in mm.model_files() {
-        let ast = mf.ast();
-        for imp in ast
-            .get("imports")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(target) = imp
-                .get("namespace")
-                .and_then(Value::as_str)
-                .and_then(|ns| mm.model_file(ns))
-            else {
-                return false;
-            };
-            let declared = |name: &Value| {
-                target
-                    .ast()
-                    .get("declarations")
-                    .and_then(Value::as_array)
-                    .is_some_and(|ds| ds.iter().any(|d| d.get("name") == Some(name)))
-            };
-            let resolves = match class_of(imp).strip_prefix(MM) {
-                Some("ImportType") => imp.get("name").is_some_and(declared),
-                Some("ImportTypes") => imp
-                    .get("types")
-                    .and_then(Value::as_array)
-                    .is_some_and(|ts| ts.iter().all(declared)),
-                _ => true,
-            };
-            if !resolves {
-                return false;
-            }
-        }
-        let system = recipe::is_system_namespace(mf.namespace());
-        let mut nodes = vec![ast];
-        for decl in ast
-            .get("declarations")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            nodes.push(decl);
-            nodes.extend(
-                decl.get("properties")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten(),
-            );
-            nodes.extend(decl.get("key"));
-            nodes.extend(decl.get("value"));
-        }
-        for node in nodes {
-            if has_type_reference_decorator(node) || (!system && rewritten(node)) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
 /// `DecoratorExtractor.filterOutDecorators` returns `undefined` when it
 /// strips every decorator (`removeDecoratorsFromModel` with `EXTRACT_ALL`),
 /// and TS assigns that back: the node keeps a `decorators` key whose value
@@ -2702,16 +2648,6 @@ fn restore_undefined_decorators(source: &ModelManager, summary: &mut Value) {
             }
         }
     }
-}
-
-fn blocked_on_resolution(op: &str) -> Fault {
-    Fault::Blocked(
-        format!(
-            "{op} reads getAst(true, …), whose metamodel resolution (resolveMetaModel) is not \
-             ported and would change these models"
-        ),
-        recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
-    )
 }
 
 /// `decorateModels`' `decoratorCommandSet` argument as a list:
@@ -2838,15 +2774,8 @@ pub fn derive_model_manager(
                 "a model manager derived from {op} with no command sets, which returns its input"
             )));
         };
-        if options.disable_metamodel_resolution != Some(true) && !resolution_changes_nothing(&r.mm)
-        {
-            return Err(blocked_on_resolution(op));
-        }
         let mm = dcs::apply_decoration(&r.mm, &prepared, &options).map_err(failed)?;
         return Ok(Some(DerivedModelManager { mm }));
-    }
-    if !resolution_changes_nothing(&r.mm) {
-        return Err(blocked_on_resolution(op));
     }
     let options = extract_options(plain_arg(&args, 1)?.as_ref());
     let result = match member {
@@ -2912,11 +2841,6 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 // TS returns the model manager it was given.
                 Ok(None) => Ok(recipe::summary_of(r.kind, &r.mm)),
                 Ok(Some(prepared)) => {
-                    if options.disable_metamodel_resolution != Some(true)
-                        && !resolution_changes_nothing(&r.mm)
-                    {
-                        return Err(blocked_on_resolution(&op));
-                    }
                     let applied = dcs::apply_decoration(&r.mm, &prepared, &options);
                     // An error that goes away when `fromAst`'s final
                     // `validateModelFiles` is skipped came from model
@@ -2951,9 +2875,6 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             };
             let r = &session.pool[*index];
             let options = extract_options(plain_arg(&args, 1)?.as_ref());
-            if !resolution_changes_nothing(&r.mm) {
-                return Err(blocked_on_resolution(&op));
-            }
             let result = match member {
                 "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
                 "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
@@ -3117,13 +3038,18 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
             let (Some(resolve), Some(include)) = (plain(0), plain(1)) else {
                 return unsupported("getAst with non-plain arguments");
             };
-            if recipe::truthy(&resolve) {
-                return Dispatch::Fault(Fault::Blocked(
-                    "getAst(resolve = true) needs resolveMetaModel, not ported yet".into(),
-                    recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
-                ));
+            let resolve = recipe::truthy(&resolve);
+            let include = recipe::truthy(&include);
+            if !resolve {
+                return ran(Ok(r.ast(include)));
             }
-            ran(Ok(r.ast(recipe::truthy(&include))))
+            from_engine(r.mm.get_ast(true, include), |v| v)
+        }
+        "resolveMetaModel" => {
+            let Some(Arg::Plain(meta_model)) = args.first() else {
+                return unsupported("resolveMetaModel with a metamodel that is not plain data");
+            };
+            from_engine(r.mm.resolve_meta_model(meta_model), |v| v)
         }
         "getType" => {
             let Some(Value::String(fqn)) = plain(0) else {
@@ -3149,7 +3075,168 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
                     .collect();
             ran(Ok(Value::Array(declarations)))
         }
+        // P2-08b: `BaseModelManager.getModels(options)`.
+        "getModels" => {
+            let Some(options) = plain(0) else {
+                return unsupported("getModels with options that are not plain data");
+            };
+            let include_external = options
+                .get("includeExternalModels")
+                .is_none_or(recipe::truthy);
+            let models: Vec<Value> =
+                r.mm.get_models(include_external)
+                    .into_iter()
+                    .map(|(name, content)| {
+                        json!({
+                            "name": name,
+                            "content": content.map_or(Value::Null, Value::String),
+                        })
+                    })
+                    .collect();
+            ran(Ok(Value::Array(models)))
+        }
+        // P2-08b: `BaseModelManager.resolveType(context, type)`.
+        "resolveType" => {
+            let (Some(Value::String(context)), Some(Value::String(type_name))) =
+                (plain(0), plain(1))
+            else {
+                return unsupported("resolveType with an argument that is not a string");
+            };
+            match r.mm.resolve_type(&context, &type_name) {
+                Ok(resolved) => ran(Ok(Value::String(resolved))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
+        }
+        // P2-08b: `BaseModelManager.derivesFrom(fqt1, fqt2)`.
+        "derivesFrom" => {
+            let (Some(Value::String(fqt1)), Some(Value::String(fqt2))) = (plain(0), plain(1))
+            else {
+                return unsupported("derivesFrom with an argument that is not a string");
+            };
+            match r.mm.derives_from(&fqt1, &fqt2) {
+                Ok(result) => ran(Ok(Value::Bool(result))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
+        }
+        // P2-08b: `BaseModelManager.isAssignableTo(fqn, baseFqn)` — not to be
+        // confused with `ModelUtil.isAssignableTo`, dispatched separately
+        // through `model_util_with_context` (module doc).
+        "isAssignableTo" => {
+            let (Some(Value::String(fqn)), Some(Value::String(base_fqn))) = (plain(0), plain(1))
+            else {
+                return unsupported("isAssignableTo with an argument that is not a string");
+            };
+            ran(Ok(Value::Bool(r.mm.is_type_assignable_to(&fqn, &base_fqn))))
+        }
+        // P2-08b: `BaseModelManager.getAssignableConcreteTypes(baseFqn)`.
+        "getAssignableConcreteTypes" => {
+            let Some(Value::String(base_fqn)) = plain(0) else {
+                return unsupported(
+                    "getAssignableConcreteTypes with a base type that is not a string",
+                );
+            };
+            let declarations: Vec<Value> =
+                r.mm.get_assignable_concrete_types(&base_fqn)
+                    .into_iter()
+                    .filter_map(|id| r.declaration_summary(id))
+                    .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
+        // P2-08b: the `BaseModelManager.get<Kind>Declarations()` family.
+        "getAssetDeclarations"
+        | "getTransactionDeclarations"
+        | "getEventDeclarations"
+        | "getParticipantDeclarations"
+        | "getConceptDeclarations"
+        | "getEnumDeclarations" => {
+            let ids = match member {
+                "getAssetDeclarations" => r.mm.get_asset_declarations(),
+                "getTransactionDeclarations" => r.mm.get_transaction_declarations(),
+                "getEventDeclarations" => r.mm.get_event_declarations(),
+                "getParticipantDeclarations" => r.mm.get_participant_declarations(),
+                "getConceptDeclarations" => r.mm.get_concept_declarations(),
+                _ => r.mm.get_enum_declarations(),
+            };
+            let declarations: Vec<Value> = ids
+                .into_iter()
+                .filter_map(|id| r.declaration_summary(id))
+                .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
         _ => unreachable!("`dispatched` lists every query"),
+    }
+}
+
+/// `BaseModelManager.validateModelFile(modelFile, fileName)` (P2-08b): `r`
+/// is `index`'s own pool entry, the receiver `this` — used only for the
+/// string overload's `processFile`; the model-file overload validates
+/// against *that file's own* owning manager instead
+/// ([`owning_manager`]'s doc, shared with `ModelFile.validate`), which TS's
+/// `modelFile.validate()` reaches without ever consulting `this`.
+fn validate_model_file_op(h: &Harness, session: &Session, index: usize, args: &[Arg]) -> Dispatch {
+    match args.first() {
+        Some(Arg::File(file)) => match owning_manager(session, file) {
+            Ok(owner) => {
+                let mf = match ModelFile::from_json_with_definitions(
+                    &file.ast,
+                    file.definitions.clone(),
+                    file.file_name.clone(),
+                ) {
+                    Ok(mf) => mf,
+                    Err(e) => {
+                        return Dispatch::Fault(Fault::Divergence(format!(
+                            "state divergence: a model file that decoded successfully failed to rebuild: {}",
+                            to_oracle_error(&e).message
+                        )));
+                    }
+                };
+                from_engine(owner.mm.validate_detached_model_file(&mf), |()| {
+                    recipe::undefined()
+                })
+            }
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        Some(Arg::Plain(Value::String(cto))) => {
+            let file_name_value = match args.get(1) {
+                None => recipe::undefined(),
+                Some(Arg::Plain(v)) => v.clone(),
+                Some(_) => {
+                    return unsupported(
+                        "validateModelFile with a file name that is not plain data",
+                    );
+                }
+            };
+            let r = &session.pool[index];
+            match r.validate_model_file_text(h, cto, &file_name_value) {
+                Ok(outcome) => ran(outcome),
+                Err(fault) => Dispatch::Fault(fault),
+            }
+        }
+        _ => unsupported("validateModelFile with an argument that is not a string or model file"),
+    }
+}
+
+/// `BaseModelManager.filter(predicate, options)` (P2-08b): `predicate` is
+/// the oracle's `"fqn-in"` encoding, already decoded into
+/// [`Arg::Predicate`]; `options.disableValidation` is the only option this
+/// engine reads (`ModelManager::filter`'s doc).
+fn model_manager_filter_op(r: &Replayed, args: &[Arg]) -> Dispatch {
+    let Some(Arg::Predicate(names)) = args.first() else {
+        return unsupported("filter with a predicate this harness does not decode");
+    };
+    let disable_validation = match args.get(1) {
+        None => false,
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => false,
+        Some(Arg::Plain(v)) => v.get("disableValidation").is_some_and(recipe::truthy),
+        Some(_) => return unsupported("filter with options that are not plain data"),
+    };
+    match r
+        .mm
+        .filter(|fqn| names.iter().any(|n| n == fqn), disable_validation)
+    {
+        Ok(mm) => ran(Ok(recipe::summary_of(recipe::Kind::BaseModelManager, &mm))),
+        Err(e) => ran(Err(to_oracle_error(&e))),
     }
 }
 

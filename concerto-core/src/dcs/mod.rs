@@ -29,18 +29,23 @@
 //! manager is built here the same way, from the metamodel and `DCS_MODEL`
 //! ASTs (`metamodel.json`, `dcsmodel.json`; CTO stays in JS), and
 //! [`validate_command`] runs against it as in TS. Of `Serializer.fromJSON`,
-//! only its first two steps are ported (the `$class` check and `getType`,
-//! with TS's errors): the rest of `Serializer.fromJSON` is not ported yet
-//! (P3-01b). [`validate_dcs_structure`] stands in for the
-//! rest, checking the command set against `DCS_MODEL`'s shape directly
-//! (required/optional fields, the `CommandType`/`MapElement` enums). It
-//! rejects what the schema check exists to reject, but with its own error
-//! text and class, not the `ValidationException` TS raises.
+//! the `$class` check and `getType` are hand-ported here to keep TS's own
+//! errors for a missing or non-string `$class`
+//! ([`from_json_against`]); the rest — the `JSONPopulator` walk and the
+//! `ResourceValidator` pass — now runs as the real, ported
+//! `Serializer::from_json` (P3-01b, `src/instance/serializer.rs`), raising
+//! the same `ValidationException`-style errors TS does.
+//! [`validate_dcs_structure`] used to stand in for that; nothing here still
+//! calls it (kept for its own unit tests).
 //!
 //! **Metamodel resolution.** `decorateModels` and the `extract*` statics read
 //! `modelManager.getAst(true, …)`, which runs `BaseModelManager.resolveMetaModel`
-//! over every model. That is `BaseModelManager`'s (P2-08/P4-08) and is not
-//! ported, so this port reads the unresolved AST; see [`decorate_models`].
+//! over every model; so does this port, through [`ModelManager::get_ast`]
+//! (P2-08b). In rust mode the concerto-wasm bindings are handed ASTs the TS
+//! ModelManager has already resolved (concerto `src/engine/views.ts`), and
+//! Rust then resolves them again here. That second pass is idempotent: every
+//! type reference already carries the namespace it resolves to, so the
+//! result is the same as resolving once, as in ts mode.
 pub mod dcsconverter;
 #[cfg(test)]
 mod decoratormanager_tests;
@@ -1082,16 +1087,43 @@ fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()
     Ok(())
 }
 
+/// `Factory.newId`/the `dayjs.utc()` clock `Serializer.fromJSON` reads while
+/// building and validating a decorator command set instance
+/// ([`from_json_against`]). Neither is reachable in practice: no
+/// declaration in `DCS_MODEL` is system-identified or timestamped, so this
+/// exists only to satisfy [`crate::instance::InstanceEnv`].
+struct DcsInstanceEnv;
+
+impl crate::instance::InstanceEnv for DcsInstanceEnv {
+    fn new_id(&mut self) -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("dcs-unused-id-{n:016x}")
+    }
+
+    fn now_ms(&mut self) -> f64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_millis() as f64)
+    }
+}
+
 /// `serializer.fromJSON(decoratorCommandSet)` over the validation model
 /// manager, as `DecoratorManager.validate`/`migrateAndValidate` call it.
 ///
-/// Its first two steps are ported as `Serializer.fromJSON`
-/// (`src/serializer.ts`) runs them — an instance with no `$class` is
-/// rejected, then `$class` is resolved with `getType` — so an instance of an
-/// unknown type fails as TS fails. The rest, populating and validating a
-/// resource from the JSON, is the rest of `Serializer.fromJSON` (its
-/// `JSONPopulator` walk and validation), not ported yet (P3-01b):
-/// [`validate_dcs_structure`] stands in for it (module doc).
+/// Its first two steps are hand-ported here rather than left to
+/// `Serializer.fromJSON` (`src/serializer.ts`) itself — an instance with no
+/// `$class` is rejected, then a truthy non-string `$class` fails the way
+/// `ModelUtil.getNamespace`'s `fqn.lastIndexOf('.')` does, which
+/// `Serializer::from_json` does not itself reproduce — so an instance of an
+/// unknown type fails as TS fails ([`get_type`], TS's own `getType` call).
+/// The rest, populating and validating a resource from the JSON, now runs
+/// as the rest of `Serializer.fromJSON` does: its `JSONPopulator` walk and
+/// `ResourceValidator` pass, ported in full by P3-01b
+/// (`src/instance/serializer.rs`). [`validate_dcs_structure`] used to stand
+/// in for that; it is kept only for its own unit tests below, and is no
+/// longer reachable from here.
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
     let class = js_read(Some(instance), "$class")?;
     let class = match class {
@@ -1115,7 +1147,13 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
     };
     get_type(model_manager, class)?;
-    validate_dcs_structure(instance)
+    let serializer = crate::instance::Serializer::new(true, true, None)
+        .expect("Serializer::new with a truthy factory and model manager cannot fail");
+    let json_instance = crate::instance::JsValue::from_json(instance);
+    let mut env = DcsInstanceEnv;
+    serializer
+        .from_json(model_manager, &json_instance, None, &mut env)
+        .map(|_| ())
 }
 
 /// `BaseModelManager.getType(qualifiedName)` (`src/basemodelmanager.ts`),
@@ -1276,14 +1314,11 @@ pub struct DecorateOptions {
 /// unvalidated as they were, rather than `model_manager` itself (TS returns
 /// the same instance; a caller that only reads it back cannot tell).
 ///
-/// **Metamodel resolution is not ported.** Unless
-/// `disableMetamodelResolution`, TS decorates `getAst(true, true)`, whose
-/// every model `BaseModelManager.resolveMetaModel` has run over (adding the
-/// resolved `namespace` to each type reference, super type and scalar); this
-/// port decorates `getAst(false, true)` either way, since `resolveMetaModel`
-/// belongs to `BaseModelManager` (P2-08/P4-08). The two agree whenever
-/// resolution changes nothing, and otherwise differ only in those resolved
-/// `namespace` fields.
+/// Unless `disableMetamodelResolution` is truthy, the models decorated are
+/// `getAst(true, true)`'s, every one run through
+/// `BaseModelManager.resolveMetaModel` ([`ModelManager::get_ast`]), which
+/// adds the resolved `namespace` to each type reference, super type and
+/// scalar, and fails as TS does for an import that does not resolve.
 pub fn decorate_models(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
@@ -1388,10 +1423,9 @@ pub fn apply_decoration(
     prepared: &PreparedDecoration,
     options: &DecorateOptions,
 ) -> Result<ModelManager> {
-    let mut models: Vec<Value> = model_manager
-        .model_files()
-        .map(|mf| mf.ast().clone())
-        .collect();
+    // `options?.disableMetamodelResolution ? getAst(false, true) : getAst(true, true)`.
+    let resolve = options.disable_metamodel_resolution != Some(true);
+    let mut models = models_of(model_manager.get_ast(resolve, true)?);
     for model in models.iter_mut() {
         decorate_model(model, &prepared.decorator_imports, &prepared.maps)?;
     }
@@ -1659,25 +1693,15 @@ impl Default for ExtractOptions {
     }
 }
 
-/// `modelManager.getAst(true, include_concerto_namespaces)`, less the
-/// metamodel resolution (see [`decorate_models`]' doc comment: TS resolves
-/// here too, and `resolveMetaModel` belongs to `BaseModelManager`).
-fn source_ast(model_manager: &ModelManager, include_concerto_namespaces: bool) -> Value {
-    let models: Vec<Value> = model_manager
-        .model_files()
-        .filter(|mf| {
-            include_concerto_namespaces
-                || !crate::model_manager::EXCLUDE_NS.contains(&mf.namespace())
-        })
-        .map(|mf| mf.ast().clone())
-        .collect();
-    let mut m = Map::new();
-    m.insert(
-        "$class".to_string(),
-        Value::String(format!("{META_MODEL_NAMESPACE}.Models")),
-    );
-    m.insert("models".to_string(), Value::Array(models));
-    Value::Object(m)
+/// The `models` of a [`ModelManager::get_ast`] envelope.
+fn models_of(ast: Value) -> Vec<Value> {
+    match ast {
+        Value::Object(mut m) => match m.remove("models") {
+            Some(Value::Array(models)) => models,
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }
 
 /// `DecoratorManager.extractDecorators(modelManager, options)`
@@ -1691,7 +1715,7 @@ pub fn extract_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        source_ast(model_manager, true),
+        model_manager.get_ast(true, true)?,
         extractor::Action::ExtractAll,
     )
     .extract()
@@ -1709,7 +1733,7 @@ pub fn extract_vocabularies(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        source_ast(model_manager, true),
+        model_manager.get_ast(true, true)?,
         extractor::Action::ExtractVocab,
     )
     .extract()
@@ -1727,7 +1751,7 @@ pub fn extract_non_vocab_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        source_ast(model_manager, false),
+        model_manager.get_ast(true, false)?,
         extractor::Action::ExtractNonVocab,
     )
     .extract()

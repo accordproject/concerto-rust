@@ -17,7 +17,7 @@
 //! decorators from the decorated model file's AST, which is what those
 //! elements are built from.
 //!
-//! Not ported, from the `#extractDecorators` group (21 `it`s, 18 ported):
+//! Not ported, from the `#extractDecorators` group (21 `it`s, 19 ported):
 //!
 //! - "should ensure that extraction and re-application of decorators and
 //!   vocabs from a model is an identity operation", and the same "including
@@ -25,11 +25,6 @@
 //!   concerto-vocabulary's `VocabularyManager.generateDecoratorCommands`,
 //!   which has no Rust port, and compare the models as CTO text printed by
 //!   concerto-cto's `Printer.toCTO`, which stays in JS.
-//! - "should preserve type reference arguments when extracting decorators":
-//!   its expected type reference carries `namespace: 'test@1.0.0'`, which
-//!   only `BaseModelManager.resolveMetaModel` adds (`extractDecorators`
-//!   reads `getAst(true, true)`); metamodel resolution is P2-08/P4-08's, not
-//!   ported yet (`super::decorate_models`' doc comment).
 use serde_json::{Value, json};
 use yaml_rust2::{Yaml, YamlLoader};
 
@@ -416,6 +411,65 @@ fn extracts_non_vocab_decorators_from_a_model() {
     ));
     assert_eq!(Value::Array(dcs.clone()), expected);
     assert!(Value::Array(dcs).to_string().contains("term_desc"));
+}
+
+// "should preserve type reference arguments when extracting decorators"
+// (the type references carry the `namespace` only
+// `BaseModelManager.resolveMetaModel` adds: `extractDecorators` reads
+// `getAst(true, true)`)
+#[test]
+fn preserves_type_reference_arguments_when_extracting_decorators() {
+    let model_manager = model_manager_with(
+        include_str!("testdata/decoratorcommands/extract-test-type-reference.ast.json"),
+        "test.cto",
+    );
+    let resp = extract_decorators(&model_manager, &remove_decorators_en()).unwrap();
+    let command_set = resp
+        .decorator_command_set
+        .iter()
+        .find(|dcs| dcs.get("name").and_then(Value::as_str) == Some("test"))
+        .unwrap()
+        .clone();
+    let args: Vec<Value> = command_set["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|command| command["decorator"]["arguments"].clone())
+        .collect();
+    let type_ref = |is_array: bool| {
+        json!({
+            "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
+            "type": {
+                "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                "name": "Address",
+                "namespace": "test@1.0.0"
+            },
+            "isArray": is_array
+        })
+    };
+    assert_eq!(
+        args,
+        vec![
+            json!([type_ref(false)]),
+            json!([
+                type_ref(true),
+                { "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "text" }
+            ]),
+        ]
+    );
+    validate(&command_set, None).unwrap();
+    let decorated = decorate_models(
+        &resp.model_manager,
+        &mut [command_set],
+        &mut DecorateOptions::default(),
+    )
+    .unwrap();
+    let person = decorated.get_declaration("test@1.0.0.Person").unwrap();
+    let form = person.get_decorator("Form").unwrap();
+    assert!(matches!(
+        form.arguments().first(),
+        Some(crate::introspect::DecoratorArgument::TypeReference(t)) if t.name == "Address"
+    ));
 }
 
 // "should correctly quote all YAML hazard categories and round-trip values intact"

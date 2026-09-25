@@ -84,6 +84,10 @@ pub enum ErrorKind {
     Error,
     /// A JS `TypeError(message)` the V8 engine raises in the TS code.
     JsTypeError,
+    /// A JS `RangeError(message)` the V8 engine raises in the TS code: a
+    /// stack overflow at a TS recursion point that has no cycle check
+    /// (PORTING.md 2.5), always `engine-rangeerror-maxcallstack`.
+    JsRangeError,
     /// `MetamodelException(message)` (`src/metamodelexception.ts`), thrown by
     /// `BaseModelManager.validateAst` (task P3-04,
     /// `concerto_core::instance::metamodel`).
@@ -101,6 +105,7 @@ impl ErrorKind {
             Self::Validation => "ValidationException",
             Self::Error => "Error",
             Self::JsTypeError => "TypeError",
+            Self::JsRangeError => "RangeError",
             Self::Metamodel => "MetamodelException",
         }
     }
@@ -449,6 +454,7 @@ impl ContractError {
             | ErrorKind::Validation
             | ErrorKind::Error
             | ErrorKind::JsTypeError
+            | ErrorKind::JsRangeError
             // TS: `MetamodelException` (src/metamodelexception.ts) is a bare
             // `BaseException(message)`: no suffix, no location.
             | ErrorKind::Metamodel => message,
@@ -471,7 +477,7 @@ impl ContractError {
             ErrorKind::Validator | ErrorKind::Validation | ErrorKind::Metamodel => {
                 Some("@accordproject/concerto-util")
             }
-            ErrorKind::Error | ErrorKind::JsTypeError => None,
+            ErrorKind::Error | ErrorKind::JsTypeError | ErrorKind::JsRangeError => None,
         }
     }
 }
@@ -805,6 +811,18 @@ mod tests {
     }
 
     #[test]
+    fn golden_engine_rangeerror_maxcallstack() {
+        let err = ContractError::new(
+            ErrorKind::JsRangeError,
+            "engine-rangeerror-maxcallstack",
+            Vec::new(),
+        );
+        assert_eq!(err.message(), "Maximum call stack size exceeded");
+        assert_eq!(err.kind.ts_class(), "RangeError");
+        assert_eq!(err.component(), None);
+    }
+
+    #[test]
     fn golden_engine_typeerror_notafunction() {
         assert_eq!(
             contract(
@@ -1066,6 +1084,90 @@ mod tests {
             )
             .message(),
             "No type \"Foo\" in namespace \"org.acme@1.0.0\" for \"resolving type\"."
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_updatemodelfile_notfound() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-updatemodelfile-notfound",
+                &[("namespace", "org.acme@1.0.0")]
+            )
+            .message(),
+            "Model file for namespace org.acme@1.0.0 not found"
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_deletemodelfile_notfound() {
+        assert_eq!(
+            contract("basemodelmanager-deletemodelfile-notfound", &[]).message(),
+            "Model file does not exist"
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_throwalreadyexists() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-throwalreadyexists",
+                &[
+                    ("namespace", "org.acme@1.0.0"),
+                    ("prefix", " specified in file new.cto"),
+                    ("postfix", " in file old.cto")
+                ]
+            )
+            .message(),
+            "Namespace org.acme@1.0.0 specified in file new.cto is already declared in file old.cto"
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_throwalreadyexists_without_names() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-throwalreadyexists",
+                &[
+                    ("namespace", "org.acme@1.0.0"),
+                    ("prefix", ""),
+                    ("postfix", "")
+                ]
+            )
+            .message(),
+            "Namespace org.acme@1.0.0 is already declared"
+        );
+    }
+
+    #[test]
+    fn golden_metamodelutil_createnametable_declarationnotfound() {
+        assert_eq!(
+            contract(
+                "metamodelutil-createnametable-declarationnotfound",
+                &[("name", "Foo"), ("namespace", "org.acme@1.0.0")]
+            )
+            .message(),
+            "Declaration Foo in namespace org.acme@1.0.0 not found"
+        );
+    }
+
+    #[test]
+    fn golden_metamodelutil_resolvename_notfound() {
+        assert_eq!(
+            contract("metamodelutil-resolvename-notfound", &[("name", "Foo")]).message(),
+            "Name Foo not found"
+        );
+    }
+
+    #[test]
+    fn golden_metamodelutil_resolvetypenames_unrecognizedclass() {
+        assert_eq!(
+            contract(
+                "metamodelutil-resolvetypenames-unrecognizedclass",
+                &[("class", "undefined")]
+            )
+            .message(),
+            "Unrecognized $class undefined"
         );
     }
 

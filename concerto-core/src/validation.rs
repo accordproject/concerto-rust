@@ -14,14 +14,10 @@
 //! PORTING.md section 2.3), so every error here carries
 //! `ConcertoError::Contract` with `ErrorKind::IllegalModel` — built through
 //! [`ContractError::pre_port`] (`failed`, below) until a P2 task ports the
-//! check's exact TS wording. A model that cannot be walked at all, such as
-//! one whose inheritance is circular, surfaces the
-//! [`ConcertoError::IllegalModel`] raised while resolving it. Note that TS
-//! itself has no cycle check on this path and instead recurses until V8
-//! overflows the stack (`RangeError`, PORTING.md section 2.5): this
-//! pre-port cycle check is not yet a faithful port, and section 2.5 assigns
-//! fixing it to the task that ports the recursion point it stands in for.
-//! A model that validates cleanly returns `Ok(())`.
+//! check's exact TS wording. A model whose inheritance is circular surfaces
+//! the `RangeError` TS's recursion overflows with (`ErrorKind::JsRangeError`,
+//! PORTING.md section 2.5, DV-013), raised by the model manager's
+//! super-type walk. A model that validates cleanly returns `Ok(())`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -2536,7 +2532,7 @@ mod tests {
     fn an_undeclared_map_value_type_is_a_type_error() {
         // TS: `MapValueType.validate` reads an undeclared type's `null` from
         // `this.modelFile.getType(...)` straight into `decl.isMapDeclaration`
-        // with no null guard on the property read (DV-013, mapvaluetype.ts):
+        // with no null guard on the property read (DV-014, mapvaluetype.ts):
         // a `TypeError`, not the `IllegalModelException` this port raised
         // before that fix.
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });

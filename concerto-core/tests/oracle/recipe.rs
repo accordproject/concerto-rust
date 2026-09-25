@@ -27,7 +27,10 @@
 //! | `validateModelFiles` | `validate_models` |
 //! | `clearModelFiles` | a fresh `ModelManager::new()` (TS: `modelFiles = {}`, then the decorator and root models again) |
 //! | `fromAst` | `clearModelFiles`, `add_model` per non-system model, then `validate_models` unless disabled |
-//! | `updateModelFile`, `deleteModelFile`, `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
+//! | `updateModelFile` | [`ModelManager::update_model_file`] (P2-08b) |
+//! | `deleteModelFile` | [`ModelManager::delete_model_file`] (P2-08b) |
+//! | `updateExternalModels` (an op only) | [`ModelManager::update_external_models`] over the recorded download (P2-08b, [`Replayed::update_external_models`]) |
+//! | `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
 //!
 //! **Validation on add.** TS `addModelFile` validates *only the new file*
 //! (`modelFile.validate()`) before registering it, so a file added earlier
@@ -54,7 +57,10 @@
 //! with `ModelFile::from_json` (TS `new ModelFile(mm, ast, definitions,
 //! fileName)`), a failure being "input construction failed" (a failure).
 //! `declref` and `propref` become [`Node`] handles by position, checked by
-//! name as `codec.js` checks them. `decoref` (P2-07) becomes a
+//! name as `codec.js` checks them; a `declref` into an `mfnew` (other than
+//! a map, P2-06b's `Arg::DeclDetached`) is a handle into a copy of its
+//! manager with that file registered in place of its namespace's, unvalidated
+//! (P2-08b, `Session::detached_owner`). `decoref` (P2-07) becomes a
 //! [`DecoParent`] plus its position, resolved against its parent's processed
 //! decorators at dispatch time (`ops.rs`); its `parent` must itself be a
 //! `declref`, `propref` or `mfref`. A map key/value `propref` (one with a
@@ -62,9 +68,12 @@
 //! directly via `new Cls(modelFile, ast)`, never added to `modelFile`) is
 //! rebuilt with `ScalarDeclaration::build_standalone` when `cls` is
 //! `ScalarDeclaration` (P2-05); any other `cls` is `unsupported`, for its own
-//! owner. `validatorref`, `factory`, `serializer`,
-//! `introspector`, `predicate` and `decoratorfactory` have no Rust
-//! counterpart yet: `unsupported`. `typed` (P3-01 review, task
+//! owner. `validatorref`, `factory`, `serializer` and `introspector` have no
+//! Rust counterpart yet: `unsupported`. `predicate` decodes into
+//! [`Arg::Predicate`] for its one corpus `kind`, `"fqn-in"` (P2-08b,
+//! `BaseModelManager.filter`); any other `kind` is `unsupported`.
+//! `decoratorfactory` has no Rust counterpart yet: `unsupported`. `typed`
+//! (P3-01 review, task
 //! `accordproject-concerto-rust#56` follow-up) is decoded directly into
 //! [`DecodedInstance`] by [`Session::typed`], from the node's own `fields`
 //! object rather than a `Factory`/`JSONPopulator` replay — see
@@ -79,7 +88,9 @@ use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
 };
-use concerto_core::model_manager::{DeclId, ModelFileId, ModelManager, Node, PropId};
+use concerto_core::model_manager::{
+    DeclId, ModelFileId, ModelFileSource, ModelManager, Node, PropId,
+};
 use concerto_core::model_util;
 use serde_json::{Value, json};
 
@@ -138,7 +149,6 @@ fn member_of_kind(kind: &str) -> Option<&'static str> {
         "factory" => "Factory.new",
         "serializer" => "Serializer.new",
         "introspector" => "Introspector.new",
-        "predicate" => "BaseModelManager.filter",
         "decoratorfactory" => "BaseModelManager.addDecoratorFactory",
         _ => return None,
     })
@@ -209,11 +219,15 @@ impl Kind {
 /// manager without it (restoring after a failed add), and the JS nullish
 /// spelling of its file name, which the Rust engine's `Option<String>`
 /// does not keep (`getName()` returns `undefined` or `null` as passed).
+/// `definitions` (P2-08b) is the CTO source text, when this entry's own
+/// load kept one (`ModelManager::add_model_with_definitions`'s doc); a
+/// rebuild threads it back through so it survives a rollback.
 #[derive(Debug, Clone)]
 struct Entry {
     ast: Value,
     file_name: Option<String>,
     nullish_name: Value,
+    definitions: Option<String>,
 }
 
 /// A replayed model manager.
@@ -272,9 +286,10 @@ pub enum Arg {
     /// A `MapDeclaration` reached from a `ModelFile` built directly
     /// (`mfnew`) and never registered: `declref`'s `mf` is `mfnew` rather
     /// than `mfref`, so there is no arena `DeclId` for it (P2-06b, closing
-    /// "ModelFile.new" for `MapDeclaration`/`MapKeyType`/`MapValueType` —
-    /// every other declaration kind on an `mfnew` receiver is still
-    /// unsupported, `declref`'s doc comment). Carries the built `ModelFile`,
+    /// "ModelFile.new" for `MapDeclaration`/`MapKeyType`/`MapValueType`;
+    /// every other declaration kind on an `mfnew` receiver gets an
+    /// [`Arg::Decl`] into a copy of its manager instead, P2-08b,
+    /// `Session::detached_owner`). Carries the built `ModelFile`,
     /// its position in [`concerto_core::introspect::ModelFile::declarations`],
     /// and the owning model manager's pool index (for the cross-file
     /// resolution `ModelManager::validate_detached_declaration` needs).
@@ -311,6 +326,13 @@ pub enum Arg {
     Deco(usize, DecoParent, usize),
     /// An array that holds encoded values (a list of model files).
     List(Vec<Arg>),
+    /// A `BaseModelManager.filter` predicate (`"predicate"`, README "Value
+    /// encoding"), decoded from the oracle's own `{kind: "fqn-in", names}`
+    /// encoding into the fully-qualified names it keeps (P2-08b): every
+    /// `predicate` fixture in the canonical corpus uses this one `kind`, so
+    /// no other shape is decoded — see [`Session::decode`]'s `"predicate"`
+    /// arm.
+    Predicate(Vec<String>),
     /// A `Resource`, `ValidatedResource` or `Relationship` (`"typed"`,
     /// README "Value encoding"), decoded into [`DecodedInstance`]: the
     /// model manager it belongs to (pool index) plus the instance itself.
@@ -492,6 +514,22 @@ impl<'h> Session<'h> {
             "declref" => self.declref(v).map(DeclTarget::into_arg),
             "propref" if v.get("part").and_then(Value::as_str).is_some() => self.map_part(v),
             "declnew" => self.declnew(v, self_mm),
+            "predicate" => match v.get("kind").and_then(Value::as_str) {
+                Some("fqn-in") => {
+                    let names = v
+                        .get("names")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect();
+                    Ok(Arg::Predicate(names))
+                }
+                other => Err(Fault::Unsupported(format!(
+                    "a predicate of kind {other:?}, which BaseModelManager.filter's oracle wiring does not decode"
+                ))),
+            },
             "typed" => self.typed(v),
             "propref" => {
                 let (mm, id) = self.propref(v)?;
@@ -734,10 +772,13 @@ impl<'h> Session<'h> {
         let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
         let index = usize::try_from(index).unwrap_or(usize::MAX);
 
-        if mf.get(M).and_then(Value::as_str) != Some("mfref") {
-            // Only a `MapDeclaration` on an unregistered file is wired yet
-            // (P2-06b): every other declaration kind built this way still
-            // has no Rust handle, owned by `ModelFile.new`.
+        let registered_as = if mf.get(M).and_then(Value::as_str) == Some("mfref") {
+            None
+        } else {
+            // A `MapDeclaration` on an unregistered file (`mfnew`) is read
+            // straight out of its `ModelFile` (P2-06b); every other kind
+            // gets a handle in a copy of its manager (P2-08b,
+            // `detached_owner`).
             let is_map = mf
                 .get("ast")
                 .and_then(|ast| ast.get("declarations"))
@@ -746,35 +787,23 @@ impl<'h> Session<'h> {
                 .and_then(|d| d.get("$class"))
                 .and_then(Value::as_str)
                 .is_some_and(|c| c.ends_with(".MapDeclaration"));
-            if !is_map {
-                return Err(blocked(
-                    "a declaration of a model file that is not registered (mfnew) has no Rust handle",
-                    "ModelFile.new",
-                ));
+            if is_map {
+                return self.detached_map(mf, index, name);
             }
-            let file_arg = self.file(mf, None)?;
-            let built = ModelFile::from_json_with_definitions(
-                &file_arg.ast,
-                file_arg.definitions.clone(),
-                file_arg.file_name.clone(),
-            )
-            .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
-            if built.declarations().get(index).map(Named::name) != Some(name) {
-                return Err(Fault::Divergence(
-                    "state divergence: declaration not found in an unregistered ModelFile".into(),
-                ));
+            Some(self.detached_owner(mf)?)
+        };
+        let (owner, ns) = match registered_as {
+            Some(owner_and_ns) => owner_and_ns,
+            None => {
+                let owner = self.mm_index(
+                    mf.get("mm")
+                        .ok_or_else(|| Fault::Harness("mfref without mm".into()))?,
+                )?;
+                let ns = mf.get("ns").and_then(Value::as_str).unwrap_or_default();
+                (owner, ns.to_string())
             }
-            return Ok(DeclTarget::Detached {
-                mm_index: file_arg.mm_index,
-                file: built,
-                index,
-            });
-        }
-        let owner = self.mm_index(
-            mf.get("mm")
-                .ok_or_else(|| Fault::Harness("mfref without mm".into()))?,
-        )?;
-        let ns = mf.get("ns").and_then(Value::as_str).unwrap_or_default();
+        };
+        let ns = ns.as_str();
         let mm = &self.pool[owner].mm;
         let not_found =
             || Fault::Divergence(format!("state divergence: declaration {name} not found"));
@@ -788,6 +817,63 @@ impl<'h> Session<'h> {
             Some(d) if d.name() == name => Ok(DeclTarget::Registered(owner, id)),
             _ => Err(not_found()),
         }
+    }
+
+    /// P2-06b's `MapDeclaration` of an `mfnew` model file, read directly out
+    /// of the built `ModelFile` ([`DeclTarget::Detached`]).
+    fn detached_map(&mut self, mf: &Value, index: usize, name: &str) -> Faulty<DeclTarget> {
+        let file_arg = self.file(mf, None)?;
+        let built = ModelFile::from_json_with_definitions(
+            &file_arg.ast,
+            file_arg.definitions.clone(),
+            file_arg.file_name.clone(),
+        )
+        .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
+        if built.declarations().get(index).map(Named::name) != Some(name) {
+            return Err(Fault::Divergence(
+                "state divergence: declaration not found in an unregistered ModelFile".into(),
+            ));
+        }
+        Ok(DeclTarget::Detached {
+            mm_index: file_arg.mm_index,
+            file: built,
+            index,
+        })
+    }
+
+    /// The Rust owner of a non-map declaration of an `mfnew` model file:
+    /// TS's `new ModelFile(mm, ast, …)`, never registered with `mm`. The
+    /// arena hands out handles only for a registered file, so the file is
+    /// registered, unvalidated, into a copy of `mm` pushed onto the pool
+    /// ([`Replayed::with_detached_file`]); `mm` itself stays as TS leaves
+    /// it. TS resolves such a file's own names through the file and its
+    /// imports through `mm`, which the copy answers the same way. An
+    /// `mfnew` inside a step, or of a system namespace, stays unsupported.
+    fn detached_owner(&mut self, mf: &Value) -> Faulty<(usize, String)> {
+        if mf.get("mm").and_then(|m| m.get(M)).and_then(Value::as_str) == Some("self") {
+            return Err(blocked(
+                "a declaration of an unregistered model file (mfnew) inside a model manager step",
+                "ModelFile.new",
+            ));
+        }
+        let file = self.file(mf, None)?;
+        let owner = file
+            .mm_index
+            .ok_or_else(|| Fault::Harness("an mfnew without its model manager".into()))?;
+        let ns = file
+            .ast
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(copy) = self.pool[owner].with_detached_file(&file)? else {
+            return Err(blocked(
+                "a declaration of an unregistered model file (mfnew) of a system namespace",
+                "ModelFile.new",
+            ));
+        };
+        self.pool.push(copy);
+        Ok((self.pool.len() - 1, ns))
     }
 
     /// A `MapKeyType`/`MapValueType` target: `{decl: <declref>, part: "key" |
@@ -927,6 +1013,21 @@ impl<'h> Session<'h> {
                     }
                 };
                 Ok((owner, DecoParent::Decl(id)))
+            }
+            // A map's key or value (`{decl, part}`, P2-06): the engine's
+            // `MapDeclaration` does not read its key's or value's decorators
+            // (its doc comment), which `MapKeyType.process`/
+            // `MapValueType.process` do in TS.
+            Some("propref") if v.get("part").is_some() => {
+                let member = match v.get("part").and_then(Value::as_str) {
+                    Some("value") => "MapValueType.process",
+                    _ => "MapKeyType.process",
+                };
+                Err(blocked(
+                    "the decorators of a map's key or value, which the Rust MapDeclaration does \
+                     not read",
+                    member,
+                ))
             }
             Some("propref") => {
                 let (owner, id) = self.propref(v)?;
@@ -1289,6 +1390,7 @@ impl Replayed {
                 ast: mf.ast().clone(),
                 file_name: mf.file_name().map(str::to_string),
                 nullish_name: undefined(),
+                definitions: mf.definitions().map(str::to_string),
             })
             .collect();
         Self {
@@ -1321,16 +1423,57 @@ impl Replayed {
     fn rebuild(&mut self) -> Faulty<()> {
         let mut mm = Self::fresh_manager(self.allow_reserved_system_type_names)?;
         for entry in &self.files {
-            mm.add_model(&entry.ast, entry.file_name.clone())
-                .map_err(|e| {
-                    Fault::Harness(format!(
-                        "a model file that loaded before failed to reload: {}",
-                        to_oracle_error(&e).message
-                    ))
-                })?;
+            mm.add_model_with_definitions(
+                &entry.ast,
+                entry.definitions.clone(),
+                entry.file_name.clone(),
+            )
+            .map_err(|e| {
+                Fault::Harness(format!(
+                    "a model file that loaded before failed to reload: {}",
+                    to_oracle_error(&e).message
+                ))
+            })?;
         }
         self.mm = mm;
         Ok(())
+    }
+
+    /// A copy of this manager with `file` (an `mfnew`,
+    /// `Session::detached_owner`) registered without validation: in place of
+    /// the file this manager has under the same namespace, if any (TS
+    /// resolves the detached file's own names through the file itself, never
+    /// through the registered one), and last otherwise. `None` for a system
+    /// namespace, which the copy cannot re-register.
+    fn with_detached_file(&self, file: &FileArg) -> Faulty<Option<Self>> {
+        let ns = file.ast.get("namespace").and_then(Value::as_str);
+        if ns.is_none_or(is_system_namespace) {
+            return Ok(None);
+        }
+        let mut copy = Self {
+            kind: self.kind,
+            options: self.options.clone(),
+            skip_location_nodes: self.skip_location_nodes.clone(),
+            allow_reserved_system_type_names: self.allow_reserved_system_type_names,
+            files: self.files.clone(),
+            mm: Self::fresh_manager(self.allow_reserved_system_type_names)?,
+        };
+        let entry = Entry {
+            ast: file.ast.clone(),
+            file_name: file.file_name.clone(),
+            nullish_name: file.nullish_name.clone(),
+            definitions: file.definitions.clone(),
+        };
+        match copy
+            .files
+            .iter_mut()
+            .find(|e| e.ast.get("namespace").and_then(Value::as_str) == ns)
+        {
+            Some(existing) => *existing = entry,
+            None => copy.files.push(entry),
+        }
+        copy.rebuild()?;
+        Ok(Some(copy))
     }
 
     /// `mm_index` is left `None`: this method doesn't know its own index in
@@ -1465,13 +1608,18 @@ impl Replayed {
             .get("namespace")
             .and_then(Value::as_str)
             .map(str::to_string);
-        if let Err(e) = self.mm.add_model(&file.ast, file.file_name.clone()) {
+        if let Err(e) = self.mm.add_model_with_definitions(
+            &file.ast,
+            file.definitions.clone(),
+            file.file_name.clone(),
+        ) {
             return Ok(Err(to_oracle_error(&e)));
         }
         self.files.push(Entry {
             ast: file.ast,
             file_name: file.file_name,
             nullish_name: file.nullish_name,
+            definitions: file.definitions,
         });
         let ns = ns.unwrap_or_default();
         if validate {
@@ -1492,6 +1640,253 @@ impl Replayed {
             }
         }
         Ok(Ok(self.model_file_summary(&ns).unwrap_or_else(undefined)))
+    }
+
+    /// TS `BaseModelManager.validateModelFile(modelFile, fileName)`'s string
+    /// overload (P2-08b): `processFile` then `new ModelFile(this, ast,
+    /// modelFile, fileName).validate()`, replayed against `self` without
+    /// registering the file — [`ModelManager::validate_detached_model_file`]
+    /// is exactly this (module doc on `ops.rs`'s `ModelFile.validate` wiring,
+    /// which shares it). CTO parsing goes through the P1-07a cache
+    /// (`process_file`), never a Rust parser (module doc, top of file).
+    pub fn validate_model_file_text(
+        &self,
+        h: &Harness,
+        cto: &str,
+        file_name: &Value,
+    ) -> Faulty<Outcome> {
+        let ast = match self.process_file(h, &Value::String(cto.to_string()), file_name)? {
+            Ok(ast) => ast,
+            Err(parse_error) => return Ok(Err(parse_error)),
+        };
+        let file_name_str = match file_name {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        };
+        let mf = ModelFile::from_json_with_definitions(&ast, Some(cto.to_string()), file_name_str)
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "state divergence: a model file the CTO cache accepted failed to build: {}",
+                    to_oracle_error(&e).message
+                ))
+            })?;
+        Ok(match self.mm.validate_detached_model_file(&mf) {
+            Ok(()) => Ok(undefined()),
+            Err(e) => Err(to_oracle_error(&e)),
+        })
+    }
+
+    /// TS `updateModelFile(modelFile, fileName, disableValidation)`'s
+    /// registration (P2-08b), for an already-parsed `file`: rebuilds it as a
+    /// [`ModelFile`] the same way [`Session::decode`]'s `mfnew`/`mfref`
+    /// already do, then delegates to
+    /// [`ModelManager::update_model_file`]. On success, `self.files` is kept
+    /// in sync with the replacement (so a later rollback in the same
+    /// fixture, `rebuild`, still has it); on error, neither `self.mm` nor
+    /// `self.files` changes, matching TS's own catch leaving `this`
+    /// unchanged.
+    fn update_file(&mut self, file: FileArg, validate: bool) -> Faulty<Outcome> {
+        let mf = match ModelFile::from_json_with_definitions(
+            &file.ast,
+            file.definitions.clone(),
+            file.file_name.clone(),
+        ) {
+            Ok(mf) => mf,
+            Err(e) => return Ok(Err(to_oracle_error(&e))),
+        };
+        let ns = mf.namespace().to_string();
+        match self.mm.update_model_file(mf, validate) {
+            Ok(updated) => {
+                self.mm = updated;
+                if let Some(entry) = self
+                    .files
+                    .iter_mut()
+                    .find(|e| e.ast.get("namespace").and_then(Value::as_str) == Some(ns.as_str()))
+                {
+                    *entry = Entry {
+                        ast: file.ast,
+                        file_name: file.file_name,
+                        nullish_name: file.nullish_name,
+                        definitions: file.definitions,
+                    };
+                }
+                Ok(Ok(self.model_file_summary(&ns).unwrap_or_else(undefined)))
+            }
+            Err(e) => Ok(Err(to_oracle_error(&e))),
+        }
+    }
+
+    /// TS `deleteModelFile(namespace)` (P2-08b), delegating to
+    /// [`ModelManager::delete_model_file`] and keeping `self.files` in sync
+    /// with the survivors on success.
+    fn delete_file(&mut self, namespace: &str) -> Faulty<Outcome> {
+        match self.mm.delete_model_file(namespace) {
+            Ok(updated) => {
+                self.mm = updated;
+                self.files
+                    .retain(|e| e.ast.get("namespace").and_then(Value::as_str) != Some(namespace));
+                Ok(Ok(undefined()))
+            }
+            Err(e) => Ok(Err(to_oracle_error(&e))),
+        }
+    }
+
+    /// TS `BaseModelManager.updateExternalModels(options, fileDownloader)`
+    /// (P2-08b). The ledger makes it HYBRID: the download stays in JS, the
+    /// rest is [`ModelManager::update_external_models`]. The fixtures record
+    /// the download's network responses (`inputs.net`, URL -> `{status,
+    /// body}`), not the ASTs it produced, so the JS half is replayed here as
+    /// the default downloader runs it over those responses —
+    /// `FileDownloader.downloadExternalDependencies` with a
+    /// `DefaultFileLoader` (concerto-util) — only as far as the corpus
+    /// exercises it; anything past that is `unsupported`:
+    ///
+    /// - the jobs are every `MetaModelUtil.getExternalImports` URI of every
+    ///   `getModelFiles()` model, in order (more than one is `unsupported`:
+    ///   `PromisePool` returns results in completion order);
+    /// - `github://x` is fetched as `https://raw.githubusercontent.com/x`,
+    ///   `http(s)://` as itself, and any other scheme fails
+    ///   `CompositeFileLoader.load`; a non-2xx response fails
+    ///   `HTTPFileLoader.load`; either error is rethrown by
+    ///   `handleJobError` as `Failed to load model file. Job: <url> Details:
+    ///   Error: <message>`;
+    /// - a 2xx body is `processFile('@' + host + path with / as ., body)`,
+    ///   through the P1-07a CTO cache, whose builder does not collect `net`
+    ///   bodies: a body with no entry is `unsupported` for P1-07a. A
+    ///   downloaded model with external imports of its own (the recursive
+    ///   walk) is `unsupported`.
+    ///
+    /// A download failure happens before anything is registered, so the
+    /// manager is left as it was, as TS's `catch` leaves it.
+    pub fn update_external_models(
+        &mut self,
+        h: &Harness,
+        args: &[Arg],
+        net: Option<&Value>,
+    ) -> Faulty<Outcome> {
+        if self.kind != Kind::ModelManager {
+            return Err(Fault::Unsupported(format!(
+                "updateExternalModels on a {}",
+                self.kind.ctor()
+            )));
+        }
+        if args.len() > 1 {
+            return Err(Fault::Unsupported(
+                "updateExternalModels with a custom fileDownloader".into(),
+            ));
+        }
+        let jobs: Vec<String> = self
+            .mm
+            .model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .flat_map(|mf| external_import_uris(mf.ast()))
+            .collect();
+        if jobs.len() > 1 {
+            return Err(Fault::Unsupported(
+                "updateExternalModels with more than one download job (JS PromisePool \
+                 returns them in completion order)"
+                    .into(),
+            ));
+        }
+        let mut sources = Vec::new();
+        for url in jobs {
+            let failed = |message: String| {
+                Ok(Err(OracleError {
+                    class: "Error".into(),
+                    message: format!(
+                        "Failed to load model file. Job: {url} Details: Error: {message}"
+                    ),
+                    location: None,
+                    component: None,
+                }))
+            };
+            let fetched = if let Some(rest) = url.strip_prefix("github://") {
+                format!("https://raw.githubusercontent.com/{rest}")
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                url.clone()
+            } else {
+                return failed(format!(
+                    "Failed to find a model file loader that can handle: {url}"
+                ));
+            };
+            let Some(response) = net.and_then(|n| n.get(&fetched)) else {
+                return Err(Fault::Unsupported(format!(
+                    "updateExternalModels fetching {fetched}, which has no recorded response"
+                )));
+            };
+            let status = response.get("status").and_then(Value::as_u64);
+            let body = response.get("body").and_then(Value::as_str);
+            let (Some(status), Some(body)) = (status, body) else {
+                return Err(Fault::Harness(format!(
+                    "a recorded response for {fetched} without a status and a body"
+                )));
+            };
+            if !(200..300).contains(&status) {
+                return failed(format!("HTTP request failed with status: {status}"));
+            }
+            let name = downloaded_file_name(&fetched);
+            let cache = h
+                .cache
+                .as_ref()
+                .ok_or_else(|| Fault::Harness("no CTO -> AST cache (build-cto-cache.js)".into()))?;
+            let ast = match cache.lookup(body, Some(&name), &self.skip_location_nodes) {
+                Ok(CacheEntry::Ast(ast)) => ast,
+                Ok(CacheEntry::Error(_)) => {
+                    return Err(Fault::Unsupported(
+                        "updateExternalModels downloading a model that fails to parse".into(),
+                    ));
+                }
+                Err(_) => {
+                    return Err(Fault::Blocked(
+                        "updateExternalModels: the downloaded CTO (a recorded `net` response \
+                         body) has no CTO cache entry; the P1-07a cache builder does not collect \
+                         `net` bodies"
+                            .into(),
+                        Blocker::Owner("P1-07a".into()),
+                    ));
+                }
+            };
+            if external_import_uris(&ast).next().is_some() {
+                return Err(Fault::Unsupported(
+                    "updateExternalModels downloading a model with external imports of its own"
+                        .into(),
+                ));
+            }
+            sources.push(ModelFileSource {
+                ast,
+                definitions: Some(body.to_string()),
+                file_name: Some(name),
+            });
+        }
+        let registered = match self.mm.update_external_models(sources) {
+            Ok(registered) => registered,
+            Err(e) => return Ok(Err(to_oracle_error(&e))),
+        };
+        let mut summaries = Vec::new();
+        for mf in registered {
+            let entry = Entry {
+                ast: mf.ast().clone(),
+                file_name: mf.file_name().map(str::to_string),
+                nullish_name: undefined(),
+                definitions: mf.definitions().map(str::to_string),
+            };
+            let ns = mf.namespace();
+            match self
+                .files
+                .iter_mut()
+                .find(|e| e.ast.get("namespace").and_then(Value::as_str) == Some(ns))
+            {
+                Some(existing) => *existing = entry,
+                None => self.files.push(entry),
+            }
+            summaries.push(json!({
+                M: "ModelFile",
+                "namespace": ns,
+                "name": mf.file_name().map_or_else(undefined, |n| json!(n)),
+                "ast": mf.ast(),
+            }));
+        }
+        Ok(Ok(Value::Array(summaries)))
     }
 
     /// Runs one state-changing call (a recipe step, or a fixture whose op is
@@ -1531,6 +1926,28 @@ impl Replayed {
                     Ok(ast) => ast,
                     Err(parse_error) => return Ok(Err(parse_error)),
                 };
+                // TS `ModelFile.getDefinitions` (P2-08b, `get_models`'s only
+                // consumer so far): `ctoProcessFile` always returns
+                // `definitions: content` — the input coerced to a string
+                // when it was not already one (`String(data)`) — and
+                // `addModel(modelInput, cto, ...)`'s own `finalCto = cto ||
+                // definitions` prefers an explicit `cto` argument over that.
+                // `process_file` already restricts `Kind::ModelManager` to a
+                // string `input` (module doc, "CTO text"), so that coercion
+                // never actually changes the value here; the other two
+                // kinds pass their `input` straight through as the AST, with
+                // no CTO text to keep, so they get `None`.
+                let explicit_cto = (method == "addModel")
+                    .then(|| args.get(1))
+                    .flatten()
+                    .and_then(|arg| match arg {
+                        Arg::Plain(Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    });
+                let definitions = explicit_cto.or_else(|| match (self.kind, &input) {
+                    (Kind::ModelManager, Value::String(s)) => Some(s.clone()),
+                    _ => None,
+                });
                 // `new ModelFile(...)` then `addModelFile(...)`: `add_model`
                 // builds the model file first, so its errors come first.
                 self.add_file(
@@ -1538,7 +1955,7 @@ impl Replayed {
                         ast,
                         file_name,
                         nullish_name,
-                        definitions: None,
+                        definitions,
                         mm_index: None,
                     },
                     validate,
@@ -1600,6 +2017,52 @@ impl Replayed {
                 }
                 Ok(Ok(undefined()))
             }
+            // TS `updateModelFile(modelFile, fileName?, disableValidation?)`
+            // (basemodelmanager.ts, P2-08b): `fileName` is read only for the
+            // string overload — TS's object branch ignores its own
+            // `fileName` parameter entirely — so `disableValidation` stays
+            // at argument position 2 either way.
+            "updateModelFile" => match args.first() {
+                Some(Arg::Plain(Value::String(cto))) => {
+                    let file_name_value = plain(1)?;
+                    let validate = !no_validation(2)?;
+                    let ast = match self.process_file(
+                        h,
+                        &Value::String(cto.clone()),
+                        &file_name_value,
+                    )? {
+                        Ok(ast) => ast,
+                        Err(parse_error) => return Ok(Err(parse_error)),
+                    };
+                    let (file_name, nullish_name) = nullish_or_string(&file_name_value)?;
+                    self.update_file(
+                        FileArg {
+                            ast,
+                            file_name,
+                            nullish_name,
+                            definitions: Some(cto.clone()),
+                            mm_index: None,
+                        },
+                        validate,
+                    )
+                }
+                Some(Arg::File(file)) => {
+                    let validate = !no_validation(2)?;
+                    self.update_file(file.clone(), validate)
+                }
+                _ => Err(Fault::Unsupported(
+                    "updateModelFile with a modelFile argument that is not a string or model file"
+                        .into(),
+                )),
+            },
+            "deleteModelFile" => {
+                let Some(Arg::Plain(Value::String(namespace))) = args.first() else {
+                    return Err(Fault::Unsupported(
+                        "deleteModelFile with a namespace argument that is not a string".into(),
+                    ));
+                };
+                self.delete_file(namespace)
+            }
             other => Err(blocked(
                 format!("ModelManager.{other} has no Rust counterpart yet"),
                 format!("ModelManager.{other}"),
@@ -1636,7 +2099,7 @@ impl Replayed {
                 Some(names) => names.get(n).cloned().unwrap_or_else(undefined),
                 None => Value::Null,
             };
-            let (file_name, nullish_name, ast) = match item {
+            let (file_name, nullish_name, ast, definitions) = match item {
                 // A string is parsed; an already-built ModelFile keeps its
                 // own name (TS ignores `fileNames[n]` for it).
                 Arg::Plain(input) => {
@@ -1647,8 +2110,15 @@ impl Replayed {
                         ));
                     }
                     let (file_name, nullish_name) = nullish_or_string(&file_name_value)?;
+                    // `ctoProcessFile`'s `definitions: content` (P2-08b,
+                    // `add_model_with_definitions`'s doc); `process_file`
+                    // restricts a `Kind::ModelManager` input to a string.
+                    let definitions = match (self.kind, input) {
+                        (Kind::ModelManager, Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    };
                     match self.process_file(h, input, &file_name_value)? {
-                        Ok(ast) => (file_name, nullish_name, ast),
+                        Ok(ast) => (file_name, nullish_name, ast, definitions),
                         Err(e) => return restore(self, e),
                     }
                 }
@@ -1656,6 +2126,7 @@ impl Replayed {
                     file.file_name.clone(),
                     file.nullish_name.clone(),
                     file.ast.clone(),
+                    file.definitions.clone(),
                 ),
                 _ => {
                     return Err(Fault::Unsupported(
@@ -1667,13 +2138,17 @@ impl Replayed {
                 .get("namespace")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            if let Err(e) = self.mm.add_model(&ast, file_name.clone()) {
+            if let Err(e) =
+                self.mm
+                    .add_model_with_definitions(&ast, definitions.clone(), file_name.clone())
+            {
                 return restore(self, to_oracle_error(&e));
             }
             self.files.push(Entry {
                 ast,
                 file_name,
                 nullish_name,
+                definitions,
             });
             added.push(ns.unwrap_or_default());
         }
@@ -1727,6 +2202,7 @@ impl Clone for Arg {
             Self::Deco(m, parent, i) => Self::Deco(*m, parent.clone(), *i),
             Self::List(items) => Self::List(items.clone()),
             Self::Typed(m, inst) => Self::Typed(*m, inst.clone()),
+            Self::Predicate(names) => Self::Predicate(names.clone()),
         }
     }
 }
@@ -1758,6 +2234,72 @@ pub fn ast_of(mm: &ModelManager, include_concerto_namespaces: bool) -> Value {
         .map(|mf| mf.ast().clone())
         .collect();
     json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
+}
+
+/// TS `Object.values(MetaModelUtil.getExternalImports(ast))`
+/// (concerto-metamodel): the `uri` of every import that has one, keyed by
+/// the import's first fully-qualified name (a later import with the same key
+/// replaces the earlier one's URI, in the earlier one's place).
+fn external_import_uris(ast: &Value) -> impl Iterator<Item = String> + use<> {
+    let mut keyed: Vec<(String, String)> = Vec::new();
+    for imp in ast
+        .get("imports")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(uri) = imp
+            .get("uri")
+            .and_then(Value::as_str)
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let ns = imp
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("undefined");
+        let class = imp
+            .get("$class")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let first = match class.rsplit('.').next() {
+            Some("ImportAll") => "*".to_string(),
+            Some("ImportType") => imp
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("undefined")
+                .to_string(),
+            _ => imp
+                .get("types")
+                .and_then(Value::as_array)
+                .and_then(|t| t.first())
+                .and_then(Value::as_str)
+                .unwrap_or("undefined")
+                .to_string(),
+        };
+        let key = format!("{ns}.{first}");
+        match keyed.iter_mut().find(|(k, _)| *k == key) {
+            Some(existing) => existing.1 = uri.to_string(),
+            None => keyed.push((key, uri.to_string())),
+        }
+    }
+    keyed.into_iter().map(|(_, uri)| uri)
+}
+
+/// `HTTPFileLoader.load`'s name for a downloaded file: `'@' + (url.host +
+/// url.pathname).replace(/\//g, '.')`.
+fn downloaded_file_name(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (host, path) = match rest.split_once('/') {
+        Some((host, path)) => (host, format!("/{path}")),
+        None => (rest, "/".to_string()),
+    };
+    format!(
+        "@{}",
+        format!("{}{path}", host.to_ascii_lowercase()).replace('/', ".")
+    )
 }
 
 /// The handle of a model file registered in `r`, as a [`Node`].

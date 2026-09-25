@@ -47,6 +47,10 @@ pub struct Inputs {
     pub target: Option<Value>,
     #[serde(default)]
     pub args: Vec<Value>,
+    /// The network responses an async op fetched (URL -> `{status, body}`),
+    /// for `ModelManager.updateExternalModels`' download (P2-08b).
+    #[serde(default)]
+    pub net: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]

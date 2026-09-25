@@ -47,6 +47,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::resource_id::ResourceId;
@@ -65,7 +66,7 @@ use concerto_core::introspect::validators::{
 use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
-use concerto_core::{ConcertoError, ModelManager, Named};
+use concerto_core::{ConcertoError, ModelFile, ModelManager, Named};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
@@ -146,6 +147,7 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::Validation => "Validation",
         ErrorKind::Error => "Error",
         ErrorKind::JsTypeError => "JsTypeError",
+        ErrorKind::JsRangeError => "JsRangeError",
         ErrorKind::Metamodel => "Metamodel",
     }
 }
@@ -3585,6 +3587,317 @@ impl ModelManagerHandle {
             .and_then(|declarations| declarations.get(index))
             .ok_or_else(missing)
     }
+}
+
+// ---------------------------------------------------------------------------
+// DecoratorManager, DCS converter and extractor (src/decoratormanager.ts,
+// src/decoratorextractor.ts) — P4-09
+// ---------------------------------------------------------------------------
+//
+// Neither `DecoratorManager` nor `DecoratorExtractor` yet meets a
+// Rust-backed `ModelManagerHandle` (P4-08 has not run): every binding below
+// takes the plain model ASTs a view reads off its `ModelManager` with
+// `getAst`/`getModelFiles`, builds its own throwaway native `ModelManager`
+// (`model_manager_from_asts`) the way the already-reviewed P2-12 port's own
+// callers do, and hands the result's models back as one more AST for the
+// view's `new ModelManager().fromAst(...)` — the same shape `decorateModels`
+// and `DecoratorExtractor.extract` already build in TS. `dcsconverter.ts`
+// stays out of this: the seam ledger classifies every one of its members TS
+// ("YAML (de)serialisation via the `yaml` npm lib ... no model semantics"),
+// so `DecoratorManager.jsonToYaml`/`yamlToJson` only need `validate` below —
+// the YAML conversion itself is unchanged TS on both sides of the view.
+
+/// `new ModelManager()` (`src/modelmanager.ts`), then `models` (a JSON
+/// array of model ASTs, none of them the system ones — a view reads them
+/// off `ModelManager.getAst(resolve, false).models`, or a per-file
+/// `getModelFiles(false).map(mf => mf.getAst())`) added the way
+/// `fromAst`/`add_model` do (P4-09).
+fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
+    let mut mm = ModelManager::new()?;
+    for model in models {
+        mm.add_model(model, None)?;
+    }
+    Ok(mm)
+}
+
+/// [`model_manager_from_asts`], plus the namespaces of the models it added
+/// (as distinct from the system ones `ModelManager::new()` pre-loads) — for
+/// [`decorator_manager_validate`], which must hand [`dcs::validate`] only
+/// the caller's own model files: re-adding a system one to the fresh
+/// validation manager `dcs::validate` builds internally is a duplicate
+/// namespace.
+fn model_manager_from_asts_with_user_ns(
+    models: &[Value],
+) -> Result<(ModelManager, HashSet<String>)> {
+    let mut mm = ModelManager::new()?;
+    let mut user_ns = HashSet::new();
+    for model in models {
+        mm.add_model(model, None)?;
+        if let Some(ns) = model.get("namespace").and_then(Value::as_str) {
+            user_ns.insert(ns.to_string());
+        }
+    }
+    Ok((mm, user_ns))
+}
+
+/// A native `ModelManager`'s own models (the system ones included, in load
+/// order) as `{ $class, models }` — the shape
+/// `BaseModelManager.getAst`/`fromAst` (`src/basemodelmanager.ts`) use. The
+/// view's own `fromAst` filters the system ones back out (`EXCLUDE_NS`)
+/// exactly as it already does for the ts-mode `decorateModels`/`extract*`
+/// bodies, so this need not filter them here.
+fn model_manager_to_ast(mm: &ModelManager) -> Value {
+    let models: Vec<Value> = mm.model_files().map(|mf| mf.ast().clone()).collect();
+    json!({
+        "$class": "concerto.metamodel@1.0.0.Models",
+        "models": models,
+    })
+}
+
+/// An `Option<bool>` the way [`dcs::DecorateOptions`]' `disable_*` fields
+/// read a JS option: `Some(b)` only for a literal JS boolean, `None` for
+/// anything else (absent, `null`, `undefined`, or a non-boolean value),
+/// matching TS's `=== false`/truthy-assignment use of the same fields.
+fn opt_bool(options: &Value, key: &str) -> Option<bool> {
+    match options.get(key) {
+        Some(Value::Bool(b)) => Some(*b),
+        _ => None,
+    }
+}
+
+/// [`dcs::DecorateOptions`] from `DecoratorManager.decorateModels`'s
+/// `options` object.
+fn decorate_options_from_js(options: &Value) -> dcs::DecorateOptions {
+    dcs::DecorateOptions {
+        migrate: options
+            .get("migrate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        validate: options
+            .get("validate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        validate_commands: options
+            .get("validateCommands")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        default_namespace: options
+            .get("defaultNamespace")
+            .cloned()
+            .filter(|v| !v.is_null()),
+        skip_validation_and_resolution: options
+            .get("skipValidationAndResolution")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        disable_metamodel_resolution: opt_bool(options, "disableMetamodelResolution"),
+        disable_metamodel_validation: opt_bool(options, "disableMetamodelValidation"),
+    }
+}
+
+/// [`dcs::ExtractOptions`] from `DecoratorManager.extractDecorators`'s (and
+/// its `extractVocabularies`/`extractNonVocabDecorators` siblings') `options`
+/// object; TS defaults `removeDecoratorsFromModel` to `false` and `locale`
+/// to `'en'` the same way before either ever reads it.
+fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
+    dcs::ExtractOptions {
+        remove_decorators_from_model: options
+            .get("removeDecoratorsFromModel")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        locale: options
+            .get("locale")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "en".to_string()),
+    }
+}
+
+/// `{ modelManager, decoratorCommandSet, vocabularies }`
+/// (`ExtractDecoratorsResult`, `src/decoratormanager.ts`'s JSDoc typedef),
+/// from a native [`dcs::extractor::ExtractResult`].
+fn extract_result_to_js(result: dcs::extractor::ExtractResult) -> Value {
+    json!({
+        "modelManager": model_manager_to_ast(&result.model_manager),
+        "decoratorCommandSet": result.decorator_command_set,
+        "vocabularies": result.vocabularies,
+    })
+}
+
+/// TS: `DecoratorManager.falsyOrEqual`. `values` is always a plain string
+/// array (every call site passes one).
+#[wasm_bindgen(js_name = decoratorManagerFalsyOrEqual)]
+pub fn decorator_manager_falsy_or_equal(
+    test: JsValue,
+    values: JsValue,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        let test_json = to_json(&test)?;
+        let values_json = to_json(&values)?.unwrap_or(Value::Array(Vec::new()));
+        let values_vec: Vec<String> = values_json
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let values_refs: Vec<&str> = values_vec.iter().map(String::as_str).collect();
+        Ok(dcs::falsy_or_equal(test_json.as_ref(), &values_refs))
+    })
+}
+
+/// TS: `DecoratorManager.migrateTo` (the unused `version` parameter is
+/// dropped, as [`dcs::migrate_to`]'s doc comment explains). Mutates a clone
+/// of `decorator_command_set` and returns it; the view assigns the result
+/// back onto its own variable exactly as the TS body's `return
+/// decoratorCommandSet` does.
+#[wasm_bindgen(js_name = decoratorManagerMigrateTo)]
+pub fn decorator_manager_migrate_to(
+    decorator_command_set: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let mut value = to_json(&decorator_command_set)?.unwrap_or(Value::Null);
+        dcs::migrate_to(&mut value)?;
+        Ok(to_js(&value))
+    })
+}
+
+/// TS: `DecoratorManager.validate`'s structural check — the second half of
+/// the TS body (`serializer.fromJSON(decoratorCommandSet)`); the view still
+/// builds the returned `validationModelManager` itself (CTO parsing stays
+/// TS). `model_files` is `null`/`undefined` for the no-model-files overload,
+/// or an array of model ASTs (a view's own `modelFiles.map(mf =>
+/// mf.getAst())`) for the other.
+#[wasm_bindgen(js_name = decoratorManagerValidate)]
+pub fn decorator_manager_validate(
+    decorator_command_set: JsValue,
+    model_files: JsValue,
+) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let command_set = to_json(&decorator_command_set)?.unwrap_or(Value::Null);
+        match to_json(&model_files)? {
+            None | Some(Value::Null) => {
+                dcs::validate(&command_set, None)?;
+            }
+            Some(models) => {
+                let models = models.as_array().cloned().unwrap_or_default();
+                let (mm, user_ns) = model_manager_from_asts_with_user_ns(&models)?;
+                let files: Vec<&ModelFile> = mm
+                    .model_files()
+                    .filter(|mf| user_ns.contains(mf.namespace()))
+                    .collect();
+                let refs: Option<&[&ModelFile]> =
+                    if files.is_empty() { None } else { Some(&files) };
+                dcs::validate(&command_set, refs)?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// TS: `DecoratorManager.executePropertyCommand`, which mutates `property`
+/// in place and returns nothing; the view copies the mutated fields this
+/// returns back onto its own `property` object.
+#[wasm_bindgen(js_name = decoratorManagerExecutePropertyCommand)]
+pub fn decorator_manager_execute_property_command(
+    property: JsValue,
+    command: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let mut prop = to_json(&property)?.unwrap_or(Value::Null);
+        let cmd = to_json(&command)?.unwrap_or(Value::Null);
+        dcs::execute_property_command(&mut prop, &cmd)?;
+        Ok(to_js(&prop))
+    })
+}
+
+/// TS: `DecoratorManager.decorateModels`, after the view's own early return
+/// (an empty `decoratorCommandSet` returns `modelManager` itself, never
+/// reaching this binding) and its `Array.isArray` normalisation. `models`
+/// is `modelManager.getAst(!options.disableMetamodelResolution, false).models`,
+/// read by the view's shim (concerto `src/engine/views.ts`
+/// `decoratorManagerDecorateModels`): metamodel resolution is not ported
+/// (`dcs::decorate_models`'s doc comment), so the TS ModelManager resolves
+/// before the call, as the ts-mode body does, and the system namespaces are
+/// left out, the native manager carrying its own. The result is the new
+/// manager's own AST, for the shim's `new ModelManager({decoratorValidation})
+/// .fromAst(decoratedAst, { disableValidation })`.
+#[wasm_bindgen(js_name = decoratorManagerDecorateModels)]
+pub fn decorator_manager_decorate_models(
+    models: JsValue,
+    decorator_command_sets: JsValue,
+    options: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
+        let models_vec = models_json.as_array().cloned().unwrap_or_default();
+        let mm = model_manager_from_asts(&models_vec)?;
+
+        let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
+        let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+
+        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
+        let mut opts = decorate_options_from_js(&options_json);
+
+        let decorated = dcs::decorate_models(&mm, &mut sets, &mut opts)?;
+        Ok(to_js(&model_manager_to_ast(&decorated)))
+    })
+}
+
+/// TS: `DecoratorManager.extractDecorators`. `models` is
+/// `modelManager.getAst(true, false).models`: resolved on the TS side, as
+/// the ts-mode body's own `getAst(true, true)` is, with the system
+/// namespaces left out (see [`decorator_manager_decorate_models`]).
+#[wasm_bindgen(js_name = decoratorManagerExtractDecorators)]
+pub fn decorator_manager_extract_decorators(
+    models: JsValue,
+    options: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
+        let mm = model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
+        let opts = extract_options_from_js(&options_json);
+        let result = dcs::extract_decorators(&mm, &opts)?;
+        Ok(to_js(&extract_result_to_js(result)))
+    })
+}
+
+/// TS: `DecoratorManager.extractVocabularies`. `models` is
+/// `modelManager.getAst(true, false).models` (see
+/// [`decorator_manager_extract_decorators`]).
+#[wasm_bindgen(js_name = decoratorManagerExtractVocabularies)]
+pub fn decorator_manager_extract_vocabularies(
+    models: JsValue,
+    options: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
+        let mm = model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
+        let opts = extract_options_from_js(&options_json);
+        let result = dcs::extract_vocabularies(&mm, &opts)?;
+        Ok(to_js(&extract_result_to_js(result)))
+    })
+}
+
+/// TS: `DecoratorManager.extractNonVocabDecorators`. `models` is
+/// `modelManager.getAst(true, false).models`, resolved on the TS side and
+/// without the system namespaces, matching the ts-mode body's own
+/// `getAst(true)` call (the one-argument overload).
+#[wasm_bindgen(js_name = decoratorManagerExtractNonVocabDecorators)]
+pub fn decorator_manager_extract_non_vocab_decorators(
+    models: JsValue,
+    options: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
+        let mm = model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
+        let opts = extract_options_from_js(&options_json);
+        let result = dcs::extract_non_vocab_decorators(&mm, &opts)?;
+        Ok(to_js(&extract_result_to_js(result)))
+    })
 }
 
 #[cfg(test)]
