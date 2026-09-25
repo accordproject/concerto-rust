@@ -34,6 +34,7 @@ use crate::error::{ConcertoError, Result};
 
 pub mod declaration;
 pub mod decorator;
+pub mod field;
 pub mod import;
 pub mod model_file;
 pub mod property;

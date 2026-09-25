@@ -51,6 +51,7 @@ use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
+use concerto_core::introspect::field;
 use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
 use concerto_core::introspect::validators::{
@@ -1125,6 +1126,264 @@ pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> 
     })
 }
 
+/// TS: Property.validate, after `super.validate()` (`Decorated`'s, which the
+/// view calls separately before this). `classDecl` is the argument TS's
+/// `validate(classDecl)` takes. `ModelFile` and `ModelManager` are not yet
+/// Rust-backed (P2-08), so type resolution and the "is this a map
+/// declaration" check are reached by calling straight back into the same
+/// collaborators TS itself calls (`modelFile.resolveType`, `modelFile.getType`),
+/// through the small context interface PORTING.md section 3 describes for a
+/// view without a real Rust-backed parent — only the branching around them
+/// runs in Rust. `modelFile.resolveType`'s own thrown `TypeNotFoundException`
+/// propagates unchanged (`Error::Js`, from the `?` on `call`), so its message
+/// and class are never reimplemented here.
+#[wasm_bindgen(js_name = propertyValidate)]
+pub fn property_validate(
+    property: JsValue,
+    class_decl: JsValue,
+) -> std::result::Result<(), JsValue> {
+    let model_file = call(&class_decl, "getModelFile", &[], "classDecl.getModelFile")
+        .unwrap_or(JsValue::UNDEFINED);
+    let body = || -> Result<()> {
+        let property_type = get(&property, "type")?;
+        if !nullish(&property_type) {
+            let fqn = js_string(&call(
+                &property,
+                "getFullyQualifiedName",
+                &[],
+                "this.getFullyQualifiedName",
+            )?)?;
+            let message = JsValue::from_str(&format!("property {fqn}"));
+            call(
+                &model_file,
+                "resolveType",
+                &[message, property_type.clone()],
+                "modelFile.resolveType",
+            )?;
+        }
+
+        let size_validator = get(&property, "sizeValidator")?;
+        let array = get(&property, "array")?.is_truthy();
+        if !nullish(&size_validator) && !array {
+            let mut is_map_type = false;
+            if !nullish(&property_type) {
+                let is_primitive =
+                    call(&property, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
+                if !is_primitive {
+                    if let Ok(resolved) = call(
+                        &model_file,
+                        "getType",
+                        &[property_type.clone()],
+                        "modelFile.getType",
+                    ) {
+                        if let Some(v) = call_optional(&resolved, "isMapDeclaration")? {
+                            is_map_type = v.is_truthy();
+                        }
+                    }
+                }
+            }
+            if !is_map_type {
+                let fqn = js_string(&call(
+                    &property,
+                    "getFullyQualifiedName",
+                    &[],
+                    "this.getFullyQualifiedName",
+                )?)?;
+                let ast = get(&property, "ast")?;
+                let location = to_json(&get(&ast, "location")?)?;
+                let mut err = ContractError::new(
+                    ErrorKind::IllegalModel,
+                    "property-validate-sizevalidator",
+                    vec![("fqn", fqn)],
+                );
+                err.location = location;
+                err.model_file = Some(None);
+                return Err(err.into());
+            }
+        }
+        Ok(())
+    };
+    body().map_err(|e| throw(e, Some(&model_file)))
+}
+
+// ---------------------------------------------------------------------------
+// Field (src/introspect/field.ts) — P4-07
+// ---------------------------------------------------------------------------
+
+/// TS: Field.process, after `super.process()` (`Property`'s, already run).
+/// Returns the snapshot `{validator, defaultValue}`, where `validator` is
+/// `null`, `{kind: "NumberValidator", lowerBound, upperBound}` or
+/// `{kind: "StringValidator"}` — the identical selection
+/// `scalarDeclarationProcess` returns for `ScalarDeclaration`, reusing the
+/// same [`ScalarValidator`] shape (field.rs module doc).
+#[wasm_bindgen(js_name = fieldProcess)]
+pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    let body = || -> Result<JsValue> {
+        let ast = to_json(&get(&view, "ast")?)?.unwrap_or(Value::Null);
+        let property_type = get(&view, "type")?;
+        let property_type = if nullish(&property_type) {
+            None
+        } else {
+            Some(js_string(&property_type)?)
+        };
+        let fqn = || {
+            js_string(&call(
+                &view,
+                "getFullyQualifiedName",
+                &[],
+                "this.getFullyQualifiedName",
+            )?)
+        };
+        let processed = field::process(property_type.as_deref(), &ast, &fqn)?;
+        let validator = match &processed.validator {
+            None => Value::Null,
+            Some(ScalarValidator::Number(v)) => {
+                let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
+                if let Value::Object(map) = &mut snapshot {
+                    map.insert("kind".to_string(), json!("NumberValidator"));
+                }
+                snapshot
+            }
+            Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
+        };
+        Ok(to_js(&json!({
+            "validator": validator,
+            "defaultValue": processed.default_value,
+        })))
+    };
+    body().map_err(|e| {
+        let model_file = call(&view, "getModelFile", &[], "this.getModelFile")
+            .unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// RelationshipDeclaration (src/introspect/relationshipdeclaration.ts) — P4-07
+// ---------------------------------------------------------------------------
+
+/// TS: RelationshipDeclaration.validate, after `super.validate(classDecl)`
+/// (`Property`'s, which the view calls separately before this — the same
+/// layering `propertyValidate` itself uses for `Decorated`'s). `ModelFile`
+/// and `ModelManager` are not yet Rust-backed (P2-08), so this calls back
+/// into the same collaborators TS itself calls, in the same order and with
+/// the same try/catch shape (only the "own model file" lookup is
+/// unguarded, exactly as TS's is): the branching runs in Rust, the
+/// resolution itself is the small context interface PORTING.md section 3
+/// describes.
+#[wasm_bindgen(js_name = relationshipDeclarationValidate)]
+pub fn relationship_declaration_validate(
+    view: JsValue,
+    class_decl: JsValue,
+) -> std::result::Result<(), JsValue> {
+    let model_file = call(&class_decl, "getModelFile", &[], "classDecl.getModelFile")
+        .unwrap_or(JsValue::UNDEFINED);
+    let body = || -> Result<()> {
+        let ast = get(&view, "ast")?;
+        let location = to_json(&get(&ast, "location")?)?;
+        let name = js_string(&call(&view, "getName", &[], "this.getName")?)?;
+        // TS reads `this.getType()` throughout (a method call, not the raw
+        // `type` field), so a test that stubs `getType()` alone still takes
+        // effect here.
+        let property_type = call(&view, "getType", &[], "this.getType")?;
+
+        if nullish(&property_type) {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "relationshipdeclaration-validate-notype",
+                vec![],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        }
+
+        let type_str = js_string(&property_type)?;
+        if mu::is_primitive_type(&type_str) {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "relationshipdeclaration-validate-primitivetype",
+                vec![("name", name), ("type", type_str)],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        }
+
+        let parent = call(&view, "getParent", &[], "this.getParent")?;
+        let namespace = js_string(&call(&parent, "getNamespace", &[], "parent.getNamespace")?)?;
+        let fqtn = js_string(&call(
+            &view,
+            "getFullyQualifiedTypeName",
+            &[],
+            "this.getFullyQualifiedTypeName",
+        )?)?;
+        let type_namespace = mu::get_namespace(Some(&fqtn))?.to_string();
+        let parent_model_file = call(&parent, "getModelFile", &[], "parent.getModelFile")?;
+
+        let mut class_declaration: Option<JsValue> = None;
+        if namespace == type_namespace {
+            // TS does not guard this lookup: any error it raises propagates.
+            let resolved = call(
+                &parent_model_file,
+                "getType",
+                &[property_type.clone()],
+                "modelFile.getType",
+            )?;
+            if !nullish(&resolved) {
+                class_declaration = Some(resolved);
+            }
+        } else if let Ok(model_manager) = call(
+            &parent_model_file,
+            "getModelManager",
+            &[],
+            "modelFile.getModelManager",
+        ) {
+            if let Ok(resolved) = call(
+                &model_manager,
+                "getType",
+                &[JsValue::from_str(&fqtn)],
+                "modelManager.getType",
+            ) {
+                if !nullish(&resolved) {
+                    class_declaration = Some(resolved);
+                }
+            }
+        }
+
+        let Some(class_declaration) = class_declaration else {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "relationshipdeclaration-validate-missingtype",
+                vec![("name", name), ("type", fqtn)],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        };
+
+        let is_identified = call(
+            &class_declaration,
+            "isIdentified",
+            &[],
+            "classDeclaration.isIdentified",
+        )?
+        .is_truthy();
+        if !is_identified {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "relationshipdeclaration-validate-notidentified",
+                vec![("name", name), ("type", fqtn)],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        }
+        Ok(())
+    };
+    body().map_err(|e| throw(e, Some(&model_file)))
+}
+
 // ---------------------------------------------------------------------------
 // ScalarDeclaration (src/introspect/scalardeclaration.ts)
 // ---------------------------------------------------------------------------
@@ -1187,6 +1446,230 @@ pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result
             "this.getFullyQualifiedName",
         )?)?;
         Ok(ScalarDeclaration::to_string(&fqn))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// MapDeclaration, MapKeyType, MapValueType (src/introspect/mapdeclaration.ts,
+// mapkeytype.ts, mapvaluetype.ts) — P4-07
+// ---------------------------------------------------------------------------
+
+/// TS: MapDeclaration.process, after `super.process()`. Checks the AST's
+/// `key`/`value` shape with the same checks `ModelUtil.isValidMapKey`/
+/// `isValidMapValue` already run through Rust (P2-06), called here
+/// natively ([`mu::is_valid_map_key`], [`mu::is_valid_map_value`]) rather
+/// than through another JS round trip. The view still builds the
+/// `MapKeyType`/`MapValueType` child views itself afterwards, the same way
+/// `propertyProcess` still builds its own `CollectionSizeValidator`.
+#[wasm_bindgen(js_name = mapDeclarationProcess)]
+pub fn map_declaration_process(view: JsValue) -> std::result::Result<(), JsValue> {
+    let body = || -> Result<()> {
+        let ast = get(&view, "ast")?;
+        let name = opt_get(&ast, "name")?;
+        let name = if nullish(&name) {
+            String::new()
+        } else {
+            js_string(&name)?
+        };
+        let key = to_json(&get(&ast, "key")?)?;
+        let value = to_json(&get(&ast, "value")?)?;
+        let location = to_json(&get(&ast, "location")?)?;
+
+        if key.is_none() || value.is_none() {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "mapdeclaration-process-missingkeyvalue",
+                vec![("name", name)],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        }
+        if !mu::is_valid_map_key(key.as_ref())? {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "mapdeclaration-process-invalidkey",
+                vec![("name", name)],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        }
+        if !mu::is_valid_map_value(value.as_ref())? {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "mapdeclaration-process-invalidvalue",
+                vec![("name", name)],
+            );
+            err.location = location;
+            err.model_file = Some(None);
+            return Err(err.into());
+        }
+        Ok(())
+    };
+    body().map_err(|e| {
+        let model_file = get(&view, "modelFile").unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
+    })
+}
+
+/// The metamodel `$class`'s short name (after the last `.`).
+fn short_class(class: &str) -> &str {
+    class.rsplit('.').next().unwrap_or(class)
+}
+
+/// TS: MapKeyType.processType. Pure AST logic (module doc); the `$class`
+/// switch has no default arm, which is unreachable here since
+/// `mapDeclarationProcess`'s `mu::is_valid_map_key` check already restricts
+/// the AST to one of these three kinds before a `MapKeyType` is ever built —
+/// the empty-string fallback below is never actually observed.
+#[wasm_bindgen(js_name = mapKeyTypeProcess)]
+pub fn map_key_type_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let ast = get(&view, "ast")?;
+        let class = get(&ast, "$class")?;
+        let class = if nullish(&class) {
+            String::new()
+        } else {
+            js_string(&class)?
+        };
+        let type_name = match short_class(&class) {
+            "DateTimeMapKeyType" => "DateTime".to_string(),
+            "StringMapKeyType" => "String".to_string(),
+            "ObjectMapKeyType" => {
+                let ast_type = get(&ast, "type")?;
+                js_string(&get(&ast_type, "name")?)?
+            }
+            _ => String::new(),
+        };
+        Ok(JsValue::from_str(&type_name))
+    })
+}
+
+/// TS: MapKeyType.validate. `this.modelFile.getType(...)` is a live TS
+/// collaborator call (`ModelFile` is not yet Rust-backed, P2-08); the
+/// scalar-kind check itself is [`mu::is_valid_map_key_scalar`], already
+/// shared with the native engine's own `validate_map_key`.
+#[wasm_bindgen(js_name = mapKeyTypeValidate)]
+pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let type_name = js_string(&get(&view, "type")?)?;
+        if mu::is_primitive_type(&type_name) {
+            return Ok(());
+        }
+        let model_file = get(&view, "modelFile")?;
+        let ast = get(&view, "ast")?;
+        let ast_type = get(&ast, "type")?;
+        let type_name_ast = get(&ast_type, "name")?;
+        let decl = call(
+            &model_file,
+            "getType",
+            &[type_name_ast],
+            "modelFile.getType",
+        )?;
+        let valid = mu::is_valid_map_key_scalar(&JsContext, Some(&decl))?;
+        if valid != Some(true) {
+            let parent = get(&view, "parent")?;
+            let parent_name = js_string(&get(&parent, "name")?)?;
+            return Err(ContractError::new(
+                ErrorKind::IllegalModel,
+                "mapkeytype-validate-invalidscalar",
+                vec![("type", type_name), ("name", parent_name)],
+            )
+            .into());
+        }
+        Ok(())
+    })
+}
+
+/// TS: MapValueType.processType. Pure AST logic (module doc), except the
+/// `ObjectMapValueType`/`RelationshipMapValueType` arm's own shape checks,
+/// which TS throws inline for.
+#[wasm_bindgen(js_name = mapValueTypeProcess)]
+pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let ast = get(&view, "ast")?;
+        let parent = get(&view, "parent")?;
+        let parent_name = js_string(&get(&parent, "name")?)?;
+        let class = get(&ast, "$class")?;
+        let class = if nullish(&class) {
+            String::new()
+        } else {
+            js_string(&class)?
+        };
+        let type_name = match short_class(&class) {
+            "ObjectMapValueType" | "RelationshipMapValueType" => {
+                let ast_type = get(&ast, "type")?;
+                if nullish(&ast_type) {
+                    return Err(ContractError::new(
+                        ErrorKind::IllegalModel,
+                        "mapvaluetype-process-missingtype",
+                        vec![("name", parent_name)],
+                    )
+                    .into());
+                }
+                let type_class = get(&ast_type, "$class")?;
+                let type_name_field = get(&ast_type, "name")?;
+                if nullish(&type_class) || nullish(&type_name_field) {
+                    return Err(ContractError::new(
+                        ErrorKind::IllegalModel,
+                        "mapvaluetype-process-malformedtype",
+                        vec![("name", parent_name)],
+                    )
+                    .into());
+                }
+                if js_string(&type_class)? != "concerto.metamodel@1.0.0.TypeIdentifier" {
+                    return Err(ContractError::new(
+                        ErrorKind::IllegalModel,
+                        "mapvaluetype-process-invalidtypeclass",
+                        vec![("name", parent_name)],
+                    )
+                    .into());
+                }
+                js_string(&type_name_field)?
+            }
+            "BooleanMapValueType" => "Boolean".to_string(),
+            "DateTimeMapValueType" => "DateTime".to_string(),
+            "StringMapValueType" => "String".to_string(),
+            "IntegerMapValueType" => "Integer".to_string(),
+            "LongMapValueType" => "Long".to_string(),
+            "DoubleMapValueType" => "Double".to_string(),
+            _ => String::new(),
+        };
+        Ok(JsValue::from_str(&type_name))
+    })
+}
+
+/// TS: MapValueType.validate. `this.modelFile.getType(...)` is a live TS
+/// collaborator call (`ModelFile` is not yet Rust-backed, P2-08); the
+/// "is this a map declaration" check itself goes through [`JsContext`]'s
+/// existing [`ResolutionContext::is_map_declaration`].
+#[wasm_bindgen(js_name = mapValueTypeValidate)]
+pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let type_name = js_string(&get(&view, "type")?)?;
+        if mu::is_primitive_type(&type_name) {
+            return Ok(());
+        }
+        let model_file = get(&view, "modelFile")?;
+        let ast = get(&view, "ast")?;
+        let ast_type = get(&ast, "type")?;
+        let type_name_ast = get(&ast_type, "name")?;
+        let decl = call(
+            &model_file,
+            "getType",
+            &[type_name_ast],
+            "modelFile.getType",
+        )?;
+        if JsContext.is_map_declaration(&decl)?.unwrap_or(false) {
+            return Err(ContractError::new(
+                ErrorKind::IllegalModel,
+                "mapvaluetype-validate-mapnotsupported",
+                vec![("type", type_name)],
+            )
+            .into());
+        }
+        Ok(())
     })
 }
 
