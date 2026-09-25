@@ -38,11 +38,14 @@ use std::cell::RefCell;
 use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
-use concerto_core::introspect::validators::{NumberValidator, Validator};
+use concerto_core::introspect::validators::{
+    CollectionSizeValidator, NumberValidator, StringValidator, Validator,
+};
 use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{ConcertoError, ModelManager, Named};
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -762,6 +765,246 @@ pub fn number_validator_compatible_with(
         let this = number_validator(&view, "getLowerBound", "getUpperBound")?;
         let other = number_validator(&other, "getLowerBound", "getUpperBound")?;
         Ok(this.compatible_with(Some(&Validator::Number(other))))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// StringValidator (src/introspect/stringvalidator.ts) and
+// CollectionSizeValidator (src/introspect/collectionsizevalidator.ts) (P4-04)
+// ---------------------------------------------------------------------------
+//
+// Neither Rust type derives `Serialize`/`Deserialize` (`StringValidator` owns
+// a compiled `regress::Regex`, which does not), so unlike `NumberValidator`
+// there is no snapshot to deserialise a validator back from on every
+// `validate`/`compatibleWith` call. Instead each call rebuilds the validator
+// from the view's own cached AST (`view.validator`, the regex AST `super()`
+// stored; length/size bounds read back from the snapshot the constructor
+// cached), the same inputs the constructor itself validated, so the rebuild
+// is deterministic and never observably re-runs a check that could now fail
+// differently.
+
+/// Tags a plain JS AST object (as the unit tests and the TS views hand it
+/// across, with no `$class`) with the metamodel type it is, so it
+/// deserialises into the typed AST the core validators take.
+fn tag(mut json: Value, class: &str) -> Value {
+    if let Value::Object(map) = &mut json {
+        map.entry("$class".to_string())
+            .or_insert_with(|| json!(class));
+    }
+    json
+}
+
+/// `{pattern, flags}`, or `None` for a nullish value. `flags` defaults to
+/// `""`, matching `IStringRegexValidator.flags?: string` (the TS view's
+/// callers, including the unit tests, often omit it for "no flags").
+fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
+    if nullish(value) {
+        return Ok(None);
+    }
+    let mut json = tag(
+        to_json(value)?.unwrap_or(Value::Null),
+        "concerto.metamodel@1.0.0.StringRegexValidator",
+    );
+    if let Value::Object(map) = &mut json {
+        map.entry("flags".to_string()).or_insert_with(|| json!(""));
+    }
+    serde_json::from_value(json)
+        .map(Some)
+        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// `{minLength, maxLength}`, or `None` for a nullish value.
+fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLengthValidator>> {
+    if nullish(value) {
+        return Ok(None);
+    }
+    let json = tag(
+        to_json(value)?.unwrap_or(Value::Null),
+        "concerto.metamodel@1.0.0.StringLengthValidator",
+    );
+    serde_json::from_value(json)
+        .map(Some)
+        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// `{minSize, maxSize}`.
+fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
+    let json = tag(
+        to_json(value)?.unwrap_or(Value::Null),
+        "concerto.metamodel@1.0.0.CollectionSizeValidator",
+    );
+    serde_json::from_value(json).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// TS: StringValidator constructor, after `super(field, validator)`. `view`
+/// is the object under construction; the result is its `{minLength,
+/// maxLength}` snapshot. The view builds its own cached `RegExp` from
+/// `validator` afterwards: `StringValidator.getRegex` stays TS (public API
+/// returns a live `RegExp`), and the pluggable `options.regExp` hook is never
+/// reached here (the view only calls this binding when no hook is
+/// configured, PORTING.md section 3).
+#[wasm_bindgen(js_name = stringValidatorNew)]
+pub fn string_validator_new(
+    view: JsValue,
+    validator: JsValue,
+    length_validator: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let regex_ast = string_regex_ast(&validator)?;
+        let length_ast = string_length_ast(&length_validator)?;
+        let built = StringValidator::new(
+            &JsElement { validator: &view },
+            regex_ast.as_ref(),
+            length_ast.as_ref(),
+        )?;
+        Ok(to_js(&json!({
+            "minLength": built.min_length(),
+            "maxLength": built.max_length(),
+        })))
+    })
+}
+
+/// Rebuilds the validator's snapshot from the view: the regex AST `super()`
+/// cached at `view.validator`, and the length bounds the constructor cached
+/// at `view.minLength`/`view.maxLength` (`None` for both, the only state a
+/// successful construction can have left, means no length AST was ever
+/// given).
+fn string_validator(view: &JsValue) -> Result<StringValidator> {
+    let regex_ast = string_regex_ast(&get(view, "validator")?)?;
+    let min_length = get(view, "minLength")?;
+    let max_length = get(view, "maxLength")?;
+    let length_ast = if nullish(&min_length) && nullish(&max_length) {
+        None
+    } else {
+        let json = tag(
+            json!({
+                "minLength": to_json(&min_length)?,
+                "maxLength": to_json(&max_length)?,
+            }),
+            "concerto.metamodel@1.0.0.StringLengthValidator",
+        );
+        Some(
+            serde_json::from_value::<mm::StringLengthValidator>(json)
+                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?,
+        )
+    };
+    StringValidator::new(
+        &JsElement { validator: view },
+        regex_ast.as_ref(),
+        length_ast.as_ref(),
+    )
+}
+
+/// TS: StringValidator.validate. `null` is always accepted.
+#[wasm_bindgen(js_name = stringValidatorValidate)]
+pub fn string_validator_validate(
+    view: JsValue,
+    identifier: JsValue,
+    value: JsValue,
+) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let validator = string_validator(&view)?;
+        let identifier = if identifier.is_null() {
+            None
+        } else {
+            Some(js_string(&identifier)?)
+        };
+        let value = if value.is_null() {
+            None
+        } else {
+            Some(js_string(&value)?)
+        };
+        validator.validate(
+            &JsElement { validator: &view },
+            identifier.as_deref(),
+            value.as_deref(),
+        )
+    })
+}
+
+/// TS: StringValidator.compatibleWith. `string_validator_class` is the
+/// `StringValidator` class, for the `other instanceof StringValidator` check.
+#[wasm_bindgen(js_name = stringValidatorCompatibleWith)]
+pub fn string_validator_compatible_with(
+    view: JsValue,
+    other: JsValue,
+    string_validator_class: Function,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        // `other instanceof StringValidator`
+        let prototype = get(&string_validator_class, "prototype")?;
+        if !other.is_object() || !prototype.unchecked_ref::<Object>().is_prototype_of(&other) {
+            return Ok(false);
+        }
+        let this = string_validator(&view)?;
+        let other = string_validator(&other)?;
+        Ok(this.compatible_with(Some(&Validator::String(other))))
+    })
+}
+
+/// TS: CollectionSizeValidator constructor, after `super(field, validator)`.
+/// `view` is the object under construction; the result is its `{minSize,
+/// maxSize}` snapshot.
+#[wasm_bindgen(js_name = collectionSizeValidatorNew)]
+pub fn collection_size_validator_new(
+    view: JsValue,
+    ast: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let typed = collection_size_ast(&ast)?;
+        let built = CollectionSizeValidator::new(&JsElement { validator: &view }, &typed)?;
+        Ok(to_js(&json!({
+            "minSize": built.min_size(),
+            "maxSize": built.max_size(),
+        })))
+    })
+}
+
+/// Rebuilds the validator from `view.validator`, the AST `super()` cached.
+fn collection_size_validator(view: &JsValue) -> Result<CollectionSizeValidator> {
+    let ast = collection_size_ast(&get(view, "validator")?)?;
+    CollectionSizeValidator::new(&JsElement { validator: view }, &ast)
+}
+
+/// TS: CollectionSizeValidator.validate. `value` is compared as JS `<`/`>`
+/// would, through `Number(value)`.
+#[wasm_bindgen(js_name = collectionSizeValidatorValidate)]
+pub fn collection_size_validator_validate(
+    view: JsValue,
+    identifier: JsValue,
+    value: JsValue,
+) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let validator = collection_size_validator(&view)?;
+        let identifier = if identifier.is_null() {
+            None
+        } else {
+            Some(js_string(&identifier)?)
+        };
+        // `+value`: JS ToNumber.
+        let value = value.unchecked_into_f64();
+        validator.validate(&JsElement { validator: &view }, identifier.as_deref(), value)
+    })
+}
+
+/// TS: CollectionSizeValidator.compatibleWith.
+/// `collection_size_validator_class` is the `CollectionSizeValidator` class,
+/// for the `other instanceof CollectionSizeValidator` check.
+#[wasm_bindgen(js_name = collectionSizeValidatorCompatibleWith)]
+pub fn collection_size_validator_compatible_with(
+    view: JsValue,
+    other: JsValue,
+    collection_size_validator_class: Function,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        // `other instanceof CollectionSizeValidator`
+        let prototype = get(&collection_size_validator_class, "prototype")?;
+        if !other.is_object() || !prototype.unchecked_ref::<Object>().is_prototype_of(&other) {
+            return Ok(false);
+        }
+        let this = collection_size_validator(&view)?;
+        let other = collection_size_validator(&other)?;
+        Ok(this.compatible_with(Some(&Validator::CollectionSize(other))))
     })
 }
 
