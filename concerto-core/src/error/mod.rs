@@ -632,7 +632,10 @@ mod tests {
         assert_eq!(
             contract(
                 "stringvalidator-constructor-invalidregex",
-                &[("message", "Invalid regular expression: /^[A-z/: unterminated character class")]
+                &[(
+                    "message",
+                    "Invalid regular expression: /^[A-z/: unterminated character class"
+                )]
             )
             .message(),
             "Invalid regular expression: /^[A-z/: unterminated character class"

@@ -582,8 +582,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(cv.compatible_with(other.as_ref()))))
                 }
-                "getMinSize" => ran(Ok(cv.min_size().map_or_else(recipe::undefined, |v| json!(v)))),
-                "getMaxSize" => ran(Ok(cv.max_size().map_or_else(recipe::undefined, |v| json!(v)))),
+                "getMinSize" => ran(Ok(cv
+                    .min_size()
+                    .map_or_else(recipe::undefined, |v| json!(v)))),
+                "getMaxSize" => ran(Ok(cv
+                    .max_size()
+                    .map_or_else(recipe::undefined, |v| json!(v)))),
                 _ => unreachable!("`dispatched` lists every member"),
             })
         }
@@ -722,8 +726,8 @@ fn build_validator(
     prop_id: concerto_core::model_manager::PropId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
-    use concerto_core::introspect::Property;
     use concerto_core::introspect::Named;
+    use concerto_core::introspect::Property;
 
     let r = session.pool.get(mm_idx).ok_or_else(|| {
         Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
@@ -731,14 +735,13 @@ fn build_validator(
     let prop = r.mm.property(prop_id).ok_or_else(|| {
         Fault::Divergence("state divergence: the validatorref's property was not found".into())
     })?;
-    let fqn = r
-        .mm
-        .get_fully_qualified_name(&Node::Property(prop_id))
-        .map_err(|e| {
-            Fault::Divergence(format!(
-                "computing the validatorref property's fully qualified name: {e}"
-            ))
-        })?;
+    let fqn =
+        r.mm.get_fully_qualified_name(&Node::Property(prop_id))
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "computing the validatorref property's fully qualified name: {e}"
+                ))
+            })?;
     let elem = PropertyElement {
         fqn,
         name: prop.name().to_string(),
@@ -752,10 +755,11 @@ fn build_validator(
                     "state divergence: the validatorref's property has no size validator".into(),
                 )
             })?;
-            let built = concerto_core::introspect::validators::CollectionSizeValidator::new(
-                &elem, ast,
-            )
-            .map_err(|e| Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}")))?;
+            let built =
+                concerto_core::introspect::validators::CollectionSizeValidator::new(&elem, ast)
+                    .map_err(|e| {
+                        Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}"))
+                    })?;
             Validator::CollectionSize(built)
         }
         "validator" => match prop {
@@ -769,30 +773,36 @@ fn build_validator(
                 Validator::String(built)
             }
             Property::Integer(p) => {
-                let ast = p
-                    .validator
-                    .as_ref()
-                    .map_or(Value::Null, |v| serde_json::to_value(v).expect("domain validator serializes"));
-                let built = concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
-                    .map_err(|e| Fault::Divergence(format!("rebuilding NumberValidator: {e}")))?;
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
                 Validator::Number(built)
             }
             Property::Long(p) => {
-                let ast = p
-                    .validator
-                    .as_ref()
-                    .map_or(Value::Null, |v| serde_json::to_value(v).expect("domain validator serializes"));
-                let built = concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
-                    .map_err(|e| Fault::Divergence(format!("rebuilding NumberValidator: {e}")))?;
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
                 Validator::Number(built)
             }
             Property::Double(p) => {
-                let ast = p
-                    .validator
-                    .as_ref()
-                    .map_or(Value::Null, |v| serde_json::to_value(v).expect("domain validator serializes"));
-                let built = concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
-                    .map_err(|e| Fault::Divergence(format!("rebuilding NumberValidator: {e}")))?;
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
                 Validator::Number(built)
             }
             _ => {
@@ -835,11 +845,7 @@ fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
 
 /// `compatibleWith`'s `other` argument: `null`, or another `validatorref`,
 /// rebuilt the same way the receiver was.
-fn arg_other_validator(
-    session: &Session,
-    args: &[Arg],
-    index: usize,
-) -> Faulty<Option<Validator>> {
+fn arg_other_validator(session: &Session, args: &[Arg], index: usize) -> Faulty<Option<Validator>> {
     match args.get(index) {
         None | Some(Arg::Plain(Value::Null)) => Ok(None),
         Some(Arg::Validator(mm_idx, prop_id, part)) => {

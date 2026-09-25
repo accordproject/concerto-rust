@@ -689,10 +689,7 @@ impl StringValidator {
                 identifier,
                 DEFAULT_VALIDATOR_EXCEPTION,
                 "stringvalidator-validate-regexmismatch",
-                vec![
-                    ("value", value.to_string()),
-                    ("regex", regex.to_string()),
-                ],
+                vec![("value", value.to_string()), ("regex", regex.to_string())],
             ));
         }
         Ok(())
@@ -718,7 +715,8 @@ impl StringValidator {
         fn flags(v: &Option<CompiledRegex>) -> Option<&str> {
             v.as_ref().map(|r| r.flags.as_str())
         }
-        if pattern(&self.regex) != pattern(&other.regex) || flags(&self.regex) != flags(&other.regex)
+        if pattern(&self.regex) != pattern(&other.regex)
+            || flags(&self.regex) != flags(&other.regex)
         {
             return false;
         }
@@ -806,7 +804,8 @@ mod tests {
     }
 
     fn length_ast(min: Option<f64>, max: Option<f64>) -> mm::StringLengthValidator {
-        let mut ast = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
+        let mut ast =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
         if let Some(min) = min {
             ast["minLength"] = min.into();
         }
@@ -817,7 +816,8 @@ mod tests {
     }
 
     fn size_ast(min: Option<f64>, max: Option<f64>) -> mm::CollectionSizeValidator {
-        let mut ast = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator" });
+        let mut ast =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator" });
         if let Some(min) = min {
             ast["minSize"] = min.into();
         }
@@ -875,7 +875,8 @@ mod tests {
 
     #[test]
     fn string_validator_rejects_min_length_above_max_length() {
-        let err = string_validator(Some(("^[A-z]", "")), Some((Some(200.0), Some(100.0)))).unwrap_err();
+        let err =
+            string_validator(Some(("^[A-z]", "")), Some((Some(200.0), Some(100.0)))).unwrap_err();
         assert!(
             err.to_string()
                 .contains("minLength must be less than or equal to maxLength")
@@ -884,7 +885,11 @@ mod tests {
 
     #[test]
     fn string_validator_rejects_negative_lengths() {
-        for (min, max) in [(Some(-2.0), None), (None, Some(-100.0)), (Some(-1.0), Some(-100.0))] {
+        for (min, max) in [
+            (Some(-2.0), None),
+            (None, Some(-100.0)),
+            (Some(-1.0), Some(-100.0)),
+        ] {
             let err = string_validator(None, Some((min, max))).unwrap_err();
             assert!(
                 err.to_string()
@@ -897,7 +902,8 @@ mod tests {
     #[test]
     fn string_validator_rejects_a_default_value_shorter_than_min_length() {
         let f = field().with_default(serde_json::json!("abc"));
-        let err = StringValidator::new(&f, None, Some(&length_ast(Some(5.0), Some(10.0)))).unwrap_err();
+        let err =
+            StringValidator::new(&f, None, Some(&length_ast(Some(5.0), Some(10.0)))).unwrap_err();
         assert!(
             err.to_string()
                 .contains("The string length of 'abc' should be at least 5 characters.")
@@ -907,7 +913,8 @@ mod tests {
     #[test]
     fn string_validator_rejects_a_default_value_longer_than_max_length() {
         let f = field().with_default(serde_json::json!("abcdefgh"));
-        let err = StringValidator::new(&f, None, Some(&length_ast(Some(2.0), Some(5.0)))).unwrap_err();
+        let err =
+            StringValidator::new(&f, None, Some(&length_ast(Some(2.0), Some(5.0)))).unwrap_err();
         assert!(
             err.to_string()
                 .contains("The string length of 'abcdefgh' should not exceed 5 characters.")
@@ -945,7 +952,10 @@ mod tests {
     fn string_validator_detects_a_mismatched_string() {
         let v = string_validator(Some(("^[A-z][A-z][0-9]{7}", "")), None).unwrap();
         let err = v.validate(&field(), Some("id"), Some("xyz")).unwrap_err();
-        assert!(err.to_string().contains("Validator error for field `id`. org.acme.myField"));
+        assert!(
+            err.to_string()
+                .contains("Validator error for field `id`. org.acme.myField")
+        );
     }
 
     #[test]
@@ -1000,22 +1010,43 @@ mod tests {
     #[test]
     fn string_validator_length_only_bounds() {
         let min_only = string_validator(None, Some((Some(2.0), None))).unwrap();
-        assert!(min_only.validate(&field(), Some("id"), Some("AB1234567455455455")).is_ok());
-        let err = min_only.validate(&field(), Some("id"), Some("w")).unwrap_err();
-        assert!(err.to_string().contains("The string length of 'w' should be at least 2 characters."));
-        let err = min_only.validate(&field(), Some("id"), Some("")).unwrap_err();
-        assert!(err.to_string().contains("The string length of '' should be at least 2 characters."));
+        assert!(
+            min_only
+                .validate(&field(), Some("id"), Some("AB1234567455455455"))
+                .is_ok()
+        );
+        let err = min_only
+            .validate(&field(), Some("id"), Some("w"))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("The string length of 'w' should be at least 2 characters.")
+        );
+        let err = min_only
+            .validate(&field(), Some("id"), Some(""))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("The string length of '' should be at least 2 characters.")
+        );
 
         let max_only = string_validator(None, Some((None, Some(10.0)))).unwrap();
-        assert!(max_only.validate(&field(), Some("id"), Some("ABCD123456")).is_ok());
+        assert!(
+            max_only
+                .validate(&field(), Some("id"), Some("ABCD123456"))
+                .is_ok()
+        );
         assert!(max_only.validate(&field(), Some("id"), Some("")).is_ok());
-        let err = max_only.validate(&field(), Some("id"), Some("ABCD1234567")).unwrap_err();
+        let err = max_only
+            .validate(&field(), Some("id"), Some("ABCD1234567"))
+            .unwrap_err();
         assert!(err.to_string().contains("should not exceed 10 characters."));
     }
 
     #[test]
     fn string_validator_length_takes_precedence_over_regex() {
-        let v = string_validator(Some(("^[A-z]{1,100}$", "")), Some((Some(1.0), Some(10.0)))).unwrap();
+        let v =
+            string_validator(Some(("^[A-z]{1,100}$", "")), Some((Some(1.0), Some(10.0)))).unwrap();
         let err = v
             .validate(&field(), Some("id"), Some("AbCdefghijklmksadada"))
             .unwrap_err();
@@ -1026,7 +1057,8 @@ mod tests {
 
     #[test]
     fn string_validator_is_incompatible_with_a_number_validator() {
-        let other = NumberValidator::new(&field(), &serde_json::json!({"lower": -1, "upper": 1})).unwrap();
+        let other =
+            NumberValidator::new(&field(), &serde_json::json!({"lower": -1, "upper": 1})).unwrap();
         let v = string_validator(Some(("foo", "")), Some((Some(1.0), Some(100.0)))).unwrap();
         assert!(!v.compatible_with(Some(&Validator::Number(other))));
     }
@@ -1092,7 +1124,10 @@ mod tests {
     #[test]
     fn collection_size_validator_rejects_no_bounds() {
         let err = CollectionSizeValidator::new(&field(), &size_ast(None, None)).unwrap_err();
-        assert!(err.to_string().contains("minSize and/or maxSize must be specified"));
+        assert!(
+            err.to_string()
+                .contains("minSize and/or maxSize must be specified")
+        );
     }
 
     #[test]
@@ -1105,8 +1140,12 @@ mod tests {
 
     #[test]
     fn collection_size_validator_rejects_min_above_max() {
-        let err = CollectionSizeValidator::new(&field(), &size_ast(Some(5.0), Some(2.0))).unwrap_err();
-        assert!(err.to_string().contains("minSize must be less than or equal to maxSize"));
+        let err =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(5.0), Some(2.0))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("minSize must be less than or equal to maxSize")
+        );
     }
 
     #[test]
@@ -1138,13 +1177,37 @@ mod tests {
         };
 
         assert!(!v(Some(1.0), None).compatible_with(None));
-        assert!(v(Some(2.0), Some(5.0)).compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(6.0))))));
-        assert!(!v(Some(1.0), Some(5.0)).compatible_with(Some(&Validator::CollectionSize(v(Some(3.0), Some(5.0))))));
-        assert!(!v(Some(1.0), Some(5.0)).compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(3.0))))));
-        assert!(!v(None, Some(10.0)).compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(10.0))))));
-        assert!(!v(Some(1.0), None).compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(10.0))))));
-        assert!(v(Some(1.0), Some(5.0)).compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), None)))));
-        assert!(v(Some(1.0), Some(5.0)).compatible_with(Some(&Validator::CollectionSize(v(None, Some(5.0))))));
-        assert!(v(Some(2.0), Some(8.0)).compatible_with(Some(&Validator::CollectionSize(v(Some(2.0), Some(8.0))))));
+        assert!(
+            v(Some(2.0), Some(5.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(6.0)))))
+        );
+        assert!(
+            !v(Some(1.0), Some(5.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(3.0), Some(5.0)))))
+        );
+        assert!(
+            !v(Some(1.0), Some(5.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(3.0)))))
+        );
+        assert!(
+            !v(None, Some(10.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(10.0)))))
+        );
+        assert!(
+            !v(Some(1.0), None)
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), Some(10.0)))))
+        );
+        assert!(
+            v(Some(1.0), Some(5.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(1.0), None))))
+        );
+        assert!(
+            v(Some(1.0), Some(5.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(None, Some(5.0)))))
+        );
+        assert!(
+            v(Some(2.0), Some(8.0))
+                .compatible_with(Some(&Validator::CollectionSize(v(Some(2.0), Some(8.0)))))
+        );
     }
 }
