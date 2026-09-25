@@ -445,6 +445,10 @@ pub enum DecoParent {
     Prop(PropId),
     /// A model file's own decorators, by namespace.
     File(String),
+    /// A map's key (`is_key = true`) or value decorators (P2-09a/#152):
+    /// `MapKeyType`/`MapValueType.process` reads them in TS, independently
+    /// of the map's own `getDecorators()`.
+    MapPart(DeclId, bool),
 }
 
 /// One decoding session: `dctx` in `codec.js`.
@@ -1024,21 +1028,21 @@ impl<'h> Session<'h> {
                 };
                 Ok((owner, DecoParent::Decl(id)))
             }
-            // A map's key or value (`{decl, part}`, P2-06): the engine's
-            // `MapDeclaration` does not read its key's or value's decorators
-            // (its doc comment), which `MapKeyType.process`/
-            // `MapValueType.process` do in TS.
-            Some("propref") if v.get("part").is_some() => {
-                let member = match v.get("part").and_then(Value::as_str) {
-                    Some("value") => "MapValueType.process",
-                    _ => "MapKeyType.process",
-                };
-                Err(blocked(
-                    "the decorators of a map's key or value, which the Rust MapDeclaration does \
-                     not read",
-                    member,
-                ))
-            }
+            // A map's key or value (`{decl, part}`): `MapDeclaration` reads
+            // and stores its key's and value's own decorators (P2-09a/#152),
+            // the same way `MapKeyType.process`/`MapValueType.process` do in
+            // TS. A detached (`mfnew`, unregistered) map's key or value has
+            // no pool entry to resolve against, the same gap as the
+            // `declref`/`DeclTarget::Detached` branch above.
+            Some("propref") if v.get("part").is_some() => match self.map_part(v)? {
+                Arg::MapPart(owner, id, is_key) => Ok((owner, DecoParent::MapPart(id, is_key))),
+                Arg::MapPartDetached { .. } => Err(blocked(
+                    "a decorator of a map's key or value in a model file that is not \
+                     registered (mfnew) has no Rust handle",
+                    "ModelFile.new",
+                )),
+                _ => Err(Fault::Harness("map_part returned an unexpected Arg".into())),
+            },
             Some("propref") => {
                 let (owner, id) = self.propref(v)?;
                 Ok((owner, DecoParent::Prop(id)))
@@ -1070,6 +1074,11 @@ impl DecoParent {
             Self::Decl(id) => r.mm.declaration(*id).map(Decorated::get_decorators),
             Self::Prop(id) => r.mm.property(*id).map(Decorated::get_decorators),
             Self::File(ns) => r.mm.model_file(ns).map(Decorated::get_decorators),
+            Self::MapPart(id, is_key) => match r.mm.declaration(*id) {
+                Some(Declaration::Map(map)) if *is_key => Some(map.key_decorators()),
+                Some(Declaration::Map(map)) => Some(map.value_decorators()),
+                _ => None,
+            },
         }
     }
 }
