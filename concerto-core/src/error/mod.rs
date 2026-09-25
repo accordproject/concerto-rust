@@ -1001,6 +1001,70 @@ mod tests {
     }
 
     #[test]
+    fn golden_basemodelmanager_throwalreadyexists() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-throwalreadyexists",
+                &[
+                    ("namespace", "org.acme@1.0.0"),
+                    ("prefix", " specified in file new.cto"),
+                    ("postfix", " in file old.cto")
+                ]
+            )
+            .message(),
+            "Namespace org.acme@1.0.0 specified in file new.cto is already declared in file old.cto"
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_throwalreadyexists_without_names() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-throwalreadyexists",
+                &[
+                    ("namespace", "org.acme@1.0.0"),
+                    ("prefix", ""),
+                    ("postfix", "")
+                ]
+            )
+            .message(),
+            "Namespace org.acme@1.0.0 is already declared"
+        );
+    }
+
+    #[test]
+    fn golden_metamodelutil_createnametable_declarationnotfound() {
+        assert_eq!(
+            contract(
+                "metamodelutil-createnametable-declarationnotfound",
+                &[("name", "Foo"), ("namespace", "org.acme@1.0.0")]
+            )
+            .message(),
+            "Declaration Foo in namespace org.acme@1.0.0 not found"
+        );
+    }
+
+    #[test]
+    fn golden_metamodelutil_resolvename_notfound() {
+        assert_eq!(
+            contract("metamodelutil-resolvename-notfound", &[("name", "Foo")]).message(),
+            "Name Foo not found"
+        );
+    }
+
+    #[test]
+    fn golden_metamodelutil_resolvetypenames_unrecognizedclass() {
+        assert_eq!(
+            contract(
+                "metamodelutil-resolvetypenames-unrecognizedclass",
+                &[("class", "undefined")]
+            )
+            .message(),
+            "Unrecognized $class undefined"
+        );
+    }
+
+    #[test]
     fn golden_modelmanager_gettype_notypeinns() {
         assert_eq!(
             contract(

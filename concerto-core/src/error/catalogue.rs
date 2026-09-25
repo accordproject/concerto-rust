@@ -326,6 +326,41 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["src/basemodelmanager.ts:372"],
     },
     CatalogueEntry {
+        code: "basemodelmanager-throwalreadyexists",
+        template: "Namespace {namespace}{prefix} is already declared{postfix}",
+        renderer: Renderer::Inline,
+        // BaseModelManager._throwAlreadyExists (RUST, P2-08b): a plain
+        // `Error`. `prefix`/`postfix` are pre-formatted (" specified in
+        // file {name}" / " in file {name}"), empty when that model file has
+        // no name, since `Renderer::Inline` does no conditional logic.
+        sources: &["src/basemodelmanager.ts:226"],
+    },
+    CatalogueEntry {
+        code: "metamodelutil-createnametable-declarationnotfound",
+        template: "Declaration {name} in namespace {namespace} not found",
+        renderer: Renderer::Inline,
+        // MetaModelUtil.createNameTable (RUST, P2-08b): a plain `Error`,
+        // reached through BaseModelManager.resolveMetaModel/getAst(true, …).
+        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:75,90"],
+    },
+    CatalogueEntry {
+        code: "metamodelutil-resolvename-notfound",
+        template: "Name {name} not found",
+        renderer: Renderer::Inline,
+        // MetaModelUtil.resolveName (RUST, P2-08b): a plain `Error`, reached
+        // through BaseModelManager.resolveMetaModel/getAst(true, …).
+        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:117"],
+    },
+    CatalogueEntry {
+        code: "metamodelutil-resolvetypenames-unrecognizedclass",
+        template: "Unrecognized $class {class}",
+        renderer: Renderer::Inline,
+        // MetaModelUtil.resolveTypeNames (RUST, P2-08b): a plain `Error`,
+        // only reachable for a node with no (or an empty) `$class` — no
+        // corpus fixture reaches it, ported for fidelity with the reference.
+        sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:196"],
+    },
+    CatalogueEntry {
         code: "modelmanager-gettype-notypeinns",
         template: "Type \"{type}\" is not defined in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,

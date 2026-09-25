@@ -22,7 +22,10 @@
 //!   `validateModelFiles`, `clearModelFiles`, `fromAst`, which are also the
 //!   recipe steps every other model-manager fixture is rebuilt with; plus
 //!   the queries with a direct Rust counterpart: `getNamespaces`,
-//!   `getAst(false, …)` and `getType` (`get_declaration`). The Rust
+//!   `getAst` (both `resolve` values, `ModelManager::get_ast`, P2-08b) and
+//!   `getType` (`get_declaration`); `resolveMetaModel`
+//!   (`ModelManager::resolve_meta_model`, P2-08b) has its own fixtures too.
+//!   The Rust
 //!   `ModelManager` is still pre-port (P2-08 ports it), so these fixtures
 //!   report its differences from TS as per-rule failures, which is the
 //!   point: they are what P2-08 and the introspection tasks have to close.
@@ -48,7 +51,10 @@
 //!   `executePropertyCommand`'s property) is compared through
 //!   `outcome.effects.args`, as the recorder records it. `decorateModels` and
 //!   the `extract*` statics read `getAst(true, …)` in TS, which resolves the
-//!   metamodel (`BaseModelManager.resolveMetaModel`, not ported: P2-08):
+//!   metamodel (`BaseModelManager.resolveMetaModel`); `concerto_core::dcs`
+//!   (P2-12) reads the unresolved AST instead by design (its own module
+//!   doc), even though `ModelManager::resolve_meta_model` exists now
+//!   (P2-08b) — wiring DCS itself through it is P2-12's, not this file's:
 //!   a fixture whose models that resolution would change is `unsupported`
 //!   for that owner, once every step before it has been compared
 //!   (`resolution_changes_nothing`). A model manager `derived` from one of
@@ -537,6 +543,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                         | "getMapDeclarations"
                         | "validateModelFile"
                         | "filter"
+                        | "resolveMetaModel"
                 )
         }
         ("ModelUtil", m) => matches!(
@@ -2488,19 +2495,24 @@ fn extract_options(options: Option<&Value>) -> dcs::ExtractOptions {
     out
 }
 
-/// Whether `BaseModelManager.resolveMetaModel` (not ported: P2-08/P4-08)
-/// would leave every model of `mm` unchanged, so that a DCS op which reads
-/// `getAst(true, …)` in TS is replayed exactly by one that reads the
-/// unresolved AST. `MetaModelUtil.resolveLocalNames` (concerto-metamodel)
-/// builds a name table from each model's imports, which throws for an
-/// import whose namespace or declaration is not loaded, then only rewrites
-/// super types, object/relationship property and map types, decorator type
-/// references and scalar declarations (it adds their `namespace`). So it is
-/// the identity when every import resolves and no user model holds any of
-/// those nodes, nor any model a decorator type reference. The system models'
-/// own super types are rewritten too, but no DCS op's result carries them:
-/// `fromAst` skips those namespaces, and their decorators have no type
-/// references.
+/// Whether `BaseModelManager.resolveMetaModel` would leave every model of
+/// `mm` unchanged, so that a DCS op which reads `getAst(true, …)` in TS is
+/// replayed exactly by one that reads the unresolved AST. `resolveMetaModel`
+/// is ported now (`ModelManager::resolve_meta_model`, P2-08b), but
+/// `concerto_core::dcs` (P2-12) still reads the unresolved AST by design
+/// (its own module doc, "Metamodel resolution") — wiring DCS through the
+/// real port is P2-12's, not this harness's, so this heuristic stays a
+/// stand-in for that gap rather than calling `resolve_meta_model` and
+/// diffing the result: `MetaModelUtil.resolveLocalNames`
+/// (concerto-metamodel) builds a name table from each model's imports,
+/// which throws for an import whose namespace or declaration is not
+/// loaded, then only rewrites super types, object/relationship property
+/// and map types, decorator type references and scalar declarations (it
+/// adds their `namespace`). So it is the identity when every import
+/// resolves and no user model holds any of those nodes, nor any model a
+/// decorator type reference. The system models' own super types are
+/// rewritten too, but no DCS op's result carries them: `fromAst` skips
+/// those namespaces, and their decorators have no type references.
 fn resolution_changes_nothing(mm: &ModelManager) -> bool {
     const MM: &str = "concerto.metamodel@1.0.0.";
     fn class_of(v: &Value) -> &str {
@@ -2661,8 +2673,8 @@ fn restore_undefined_decorators(source: &ModelManager, summary: &mut Value) {
 fn blocked_on_resolution(op: &str) -> Fault {
     Fault::Blocked(
         format!(
-            "{op} reads getAst(true, …), whose metamodel resolution (resolveMetaModel) is not \
-             ported and would change these models"
+            "{op} reads getAst(true, …), whose metamodel resolution (resolveMetaModel) would \
+             change these models, and concerto_core::dcs does not call it yet"
         ),
         recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
     )
@@ -3071,13 +3083,18 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
             let (Some(resolve), Some(include)) = (plain(0), plain(1)) else {
                 return unsupported("getAst with non-plain arguments");
             };
-            if recipe::truthy(&resolve) {
-                return Dispatch::Fault(Fault::Blocked(
-                    "getAst(resolve = true) needs resolveMetaModel, not ported yet".into(),
-                    recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
-                ));
+            let resolve = recipe::truthy(&resolve);
+            let include = recipe::truthy(&include);
+            if !resolve {
+                return ran(Ok(r.ast(include)));
             }
-            ran(Ok(r.ast(recipe::truthy(&include))))
+            from_engine(r.mm.get_ast(true, include), |v| v)
+        }
+        "resolveMetaModel" => {
+            let Some(Arg::Plain(meta_model)) = args.first() else {
+                return unsupported("resolveMetaModel with a metamodel that is not plain data");
+            };
+            from_engine(r.mm.resolve_meta_model(meta_model), |v| v)
         }
         "getType" => {
             let Some(Value::String(fqn)) = plain(0) else {
