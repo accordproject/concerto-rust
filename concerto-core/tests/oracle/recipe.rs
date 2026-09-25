@@ -58,11 +58,12 @@
 //! name as `codec.js` checks them. `decoref` (P2-07) becomes a
 //! [`DecoParent`] plus its position, resolved against its parent's processed
 //! decorators at dispatch time (`ops.rs`); its `parent` must itself be a
-//! `declref`, `propref` or `mfref`. A `declnew` (a declaration built
+//! `declref`, `propref` or `mfref`. A map key/value `propref` (one with a
+//! `part`) becomes an [`Arg::MapPart`] (P2-06). A `declnew` (a declaration built
 //! directly via `new Cls(modelFile, ast)`, never added to `modelFile`) is
 //! rebuilt with `ScalarDeclaration::build_standalone` when `cls` is
 //! `ScalarDeclaration` (P2-05); any other `cls` is `unsupported`, for its own
-//! owner. Map key/value `propref`s, `validatorref`, `factory`, `serializer`,
+//! owner. `validatorref`, `factory`, `serializer`,
 //! `introspector`, `predicate` and `decoratorfactory` have no Rust
 //! counterpart yet: `unsupported`. `typed` (P3-01 review, task
 //! `accordproject-concerto-rust#56` follow-up) is decoded directly into
@@ -243,6 +244,15 @@ pub enum Arg {
     SelfMm,
     Decl(usize, DeclId),
     Prop(usize, PropId),
+    /// A `MapKeyType` (`is_key = true`) or `MapValueType` (`is_key = false`)
+    /// belonging to the `MapDeclaration` at `(pool index, DeclId)`. TS gives
+    /// these their own class, but this engine reads a map's key and value as
+    /// plain accessors on `MapDeclaration` (README "Ops";
+    /// `introspect::declaration::MapDeclaration`), so there is no separate
+    /// handle to register — the recorder's `propref` with a `part` field
+    /// (`"key"` or `"value"`) decodes straight to this variant instead of a
+    /// `PropId`.
+    MapPart(usize, DeclId, bool),
     /// A declaration built directly via `new` (`declnew`), never added to its
     /// model file: `ScalarDeclaration::build_standalone`'s result, computed
     /// eagerly here as TS runs the constructor while decoding the receiver.
@@ -404,6 +414,10 @@ impl<'h> Session<'h> {
             "declref" => {
                 let (mm, id) = self.declref(v)?;
                 Ok(Arg::Decl(mm, id))
+            }
+            "propref" if v.get("part").and_then(Value::as_str).is_some() => {
+                let (mm, id, is_key) = self.map_part(v)?;
+                Ok(Arg::MapPart(mm, id, is_key))
             }
             "declnew" => self.declnew(v, self_mm),
             "typed" => self.typed(v),
@@ -647,13 +661,40 @@ impl<'h> Session<'h> {
         }
     }
 
-    fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
-        if v.get("part").and_then(Value::as_str).is_some() {
+    /// A `MapKeyType`/`MapValueType` target: `{decl: <declref>, part: "key" |
+    /// "value"}` (`migration/oracle/lib/codec.js`). The referenced
+    /// declaration is checked to be a `MapDeclaration` here, once, rather
+    /// than by every op that takes an [`Arg::MapPart`].
+    fn map_part(&mut self, v: &Value) -> Faulty<(usize, DeclId, bool)> {
+        let part = v.get("part").and_then(Value::as_str).unwrap_or_default();
+        let is_key = match part {
+            "key" => true,
+            "value" => false,
+            other => {
+                return Err(Fault::Unsupported(format!(
+                    "a map part that is neither \"key\" nor \"value\": {other:?}"
+                )));
+            }
+        };
+        let decl = v
+            .get("decl")
+            .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
+        if decl.get(M).and_then(Value::as_str) != Some("declref") {
             return Err(blocked(
-                "a map key or value type has no Rust handle yet (MapKeyType/MapValueType)",
-                "MapKeyType.new",
+                "a map key or value of a declaration that is not in its model file (declnew)",
+                "MapDeclaration.new",
             ));
         }
+        let (owner, id) = self.declref(decl)?;
+        match self.pool[owner].mm.declaration(id) {
+            Some(Declaration::Map(_)) => Ok((owner, id, is_key)),
+            _ => Err(Fault::Divergence(
+                "state divergence: the declaration did not load as a map".into(),
+            )),
+        }
+    }
+
+    fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
         let decl = v
             .get("decl")
             .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
@@ -1138,6 +1179,21 @@ impl Replayed {
         }))
     }
 
+    /// The outcome-only `MapKeyType`/`MapValueType` summary
+    /// (`makeOutputEncoder`'s generic `Property` shape, confirmed against a
+    /// recorded `MapDeclaration.getKey`/`getValue` fixture): `{ctor, type}`,
+    /// `type` being `MapKeyType.getType`/`MapValueType.getType`'s result.
+    pub fn map_part_summary(&self, id: DeclId, is_key: bool) -> Option<Value> {
+        let Declaration::Map(map) = self.mm.declaration(id)? else {
+            return None;
+        };
+        Some(json!({
+            M: "Property",
+            "ctor": if is_key { "MapKeyType" } else { "MapValueType" },
+            "type": if is_key { map.key_type_name() } else { map.value_type_name() },
+        }))
+    }
+
     pub fn file_id(&self, ns: &str) -> Option<ModelFileId> {
         self.mm.model_file_id(ns)
     }
@@ -1432,6 +1488,7 @@ impl Clone for Arg {
             Self::SelfMm => Self::SelfMm,
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
+            Self::MapPart(m, d, is_key) => Self::MapPart(*m, *d, *is_key),
             Self::DeclNew { fqn, processed } => Self::DeclNew {
                 fqn: fqn.clone(),
                 processed: processed.clone(),
