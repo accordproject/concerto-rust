@@ -279,6 +279,28 @@ pub enum Arg {
     /// (`"key"` or `"value"`) decodes straight to this variant instead of a
     /// `PropId`.
     MapPart(usize, DeclId, bool),
+    /// A `MapDeclaration` reached from a `ModelFile` built directly
+    /// (`mfnew`) and never registered: `declref`'s `mf` is `mfnew` rather
+    /// than `mfref`, so there is no arena `DeclId` for it (P2-06b, closing
+    /// "ModelFile.new" for `MapDeclaration`/`MapKeyType`/`MapValueType` —
+    /// every other declaration kind on an `mfnew` receiver is still
+    /// unsupported, `declref`'s doc comment). Carries the built `ModelFile`,
+    /// its position in [`concerto_core::introspect::ModelFile::declarations`],
+    /// and the owning model manager's pool index (for the cross-file
+    /// resolution `ModelManager::validate_detached_declaration` needs).
+    DeclDetached {
+        mm_index: Option<usize>,
+        file: ModelFile,
+        index: usize,
+    },
+    /// [`Arg::DeclDetached`]'s key (`is_key = true`) or value part, the same
+    /// relationship [`Arg::MapPart`] has to [`Arg::Decl`].
+    MapPartDetached {
+        mm_index: Option<usize>,
+        file: ModelFile,
+        index: usize,
+        is_key: bool,
+    },
     /// A declaration built directly via `new` (`declnew`), never added to its
     /// model file: `ScalarDeclaration::build_standalone`'s result, computed
     /// eagerly here as TS runs the constructor while decoding the receiver.
@@ -313,6 +335,36 @@ pub enum Arg {
     /// `Resource.validate` and the `Identifiable`/`Typed`/`Relationship`
     /// accessors are dispatched from this.
     Typed(usize, DecodedInstance),
+}
+
+/// What a `declref` resolved to: a handle into an already-registered model
+/// manager, or (P2-06b) a `MapDeclaration` read directly out of a `ModelFile`
+/// that was built but never registered (`mfnew`).
+#[allow(clippy::large_enum_variant)]
+enum DeclTarget {
+    Registered(usize, DeclId),
+    Detached {
+        mm_index: Option<usize>,
+        file: ModelFile,
+        index: usize,
+    },
+}
+
+impl DeclTarget {
+    fn into_arg(self) -> Arg {
+        match self {
+            Self::Registered(mm, id) => Arg::Decl(mm, id),
+            Self::Detached {
+                mm_index,
+                file,
+                index,
+            } => Arg::DeclDetached {
+                mm_index,
+                file,
+                index,
+            },
+        }
+    }
 }
 
 /// A decoded oracle `"typed"` value: enough of a `Resource`, `ValidatedResource`
@@ -454,14 +506,8 @@ impl<'h> Session<'h> {
                 self.mm_index(mm_node).map(Arg::Mm)
             }
             "mfref" | "mfnew" => self.file(v, self_mm).map(Arg::File),
-            "declref" => {
-                let (mm, id) = self.declref(v)?;
-                Ok(Arg::Decl(mm, id))
-            }
-            "propref" if v.get("part").and_then(Value::as_str).is_some() => {
-                let (mm, id, is_key) = self.map_part(v)?;
-                Ok(Arg::MapPart(mm, id, is_key))
-            }
+            "declref" => self.declref(v).map(DeclTarget::into_arg),
+            "propref" if v.get("part").and_then(Value::as_str).is_some() => self.map_part(v),
             "declnew" => self.declnew(v, self_mm),
             "predicate" => match v.get("kind").and_then(Value::as_str) {
                 Some("fqn-in") => {
@@ -705,7 +751,7 @@ impl<'h> Session<'h> {
         // the ops that read it (`getClassDeclaration`, `instanceOf`) report.
         if let Some(decl) = v.get("decl")
             && decl.get(M).and_then(Value::as_str) == Some("declref")
-            && let Ok((owner, id)) = self.declref(decl)
+            && let Ok(DeclTarget::Registered(owner, id)) = self.declref(decl)
             && owner == mm_index
         {
             inst.class_declaration = Some(id);
@@ -713,23 +759,55 @@ impl<'h> Session<'h> {
         Ok(Arg::Typed(mm_index, inst))
     }
 
-    fn declref(&mut self, v: &Value) -> Faulty<(usize, DeclId)> {
+    fn declref(&mut self, v: &Value) -> Faulty<DeclTarget> {
         let mf = v
             .get("mf")
             .ok_or_else(|| Fault::Harness("declref without mf".into()))?;
+        let index = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
+        let index = usize::try_from(index).unwrap_or(usize::MAX);
+
         if mf.get(M).and_then(Value::as_str) != Some("mfref") {
-            return Err(blocked(
-                "a declaration of a model file that is not registered (mfnew) has no Rust handle",
-                "ModelFile.new",
-            ));
+            // Only a `MapDeclaration` on an unregistered file is wired yet
+            // (P2-06b): every other declaration kind built this way still
+            // has no Rust handle, owned by `ModelFile.new`.
+            let is_map = mf
+                .get("ast")
+                .and_then(|ast| ast.get("declarations"))
+                .and_then(Value::as_array)
+                .and_then(|decls| decls.get(index))
+                .and_then(|d| d.get("$class"))
+                .and_then(Value::as_str)
+                .is_some_and(|c| c.ends_with(".MapDeclaration"));
+            if !is_map {
+                return Err(blocked(
+                    "a declaration of a model file that is not registered (mfnew) has no Rust handle",
+                    "ModelFile.new",
+                ));
+            }
+            let file_arg = self.file(mf, None)?;
+            let built = ModelFile::from_json_with_definitions(
+                &file_arg.ast,
+                file_arg.definitions.clone(),
+                file_arg.file_name.clone(),
+            )
+            .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
+            if built.declarations().get(index).map(Named::name) != Some(name) {
+                return Err(Fault::Divergence(
+                    "state divergence: declaration not found in an unregistered ModelFile".into(),
+                ));
+            }
+            return Ok(DeclTarget::Detached {
+                mm_index: file_arg.mm_index,
+                file: built,
+                index,
+            });
         }
         let owner = self.mm_index(
             mf.get("mm")
                 .ok_or_else(|| Fault::Harness("mfref without mm".into()))?,
         )?;
         let ns = mf.get("ns").and_then(Value::as_str).unwrap_or_default();
-        let index = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
-        let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
         let mm = &self.pool[owner].mm;
         let not_found =
             || Fault::Divergence(format!("state divergence: declaration {name} not found"));
@@ -738,12 +816,9 @@ impl<'h> Session<'h> {
                 "state divergence: model file {ns} not registered after replay"
             ))
         })?;
-        let id = mm
-            .declaration_ids(file)
-            .nth(usize::try_from(index).unwrap_or(usize::MAX))
-            .ok_or_else(not_found)?;
+        let id = mm.declaration_ids(file).nth(index).ok_or_else(not_found)?;
         match mm.declaration(id) {
-            Some(d) if d.name() == name => Ok((owner, id)),
+            Some(d) if d.name() == name => Ok(DeclTarget::Registered(owner, id)),
             _ => Err(not_found()),
         }
     }
@@ -751,8 +826,8 @@ impl<'h> Session<'h> {
     /// A `MapKeyType`/`MapValueType` target: `{decl: <declref>, part: "key" |
     /// "value"}` (`migration/oracle/lib/codec.js`). The referenced
     /// declaration is checked to be a `MapDeclaration` here, once, rather
-    /// than by every op that takes an [`Arg::MapPart`].
-    fn map_part(&mut self, v: &Value) -> Faulty<(usize, DeclId, bool)> {
+    /// than by every op that takes an [`Arg::MapPart`]/[`Arg::MapPartDetached`].
+    fn map_part(&mut self, v: &Value) -> Faulty<Arg> {
         let part = v.get("part").and_then(Value::as_str).unwrap_or_default();
         let is_key = match part {
             "key" => true,
@@ -772,12 +847,28 @@ impl<'h> Session<'h> {
                 "MapDeclaration.new",
             ));
         }
-        let (owner, id) = self.declref(decl)?;
-        match self.pool[owner].mm.declaration(id) {
-            Some(Declaration::Map(_)) => Ok((owner, id, is_key)),
-            _ => Err(Fault::Divergence(
-                "state divergence: the declaration did not load as a map".into(),
-            )),
+        match self.declref(decl)? {
+            DeclTarget::Registered(owner, id) => match self.pool[owner].mm.declaration(id) {
+                Some(Declaration::Map(_)) => Ok(Arg::MapPart(owner, id, is_key)),
+                _ => Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a map".into(),
+                )),
+            },
+            DeclTarget::Detached {
+                mm_index,
+                file,
+                index,
+            } => match file.declarations().get(index) {
+                Some(Declaration::Map(_)) => Ok(Arg::MapPartDetached {
+                    mm_index,
+                    file,
+                    index,
+                    is_key,
+                }),
+                _ => Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a map".into(),
+                )),
+            },
         }
     }
 
@@ -791,7 +882,16 @@ impl<'h> Session<'h> {
                 "ScalarDeclaration.new",
             ));
         }
-        let (owner, decl) = self.declref(decl)?;
+        let (owner, decl) = match self.declref(decl)? {
+            DeclTarget::Registered(owner, id) => (owner, id),
+            DeclTarget::Detached { .. } => {
+                return Err(blocked(
+                    "a property of a declaration in a model file that is not registered \
+                     (mfnew) has no Rust handle",
+                    "ModelFile.new",
+                ));
+            }
+        };
         let mm = &self.pool[owner].mm;
         let index = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
         let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -849,7 +949,16 @@ impl<'h> Session<'h> {
     pub fn decorated_target(&mut self, v: &Value) -> Faulty<(usize, DecoParent)> {
         match v.get(M).and_then(Value::as_str) {
             Some("declref") => {
-                let (owner, id) = self.declref(v)?;
+                let (owner, id) = match self.declref(v)? {
+                    DeclTarget::Registered(owner, id) => (owner, id),
+                    DeclTarget::Detached { .. } => {
+                        return Err(blocked(
+                            "a decorator of a declaration in a model file that is not \
+                             registered (mfnew) has no Rust handle",
+                            "ModelFile.new",
+                        ));
+                    }
+                };
                 Ok((owner, DecoParent::Decl(id)))
             }
             Some("propref") => {
@@ -1960,6 +2069,26 @@ impl Clone for Arg {
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
             Self::MapPart(m, d, is_key) => Self::MapPart(*m, *d, *is_key),
+            Self::DeclDetached {
+                mm_index,
+                file,
+                index,
+            } => Self::DeclDetached {
+                mm_index: *mm_index,
+                file: file.clone(),
+                index: *index,
+            },
+            Self::MapPartDetached {
+                mm_index,
+                file,
+                index,
+                is_key,
+            } => Self::MapPartDetached {
+                mm_index: *mm_index,
+                file: file.clone(),
+                index: *index,
+                is_key: *is_key,
+            },
             Self::DeclNew { fqn, processed } => Self::DeclNew {
                 fqn: fqn.clone(),
                 processed: processed.clone(),

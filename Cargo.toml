@@ -28,6 +28,11 @@ homepage = "https://concerto.accordproject.org"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# `float_roundtrip`: every Concerto number is a JS double (PORTING.md 3.1),
+# and JS `JSON.parse`/`Number::toString` round-trip exactly; serde_json's
+# default fast float parser can land 1 ULP off (989.9951327998887 parsed as
+# 989.9951327998888), silently changing Double values that cross the
+# Serializer fast path (P4-10, accordproject/concerto-rust#69).
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 thiserror = "1.0"
 chrono = "0.4"

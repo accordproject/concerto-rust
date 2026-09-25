@@ -48,7 +48,12 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use concerto_core::error::{ContractError, ErrorKind};
+use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::resource_id::ResourceId;
+use concerto_core::instance::{
+    Instance, InstanceEnv, InstanceKind, JsValue as CoreValue, Serializer, SerializerOptions,
+};
+use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
 use concerto_core::introspect::field;
@@ -141,6 +146,7 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::Validation => "Validation",
         ErrorKind::Error => "Error",
         ErrorKind::JsTypeError => "JsTypeError",
+        ErrorKind::Metamodel => "Metamodel",
     }
 }
 
@@ -1688,6 +1694,7 @@ fn illegal_model_error(message: String, location: Option<Value>) -> Error {
         location,
         model_file: Some(None),
         validator: None,
+        details: Vec::new(),
     }
     .into()
 }
@@ -2177,6 +2184,7 @@ pub fn class_declaration_get_nested_property(
                     location: ast_location(&declaration)?,
                     model_file: Some(None),
                     validator: None,
+                    details: Vec::new(),
                 }
                 .into());
             }
@@ -2941,6 +2949,284 @@ fn snapshot(value: &Value) -> Result<String> {
     serde_json::to_string(value).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
 }
 
+// ---------------------------------------------------------------------------
+// Serializer fast path (P4-10, accordproject/concerto-rust#69)
+// ---------------------------------------------------------------------------
+//
+// `Serializer.fromJSON`/`toJSON` cross the boundary in one call each
+// (PORTING.md section 5 row 6, D7), rather than per field through the TS
+// visitors (which keep their shells and stay the fallback path, plan §3).
+// The view (`JSON.stringify`s its argument, reads a JSON string back, per
+// `snapshot`'s doc above.
+//
+// Plain JSON crosses unchanged. Anything else is a one-key object tagged
+// `@@oracle` ([`WIRE_TAG`]), so that a value JSON cannot hold (a non-finite
+// number, `undefined`, a `Map`, a dayjs, an already-`Resource`/
+// `ValidatedResource`/`Relationship` field) still round-trips. This mirrors
+// `concerto-core/tests/oracle/instances.rs`'s own codec closely enough to
+// reuse its design, but is self-contained here since that module is
+// test-only; the TS-side codec (`src/engine/serializer-codec.ts`) writes and
+// reads the exact same shapes.
+//
+// A `"typed"` value's `fields` holds every own property of the TS object,
+// in order, `$`-prefixed handles included (`$namespace`, `$type`,
+// `$identifierFieldName`, `$identifier`, `$timestamp`, and `$class` for a
+// `Relationship`) except `$modelManager`/`$classDeclaration`/`$validator`
+// (the view never sends those): decoding needs no separate model lookup, it
+// is built directly into the `Instance`'s `props`. A dayjs crosses as
+// `(epoch ms, utcOffset minutes)` (PORTING.md 3.3), never a date object;
+// D7 keeps dayjs construction in TS, so the view rebuilds it from that pair.
+
+/// The wire tag key, matching the oracle harness's own `M` constant.
+const WIRE_TAG: &str = "@@oracle";
+
+/// An engine-side error for a wire shape the codec does not recognise: not
+/// a TS bug (the view controls what it sends), so it is reported the same
+/// way as any other not-yet-ported call site (PORTING.md 7.2), rather than
+/// through the message catalogue.
+fn wire_error(reason: String) -> Error {
+    ContractError::pre_port(ErrorKind::Error, reason, None).into()
+}
+
+/// A JS number that is not finite, or `-0`, in [`WIRE_TAG`]'s `"number"`
+/// encoding.
+fn decode_wire_number(text: &str) -> Result<f64> {
+    match text {
+        "NaN" => Ok(f64::NAN),
+        "Infinity" => Ok(f64::INFINITY),
+        "-Infinity" => Ok(f64::NEG_INFINITY),
+        "-0" => Ok(-0.0),
+        other => Err(wire_error(format!("an unrecognised wire number {other}"))),
+    }
+}
+
+/// A `"typed"` wire value (module doc) as an [`Instance`]: `ctor` selects
+/// the [`InstanceKind`], `fqn` is `class_fqn`, and every entry of `fields`
+/// decodes straight into `props`, in order.
+fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<Instance> {
+    let kind = match map.get("ctor").and_then(Value::as_str) {
+        Some("Resource") => InstanceKind::Resource,
+        Some("ValidatedResource") => InstanceKind::ValidatedResource,
+        Some("Relationship") => InstanceKind::Relationship,
+        other => return Err(wire_error(format!("a typed wire value of class {other:?}"))),
+    };
+    let fqn = map
+        .get("fqn")
+        .and_then(Value::as_str)
+        .ok_or_else(|| wire_error("a typed wire value without fqn".to_string()))?
+        .to_string();
+    let fields = map
+        .get("fields")
+        .and_then(Value::as_object)
+        .ok_or_else(|| wire_error("a typed wire value without fields".to_string()))?;
+    let mut props = SerializerOptions::new();
+    for (key, value) in fields {
+        props.insert(key.clone(), decode_wire(value)?);
+    }
+    Ok(Instance {
+        kind,
+        class_fqn: fqn,
+        props,
+        validator_options: concerto_core::instance::ValidateOptions::default(),
+    })
+}
+
+/// A wire value (module doc) as the [`CoreValue`] it decodes to: plain JSON
+/// unchanged, and [`WIRE_TAG`]'s `undefined`, `number`, `dayjs`, `map` and
+/// `typed` kinds.
+fn decode_wire(value: &Value) -> Result<CoreValue> {
+    match value {
+        Value::Null => Ok(CoreValue::Null),
+        Value::Bool(b) => Ok(CoreValue::Bool(*b)),
+        Value::Number(n) => Ok(CoreValue::Number(n.as_f64().unwrap_or(f64::NAN))),
+        Value::String(s) => Ok(CoreValue::String(s.clone())),
+        Value::Array(items) => items
+            .iter()
+            .map(decode_wire)
+            .collect::<Result<Vec<_>>>()
+            .map(CoreValue::Array),
+        Value::Object(map) => match map.get(WIRE_TAG).and_then(Value::as_str) {
+            None => {
+                let mut out = SerializerOptions::new();
+                for (key, item) in map {
+                    out.insert(key.clone(), decode_wire(item)?);
+                }
+                Ok(CoreValue::Object(out))
+            }
+            Some("undefined") => Ok(CoreValue::Undefined),
+            Some("number") => {
+                let text = map
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| wire_error("a wire number without value".to_string()))?;
+                decode_wire_number(text).map(CoreValue::Number)
+            }
+            Some("map") => {
+                let entries = map
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| wire_error("a wire map without entries".to_string()))?;
+                let mut decoded = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let pair = entry.as_array().ok_or_else(|| {
+                        wire_error("a wire map entry that is not a pair".to_string())
+                    })?;
+                    let key = pair
+                        .first()
+                        .ok_or_else(|| wire_error("a wire map entry without a key".to_string()))?;
+                    let value = pair.get(1).ok_or_else(|| {
+                        wire_error("a wire map entry without a value".to_string())
+                    })?;
+                    decoded.push((decode_wire(key)?, decode_wire(value)?));
+                }
+                Ok(CoreValue::Map(decoded))
+            }
+            Some("dayjs") => {
+                let valid = map.get("valid").and_then(Value::as_bool).unwrap_or(false);
+                if !valid {
+                    return Ok(CoreValue::DateTime(Dayjs::utc_invalid()));
+                }
+                let ms = map
+                    .get("ms")
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| wire_error("a valid wire dayjs without ms".to_string()))?;
+                let offset = map.get("utcOffset").and_then(Value::as_f64).unwrap_or(0.0);
+                let built = Dayjs::utc_from_number(ms);
+                let built = if offset == 0.0 {
+                    built
+                } else {
+                    built.utc_offset_set(&UtcOffset::Number(offset))
+                };
+                Ok(CoreValue::DateTime(built))
+            }
+            Some("typed") => decode_wire_typed(map).map(|i| CoreValue::Instance(Box::new(i))),
+            Some(other) => Err(wire_error(format!(
+                "a wire value of kind {other} has no engine counterpart"
+            ))),
+        },
+    }
+}
+
+/// The options object a serializer call's `optionsText` decodes to
+/// (`JSON.stringify`d by the view, `"null"` for no options).
+fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
+    let value: Value = serde_json::from_str(text)
+        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+    match value {
+        Value::Null => Ok(None),
+        Value::Object(map) => {
+            let mut options = SerializerOptions::new();
+            for (key, item) in &map {
+                options.insert(key.clone(), decode_wire(item)?);
+            }
+            Ok(Some(options))
+        }
+        _ => Err(wire_error(
+            "serializer options that are not a plain object or null".to_string(),
+        )),
+    }
+}
+
+/// A JS number in [`WIRE_TAG`]'s `"number"` encoding: non-finite or `-0`
+/// values only, since JSON already holds every other number.
+fn encode_wire_number(n: f64) -> Value {
+    if !n.is_finite() {
+        let text = if n.is_nan() {
+            "NaN"
+        } else if n > 0.0 {
+            "Infinity"
+        } else {
+            "-Infinity"
+        };
+        return json!({ WIRE_TAG: "number", "value": text });
+    }
+    if n == 0.0 && n.is_sign_negative() {
+        return json!({ WIRE_TAG: "number", "value": "-0" });
+    }
+    serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
+}
+
+/// A dayjs as `(epoch ms, utcOffset minutes)` (PORTING.md 3.3): an invalid
+/// one crosses as `{valid: false}`, carrying no time value.
+fn encode_wire_dayjs(d: &Dayjs) -> Value {
+    if !d.is_valid() {
+        return json!({ WIRE_TAG: "dayjs", "valid": false });
+    }
+    json!({
+        WIRE_TAG: "dayjs",
+        "valid": true,
+        "ms": d.epoch_ms(),
+        "utcOffset": d.utc_offset(),
+    })
+}
+
+/// An [`Instance`] in [`WIRE_TAG`]'s `"typed"` encoding (module doc): every
+/// own property, `fields`, plus its class and TS constructor.
+fn encode_wire_instance(i: &Instance) -> Value {
+    let fields: serde_json::Map<String, Value> = i
+        .props
+        .iter()
+        .map(|(k, v)| (k.clone(), encode_wire(v)))
+        .collect();
+    json!({
+        WIRE_TAG: "typed",
+        "ctor": i.kind.ctor(),
+        "fqn": i.class_fqn,
+        "fields": fields,
+    })
+}
+
+/// A [`CoreValue`] as the wire value the view reads back (module doc).
+fn encode_wire(v: &CoreValue) -> Value {
+    match v {
+        CoreValue::Undefined => json!({ WIRE_TAG: "undefined" }),
+        CoreValue::Null => Value::Null,
+        CoreValue::Bool(b) => Value::Bool(*b),
+        CoreValue::Number(n) => encode_wire_number(*n),
+        CoreValue::String(s) => Value::String(s.clone()),
+        CoreValue::Array(items) => Value::Array(items.iter().map(encode_wire).collect()),
+        CoreValue::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, x)| (k.clone(), encode_wire(x)))
+                .collect(),
+        ),
+        CoreValue::Map(entries) => json!({
+            WIRE_TAG: "map",
+            "entries": entries
+                .iter()
+                .map(|(k, x)| Value::Array(vec![encode_wire(k), encode_wire(x)]))
+                .collect::<Vec<_>>(),
+        }),
+        CoreValue::DateTime(d) => encode_wire_dayjs(d),
+        CoreValue::Instance(i) => encode_wire_instance(i),
+    }
+}
+
+/// Calls back the view's `env.newId()`/`env.nowMs()` (D7: the identifier
+/// and the clock stay with the caller, `InstanceEnv`'s doc). Both trait
+/// methods are infallible, so a callback that throws or returns the wrong
+/// type is reported as best it can be (an empty id, or `0`) rather than
+/// propagated: a real `Factory.newId`/clock never does either.
+struct JsInstanceEnv {
+    env: JsValue,
+}
+
+impl InstanceEnv for JsInstanceEnv {
+    fn new_id(&mut self) -> String {
+        call(&self.env, "newId", &[], "env.newId")
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default()
+    }
+
+    fn now_ms(&mut self) -> f64 {
+        call(&self.env, "nowMs", &[], "env.nowMs")
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+    }
+}
+
 /// A `ModelManager`, exported to JS as one object (spike "Input to P1-04",
 /// point 1). The model files, declarations and properties it holds are
 /// addressed by the arena's dense `u32` handles, which cross the boundary as
@@ -3142,6 +3428,130 @@ impl ModelManagerHandle {
             }))
         })
     }
+
+    /// `Serializer.fromJSON`'s fast path (P4-10; module doc above
+    /// "Serializer fast path"): decodes `json_text` (the JSON object to
+    /// populate) and `options_text` (the serializer's merged options, or
+    /// `"null"`), builds the resource in one call, and returns its wire
+    /// encoding as JSON text for the view to materialise into a real
+    /// `Resource`/`ValidatedResource`/`Relationship`. `env` is a plain JS
+    /// object exposing `newId()`/`nowMs()` (D7).
+    #[wasm_bindgen(js_name = serializerFromJson)]
+    pub fn serializer_from_json(
+        &self,
+        json_text: &str,
+        options_text: &str,
+        env: JsValue,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let json_value: Value = serde_json::from_str(json_text)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let object = decode_wire(&json_value)?;
+            let options = decode_wire_options(options_text)?;
+            let serializer = Serializer::new(true, true, options.as_ref())?;
+            let mut js_env = JsInstanceEnv { env };
+            let resource =
+                serializer.from_json(&self.manager, &object, options.as_ref(), &mut js_env)?;
+            snapshot(&encode_wire_instance(&resource))
+        })
+    }
+
+    /// `Serializer.toJSON`'s fast path (P4-10; module doc above): the
+    /// counterpart of [`Self::serializer_from_json`]. `wire_text` is the
+    /// resource's `"typed"` wire encoding (module doc), `options_text` its
+    /// merged options or `"null"`.
+    #[wasm_bindgen(js_name = serializerToJson)]
+    pub fn serializer_to_json(
+        &self,
+        wire_text: &str,
+        options_text: &str,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let wire_value: Value = serde_json::from_str(wire_text)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let resource = decode_wire(&wire_value)?;
+            let options = decode_wire_options(options_text)?;
+            let serializer = Serializer::new(true, true, options.as_ref())?;
+            let result = serializer.to_json(&self.manager, &resource, options.as_ref())?;
+            snapshot(&encode_wire(&result))
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSONPopulator / JSONGenerator / ResourceValidator per-field delegation
+// (task P4-10, accordproject/concerto-rust#69)
+//
+// The visitor shells (jsonpopulator.ts, jsongenerator.ts,
+// resourcevalidator.ts) stay in TS -- white-box tests spy on their
+// `visitX` methods -- but the leaf per-field check or coercion each calls
+// (`convertToObject`, `convertToJSON`, `checkItem`'s primitive switch) is
+// pure: it needs only the field's declared type name, the JSON value at
+// that path, and the serializer's merged options, none of which needs a
+// live `ModelManagerHandle`. So these are free functions, not methods on
+// `ModelManagerHandle`, and reuse the same wire codec as the whole-document
+// fast path above.
+
+/// `JSONPopulator.convertToObject` (task P4-10): `json_text` is the wire
+/// encoding (module doc on `decode_wire`) of the value at `path`,
+/// `options_text` the serializer's merged options or `"null"`. Returns the
+/// coerced value's wire encoding, or throws the same `ValidationException`
+/// TS would for that path and type.
+#[wasm_bindgen(js_name = populatorConvertPrimitive)]
+pub fn populator_convert_primitive(
+    type_name: &str,
+    json_text: &str,
+    options_text: &str,
+    path: &str,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let json_value: Value = serde_json::from_str(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = decode_wire(&json_value)?;
+        let options = decode_wire_options(options_text)?.unwrap_or_default();
+        let popt = populator::populator_options(&options);
+        let result = populator::convert_primitive(type_name, &value, &popt, path)?;
+        snapshot(&encode_wire(&result))
+    })
+}
+
+/// `JSONGenerator.convertToJSON` (task P4-10): the counterpart of
+/// [`populator_convert_primitive`], for `Serializer.toJSON`'s visitor path.
+#[wasm_bindgen(js_name = generatorConvertPrimitive)]
+pub fn generator_convert_primitive(
+    type_name: &str,
+    json_text: &str,
+    options_text: &str,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let json_value: Value = serde_json::from_str(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = decode_wire(&json_value)?;
+        let options = decode_wire_options(options_text)?.unwrap_or_default();
+        let gopt = generator::generator_options(&options);
+        let result = generator::convert_primitive(type_name, &value, &gopt)?;
+        snapshot(&encode_wire(&result))
+    })
+}
+
+/// `ResourceValidator.checkItem`'s primitive-type switch (task P4-10,
+/// resourcevalidator.ts:397): whether `json_text`'s value (already coerced
+/// by the populator, as a real field value always is here) is valid for
+/// the declared primitive `type_name`. A pure predicate -- the TS shell
+/// still does its own `reportFieldTypeViolation` (needs `rootResourceIdentifier`
+/// and the `Field`, neither of which crosses this call), and still makes
+/// the `undefined`/`symbol` check the wire codec cannot cross.
+#[wasm_bindgen(js_name = resourceValidatorPrimitiveValid)]
+pub fn resource_validator_primitive_valid(
+    type_name: &str,
+    json_text: &str,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        let json_value: Value = serde_json::from_str(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = decode_wire(&json_value)?;
+        Ok(populator::primitive_field_valid(type_name, &value))
+    })
 }
 
 impl ModelManagerHandle {
@@ -3174,5 +3584,103 @@ impl ModelManagerHandle {
             .get("declarations")
             .and_then(|declarations| declarations.get(index))
             .ok_or_else(missing)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Host-side tests of the pure wire codec (no `js_sys` call is reached on
+    // these paths): `cargo test` from concerto-wasm/.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// `decode_wire`, which must succeed (`Error` has no `Debug`).
+    fn decoded(value: &Value) -> CoreValue {
+        match decode_wire(value) {
+            Ok(v) => v,
+            Err(_) => panic!("decode_wire failed on {value}"),
+        }
+    }
+
+    /// The number `decode_wire` reads from `text`, the JSON a view's
+    /// `JSON.stringify` wrote.
+    fn wire_number(text: &str) -> f64 {
+        let value: Value = serde_json::from_str(text).unwrap();
+        match decoded(&value) {
+            CoreValue::Number(n) => n,
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
+    /// P4-10 review: without serde_json's `float_roundtrip` feature these
+    /// two doubles came back 1 ULP off (…888 and …2917).
+    #[test]
+    fn decode_wire_keeps_doubles_exact() {
+        for n in [989.9951327998887_f64, 477.95269883162916_f64] {
+            let text = serde_json::to_string(&n).unwrap();
+            assert_eq!(wire_number(&text).to_bits(), n.to_bits(), "{text}");
+        }
+        assert_eq!(
+            wire_number("989.9951327998887").to_bits(),
+            989.9951327998887_f64.to_bits()
+        );
+        assert_eq!(
+            wire_number("477.95269883162916").to_bits(),
+            477.95269883162916_f64.to_bits()
+        );
+    }
+
+    /// A deterministic pseudo-random sample of finite doubles (xorshift64
+    /// over raw bit patterns, so every exponent range is hit): each one
+    /// written in shortest round-trip form (what JS `JSON.stringify` writes,
+    /// and what `serde_json`/ryu writes too) decodes to the same bits, and
+    /// encodes back to the same text.
+    #[test]
+    fn decode_wire_round_trips_a_random_sample_of_doubles() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut checked = 0;
+        while checked < 200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let n = f64::from_bits(state);
+            if !n.is_finite() {
+                continue;
+            }
+            let text = serde_json::to_string(&n).unwrap();
+            let back = wire_number(&text);
+            if n == 0.0 {
+                // `-0` crosses as a tagged wire number, never plain JSON.
+                assert_eq!(back, 0.0);
+            } else {
+                assert_eq!(back.to_bits(), n.to_bits(), "{text}");
+                assert_eq!(
+                    serde_json::to_string(&encode_wire(&CoreValue::Number(back))).unwrap(),
+                    text
+                );
+            }
+            checked += 1;
+        }
+    }
+
+    /// The same doubles inside a document, as `serializerFromJson` and the
+    /// per-field bindings decode it.
+    #[test]
+    fn decode_wire_keeps_nested_doubles_exact() {
+        let value: Value = serde_json::from_str(
+            r#"{"$class":"org.x@1.0.0.T","d":989.9951327998887,"ds":[477.95269883162916]}"#,
+        )
+        .unwrap();
+        let CoreValue::Object(map) = decoded(&value) else {
+            panic!("expected an object");
+        };
+        assert_eq!(map.get("d"), Some(&CoreValue::Number(989.9951327998887)));
+        assert_eq!(
+            map.get("ds"),
+            Some(&CoreValue::Array(vec![CoreValue::Number(
+                477.95269883162916
+            )]))
+        );
     }
 }
