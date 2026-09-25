@@ -227,6 +227,15 @@ pub enum Arg {
     SelfMm,
     Decl(usize, DeclId),
     Prop(usize, PropId),
+    /// A `MapKeyType` (`is_key = true`) or `MapValueType` (`is_key = false`)
+    /// belonging to the `MapDeclaration` at `(pool index, DeclId)`. TS gives
+    /// these their own class, but this engine reads a map's key and value as
+    /// plain accessors on `MapDeclaration` (README "Ops";
+    /// `introspect::declaration::MapDeclaration`), so there is no separate
+    /// handle to register — the recorder's `propref` with a `part` field
+    /// (`"key"` or `"value"`) decodes straight to this variant instead of a
+    /// `PropId`.
+    MapPart(usize, DeclId, bool),
     /// An array that holds encoded values (a list of model files).
     List(Vec<Arg>),
 }
@@ -298,6 +307,10 @@ impl<'h> Session<'h> {
             "declref" => {
                 let (mm, id) = self.declref(v)?;
                 Ok(Arg::Decl(mm, id))
+            }
+            "propref" if v.get("part").and_then(Value::as_str).is_some() => {
+                let (mm, id, is_key) = self.map_part(v)?;
+                Ok(Arg::MapPart(mm, id, is_key))
             }
             "propref" => {
                 let (mm, id) = self.propref(v)?;
@@ -467,13 +480,40 @@ impl<'h> Session<'h> {
         }
     }
 
-    fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
-        if v.get("part").and_then(Value::as_str).is_some() {
+    /// A `MapKeyType`/`MapValueType` target: `{decl: <declref>, part: "key" |
+    /// "value"}` (`migration/oracle/lib/codec.js`). The referenced
+    /// declaration is checked to be a `MapDeclaration` here, once, rather
+    /// than by every op that takes an [`Arg::MapPart`].
+    fn map_part(&mut self, v: &Value) -> Faulty<(usize, DeclId, bool)> {
+        let part = v.get("part").and_then(Value::as_str).unwrap_or_default();
+        let is_key = match part {
+            "key" => true,
+            "value" => false,
+            other => {
+                return Err(Fault::Unsupported(format!(
+                    "a map part that is neither \"key\" nor \"value\": {other:?}"
+                )));
+            }
+        };
+        let decl = v
+            .get("decl")
+            .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
+        if decl.get(M).and_then(Value::as_str) != Some("declref") {
             return Err(blocked(
-                "a map key or value type has no Rust handle yet (MapKeyType/MapValueType)",
-                "MapKeyType.new",
+                "a map key or value of a declaration that is not in its model file (declnew)",
+                "MapDeclaration.new",
             ));
         }
+        let (owner, id) = self.declref(decl)?;
+        match self.pool[owner].mm.declaration(id) {
+            Some(Declaration::Map(_)) => Ok((owner, id, is_key)),
+            _ => Err(Fault::Divergence(
+                "state divergence: the declaration did not load as a map".into(),
+            )),
+        }
+    }
+
+    fn propref(&mut self, v: &Value) -> Faulty<(usize, PropId)> {
         let decl = v
             .get("decl")
             .ok_or_else(|| Fault::Harness("propref without decl".into()))?;
@@ -693,6 +733,21 @@ impl Replayed {
             M: "Declaration",
             "ctor": ctor,
             "fqn": format!("{}.{}", file.namespace(), declaration.name()),
+        }))
+    }
+
+    /// The outcome-only `MapKeyType`/`MapValueType` summary
+    /// (`makeOutputEncoder`'s generic `Property` shape, confirmed against a
+    /// recorded `MapDeclaration.getKey`/`getValue` fixture): `{ctor, type}`,
+    /// `type` being `MapKeyType.getType`/`MapValueType.getType`'s result.
+    pub fn map_part_summary(&self, id: DeclId, is_key: bool) -> Option<Value> {
+        let Declaration::Map(map) = self.mm.declaration(id)? else {
+            return None;
+        };
+        Some(json!({
+            M: "Property",
+            "ctor": if is_key { "MapKeyType" } else { "MapValueType" },
+            "type": if is_key { map.key_type_name() } else { map.value_type_name() },
         }))
     }
 
@@ -990,6 +1045,7 @@ impl Clone for Arg {
             Self::SelfMm => Self::SelfMm,
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
+            Self::MapPart(m, d, is_key) => Self::MapPart(*m, *d, *is_key),
             Self::List(items) => Self::List(items.clone()),
         }
     }

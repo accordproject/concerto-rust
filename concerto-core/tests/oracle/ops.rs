@@ -28,12 +28,25 @@
 //!   point: they are what P2-08 and the introspection tasks have to close.
 //! - **`ScalarDeclaration`** `toString`, `getType`, `getValidator` and
 //!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`.
+//! - **`MapDeclaration`** `declarationKind`, `getKey`, `getValue`,
+//!   `isMapDeclaration`, `toString` and `validate`; **`MapKeyType`**/
+//!   **`MapValueType`** `getType`, `getNamespace`, `getParent`, `toString` and
+//!   `validate` (P2-06), over a `recipe::Arg::MapPart` handle (`recipe.rs`)
+//!   since this engine reads a map's key and value as plain accessors on
+//!   `MapDeclaration` rather than as their own registered declarations;
+//!   **`ClassDeclaration.isMapDeclaration`** and
+//!   **`ModelManager.getMapDeclarations`**, generic queries any declaration
+//!   or model manager already answers. A fixture whose target is an
+//!   unregistered `ModelFile` (`mfnew`, e.g. most of
+//!   `MapDeclaration.validate`) stays `unsupported`, owned by P2-08's
+//!   `ModelFile.new`.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
-use concerto_core::introspect::Declaration;
 use concerto_core::introspect::scalar::ScalarValidator;
-use concerto_core::model_manager::{ModelManager, Node, ResolutionContext};
+use concerto_core::introspect::{Declaration, DeclarationKind, MapDeclaration};
+use concerto_core::model_manager::{DeclId, ModelManager, Node, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
+use concerto_core::validation;
 use serde_json::{Value, json};
 
 use super::Harness;
@@ -367,7 +380,11 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     let dispatched = match (class, member) {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
-            MM_STEP_OPS.contains(&m) || matches!(m, "getNamespaces" | "getAst" | "getType")
+            MM_STEP_OPS.contains(&m)
+                || matches!(
+                    m,
+                    "getNamespaces" | "getAst" | "getType" | "getMapDeclarations"
+                )
         }
         ("ModelUtil", m) => matches!(
             m,
@@ -379,6 +396,22 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
+        ("MapDeclaration", m) => matches!(
+            m,
+            "declarationKind"
+                | "getKey"
+                | "getValue"
+                | "isMapDeclaration"
+                | "toString"
+                | "validate"
+        ),
+        ("MapKeyType" | "MapValueType", m) => {
+            matches!(
+                m,
+                "getType" | "getNamespace" | "getParent" | "toString" | "validate"
+            )
+        }
+        ("ClassDeclaration", "isMapDeclaration") => true,
         _ => false,
     };
     if !dispatched {
@@ -467,6 +500,96 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 })),
             })
         }
+        "MapDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a MapDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a map".into(),
+                ));
+            };
+            Ok(match member {
+                "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
+                "isMapDeclaration" => ran(Ok(Value::Bool(true))),
+                "toString" => from_engine(
+                    r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                    |fqn| Value::String(MapDeclaration::to_string(&fqn)),
+                ),
+                "getKey" => ran(Ok(r.map_part_summary(id, true).unwrap_or(Value::Null))),
+                "getValue" => ran(Ok(r.map_part_summary(id, false).unwrap_or(Value::Null))),
+                _ => {
+                    let Some(namespace) = map_namespace(r, id) else {
+                        return Err(Fault::Divergence(
+                            "state divergence: the map's model file is not registered".into(),
+                        ));
+                    };
+                    let result = validation::validate_map_key(&r.mm, namespace, map)
+                        .and_then(|()| validation::validate_map_value(&r.mm, namespace, map));
+                    from_engine(result, |()| recipe::undefined())
+                }
+            })
+        }
+        "MapKeyType" | "MapValueType" => {
+            let Some(Arg::MapPart(index, id, is_key)) = target else {
+                return Err(Fault::Unsupported(
+                    "a MapKeyType/MapValueType receiver that is not a map part".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as a map".into(),
+                ));
+            };
+            let type_name = if is_key {
+                map.key_type_name()
+            } else {
+                map.value_type_name()
+            };
+            let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
+            Ok(match member {
+                "getType" => ran(Ok(Value::String(type_name.to_string()))),
+                "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
+                "getNamespace" => match map_namespace(r, id) {
+                    Some(ns) => ran(Ok(Value::String(ns.to_string()))),
+                    None => Dispatch::Fault(Fault::Divergence(
+                        "state divergence: the map's model file is not registered".into(),
+                    )),
+                },
+                "getParent" => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+                _ => {
+                    let Some(namespace) = map_namespace(r, id) else {
+                        return Err(Fault::Divergence(
+                            "state divergence: the map's model file is not registered".into(),
+                        ));
+                    };
+                    let result = if is_key {
+                        validation::validate_map_key(&r.mm, namespace, map)
+                    } else {
+                        validation::validate_map_value(&r.mm, namespace, map)
+                    };
+                    from_engine(result, |()| recipe::undefined())
+                }
+            })
+        }
+        "ClassDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ClassDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(declaration) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration is no longer registered".into(),
+                ));
+            };
+            Ok(ran(Ok(Value::Bool(declaration.is_map_declaration()))))
+        }
         _ => unreachable!("`dispatched` lists every class"),
     }
 }
@@ -503,8 +626,32 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
                 }
             }
         }
+        "getMapDeclarations" => {
+            // TS `BaseModelManager.getMapDeclarations` (basemodelmanager.js):
+            // every model file's map declarations, concatenated in
+            // registration order.
+            let declarations: Vec<Value> =
+                r.mm.model_files()
+                    .flat_map(|mf| {
+                        let file = r.mm.model_file_id(mf.namespace());
+                        file.into_iter().flat_map(|f| r.mm.declaration_ids(f))
+                    })
+                    .filter(|id| matches!(r.mm.declaration(*id), Some(Declaration::Map(_))))
+                    .filter_map(|id| r.declaration_summary(id))
+                    .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
         _ => unreachable!("`dispatched` lists every query"),
     }
+}
+
+/// The namespace of the model file a declaration was loaded into, for the
+/// map-part ops (`MapKeyType`/`MapValueType.getNamespace` and the shared
+/// `validate_map_key`/`validate_map_value` calls, which both need it to
+/// resolve a referenced type).
+fn map_namespace(r: &Replayed, id: DeclId) -> Option<&str> {
+    let file_id = r.mm.model_file_of(id)?;
+    Some(r.mm.file(file_id)?.namespace())
 }
 
 /// The `ModelUtil` statics that take model-manager collaborators.

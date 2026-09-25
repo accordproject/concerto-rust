@@ -33,7 +33,7 @@ use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
 use crate::introspect::{Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
-use crate::model_util::{get_fully_qualified_name, is_primitive_type};
+use crate::model_util::{self, get_fully_qualified_name, is_primitive_type};
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
@@ -450,53 +450,41 @@ fn check_identity_matches_super(
     Ok(())
 }
 
-/// The key kinds the specification allows: a `String` or `DateTime`, or an
-/// object key naming a scalar over one of those.
-const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
-
-/// The value kinds the specification allows: any primitive, or an object or
-/// relationship value naming a declared type.
-///
-/// TS: `ModelUtil.isValidMapValue` (src/modelutil.ts) lists the same eight
-/// kinds, including `RelationshipMapValueType`.
-const MAP_VALUE_KINDS: &[&str] = &[
-    "BooleanMapValueType",
-    "DateTimeMapValueType",
-    "DoubleMapValueType",
-    "IntegerMapValueType",
-    "LongMapValueType",
-    "StringMapValueType",
-    "ObjectMapValueType",
-    "RelationshipMapValueType",
-];
-
 impl Validate for MapDeclaration {
     /// Checks a map against the key and value types the specification permits.
+    ///
+    /// TS: `MapDeclaration.validate` (src/introspect/mapdeclaration.ts) is
+    /// `super.validate(); this.key.validate(); this.value.validate()`; the
+    /// oracle op `MapDeclaration.validate` exercises this whole sequence,
+    /// while `MapKeyType.validate` and `MapValueType.validate` exercise
+    /// [`validate_map_key`] and [`validate_map_value`] in isolation (see
+    /// `tests/oracle/ops.rs`).
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        check_map_types(manager, namespace, self)
+        validate_map_key(manager, namespace, self)?;
+        validate_map_value(manager, namespace, self)
     }
 }
 
-/// Every error in `check_map_types` passes `location: None`: `MapDeclaration`'s
-/// own doc comment records that its `location` (and its key's and value's) is
-/// deliberately not read, so there is no AST node to copy from, not a gap
-/// left for later.
-fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration) -> Result<()> {
-    if !MAP_KEY_KINDS.contains(&map.key_kind()) {
+/// `MapKeyType.validate` (src/introspect/mapkeytype.ts), plus the key-kind
+/// membership check TS makes at `MapDeclaration` construction time
+/// (`ModelUtil.isValidMapKey`, src/introspect/mapdeclaration.ts): this
+/// engine's `MapDeclaration` always constructs (`introspect::declaration`'s
+/// doc comment on `MapDeclaration::Untyped`), deferring an unsupported kind
+/// to this semantic-validation pass instead.
+///
+/// Every error passes `location: None`: `MapDeclaration`'s own doc comment
+/// records that its `location` (and its key's and value's) is deliberately
+/// not read, so there is no AST node to copy from, not a gap left for later.
+pub fn validate_map_key(
+    manager: &ModelManager,
+    namespace: &str,
+    map: &MapDeclaration,
+) -> Result<()> {
+    if !model_util::MAP_KEY_KINDS.contains(&map.key_kind()) {
         return Err(failed(
             format!(
                 "The key of map {} must be a String or DateTime, or a scalar over one of them",
                 map.name()
-            ),
-            None,
-        ));
-    }
-    if !MAP_VALUE_KINDS.contains(&map.value_kind()) {
-        return Err(failed(
-            format!(
-                "The value of map {} may not be a {}",
-                map.name(),
-                map.value_kind()
             ),
             None,
         ));
@@ -516,6 +504,28 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
                 None,
             ));
         }
+    }
+    Ok(())
+}
+
+/// `MapValueType.validate` (src/introspect/mapvaluetype.ts), plus the
+/// value-kind membership check TS makes at `MapDeclaration` construction
+/// time (`ModelUtil.isValidMapValue`), deferred here for the same reason as
+/// [`validate_map_key`].
+pub fn validate_map_value(
+    manager: &ModelManager,
+    namespace: &str,
+    map: &MapDeclaration,
+) -> Result<()> {
+    if !model_util::MAP_VALUE_KINDS.contains(&map.value_kind()) {
+        return Err(failed(
+            format!(
+                "The value of map {} may not be a {}",
+                map.name(),
+                map.value_kind()
+            ),
+            None,
+        ));
     }
 
     // TS: `MapValueType.validate` allows any declaration as a map value except
