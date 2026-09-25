@@ -1700,6 +1700,233 @@ pub fn class_declaration_get_properties(
     })
 }
 
+/// TS: `Introspector.getClassDeclarations`, inlined: every model file's
+/// declarations, minus map and scalar declarations (which have no
+/// superType-based subclass relationship, and whose `isMapDeclaration`/
+/// `isScalarDeclaration` TS calls with `?.`, so a class-family declaration
+/// without either method is just treated as neither).
+fn get_class_declarations(model_manager: &JsValue) -> Result<Vec<JsValue>> {
+    let model_files = call(
+        model_manager,
+        "getModelFiles",
+        &[],
+        "modelManager.getModelFiles",
+    )?;
+    let mut result = Vec::new();
+    for model_file in Array::from(&model_files).iter() {
+        let declarations = call(
+            &model_file,
+            "getAllDeclarations",
+            &[],
+            "modelFile.getAllDeclarations",
+        )?;
+        for declaration in Array::from(&declarations).iter() {
+            let is_map = call_optional(&declaration, "isMapDeclaration")?
+                .is_some_and(|v| v.is_truthy());
+            let is_scalar = call_optional(&declaration, "isScalarDeclaration")?
+                .is_some_and(|v| v.is_truthy());
+            if !is_map && !is_scalar {
+                result.push(declaration);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Builds the same `subclassMap` TS does in `getAssignableClassDeclarations`
+/// and `getDirectSubclasses`: every loaded class-like declaration, keyed by
+/// its own super type's fully qualified name (in `getModelFiles`/
+/// `getAllDeclarations` order, so each bucket's insertion order matches TS's
+/// `Array.forEach` too).
+fn build_subclass_map(
+    model_manager: &JsValue,
+) -> Result<std::collections::HashMap<String, Vec<JsValue>>> {
+    let all = get_class_declarations(model_manager)?;
+    let mut subclass_map: std::collections::HashMap<String, Vec<JsValue>> =
+        std::collections::HashMap::new();
+    for decl in &all {
+        let super_type = call(decl, "getSuperType", &[], "declaration.getSuperType")?;
+        if super_type.is_truthy() {
+            let key = js_string(&super_type)?;
+            subclass_map.entry(key).or_default().push(decl.clone());
+        }
+    }
+    Ok(subclass_map)
+}
+
+/// TS: `ClassDeclaration.getAssignableClassDeclarations`: `this` plus every
+/// direct and indirect subclass, deduplicated the way TS's
+/// `Set<ClassDeclaration>` deduplicates — by declaration identity, which
+/// (every FQN in a validated model manager names exactly one declaration
+/// instance) is the same as deduplicating by fully qualified name here.
+#[wasm_bindgen(js_name = classDeclarationGetAssignableClassDeclarations)]
+pub fn class_declaration_get_assignable_class_declarations(
+    declaration: JsValue,
+) -> std::result::Result<Array, JsValue> {
+    run(|| {
+        let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
+        let model_manager = call(
+            &model_file,
+            "getModelManager",
+            &[],
+            "this.getModelFile().getModelManager",
+        )?;
+        let subclass_map = build_subclass_map(&model_manager)?;
+
+        fn collect(
+            declarations: &[JsValue],
+            subclass_map: &std::collections::HashMap<String, Vec<JsValue>>,
+            seen: &mut Vec<JsValue>,
+            seen_keys: &mut HashSet<String>,
+        ) -> Result<()> {
+            for decl in declarations {
+                let fqn = js_string(&call(
+                    decl,
+                    "getFullyQualifiedName",
+                    &[],
+                    "declaration.getFullyQualifiedName",
+                )?)?;
+                if seen_keys.insert(fqn.clone()) {
+                    seen.push(decl.clone());
+                }
+                if let Some(children) = subclass_map.get(&fqn) {
+                    collect(children, subclass_map, seen, seen_keys)?;
+                }
+            }
+            Ok(())
+        }
+
+        let mut seen = Vec::new();
+        let mut seen_keys = HashSet::new();
+        collect(
+            std::slice::from_ref(&declaration),
+            &subclass_map,
+            &mut seen,
+            &mut seen_keys,
+        )?;
+
+        let result = Array::new();
+        for d in seen {
+            result.push(&d);
+        }
+        Ok(result)
+    })
+}
+
+/// TS: `ClassDeclaration.getDirectSubclasses`: just the receiver's own
+/// bucket in the same `subclassMap`, excluding the receiver itself.
+#[wasm_bindgen(js_name = classDeclarationGetDirectSubclasses)]
+pub fn class_declaration_get_direct_subclasses(
+    declaration: JsValue,
+) -> std::result::Result<Array, JsValue> {
+    run(|| {
+        let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
+        let model_manager = call(
+            &model_file,
+            "getModelManager",
+            &[],
+            "this.getModelFile().getModelManager",
+        )?;
+        let subclass_map = build_subclass_map(&model_manager)?;
+        let fqn = js_string(&call(
+            &declaration,
+            "getFullyQualifiedName",
+            &[],
+            "this.getFullyQualifiedName",
+        )?)?;
+        let result = Array::new();
+        if let Some(children) = subclass_map.get(&fqn) {
+            for d in children {
+                result.push(d);
+            }
+        }
+        Ok(result)
+    })
+}
+
+/// TS: `ClassDeclaration.getNestedProperty`: walks a dotted property path
+/// one name at a time, resolving each step's class through
+/// `getFullyQualifiedTypeName` and `modelManager.getType`, and stopping with
+/// the same `IllegalModelException`/plain `Error` TS raises for a missing
+/// property or a primitive/enum step that isn't the path's last element.
+#[wasm_bindgen(js_name = classDeclarationGetNestedProperty)]
+pub fn class_declaration_get_nested_property(
+    declaration: JsValue,
+    property_path: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    let body = || -> Result<JsValue> {
+        let path = js_string(&property_path)?;
+        let names: Vec<&str> = path.split('.').collect();
+        let mut class_declaration = declaration.clone();
+        let mut result = JsValue::UNDEFINED;
+
+        for (n, name) in names.iter().enumerate() {
+            let property = call(
+                &class_declaration,
+                "getProperty",
+                &[JsValue::from_str(name)],
+                "classDeclaration.getProperty",
+            )?;
+            if nullish(&property) {
+                let fqn = js_string(&call(
+                    &class_declaration,
+                    "getFullyQualifiedName",
+                    &[],
+                    "classDeclaration.getFullyQualifiedName",
+                )?)?;
+                return Err(ContractError {
+                    kind: ErrorKind::IllegalModel,
+                    code: "classdeclaration-getnestedproperty-doesnotexist",
+                    params: vec![("propertyName", (*name).to_string()), ("fqn", fqn)],
+                    location: ast_location(&declaration)?,
+                    model_file: Some(None),
+                    validator: None,
+                }
+                .into());
+            }
+            result = property.clone();
+
+            if n < names.len() - 1 {
+                let is_primitive =
+                    call(&property, "isPrimitive", &[], "result.isPrimitive")?.is_truthy();
+                let is_enum =
+                    call(&property, "isTypeEnum", &[], "result.isTypeEnum")?.is_truthy();
+                if is_primitive || is_enum {
+                    return Err(plain_error(
+                        "classdeclaration-getnestedproperty-primitiveorenum",
+                        vec![("propertyName", (*name).to_string()), ("propertyPath", path.clone())],
+                    ));
+                }
+                let type_fqn = call(
+                    &property,
+                    "getFullyQualifiedTypeName",
+                    &[],
+                    "result.getFullyQualifiedTypeName",
+                )?;
+                let own_model_file = get(&declaration, "modelFile")?;
+                let manager = call(
+                    &own_model_file,
+                    "getModelManager",
+                    &[],
+                    "this.modelFile.getModelManager",
+                )?;
+                class_declaration = call(
+                    &manager,
+                    "getType",
+                    &[type_fqn],
+                    "this.modelFile.getModelManager().getType",
+                )?;
+            }
+        }
+
+        Ok(result)
+    };
+    body().map_err(|e| {
+        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Decorator, Decorated (src/introspect/decorator.ts, decorated.ts) — P4-05
 // ---------------------------------------------------------------------------
