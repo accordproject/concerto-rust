@@ -157,6 +157,93 @@ impl ModelManager {
             .expect("with_model_file_registered registers the file under its namespace");
         scratch.validate_model_file(registered)
     }
+
+    /// TS `declaration.validate()` called directly on one declaration of a
+    /// `ModelFile` built with `new ModelFile(modelManager, ast)` and never
+    /// registered — `MapDeclaration.validate`'s oracle fixtures do exactly
+    /// this (the fixture's `declref` targets an `mfnew` model file, P2-06b).
+    /// Reuses [`ModelManager::validate_detached_model_file`]'s
+    /// scratch-registration resolution, but for the one declaration at
+    /// `index` in [`ModelFile::declarations`] rather than the whole file, so
+    /// this is never charged for a sibling declaration's own errors, or for
+    /// `ModelFile.validate`'s own import and duplicate-name checks — neither
+    /// of which the recorded op ever runs.
+    ///
+    /// `Err(ConcertoError::IllegalModel)` with no catalogue entry (no TS
+    /// class corresponds to it) if `model_file` has no declaration at
+    /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
+    /// `next_index` documents.
+    pub fn validate_detached_declaration(
+        &self,
+        model_file: &ModelFile,
+        index: usize,
+    ) -> Result<()> {
+        let (scratch, namespace) = self.detached_scratch(model_file)?;
+        let declaration = scratch
+            .model_file(&namespace)
+            .expect("with_model_file_registered registers the file under its namespace")
+            .declarations()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| no_such_detached_declaration(model_file, index))?;
+        declaration.validate(&scratch, &namespace)
+    }
+
+    /// [`ModelManager::validate_detached_declaration`], but for just the key
+    /// half of the map declaration at `index` (TS `MapKeyType.validate`,
+    /// called directly rather than through `MapDeclaration.validate`).
+    pub fn validate_detached_map_key(&self, model_file: &ModelFile, index: usize) -> Result<()> {
+        let (scratch, map) = self.detached_map(model_file, index)?;
+        validate_map_key(&scratch, model_file.namespace(), &map)
+    }
+
+    /// [`ModelManager::validate_detached_map_key`], for the value half (TS
+    /// `MapValueType.validate`).
+    pub fn validate_detached_map_value(&self, model_file: &ModelFile, index: usize) -> Result<()> {
+        let (scratch, map) = self.detached_map(model_file, index)?;
+        validate_map_value(&scratch, model_file.namespace(), &map)
+    }
+
+    /// The scratch-registered copy of `self`
+    /// [`ModelManager::validate_detached_model_file`] builds (with
+    /// `model_file` registered under its own namespace, in place of
+    /// whatever `self` holds there), plus that namespace as an owned
+    /// `String` — every caller here goes on to borrow `model_file`'s
+    /// declaration back out of the *scratch* copy, not `self`.
+    fn detached_scratch(&self, model_file: &ModelFile) -> Result<(Self, String)> {
+        let scratch = self.with_model_file_registered(model_file)?;
+        Ok((scratch, model_file.namespace().to_string()))
+    }
+
+    /// [`ModelManager::detached_scratch`], plus the `MapDeclaration` at
+    /// `index`, cloned out so it can be validated against the scratch copy
+    /// without borrowing the copy at the same time.
+    fn detached_map(&self, model_file: &ModelFile, index: usize) -> Result<(Self, MapDeclaration)> {
+        let (scratch, namespace) = self.detached_scratch(model_file)?;
+        let declaration = scratch
+            .model_file(&namespace)
+            .expect("with_model_file_registered registers the file under its namespace")
+            .declarations()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| no_such_detached_declaration(model_file, index))?;
+        match declaration {
+            Declaration::Map(map) => Ok((scratch, map)),
+            _ => Err(no_such_detached_declaration(model_file, index)),
+        }
+    }
+}
+
+/// A harness-only bound: `index` names no declaration of `model_file` (for
+/// [`ModelManager::detached_map`], not one that loaded as a
+/// `MapDeclaration`). No TS class corresponds to this, the same convention
+/// `model_manager.rs`'s `next_index` documents.
+fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> ConcertoError {
+    ConcertoError::IllegalModel {
+        message: format!("no MapDeclaration at index {index}"),
+        file_name: model_file.file_name().map(str::to_string),
+        location: None,
+    }
 }
 
 /// TS: `ModelFile.validate()`'s "Check if names of the declarations are
@@ -1023,6 +1110,13 @@ pub fn validate_map_key(
     }
 
     // An object key names a scalar, which has to be over a String or DateTime.
+    //
+    // TS: `MapKeyType.validate` (src/introspect/mapkeytype.ts) — this is a
+    // different check, with a different message, than the kind-membership
+    // one above (which ports `MapDeclaration`'s own construction-time
+    // `ModelUtil.isValidMapKey`, this function's own doc comment): this one
+    // runs once the key's kind is already known to be `ObjectMapKeyType`,
+    // over the scalar it names.
     if let Some(key) = map.key_type() {
         let scalar = resolve(manager, namespace, &key.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
@@ -1030,7 +1124,9 @@ pub fn validate_map_key(
         if !matches!(scalar, Some("String") | Some("DateTime")) {
             return Err(failed(
                 format!(
-                    "The key of map {} must be a String or DateTime, or a scalar over one of them",
+                    "Scalar must be one of StringScalar, DateTimeScalar in context of \
+                     MapKeyType. Invalid Scalar: {}, for MapDeclaration {}",
+                    key.name,
                     map.name()
                 ),
                 None,
@@ -2326,7 +2422,11 @@ mod tests {
             object_type("Item", "ObjectMapKeyType"),
             string_value.clone(),
         ));
-        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("Scalar must be one of StringScalar, DateTimeScalar")
+        );
 
         // A scalar over String or over DateTime is.
         for scalar in ["Code", "When"] {
@@ -2842,9 +2942,23 @@ mod tests {
     // it ports. Cases that need a real `ModelFile` object (`new
     // MapDeclaration(modelFile, ast)`, `introspectUtils.loadLastDeclaration`,
     // and the TS `MapKeyType`/`MapValueType` classes' own `getParent`,
-    // `getNamespace`, `getModelFile` and `toString`) are deferred to P2-08
-    // (`ModelFile.new`), per the coordinator's split on this issue; the TS
-    // `#accept` visitor test has no Rust counterpart yet at all, since no
+    // `getNamespace` and `toString`) were deferred to P2-08's `ModelFile.new`
+    // by the coordinator's split on this issue (#114), and are now covered
+    // there instead of as unit tests here: the oracle corpus already records
+    // these `it()`s as `MapDeclaration.validate`, `MapKeyType`/
+    // `MapValueType.getNamespace`/`getParent`/`toString` fixtures (behavioural
+    // tests become fixtures directly, plan §2.1), and P2-06b wires them
+    // against `ModelFile::from_json` on an unregistered file
+    // ([`ModelManager::validate_detached_declaration`],
+    // [`ModelManager::validate_detached_map_key`],
+    // [`ModelManager::validate_detached_map_value`], `tests/oracle/`'s
+    // `declref`/`map_part` on an `mfnew` target) rather than duplicating them
+    // as hand-written Rust tests — this engine has no separate `MapKeyType`/
+    // `MapValueType` type to call `getParent`/`getNamespace`/`toString` on in
+    // the first place (`MapVariant`'s doc comment: "this engine reads a
+    // map's key and value as plain accessors on `MapDeclaration`"). The TS
+    // `getModelFile()` test has no oracle fixture and stays untouched; the
+    // TS `#accept` visitor test has no Rust counterpart yet at all, since no
     // visitor pattern has been ported (plan section 3: visitors stay TS
     // shells for now).
 
@@ -2956,7 +3070,9 @@ mod tests {
                 }));
             let err = validate(declarations);
             assert!(
-                err.unwrap_err().to_string().contains("String or DateTime"),
+                err.unwrap_err()
+                    .to_string()
+                    .contains("Scalar must be one of StringScalar, DateTimeScalar"),
                 "a scalar over {scalar_class} should be rejected as a map key"
             );
         }
@@ -3002,7 +3118,7 @@ mod tests {
                 .validate_models()
                 .unwrap_err()
                 .to_string()
-                .contains("String or DateTime")
+                .contains("Scalar must be one of StringScalar, DateTimeScalar")
         );
     }
 

@@ -797,82 +797,163 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "a ScalarDeclaration receiver that is not a declref or declnew".into(),
             )),
         },
-        "MapDeclaration" => {
-            let Some(Arg::Decl(index, id)) = target else {
-                return Err(Fault::Unsupported(
-                    "a MapDeclaration receiver that is not a declref".into(),
-                ));
-            };
-            let r = &session.pool[index];
-            let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
-                return Err(Fault::Divergence(
-                    "state divergence: the declaration did not load as a map".into(),
-                ));
-            };
-            Ok(match member {
-                "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
-                "isMapDeclaration" => ran(Ok(Value::Bool(true))),
-                "toString" => from_engine(
-                    r.mm.get_fully_qualified_name(&Node::Declaration(id)),
-                    |fqn| Value::String(MapDeclaration::to_string(&fqn)),
-                ),
-                "getKey" => ran(Ok(r.map_part_summary(id, true).unwrap_or(Value::Null))),
-                "getValue" => ran(Ok(r.map_part_summary(id, false).unwrap_or(Value::Null))),
-                _ => {
-                    let Some(namespace) = map_namespace(r, id) else {
-                        return Err(Fault::Divergence(
+        "MapDeclaration" => match target {
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                Ok(match member {
+                    "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
+                    "isMapDeclaration" => ran(Ok(Value::Bool(true))),
+                    "toString" => from_engine(
+                        r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                        |fqn| Value::String(MapDeclaration::to_string(&fqn)),
+                    ),
+                    "getKey" => ran(Ok(r.map_part_summary(id, true).unwrap_or(Value::Null))),
+                    "getValue" => ran(Ok(r.map_part_summary(id, false).unwrap_or(Value::Null))),
+                    _ => {
+                        let Some(namespace) = map_namespace(r, id) else {
+                            return Err(Fault::Divergence(
+                                "state divergence: the map's model file is not registered".into(),
+                            ));
+                        };
+                        let result = validation::validate_map_key(&r.mm, namespace, map)
+                            .and_then(|()| validation::validate_map_value(&r.mm, namespace, map));
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            // P2-06b: a `MapDeclaration` reached from a `ModelFile` built
+            // directly (`mfnew`) and never registered — no arena `DeclId`,
+            // so read straight off the built file (`declarationKind`,
+            // `isMapDeclaration`, `toString`, `getKey`, `getValue`) or, for
+            // `validate`, run against the scratch-registered copy
+            // `ModelManager::validate_detached_declaration` builds.
+            Some(Arg::DeclDetached {
+                mm_index,
+                file,
+                index,
+            }) => {
+                let Some(Declaration::Map(map)) = file.declarations().get(index) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                let fqn = format!("{}.{}", file.namespace(), map.name());
+                Ok(match member {
+                    "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
+                    "isMapDeclaration" => ran(Ok(Value::Bool(true))),
+                    "toString" => ran(Ok(Value::String(MapDeclaration::to_string(&fqn)))),
+                    "getKey" => ran(Ok(detached_map_part_summary(map, true))),
+                    "getValue" => ran(Ok(detached_map_part_summary(map, false))),
+                    _ => {
+                        let Some(mm_index) = mm_index else {
+                            return Err(Fault::Harness(
+                                "a detached MapDeclaration with no owning model manager".into(),
+                            ));
+                        };
+                        let manager = &session.pool[mm_index].mm;
+                        let result = manager.validate_detached_declaration(&file, index);
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            _ => Err(Fault::Unsupported(
+                "a MapDeclaration receiver that is not a declref".into(),
+            )),
+        },
+        "MapKeyType" | "MapValueType" => match target {
+            Some(Arg::MapPart(index, id, is_key)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                let type_name = if is_key {
+                    map.key_type_name()
+                } else {
+                    map.value_type_name()
+                };
+                let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
+                Ok(match member {
+                    "getType" => ran(Ok(Value::String(type_name.to_string()))),
+                    "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
+                    "getNamespace" => match map_namespace(r, id) {
+                        Some(ns) => ran(Ok(Value::String(ns.to_string()))),
+                        None => Dispatch::Fault(Fault::Divergence(
                             "state divergence: the map's model file is not registered".into(),
-                        ));
-                    };
-                    let result = validation::validate_map_key(&r.mm, namespace, map)
-                        .and_then(|()| validation::validate_map_value(&r.mm, namespace, map));
-                    from_engine(result, |()| recipe::undefined())
-                }
-            })
-        }
-        "MapKeyType" | "MapValueType" => {
-            let Some(Arg::MapPart(index, id, is_key)) = target else {
-                return Err(Fault::Unsupported(
-                    "a MapKeyType/MapValueType receiver that is not a map part".into(),
-                ));
-            };
-            let r = &session.pool[index];
-            let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
-                return Err(Fault::Divergence(
-                    "state divergence: the declaration did not load as a map".into(),
-                ));
-            };
-            let type_name = if is_key {
-                map.key_type_name()
-            } else {
-                map.value_type_name()
-            };
-            let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
-            Ok(match member {
-                "getType" => ran(Ok(Value::String(type_name.to_string()))),
-                "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
-                "getNamespace" => match map_namespace(r, id) {
-                    Some(ns) => ran(Ok(Value::String(ns.to_string()))),
-                    None => Dispatch::Fault(Fault::Divergence(
-                        "state divergence: the map's model file is not registered".into(),
-                    )),
-                },
-                "getParent" => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
-                _ => {
-                    let Some(namespace) = map_namespace(r, id) else {
-                        return Err(Fault::Divergence(
-                            "state divergence: the map's model file is not registered".into(),
-                        ));
-                    };
-                    let result = if is_key {
-                        validation::validate_map_key(&r.mm, namespace, map)
-                    } else {
-                        validation::validate_map_value(&r.mm, namespace, map)
-                    };
-                    from_engine(result, |()| recipe::undefined())
-                }
-            })
-        }
+                        )),
+                    },
+                    "getParent" => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+                    _ => {
+                        let Some(namespace) = map_namespace(r, id) else {
+                            return Err(Fault::Divergence(
+                                "state divergence: the map's model file is not registered".into(),
+                            ));
+                        };
+                        let result = if is_key {
+                            validation::validate_map_key(&r.mm, namespace, map)
+                        } else {
+                            validation::validate_map_value(&r.mm, namespace, map)
+                        };
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            // P2-06b: the key/value part of a `MapDeclaration` reached from
+            // an unregistered (`mfnew`) `ModelFile` — the same fallback as
+            // `Arg::DeclDetached` above, but for `MapKeyType`/`MapValueType`.
+            Some(Arg::MapPartDetached {
+                mm_index,
+                file,
+                index,
+                is_key,
+            }) => {
+                let Some(Declaration::Map(map)) = file.declarations().get(index) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                let type_name = if is_key {
+                    map.key_type_name()
+                } else {
+                    map.value_type_name()
+                };
+                let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
+                Ok(match member {
+                    "getType" => ran(Ok(Value::String(type_name.to_string()))),
+                    "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
+                    "getNamespace" => ran(Ok(Value::String(file.namespace().to_string()))),
+                    "getParent" => ran(Ok(json!({
+                        M: "Declaration",
+                        "ctor": "MapDeclaration",
+                        "fqn": format!("{}.{}", file.namespace(), map.name()),
+                    }))),
+                    _ => {
+                        let Some(mm_index) = mm_index else {
+                            return Err(Fault::Harness(
+                                "a detached MapKeyType/MapValueType with no owning model manager"
+                                    .into(),
+                            ));
+                        };
+                        let manager = &session.pool[mm_index].mm;
+                        let result = if is_key {
+                            manager.validate_detached_map_key(&file, index)
+                        } else {
+                            manager.validate_detached_map_value(&file, index)
+                        };
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            _ => Err(Fault::Unsupported(
+                "a MapKeyType/MapValueType receiver that is not a map part".into(),
+            )),
+        },
         "NumberValidator" => {
             let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
                 return Err(Fault::Unsupported(
@@ -3079,6 +3160,17 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
 fn map_namespace(r: &Replayed, id: DeclId) -> Option<&str> {
     let file_id = r.mm.model_file_of(id)?;
     Some(r.mm.file(file_id)?.namespace())
+}
+
+/// [`Replayed::map_part_summary`], for a `MapDeclaration` read directly off
+/// an unregistered (`mfnew`) `ModelFile` (P2-06b) rather than a registered
+/// `DeclId` — the same outcome-only `{ctor, type}` shape.
+fn detached_map_part_summary(map: &MapDeclaration, is_key: bool) -> Value {
+    json!({
+        M: "Property",
+        "ctor": if is_key { "MapKeyType" } else { "MapValueType" },
+        "type": if is_key { map.key_type_name() } else { map.value_type_name() },
+    })
 }
 
 /// The `ModelUtil` statics that take model-manager collaborators.
