@@ -417,26 +417,74 @@ fn check_property_type(
     }
 
     let target_fqn = resolve(manager, namespace, &type_identifier.name);
-    let target = target_fqn
-        .as_deref()
-        .and_then(|fqn| manager.get_declaration(fqn).ok());
 
+    let Some(target_fqn) = target_fqn else {
+        // TS: `Property.validate` runs `classDecl.getModelFile().resolveType(
+        // 'property ' + this.getFullyQualifiedName(), this.type)` before any
+        // relationship-specific check (property.ts) — `RelationshipDeclaration
+        // .validate` calls it through `super.validate(classDecl)` first thing.
+        // `resolveType` (modelfile.ts) is the same import/local lookup
+        // `resolve` above does; when the type name does not resolve through
+        // it at all, this is the error every property kind raises — a
+        // relationship never reaches its own "points to a missing type" check
+        // below, because `resolveType` throws first.
+        return Err(undeclared_type_error(
+            manager,
+            namespace,
+            &type_identifier.name,
+            format!(
+                "property {}.{}",
+                get_fully_qualified_name(namespace, owner),
+                property.name()
+            ),
+        ));
+    };
+
+    let target = manager.get_declaration(&target_fqn).ok();
     let Some(target) = target else {
         if property.is_relationship() {
             // TS: `'Relationship ' + this.getName() + ' points to a missing
             // type ' + this.getFullyQualifiedTypeName()`
-            // (relationshipdeclaration.ts) — `getFullyQualifiedTypeName`
-            // resolves the type name through the same import/local lookup
-            // `resolve` above does, even when nothing actually declares it.
+            // (relationshipdeclaration.ts), reached only once `resolveType`
+            // above has already succeeded (the type resolves through
+            // import/local lookup, so `target_fqn` is always known here) and
+            // the declaration lookup `RelationshipDeclaration.validate` does
+            // on top of that — `getModelFile().getType(...)` in the same
+            // namespace, `getModelManager().getType(...)` otherwise, swallowed
+            // into `null` on error — still comes back empty.
+            //
+            // No unit test reaches this branch: through the full
+            // `validate_models` pipeline, `target_fqn` (via [`resolve`],
+            // ultimately `ModelFile::resolve_local_type`) and
+            // `manager.get_declaration` always agree. A local name in
+            // `resolve_local_type`'s `local_types` map is built straight from
+            // the file's own declarations, the same list `get_declaration`
+            // reads; an imported name is checked against the *target*
+            // namespace's declarations by [`check_imported_types_exist`],
+            // which every model file's own imports are run through before any
+            // of its declarations validate. So an import naming a
+            // non-existent type is rejected earlier, with a different
+            // message, before a relationship of that file ever reaches this
+            // check. This mirrors TS: real divergence between `resolveType`
+            // and the later `getType` lookup needs the try/catch around
+            // `getModelManager().getType(...)` to swallow a *different* kind
+            // of failure than "undeclared", which the current port does not
+            // yet model.
             return Err(failed(
                 format!(
                     "Relationship {} points to a missing type {}",
                     property.name(),
-                    target_fqn.as_deref().unwrap_or(&type_identifier.name)
+                    target_fqn
                 ),
                 class_location(class),
             ));
         }
+        // Not yet observed for a non-relationship property: TS's own
+        // `Property.validate` has no declaration lookup beyond `resolveType`
+        // above, which just succeeded, so this is unreached in practice. Kept
+        // as a defensive pre-port fallback rather than an `unreachable!`,
+        // since `resolve` and `get_declaration` are still two separate Rust
+        // lookups that could in principle disagree.
         return Err(failed(
             format!(
                 "Undeclared type {} referenced by {}.{}",
@@ -453,10 +501,8 @@ fn check_property_type(
         // src/introspect/relationshipdeclaration.ts) — inherited, so a
         // target that has no identity of its own but extends one that does
         // (every `Asset`/`Participant`, for one) still counts.
-        let identifiable = target.is_class_declaration()
-            && manager
-                .identifier_field_name(target_fqn.as_deref().expect("target resolved"))?
-                .is_some();
+        let identifiable =
+            target.is_class_declaration() && manager.identifier_field_name(&target_fqn)?.is_some();
         if !identifiable {
             // TS: `'Relationship ' + this.getName() + ' must be to a class
             // that has an identifier, but this is to ' +
@@ -466,7 +512,7 @@ fn check_property_type(
                 format!(
                     "Relationship {} must be to a class that has an identifier, but this is to {}",
                     property.name(),
-                    target_fqn.as_deref().expect("target resolved")
+                    target_fqn
                 ),
                 class_location(class),
             ));
@@ -749,6 +795,39 @@ fn catalogue_error(
     err.into()
 }
 
+/// `modelfile-resolvetype-undecltype`: TS's `ModelFile.resolveType` (module
+/// doc on [`resolve`]) — a type name that resolves through neither the
+/// primitive list, an import, nor a local declaration. `context` is TS's own
+/// `context` argument verbatim (e.g. `'property ' + this.getFullyQualifiedName()`,
+/// `Property.validate`, property.ts); no `location`, since `resolveType`'s own
+/// callers on this path never pass its optional `fileLocation` third argument.
+///
+/// TS passes `this` (the `ModelFile`) as the exception's `modelFile` argument
+/// (`IllegalModelException` constructor), which the message ends with
+/// `modelFile.getName()` for, when the file was given a name — `namespace`'s
+/// own [`ModelFile::file_name`], read fresh through `manager` rather than
+/// threaded in by every caller, since a property's declaring class always
+/// carries its namespace already.
+fn undeclared_type_error(
+    manager: &ModelManager,
+    namespace: &str,
+    type_name: &str,
+    context: String,
+) -> ConcertoError {
+    let mut err = ContractError::new(
+        ErrorKind::IllegalModel,
+        "modelfile-resolvetype-undecltype",
+        vec![("type", type_name.to_string()), ("context", context)],
+    );
+    err.model_file = Some(
+        manager
+            .model_file(namespace)
+            .and_then(ModelFile::file_name)
+            .map(str::to_string),
+    );
+    err.into()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::error::ConcertoError;
@@ -934,6 +1013,36 @@ mod tests {
         assert!(err.is_ok());
     }
 
+    /// TS: `RelationshipDeclaration.validate` calls `super.validate(classDecl)`
+    /// first (relationshipdeclaration.ts), which is `Property.validate`'s own
+    /// `classDecl.getModelFile().resolveType('property ' +
+    /// this.getFullyQualifiedName(), this.type)` (property.ts) — the
+    /// structural check every property kind shares. `Ghost` resolves through
+    /// neither an import nor a local declaration, so `resolveType` throws the
+    /// catalogue's `modelfile-resolvetype-undecltype` message
+    /// (modelfile.ts) before `RelationshipDeclaration`'s own "points to a
+    /// missing type" check (which needs a type that *did* resolve) ever
+    /// runs. Evidence: conformance fixture
+    /// `concepts/models/RELATIONSHIP_002/relationship_002_type_not_exist.cto`
+    /// (oracle id `0708cadc678cefd55e7c5e12`, `ModelManager.addCTOModel`) —
+    /// this was a P2-04 review blocker: the branch below used to fire the
+    /// relationship-specific message for this unresolvable case too.
+    #[test]
+    fn relationship_to_unresolvable_type_fails_with_the_undeclared_type_message() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Order",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "ship",
+                  "isArray": false, "isOptional": false,
+                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" } }
+            ]
+        }))]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Undeclared type \"Ghost\" in \"property org.example@1.0.0.Order.ship\"."
+        );
+    }
+
     #[test]
     fn object_property_of_undeclared_type_fails() {
         let err = validate(serde_json::json!([concept(serde_json::json!({
@@ -944,7 +1053,13 @@ mod tests {
                   "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "LineItem" } }
             ]
         }))]));
-        assert!(err.unwrap_err().to_string().contains("Undeclared type"));
+        // Same shared `Property.validate` → `resolveType` check as the
+        // relationship case above (property.ts, modelfile.ts): a
+        // non-relationship property gets the identical catalogue message.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Undeclared type \"LineItem\" in \"property org.example@1.0.0.Order.line\"."
+        );
     }
 
     #[test]

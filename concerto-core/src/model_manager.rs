@@ -1456,6 +1456,65 @@ mod tests {
         mgr
     }
 
+    /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
+    /// `this.ast.defaultValue` straight off the raw AST, for every field kind
+    /// — including `DateTimeProperty`, which the official metamodel does not
+    /// declare a `defaultValue` field on at all (module doc on
+    /// [`ModelManager::property_default_value`]), so a typed per-variant read
+    /// would silently drop one. Covers a present string default, an absent
+    /// one, one explicitly `null` in the AST (also `None`, the same as
+    /// absent: `Field.getDefaultValue`'s own doc says falsy-but-not-`false`
+    /// values are still returned, but TS's `null` and `undefined` are
+    /// indistinguishable through a plain property read, and `filter(!is_null)`
+    /// is this port's chosen way to collapse the two), and a `DateTime`
+    /// field's, which is the case this method exists for.
+    #[test]
+    fn property_default_value_reads_the_raw_ast_including_datetime() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Order", "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "status",
+                          "isArray": false, "isOptional": true, "defaultValue": "OPEN" },
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "note",
+                          "isArray": false, "isOptional": true },
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "nulled",
+                          "isArray": false, "isOptional": true, "defaultValue": null },
+                        { "$class": "concerto.metamodel@1.0.0.DateTimeProperty", "name": "placedAt",
+                          "isArray": false, "isOptional": true, "defaultValue": "2020-01-01T00:00:00.000Z" }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        let prop = |name: &str| {
+            mgr.find_property_id("org.example@1.0.0.Order", name)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name} not found"))
+        };
+
+        assert_eq!(
+            mgr.property_default_value(prop("status")),
+            Some(&serde_json::json!("OPEN"))
+        );
+        assert_eq!(mgr.property_default_value(prop("note")), None);
+        assert_eq!(mgr.property_default_value(prop("nulled")), None);
+        assert_eq!(
+            mgr.property_default_value(prop("placedAt")),
+            Some(&serde_json::json!("2020-01-01T00:00:00.000Z"))
+        );
+        assert!(
+            mgr.property_default_value(PropId::from_index(u32::MAX))
+                .is_none()
+        );
+    }
+
     /// TS: `getDirectSubclasses` builds its population from
     /// `Introspector.getClassDeclarations()`, which reads
     /// `modelManager.getModelFiles()` with no argument and so leaves out
