@@ -351,8 +351,10 @@ static getShortName(fqn) {
   through the CommonJS `dist/` only: through the public ESM and browser entry
   points (`dist/esm/index.mjs`, `dist/esm-browser/index.mjs`) `loadEngine`'s
   `module.require` did not exist; P4-11a (accordproject/concerto-rust#115)
-  gives the ESM builds a `module.require` too, in `scripts/build-esm.js`
-  rather than here (below).
+  gives the Node ESM build a working `module.require`, and the browser ESM
+  build a `module` that forwards to one a bundler or host supplies, in
+  `scripts/build-esm.js` rather than here (below). Browser rust mode needs a
+  bundler, or a host that supplies a synchronous `require`.
 - **Why `loadEngine` and not `require('./engine')`:** a downstream bundler
   (esbuild, webpack, rollup) resolves every string-literal `require` it sees,
   even behind a runtime guard that is false in ts mode. In the trial, when
@@ -380,11 +382,12 @@ static getShortName(fqn) {
 - The rust-mode runs cover the ignored code instead: the unit's test files
   in rust mode (6.2) and the WASM replay of the oracle.
 - **P4-11a (#115): reaching `engine/*.mjs` from the public ESM and browser
-  entry points.** `module.require(specifier)` itself is unchanged — no view
-  source changed. `scripts/build-esm.js` gives concerto-core's Node ESM build
-  (`dist/esm`) a real `module.require`, and its browser build
-  (`dist/esm-browser`) a fallback one, without moving any other package's
-  output or ts mode's behaviour:
+  entry points.** `module.require(specifier)` itself is unchanged; only the
+  views' comments changed. `scripts/build-esm.js` gives concerto-core's Node
+  ESM build (`dist/esm`) a real `module.require`. Its browser build
+  (`dist/esm-browser`) gets a `module` that forwards to one a bundler or host
+  supplies. Neither change moves any other package's output or ts mode's
+  behaviour:
   - **Node.** The build already injects a per-file
     `const require = createRequire(import.meta.url);` banner. P4-11a adds,
     guarded by `CONCERTO_ENGINE=rust`, an assignment —
@@ -423,23 +426,38 @@ static getShortName(fqn) {
       property of `globalThis`, never a local declaration, has that
       property. The guard also means a ts-mode consumer's process is never
       touched: nothing runs unless `CONCERTO_ENGINE=rust` is actually set.
-  - **Browser.** There is no Node `module`, `require`, or `createRequire` to
-    build one from. `scripts/browser-module-shim.js`, injected only into
-    concerto-core's browser build, exports a `module` bound to
-    `globalThis.module` when a page provides one, or a stub that throws a
-    clear error otherwise — the same contract `src/engine/rust.ts`'s own bare
-    `require('@accordproject/concerto-engine')` already relies on in this
-    build. A consumer's bundler (or a test harness, as in
-    `e2e/tests/wasm-engine.spec.ts`) supplies the real one; concerto-core
-    ships no browser-native resolution for it, same as before. The test
-    harness's stand-in resolves whatever subpath a specifier names (not only
-    the literal `'../engine'`) against a genuine `import()` of that file from
-    the served `dist/esm-browser/engine/` directory, and drives it by
-    validating a real model — through `ModelManager`/`ModelFile`/
-    `ScalarDeclaration`, not only `ModelUtil` — so the public entry point's
-    own graph, not the harness, is what actually reaches
-    `engine/views.mjs` and (through its own cross-boundary `require`)
-    `introspect/numbervalidator.mjs`.
+  - **Browser: rust mode requires a bundler, or a host that supplies a
+    synchronous `require`** (maintainer decision on #115). The views load the
+    engine synchronously, through `loadEngine`'s `module.require`, and a
+    browser cannot load an ES module synchronously. So the public browser
+    ESM graph (`dist/esm-browser/index.mjs`) does **not** load
+    `dist/esm-browser/engine/*.mjs` by itself. Making it do so would need an
+    asynchronous `loadEngine`, which would change the shared engine-loading
+    design in this section, and is out of scope. What the browser build
+    ships: `scripts/browser-module-shim.js`, injected only into
+    concerto-core's browser build, exports a `module` bound to the
+    `globalThis.module` that the page provides, or a stub that throws a
+    clear error when there is none. The bundler or host must supply a
+    synchronous `require` there that resolves `./engine`, `../engine` and
+    `../engine/<subpath>` to the matching `dist/esm-browser/engine/*.mjs`
+    module. The same `require` must resolve the engine's own `require`s:
+    `@accordproject/concerto-engine` (src/engine/rust.ts) and
+    `../introspect/numbervalidator.mjs` / `../introspect/stringvalidator.mjs`
+    (src/engine/views.ts). It must resolve those two to the same module
+    instances the public graph uses, so that the engine shares class
+    identity with the public modules. A bundler does this at build time.
+    `globalThis.module` must be set before concerto-core is first imported,
+    because the shim reads it once.
+    `e2e/tests/wasm-engine.spec.ts` checks this path. It imports only the
+    public `dist/esm-browser/index.mjs` and calls public API (`ModelUtil`,
+    and `ModelManager`/`ModelFile`/`ScalarDeclaration` on a model with a
+    scalar range), whose views reach the engine through `loadEngine`. It
+    asserts that the views requested `./engine`, `../engine` and
+    `../engine/views`. The test stands in for the bundler: it preloads
+    `engine/*.mjs`, the WASM package and the two introspect modules with
+    `import()`, then answers the synchronous `require` calls from that
+    registry. The test comments label this as the bundler's role, not
+    something the browser graph does unaided.
   - **Why not touched for any other package.** `scripts/build-esm.js` is
     shared by every workspace package. Both pieces above are gated on the
     package being built being `@accordproject/concerto-core`: an earlier,
@@ -1491,7 +1509,7 @@ named task.
 | OD-8 | New dependencies | `regress` (required by the plan), `indexmap` (3.7) and `ryu-js` (3.1) are pre-approved for `concerto-core`; the trial added `regress` and `ryu-js`. `concerto-wasm` uses `wasm-bindgen` (pinned `=0.2.128`, the CLI version), `js-sys` and `serde_json`, as the spike did. Anything else needs architect approval on the issue. | this rulebook |
 | OD-9 | How does the native harness rebuild the fixtures whose inputs are CTO text (13,006 of 15,037, section 6.2), when CTO parsing stays in JS? | P1-07 adds a JS generator in `migration/oracle/` that runs the frozen `concerto-cto` 5.0.0 parser (the one the oracle recorded with) over every CTO text in the corpus, fixture recipes and blobs included. It writes a CTO→AST cache keyed by the SHA-256 of the exact CTO text and the parser arguments that affect the AST, storing either the AST or the recorded `ParseException`. The cache is committed next to the corpus and regenerated whenever the corpus is re-recorded. A check fails if any CTO text in the corpus has no cache entry. The native harness replays an `addCTOModel` step as `add_model` with the cached AST, and never parses CTO in Rust. | P1-07 |
 | OD-10 | How are cross-op error fixtures attributed to a unit (section 6.2)? | The P1-07 harness writes an attribution index, `fixture id → catalogue key → src/<file>.ts:<line> → unit`, by matching each error fixture's class and final message against the catalogue (2.2, 2.3). It lists fixtures with no match or several matches as unattributed. The index is regenerated whenever the catalogue changes, and each P2 or P3 PR quotes its unit's slice of it, split into due and deferred (6.2). | P1-07 |
-| OD-11 | How does the shim ship in `dist/`? The trial keeps `src/engine/` out of the declaration build (`tsconfig.build.json` excludes it, and the views `require` it) so that the `.d.ts` snapshot does not move; so, in the trial, `dist/` had no shim and rust mode ran only from `src/` (ts-node). The views load it through `loadEngine` (1.5), never a literal `require('./engine')`, so bundling `dist/` in ts mode is unchanged; `scripts/build-esm.js` honours the exclude too. | **Settled (P4-11, extended by P4-11a):** the shim ships as JavaScript only, with no `.d.ts`. `tsconfig.build.json` keeps excluding `src/engine/`, so the snapshot does not move; `tsconfig.build.internal.json` (`declaration: false`) compiles it into `dist/engine/`; `scripts/build-esm.js` builds it into `dist/esm*/engine/` in a separate esbuild pass with the public modules external, so the public ESM output and its chunks are unchanged. The views keep the non-literal `loadEngine` and the `never`-typed guard, so every public signature stays as it is. Rust mode works through the CommonJS `dist/` **and**, since P4-11a, through the public ESM and browser entry points: `scripts/build-esm.js` gives concerto-core's Node build a `globalThis.module.require` (guarded by `CONCERTO_ENGINE=rust`, gated to concerto-core, never a locally declared `module`, so it stays invisible to webpack's "Critical dependency" check exactly as `module` being undefined always was) and its browser build a `globalThis.module` fallback via `scripts/browser-module-shim.js` (1.5). | P4-02, P4-11, P4-11a |
+| OD-11 | How does the shim ship in `dist/`? The trial keeps `src/engine/` out of the declaration build (`tsconfig.build.json` excludes it, and the views `require` it) so that the `.d.ts` snapshot does not move; so, in the trial, `dist/` had no shim and rust mode ran only from `src/` (ts-node). The views load it through `loadEngine` (1.5), never a literal `require('./engine')`, so bundling `dist/` in ts mode is unchanged; `scripts/build-esm.js` honours the exclude too. | **Settled (P4-11, extended by P4-11a):** the shim ships as JavaScript only, with no `.d.ts`. `tsconfig.build.json` keeps excluding `src/engine/`, so the snapshot does not move; `tsconfig.build.internal.json` (`declaration: false`) compiles it into `dist/engine/`; `scripts/build-esm.js` builds it into `dist/esm*/engine/` in a separate esbuild pass with the public modules external, so the public ESM output and its chunks are unchanged. The views keep the non-literal `loadEngine` and the `never`-typed guard, so every public signature stays as it is. Rust mode works through the CommonJS `dist/` **and**, since P4-11a, through the public Node ESM entry point: `scripts/build-esm.js` gives concerto-core's Node build a `globalThis.module.require` (guarded by `CONCERTO_ENGINE=rust`, gated to concerto-core, never a locally declared `module`, so it stays invisible to webpack's "Critical dependency" check exactly as `module` being undefined always was). Through the public browser entry point, rust mode requires a bundler, or a host that supplies a synchronous `require`; the browser build forwards `module.require` to it via `scripts/browser-module-shim.js` and does not load the engine by itself (1.5; maintainer decision on #115). | P4-02, P4-11, P4-11a |
 | OD-12 | Snapshot pass-back or handles, and one context trait or two? The trial's views hand the JS object back and the binding reads the cached fields; the arena will hand a `DeclId`/`PropId` instead. The trial also added `ValidatedElement` next to `ResolutionContext`. | Keep the snapshot fields as the view's state either way (getters read them, 1.5); P1-04 replaces the pass-back with handles and a `generation()` counter, and decides whether `ValidatedElement` becomes `ResolutionContext` methods on a `Node`. **Settled in P1-04:** the arena has `ModelFileId`/`DeclId`/`PropId` handles and `generation()`; the binding moves to them in P4-01. `ValidatedElement` stays a separate trait, because a validator is built while its element is constructed, before the element has a handle. | P1-04 |
 
 ---
