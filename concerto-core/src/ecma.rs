@@ -181,6 +181,46 @@ pub(crate) fn string_to_number(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(f64::NAN)
 }
 
+/// ECMAScript `parseInt(string)` (no radix): leading JS whitespace, an
+/// optional sign, an optional `0x`/`0X` (radix 16), then the longest run of
+/// digits; `NaN` when there are none.
+pub(crate) fn parse_int(s: &str) -> f64 {
+    let s = s.trim_start_matches(is_js_whitespace);
+    let (sign, rest) = match s.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let (radix, digits) = match rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        Some(hex) => (16, hex),
+        None => (10, rest),
+    };
+    let run: Vec<u32> = digits.chars().map_while(|c| c.to_digit(radix)).collect();
+    if run.is_empty() {
+        return f64::NAN;
+    }
+    let magnitude = if radix == 10 {
+        let text: String = digits.chars().take(run.len()).collect();
+        text.parse::<f64>().unwrap_or(f64::NAN)
+    } else {
+        run.iter()
+            .fold(0.0, |acc, d| acc * f64::from(radix) + f64::from(*d))
+    };
+    sign * magnitude
+}
+
+/// ECMAScript `parseFloat(string)`: leading JS whitespace, then the longest
+/// prefix that is a `StrDecimalLiteral` (`Infinity`, digits with an optional
+/// fraction and exponent); `NaN` when there is none.
+pub(crate) fn parse_float(s: &str) -> f64 {
+    let s = s.trim_start_matches(is_js_whitespace);
+    let re = regress::Regex::new(r"^[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
+        .expect("static pattern");
+    match re.find(s) {
+        Some(m) => string_to_number(&s[m.range]),
+        None => f64::NAN,
+    }
+}
+
 /// JS truthiness of a JSON value (`!!value`).
 pub(crate) fn is_truthy(value: &Value) -> bool {
     match value {
@@ -200,6 +240,19 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn parse_int_and_parse_float_follow_ecmascript() {
+        assert_eq!(parse_int("42"), 42.0);
+        assert_eq!(parse_int("  -7.9abc"), -7.0);
+        assert_eq!(parse_int("0x1F"), 31.0);
+        assert_eq!(parse_int("1e+21"), 1.0);
+        assert!(parse_int("abc").is_nan());
+        assert_eq!(parse_float("3.25kg"), 3.25);
+        assert_eq!(parse_float(" -.5e1x"), -5.0);
+        assert_eq!(parse_float("Infinityx"), f64::INFINITY);
+        assert!(parse_float("x1").is_nan());
+    }
 
     #[test]
     fn numbers_format_the_js_way() {

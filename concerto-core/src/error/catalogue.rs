@@ -677,6 +677,209 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/introspect/mapvaluetype.ts:108"],
     },
+    // ---- P3-01b additions (Serializer, Factory, JSONPopulator, JSONGenerator
+    //      and the Resource-mutating members; accordproject/concerto-rust#124) ----
+    CatalogueEntry {
+        code: "engine-typeerror-convertnulltoobject",
+        template: "Cannot convert undefined or null to object",
+        renderer: Renderer::Inline,
+        sources: &["V8 (Object.keys of null or undefined)"],
+    },
+    CatalogueEntry {
+        code: "serializer-constructor-factorynull",
+        template: "\"Factory\" cannot be \"null\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer.ts:57"],
+    },
+    CatalogueEntry {
+        code: "serializer-constructor-modelmanagernull",
+        template: "\"ModelManager\" cannot be \"null\".",
+        renderer: Renderer::Globalize,
+        sources: &["src/serializer.ts:59"],
+    },
+    CatalogueEntry {
+        code: "serializer-fromjson-noclass",
+        template: "Invalid JSON data. Does not contain a $class type identifier.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer.ts:146"],
+    },
+    CatalogueEntry {
+        code: "serializer-fromjson-mapnotsupported",
+        template: "Attempting to create a Map declaration is not supported.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer.ts:166"],
+    },
+    CatalogueEntry {
+        code: "serializer-fromjson-enumnotsupported",
+        template: "Attempting to create an ENUM declaration is not supported.",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer.ts:168"],
+    },
+    CatalogueEntry {
+        code: "factory-newresource-idregexmismatch",
+        template: "Provided id does not match regex: {regex}",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:127"],
+    },
+    CatalogueEntry {
+        code: "factory-newresource-notidentifiable",
+        template: "Type is not identifiable {fqn}",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:131"],
+    },
+    CatalogueEntry {
+        code: "factory-newrelationship-notidentifiable",
+        template: "Cannot create a relationship to {fqn}, it is not identifiable.",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:190"],
+    },
+    CatalogueEntry {
+        code: "factory-newtransaction-nsnotspecified",
+        template: "ns not specified",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:211", "src/factory.ts:240"],
+    },
+    CatalogueEntry {
+        code: "factory-newtransaction-typenotspecified",
+        template: "type not specified",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:213", "src/factory.ts:242"],
+    },
+    CatalogueEntry {
+        code: "factory-newtransaction-notatransaction",
+        template: "{fqn} is not a transaction",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:219"],
+    },
+    CatalogueEntry {
+        code: "factory-newevent-notanevent",
+        template: "{fqn} is not an event",
+        renderer: Renderer::Inline,
+        sources: &["src/factory.ts:248"],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-getassignableproperties-reservedproperties",
+        template: "Unexpected reserved properties for type {fqn}: {properties}",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsonpopulator.ts:62"],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-getassignableproperties-timestamp",
+        template: "Unexpected property for type {fqn}: $timestamp",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsonpopulator.ts:69"],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-validateproperties-unexpectedproperties",
+        template: "Unexpected properties for type {fqn}: {properties}",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsonpopulator.ts:93"],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-visitfield-notarray",
+        template: "Expected value at path `{path}` to be an array of type `{type}`",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/serializer/jsonpopulator.ts:254",
+            "src/serializer/jsonpopulator.ts:421",
+        ],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-converttoobject-wrongtype",
+        template: "Expected value at path `{path}` to be of type `{type}`",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/serializer/jsonpopulator.ts:337",
+            "src/serializer/jsonpopulator.ts:349",
+            "src/serializer/jsonpopulator.ts:357",
+            "src/serializer/jsonpopulator.ts:360",
+            "src/serializer/jsonpopulator.ts:369",
+            "src/serializer/jsonpopulator.ts:377",
+            "src/serializer/jsonpopulator.ts:385",
+        ],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-converttoobject-datetimeformat",
+        template: "Expected value at path `{path}` to be of type `{type}` with format YYYY-MM-DDTHH:mm:ss[Z]",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsonpopulator.ts:345"],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-visitrelationshipdeclaration-notastring",
+        template: "Invalid JSON data. Found a value that is not a string: {value} for relationship {relationship}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/serializer/jsonpopulator.ts:433",
+            "src/serializer/jsonpopulator.ts:457",
+        ],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-visitrelationshipdeclaration-noclass",
+        template: "Invalid JSON data. Does not contain a $class type identifier: {value} for relationship {relationship}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/serializer/jsonpopulator.ts:438",
+            "src/serializer/jsonpopulator.ts:462",
+        ],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-visitrelationshipdeclaration-notstringorobject",
+        template: "Invalid JSON data. Found a value that is not a string or object: {value} for relationship {relationship}",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsonpopulator.ts:474"],
+    },
+    CatalogueEntry {
+        code: "jsongenerator-visitclassdeclaration-notaresource",
+        template: "Expected a Resource, but found {obj}",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsongenerator.ts:122"],
+    },
+    CatalogueEntry {
+        code: "jsongenerator-getrelationshiptext-norelationship",
+        template: "Did not find a relationship for {type} found {obj}",
+        renderer: Renderer::Inline,
+        sources: &["src/serializer/jsongenerator.ts:308"],
+    },
+    CatalogueEntry {
+        code: "typedstack-push-unexpectedtype",
+        template: "Did not find expected type {type} as argument to push. Found: {obj}",
+        renderer: Renderer::Inline,
+        sources: &["@accordproject/concerto-util@5.0.0 src/typedstack.ts (TypedStack.push)"],
+    },
+    CatalogueEntry {
+        code: "typed-tojson-useserializer",
+        template: "Use Serializer.toJSON to convert resource instances to JSON objects.",
+        renderer: Renderer::Inline,
+        sources: &["src/model/typed.ts:209"],
+    },
+    CatalogueEntry {
+        code: "validatedresource-setpropertyvalue-undeclaredfield",
+        template: "The instance with id {id} trying to set field {propName} which is not declared in the model.",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/model/validatedresource.ts:56",
+            "src/model/validatedresource.ts:83",
+        ],
+    },
+    CatalogueEntry {
+        code: "validatedresource-addarrayvalue-notanarray",
+        template: "The instance with id {id} trying to add array item {propName} which is not declared as an array in the model.",
+        renderer: Renderer::Inline,
+        sources: &["src/model/validatedresource.ts:89"],
+    },
+    CatalogueEntry {
+        // `'Unrecognised ' + JSON.stringify(thing)` in `JSONPopulator.visit`
+        // and `JSONGenerator.visit`, for an introspection object (a scalar
+        // declaration, an enum value): `JSON.stringify` meets the model
+        // manager again through the model file and throws before the
+        // `Error` is built. The cycle it names is always the same one.
+        code: "engine-typeerror-circularjson",
+        template: "Converting circular structure to JSON\n    --> starting at object with constructor 'ModelManager'\n    |     property 'modelFiles' -> object with constructor 'Object'\n    |     property 'concerto.decorator@1.0.0' -> object with constructor 'ModelFile'\n    --- property 'modelManager' closes the circle",
+        renderer: Renderer::Inline,
+        sources: &[
+            "V8 (JSON.stringify of a cyclic object), src/serializer/jsonpopulator.ts:124, src/serializer/jsongenerator.ts:72",
+        ],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",
