@@ -1350,9 +1350,16 @@ Categories:
   Unicode tables or V8 message text. An `engine` row must not change any
   oracle outcome. If it does, it is a failure, not a divergence. The reviewer
   signs off every `engine` row.
+- `maintainer-accepted`: a `ts-bug` case (TS crashes or misbehaves from a
+  missing check) that the plan owner has explicitly approved keeping *un*-
+  ported — Rust's behaviour is kept even though it differs from TS, as a
+  named exception to "no improvements". This is not a default: it needs a
+  specific maintainer sign-off recorded in the row (the issue where it was
+  decided), not just an agent's judgement that TS looks wrong. See DV-015.
 
 Fixing a TS bug is out of scope for the migration. Open a follow-up issue and
-link it from the row.
+link it from the row, unless the maintainer has already made a
+`maintainer-accepted` call on it.
 
 ---
 
