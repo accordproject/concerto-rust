@@ -1437,6 +1437,29 @@ mod tests {
         );
     }
 
+    // TS: `Field.getScalarField`'s own inline templates
+    // (src/introspect/field.ts:186,215), checked against the frozen TS
+    // 5.0.0 reference (#154).
+    #[test]
+    fn golden_field_getscalarfield_notscalar() {
+        assert_eq!(
+            contract("field-getscalarfield-notscalar", &[("name", "bar")]).message(),
+            "Field bar is not a scalar property."
+        );
+    }
+
+    #[test]
+    fn golden_field_getscalarfield_unrecognizedtype() {
+        assert_eq!(
+            contract(
+                "field-getscalarfield-unrecognizedtype",
+                &[("class", "concerto.metamodel@1.0.0.MapScalar")]
+            )
+            .message(),
+            "Unrecognized scalar type concerto.metamodel@1.0.0.MapScalar"
+        );
+    }
+
     // TS: `MapDeclaration.process`'s own inline templates
     // (src/introspect/mapdeclaration.ts:63,67,71), checked against the
     // frozen TS 5.0.0 reference.

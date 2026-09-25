@@ -699,6 +699,22 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/introspect/relationshipdeclaration.ts:86"],
     },
+    // ---- P4-07a additions (Field.getScalarField's own inline templates,
+    //      #154 — the P2-09 partial audit found it still TS) ----
+    CatalogueEntry {
+        code: "field-getscalarfield-notscalar",
+        template: "Field {name} is not a scalar property.",
+        renderer: Renderer::Inline,
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // at the throw site).
+        sources: &["src/introspect/field.ts:186"],
+    },
+    CatalogueEntry {
+        code: "field-getscalarfield-unrecognizedtype",
+        template: "Unrecognized scalar type {class}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/field.ts:215"],
+    },
     CatalogueEntry {
         code: "mapdeclaration-process-missingkeyvalue",
         template: "MapDeclaration must contain Key & Value properties {name}",

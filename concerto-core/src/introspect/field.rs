@@ -12,11 +12,15 @@
 use serde_json::Value;
 
 use crate::ecma;
-use crate::error::ContractError;
+use crate::error::{ContractError, ErrorKind};
 use crate::introspect::FullyQualified;
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::NumberValidator;
 use crate::model_manager::ValidatedElement;
+
+/// The metamodel namespace (`MetaModelNamespace` in `concerto-metamodel`),
+/// as `Field.getScalarField`'s own `$class` switch spells it.
+const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
 /// What `Field.process` computes, after `Property.process` has set `type`.
 #[derive(Debug, Clone, PartialEq)]
@@ -106,4 +110,108 @@ pub fn process<E: From<ContractError>>(
         validator,
         default_value,
     })
+}
+
+/// TS: the `switch (type.ast.$class)` inside `Field.getScalarField`
+/// (src/introspect/field.ts), after `isTypeScalar()` has already confirmed
+/// `type` is a scalar declaration. Builds the synthetic field's AST from the
+/// scalar's own AST (`JSON.parse(JSON.stringify(type.ast))`, here a clone),
+/// with `$class` swapped for the matching `*Property` class and `name` set
+/// to `field_name` (`this.ast.name`, the original field's own name). An
+/// unrecognised `$class` — unreachable for a real scalar declaration, since
+/// `ScalarDeclaration` only ever holds one of these six — errors exactly as
+/// the TS `default` branch's `Unrecognized scalar type ${type.ast.$class}`
+/// does, by way of the catalogue's `field-getscalarfield-unrecognizedtype`
+/// entry.
+///
+/// `array` is not set here: the view sets it from `this.isArray()`, exactly
+/// as the TS body's own `this.scalarField.array = this.isArray();` does,
+/// after constructing the `Field` from this AST.
+pub fn scalar_to_field_ast<E: From<ContractError>>(
+    scalar_ast: &Value,
+    field_name: Value,
+) -> Result<Value, E> {
+    let class = scalar_ast.get("$class").and_then(Value::as_str);
+    let property_class = match class {
+        Some("concerto.metamodel@1.0.0.StringScalar") => {
+            format!("{METAMODEL_NAMESPACE}.StringProperty")
+        }
+        Some("concerto.metamodel@1.0.0.BooleanScalar") => {
+            format!("{METAMODEL_NAMESPACE}.BooleanProperty")
+        }
+        Some("concerto.metamodel@1.0.0.DateTimeScalar") => {
+            format!("{METAMODEL_NAMESPACE}.DateTimeProperty")
+        }
+        Some("concerto.metamodel@1.0.0.DoubleScalar") => {
+            format!("{METAMODEL_NAMESPACE}.DoubleProperty")
+        }
+        Some("concerto.metamodel@1.0.0.IntegerScalar") => {
+            format!("{METAMODEL_NAMESPACE}.IntegerProperty")
+        }
+        Some("concerto.metamodel@1.0.0.LongScalar") => {
+            format!("{METAMODEL_NAMESPACE}.LongProperty")
+        }
+        other => {
+            let class_display = other
+                .map(str::to_string)
+                .unwrap_or_else(|| "undefined".to_string());
+            return Err(ContractError::new(
+                ErrorKind::Error,
+                "field-getscalarfield-unrecognizedtype",
+                vec![("class", class_display)],
+            )
+            .into());
+        }
+    };
+    let mut field_ast = scalar_ast.clone();
+    field_ast["$class"] = Value::String(property_class);
+    field_ast["name"] = field_name;
+    Ok(field_ast)
+}
+
+#[cfg(test)]
+mod scalar_to_field_ast_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Debug)]
+    struct TestError(ContractError);
+
+    impl From<ContractError> for TestError {
+        fn from(err: ContractError) -> Self {
+            Self(err)
+        }
+    }
+
+    #[test]
+    fn maps_every_scalar_class_to_its_property_class() {
+        let cases = [
+            ("StringScalar", "StringProperty"),
+            ("BooleanScalar", "BooleanProperty"),
+            ("DateTimeScalar", "DateTimeProperty"),
+            ("DoubleScalar", "DoubleProperty"),
+            ("IntegerScalar", "IntegerProperty"),
+            ("LongScalar", "LongProperty"),
+        ];
+        for (scalar_class, property_class) in cases {
+            let scalar_ast = json!({
+                "$class": format!("{METAMODEL_NAMESPACE}.{scalar_class}"),
+                "name": "S",
+            });
+            let field_ast: Value =
+                scalar_to_field_ast::<TestError>(&scalar_ast, json!("myField")).unwrap();
+            assert_eq!(
+                field_ast["$class"],
+                json!(format!("{METAMODEL_NAMESPACE}.{property_class}"))
+            );
+            assert_eq!(field_ast["name"], json!("myField"));
+        }
+    }
+
+    #[test]
+    fn errors_on_an_unrecognized_scalar_class() {
+        let scalar_ast = json!({ "$class": format!("{METAMODEL_NAMESPACE}.MapScalar") });
+        let err = scalar_to_field_ast::<TestError>(&scalar_ast, json!("myField")).unwrap_err();
+        assert_eq!(err.0.code, "field-getscalarfield-unrecognizedtype");
+    }
 }
