@@ -96,6 +96,10 @@ impl Serializer {
         if !class_name.is_truthy() {
             return Err(plain_error("serializer-fromjson-noclass"));
         }
+        // DV-015: TS has no type check here and either crashes in
+        // `ModelUtil.getShortName`/`getNamespace` or, for an array, resolves
+        // it to a `TypeNotFoundException`; kept as an explicit rejection
+        // (maintainer-accepted, accordproject/concerto-rust#156).
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::Error,
@@ -729,6 +733,63 @@ mod tests {
                 .expect("a car");
             assert_eq!(car.get("wheels"), &JsValue::Number(4.0));
         }
+    }
+
+    /// DV-015: a non-string `$class` on the top-level document.
+    /// `ModelUtil.getShortName`/`getNamespace` call `fqn.lastIndexOf` on it
+    /// with no type check, and TS's outcome then depends on *which*
+    /// non-string value it is: `true`, a number or a plain object have no
+    /// `lastIndexOf` of their own, so V8 throws an uncaught `TypeError:
+    /// fqn.lastIndexOf is not a function`; an array does have its own
+    /// `Array.prototype.lastIndexOf` (which searches for an element equal to
+    /// `'.'`, finds none, and returns `-1` rather than throwing), so TS
+    /// doesn't crash at all — it stringifies the array and raises a normal
+    /// `TypeNotFoundException: Namespace is not defined for type "…"`
+    /// instead. Either way, the underlying bug is the same missing type
+    /// check, and Rust raises the same explicit rejection for every shape;
+    /// the maintainer accepted keeping Rust's clearer, explicit rejection
+    /// over reproducing either TS outcome (accordproject/concerto-rust#156,
+    /// whose decision and #160's follow-up both confirm this covers the
+    /// array shape too, not only the `TypeError` crash).
+    #[test]
+    fn a_non_string_class_on_the_document_is_an_explicit_error() {
+        // `null`, `false`, `0` and `""` are falsy in JS and take the earlier
+        // "no $class" branch instead (`serializer-fromjson-noclass`), both
+        // in TS (`if (!jsonObject.$class)`) and here — only a truthy,
+        // non-string `$class` reaches this check. `json!([])` is the
+        // non-crashing TypeNotFoundException shape above, not the TypeError
+        // crash; it's included here because Rust's rejection, and DV-015's
+        // scope, are the same for both.
+        for class in [json!(true), json!(1), json!([]), json!({})] {
+            let json = json!({ "$class": class, "vin": "A" });
+            let error = message(serializer().from_json(
+                &model(),
+                &JsValue::from_json(&json),
+                None,
+                &mut Env,
+            ));
+            assert_eq!(
+                error,
+                format!(
+                    "a $class that is not a string: {}",
+                    JsValue::from_json(&class).to_js_string()
+                )
+            );
+        }
+    }
+
+    /// The same DV-015 check, reached through `JSONPopulator.convertItem`
+    /// (`populator.rs`) for a nested object field rather than the top-level
+    /// document.
+    #[test]
+    fn a_non_string_class_on_a_nested_field_is_an_explicit_error() {
+        let json = json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A",
+            "address": { "$class": true, "city": "Paris" }
+        });
+        let error =
+            message(serializer().from_json(&model(), &JsValue::from_json(&json), None, &mut Env));
+        assert_eq!(error, "a $class that is not a string: true");
     }
 
     #[test]
