@@ -390,12 +390,18 @@ static getShortName(fqn) {
     guarded by `CONCERTO_ENGINE=rust`, an assignment —
     `globalThis.module = { require(specifier) { … } }`, never a locally
     declared `const module` — whose `require` rewrites only a specifier
-    matching `/^\.\.?\/engine(\/.*)?$/` to the engine directory's real,
-    absolute path (baked in at build time from `nodeOutdir`) before calling
-    a `createRequire`-built function, and defers everything else to a plain
-    `require`. Two things forced that specific shape, both checked by
-    building the actual package and diffing against the pre-P4-11a build,
-    never just read from the source:
+    matching `/^\.\.?\/engine(\/.*)?$/` to the engine directory's real
+    location before calling a `createRequire`-built function, and defers
+    everything else to a plain `require`. The engine directory is located at
+    runtime — never baked in at build time from `nodeOutdir`, since that is
+    only this build machine's own absolute path and breaks the moment the
+    package is installed anywhere else (an npm tarball, another checkout,
+    CI): the first call from a given output file walks upward from that
+    file's own `import.meta.url` (real wherever the file actually ends up)
+    until it finds an `engine/` directory next to it, and caches the answer.
+    Two things forced that specific shape, both checked by building the
+    actual package and diffing against the pre-P4-11a build, never just read
+    from the source:
     - **Splitting flattens depth.** A view shared by more than one entry
       point — every rust-mode view is — gets hoisted into a chunk at the
       outdir root, one directory shallower than a nested source file such as
@@ -425,7 +431,15 @@ static getShortName(fqn) {
     `require('@accordproject/concerto-engine')` already relies on in this
     build. A consumer's bundler (or a test harness, as in
     `e2e/tests/wasm-engine.spec.ts`) supplies the real one; concerto-core
-    ships no browser-native resolution for it, same as before.
+    ships no browser-native resolution for it, same as before. The test
+    harness's stand-in resolves whatever subpath a specifier names (not only
+    the literal `'../engine'`) against a genuine `import()` of that file from
+    the served `dist/esm-browser/engine/` directory, and drives it by
+    validating a real model — through `ModelManager`/`ModelFile`/
+    `ScalarDeclaration`, not only `ModelUtil` — so the public entry point's
+    own graph, not the harness, is what actually reaches
+    `engine/views.mjs` and (through its own cross-boundary `require`)
+    `introspect/numbervalidator.mjs`.
   - **Why not touched for any other package.** `scripts/build-esm.js` is
     shared by every workspace package. Both pieces above are gated on the
     package being built being `@accordproject/concerto-core`: an earlier,
