@@ -1010,6 +1010,23 @@ mod tests {
         );
     }
 
+    /// P2-04 (#48): TS `'Failed to find fully qualified type name for
+    /// property ' + this.name + ' with type ' + this.type`
+    /// (src/introspect/property.ts:218), checked against the frozen TS 5.0.0
+    /// reference. `this.type` is JS `null` for an enum value, coerced to the
+    /// literal string `null` by the `+` concatenation.
+    #[test]
+    fn golden_property_getfullyqualifiedtypename_notfound() {
+        assert_eq!(
+            contract(
+                "property-getfullyqualifiedtypename-notfound",
+                &[("name", "status"), ("type", "null")]
+            )
+            .message(),
+            "Failed to find fully qualified type name for property status with type null"
+        );
+    }
+
     #[test]
     fn golden_instancegenerator_newinstance_noconcreteclass() {
         assert_eq!(

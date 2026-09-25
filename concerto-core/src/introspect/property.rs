@@ -749,4 +749,105 @@ mod tests {
                 .starts_with("illegal model: invalid StringProperty: ")
         );
     }
+
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// reject size on a non-array Integer property" — the same
+    /// `check_size_validator` path `size_validator_on_non_array_is_rejected`
+    /// exercises for a `String` property, checked here for `Integer` too.
+    #[test]
+    fn size_validator_on_non_array_integer_property_is_rejected() {
+        let json = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.IntegerProperty",
+            "name": "count", "isArray": false, "isOptional": false,
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": 1, "maxSize": 5
+            }
+        });
+        let err = Property::try_from(&json);
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("size validator can only be applied to array or map")
+        );
+    }
+
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// return null when no size validator".
+    #[test]
+    fn size_validator_is_none_when_absent() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "tags", "isArray": true, "isOptional": false
+        }));
+        assert!(p.size_validator().is_none());
+    }
+
+    /// Ported from `test/introspect/field.js` #constructor "should not have a
+    /// default value by default" and "should save the incoming default
+    /// value". TS builds a `Field` over a stubbed `ClassDeclaration` parent
+    /// for these two, but `process()` never calls it (`this.ast.defaultValue`
+    /// only), so the stub is inert scaffolding, not white-box coupling
+    /// (module doc on [`crate::model_manager::ModelManager::property_default_value`],
+    /// which is the same raw-AST read for a `PropId` already in the arena);
+    /// `Property::try_from` alone is the faithful port here, no `ModelManager`
+    /// or parent needed.
+    #[test]
+    fn a_default_value_is_read_from_the_ast_when_present() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "field", "isArray": false, "isOptional": false,
+            "defaultValue": "wowSuchDefault"
+        }));
+        match &p {
+            Property::String(s) => {
+                assert_eq!(s.default_value.as_deref(), Some("wowSuchDefault"));
+            }
+            _ => panic!("expected String"),
+        }
+
+        let without = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "field", "isArray": false, "isOptional": false
+        }));
+        match &without {
+            Property::String(s) => assert_eq!(s.default_value, None),
+            _ => panic!("expected String"),
+        }
+    }
+
+    /// Ported from `test/introspect/field.js` #getDefaultValue "should return
+    /// the default value for falsy defaults": a JSON `false` default is not
+    /// itself nullish, so it is kept (`Util.isNull` in TS, `!v.is_null()` in
+    /// [`crate::model_manager::ModelManager::property_default_value`]),
+    /// unlike a JSON `null`.
+    #[test]
+    fn a_falsy_boolean_default_value_is_not_treated_as_absent() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.BooleanProperty",
+            "name": "field", "isArray": false, "isOptional": false,
+            "defaultValue": false
+        }));
+        match &p {
+            Property::Boolean(b) => assert_eq!(b.default_value, Some(false)),
+            _ => panic!("expected Boolean"),
+        }
+    }
+
+    /// Ported from `test/introspect/field.js` #constructor "should not be
+    /// optional by default" and "should detect if field is optional".
+    #[test]
+    fn optional_defaults_to_false_and_follows_the_ast() {
+        let not_optional = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "field", "isArray": false
+        }));
+        assert!(!not_optional.is_optional());
+
+        let optional = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "field", "isArray": false, "isOptional": true
+        }));
+        assert!(optional.is_optional());
+    }
 }

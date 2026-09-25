@@ -402,11 +402,14 @@ fn check_property_type(
     };
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
+        // TS: RelationshipDeclaration.validate's own hardcoded message
+        // (src/introspect/relationshipdeclaration.ts): `'Relationship ' +
+        // this.getName() + ' cannot be to the primitive type ' +
+        // this.getType()` — no owner clause.
         return Err(failed(
             format!(
-                "Relationship {} on {} cannot be to the primitive type {}",
+                "Relationship {} cannot be to the primitive type {}",
                 property.name(),
-                owner,
                 type_identifier.name
             ),
             class_location(class),
@@ -419,6 +422,21 @@ fn check_property_type(
         .and_then(|fqn| manager.get_declaration(fqn).ok());
 
     let Some(target) = target else {
+        if property.is_relationship() {
+            // TS: `'Relationship ' + this.getName() + ' points to a missing
+            // type ' + this.getFullyQualifiedTypeName()`
+            // (relationshipdeclaration.ts) — `getFullyQualifiedTypeName`
+            // resolves the type name through the same import/local lookup
+            // `resolve` above does, even when nothing actually declares it.
+            return Err(failed(
+                format!(
+                    "Relationship {} points to a missing type {}",
+                    property.name(),
+                    target_fqn.as_deref().unwrap_or(&type_identifier.name)
+                ),
+                class_location(class),
+            ));
+        }
         return Err(failed(
             format!(
                 "Undeclared type {} referenced by {}.{}",
@@ -440,11 +458,15 @@ fn check_property_type(
                 .identifier_field_name(target_fqn.as_deref().expect("target resolved"))?
                 .is_some();
         if !identifiable {
+            // TS: `'Relationship ' + this.getName() + ' must be to a class
+            // that has an identifier, but this is to ' +
+            // this.getFullyQualifiedTypeName()` — no owner clause, and with
+            // the target's own fully-qualified name appended.
             return Err(failed(
                 format!(
-                    "Relationship {} on {} must be to a class that has an identifier",
+                    "Relationship {} must be to a class that has an identifier, but this is to {}",
                     property.name(),
-                    owner
+                    target_fqn.as_deref().expect("target resolved")
                 ),
                 class_location(class),
             ));
@@ -854,7 +876,13 @@ mod tests {
                   "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Double" } }
             ]
         }))]));
-        assert!(err.unwrap_err().to_string().contains("primitive type"));
+        // TS (relationshipdeclaration.ts): `'Relationship ' + this.getName()
+        // + ' cannot be to the primitive type ' + this.getType()` — no
+        // owner clause.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Relationship total cannot be to the primitive type Double"
+        );
     }
 
     #[test]
@@ -870,10 +898,14 @@ mod tests {
                 ]
             }))
         ]));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("must be to a class that has an identifier")
+        // TS: `'Relationship ' + this.getName() + ' must be to a class that
+        // has an identifier, but this is to ' +
+        // this.getFullyQualifiedTypeName()` — no owner clause, with the
+        // target's own fully-qualified name appended.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Relationship shipTo must be to a class that has an identifier, \
+             but this is to org.example@1.0.0.Address"
         );
     }
 
@@ -1792,6 +1824,104 @@ mod tests {
                 .to_string()
                 .contains("must be a concept or a scalar")
         );
+    }
+
+    /// P2-04 (issue #48): `Property.validate`'s size-validator check
+    /// (property.ts) allows a non-array size validator only when the
+    /// property's own type is a map declaration — checked here only once
+    /// the target type is known, which is why it is a `validate_models`
+    /// check (`check_property_type`) rather than a load-time one
+    /// (`Property::check_validators`, which only knows the property's own
+    /// AST, not what its type resolves to).
+    ///
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// reject size on a non-array, non-map object property".
+    #[test]
+    fn size_validator_on_a_non_array_object_property_of_a_non_map_type_is_rejected() {
+        let err = validate(serde_json::json!([
+            concept(serde_json::json!({ "name": "B" })),
+            concept(serde_json::json!({
+                "name": "A",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "thing",
+                      "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "B" },
+                      "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 5 } }
+                ]
+            }))
+        ]));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("size validator can only be applied to array or map")
+        );
+    }
+
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// allow size on a map-typed property".
+    #[test]
+    fn size_validator_on_a_non_array_object_property_of_a_map_type_is_allowed() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+        let err = validate(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "M", "key": key, "value": value },
+            concept(serde_json::json!({
+                "name": "A",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "data",
+                      "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "M" },
+                      "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 5 } }
+                ]
+            }))
+        ]));
+        assert!(err.is_ok());
+    }
+
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// allow size on a map-typed property imported from another namespace":
+    /// the map declaration and the property pointing at it are in different
+    /// namespaces, so resolving the property's type needs the import list,
+    /// not just the local declarations `validate`'s own helpers build.
+    #[test]
+    fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "maps@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "PhoneBook",
+                          "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                          "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "t@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "maps@1.0.0", "name": "PhoneBook" }
+                    ],
+                    "declarations": [concept(serde_json::json!({
+                        "name": "A",
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "contacts",
+                              "isArray": false, "isOptional": false,
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "PhoneBook" },
+                              "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 10 } }
+                        ]
+                    }))]
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(manager.validate_models().is_ok());
     }
 
     #[test]
