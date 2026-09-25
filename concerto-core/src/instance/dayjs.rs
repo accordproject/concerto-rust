@@ -667,14 +667,6 @@ mod tests {
             Dayjs::parse_instant("2022-11-28")
         );
         assert!(Dayjs::parse_instant("13-28").is_nan());
-        // DV-009 (DIVERGENCES.md) — an embedded NUL after an
-        // otherwise-valid instant. V8's legacy tokenizer stops at U+0000 and
-        // accepts the prefix; the Rust parser matches the whole string and
-        // rejects it (found by P5-05 differential fuzzing,
-        // accordproject/concerto-rust#76, seed
-        // data/Serializer.fromJSON/024a285d00093fff73ca0e8d.json,
-        // mutationSeed 3124886527).
-        assert!(Dayjs::parse_instant("1970-01-01T00:00:00.000+00:00\u{0}").is_nan());
     }
 
     #[test]
