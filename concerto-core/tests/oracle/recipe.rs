@@ -73,7 +73,9 @@
 
 use std::collections::HashMap;
 
-use concerto_core::instance::validate::{DAYJS_TAG, RELATIONSHIP_TAG, js_undefined};
+use concerto_core::instance::validate::{
+    DAYJS_TAG, RELATIONSHIP_TAG, js_map, js_special_number, js_undefined,
+};
 use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
@@ -219,6 +221,9 @@ struct Entry {
 /// A replayed model manager.
 pub struct Replayed {
     pub kind: Kind,
+    /// The constructor's options, as recorded (`BaseModelManager` hands
+    /// them to its `Serializer`, which `Resource.toJSON` uses).
+    pub options: Value,
     skip_location_nodes: Value,
     files: Vec<Entry>,
     pub mm: ModelManager,
@@ -964,34 +969,33 @@ fn typed_field_value(v: &Value) -> Faulty<Value> {
         // TS as a value `undefined` of type `undefined`, not `null`/`object`.
         "undefined" => Ok(js_undefined()),
         // A JS `Map` (a `MapDeclaration` value): `{"@@oracle":"map",
-        // "entries": [[key, value], ...]}` -> the plain object
-        // `visitMapDeclaration`'s `Object.fromEntries(map)` would produce.
+        // "entries": [[key, value], ...]}` -> `MAP_TAG`'s value (task
+        // P3-01b), which keeps each key's JS type and tells a `Map` from a
+        // plain object.
         "map" => {
             let entries = map
                 .get("entries")
                 .and_then(Value::as_array)
                 .ok_or_else(|| Fault::Harness("map value without entries".into()))?;
-            let mut obj = serde_json::Map::new();
+            let mut pairs = Vec::with_capacity(entries.len());
             for entry in entries {
                 let pair = entry
                     .as_array()
                     .ok_or_else(|| Fault::Harness("a map entry that is not [key, value]".into()))?;
-                let key = pair
-                    .first()
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Fault::Harness("a map entry with a non-string key".into()))?;
+                let key = typed_field_value(pair.first().unwrap_or(&Value::Null))?;
                 let value = typed_field_value(pair.get(1).unwrap_or(&Value::Null))?;
-                obj.insert(key.to_string(), value);
+                pairs.push((key, value));
             }
-            Ok(Value::Object(obj))
+            Ok(js_map(pairs))
         }
         // `{"@@oracle":"number","value":"NaN"|"Infinity"|"-Infinity"|"-0"}`:
-        // a JSON number cannot hold any of these; encoded here as a JSON
-        // string, which is not itself a valid Concerto primitive value for
-        // any field type, so a validator check reaching it correctly
-        // reports a field type violation (never a silent pass) the same way
-        // TS's own `!isFinite(NaN)` does for the numeric kinds.
-        "number" => Ok(map.get("value").cloned().unwrap_or(Value::Null)),
+        // a non-finite number as `NUMBER_TAG`'s value (task P3-01b), `-0`
+        // as the JSON number it compares equal to.
+        "number" => Ok(match map.get("value").and_then(Value::as_str) {
+            Some("-0") => json!(-0.0),
+            Some(text) => js_special_number(text),
+            None => Value::Null,
+        }),
         other => Err(Fault::Unsupported(format!(
             "a typed field value of kind {other} is not decoded"
         ))),
@@ -1081,6 +1085,7 @@ impl Replayed {
             .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
         Ok(Self {
             kind,
+            options: options.clone(),
             skip_location_nodes,
             files: Vec::new(),
             mm,

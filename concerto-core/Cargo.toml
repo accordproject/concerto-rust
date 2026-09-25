@@ -23,6 +23,8 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
 # PORTING.md OD-8: ECMAScript regular expressions (ID_REGEX, node-semver's FULL
 # pattern) and ECMAScript Number::toString.
+# PORTING.md OD-8: insertion-ordered maps (3.7), for instance fields.
+indexmap = "2"
 regress = "0.12"
 ryu-js = "1.0"
 

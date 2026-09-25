@@ -1182,6 +1182,308 @@ mod tests {
     }
 
     #[test]
+    fn golden_engine_typeerror_circularjson() {
+        assert_eq!(
+            contract("engine-typeerror-circularjson", &[]).message(),
+            "Converting circular structure to JSON\n    --> starting at object with constructor 'ModelManager'\n    |     property 'modelFiles' -> object with constructor 'Object'\n    |     property 'concerto.decorator@1.0.0' -> object with constructor 'ModelFile'\n    --- property 'modelManager' closes the circle"
+        );
+    }
+
+    #[test]
+    fn golden_engine_typeerror_convertnulltoobject() {
+        assert_eq!(
+            contract("engine-typeerror-convertnulltoobject", &[]).message(),
+            "Cannot convert undefined or null to object"
+        );
+    }
+
+    #[test]
+    fn golden_serializer_constructor_factorynull() {
+        assert_eq!(
+            contract("serializer-constructor-factorynull", &[]).message(),
+            "\"Factory\" cannot be \"null\"."
+        );
+    }
+
+    #[test]
+    fn golden_serializer_constructor_modelmanagernull() {
+        assert_eq!(
+            contract("serializer-constructor-modelmanagernull", &[]).message(),
+            "\"ModelManager\" cannot be \"null\"."
+        );
+    }
+
+    #[test]
+    fn golden_serializer_fromjson_noclass() {
+        assert_eq!(
+            contract("serializer-fromjson-noclass", &[]).message(),
+            "Invalid JSON data. Does not contain a $class type identifier."
+        );
+    }
+
+    #[test]
+    fn golden_serializer_fromjson_mapnotsupported() {
+        assert_eq!(
+            contract("serializer-fromjson-mapnotsupported", &[]).message(),
+            "Attempting to create a Map declaration is not supported."
+        );
+    }
+
+    #[test]
+    fn golden_serializer_fromjson_enumnotsupported() {
+        assert_eq!(
+            contract("serializer-fromjson-enumnotsupported", &[]).message(),
+            "Attempting to create an ENUM declaration is not supported."
+        );
+    }
+
+    #[test]
+    fn golden_factory_newresource_idregexmismatch() {
+        assert_eq!(
+            contract(
+                "factory-newresource-idregexmismatch",
+                &[("regex", "/\\d{3}/")]
+            )
+            .message(),
+            "Provided id does not match regex: /\\d{3}/"
+        );
+    }
+
+    #[test]
+    fn golden_factory_newresource_notidentifiable() {
+        assert_eq!(
+            contract(
+                "factory-newresource-notidentifiable",
+                &[("fqn", "org.acme@1.0.0.C")]
+            )
+            .message(),
+            "Type is not identifiable org.acme@1.0.0.C"
+        );
+    }
+
+    #[test]
+    fn golden_factory_newrelationship_notidentifiable() {
+        assert_eq!(
+            contract(
+                "factory-newrelationship-notidentifiable",
+                &[("fqn", "org.acme@1.0.0.C")]
+            )
+            .message(),
+            "Cannot create a relationship to org.acme@1.0.0.C, it is not identifiable."
+        );
+    }
+
+    #[test]
+    fn golden_factory_newtransaction_nsnotspecified() {
+        assert_eq!(
+            contract("factory-newtransaction-nsnotspecified", &[]).message(),
+            "ns not specified"
+        );
+    }
+
+    #[test]
+    fn golden_factory_newtransaction_typenotspecified() {
+        assert_eq!(
+            contract("factory-newtransaction-typenotspecified", &[]).message(),
+            "type not specified"
+        );
+    }
+
+    #[test]
+    fn golden_factory_newtransaction_notatransaction() {
+        assert_eq!(
+            contract(
+                "factory-newtransaction-notatransaction",
+                &[("fqn", "org.acme@1.0.0.A")]
+            )
+            .message(),
+            "org.acme@1.0.0.A is not a transaction"
+        );
+    }
+
+    #[test]
+    fn golden_factory_newevent_notanevent() {
+        assert_eq!(
+            contract(
+                "factory-newevent-notanevent",
+                &[("fqn", "org.acme@1.0.0.A")]
+            )
+            .message(),
+            "org.acme@1.0.0.A is not an event"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_getassignableproperties_reservedproperties() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-getassignableproperties-reservedproperties",
+                &[
+                    ("fqn", "org.acme@1.0.0.C"),
+                    ("properties", "$type, $namespace")
+                ]
+            )
+            .message(),
+            "Unexpected reserved properties for type org.acme@1.0.0.C: $type, $namespace"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_getassignableproperties_timestamp() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-getassignableproperties-timestamp",
+                &[("fqn", "org.acme@1.0.0.C")]
+            )
+            .message(),
+            "Unexpected property for type org.acme@1.0.0.C: $timestamp"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_validateproperties_unexpectedproperties() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-validateproperties-unexpectedproperties",
+                &[("fqn", "org.acme@1.0.0.C"), ("properties", "a, b")]
+            )
+            .message(),
+            "Unexpected properties for type org.acme@1.0.0.C: a, b"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_visitfield_notarray() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-visitfield-notarray",
+                &[("path", "$.a"), ("type", "String")]
+            )
+            .message(),
+            "Expected value at path `$.a` to be an array of type `String`"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_converttoobject_wrongtype() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-converttoobject-wrongtype",
+                &[("path", "$.a"), ("type", "Integer")]
+            )
+            .message(),
+            "Expected value at path `$.a` to be of type `Integer`"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_converttoobject_datetimeformat() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-converttoobject-datetimeformat",
+                &[("path", "$.d"), ("type", "DateTime")]
+            )
+            .message(),
+            "Expected value at path `$.d` to be of type `DateTime` with format YYYY-MM-DDTHH:mm:ss[Z]"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_visitrelationshipdeclaration_notastring() {
+        assert_eq!(
+            contract("jsonpopulator-visitrelationshipdeclaration-notastring", &[("value", "[object Object]"), ("relationship", "RelationshipDeclaration {name=r, type=org.acme@1.0.0.A, array=false, optional=false}")]).message(),
+            "Invalid JSON data. Found a value that is not a string: [object Object] for relationship RelationshipDeclaration {name=r, type=org.acme@1.0.0.A, array=false, optional=false}"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_visitrelationshipdeclaration_noclass() {
+        assert_eq!(
+            contract("jsonpopulator-visitrelationshipdeclaration-noclass", &[("value", "[object Object]"), ("relationship", "RelationshipDeclaration {name=r, type=org.acme@1.0.0.A, array=false, optional=false}")]).message(),
+            "Invalid JSON data. Does not contain a $class type identifier: [object Object] for relationship RelationshipDeclaration {name=r, type=org.acme@1.0.0.A, array=false, optional=false}"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_visitrelationshipdeclaration_notstringorobject() {
+        assert_eq!(
+            contract("jsonpopulator-visitrelationshipdeclaration-notstringorobject", &[("value", "1"), ("relationship", "RelationshipDeclaration {name=r, type=org.acme@1.0.0.A, array=false, optional=false}")]).message(),
+            "Invalid JSON data. Found a value that is not a string or object: 1 for relationship RelationshipDeclaration {name=r, type=org.acme@1.0.0.A, array=false, optional=false}"
+        );
+    }
+
+    #[test]
+    fn golden_jsongenerator_visitclassdeclaration_notaresource() {
+        assert_eq!(
+            contract(
+                "jsongenerator-visitclassdeclaration-notaresource",
+                &[("obj", "Relationship {id=org.acme@1.0.0.A#1}")]
+            )
+            .message(),
+            "Expected a Resource, but found Relationship {id=org.acme@1.0.0.A#1}"
+        );
+    }
+
+    #[test]
+    fn golden_jsongenerator_getrelationshiptext_norelationship() {
+        assert_eq!(
+            contract(
+                "jsongenerator-getrelationshiptext-norelationship",
+                &[
+                    ("type", "org.acme@1.0.0.A"),
+                    ("obj", "Resource {id=org.acme@1.0.0.A#1}")
+                ]
+            )
+            .message(),
+            "Did not find a relationship for org.acme@1.0.0.A found Resource {id=org.acme@1.0.0.A#1}"
+        );
+    }
+
+    #[test]
+    fn golden_typedstack_push_unexpectedtype() {
+        assert_eq!(
+            contract(
+                "typedstack-push-unexpectedtype",
+                &[("type", "Typed"), ("obj", "abc")]
+            )
+            .message(),
+            "Did not find expected type Typed as argument to push. Found: abc"
+        );
+    }
+
+    #[test]
+    fn golden_typed_tojson_useserializer() {
+        assert_eq!(
+            contract("typed-tojson-useserializer", &[]).message(),
+            "Use Serializer.toJSON to convert resource instances to JSON objects."
+        );
+    }
+
+    #[test]
+    fn golden_validatedresource_setpropertyvalue_undeclaredfield() {
+        assert_eq!(
+            contract(
+                "validatedresource-setpropertyvalue-undeclaredfield",
+                &[("id", "1"), ("propName", "x")]
+            )
+            .message(),
+            "The instance with id 1 trying to set field x which is not declared in the model."
+        );
+    }
+
+    #[test]
+    fn golden_validatedresource_addarrayvalue_notanarray() {
+        assert_eq!(
+            contract(
+                "validatedresource-addarrayvalue-notanarray",
+                &[("id", "1"), ("propName", "x")]
+            )
+            .message(),
+            "The instance with id 1 trying to add array item x which is not declared as an array in the model."
+        );
+    }
+
+    #[test]
     fn golden_resourcevalidator_fieldtypeviolation() {
         assert_eq!(
             contract(
@@ -1474,6 +1776,11 @@ mod tests {
             "resourcevalidator-abstractclass",
             "resourcevalidator-undeclaredfield",
             "resourcevalidator-invalidfieldassignment",
+            // `Serializer.constructor`: TS in the TSV, but the plan owner
+            // moved `Serializer.new` to Rust under P3-01b
+            // (tests/oracle/ledger.rs, `PLAN_OWNER_OVERRIDES`).
+            "serializer-constructor-factorynull",
+            "serializer-constructor-modelmanagernull",
         ];
         for key in OD5_EN_JSON_KEYS {
             assert!(

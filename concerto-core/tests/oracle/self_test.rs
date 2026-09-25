@@ -984,6 +984,7 @@ fn plan_owner_overrides_take_precedence_over_the_ledger() {
          src/factory.ts\tFactory\tnewResource\tTS\t-\n\
          src/modelloader.ts\tModelLoader\tloadModelManager\tTS\t-\n\
          src/serializer.ts\tSerializer\tconstructor\tTS\t-\n\
+         src/serializer.ts\tSerializer\tsetDefaultOptions\tTS\t-\n\
          src/serializer.ts\tSerializer\ttoJSON\tHYBRID\tP3-01+P4-10\n",
     )
     .unwrap();
@@ -991,8 +992,10 @@ fn plan_owner_overrides_take_precedence_over_the_ledger() {
     assert_eq!(ledger.owner("Factory.newResource"), "P3-01b");
     assert_eq!(ledger.owner("Factory.new"), "P3-01b");
     assert_eq!(ledger.owner("ModelLoader.loadModelManager"), "stays-ts");
-    // A member-level override moves only that member.
+    // A member-level override moves only that member: `new`, `toJSON` and
+    // `fromJSON` are P3-01b's (#124), `setDefaultOptions` keeps its row.
     assert_eq!(ledger.owner("Serializer.new"), "P3-01b");
-    assert_eq!(ledger.owner("Serializer.toJSON"), "P3-01+P4-10");
+    assert_eq!(ledger.owner("Serializer.toJSON"), "P3-01b");
+    assert_eq!(ledger.owner("Serializer.setDefaultOptions"), "stays-ts");
     let _ = fs::remove_dir_all(&root);
 }

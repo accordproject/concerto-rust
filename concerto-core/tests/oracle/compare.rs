@@ -35,6 +35,34 @@ pub enum Verdict {
 }
 
 pub fn judge(fixture: &Fixture, dispatch: Dispatch) -> Verdict {
+    judge_at(fixture, dispatch, None)
+}
+
+/// [`judge`], with the time window the op ran in (ms since the epoch,
+/// before and after it): the actual outcome is canonicalised the way
+/// `judge.js`'s `verdictOf` canonicalises it (`canon.js` `canonicalise`),
+/// so that an identifier or an instant the op generated compares equal to
+/// the `<uuid>` or `<now>` the recorder wrote in its place.
+pub fn judge_at(fixture: &Fixture, dispatch: Dispatch, window: Option<(f64, f64)>) -> Verdict {
+    // A fixture whose op this harness cannot run with these inputs anyway
+    // is reported with that reason and owner, whatever its environment
+    // (P3-01b: every `env.random` Factory fixture also passes
+    // `options.generate`, which stays in TS).
+    let dispatch = match dispatch {
+        Dispatch::Fault(Fault::Unsupported(reason)) => {
+            return Verdict::Unsupported {
+                reason,
+                blocker: None,
+            };
+        }
+        Dispatch::Fault(Fault::Blocked(reason, blocker)) => {
+            return Verdict::Unsupported {
+                reason,
+                blocker: Some(blocker),
+            };
+        }
+        other => other,
+    };
     if fixture.env.random {
         // README: "An engine that cannot reproduce that PRNG should compare
         // such fixtures structurally". No op this harness runs draws from
@@ -71,6 +99,7 @@ pub fn judge(fixture: &Fixture, dispatch: Dispatch) -> Verdict {
         Dispatch::Ran(outcome) => outcome,
     };
 
+    let actual = canonicalise(&actual, &fixture.inputs, window);
     match first_diff(&fixture.outcome.0, &actual, "$") {
         None => Verdict::Pass,
         Some(detail) => Verdict::Fail {
@@ -240,4 +269,110 @@ fn show(v: Option<&Value>) -> String {
         }
         format!("{}…", &s[..end])
     }
+}
+
+/// `canon.js` `UUID_RE`.
+const UUID_RE: &str =
+    "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}";
+/// `canon.js` `ISO_RE`.
+const ISO_RE: &str =
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?";
+
+/// `canon.js` `inputFacts`: the UUIDs (lower-cased) and instants (`Date.parse`)
+/// written anywhere in the fixture's inputs, which canonicalisation keeps.
+struct Facts {
+    uuids: Vec<String>,
+    instants: Vec<f64>,
+}
+
+impl Facts {
+    fn of(inputs: &super::fixture::Inputs) -> Self {
+        let mut text = String::new();
+        if let Some(t) = &inputs.target {
+            text.push_str(&t.to_string());
+        }
+        for a in &inputs.args {
+            text.push_str(&a.to_string());
+        }
+        let uuid = regress::Regex::new(UUID_RE).expect("static pattern");
+        let iso = regress::Regex::new(ISO_RE).expect("static pattern");
+        Self {
+            uuids: uuid
+                .find_iter(&text)
+                .map(|m| text[m.range].to_lowercase())
+                .collect(),
+            instants: iso
+                .find_iter(&text)
+                .map(|m| instant(&text[m.range]))
+                .filter(|t| !t.is_nan())
+                .collect(),
+        }
+    }
+}
+
+/// `Date.parse` of an `ISO_RE` match (under `TZ=UTC`).
+fn instant(text: &str) -> f64 {
+    concerto_core::instance::dayjs::Dayjs::parse_instant(text)
+}
+
+/// `canon.js` `normaliseString`, over every string in `value`.
+fn canonicalise(
+    value: &Value,
+    inputs: &super::fixture::Inputs,
+    window: Option<(f64, f64)>,
+) -> Value {
+    let text = value.to_string();
+    let uuid = regress::Regex::new(UUID_RE).expect("static pattern");
+    let iso = regress::Regex::new(ISO_RE).expect("static pattern");
+    let has_uuid = uuid.find(&text).is_some();
+    let has_iso = window.is_some() && iso.find(&text).is_some();
+    if !has_uuid && !has_iso {
+        return value.clone();
+    }
+    let facts = Facts::of(inputs);
+    fn walk(v: &Value, f: &dyn Fn(&str) -> String) -> Value {
+        match v {
+            Value::String(s) => Value::String(f(s)),
+            Value::Array(items) => Value::Array(items.iter().map(|x| walk(x, f)).collect()),
+            Value::Object(map) => {
+                Value::Object(map.iter().map(|(k, x)| (k.clone(), walk(x, f))).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    let replace = |s: &str| -> String {
+        let mut out = String::new();
+        let mut last = 0;
+        for m in uuid.find_iter(s) {
+            out.push_str(&s[last..m.range.start]);
+            let found = &s[m.range.clone()];
+            if facts.uuids.contains(&found.to_lowercase()) {
+                out.push_str(found);
+            } else {
+                out.push_str("<uuid>");
+            }
+            last = m.range.end;
+        }
+        out.push_str(&s[last..]);
+        let Some((start, end)) = window else {
+            return out;
+        };
+        let s = out;
+        let mut out = String::new();
+        let mut last = 0;
+        for m in iso.find_iter(&s) {
+            out.push_str(&s[last..m.range.start]);
+            let found = &s[m.range.clone()];
+            let t = instant(found);
+            if t.is_nan() || facts.instants.contains(&t) || t < start || t > end {
+                out.push_str(found);
+            } else {
+                out.push_str("<now>");
+            }
+            last = m.range.end;
+        }
+        out.push_str(&s[last..]);
+        out
+    };
+    walk(value, &replace)
 }

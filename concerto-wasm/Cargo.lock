@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "accordproject-concerto-macros",
  "accordproject-concerto-metamodel",
+ "indexmap",
  "regress",
  "ryu-js",
  "serde",

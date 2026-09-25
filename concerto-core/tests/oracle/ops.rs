@@ -42,10 +42,13 @@
 //!   full list), over an oracle `"typed"` receiver decoded into
 //!   [`recipe::DecodedInstance`] (`recipe.rs`'s `Session::typed`, task
 //!   P3-01 review, `accordproject-concerto-rust#56` follow-up).
-//!   `Factory`/`Serializer`/`JSONPopulator`/`JSONGenerator` and every
-//!   receiver-mutating op (`setPropertyValue`, `addArrayValue`,
-//!   `setIdentifier`) are not ported yet, so their fixtures stay
-//!   `unsupported`.
+//! - **`Serializer`** `new`, `fromJSON` and `toJSON`, **`Factory`**
+//!   `newResource`, `newConcept`, `newRelationship`, `newTransaction` and
+//!   `newEvent`, and the members that change or serialize an instance
+//!   (`Resource.setPropertyValue`, `addArrayValue`, `toJSON`,
+//!   `Identifiable.setIdentifier`): task P3-01b, over
+//!   `concerto_core::instance` (`instances.rs` has the list, the instance
+//!   encoding and the `effects` a mutating op records).
 //! - **`MapDeclaration`** `declarationKind`, `getKey`, `getValue`,
 //!   `isMapDeclaration`, `toString` and `validate`; **`MapKeyType`**/
 //!   **`MapValueType`** `getType`, `getNamespace`, `getParent`, `toString` and
@@ -402,6 +405,13 @@ const MM_STEP_OPS: [&str; 7] = [
 /// The ops whose inputs hold model managers or their handles.
 fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     let (class, member) = op.split_once('.').unwrap_or((op, ""));
+
+    // P3-01b: the Serializer, Factory and Resource-mutating ops decode
+    // their own receivers (`serializer` and `factory` nodes) and record
+    // `effects` (`instances.rs`).
+    if super::instances::handles(class, member) {
+        return super::instances::exec(h, class, member, inputs);
+    }
 
     // `Decorated`'s target may be an `mfref` (P2-07): the generic decode
     // below turns that into an `Arg::File`, which drops the model manager it
@@ -1484,11 +1494,10 @@ fn relationship_to_string(r: &Replayed, id: PropId, property: &Property) -> Disp
 /// - `Typed.getType`, `getNamespace`, `getFullyQualifiedType`,
 ///   `getClassDeclaration` (`src/model/typed.ts`).
 ///
-/// The members left (`setPropertyValue`, `addArrayValue`, `setIdentifier`,
-/// `toJSON`) mutate the receiver or serialize it: they need a
-/// `Serializer`/`Factory` port and an `effects`-comparing receiver, so
-/// `dispatched` (`exec_handles`) does not list them and they stay
-/// `unsupported`, owned by P3-01b (`ledger.rs`, `PLAN_OWNER_OVERRIDES`).
+/// The members that mutate the receiver or serialize it
+/// (`setPropertyValue`, `addArrayValue`, `setIdentifier`, `toJSON`) are
+/// P3-01b's, dispatched from `instances.rs` over the whole decoded
+/// instance.
 fn instance_op(
     r: &Replayed,
     inst: &recipe::DecodedInstance,
@@ -1590,56 +1599,12 @@ fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoEr
     Ok(false)
 }
 
-/// TS `BaseModelManager.getType(qualifiedName)` (src/basemodelmanager.ts):
-/// the model file of the name's namespace, then that file's
-/// `getType(qualifiedName)`, each with its own `TypeNotFoundException`.
-/// `ModelManager.getType` itself is P2-08's; this is the same composition,
-/// over the ported `ModelFile.getType`, for `Relationship.fromURI`.
-fn base_model_manager_get_type(
-    r: &Replayed,
-    qualified_name: &str,
-) -> Result<DeclId, ConcertoError> {
-    let namespace = model_util::get_namespace(Some(qualified_name))?;
-    let Some(file) = r.mm.model_file_id(namespace) else {
-        return Err(concerto_core::error::ContractError::type_not_found(
-            "modelmanager-gettype-noregisteredns",
-            vec![("type", qualified_name.to_string())],
-            qualified_name.to_string(),
-            None,
-        )
-        .into());
-    };
-    match r
-        .mm
-        .get_type(&Node::ModelFile(file), Some(qualified_name))?
-    {
-        Some(Node::Declaration(id)) => Ok(id),
-        _ => Err(concerto_core::error::ContractError::type_not_found(
-            "modelmanager-gettype-notypeinns",
-            vec![
-                (
-                    "type",
-                    model_util::get_short_name(qualified_name).to_string(),
-                ),
-                ("namespace", namespace.to_string()),
-            ],
-            qualified_name.to_string(),
-            None,
-        )
-        .into()),
-    }
-}
-
 /// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
-/// defaultType?)` (src/model/relationship.ts): parses the URI
-/// (`ResourceId.fromURI`), looks the type up (`modelManager.getType`), and
-/// builds a `Relationship`. The result is written the way the oracle
-/// encodes a `Typed` value (`codec.js`): `$identifierFieldName` is the
-/// type's identifying field or `$identifier` (`Identifiable`'s
-/// constructor, via `modelFile.getType(fqt)?.getIdentifierFieldName()`,
-/// `null` for a declaration that is not class-like), `setIdentifier` writes
-/// the id under that name, `$timestamp` is `undefined`, and the
-/// `Relationship` constructor adds `$class: 'Relationship'`.
+/// defaultType?)` (src/model/relationship.ts), over
+/// [`concerto_core::instance::factory::relationship_from_uri`] (which looks
+/// the type up with `BaseModelManager.getType`,
+/// [`ModelManager::get_type_declaration`]), written as the oracle encodes a
+/// `Typed` value ([`super::instances::encode_instance`]).
 fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
     let Some(Arg::Mm(index)) = args.first() else {
         return unsupported("Relationship.fromURI with a model manager argument that is not one");
@@ -1656,40 +1621,15 @@ fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
         return unsupported("Relationship.fromURI with arguments that are not strings");
     };
     let r = &session.pool[*index];
-    let built = (|| {
-        let resource_id = concerto_core::instance::resource_id::ResourceId::from_uri(
+    from_engine(
+        concerto_core::instance::factory::relationship_from_uri(
+            &r.mm,
             uri,
             default_namespace,
             default_type,
-        )?;
-        let fqt =
-            model_util::get_fully_qualified_name(&resource_id.namespace, &resource_id.type_name);
-        let id = base_model_manager_get_type(r, &fqt)?;
-        let fqn = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
-        let identifier_field_name = match r.mm.declaration(id) {
-            Some(Declaration::Class(_) | Declaration::Enum(_)) => {
-                r.mm.identifier_field_name(&fqn)?
-            }
-            _ => None,
-        }
-        .unwrap_or_else(|| "$identifier".to_string());
-        let mut fields = serde_json::Map::new();
-        fields.insert("$class".into(), json!("Relationship"));
-        if identifier_field_name != "$identifier" {
-            fields.insert(identifier_field_name, json!(resource_id.id));
-        }
-        Ok::<_, ConcertoError>(json!({
-            M: "typed",
-            "ctor": "Relationship",
-            "fqn": fqn,
-            "ns": resource_id.namespace,
-            "type": resource_id.type_name,
-            "id": resource_id.id,
-            "timestamp": recipe::undefined(),
-            "fields": fields,
-        }))
-    })();
-    ran(built.map_err(|e| to_oracle_error(&e)))
+        ),
+        |relationship| super::instances::encode_instance(&relationship),
+    )
 }
 
 /// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
@@ -1982,12 +1922,9 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
             let Some(Value::String(fqn)) = plain(0) else {
                 return unsupported("getType with a type name that is not a string");
             };
-            match r.mm.get_declaration(&fqn) {
+            match r.mm.get_type_declaration(&fqn) {
                 Err(e) => ran(Err(to_oracle_error(&e))),
-                Ok(_) => {
-                    let id = r.mm.declaration_id(&fqn).expect("get_declaration found it");
-                    ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null)))
-                }
+                Ok(id) => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
             }
         }
         "getMapDeclarations" => {

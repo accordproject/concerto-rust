@@ -731,6 +731,71 @@ impl ModelManager {
             })
     }
 
+    /// Looks a type up by fully-qualified name, with the TS errors: the model
+    /// file of the name's namespace (`modelmanager-gettype-noregisteredns`
+    /// when there is none), then that file's `getType(qualifiedName)`
+    /// (`modelmanager-gettype-notypeinns` when it answers nothing). A name
+    /// that `ModelFile.getType` answers with a primitive (not a declaration)
+    /// is reported as not found.
+    ///
+    /// `BaseModelManager.getType` itself is P2-08's; this is its composition
+    /// over the ported `ModelFile.getType` ([`ResolutionContext::get_type`]),
+    /// ported as a helper (PORTING.md 7.2) for the instance layer
+    /// (`Factory`, `Serializer`, `JSONPopulator`, `JSONGenerator`,
+    /// `Relationship.fromURI`).
+    ///
+    /// TS: BaseModelManager.getType (src/basemodelmanager.ts)
+    pub fn get_type_declaration(&self, qualified_name: &str) -> Result<DeclId> {
+        let namespace = crate::model_util::get_namespace(Some(qualified_name))?;
+        let Some(file) = self.model_file_id(namespace) else {
+            return Err(ContractError::type_not_found(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", qualified_name.to_string())],
+                qualified_name.to_string(),
+                None,
+            )
+            .into());
+        };
+        match self.get_type(&Node::ModelFile(file), Some(qualified_name))? {
+            Some(Node::Declaration(id)) => Ok(id),
+            _ => Err(ContractError::type_not_found(
+                "modelmanager-gettype-notypeinns",
+                vec![
+                    (
+                        "type",
+                        crate::model_util::get_short_name(qualified_name).to_string(),
+                    ),
+                    ("namespace", namespace.to_string()),
+                ],
+                qualified_name.to_string(),
+                None,
+            )
+            .into()),
+        }
+    }
+
+    /// TS: ModelFile.getFullyQualifiedTypeName (src/introspect/modelfile.ts):
+    /// a primitive's own name, an imported name's fully-qualified name, a
+    /// local declaration's fully-qualified name, or `None` (JS `null`), for
+    /// `type_name` as written in the model file of `namespace`. `None` too
+    /// when no model file has that namespace.
+    pub fn model_file_fully_qualified_type_name(
+        &self,
+        namespace: &str,
+        type_name: &str,
+    ) -> Option<String> {
+        let mf = self.model_file(namespace)?;
+        if crate::model_util::is_primitive_type(type_name) {
+            return Some(type_name.to_string());
+        }
+        if let Some(fqn) = imported_type(mf, type_name) {
+            return Some(fqn);
+        }
+        let file = self.model_file_id(namespace)?;
+        let id = self.local_type(file, type_name)?;
+        self.declaration_fqn(id).ok()
+    }
+
     /// Resolves a short name, as written inside `in_namespace`, to its
     /// fully-qualified name, using the primitives, local declarations and named
     /// imports the model file can see.
