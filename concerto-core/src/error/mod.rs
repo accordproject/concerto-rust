@@ -84,6 +84,10 @@ pub enum ErrorKind {
     Error,
     /// A JS `TypeError(message)` the V8 engine raises in the TS code.
     JsTypeError,
+    /// `MetamodelException(message)` (`src/metamodelexception.ts`), thrown by
+    /// `BaseModelManager.validateAst` (task P3-04,
+    /// `concerto_core::instance::metamodel`).
+    Metamodel,
 }
 
 impl ErrorKind {
@@ -97,6 +101,7 @@ impl ErrorKind {
             Self::Validation => "ValidationException",
             Self::Error => "Error",
             Self::JsTypeError => "TypeError",
+            Self::Metamodel => "MetamodelException",
         }
     }
 }
@@ -443,7 +448,10 @@ impl ContractError {
             | ErrorKind::Validator
             | ErrorKind::Validation
             | ErrorKind::Error
-            | ErrorKind::JsTypeError => message,
+            | ErrorKind::JsTypeError
+            // TS: `MetamodelException` (src/metamodelexception.ts) is a bare
+            // `BaseException(message)`: no suffix, no location.
+            | ErrorKind::Metamodel => message,
         }
     }
 
@@ -457,7 +465,12 @@ impl ContractError {
             // and passes no explicit `component`, so `BaseException`'s own
             // default (`@accordproject/concerto-util`) applies, the same as
             // `ErrorKind::Validator` (table 2.3).
-            ErrorKind::Validator | ErrorKind::Validation => Some("@accordproject/concerto-util"),
+            // TS: `MetamodelException` passes no explicit `component` either,
+            // so `BaseException`'s own default applies, same as `Validator`/
+            // `Validation` (table 2.3).
+            ErrorKind::Validator | ErrorKind::Validation | ErrorKind::Metamodel => {
+                Some("@accordproject/concerto-util")
+            }
             ErrorKind::Error | ErrorKind::JsTypeError => None,
         }
     }
@@ -917,6 +930,38 @@ mod tests {
             // (rescanning) — but the "{type}" that "$&" just inserted is not
             // reprocessed, because the "type" param has already run.
             "Missing identifier for Type \"org.acme $ {type}\" in namespace \"org.acme\"."
+        );
+    }
+
+    // ---- P3-04 (BaseModelManager.validateAst) ----
+
+    #[test]
+    fn golden_basemodelmanager_validateast_versionmismatch() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-validateast-versionmismatch",
+                &[
+                    ("modelFileVersion", "99.0.0"),
+                    ("metamodelVersion", "1.0.0")
+                ]
+            )
+            .message(),
+            "Model file version 99.0.0 does not match metamodel version 1.0.0"
+        );
+    }
+
+    #[test]
+    fn golden_basemodelmanager_validateast_wrapped() {
+        assert_eq!(
+            contract(
+                "basemodelmanager-validateast-wrapped",
+                &[(
+                    "message",
+                    "Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
+                )]
+            )
+            .message(),
+            "Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
         );
     }
 

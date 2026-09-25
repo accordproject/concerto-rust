@@ -141,6 +141,7 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::Validation => "Validation",
         ErrorKind::Error => "Error",
         ErrorKind::JsTypeError => "JsTypeError",
+        ErrorKind::Metamodel => "Metamodel",
     }
 }
 
