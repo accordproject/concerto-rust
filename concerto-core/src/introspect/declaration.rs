@@ -828,11 +828,17 @@ enum MapVariant {
 ///
 /// TS `MapDeclaration.getDecorators()` reads the same real decorators as any
 /// other declaration; nothing about the key/value fallback above extends to
-/// them.
+/// them. `MapKeyType`/`MapValueType.process` (mapkeytype.ts, mapvaluetype.ts)
+/// each run `Decorated.process()` on their own AST node — a `MapKeyType`/
+/// `MapValueType` is a `Decorated` in its own right in TS — so the key's and
+/// value's decorators are read here too, alongside the map's own (#152,
+/// closing the "map key/value decorators aren't read" gap).
 #[derive(Debug, Clone)]
 pub struct MapDeclaration {
     variant: MapVariant,
     decorators: Vec<Decorator>,
+    key_decorators: Vec<Decorator>,
+    value_decorators: Vec<Decorator>,
 }
 
 impl Named for MapDeclaration {
@@ -906,6 +912,21 @@ impl MapDeclaration {
             },
             MapVariant::Untyped { value_type, .. } => value_type.as_ref(),
         }
+    }
+
+    /// The key node's own decorators. TS `MapKeyType` extends `Decorated`
+    /// and reads these in its constructor (`MapKeyType.process`,
+    /// mapkeytype.ts), independently of the map's own `getDecorators()`.
+    pub fn key_decorators(&self) -> &[Decorator] {
+        &self.key_decorators
+    }
+
+    /// The value node's own decorators. TS `MapValueType` extends
+    /// `Decorated` and reads these in its constructor (`MapValueType
+    /// .process`, mapvaluetype.ts), independently of the map's own
+    /// `getDecorators()`.
+    pub fn value_decorators(&self) -> &[Decorator] {
+        &self.value_decorators
     }
 
     /// `MapKeyType.getType` (src/introspect/mapkeytype.ts): the primitive
@@ -985,6 +1006,8 @@ impl MapDeclaration {
         let value_kind = node_kind(Some(value_node.unwrap()));
         let value_type = type_reference(Some(value_node.unwrap()));
         let decorators = parse_decorators(value);
+        let key_decorators = parse_decorators(key_node.unwrap());
+        let value_decorators = parse_decorators(value_node.unwrap());
 
         if !MAP_KEY_KINDS.contains(&key_kind.as_str()) {
             return Err(illegal_model(format!(
@@ -1028,6 +1051,8 @@ impl MapDeclaration {
             let candidate = Self {
                 variant,
                 decorators: decorators.clone(),
+                key_decorators: key_decorators.clone(),
+                value_decorators: value_decorators.clone(),
             };
             if candidate.key_type().is_some() == key_type.is_some()
                 && candidate.value_type().is_some() == value_type.is_some()
@@ -1044,6 +1069,8 @@ impl MapDeclaration {
                 value_type,
             },
             decorators,
+            key_decorators,
+            value_decorators,
         })
     }
 }
@@ -1907,5 +1934,50 @@ mod tests {
         assert!(!d.is_class_declaration());
         assert!(!d.is_enum_declaration());
         assert!(!d.is_scalar_declaration());
+    }
+
+    /// #152, closing the "map key/value decorators aren't read" gap: TS
+    /// `MapKeyType`/`MapValueType.process` (mapkeytype.ts, mapvaluetype.ts)
+    /// each run `Decorated.process()` on their own AST node, independently
+    /// of the map's own decorators.
+    #[test]
+    fn key_and_value_decorators_are_read_independently_of_the_map_s_own() {
+        let mut key = kind("StringMapKeyType");
+        key["decorators"] = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onKey", "arguments": [] }
+        ]);
+        let mut value = kind("StringMapValueType");
+        value["decorators"] = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onValue1", "arguments": [] },
+            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onValue2", "arguments": [] }
+        ]);
+        let mut map = map_with(key, value);
+        map["decorators"] = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onMap", "arguments": [] }
+        ]);
+        let decl = decl(map);
+        let d = decl.as_map().unwrap();
+
+        assert_eq!(
+            d.key_decorators()
+                .iter()
+                .map(Decorator::name)
+                .collect::<Vec<_>>(),
+            vec!["onKey"]
+        );
+        assert_eq!(
+            d.value_decorators()
+                .iter()
+                .map(Decorator::name)
+                .collect::<Vec<_>>(),
+            vec!["onValue1", "onValue2"]
+        );
+        assert_eq!(
+            crate::introspect::Decorated::get_decorators(d)
+                .iter()
+                .map(Decorator::name)
+                .collect::<Vec<_>>(),
+            vec!["onMap"]
+        );
     }
 }
