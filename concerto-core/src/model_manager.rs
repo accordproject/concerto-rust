@@ -50,6 +50,13 @@ use crate::model_util::{
 };
 use crate::rootmodel::{decorator_model_ast, root_model_ast};
 
+/// The namespaces TS `BaseModelManager.getModelFiles()` leaves out unless it
+/// is asked to include them: the system model, its unversioned name, and the
+/// decorator model. The match is on the exact namespace string.
+///
+/// TS: `EXCLUDE_NS` (src/basemodelmanager.ts).
+const EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
+
 /// The namespace part of a fully-qualified name, `""` when there is none.
 fn namespace_of(fqn: &str) -> &str {
     // An empty name has no namespace; the loader looks it up and fails.
@@ -933,21 +940,27 @@ impl ModelManager {
             .collect())
     }
 
-    /// Every class-like or enum declaration loaded, across every model file,
-    /// in registration order — the population `getAssignableClassDeclarations`
-    /// and `getDirectSubclasses` search (TS: `new Introspector(modelManager)
-    /// .getClassDeclarations()`, src/introspect/introspector.ts, itself every
-    /// loaded declaration whose `isClassDeclaration()` is true, which
-    /// `EnumDeclaration` inherits as `true` unchanged).
+    /// Every class-like or enum declaration loaded, across every model file
+    /// whose namespace is not in [`EXCLUDE_NS`], in registration order — the
+    /// population `getAssignableClassDeclarations` and `getDirectSubclasses`
+    /// search (TS: `new Introspector(modelManager).getClassDeclarations()`,
+    /// src/introspect/introspector.ts, which reads
+    /// `modelManager.getModelFiles()` with no argument, so the system and
+    /// decorator models are left out by their namespace string, not by
+    /// `ModelFile.isSystemModelFile`; then every declaration that is not a
+    /// map or a scalar, which leaves the class-like kinds and
+    /// `EnumDeclaration`).
     fn all_class_like(&self) -> impl Iterator<Item = (String, DeclId)> + '_ {
-        self.model_files().flat_map(move |mf| {
-            let file = self.model_file_id(mf.namespace()).expect("just iterated");
-            self.declaration_ids(file).filter_map(move |id| {
-                let declaration = self.declaration(id)?;
-                ClassLike::from_declaration(declaration)?;
-                Some((format!("{}.{}", mf.namespace(), declaration.name()), id))
+        self.model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .flat_map(move |mf| {
+                let file = self.model_file_id(mf.namespace()).expect("just iterated");
+                self.declaration_ids(file).filter_map(move |id| {
+                    let declaration = self.declaration(id)?;
+                    ClassLike::from_declaration(declaration)?;
+                    Some((format!("{}.{}", mf.namespace(), declaration.name()), id))
+                })
             })
-        })
     }
 
     /// `fqn` itself, plus every declaration that (transitively) extends it.
@@ -1405,6 +1418,106 @@ mod tests {
         )
         .unwrap();
         mgr
+    }
+
+    /// TS: `getDirectSubclasses` builds its population from
+    /// `Introspector.getClassDeclarations()`, which reads
+    /// `modelManager.getModelFiles()` with no argument and so leaves out
+    /// every namespace in `EXCLUDE_NS` (src/basemodelmanager.ts). A fresh
+    /// manager has only those, so nothing directly extends the system root.
+    #[test]
+    fn direct_subclasses_of_a_fresh_manager_leave_out_the_system_models() {
+        let mgr = ModelManager::new().unwrap();
+        assert!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Concept")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Asset")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Only the user declarations extend the system root, in registration
+    /// order: `Person` implicitly, and the enum `Color` implicitly too.
+    /// `Asset`, `Participant`, `Transaction`, `Event` and the decorator
+    /// model's own declarations are not in the population.
+    #[test]
+    fn direct_subclasses_are_only_user_declarations() {
+        let mgr = manager();
+        assert_eq!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Concept").unwrap(),
+            ["org.example@1.0.0.Person", "org.example@1.0.0.Color"]
+        );
+        assert_eq!(
+            mgr.get_direct_subclasses("org.example@1.0.0.Person")
+                .unwrap(),
+            ["org.example@1.0.0.Employee"]
+        );
+    }
+
+    /// TS `collectSubclasses([this])` always adds the receiver itself, so a
+    /// fresh manager's `Concept` is assignable only from itself.
+    #[test]
+    fn assignable_class_declarations_of_a_fresh_manager_leave_out_the_system_models() {
+        let mgr = ModelManager::new().unwrap();
+        assert_eq!(
+            mgr.get_assignable_class_declarations("concerto@1.0.0.Concept")
+                .unwrap(),
+            ["concerto@1.0.0.Concept"]
+        );
+    }
+
+    #[test]
+    fn assignable_class_declarations_are_the_receiver_and_user_declarations() {
+        let mgr = manager();
+        assert_eq!(
+            mgr.get_assignable_class_declarations("concerto@1.0.0.Concept")
+                .unwrap(),
+            [
+                "concerto@1.0.0.Concept",
+                "org.example@1.0.0.Person",
+                "org.example@1.0.0.Employee",
+                "org.example@1.0.0.Manager",
+                "org.example@1.0.0.Color",
+            ]
+        );
+    }
+
+    /// A user asset that implicitly extends the system `Asset` is found; the
+    /// system root declarations themselves are not.
+    #[test]
+    fn a_user_asset_is_the_only_direct_subclass_of_asset() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Car", "isAbstract": false,
+                      "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
+                      "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Asset").unwrap(),
+            ["org.acme@1.0.0.Car"]
+        );
+        assert_eq!(
+            mgr.get_assignable_class_declarations("concerto@1.0.0.Asset")
+                .unwrap(),
+            ["concerto@1.0.0.Asset", "org.acme@1.0.0.Car"]
+        );
+        assert!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Concept")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

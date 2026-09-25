@@ -329,14 +329,8 @@ fn check_identifier(
             )
         })?;
 
-    // TS: hardcoded, not a catalogue template (Globalize is never called on
-    // this path).
-    if field.is_optional() {
-        return Err(failed(
-            "Identifying fields cannot be optional.".to_string(),
-            class_location(class),
-        ));
-    }
+    // TS checks the type first, then optionality (classdeclaration.ts
+    // `validate`), so an optional non-String identifier reports the type.
     if !is_string_typed(manager, namespace, &field) {
         return Err(catalogue_error(
             "classdeclaration-validate-identifiernotstring",
@@ -344,6 +338,14 @@ fn check_identifier(
                 ("class", class.name().to_string()),
                 ("idField", field_name.to_string()),
             ],
+            class_location(class),
+        ));
+    }
+    // TS: hardcoded, not a catalogue template (Globalize is never called on
+    // this path).
+    if field.is_optional() {
+        return Err(failed(
+            "Identifying fields cannot be optional.".to_string(),
             class_location(class),
         ));
     }
@@ -1723,6 +1725,26 @@ mod tests {
                 .to_string()
                 .contains("Identifying fields cannot be optional")
         );
+    }
+
+    /// TS `ClassDeclaration.validate` checks `identifiernotstring` before
+    /// "Identifying fields cannot be optional.", so a field that is both
+    /// optional and not a String reports the type.
+    #[test]
+    fn optional_non_string_identifier_reports_the_type_first() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Product",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "productId" },
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "productId", "isArray": false, "isOptional": true }
+            ]
+        }))]));
+        let message = err.unwrap_err().to_string();
+        assert!(
+            message.contains("the type of the field is not \"String\""),
+            "{message}"
+        );
+        assert!(!message.contains("cannot be optional"), "{message}");
     }
 
     #[test]
