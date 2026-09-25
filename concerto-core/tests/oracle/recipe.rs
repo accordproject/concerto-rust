@@ -222,7 +222,17 @@ pub struct Replayed {
 pub struct FileArg {
     pub(crate) ast: Value,
     pub(crate) file_name: Option<String>,
-    nullish_name: Value,
+    pub(crate) nullish_name: Value,
+    /// TS `ModelFile.getDefinitions`: the CTO source text the recipe's own
+    /// `definitions` field carries (`mfnew` only — a manager-registered
+    /// `mfref` never has one, since `ModelManager.add_model` never threads
+    /// one through, P2-08).
+    pub(crate) definitions: Option<String>,
+    /// The owning model manager's index in the session's pool (P2-08:
+    /// `ModelFile.getModelManager`), when this file was decoded at the top
+    /// level rather than mid model-manager-step replay (where the owner may
+    /// still be under construction, with no pool index of its own yet).
+    pub(crate) mm_index: Option<usize>,
 }
 
 /// One decoded argument.
@@ -331,6 +341,16 @@ impl<'h> Session<'h> {
             },
             "mm" => self.replay(v).map(Arg::Mm),
             "mmref" => self.mmref(v).map(Arg::Mm),
+            // TS `Introspector` (src/introspect/introspector.ts) is a thin
+            // wrapper that stores its `ModelManager` and delegates every
+            // member to it (P2-08): its handle is just that manager's own
+            // pool index, the same `Arg::Mm` a `ModelManager` receiver is.
+            "introspector" => {
+                let mm_node = v
+                    .get("mm")
+                    .ok_or_else(|| Fault::Harness("introspector without mm".into()))?;
+                self.mm_index(mm_node).map(Arg::Mm)
+            }
             "mfref" | "mfnew" => self.file(v, self_mm).map(Arg::File),
             "declref" => {
                 let (mm, id) = self.declref(v)?;
@@ -458,23 +478,37 @@ impl<'h> Session<'h> {
                 Some(index) => &self.pool[index],
                 None => self_mm.expect("checked above"),
             };
-            return r.file_arg(ns).ok_or_else(|| {
+            let mut file = r.file_arg(ns).ok_or_else(|| {
                 Fault::Divergence(format!(
                     "state divergence: model file {ns} not registered after replay"
                 ))
-            });
+            })?;
+            file.mm_index = owner;
+            return Ok(file);
         }
         let ast = v.get("ast").cloned().unwrap_or(Value::Null);
         let (file_name, nullish_name) =
             nullish_or_string(v.get("fileName").unwrap_or(&undefined()))?;
+        let definitions = match v.get("definitions") {
+            None => None,
+            Some(d) if d.is_null() || is_undefined(d) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => {
+                return Err(Fault::Unsupported(
+                    "a model file's definitions argument that is not a string".into(),
+                ));
+            }
+        };
         // TS `new ModelFile(mm, ast, definitions, fileName)` runs while the
         // input is decoded, so a failure here is "input construction failed".
-        ModelFile::from_json(&ast, file_name.clone())
+        ModelFile::from_json_with_definitions(&ast, definitions.clone(), file_name.clone())
             .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
         Ok(FileArg {
             ast,
             file_name,
             nullish_name,
+            definitions,
+            mm_index: owner,
         })
     }
 
@@ -776,12 +810,16 @@ impl Replayed {
         Ok(())
     }
 
+    /// `mm_index` is left `None`: this method doesn't know its own index in
+    /// the session's pool, so [`Session::file`] fills it in on the result.
     fn file_arg(&self, ns: &str) -> Option<FileArg> {
         let mf = self.mm.model_file(ns)?;
         Some(FileArg {
             ast: mf.ast().clone(),
             file_name: mf.file_name().map(str::to_string),
             nullish_name: self.nullish_name(ns),
+            definitions: mf.definitions().map(str::to_string),
+            mm_index: None,
         })
     }
 
@@ -979,6 +1017,8 @@ impl Replayed {
                         ast,
                         file_name,
                         nullish_name,
+                        definitions: None,
+                        mm_index: None,
                     },
                     validate,
                 )
@@ -1027,6 +1067,8 @@ impl Replayed {
                         ast: model.clone(),
                         file_name: None,
                         nullish_name: undefined(),
+                        definitions: None,
+                        mm_index: None,
                     };
                     // `new ModelFile(this, model)`, then `addModelFile(…,
                     // true)`; TS keeps whatever loaded before an error.

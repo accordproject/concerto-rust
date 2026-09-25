@@ -22,6 +22,7 @@ pub mod introspect;
 pub mod model_manager;
 pub mod model_util;
 pub mod rootmodel;
+mod semver_range;
 mod validation;
 
 pub use error::{ConcertoError, Result};

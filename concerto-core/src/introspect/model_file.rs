@@ -645,19 +645,18 @@ fn imports_json(imports: &[Import]) -> String {
 
 /// TS `ModelFile.isCompatibleVersion` (modelfile.ts): if the AST declares a
 /// `concertoVersion` range, this runtime's own version (D10: the frozen TS
-/// 5.0.0 reference) must satisfy it; failing that, a model still targeting
-/// v3.0.0 or later is accepted for backward compatibility; anything else is a
-/// plain `Error`, not an `IllegalModelException`. `None` (not an error) when
-/// the AST carries no `concertoVersion` at all.
+/// 5.0.0 reference) must satisfy it (`semver.satisfies(…, {includePrerelease:
+/// true})`); failing that, a model still targeting v3.0.0 or later is
+/// accepted for backward compatibility (`semver.minSatisfying(['3.0.0'],
+/// range)`, no options); anything else is a plain `Error`, not an
+/// `IllegalModelException`. `None` (not an error) when the AST carries no
+/// `concertoVersion` at all.
 ///
-/// The range check uses the `semver` crate rather than a byte-for-byte port
-/// of node-semver's range grammar (unlike [`crate::model_util`]'s
-/// `ID_REGEX`/version-parsing ports, PORTING.md OD-8): it covers the common
-/// ranges (`^`, `~`, comparisons, comma-separated ANDs, `||`-separated ORs)
-/// but not every node-semver extension (hyphen ranges, `x`-ranges). A range
-/// this crate cannot parse is treated as not satisfied, falling through to
-/// the v3.0.0 check below, the same as an unparseable range would fail
-/// node-semver's own `satisfies`.
+/// The range check is [`crate::semver_range::satisfies`], a port of
+/// node-semver's own range grammar (module doc there), not the Cargo
+/// `semver` crate's requirement syntax: the two disagree on space-separated
+/// AND comparators (`>=3.0.0 <6.0.0`), hyphen ranges (`1.2.3 - 2.3.4`) and
+/// what a bare version means (exact in node-semver, caret in Cargo).
 fn check_compatible_version(value: &serde_json::Value) -> Result<Option<String>> {
     let Some(range) = value
         .get("concertoVersion")
@@ -666,7 +665,9 @@ fn check_compatible_version(value: &serde_json::Value) -> Result<Option<String>>
     else {
         return Ok(None);
     };
-    if range_satisfied_by(range, CONCERTO_CORE_VERSION) || range_satisfied_by(range, "3.0.0") {
+    if crate::semver_range::satisfies(CONCERTO_CORE_VERSION, range, true)
+        || crate::semver_range::satisfies("3.0.0", range, false)
+    {
         return Ok(Some(range.to_string()));
     }
     Err(plain_error(format!(
@@ -678,19 +679,6 @@ fn check_compatible_version(value: &serde_json::Value) -> Result<Option<String>>
 /// (D10), which `ModelFile.isCompatibleVersion` checks a model's
 /// `concertoVersion` range against.
 const CONCERTO_CORE_VERSION: &str = "5.0.0";
-
-/// Whether `version` satisfies `range`, trying each `||`-separated
-/// alternative (node-semver OR-of-comparator-sets) against the `semver`
-/// crate's own (AND-only) range syntax.
-fn range_satisfied_by(range: &str, version: &str) -> bool {
-    let Ok(version) = semver::Version::parse(version) else {
-        return false;
-    };
-    range
-        .split("||")
-        .filter_map(|part| semver::VersionReq::parse(part.trim()).ok())
-        .any(|req| req.matches(&version))
-}
 
 /// A plain JS `Error(message)` (`ErrorKind::Error`), for the several
 /// hardcoded, non-catalogue messages `ModelFile.fromAst`/`isCompatibleVersion`

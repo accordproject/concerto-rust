@@ -694,23 +694,24 @@ impl ModelManager {
             .map(DeclId)
     }
 
-    /// Every concept-like declaration across every loaded model file (the
-    /// decorator and root models included, as TS's own `getModelFiles()`
-    /// does), in file order and then declaration order — a map or scalar
-    /// declaration is left out.
+    /// Every class-like or enum declaration across every loaded model file
+    /// whose namespace is not in [`EXCLUDE_NS`], in file order and then
+    /// declaration order — a map or scalar declaration is left out, as is
+    /// the decorator and root models' own declarations (P2-08 review: this
+    /// previously iterated every loaded file, `EXCLUDE_NS` included, which
+    /// put system declarations like `Concept` into the result).
     ///
     /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
     /// `modelFile.getAllDeclarations().filter(d =>
     /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
-    /// over every loaded model file.
+    /// over `modelManager.getModelFiles()` — which, called with no argument,
+    /// already leaves the system and decorator models out by their
+    /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
+    /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
+    /// [`Self::all_class_like`], which [`Self::get_assignable_class_declarations`]
+    /// and [`Self::get_direct_subclasses`] already search this same way.
     pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
-        self.files
-            .iter()
-            .flat_map(|file| file.declarations.clone().map(DeclId))
-            .filter(move |id| {
-                self.declaration(*id)
-                    .is_some_and(|d| !d.is_map_declaration() && !d.is_scalar_declaration())
-            })
+        self.all_class_like().map(|(_, id)| id)
     }
 
     /// The handles of a class declaration's own properties, in the order they
@@ -2005,11 +2006,12 @@ mod tests {
         for name in ["Person", "Employee", "Manager", "Color"] {
             assert!(names.contains(&name), "{name} missing from {names:?}");
         }
-        // The built-in system and decorator models load first, so their own
-        // class-like declarations (e.g. `Concept`) are included too — TS's
-        // `Introspector.getClassDeclarations` iterates every loaded model
-        // file, system ones included.
-        assert!(names.contains(&"Concept"));
+        // `Introspector.getClassDeclarations` reads
+        // `modelManager.getModelFiles()` with no argument, which leaves out
+        // the built-in decorator and root models by namespace (`EXCLUDE_NS`,
+        // src/basemodelmanager.ts) — so their own class-like declarations,
+        // such as the root model's `Concept`, are not in the result.
+        assert!(!names.contains(&"Concept"));
     }
 
     /// A map or scalar declaration is left out of `class_declarations`, the

@@ -13,7 +13,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
-use crate::error::{ConcertoError, Result};
+use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
@@ -1001,12 +1001,18 @@ impl Declaration {
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)
             }
-            other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown declaration type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
+            _ => {
+                // TS: `ModelFile.fromAst`'s `default` case (modelfile.ts),
+                // the catalogue's own `{type}` — `thing.$class` verbatim,
+                // the full `$class` string as given, never the short kind
+                // (P2-08 review).
+                let mut err = ContractError::new(
+                    ErrorKind::IllegalModel,
+                    "modelfile-constructor-unrecmodelelem",
+                    vec![("type", class.to_string())],
+                );
+                err.model_file = Some(file_name.map(str::to_string));
+                return Err(err.into());
             }
         };
         check_name(declaration)

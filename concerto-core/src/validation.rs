@@ -67,28 +67,48 @@ impl ModelManager {
         model_files.sort_by_key(|model_file| model_file.namespace());
 
         for model_file in model_files {
-            let checks = || -> Result<()> {
-                // TS `ModelFile.validate` (modelfile.ts), in order:
-                // (1) `super.validate()` — the file's own decorators
-                // (`Decorated.validate`);
-                check_unique_decorators(model_file, None)?;
-                validate_decorators(self, model_file.namespace(), model_file, None)?;
-                // (2) the `getImports()` loop;
-                check_imports(self, model_file)?;
-                // (3) the duplicate-class-name scan — already impossible to
-                // construct in this port (`ModelFile::from_json` rejects a
-                // second declaration of one name at load time), so there is
-                // nothing left to check here;
-                // (4) each declaration, in file order — including, first
-                // thing, the import-clash check every declaration kind
-                // reaches through its own `super.validate()` chain
-                // ([`check_import_clash`]'s doc comment).
-                for declaration in model_file.declarations() {
-                    declaration.validate(self, model_file.namespace())?;
-                }
-                Ok(())
-            };
-            checks().map_err(|e| attach_model_file(e, model_file))?;
+            self.validate_model_file(model_file)
+                .map_err(|e| attach_model_file(e, model_file))?;
+        }
+        Ok(())
+    }
+
+    /// TS `ModelFile.validate()` (modelfile.ts), checked against `self` as
+    /// the file's owning model manager — the same `this.getModelManager()`
+    /// import resolution reaches. [`ModelManager::validate_models`] runs
+    /// this over every loaded file; the oracle's `ModelFile.validate` op
+    /// runs it directly on one (P2-08).
+    ///
+    /// **`model_file` must be the file `self` itself has registered under
+    /// its namespace**, the same object [`ModelManager::model_file`] would
+    /// return: `check_imports` and, through [`ModelManager::resolve_type_name`],
+    /// every super-type and property-type lookup this pass runs, all resolve
+    /// a namespace *through `self`* (`self.model_file(namespace)`), not
+    /// through `model_file` directly. TS's `this.getModelManager()` always
+    /// finds `this` this way, because `this` is a live reference the caller
+    /// already holds; a `model_file` this port reconstructs from an AST
+    /// rather than fetches from `self` is a different value with the same
+    /// content, and `self` has no way to recognise it as "the same file" for
+    /// these lookups if it is not registered — every check that needs to
+    /// resolve *this file's own* namespace back to itself then wrongly
+    /// reports it as undeclared (a caller that cannot guarantee registration
+    /// must check first, as `ops.rs`'s `registered_file` does for the oracle
+    /// dispatch).
+    ///
+    /// In order: (1) `super.validate()` — the file's own decorators
+    /// (`Decorated.validate`); (2) the `getImports()` loop; (3) the
+    /// duplicate-class-name scan — already impossible to construct in this
+    /// port (`ModelFile::from_json` rejects a second declaration of one name
+    /// at load time), so there is nothing left to check here; (4) each
+    /// declaration, in file order — including, first thing, the
+    /// import-clash check every declaration kind reaches through its own
+    /// `super.validate()` chain ([`check_import_clash`]'s doc comment).
+    pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
+        check_unique_decorators(model_file, None)?;
+        validate_decorators(self, model_file.namespace(), model_file, None)?;
+        check_imports(self, model_file)?;
+        for declaration in model_file.declarations() {
+            declaration.validate(self, model_file.namespace())?;
         }
         Ok(())
     }

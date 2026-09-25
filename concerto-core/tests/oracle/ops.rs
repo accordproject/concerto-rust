@@ -44,7 +44,7 @@ use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
-use concerto_core::introspect::{Declaration, Named, Typed, Validate};
+use concerto_core::introspect::{Declaration, DeclarationKind, Named, Typed, Validate};
 use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use serde_json::{Value, json};
@@ -457,6 +457,49 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ),
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
+        // P2-08: every `ModelFile` member the oracle corpus reaches
+        // (`filter`, `getConceptDeclarations`, `getMapDeclarations` and
+        // `getExternalImports` have no fixtures, module doc on `ops.rs`).
+        ("ModelFile", m) => matches!(
+            m,
+            "new"
+                | "getAllDeclarations"
+                | "getAssetDeclaration"
+                | "getAssetDeclarations"
+                | "getAst"
+                | "getClassDeclarations"
+                | "getConcertoVersion"
+                | "getDefinitions"
+                | "getEnumDeclarations"
+                | "getEventDeclaration"
+                | "getEventDeclarations"
+                | "getFullyQualifiedTypeName"
+                | "getImportURI"
+                | "getImportedType"
+                | "getImports"
+                | "getModelManager"
+                | "getName"
+                | "getNamespace"
+                | "getParticipantDeclaration"
+                | "getScalarDeclarations"
+                | "getTransactionDeclaration"
+                | "getTransactionDeclarations"
+                | "getType"
+                | "isDefined"
+                | "isExternal"
+                | "isImportedType"
+                | "isLocalType"
+                | "isModelFile"
+                | "isSystemModelFile"
+                | "resolveImport"
+                | "validate"
+        ),
+        ("Introspector", m) => {
+            matches!(
+                m,
+                "getClassDeclaration" | "getClassDeclarations" | "getModelManager"
+            )
+        }
         _ => false,
     };
     if !dispatched {
@@ -509,6 +552,15 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 })
             },
         ));
+    }
+
+    // TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08):
+    // args[0] (the model manager) has already been fully replayed by
+    // `session.decode` above, for state-divergence parity, even though the
+    // constructed `ModelFile` does not itself need it for these arguments —
+    // only `getModelManager`/`getType` do, later, through `file.mm_index`.
+    if class == "ModelFile" && member == "new" {
+        return Ok(model_file_new(&args));
     }
 
     if member == "new" {
@@ -801,6 +853,23 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             Ok(ran(Ok(Value::String(format!(
                 "EnumDeclaration {{id={fqn}}}"
             )))))
+        }
+        "ModelFile" => {
+            let Some(Arg::File(file)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ModelFile op whose receiver is not a model file (mfref/mfnew)".into(),
+                ));
+            };
+            Ok(model_file_op(&session, &file, member, &args))
+        }
+        "Introspector" => {
+            let Some(Arg::Mm(index)) = target else {
+                return Err(Fault::Unsupported(
+                    "an Introspector op whose receiver is not an introspector recipe".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            Ok(introspector_op(r, member, &args))
         }
         _ => unreachable!("`dispatched` lists every class"),
     }
@@ -1226,6 +1295,295 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
             ran(Ok(r.model_file_summary(namespace).unwrap_or(Value::Null)))
         }
         _ => unreachable!("`dispatched` lists every Declaration member"),
+    }
+}
+
+/// TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08),
+/// for a receiver never added to a manager via `addModelFile` (that is
+/// `ModelManager.addModelFile`, already dispatched).
+fn model_file_new(args: &[Arg]) -> Dispatch {
+    let Some(Arg::Plain(ast)) = args.get(1) else {
+        return unsupported("ModelFile.new with an ast argument that is not plain data");
+    };
+    let definitions = match args.get(2) {
+        None => None,
+        Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => None,
+        Some(Arg::Plain(Value::String(s))) => Some(s.clone()),
+        _ => {
+            return unsupported("ModelFile.new with a definitions argument that is not a string");
+        }
+    };
+    let file_name_value = match args.get(3) {
+        None => recipe::undefined(),
+        Some(Arg::Plain(v)) => v.clone(),
+        Some(_) => {
+            return unsupported("ModelFile.new with a fileName argument that is not plain data");
+        }
+    };
+    let file_name = match &file_name_value {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    };
+    from_engine(
+        ModelFile::from_json_with_definitions(ast, definitions, file_name),
+        |mf| {
+            json!({
+                M: "ModelFile",
+                "namespace": mf.namespace(),
+                "name": mf
+                    .file_name()
+                    .map_or_else(|| file_name_value.clone(), |n| Value::String(n.to_string())),
+                "ast": mf.ast(),
+            })
+        },
+    )
+}
+
+/// The outcome-only `Declaration` summary `{ctor, fqn}` (the same shape
+/// [`Replayed::declaration_summary`] builds from a [`DeclId`]), for a
+/// declaration read straight off a rebuilt [`ModelFile`] — every `ModelFile`
+/// getter that hands back a declaration (`getAssetDeclaration` and its
+/// siblings, `getAllDeclarations` and the other `get*Declarations` lists)
+/// already has it in hand, with no arena lookup needed.
+fn declaration_value(namespace: &str, declaration: &Declaration) -> Value {
+    let ctor = match declaration {
+        Declaration::Class(class) => class.declaration_kind(),
+        Declaration::Enum(_) => "EnumDeclaration",
+        Declaration::Scalar(_) => "ScalarDeclaration",
+        Declaration::Map(_) => "MapDeclaration",
+    };
+    json!({
+        M: "Declaration",
+        "ctor": ctor,
+        "fqn": format!("{namespace}.{}", declaration.name()),
+    })
+}
+
+/// A [`Node`] `ModelFile.getType` resolved to, in its outcome shape: a
+/// primitive's bare name, a declaration's summary, or `null`.
+fn node_type_value(r: &Replayed, node: Option<Node>) -> Value {
+    match node {
+        None => Value::Null,
+        Some(Node::Primitive(name)) => Value::String(name.to_string()),
+        Some(Node::Declaration(id)) => r.declaration_summary(id).unwrap_or(Value::Null),
+        // `ModelFile.getType` never resolves to a model file or a property.
+        Some(_) => Value::Null,
+    }
+}
+
+/// `ModelFile.*` ops (P2-08), other than `new` (handled directly in
+/// `exec_handles`, since the receiver does not exist yet). `file` is the
+/// `mfref`/`mfnew` receiver.
+///
+/// Every getter below runs against `mf`, rebuilt fresh from
+/// `file.ast`/`file.definitions`/`file.file_name`: a `ModelFile` is a pure
+/// function of what it was built from (module doc on
+/// [`concerto_core::introspect::model_file::ModelFile`]), and
+/// `Session::file` already proved this same construction succeeds once,
+/// while decoding the receiver — so rebuilding it here for a second time
+/// gives back an equivalent object. `getModelManager`, `getType` and
+/// `validate` are the three members that need the owning manager for
+/// something beyond that (`getModelManager`/`getType`'s cross-file lookups,
+/// `validate`'s import checks): `file.mm_index`, via `session`.
+///
+/// Every string argument these members take is required to already be a
+/// plain string; TS itself is not always this strict (`isLocalType`,
+/// `isImportedType` and `getType`/`getFullyQualifiedTypeName` degrade
+/// gracefully on a nullish argument, while the `get*Declaration` getters
+/// throw a `TypeError` calling `.startsWith` on one) — the oracle corpus
+/// exercises every one of these members with a real string name only, so
+/// this port does not need to reproduce either behaviour, and instead
+/// reports a non-string argument `unsupported` uniformly.
+fn model_file_op(
+    session: &Session,
+    file: &recipe::FileArg,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    let mf = match ModelFile::from_json_with_definitions(
+        &file.ast,
+        file.definitions.clone(),
+        file.file_name.clone(),
+    ) {
+        Ok(mf) => mf,
+        Err(e) => {
+            return Dispatch::Fault(Fault::Divergence(format!(
+                "state divergence: a model file that decoded successfully failed to rebuild: {}",
+                to_oracle_error(&e).message
+            )));
+        }
+    };
+    let namespace = mf.namespace().to_string();
+    let decl =
+        |d: Option<&Declaration>| d.map_or(Value::Null, |d| declaration_value(&namespace, d));
+    let decls = |ds: Vec<&Declaration>| {
+        Value::Array(
+            ds.into_iter()
+                .map(|d| declaration_value(&namespace, d))
+                .collect(),
+        )
+    };
+    let arg_str = |i: usize| -> Result<Option<&str>, ()> {
+        match args.get(i) {
+            None => Ok(None),
+            Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => Ok(None),
+            Some(Arg::Plain(Value::String(s))) => Ok(Some(s.as_str())),
+            _ => Err(()),
+        }
+    };
+    macro_rules! str_arg {
+        ($i:expr) => {
+            match arg_str($i) {
+                Ok(Some(s)) => s,
+                Ok(None) | Err(()) => {
+                    return unsupported(format!("ModelFile.{member} with a non-string argument"));
+                }
+            }
+        };
+    }
+
+    match member {
+        "getNamespace" => ran(Ok(Value::String(namespace))),
+        "getName" => ran(Ok(mf.file_name().map_or_else(
+            || file.nullish_name.clone(),
+            |n| Value::String(n.to_string()),
+        ))),
+        "getAst" => ran(Ok(mf.ast().clone())),
+        // TS `this.definitions = definitions` (the constructor parameter),
+        // which defaults to JS `undefined` when omitted — never observed as
+        // an explicit `null` in the oracle corpus (module doc above).
+        "getDefinitions" => ran(Ok(mf
+            .definitions()
+            .map_or_else(recipe::undefined, |d| Value::String(d.to_string())))),
+        "getConcertoVersion" => ran(Ok(mf
+            .concerto_version()
+            .map_or(Value::Null, |v| Value::String(v.to_string())))),
+        "isExternal" => ran(Ok(Value::Bool(mf.is_external()))),
+        "isModelFile" => ran(Ok(Value::Bool(true))),
+        "isSystemModelFile" => ran(Ok(Value::Bool(mf.is_system_namespace()))),
+        "getAllDeclarations" => ran(Ok(decls(mf.declarations().iter().collect()))),
+        "getClassDeclarations" => ran(Ok(decls(mf.get_class_declarations()))),
+        "getEnumDeclarations" => ran(Ok(decls(mf.get_enum_declarations()))),
+        "getScalarDeclarations" => ran(Ok(decls(mf.get_scalar_declarations()))),
+        "getAssetDeclarations" => ran(Ok(decls(mf.get_asset_declarations()))),
+        "getTransactionDeclarations" => ran(Ok(decls(mf.get_transaction_declarations()))),
+        "getEventDeclarations" => ran(Ok(decls(mf.get_event_declarations()))),
+        "getAssetDeclaration" => ran(Ok(decl(mf.get_asset_declaration(str_arg!(0))))),
+        "getTransactionDeclaration" => ran(Ok(decl(mf.get_transaction_declaration(str_arg!(0))))),
+        "getEventDeclaration" => ran(Ok(decl(mf.get_event_declaration(str_arg!(0))))),
+        "getParticipantDeclaration" => ran(Ok(decl(mf.get_participant_declaration(str_arg!(0))))),
+        "getImports" => ran(Ok(Value::Array(
+            mf.get_imports().into_iter().map(Value::String).collect(),
+        ))),
+        "getImportURI" => ran(Ok(mf
+            .get_import_uri(str_arg!(0))
+            .map_or(Value::Null, |u| Value::String(u.to_string())))),
+        "isImportedType" => ran(Ok(Value::Bool(mf.is_imported_type(str_arg!(0))))),
+        "isLocalType" => ran(Ok(Value::Bool(mf.is_local_type(str_arg!(0))))),
+        "isDefined" => ran(Ok(Value::Bool(mf.is_defined(str_arg!(0))))),
+        "resolveImport" => from_engine(mf.resolve_import(str_arg!(0)), Value::String),
+        "getImportedType" => from_engine(mf.get_imported_type(str_arg!(0)), Value::String),
+        "getFullyQualifiedTypeName" => ran(Ok(mf
+            .get_fully_qualified_type_name(str_arg!(0))
+            .map_or(Value::Null, Value::String))),
+        "getModelManager" => match registered_file(session, file) {
+            Ok(r) => ran(Ok(r.summary())),
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        "getType" => {
+            let r = match registered_file(session, file) {
+                Ok(r) => r,
+                Err(Fault::Unsupported(reason)) => return unsupported(reason),
+                Err(other) => return Dispatch::Fault(other),
+            };
+            let type_name = match arg_str(0) {
+                Ok(v) => v,
+                Err(()) => {
+                    return unsupported("ModelFile.getType with a type name that is not a string");
+                }
+            };
+            let file_id = r
+                .file_id(&namespace)
+                .expect("registered_file just confirmed this namespace is registered");
+            from_engine(
+                r.mm.get_type(&Node::ModelFile(file_id), type_name),
+                |node| node_type_value(r, node),
+            )
+        }
+        "validate" => match registered_file(session, file) {
+            Ok(r) => from_engine(r.mm.validate_model_file(&mf), |()| recipe::undefined()),
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        _ => unreachable!("`dispatched` lists every ModelFile member"),
+    }
+}
+
+/// `file`'s owning model manager, only when `file` is genuinely the file
+/// registered there under its namespace — the same check
+/// [`recipe::model_file_node`] makes for a receiver that needs a `Node`
+/// handle. `getModelManager`, `getType` and `validate` all need this: TS's
+/// `this.getModelManager()` is only meaningful once a `ModelFile` is the one
+/// its manager actually holds (`ModelManager::resolve_type_name` and the
+/// checks `validate_model_file` runs both look a namespace's file up
+/// *through the manager*, not through `file` directly — P2-08 review: an
+/// `mfnew` receiver that was never added via `addModelFile` fails these
+/// checks with the wrong verdict otherwise, since the manager has no file
+/// under that namespace to find).
+fn registered_file<'s>(
+    session: &'s Session,
+    file: &recipe::FileArg,
+) -> Result<&'s Replayed, Fault> {
+    let index = file.mm_index.ok_or_else(|| {
+        Fault::Unsupported(
+            "a ModelFile op needing the owning model manager, decoded without its pool index"
+                .into(),
+        )
+    })?;
+    let r = &session.pool[index];
+    // Discard the `Node`: only its existence (this namespace resolves to
+    // exactly `file`'s own AST) is wanted here.
+    recipe::model_file_node(r, file)?;
+    Ok(r)
+}
+
+/// `Introspector.*` ops (P2-08): a thin wrapper over the receiver's own
+/// `ModelManager` (module doc on `Session::decode`'s `"introspector"` arm) —
+/// `getModelManager` returns it directly, and the other two members
+/// delegate to it exactly as `Introspector`'s TS methods do
+/// (src/introspect/introspector.ts).
+fn introspector_op(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
+    match member {
+        "getModelManager" => ran(Ok(r.summary())),
+        // TS: `getClassDeclarations` concatenates
+        // `modelFile.getAllDeclarations().filter(d => !isMap && !isScalar)`
+        // over `modelManager.getModelFiles()`, i.e. every loaded file but
+        // the system and decorator ones — `ModelManager::class_declarations`
+        // (P2-08 review: fixed to leave those out, matching `EXCLUDE_NS`).
+        "getClassDeclarations" => ran(Ok(Value::Array(
+            r.mm.class_declarations()
+                .filter_map(|id| r.declaration_summary(id))
+                .collect(),
+        ))),
+        // TS: `getClassDeclaration(fqn)` is `this.modelManager.getType(fqn)`
+        // outright — the same lookup `ModelManager.getType`'s own dispatch
+        // (`model_manager_query`) already uses.
+        "getClassDeclaration" => {
+            let Some(Arg::Plain(Value::String(fqn))) = args.first() else {
+                return unsupported(
+                    "Introspector.getClassDeclaration with a type name that is not a string",
+                );
+            };
+            match r.mm.get_declaration(fqn) {
+                Err(e) => ran(Err(to_oracle_error(&e))),
+                Ok(_) => {
+                    let id = r.mm.declaration_id(fqn).expect("get_declaration found it");
+                    ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null)))
+                }
+            }
+        }
+        _ => unreachable!("`dispatched` lists every Introspector member"),
     }
 }
 
