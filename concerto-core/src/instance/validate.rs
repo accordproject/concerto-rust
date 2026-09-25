@@ -2429,6 +2429,26 @@ mod tests {
         assert!(err.to_string().contains("org.acme@1.0.0.Leaf"), "{err}");
     }
 
+    /// [`js_id_display`] (P5-06: cargo-mutants found this return value was
+    /// never asserted): `Leaf` above is not identified, so
+    /// [`an_undeclared_field_is_rejected`] reaches `undeclared_field`
+    /// through the *other* branch (`p.current_identifier`), never through
+    /// `js_id_display`. `Vehicle` is identified (by `vin`), so an undeclared
+    /// field on a `Vehicle` instance whose own `vin` is absent hits
+    /// `js_id_display(None)`, which is the JS `${undefined}` literal
+    /// `"undefined"` — never an empty string — as the reported resource id.
+    #[test]
+    fn an_undeclared_field_on_an_identified_resource_with_no_identifier_value_reports_undefined() {
+        let mgr = fixture();
+        let vehicle = json!({ "$class": "org.acme@1.0.0.Vehicle", "mileage": 5, "extra": "nope" });
+        let err = err_of(validate_instance(&mgr, &vehicle, &ValidateOptions::default()));
+        assert!(
+            err.to_string().contains("\"undefined\""),
+            "expected the undefined-identifier placeholder, got: {err}"
+        );
+        assert!(err.to_string().contains("\"extra\""), "{err}");
+    }
+
     #[test]
     fn a_missing_required_property_is_rejected() {
         let mgr = fixture();

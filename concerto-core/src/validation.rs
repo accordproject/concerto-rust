@@ -1397,11 +1397,11 @@ fn undeclared_type_error(
 
 #[cfg(test)]
 mod tests {
-    use crate::error::{ConcertoError, ErrorKind};
+    use crate::error::{ConcertoError, ContractError, ErrorKind};
     use crate::introspect::Named;
     use crate::introspect::model_file::ModelFile;
     use crate::model_manager::ModelManager;
-    use crate::validation::{validate_map_key, validate_map_value};
+    use crate::validation::{attach_model_file, validate_map_key, validate_map_value};
 
     /// Loads `org.example@1.0.0` with the given declarations and validates it.
     fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
@@ -1474,6 +1474,116 @@ mod tests {
         .unwrap_err();
         match err {
             ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    /// [`property_location`] (P5-06: cargo-mutants found this return value
+    /// was never asserted, only that *some* error was raised): a property's
+    /// own AST `location` is copied verbatim into the error, exactly like a
+    /// class's ([`super_type_that_is_missing_carries_the_class_ast_location`]),
+    /// not read from the owning class or hard-coded to `None`/`Default`.
+    #[test]
+    fn relationship_to_primitive_carries_the_property_ast_location() {
+        let location = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Range",
+            "start": {"$class": "concerto.metamodel@1.0.0.Position", "line": 5, "column": 3, "offset": 40},
+            "end": {"$class": "concerto.metamodel@1.0.0.Position", "line": 5, "column": 11, "offset": 48}
+        });
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Order",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "total",
+                  "isArray": false, "isOptional": false, "location": location,
+                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Double" } }
+            ]
+        }))]))
+        .unwrap_err();
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    /// [`enum_location`] (P5-06): an enum's own AST `location` is copied
+    /// verbatim into an import-clash error raised on the enum itself, the
+    /// same way a class's is.
+    #[test]
+    fn an_enum_clashing_with_an_imported_name_carries_the_enum_ast_location() {
+        let location = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Range",
+            "start": {"$class": "concerto.metamodel@1.0.0.Position", "line": 2, "column": 1, "offset": 10},
+            "end": {"$class": "concerto.metamodel@1.0.0.Position", "line": 2, "column": 9, "offset": 18}
+        });
+        let err = validate_with_imports(
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.common@1.0.0", "name": "Address" }
+            ]),
+            serde_json::json!([{
+                "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
+                "name": "Address",
+                "location": location,
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "HOME" }
+                ]
+            }]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Type 'Address' clashes with an imported type with the same name."
+        );
+        match err {
+            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    /// [`attach_model_file`]'s guard (P5-06: cargo-mutants found both the
+    /// `&&`/`||` swap and a hard-coded `true` survived): it stamps a file
+    /// name only onto an `IllegalModel`-kind contract error that has no
+    /// file yet, and leaves every other error exactly as it was passed in —
+    /// tested directly, since every path that reaches it does so only
+    /// through an already-`IllegalModel`, already-file-less error, and so
+    /// cannot itself distinguish the guard from `true`.
+    #[test]
+    fn attach_model_file_only_stamps_a_file_less_illegalmodel_error() {
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.attach@1.0.0",
+                "declarations": []
+            }),
+            Some("attach.cto".into()),
+        )
+        .unwrap();
+
+        // A file-less IllegalModel error is stamped.
+        let illegal = ConcertoError::from(ContractError::new(ErrorKind::IllegalModel, "pre-port", vec![]));
+        match attach_model_file(illegal, &mf) {
+            ConcertoError::Contract(c) => {
+                assert_eq!(c.model_file, Some(Some("attach.cto".to_string())))
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+
+        // An error that already carries a file is left alone (would be
+        // overwritten by a hard-coded `true` guard).
+        let mut already_attached = ContractError::new(ErrorKind::IllegalModel, "pre-port", vec![]);
+        already_attached.model_file = Some(Some("other.cto".to_string()));
+        match attach_model_file(ConcertoError::from(already_attached), &mf) {
+            ConcertoError::Contract(c) => {
+                assert_eq!(c.model_file, Some(Some("other.cto".to_string())))
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+
+        // A non-IllegalModel error is left alone (would be stamped by an
+        // `&&` → `||` swap, since it has no file yet).
+        let validator = ConcertoError::from(ContractError::new(ErrorKind::Validator, "pre-port", vec![]));
+        match attach_model_file(validator, &mf) {
+            ConcertoError::Contract(c) => assert_eq!(c.model_file, None),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -4015,6 +4125,35 @@ mod tests {
         );
     }
 
+    /// `validate_property`'s `in_owner_file` guard (P5-06: cargo-mutants
+    /// found `owner_ns != namespace` survived both a `true`/`false` and a
+    /// `!=`/`==` swap): a duplicate-decorator error on an *inherited*
+    /// property — raised before the primitive early-return that
+    /// [`an_inherited_property_is_validated_in_the_subclass_pass`] goes
+    /// through — is attached to the property's own declaring file (`a.cto`,
+    /// where `X.s` lives), not to the subclass's file (`b.cto`) the outer
+    /// `attach` closure would otherwise stamp. A wrong guard (stuck `false`,
+    /// or `==` instead of `!=`) skips the inner attach and lets the outer
+    /// one stamp `b.cto` instead.
+    #[test]
+    fn a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file() {
+        use crate::introspect::model_file::ModelFile;
+        let (manager, b) = inherited_property_files(serde_json::json!({
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] }
+            ]
+        }));
+        let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
+        match manager.validate_detached_model_file(&detached).unwrap_err() {
+            ConcertoError::Contract(c) => {
+                assert!(c.final_message().contains("Duplicate decorator"));
+                assert_eq!(c.model_file, Some(Some("a.cto".to_string())));
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
     /// A valid inherited property passes in the subclass's pass too, and an
     /// inherited property whose type is declared in the super type's
     /// namespace (not imported by the subclass's file) is resolved there —
@@ -4109,5 +4248,192 @@ mod tests {
             run(true),
             "Type \"Cc\" is not defined in namespace \"org.c@1.0.0\"."
         );
+    }
+
+    /// `validate_property`'s other attach guard, `context_ns != namespace`
+    /// (P5-06: cargo-mutants found the same `true`/`false`/`!=`→`==`
+    /// survivals as [`a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file`],
+    /// on the *other* branch of `validate_property`): `Y` (`org.b`) inherits
+    /// `X`'s (`org.a`) relationship property `c`, typed `Cc` — declared,
+    /// import-free, in a third namespace, `org.c`, so `Cc` resolves (unlike
+    /// [`an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type`])
+    /// and `check_property_type` itself raises the "must be to a class that
+    /// has an identifier" error, attached to `Cc`'s own file (`c.cto`), not
+    /// `b.cto`, the same way the owner-file guard attaches `a.cto` above.
+    #[test]
+    fn an_inherited_relationship_to_an_unidentified_type_is_attached_to_the_types_file() {
+        use crate::introspect::model_file::ModelFile;
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.c@1.0.0",
+                    "declarations": [concept(serde_json::json!({ "name": "Cc" }))]
+                }),
+                Some("c.cto".into()),
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.c@1.0.0", "name": "Cc" }
+                    ],
+                    "declarations": [concept(serde_json::json!({
+                        "name": "X", "isAbstract": true, "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "c",
+                              "isArray": false, "isOptional": false,
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Cc" } }
+                        ]
+                    }))]
+                }),
+                Some("a.cto".into()),
+            )
+            .unwrap();
+        let b = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.b@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.a@1.0.0", "name": "X" }
+            ],
+            "declarations": [concept(serde_json::json!({
+                "name": "Y",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
+            }))]
+        });
+        let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
+        match manager.validate_detached_model_file(&detached).unwrap_err() {
+            ConcertoError::Contract(c) => {
+                assert!(
+                    c.final_message()
+                        .contains("must be to a class that has an identifier")
+                );
+                assert_eq!(c.model_file, Some(Some("c.cto".to_string())));
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    // --- P5-06: cargo-mutants found `validate_detached_declaration`,
+    // `validate_detached_map_key` and `validate_detached_map_value` (each
+    // `-> Result<()>` replaced with `Ok(())`) and `detached_map`'s match arm
+    // (deleted) surviving under the `--lib` unit suite: real coverage for
+    // all three lives in the oracle corpus (`tests/oracle/ops.rs`'
+    // `declref`/`map_part` recipes on an `mfnew` target, module doc above),
+    // which a plain `cargo test --lib` run does not exercise; these add
+    // direct unit coverage of the same public API, on an unregistered
+    // `ModelFile`, so a fast `--lib`-only run also catches them.
+
+    /// [`ModelManager::validate_detached_declaration`] on an unregistered
+    /// file's single, invalid `MapDeclaration`: the same "concept is not a
+    /// legal key" check [`a_map_key_must_be_string_or_datetime`] exercises
+    /// through the full `validate_models` pipeline, reached here directly,
+    /// the way `MapDeclaration.validate`'s oracle fixtures do. An
+    /// out-of-set key *kind* (`IntegerMapKeyType`) is rejected at
+    /// construction (`ModelFile::from_json` itself), so this uses an
+    /// in-set kind (`ObjectMapKeyType`) whose target fails semantic
+    /// validation instead — a check `validate_detached_declaration` alone
+    /// runs, before any file is registered.
+    #[test]
+    fn validate_detached_declaration_rejects_an_invalid_map_key() {
+        let manager = ModelManager::new().unwrap();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.detached@1.0.0",
+                "declarations": [
+                    concept(serde_json::json!({ "name": "Item" })),
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                      "key": object_type("Item", "ObjectMapKeyType"),
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(
+            manager
+                .validate_detached_declaration(&mf, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("Scalar must be one of StringScalar, DateTimeScalar")
+        );
+    }
+
+    /// [`ModelManager::validate_detached_declaration`] with no declaration at
+    /// `index` (a harness-only bound, the function's own doc comment): also
+    /// kills [`detached_scratch`]'s `Ok(Default)` survivals, since a mutated
+    /// scratch would panic on the `.expect(...)` right after, not return
+    /// this error.
+    #[test]
+    fn validate_detached_declaration_out_of_bounds_index_is_rejected() {
+        let manager = ModelManager::new().unwrap();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.detached@1.0.0",
+                "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(manager.validate_detached_declaration(&mf, 0).is_err());
+    }
+
+    /// [`ModelManager::validate_detached_map_key`] and
+    /// [`ModelManager::validate_detached_map_value`], each in isolation
+    /// (TS `MapKeyType.validate`/`MapValueType.validate` called directly,
+    /// module doc), both the rejecting and the accepting side: a positive
+    /// case is what kills [`detached_map`]'s deleted `Declaration::Map`
+    /// match arm, which would otherwise reject every index, valid map
+    /// included.
+    #[test]
+    fn validate_detached_map_key_and_value_in_isolation() {
+        let manager = ModelManager::new().unwrap();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.detached@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Code" },
+                    concept(serde_json::json!({ "name": "Item" })),
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                      "key": object_type("Item", "ObjectMapKeyType"),
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Valid",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        // The invalid key, rejected on its own, the same message as through
+        // the full declaration.
+        assert!(
+            manager
+                .validate_detached_map_key(&mf, 2)
+                .unwrap_err()
+                .to_string()
+                .contains("Scalar must be one of StringScalar, DateTimeScalar")
+        );
+        // Its value is fine on its own, checked in isolation from the key.
+        assert!(manager.validate_detached_map_value(&mf, 2).is_ok());
+
+        // A wholly valid map's key and value both pass in isolation — the
+        // case a deleted `Declaration::Map` match arm in `detached_map`
+        // would wrongly reject.
+        assert!(manager.validate_detached_map_key(&mf, 3).is_ok());
+        assert!(manager.validate_detached_map_value(&mf, 3).is_ok());
+
+        // Not a map at all: `detached_map`'s own bound, same message shape
+        // as the out-of-bounds case.
+        assert!(manager.validate_detached_map_key(&mf, 1).is_err());
     }
 }
