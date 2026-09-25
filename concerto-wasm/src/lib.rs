@@ -10,7 +10,18 @@
 //!   `generation()` moves (spike REPORT §3, "Input to P1-04");
 //! - the three P0-04b trial units, `ModelUtil`, `NumberValidator` and
 //!   `ScalarDeclaration`, whose views still hand their JS objects back (the
-//!   model graph they meet is TS until P4-06 … P4-08).
+//!   model graph they meet is TS until P4-06 … P4-08);
+//! - `Decorator` and `Decorated` (P4-05): `Decorator.process` delegates to
+//!   the P2-07 port ([`Decorator::from_ast`]) directly, needing no
+//!   collaborator call; `Decorator.validate`'s argument and type-reference
+//!   checks, and `Decorated.validate`'s duplicate-decorator check, are new
+//!   code here rather than a binding of the existing (concrete-`ModelManager`)
+//!   `Decorator::validate`, because the model graph these views meet is still
+//!   TS (same reason as the trial units, above): they read [`JsContext`]
+//!   collaborators the same way the trial units do, following the TS source
+//!   directly rather than the native method's `ModelManager`-specific
+//!   shortcuts. `Decorated.process`'s `DecoratorFactory` selection is not
+//!   bound: that stays TS (decorator.rs module doc).
 //!
 //! Everything JS-shaped lives here, never in core (PORTING.md 4):
 //! - **argument coercion** (3.5): each binding converts its JS arguments the
@@ -34,15 +45,21 @@
 //! U+FFFD. No oracle fixture or unit test passes one.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use concerto_core::error::{ContractError, ErrorKind};
+use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::introspect::FullyQualified;
+use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
-use concerto_core::introspect::validators::{NumberValidator, Validator};
+use concerto_core::introspect::validators::{
+    CollectionSizeValidator, NumberValidator, StringValidator, Validator,
+};
 use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{ConcertoError, ModelManager, Named};
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -186,6 +203,11 @@ fn run<T>(body: impl FnOnce() -> Result<T>) -> std::result::Result<T, JsValue> {
 /// A V8 `TypeError`, built through the catalogue.
 fn type_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::JsTypeError, code, params).into()
+}
+
+/// A catalogue `Error`, built the same way `type_error` builds a `TypeError`.
+fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
+    ContractError::new(ErrorKind::Error, code, params).into()
 }
 
 /// JS `String(value)`.
@@ -611,6 +633,70 @@ pub fn model_util_is_valid_map_value(value: JsValue) -> std::result::Result<bool
 }
 
 // ---------------------------------------------------------------------------
+// ResourceId (src/model/resourceid.ts)
+// ---------------------------------------------------------------------------
+
+/// TS: ResourceId.fromURI. `legacyNamespace`/`legacyType` are the optional,
+/// nullable legacy-format arguments; a nullish value is `None`, matching how
+/// TS reads an omitted parameter.
+#[wasm_bindgen(js_name = resourceIdFromURI)]
+pub fn resource_id_from_uri(
+    uri: JsValue,
+    legacy_namespace: JsValue,
+    legacy_type: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        // TS's private `parseUri` calls `uri.match(...)`, which throws a
+        // `TypeError` for a non-string `uri`; `fromURI` catches that and
+        // reports it as the same "Invalid URI" error a malformed string
+        // produces, keyed on `String(uri)`. A non-string `uri` must not be
+        // silently coerced into a valid id (PORTING.md 1.4 / P4-03 review).
+        let uri = uri.as_string().ok_or_else(|| {
+            js_string(&uri)
+                .map(|rendered| {
+                    plain_error("resourceid-fromuri-invaliduri", vec![("uri", rendered)])
+                })
+                .unwrap_or_else(|e| e)
+        })?;
+        let legacy_namespace = if nullish(&legacy_namespace) {
+            None
+        } else {
+            Some(js_string(&legacy_namespace)?)
+        };
+        let legacy_type = if nullish(&legacy_type) {
+            None
+        } else {
+            Some(js_string(&legacy_type)?)
+        };
+        let id = ResourceId::from_uri(&uri, legacy_namespace.as_deref(), legacy_type.as_deref())?;
+        let out = Object::new();
+        set(&out, "namespace", &JsValue::from_str(&id.namespace));
+        set(&out, "type", &JsValue::from_str(&id.type_name));
+        set(&out, "id", &JsValue::from_str(&id.id));
+        Ok(out.into())
+    })
+}
+
+/// TS: ResourceId.prototype.toURI. Takes the view's `namespace`/`type`/`id`
+/// fields rather than a handle: `ResourceId` is a plain value object (the
+/// ledger's HYBRID constructor row), so the view still holds its own state
+/// and only the URI encoding runs in Rust.
+#[wasm_bindgen(js_name = resourceIdToURI)]
+pub fn resource_id_to_uri(
+    namespace: JsValue,
+    type_name: JsValue,
+    id: JsValue,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let namespace = js_string(&namespace)?;
+        let type_name = js_string(&type_name)?;
+        let id = js_string(&id)?;
+        let resource = ResourceId::new(namespace, type_name, id)?;
+        Ok(resource.to_uri())
+    })
+}
+
+// ---------------------------------------------------------------------------
 // NumberValidator (src/introspect/numbervalidator.ts)
 // ---------------------------------------------------------------------------
 
@@ -767,6 +853,246 @@ pub fn number_validator_compatible_with(
 }
 
 // ---------------------------------------------------------------------------
+// StringValidator (src/introspect/stringvalidator.ts) and
+// CollectionSizeValidator (src/introspect/collectionsizevalidator.ts) (P4-04)
+// ---------------------------------------------------------------------------
+//
+// Neither Rust type derives `Serialize`/`Deserialize` (`StringValidator` owns
+// a compiled `regress::Regex`, which does not), so unlike `NumberValidator`
+// there is no snapshot to deserialise a validator back from on every
+// `validate`/`compatibleWith` call. Instead each call rebuilds the validator
+// from the view's own cached AST (`view.validator`, the regex AST `super()`
+// stored; length/size bounds read back from the snapshot the constructor
+// cached), the same inputs the constructor itself validated, so the rebuild
+// is deterministic and never observably re-runs a check that could now fail
+// differently.
+
+/// Tags a plain JS AST object (as the unit tests and the TS views hand it
+/// across, with no `$class`) with the metamodel type it is, so it
+/// deserialises into the typed AST the core validators take.
+fn tag(mut json: Value, class: &str) -> Value {
+    if let Value::Object(map) = &mut json {
+        map.entry("$class".to_string())
+            .or_insert_with(|| json!(class));
+    }
+    json
+}
+
+/// `{pattern, flags}`, or `None` for a nullish value. `flags` defaults to
+/// `""`, matching `IStringRegexValidator.flags?: string` (the TS view's
+/// callers, including the unit tests, often omit it for "no flags").
+fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
+    if nullish(value) {
+        return Ok(None);
+    }
+    let mut json = tag(
+        to_json(value)?.unwrap_or(Value::Null),
+        "concerto.metamodel@1.0.0.StringRegexValidator",
+    );
+    if let Value::Object(map) = &mut json {
+        map.entry("flags".to_string()).or_insert_with(|| json!(""));
+    }
+    serde_json::from_value(json)
+        .map(Some)
+        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// `{minLength, maxLength}`, or `None` for a nullish value.
+fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLengthValidator>> {
+    if nullish(value) {
+        return Ok(None);
+    }
+    let json = tag(
+        to_json(value)?.unwrap_or(Value::Null),
+        "concerto.metamodel@1.0.0.StringLengthValidator",
+    );
+    serde_json::from_value(json)
+        .map(Some)
+        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// `{minSize, maxSize}`.
+fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
+    let json = tag(
+        to_json(value)?.unwrap_or(Value::Null),
+        "concerto.metamodel@1.0.0.CollectionSizeValidator",
+    );
+    serde_json::from_value(json).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// TS: StringValidator constructor, after `super(field, validator)`. `view`
+/// is the object under construction; the result is its `{minLength,
+/// maxLength}` snapshot. The view builds its own cached `RegExp` from
+/// `validator` afterwards: `StringValidator.getRegex` stays TS (public API
+/// returns a live `RegExp`), and the pluggable `options.regExp` hook is never
+/// reached here (the view only calls this binding when no hook is
+/// configured, PORTING.md section 3).
+#[wasm_bindgen(js_name = stringValidatorNew)]
+pub fn string_validator_new(
+    view: JsValue,
+    validator: JsValue,
+    length_validator: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let regex_ast = string_regex_ast(&validator)?;
+        let length_ast = string_length_ast(&length_validator)?;
+        let built = StringValidator::new(
+            &JsElement { validator: &view },
+            regex_ast.as_ref(),
+            length_ast.as_ref(),
+        )?;
+        Ok(to_js(&json!({
+            "minLength": built.min_length(),
+            "maxLength": built.max_length(),
+        })))
+    })
+}
+
+/// Rebuilds the validator's snapshot from the view: the regex AST `super()`
+/// cached at `view.validator`, and the length bounds the constructor cached
+/// at `view.minLength`/`view.maxLength` (`None` for both, the only state a
+/// successful construction can have left, means no length AST was ever
+/// given).
+fn string_validator(view: &JsValue) -> Result<StringValidator> {
+    let regex_ast = string_regex_ast(&get(view, "validator")?)?;
+    let min_length = get(view, "minLength")?;
+    let max_length = get(view, "maxLength")?;
+    let length_ast = if nullish(&min_length) && nullish(&max_length) {
+        None
+    } else {
+        let json = tag(
+            json!({
+                "minLength": to_json(&min_length)?,
+                "maxLength": to_json(&max_length)?,
+            }),
+            "concerto.metamodel@1.0.0.StringLengthValidator",
+        );
+        Some(
+            serde_json::from_value::<mm::StringLengthValidator>(json)
+                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?,
+        )
+    };
+    StringValidator::new(
+        &JsElement { validator: view },
+        regex_ast.as_ref(),
+        length_ast.as_ref(),
+    )
+}
+
+/// TS: StringValidator.validate. `null` is always accepted.
+#[wasm_bindgen(js_name = stringValidatorValidate)]
+pub fn string_validator_validate(
+    view: JsValue,
+    identifier: JsValue,
+    value: JsValue,
+) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let validator = string_validator(&view)?;
+        let identifier = if identifier.is_null() {
+            None
+        } else {
+            Some(js_string(&identifier)?)
+        };
+        let value = if value.is_null() {
+            None
+        } else {
+            Some(js_string(&value)?)
+        };
+        validator.validate(
+            &JsElement { validator: &view },
+            identifier.as_deref(),
+            value.as_deref(),
+        )
+    })
+}
+
+/// TS: StringValidator.compatibleWith. `string_validator_class` is the
+/// `StringValidator` class, for the `other instanceof StringValidator` check.
+#[wasm_bindgen(js_name = stringValidatorCompatibleWith)]
+pub fn string_validator_compatible_with(
+    view: JsValue,
+    other: JsValue,
+    string_validator_class: Function,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        // `other instanceof StringValidator`
+        let prototype = get(&string_validator_class, "prototype")?;
+        if !other.is_object() || !prototype.unchecked_ref::<Object>().is_prototype_of(&other) {
+            return Ok(false);
+        }
+        let this = string_validator(&view)?;
+        let other = string_validator(&other)?;
+        Ok(this.compatible_with(Some(&Validator::String(other))))
+    })
+}
+
+/// TS: CollectionSizeValidator constructor, after `super(field, validator)`.
+/// `view` is the object under construction; the result is its `{minSize,
+/// maxSize}` snapshot.
+#[wasm_bindgen(js_name = collectionSizeValidatorNew)]
+pub fn collection_size_validator_new(
+    view: JsValue,
+    ast: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let typed = collection_size_ast(&ast)?;
+        let built = CollectionSizeValidator::new(&JsElement { validator: &view }, &typed)?;
+        Ok(to_js(&json!({
+            "minSize": built.min_size(),
+            "maxSize": built.max_size(),
+        })))
+    })
+}
+
+/// Rebuilds the validator from `view.validator`, the AST `super()` cached.
+fn collection_size_validator(view: &JsValue) -> Result<CollectionSizeValidator> {
+    let ast = collection_size_ast(&get(view, "validator")?)?;
+    CollectionSizeValidator::new(&JsElement { validator: view }, &ast)
+}
+
+/// TS: CollectionSizeValidator.validate. `value` is compared as JS `<`/`>`
+/// would, through `Number(value)`.
+#[wasm_bindgen(js_name = collectionSizeValidatorValidate)]
+pub fn collection_size_validator_validate(
+    view: JsValue,
+    identifier: JsValue,
+    value: JsValue,
+) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let validator = collection_size_validator(&view)?;
+        let identifier = if identifier.is_null() {
+            None
+        } else {
+            Some(js_string(&identifier)?)
+        };
+        // `+value`: JS ToNumber.
+        let value = value.unchecked_into_f64();
+        validator.validate(&JsElement { validator: &view }, identifier.as_deref(), value)
+    })
+}
+
+/// TS: CollectionSizeValidator.compatibleWith.
+/// `collection_size_validator_class` is the `CollectionSizeValidator` class,
+/// for the `other instanceof CollectionSizeValidator` check.
+#[wasm_bindgen(js_name = collectionSizeValidatorCompatibleWith)]
+pub fn collection_size_validator_compatible_with(
+    view: JsValue,
+    other: JsValue,
+    collection_size_validator_class: Function,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        // `other instanceof CollectionSizeValidator`
+        let prototype = get(&collection_size_validator_class, "prototype")?;
+        if !other.is_object() || !prototype.unchecked_ref::<Object>().is_prototype_of(&other) {
+            return Ok(false);
+        }
+        let this = collection_size_validator(&view)?;
+        let other = collection_size_validator(&other)?;
+        Ok(this.compatible_with(Some(&Validator::CollectionSize(other))))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // ScalarDeclaration (src/introspect/scalardeclaration.ts)
 // ---------------------------------------------------------------------------
 
@@ -829,6 +1155,485 @@ pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result
         )?)?;
         Ok(ScalarDeclaration::to_string(&fqn))
     })
+}
+
+// ---------------------------------------------------------------------------
+// Decorator, Decorated (src/introspect/decorator.ts, decorated.ts) — P4-05
+// ---------------------------------------------------------------------------
+
+/// TS: Decorator.process. Builds `{name, arguments}` from the raw AST node,
+/// through the P2-07 port ([`Decorator::from_ast`]); needs no collaborator
+/// call.
+#[wasm_bindgen(js_name = decoratorProcess)]
+pub fn decorator_process(ast: JsValue) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let ast_json = to_json(&ast)?.unwrap_or(Value::Null);
+        let decorator = Decorator::from_ast(&ast_json);
+        let arguments = Array::new();
+        for arg in decorator.arguments() {
+            arguments.push(&argument_to_js(arg));
+        }
+        let out = Object::new();
+        set(&out, "name", &JsValue::from_str(decorator.name()));
+        set(&out, "arguments", &arguments);
+        Ok(out.into())
+    })
+}
+
+/// One decoded [`DecoratorArgument`], as TS's `Decorator.process` would have
+/// pushed it onto `this.arguments`. Built as a JS value directly, not
+/// through [`to_js`]'s JSON round trip, which cannot represent `undefined`
+/// (TS: `{ type: 'Identifier', name: ..., array: thing.isArray }` — the
+/// object literal always creates the `array` *property*, even when
+/// `thing.isArray` is `undefined`, which is a different, observable state
+/// from the property being absent).
+fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
+    match arg {
+        DecoratorArgument::String(s) => JsValue::from_str(s),
+        DecoratorArgument::Number(n) => JsValue::from_f64(*n),
+        DecoratorArgument::Boolean(b) => JsValue::from_bool(*b),
+        DecoratorArgument::TypeReference(t) => {
+            let out = Object::new();
+            set(&out, "type", &JsValue::from_str("Identifier"));
+            set(&out, "name", &JsValue::from_str(&t.name));
+            let array = t.array.map_or(JsValue::UNDEFINED, JsValue::from_bool);
+            set(&out, "array", &array);
+            out.into()
+        }
+    }
+}
+
+/// TS: the duplicate-decorator loop in `Decorated.validate`
+/// (src/introspect/decorated.ts) — `names` is `this.decorators.map(d =>
+/// d.getName())`. Returns the first name that repeats, in original order, or
+/// `null`; the view throws the `IllegalModelException` itself (a plain
+/// string message, no engine error payload needed).
+#[wasm_bindgen(js_name = decoratedFindDuplicateName)]
+pub fn decorated_find_duplicate_name(names: JsValue) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let mut seen = HashSet::new();
+        for name in Array::from(&names).iter() {
+            let name = js_string(&name)?;
+            if !seen.insert(name.clone()) {
+                return Ok(JsValue::from_str(&name));
+            }
+        }
+        Ok(JsValue::NULL)
+    })
+}
+
+/// `value?.name`: `undefined` for a nullish `value`, as an optional-chain
+/// property read is (unlike [`get`], which raises V8's error for one).
+fn opt_get(value: &JsValue, name: &str) -> Result<JsValue> {
+    if nullish(value) {
+        return Ok(JsValue::UNDEFINED);
+    }
+    get(value, name)
+}
+
+/// JS `typeof value`, for the shapes a decorator argument or a decorator
+/// validation option's value can be.
+fn js_typeof(value: &JsValue) -> &'static str {
+    if value.as_f64().is_some() {
+        "number"
+    } else if value.as_string().is_some() {
+        "string"
+    } else if value.as_bool().is_some() {
+        "boolean"
+    } else if value.is_undefined() {
+        "undefined"
+    } else {
+        "object"
+    }
+}
+
+/// `JSON.stringify(value)`.
+fn json_stringify(value: &JsValue) -> Result<String> {
+    JSON::stringify(value)
+        .map(|s| s.as_string().unwrap_or_default())
+        .map_err(Error::Js)
+}
+
+/// One property of a decorator's own type declaration, as
+/// `Decorator.validate` reads it: `p.getName()`, `p.isOptional()`,
+/// `p.getType()`. `node` is kept for the [`mu::is_assignable_to`] call, which
+/// reads it as a [`ResolutionContext`] node.
+struct PropertyView {
+    node: JsValue,
+    name: String,
+    optional: bool,
+    type_name: Option<String>,
+}
+
+/// TS: `p.getName()`, `p.isOptional()`, `p.getType()`, read together for one
+/// element of `decoratorDecl.getProperties()`.
+fn property_view(node: JsValue) -> Result<PropertyView> {
+    let name = js_string(&call(&node, "getName", &[], "property.getName")?)?;
+    let optional = call(&node, "isOptional", &[], "property.isOptional")?.is_truthy();
+    let type_name = {
+        let t = call(&node, "getType", &[], "property.getType")?;
+        if nullish(&t) {
+            None
+        } else {
+            Some(js_string(&t)?)
+        }
+    };
+    Ok(PropertyView {
+        node,
+        name,
+        optional,
+        type_name,
+    })
+}
+
+/// An option level (`'error'`, `'warn'`, ...) of a `DecoratorValidationOptions`
+/// value, `None` when it is falsy: TS's `if (validationOptions.missingDecorator
+/// || ...)` and `level === 'error'` checks, together.
+fn level_option(options: &JsValue, key: &str) -> Result<Option<String>> {
+    let value = get(options, key)?;
+    if !value.is_truthy() {
+        return Ok(None);
+    }
+    Ok(Some(js_string(&value)?))
+}
+
+/// `level === undefined` when TS's `validationOptions.<x>` is falsy, else the
+/// level string, as a `JsValue` for a `handleError` call.
+fn level_js(level: &Option<String>) -> JsValue {
+    level
+        .as_deref()
+        .map_or(JsValue::UNDEFINED, JsValue::from_str)
+}
+
+/// TS: `this.handleError(level, err)`, called back on `view` so its own
+/// method builds the exact `IllegalModelException` (message, model file,
+/// location) and logs through `Logger.dispatch`, exactly as every other
+/// call site of `handleError` does. `err` is a message string for one of
+/// this function's own checks, or (from the outer catch, [`decorator_validate`])
+/// whatever the try-equivalent threw — TS passes `handleError` either shape.
+fn handle_error(view: &JsValue, level: &Option<String>, err: &JsValue) -> Result<()> {
+    call(
+        view,
+        "handleError",
+        &[level_js(level), err.clone()],
+        "this.handleError",
+    )?;
+    Ok(())
+}
+
+/// TS: `this.handleError(validationOptions.invalidDecorator, err)` with a
+/// message this function built itself.
+fn report_invalid(view: &JsValue, invalid: &Option<String>, message: String) -> Result<()> {
+    handle_error(view, invalid, &JsValue::from_str(&message))
+}
+
+/// `IllegalModelException`'s own message decoration
+/// (`illegalmodelexception.ts`): `message + ' ' + messageSuffix`, where
+/// `messageSuffix` is `File '<name>': ` when `modelFile` is truthy and its
+/// `getName()` is truthy, followed by `line .. column .., to line .. column
+/// ... ` when `location` is truthy, with the whole suffix's first character
+/// upper-cased. Needed only for [`try_validate_decorator`]'s own resolution
+/// failure ([`named_js_error`]): the real `IllegalModelException`
+/// construction this replicates is `ModelFile.resolveType`'s own throw,
+/// which is not a call this binding makes (P2-07 module doc,
+/// `resolve_own_name`) — every other message here reaches the exception
+/// through a real `view.handleError` call ([`handle_error`]), never through
+/// this.
+fn illegal_model_message(
+    message: &str,
+    model_file: &JsValue,
+    location: &JsValue,
+) -> Result<String> {
+    let mut suffix = String::new();
+    if model_file.is_truthy() {
+        let file_name = call(model_file, "getName", &[], "modelFile.getName")?;
+        if file_name.is_truthy() {
+            suffix.push_str(&format!("File '{}': ", js_string(&file_name)?));
+        }
+    }
+    if location.is_truthy() {
+        let start = get(location, "start")?;
+        let end = get(location, "end")?;
+        let field = |node: &JsValue, name: &str| -> Result<String> { js_string(&get(node, name)?) };
+        suffix.push_str(&format!(
+            "line {} column {}, to line {} column {}. ",
+            field(&start, "line")?,
+            field(&start, "column")?,
+            field(&end, "line")?,
+            field(&end, "column")?,
+        ));
+    }
+    let mut capitalized = String::with_capacity(suffix.len());
+    let mut chars = suffix.chars();
+    if let Some(first) = chars.next() {
+        capitalized.extend(first.to_uppercase());
+        capitalized.push_str(chars.as_str());
+    }
+    Ok(format!("{message} {capitalized}"))
+}
+
+/// An `Error` whose `name` is `IllegalModelException` and whose `message`
+/// already carries [`illegal_model_message`]'s decoration, so that coercing
+/// it (`String(err)`, `` `${err}` ``) reads the same way TS's caught
+/// `IllegalModelException` would.
+fn named_js_error(name: &str, text: &str) -> JsValue {
+    let err = js_sys::Error::new(text);
+    let _ = Reflect::set(&err, &JsValue::from_str("name"), &JsValue::from_str(name));
+    err.into()
+}
+
+/// TS: `Decorator.validate`, driven through [`JsContext`] since the model
+/// graph these views meet is still TS (module doc: "until P4-06 … P4-08").
+/// `view` is the Decorator, already processed (`name`/`arguments` set);
+/// `model_file` is `this.getParent().getModelFile()`; `context` is
+/// `this.getParent().getFullyQualifiedName?.()` — nullish for a model file's
+/// own decorator, exactly as TS's optional call leaves it.
+///
+/// Every exception this function and its helpers raise is built by calling
+/// back into `view.handleError` (or, for the try block's own resolution
+/// failure, a plain `Error` that coerces the same way TS's caught value
+/// would): the `IllegalModelException` construction, its "File '...': "
+/// decoration and the log call are never reimplemented here, so they cannot
+/// drift from TS's. TS's outer `catch` re-reports *every* thrown value —
+/// including a raw host `TypeError` from reading a collaborator that does
+/// not behave like a real model element (e.g. a decorator named after a
+/// primitive, so `mf.getType` resolves it to a type with no
+/// `getProperties`) — through `missingDecorator`, so both of this binding's
+/// [`Error`] variants are routed the same way: a [`Error::Contract`] (a host
+/// `TypeError` this module's own `call`/`get` raised, or any other core
+/// error [`try_validate_decorator`]'s collaborators produced) is first
+/// turned into the JS exception it would coerce to ([`throw`], the same
+/// mapping the whole binding uses to leave the module), so `handleError`
+/// sees the same kind of value TS's `catch (err)` would have caught.
+#[wasm_bindgen(js_name = decoratorValidate)]
+pub fn decorator_validate(
+    view: JsValue,
+    model_file: JsValue,
+    context: JsValue,
+) -> std::result::Result<(), JsValue> {
+    let body = || -> Result<()> {
+        let mm = call(&model_file, "getModelManager", &[], "mf.getModelManager")?;
+        let options = call(
+            &mm,
+            "getDecoratorValidation",
+            &[],
+            "mm.getDecoratorValidation",
+        )?;
+        let missing = level_option(&options, "missingDecorator")?;
+        let invalid = level_option(&options, "invalidDecorator")?;
+        if missing.is_none() && invalid.is_none() {
+            return Ok(());
+        }
+        let context_name = if nullish(&context) {
+            None
+        } else {
+            Some(js_string(&context)?)
+        };
+        match try_validate_decorator(&view, &model_file, context_name.as_deref(), &invalid) {
+            Ok(()) => Ok(()),
+            Err(Error::Js(caught)) => handle_error(&view, &missing, &caught),
+            Err(err @ Error::Contract(_)) => {
+                let caught = throw(err, Some(&model_file));
+                handle_error(&view, &missing, &caught)
+            }
+        }
+    };
+    body().map_err(|e| throw(e, Some(&model_file)))
+}
+
+/// The body of TS `Decorator.validate`'s `try` block.
+fn try_validate_decorator(
+    view: &JsValue,
+    model_file: &JsValue,
+    context: Option<&str>,
+    invalid: &Option<String>,
+) -> Result<()> {
+    let name = js_string(&get(view, "name")?)?;
+    // TS: `mf.resolveType(decoratedName, this.getName(), this.ast.location);
+    // const decoratorDecl = mf.getType(this.getName());` — `getType`
+    // returning nothing is treated as `resolveType` failing to resolve the
+    // name, the same simplification the native `Decorator::validate` already
+    // makes (P2-07 module doc, `resolve_own_name`).
+    let Some(decorator_decl) = JsContext.get_type(model_file, Some(&name))? else {
+        let raw = format!(
+            "Undeclared type \"{}\" in \"{}\".",
+            name,
+            context.unwrap_or("undefined"),
+        );
+        let location = opt_get(&get(view, "ast")?, "location")?;
+        let message = illegal_model_message(&raw, model_file, &location)?;
+        return Err(Error::Js(named_js_error("IllegalModelException", &message)));
+    };
+
+    let properties: Vec<PropertyView> = {
+        let list = call(
+            &decorator_decl,
+            "getProperties",
+            &[],
+            "decoratorDecl.getProperties",
+        )?;
+        Array::from(&list)
+            .iter()
+            .map(property_view)
+            .collect::<Result<Vec<_>>>()?
+    };
+    let (required, optional): (Vec<&PropertyView>, Vec<&PropertyView>) =
+        properties.iter().partition(|p| !p.optional);
+    let ordered: Vec<&PropertyView> = required
+        .iter()
+        .copied()
+        .chain(optional.iter().copied())
+        .collect();
+
+    let arguments = Array::from(&get(view, "arguments")?);
+    let arg_count = arguments.length() as usize;
+
+    if arg_count < required.len() {
+        let names = required
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        report_invalid(
+            view,
+            invalid,
+            format!("Decorator {name} has too few arguments. Required properties are: [{names}]"),
+        )?;
+    }
+
+    for n in 0..arg_count {
+        let arg = arguments.get(n as u32);
+        let Some(property) = ordered.get(n) else {
+            let names = ordered
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            report_invalid(
+                view,
+                invalid,
+                format!("Decorator {name} has too many arguments. Properties are: [{names}]"),
+            )?;
+            continue;
+        };
+        check_argument(view, &name, model_file, property, &arg, invalid)?;
+    }
+    Ok(())
+}
+
+/// TS: one iteration of the `switch (property.getType())` in
+/// `Decorator.validate`.
+fn check_argument(
+    view: &JsValue,
+    name: &str,
+    model_file: &JsValue,
+    property: &PropertyView,
+    arg: &JsValue,
+    invalid: &Option<String>,
+) -> Result<()> {
+    match property.type_name.as_deref() {
+        Some("Integer") | Some("Double") | Some("Long") => {
+            if arg.as_f64().is_none() {
+                return report_invalid(
+                    view,
+                    invalid,
+                    format!(
+                        "Decorator {name} has invalid decorator argument. Expected number. Found {}, with value {}",
+                        js_typeof(arg),
+                        json_stringify(arg)?,
+                    ),
+                );
+            }
+        }
+        Some("String") => {
+            if arg.as_string().is_none() {
+                return report_invalid(
+                    view,
+                    invalid,
+                    format!(
+                        "Decorator {name} has invalid decorator argument. Expected string. Found {}, with value {}",
+                        js_typeof(arg),
+                        json_stringify(arg)?,
+                    ),
+                );
+            }
+        }
+        Some("Boolean") => {
+            if arg.as_bool().is_none() {
+                return report_invalid(
+                    view,
+                    invalid,
+                    format!(
+                        "Decorator {name} has invalid decorator argument. Expected boolean. Found {}, with value {}",
+                        js_typeof(arg),
+                        json_stringify(arg)?,
+                    ),
+                );
+            }
+        }
+        _ => {
+            return check_type_reference_argument(view, name, model_file, property, arg, invalid);
+        }
+    }
+    Ok(())
+}
+
+/// TS: the `default:` arm — the argument must be a type reference,
+/// resolvable, and assignable to the property's declared type.
+fn check_type_reference_argument(
+    view: &JsValue,
+    name: &str,
+    model_file: &JsValue,
+    property: &PropertyView,
+    arg: &JsValue,
+    invalid: &Option<String>,
+) -> Result<()> {
+    // TS: `typeof arg !== 'object' || arg?.type !== 'Identifier'`.
+    let is_type_reference = js_typeof(arg) == "object"
+        && opt_get(arg, "type")?.as_string().as_deref() == Some("Identifier");
+    if !is_type_reference {
+        report_invalid(
+            view,
+            invalid,
+            format!(
+                "Decorator {name} has invalid decorator argument. Expected object. Found {}, with value {}",
+                js_typeof(arg),
+                json_stringify(arg)?,
+            ),
+        )?;
+    }
+    // TS: `handleError` above only throws when the decorator validation
+    // option is `'error'` (a `?` propagation here, matching TS's `throw`),
+    // so under `'warn'` control falls through to here with no
+    // `return`/`else` guarding it in the TS `default:` arm, even though
+    // `arg` may still not be a type reference. `typeReference.name` is a
+    // direct (non-optional) property read of `arg`, which is exactly what
+    // `get` already reproduces: V8's own `TypeError` for a nullish `arg`,
+    // `undefined` for a non-object `arg`.
+    let type_name = js_string(&get(arg, "name")?)?;
+    // TS: `mf.getType(typeReference.name)` — non-throwing.
+    let Some(type_decl) = JsContext.get_type(model_file, Some(&type_name))? else {
+        return report_invalid(
+            view,
+            invalid,
+            format!(
+                "Decorator {name} references a type {type_name} which has not been defined/imported."
+            ),
+        );
+    };
+    let type_model_file = JsContext.get_model_file(&type_decl)?;
+    let type_fqn = JsContext.get_fully_qualified_name(&type_decl)?;
+    if !mu::is_assignable_to(&JsContext, &type_model_file, &type_fqn, &property.node)? {
+        let property_fqn = JsContext.get_fully_qualified_type_name(&property.node)?;
+        report_invalid(
+            view,
+            invalid,
+            format!(
+                "Decorator {name} references a type {type_name} which cannot be assigned to the declared type {property_fqn}"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

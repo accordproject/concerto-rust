@@ -24,6 +24,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 accordproject-concerto-core = { path = "../concerto-core" }
+# P4-04: builds the typed metamodel ASTs (StringRegexValidator,
+# StringLengthValidator, CollectionSizeValidator) the core validators take,
+# from the plain JSON the JS views and their unit tests hand across the
+# boundary (which carry no `$class`).
+accordproject-concerto-metamodel = { path = "../concerto-metamodel" }
 # Pinned: wasm-bindgen-cli must be exactly this version (spike REPORT §5).
 wasm-bindgen = "=0.2.128"
 js-sys = "0.3"
