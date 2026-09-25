@@ -1763,6 +1763,374 @@ fn remap_type_not_found(err: ConcertoError, fqn: &str, _hint: &str) -> ConcertoE
     }
 }
 
+// ---------------------------------------------------------------------
+// Collect-all diagnostics (task P3-03, accordproject/concerto-rust#58)
+// ---------------------------------------------------------------------
+//
+// [`diagnostic`](crate::instance::diagnostic)'s module doc has the design.
+// This section adds the walk itself: [`collect_diagnostics`] mirrors
+// [`visit_class_declaration`]/[`visit_property`]/[`check_item`] above, but
+// never returns early on a violation — it records a [`Diagnostic`] and keeps
+// walking, so a value with several unrelated problems (two missing
+// properties, an undeclared field, a bad enum value...) is reported in one
+// pass. Where a leaf check already gives a single, TS-faithful verdict
+// (a primitive/scalar/enum/relationship/map value, or a whole array of
+// them), the walk reuses [`validate_property_value`] as-is rather than
+// re-deriving its many branches, and turns its one [`ConcertoError`], if
+// any, into one [`Diagnostic`] ([`classify_error`]); only the recursive,
+// class-shaped part of the tree — where TS-faithful first-error would stop
+// the *whole* walk at the first nested object's first problem — is walked
+// here directly, so that sibling properties and sibling array elements each
+// get their own chance to report.
+
+use crate::instance::diagnostic::{Diagnostic, DiagnosticCode, ValidationResult};
+
+/// [`validate_instance_from`], but validated against `declared_fqn` instead
+/// of `value`'s own `$class` — what [`ClassDeclaration::validate_instance_or_throw`]
+/// (crate::introspect::declaration::ClassDeclaration::validate_instance_or_throw)
+/// needs to validate `value` against a specific declaration it already holds,
+/// rather than whatever `value` claims to be.
+pub(crate) fn validate_instance_against(
+    mm: &ModelManager,
+    declared_fqn: &str,
+    value: &Value,
+    options: &ValidateOptions,
+) -> Result<()> {
+    let mut params = Params {
+        mm,
+        options,
+        root_resource_identifier: String::new(),
+        current_identifier: None,
+    };
+    visit_class_declaration(&mut params, declared_fqn, value)
+}
+
+/// State threaded through the collect-all walk: the pieces
+/// [`Params`] threads through the first-error walk, minus the
+/// TS-message-only `root_resource_identifier`/`current_identifier` fields
+/// (module doc: a collect-all diagnostic's `message` reuses whatever a leaf
+/// check already renders; the walk's own diagnostics carry their own short
+/// description instead, since they have no ported TS message to match).
+struct Collector<'a> {
+    mm: &'a ModelManager,
+    options: &'a ValidateOptions,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl Collector<'_> {
+    fn push(&mut self, pointer: String, code: DiagnosticCode, message: String) {
+        self.diagnostics
+            .push(Diagnostic::error(pointer, code, message));
+    }
+
+    fn push_error(&mut self, pointer: String, err: ConcertoError) {
+        let (code, message) = classify_error(&err);
+        self.push(pointer, code, message);
+    }
+}
+
+/// Maps a [`ConcertoError`] a leaf check raised to the [`DiagnosticCode`] it
+/// reports as, keeping the check's own rendered message. A code this table
+/// does not recognise (a JS-engine-shaped error, PORTING.md 2.2 step 3, or a
+/// future check this table has not been updated for) falls back to
+/// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
+/// diagnostic is always produced rather than silently dropped.
+fn classify_error(err: &ConcertoError) -> (DiagnosticCode, String) {
+    match err {
+        ConcertoError::TypeNotFound { type_name } => (
+            DiagnosticCode::TypeNotFound,
+            format!("type not found: {type_name}"),
+        ),
+        ConcertoError::IllegalModel { message, .. } => {
+            (DiagnosticCode::TypeViolation, message.clone())
+        }
+        ConcertoError::Contract(ce) => {
+            let message = ce.message();
+            if ce.validator.is_some() {
+                return (DiagnosticCode::ValidatorFailure, message);
+            }
+            let code = match ce.code {
+                "resourcevalidator-missingrequiredproperty" => {
+                    DiagnosticCode::MissingRequiredProperty
+                }
+                "resourcevalidator-undeclaredfield" => DiagnosticCode::UndeclaredField,
+                "resourcevalidator-emptyidentifier" => DiagnosticCode::EmptyIdentifier,
+                "resourcevalidator-invalidenumvalue" => DiagnosticCode::InvalidEnumValue,
+                "resourcevalidator-abstractclass" => DiagnosticCode::AbstractClass,
+                "resourcevalidator-invalidfieldassignment" => DiagnosticCode::NotAssignable,
+                "resourcevalidator-notresourceorconcept" => DiagnosticCode::NotResource,
+                "resourcevalidator-notrelationship"
+                | "resourcevalidator-checkrelationship-notidentifiable" => {
+                    DiagnosticCode::NotRelationship
+                }
+                "typenotfounderror-defaultmessage" => DiagnosticCode::TypeNotFound,
+                _ => DiagnosticCode::TypeViolation,
+            };
+            (code, message)
+        }
+    }
+}
+
+/// A JSON Pointer (RFC 6901) one segment deeper than `base`, escaping `~`
+/// and `/` in `segment` as the spec requires.
+fn push_pointer(base: &str, segment: &str) -> String {
+    format!("{base}/{}", segment.replace('~', "~0").replace('/', "~1"))
+}
+
+/// Collect-all instance validation (task P3-03, accordproject/concerto-rust#58):
+/// walks `value` against `declared_fqn` in `mm`, gathering every
+/// [`Diagnostic`] found instead of stopping at the first one (contrast
+/// [`validate_instance`], TS `Resource.validate`'s first-error walk).
+pub(crate) fn collect_diagnostics(
+    mm: &ModelManager,
+    declared_fqn: &str,
+    value: &Value,
+    options: &ValidateOptions,
+) -> ValidationResult {
+    let mut collector = Collector {
+        mm,
+        options,
+        diagnostics: Vec::new(),
+    };
+    collect_class(&mut collector, declared_fqn, value, "");
+    ValidationResult::new(collector.diagnostics)
+}
+
+/// [`collect_diagnostics`], resolving the declared type from `value`'s own
+/// `$class`, the way [`validate_instance`] does for a root call.
+pub(crate) fn collect_diagnostics_from_value(
+    mm: &ModelManager,
+    value: &Value,
+    options: &ValidateOptions,
+) -> ValidationResult {
+    let Some(fqn) = value.get("$class").and_then(Value::as_str) else {
+        return ValidationResult::new(vec![Diagnostic::error(
+            String::new(),
+            DiagnosticCode::NotResource,
+            "cannot validate an instance with no $class".to_string(),
+        )]);
+    };
+    collect_diagnostics(mm, fqn, value, options)
+}
+
+/// The collect-all counterpart of [`visit_class_declaration`]: same shape
+/// (undeclared fields, abstractness, identity, own properties), but records
+/// a [`Diagnostic`] and keeps going at every point [`visit_class_declaration`]
+/// would return `Err` and stop.
+fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: &str) {
+    let Some(obj) = as_js_object(value).filter(|o| !o.contains_key(RELATIONSHIP_TAG)) else {
+        c.push(
+            pointer.to_string(),
+            DiagnosticCode::NotResource,
+            format!(
+                "expected a Resource at '{pointer}', found {}",
+                js_to_string(value)
+            ),
+        );
+        return;
+    };
+    let Some(own_fqn) = obj.get("$class").and_then(Value::as_str) else {
+        c.push(
+            pointer.to_string(),
+            DiagnosticCode::NotResource,
+            format!("expected a Resource with a $class at '{pointer}'"),
+        );
+        return;
+    };
+    let own_fqn = own_fqn.to_string();
+
+    let to_be_assigned = match c.mm.get_declaration(&own_fqn) {
+        Ok(d) => d,
+        Err(_) => {
+            c.push(
+                pointer.to_string(),
+                DiagnosticCode::TypeNotFound,
+                format!("type not found: {own_fqn}"),
+            );
+            return;
+        }
+    };
+    let Some(class) = to_be_assigned.as_class() else {
+        c.push(
+            pointer.to_string(),
+            DiagnosticCode::NotResource,
+            format!("'{own_fqn}' is not a class-like type and cannot back a Resource"),
+        );
+        return;
+    };
+    if class.is_abstract() {
+        c.push(
+            pointer.to_string(),
+            DiagnosticCode::AbstractClass,
+            format!("The class \"{own_fqn}\" is abstract and should not contain an instance."),
+        );
+    }
+
+    let Ok(all_properties) = c.mm.get_all_properties(&own_fqn) else {
+        c.push(
+            pointer.to_string(),
+            DiagnosticCode::TypeNotFound,
+            format!("could not resolve the properties of '{own_fqn}'"),
+        );
+        return;
+    };
+
+    for key in obj.keys() {
+        if model_util::is_system_property(key) {
+            continue;
+        }
+        if all_properties.iter().any(|(_, prop)| prop.name() == key) {
+            continue;
+        }
+        c.push(
+            push_pointer(pointer, key),
+            DiagnosticCode::UndeclaredField,
+            format!("undeclared field '{key}' on '{own_fqn}'"),
+        );
+    }
+
+    if c.mm.is_identified(declared_fqn).unwrap_or(false) {
+        let id_field =
+            c.mm.identifier_field_name(&own_fqn)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "$identifier".to_string());
+        let id = obj.get(&id_field).and_then(Value::as_str).unwrap_or("");
+        if id.trim().is_empty() {
+            c.push(
+                pointer.to_string(),
+                DiagnosticCode::EmptyIdentifier,
+                "an identifier must be provided".to_string(),
+            );
+        }
+    }
+
+    // `$identifier` is appended to every class's own properties whether or
+    // not the type actually uses system identification (module doc on
+    // `ClassDeclaration`), so a required, absent `$identifier` on an
+    // explicitly-identified type (`identifier_field_name` names its own
+    // field instead) is not really missing — [`visit_class_declaration`]
+    // skips it the same way.
+    let own_identifier_field_name = c.mm.identifier_field_name(&own_fqn).ok().flatten();
+    for (owner_fqn, property) in &all_properties {
+        let prop_pointer = push_pointer(pointer, property.name());
+        match obj.get(property.name()) {
+            Some(v) if !is_js_null(v) => {
+                collect_property(c, owner_fqn, property, v, &prop_pointer);
+            }
+            _ => {
+                if property.name() == "$identifier"
+                    && own_identifier_field_name.as_deref() != Some("$identifier")
+                {
+                    continue;
+                }
+                if !property.is_optional() && !property_has_default_value(property) {
+                    c.push(
+                        prop_pointer,
+                        DiagnosticCode::MissingRequiredProperty,
+                        format!("the required field '{}' has not been set", property.name()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The collect-all counterpart of [`visit_property`]/[`visit_field`]. A
+/// class-typed `Object` property is the one case that recurses here directly
+/// (so a nested object's own several problems are all collected, and so are
+/// its siblings'); every other kind delegates to [`validate_property_value`],
+/// the existing first-error check, since collect-all does not need to
+/// distinguish *which* primitive/scalar/enum/relationship/map/validator
+/// check failed within one field's own value, only *that* it did.
+fn collect_property(
+    c: &mut Collector,
+    owner_fqn: &str,
+    property: &Property,
+    value: &Value,
+    pointer: &str,
+) {
+    let class_target = match property {
+        Property::Object(op) => match resolve_object_target(c.mm, owner_fqn, &op.type_) {
+            Ok(ObjectTarget::Class(fqn)) => Some(fqn),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let Some(class_fqn) = class_target else {
+        if let Err(e) =
+            validate_property_value(c.mm, owner_fqn, property, value, String::new(), c.options)
+        {
+            c.push_error(pointer.to_string(), e);
+        }
+        return;
+    };
+
+    if property.is_array() {
+        let Some(items) = value.as_array() else {
+            c.push(
+                pointer.to_string(),
+                DiagnosticCode::TypeViolation,
+                format!("expected an array for field '{}'", property.name()),
+            );
+            return;
+        };
+        for (i, item) in items.iter().enumerate() {
+            collect_class_property_item(c, &class_fqn, item, &format!("{pointer}/{i}"));
+        }
+        return;
+    }
+
+    collect_class_property_item(c, &class_fqn, value, pointer);
+}
+
+/// One value behind a class-typed `Object` property (or one of its array
+/// elements): checks assignability, then recurses with
+/// [`collect_class`] so the nested object's own diagnostics are collected
+/// too.
+fn collect_class_property_item(
+    c: &mut Collector,
+    declared_class_fqn: &str,
+    value: &Value,
+    pointer: &str,
+) {
+    if is_js_undefined(value) {
+        c.push(
+            pointer.to_string(),
+            DiagnosticCode::TypeViolation,
+            "value is undefined".to_string(),
+        );
+        return;
+    }
+    if let Some(own_fqn) = value
+        .as_object()
+        .and_then(|o| o.get("$class"))
+        .and_then(Value::as_str)
+    {
+        match c.mm.is_assignable_to(own_fqn, declared_class_fqn) {
+            Ok(true) => {}
+            Ok(false) => {
+                c.push(
+                    pointer.to_string(),
+                    DiagnosticCode::NotAssignable,
+                    format!("'{own_fqn}' is not assignable to '{declared_class_fqn}'"),
+                );
+                return;
+            }
+            Err(_) => {
+                c.push(
+                    pointer.to_string(),
+                    DiagnosticCode::TypeNotFound,
+                    format!("type not found: {own_fqn}"),
+                );
+                return;
+            }
+        }
+    }
+    collect_class(c, declared_class_fqn, value, pointer);
+}
+
 #[cfg(test)]
 mod tests {
     //! Exercises the confirmed `concerto-validate-rs` bug fixes (module doc),
@@ -2485,5 +2853,282 @@ mod tests {
                 .contains("Invalid enum value of \"1\" for the field \"Color\"."),
             "{err}"
         );
+    }
+
+    // ---- Collect-all diagnostics (task P3-03, accordproject/concerto-rust#58) ----
+    //
+    // One test per `DiagnosticCode` (the issue's exit condition), plus a test
+    // that collect-all really does gather more than one diagnostic in a
+    // single pass, which is the point of the mode.
+
+    fn diag_of(result: ValidationResult) -> Diagnostic {
+        let mut diagnostics = result.into_diagnostics();
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, found {diagnostics:?}"
+        );
+        diagnostics.remove(0)
+    }
+
+    #[test]
+    fn a_valid_instance_collects_no_diagnostics() {
+        let mgr = fixture();
+        let leaf = json!({ "$class": "org.acme@1.0.0.Leaf", "a": "1", "b": "2", "c": "3" });
+        let result = collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Leaf",
+            &leaf,
+            &ValidateOptions::default(),
+        );
+        assert!(result.is_valid());
+        assert!(result.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn missing_required_property_is_diagnosed() {
+        let mgr = fixture();
+        let leaf = json!({ "$class": "org.acme@1.0.0.Leaf", "b": "2", "c": "3" });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Leaf",
+            &leaf,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::MissingRequiredProperty);
+        assert_eq!(diag.pointer, "/a");
+    }
+
+    #[test]
+    fn undeclared_field_is_diagnosed() {
+        let mgr = fixture();
+        let leaf = json!({
+            "$class": "org.acme@1.0.0.Leaf", "a": "1", "b": "2", "c": "3", "zzz": "extra"
+        });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Leaf",
+            &leaf,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::UndeclaredField);
+        assert_eq!(diag.pointer, "/zzz");
+    }
+
+    #[test]
+    fn type_violation_is_diagnosed() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": "not-a-number"
+        });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::TypeViolation);
+        assert_eq!(diag.pointer, "/mileage");
+    }
+
+    #[test]
+    fn invalid_enum_value_is_diagnosed() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1, "color": "PURPLE"
+        });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::InvalidEnumValue);
+        assert_eq!(diag.pointer, "/color");
+    }
+
+    #[test]
+    fn empty_identifier_is_diagnosed() {
+        let mgr = fixture();
+        let vehicle = json!({ "$class": "org.acme@1.0.0.Vehicle", "vin": "", "mileage": 1 });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::EmptyIdentifier);
+        assert_eq!(diag.pointer, "");
+    }
+
+    #[test]
+    fn abstract_class_is_diagnosed() {
+        let mgr = fixture();
+        let animal = json!({ "$class": "org.acme@1.0.0.Animal", "name": "Rex" });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Animal",
+            &animal,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::AbstractClass);
+        assert_eq!(diag.pointer, "");
+    }
+
+    #[test]
+    fn not_assignable_is_diagnosed() {
+        let mgr = fixture();
+        // `pet`'s declared type is `Animal`; a `Vehicle` is not assignable to it.
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "pet": { "$class": "org.acme@1.0.0.Vehicle", "vin": "XYZ99", "mileage": 2 }
+        });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::NotAssignable);
+        assert_eq!(diag.pointer, "/pet");
+    }
+
+    #[test]
+    fn not_resource_is_diagnosed() {
+        let mgr = fixture();
+        let not_a_resource = json!("just a string");
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &not_a_resource,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::NotResource);
+        assert_eq!(diag.pointer, "");
+    }
+
+    #[test]
+    fn not_relationship_is_diagnosed() {
+        let mgr = fixture();
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1", "vehicle": "not a relationship"
+        });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Owner",
+            &owner,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::NotRelationship);
+        assert_eq!(diag.pointer, "/vehicle");
+    }
+
+    #[test]
+    fn validator_failure_is_diagnosed() {
+        let mgr = fixture();
+        // `rating`'s `IntegerDomainValidator` is `0..=5`.
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1, "rating": 10
+        });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::ValidatorFailure);
+        assert_eq!(diag.pointer, "/rating");
+    }
+
+    #[test]
+    fn type_not_found_is_diagnosed() {
+        let mgr = fixture();
+        let unknown = json!({ "$class": "org.acme@1.0.0.NoSuchType" });
+        let diag = diag_of(collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.NoSuchType",
+            &unknown,
+            &ValidateOptions::default(),
+        ));
+        assert_eq!(diag.code, DiagnosticCode::TypeNotFound);
+        assert_eq!(diag.pointer, "");
+    }
+
+    /// The point of collect-all: several unrelated problems on one instance
+    /// are all reported from a single call, not just the first one a
+    /// first-error walk would stop at.
+    #[test]
+    fn collect_all_gathers_every_diagnostic_in_one_pass() {
+        let mgr = fixture();
+        let leaf = json!({
+            // `a` is missing (required, from `Base`), and `zzz` is
+            // undeclared: two unrelated problems, neither of which is the
+            // other's cause.
+            "$class": "org.acme@1.0.0.Leaf", "b": "2", "c": "3", "zzz": "extra"
+        });
+        let result = collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Leaf",
+            &leaf,
+            &ValidateOptions::default(),
+        );
+        assert!(!result.is_valid());
+        let codes: Vec<DiagnosticCode> = result.diagnostics().iter().map(|d| d.code).collect();
+        assert!(
+            codes.contains(&DiagnosticCode::MissingRequiredProperty),
+            "{codes:?}"
+        );
+        assert!(
+            codes.contains(&DiagnosticCode::UndeclaredField),
+            "{codes:?}"
+        );
+        assert_eq!(result.diagnostics().len(), 2, "{:?}", result.diagnostics());
+
+        // First-error, by contrast, only ever reports one.
+        let err = err_of(validate_instance(&mgr, &leaf, &ValidateOptions::default()));
+        let _ = err;
+    }
+
+    /// [`ModelManager::validate_instance`] resolves the declared type from
+    /// the value's own `$class`, and [`ModelManager::validate_instance_or_throw`]
+    /// is exactly the first-error [`validate_instance`] free function.
+    #[test]
+    fn model_manager_entry_points_agree_with_the_free_functions() {
+        let mgr = fixture();
+        let leaf = json!({ "$class": "org.acme@1.0.0.Leaf", "b": "2", "c": "3" });
+
+        let result = mgr.validate_instance(&leaf, &ValidateOptions::default());
+        assert_eq!(
+            diag_of(result).code,
+            DiagnosticCode::MissingRequiredProperty
+        );
+
+        let err = err_of(mgr.validate_instance_or_throw(&leaf, &ValidateOptions::default()));
+        assert!(err.to_string().contains("\"a\""), "{err}");
+    }
+
+    /// [`ClassDeclaration::validate_instance`]/`validate_instance_or_throw`
+    /// validate against the declaration's own `fqn`, not the value's `$class`.
+    #[test]
+    fn class_declaration_entry_points_validate_against_their_own_fqn() {
+        let mgr = fixture();
+        let fqn = "org.acme@1.0.0.Vehicle";
+        let class = mgr
+            .get_declaration(fqn)
+            .expect("Vehicle is in the fixture")
+            .as_class()
+            .expect("Vehicle is a class-like declaration");
+        let vehicle = json!({ "$class": fqn, "vin": "", "mileage": 1 });
+
+        let result = class.validate_instance(&mgr, fqn, &vehicle, &ValidateOptions::default());
+        assert_eq!(diag_of(result).code, DiagnosticCode::EmptyIdentifier);
+
+        let err = err_of(class.validate_instance_or_throw(
+            &mgr,
+            fqn,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
+        assert!(err.to_string().contains("identifier"), "{err}");
     }
 }
