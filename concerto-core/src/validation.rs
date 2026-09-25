@@ -33,7 +33,7 @@ use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
 use crate::introspect::{DeclarationKind, Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
-use crate::model_util::{get_fully_qualified_name, get_namespace, is_primitive_type};
+use crate::model_util::{self, get_fully_qualified_name, get_namespace, is_primitive_type};
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
@@ -662,55 +662,47 @@ fn check_identity_matches_super(
     Ok(())
 }
 
-/// The key kinds the specification allows: a `String` or `DateTime`, or an
-/// object key naming a scalar over one of those.
-const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
-
-/// The value kinds the specification allows: any primitive, or an object value
-/// naming a scalar or a concept. A relationship is not among them.
-const MAP_VALUE_KINDS: &[&str] = &[
-    "BooleanMapValueType",
-    "DateTimeMapValueType",
-    "DoubleMapValueType",
-    "IntegerMapValueType",
-    "LongMapValueType",
-    "StringMapValueType",
-    "ObjectMapValueType",
-];
-
 impl Validate for MapDeclaration {
     /// Checks a map against the key and value types the specification
     /// permits, and, like every other declaration (P2-07), that it carries no
     /// duplicate decorator and that its decorators pass `decoratorValidation`
     /// when enabled.
+    ///
+    /// TS: `MapDeclaration.validate` (src/introspect/mapdeclaration.ts) is
+    /// `super.validate(); this.key.validate(); this.value.validate()`; the
+    /// oracle op `MapDeclaration.validate` exercises this whole sequence,
+    /// while `MapKeyType.validate` and `MapValueType.validate` exercise
+    /// [`validate_map_key`] and [`validate_map_value`] in isolation (see
+    /// `tests/oracle/ops.rs`).
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        check_map_types(manager, namespace, self)?;
+        validate_map_key(manager, namespace, self)?;
+        validate_map_value(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
         check_unique_decorators(self, None)?;
         validate_decorators(manager, namespace, self, Some(&fqn))
     }
 }
 
-/// Every error in `check_map_types` passes `location: None`: `MapDeclaration`'s
-/// own doc comment records that its `location` (and its key's and value's) is
-/// deliberately not read, so there is no AST node to copy from, not a gap
-/// left for later.
-fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration) -> Result<()> {
-    if !MAP_KEY_KINDS.contains(&map.key_kind()) {
+/// `MapKeyType.validate` (src/introspect/mapkeytype.ts), plus the key-kind
+/// membership check TS makes at `MapDeclaration` construction time
+/// (`ModelUtil.isValidMapKey`, src/introspect/mapdeclaration.ts): this
+/// engine's `MapDeclaration` always constructs (`introspect::declaration`'s
+/// doc comment on `MapDeclaration::Untyped`), deferring an unsupported kind
+/// to this semantic-validation pass instead.
+///
+/// Every error passes `location: None`: `MapDeclaration`'s own doc comment
+/// records that its `location` (and its key's and value's) is deliberately
+/// not read, so there is no AST node to copy from, not a gap left for later.
+pub fn validate_map_key(
+    manager: &ModelManager,
+    namespace: &str,
+    map: &MapDeclaration,
+) -> Result<()> {
+    if !model_util::MAP_KEY_KINDS.contains(&map.key_kind()) {
         return Err(failed(
             format!(
                 "The key of map {} must be a String or DateTime, or a scalar over one of them",
                 map.name()
-            ),
-            None,
-        ));
-    }
-    if !MAP_VALUE_KINDS.contains(&map.value_kind()) {
-        return Err(failed(
-            format!(
-                "The value of map {} may not be a {}",
-                map.name(),
-                map.value_kind()
             ),
             None,
         ));
@@ -731,8 +723,70 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
             ));
         }
     }
+    Ok(())
+}
 
-    // An object value names a concept or a scalar, and it has to be declared.
+/// `MapValueType.validate` (src/introspect/mapvaluetype.ts), plus the
+/// value-kind membership check TS makes at `MapDeclaration` construction
+/// time (`ModelUtil.isValidMapValue`), deferred here for the same reason as
+/// [`validate_map_key`].
+pub fn validate_map_value(
+    manager: &ModelManager,
+    namespace: &str,
+    map: &MapDeclaration,
+) -> Result<()> {
+    if !model_util::MAP_VALUE_KINDS.contains(&map.value_kind()) {
+        return Err(failed(
+            format!(
+                "The value of map {} may not be a {}",
+                map.name(),
+                map.value_kind()
+            ),
+            None,
+        ));
+    }
+
+    // TS: `MapValueType.processType` (src/introspect/mapvaluetype.ts), for
+    // `ObjectMapValueType`/`RelationshipMapValueType`: the node must carry a
+    // `type` property, that `type` must have both a `$class` and a `name`,
+    // and its `$class` must be `TypeIdentifier`. This engine's loader folds
+    // "no `type`" and "`type` has no `name`" into the same `None`
+    // ([`MapVariant::Untyped`]'s doc comment), so one message covers both,
+    // as neither TS test on these paths asserts on message text, only that
+    // an `IllegalModelException` is thrown.
+    if matches!(
+        map.value_kind(),
+        "ObjectMapValueType" | "RelationshipMapValueType"
+    ) {
+        match map.value_type() {
+            None => {
+                return Err(failed(
+                    format!(
+                        "{} must contain property 'type' with a 'name', for MapDeclaration named {}",
+                        map.value_kind(),
+                        map.name()
+                    ),
+                    None,
+                ));
+            }
+            Some(t) if t._class != crate::introspect::qualified_class("TypeIdentifier") => {
+                return Err(failed(
+                    format!(
+                        "{} type $class must be of TypeIdentifier for MapDeclaration named {}",
+                        map.value_kind(),
+                        map.name()
+                    ),
+                    None,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    // TS: `MapValueType.validate` allows any declaration as a map value except
+    // another MapDeclaration ("All declarations, with the exception of
+    // MapDeclarations, are valid Values."); it does not itself check that the
+    // referenced type is declared.
     if let Some(value) = map.value_type() {
         let declared = resolve(manager, namespace, &value.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok());
@@ -746,11 +800,10 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
                 None,
             ));
         };
-        if !declared.is_class_declaration() && !declared.is_scalar_declaration() {
+        if declared.is_map_declaration() {
             return Err(failed(
                 format!(
-                    "The value of map {} must be a concept or a scalar, and {} is neither",
-                    map.name(),
+                    "MapDeclaration as Map Type Value is not supported: {}",
                     value.name
                 ),
                 None,
@@ -833,6 +886,7 @@ mod tests {
     use crate::error::ConcertoError;
     use crate::introspect::Named;
     use crate::model_manager::ModelManager;
+    use crate::validation::{validate_map_key, validate_map_value};
 
     /// Loads `org.example@1.0.0` with the given declarations and validates it.
     fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
@@ -1912,16 +1966,21 @@ mod tests {
     }
 
     #[test]
-    fn a_map_value_may_not_be_a_relationship() {
-        let err = validate(map_with(
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-            object_type("Item", "RelationshipMapValueType"),
-        ));
-        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    fn a_map_value_may_be_a_relationship() {
+        // TS: `MapValueType.validate` allows any declaration but a
+        // MapDeclaration, including a relationship to a concept.
+        assert!(
+            validate(map_with(
+                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+                object_type("Item", "RelationshipMapValueType"),
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
-    fn a_map_value_may_not_be_an_enum() {
+    fn a_map_value_may_be_an_enum() {
+        // TS: same rule as above; an enum is a declaration like any other.
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let mut declarations = map_with(key, object_type("Colour", "ObjectMapValueType"));
         declarations
@@ -1933,11 +1992,28 @@ mod tests {
                     { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
                 ]
             }));
+        assert!(validate(declarations).is_ok());
+    }
+
+    #[test]
+    fn a_map_value_may_not_be_a_map_declaration() {
+        // TS: `MapValueType.validate` throws only when the referenced
+        // declaration is itself a MapDeclaration.
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let mut declarations = map_with(key.clone(), object_type("Other", "ObjectMapValueType"));
+        declarations
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Other",
+                "key": key,
+                "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+            }));
         let err = validate(declarations);
         assert!(
             err.unwrap_err()
                 .to_string()
-                .contains("must be a concept or a scalar")
+                .contains("MapDeclaration as Map Type Value is not supported")
         );
     }
 
@@ -2153,5 +2229,641 @@ mod tests {
                 .to_string()
                 .contains("Invalid field name")
         );
+    }
+
+    // --- Additional MapDeclaration/MapKeyType/MapValueType porting (P2-06,
+    // continuing accordproject/concerto-rust#50): TS
+    // test/introspect/mapdeclaration.js. Each test below names the TS `it()`
+    // it ports. Cases that need a real `ModelFile` object (`new
+    // MapDeclaration(modelFile, ast)`, `introspectUtils.loadLastDeclaration`,
+    // and the TS `MapKeyType`/`MapValueType` classes' own `getParent`,
+    // `getNamespace`, `getModelFile` and `toString`) are deferred to P2-08
+    // (`ModelFile.new`), per the coordinator's split on this issue; the TS
+    // `#accept` visitor test has no Rust counterpart yet at all, since no
+    // visitor pattern has been ported (plan section 3: visitors stay TS
+    // shells for now).
+
+    // TS: `#constructor` "should throw if ast contains no Map Key Type" /
+    // "no Map Value Property". This engine's `MapDeclaration` always
+    // constructs, deferring an absent key/value to semantic validation
+    // instead (doc comment on `MapVariant`); the missing side loads with an
+    // empty kind, which is not in the allowed set either way.
+    #[test]
+    fn map_missing_its_key_field_is_rejected_at_validate() {
+        let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+        let mut node = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "MapPermutation1",
+            "value": value
+        });
+        let err = validate(serde_json::json!([node.take()]));
+        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+    }
+
+    #[test]
+    fn map_missing_its_value_field_is_rejected_at_validate() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let node = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "MapPermutation1",
+            "key": key
+        });
+        let err = validate(serde_json::json!([node]));
+        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    }
+
+    // TS: `#constructor` "should throw if invalid $class provided for Map
+    // Key" / "... for Map Value": a `$class` the metamodel does not declare
+    // at all falls back to [`MapVariant::Untyped`] and is rejected by the
+    // same kind-membership check as any other unsupported kind.
+    #[test]
+    fn map_key_with_an_unknown_class_is_rejected_at_validate() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapKeyType" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        ));
+        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+    }
+
+    #[test]
+    fn map_value_with_an_unknown_class_is_rejected_at_validate() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapValueType" }),
+        ));
+        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    }
+
+    // TS: "should throw if ast contains illegal Map Value Property" (an
+    // `EnumMapValueType` node, not a kind the metamodel's value union
+    // declares).
+    #[test]
+    fn map_value_kind_the_metamodel_does_not_declare_is_rejected() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.EnumMapValueType" }),
+        ));
+        assert!(err.unwrap_err().to_string().contains("may not be a"));
+    }
+
+    // TS: "should throw if ast contains illegal Map Key Type - Enum" (an
+    // `EnumMapKeyType` node with a `type`; not a kind the key union
+    // declares, so it is rejected the same way as any other out-of-set kind,
+    // regardless of the `type` it names).
+    #[test]
+    fn map_key_kind_the_metamodel_does_not_declare_is_rejected_even_with_a_type() {
+        let err = validate(map_with(
+            object_type("States", "EnumMapKeyType"),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        ));
+        assert!(err.unwrap_err().to_string().contains("String or DateTime"));
+    }
+
+    // TS: "should throw if ast contains illegal Map Key Type - Scalar
+    // Long/Integer/Double/Boolean": a scalar key is legal only over String
+    // or DateTime (`ModelUtil.isValidMapKeyScalar`); every other scalar base
+    // is rejected. TS's bare-kind cases, with no scalar, are ported
+    // separately: "- Integer" by
+    // `a_map_key_kind_outside_the_allowed_set_is_rejected`, and "- Boolean",
+    // "- Long" and "- Double" by `a_bare_boolean_map_key_kind_is_rejected`,
+    // `a_bare_long_map_key_kind_is_rejected` and
+    // `a_bare_double_map_key_kind_is_rejected`, below.
+    #[test]
+    fn a_scalar_map_key_over_long_integer_double_or_boolean_is_rejected() {
+        let string_value =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+        for (scalar_name, scalar_class) in [
+            ("Amount", "LongScalar"),
+            ("Count", "IntegerScalar"),
+            ("Ratio", "DoubleScalar"),
+            ("Flag", "BooleanScalar"),
+        ] {
+            let mut declarations = map_with(
+                object_type(scalar_name, "ObjectMapKeyType"),
+                string_value.clone(),
+            );
+            declarations
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "$class": format!("concerto.metamodel@1.0.0.{scalar_class}"),
+                    "name": scalar_name
+                }));
+            let err = validate(declarations);
+            assert!(
+                err.unwrap_err().to_string().contains("String or DateTime"),
+                "a scalar over {scalar_class} should be rejected as a map key"
+            );
+        }
+    }
+
+    // TS: "should throw when map key is imported and is an illegal Map Key
+    // Type": a key naming a type imported from another namespace, which is
+    // not itself String, DateTime, or a scalar over either.
+    #[test]
+    fn a_map_key_imported_from_another_namespace_and_not_string_or_datetime_is_rejected() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.base@1.0.0",
+                    "declarations": [concept(serde_json::json!({ "name": "Thing" }))]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "imports": [{
+                        "$class": "concerto.metamodel@1.0.0.ImportType",
+                        "name": "Thing",
+                        "namespace": "org.base@1.0.0"
+                    }],
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                        "key": object_type("Thing", "ObjectMapKeyType"),
+                        "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(
+            manager
+                .validate_models()
+                .unwrap_err()
+                .to_string()
+                .contains("String or DateTime")
+        );
+    }
+
+    // TS: "should validate when map key is imported and is of valid map key
+    // type": the mirror image of the test above, importing a scalar over
+    // String instead of a concept.
+    #[test]
+    fn a_map_key_imported_from_another_namespace_and_is_a_string_scalar_validates() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.base@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "GUID"
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "imports": [{
+                        "$class": "concerto.metamodel@1.0.0.ImportType",
+                        "name": "GUID",
+                        "namespace": "org.base@1.0.0"
+                    }],
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                        "key": object_type("GUID", "ObjectMapKeyType"),
+                        "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(manager.validate_models().is_ok());
+    }
+
+    // TS: "should throw if ObjectMapValueType does not contain type
+    // property", "... TypeIdentifier does not contain name property", and
+    // "... TypeIdentifier has bad $class": all three collapse to the same
+    // `None`/mismatched-`_class` checks added to `validate_map_value` above,
+    // and none of the three TS tests assert on message text.
+    #[test]
+    fn an_object_map_value_missing_its_type_property_is_rejected() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }),
+        ));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("must contain property 'type'")
+        );
+    }
+
+    #[test]
+    fn an_object_map_value_type_missing_its_name_is_rejected() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" }
+            }),
+        ));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("must contain property 'type'")
+        );
+    }
+
+    #[test]
+    fn an_object_map_value_type_with_a_bad_class_is_rejected() {
+        let err = validate(map_with(
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": { "$class": "concerto.metamodel@1.0.0.BAD_$CLASS", "name": "Person" }
+            }),
+        ));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("must be of TypeIdentifier")
+        );
+    }
+
+    // TS: `#validate success scenarios - Map Value`, the six primitive
+    // value kinds (`goodvalue.primitive.*`); each validates with no
+    // referenced-type check at all.
+    #[test]
+    fn every_primitive_map_value_kind_validates() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        for value_kind in [
+            "BooleanMapValueType",
+            "StringMapValueType",
+            "DateTimeMapValueType",
+            "DoubleMapValueType",
+            "IntegerMapValueType",
+            "LongMapValueType",
+        ] {
+            let value =
+                serde_json::json!({ "$class": format!("concerto.metamodel@1.0.0.{value_kind}") });
+            assert!(
+                validate(map_with(key.clone(), value)).is_ok(),
+                "{value_kind} should be a legal map value"
+            );
+        }
+    }
+
+    // TS: `#validate success scenarios - Map Value`, the declaration-kind
+    // cases (`goodvalue.declaration.*`): asset, participant, transaction,
+    // event and concept declarations, an identified concept, and a concept
+    // derived from another concept, each as an `ObjectMapValueType` and
+    // (per `mapdeclaration.badvalue.declaration.relationship.cto`, despite
+    // its "badvalue" file name — the TS test title itself is "should
+    // validate...") a `RelationshipMapValueType`.
+    #[test]
+    fn every_declared_class_kind_validates_as_a_map_value() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        for (decl_class, extra) in [
+            ("AssetDeclaration", serde_json::json!({})),
+            ("ParticipantDeclaration", serde_json::json!({})),
+            ("TransactionDeclaration", serde_json::json!({})),
+            ("EventDeclaration", serde_json::json!({})),
+            ("ConceptDeclaration", serde_json::json!({})),
+            (
+                "ConceptDeclaration",
+                serde_json::json!({ "identified": { "$class": "concerto.metamodel@1.0.0.Identified" } }),
+            ),
+        ] {
+            let mut decl = serde_json::json!({
+                "$class": format!("concerto.metamodel@1.0.0.{decl_class}"),
+                "name": "Item", "isAbstract": false, "properties": []
+            });
+            decl.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            for value_kind in ["ObjectMapValueType", "RelationshipMapValueType"] {
+                let declarations = serde_json::json!([
+                    decl.clone(),
+                    {
+                        "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                        "key": key.clone(), "value": object_type("Item", value_kind)
+                    }
+                ]);
+                assert!(
+                    validate(declarations).is_ok(),
+                    "{decl_class} should be a legal map value via {value_kind}"
+                );
+            }
+        }
+
+        // A concept derived from another concept is equally a legal value.
+        let declarations = serde_json::json!([
+            concept(serde_json::json!({ "name": "Base" })),
+            {
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Derived",
+                "isAbstract": false, "properties": [],
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" }
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                "key": key, "value": object_type("Derived", "ObjectMapValueType")
+            }
+        ]);
+        assert!(validate(declarations).is_ok());
+    }
+
+    // TS: "should validate when map value is imported and is of valid map
+    // key type (Concept import)" / "(Scalar Import)".
+    #[test]
+    fn a_map_value_imported_from_another_namespace_validates() {
+        for (base_decl, value_ref) in [
+            (concept(serde_json::json!({ "name": "Thing" })), "Thing"),
+            (
+                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "GUID" }),
+                "GUID",
+            ),
+        ] {
+            let mut manager = ModelManager::new().unwrap();
+            manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "namespace": "org.base@1.0.0",
+                        "declarations": [base_decl]
+                    }),
+                    None,
+                )
+                .unwrap();
+            manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "namespace": "org.example@1.0.0",
+                        "imports": [{
+                            "$class": "concerto.metamodel@1.0.0.ImportType",
+                            "name": value_ref,
+                            "namespace": "org.base@1.0.0"
+                        }],
+                        "declarations": [{
+                            "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                            "value": object_type(value_ref, "ObjectMapValueType")
+                        }]
+                    }),
+                    None,
+                )
+                .unwrap();
+            assert!(
+                manager.validate_models().is_ok(),
+                "importing {value_ref} as a map value should validate"
+            );
+        }
+    }
+
+    // TS: `MapDeclration - Test for MapDeclrations using Import Aliasing`,
+    // `#validate` (test/data/aliasing/{child,parent}.cto): `parent`
+    // re-exports `child`'s `FullName` scalar and `Child` concept under
+    // aliases (`KidFullName`, `Kid`), then declares `map KidIndex { o
+    // KidFullName  o Kid }`. Both the key and the value resolve through the
+    // alias, not the target's own declared name (`resolve`'s doc comment on
+    // this distinction, above). Built directly from the AST an aliasing
+    // CTO file resolves to, since CTO parsing is out of scope here
+    // (concerto-cto).
+    fn aliased_map_manager() -> ModelManager {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "child@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "FullName" },
+                        concept(serde_json::json!({ "name": "Child" }))
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "parent@1.0.0",
+                    "imports": [{
+                        "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                        "namespace": "child@1.0.0",
+                        "types": [
+                            { "$class": "concerto.metamodel@1.0.0.ImportType", "name": "FullName" },
+                            { "$class": "concerto.metamodel@1.0.0.ImportType", "name": "Child" }
+                        ],
+                        "aliasedTypes": [
+                            { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "FullName", "aliasedName": "KidFullName" },
+                            { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "Child", "aliasedName": "Kid" }
+                        ]
+                    }],
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "KidIndex",
+                        "key": object_type("KidFullName", "ObjectMapKeyType"),
+                        "value": object_type("Kid", "ObjectMapValueType")
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+    }
+
+    #[test]
+    fn an_aliased_imported_scalar_map_key_validates() {
+        let manager = aliased_map_manager();
+        let map = manager
+            .get_declaration("parent@1.0.0.KidIndex")
+            .unwrap()
+            .as_map()
+            .unwrap();
+        assert!(validate_map_key(&manager, "parent@1.0.0", map).is_ok());
+    }
+
+    #[test]
+    fn an_aliased_imported_concept_map_value_validates() {
+        let manager = aliased_map_manager();
+        let map = manager
+            .get_declaration("parent@1.0.0.KidIndex")
+            .unwrap()
+            .as_map()
+            .unwrap();
+        assert!(validate_map_value(&manager, "parent@1.0.0", map).is_ok());
+    }
+
+    // --- Remaining TS test/introspect/mapdeclaration.js parity (P2-06,
+    // accordproject/concerto-rust#50). Each case is built from the AST its
+    // test/data/parser/mapdeclaration/*.cto file parses to.
+
+    /// Asserts `result` is the `IllegalModelException` TS throws: the only
+    /// thing the TS tests below assert about their errors.
+    fn assert_illegal_model(result: crate::error::Result<()>) {
+        match result {
+            Err(ConcertoError::Contract(err)) => {
+                assert_eq!(err.kind, crate::error::ErrorKind::IllegalModel, "{err:?}");
+            }
+            other => panic!("expected an IllegalModelException, got {other:?}"),
+        }
+    }
+
+    // TS: `#validate success scenarios - Map Key` "should validate when map
+    // key is primitive type datetime" (goodkey.primitive.datetime.cto:
+    // `map Dictionary { o DateTime o String }`), a bare `DateTimeMapKeyType`
+    // rather than a scalar over DateTime.
+    #[test]
+    fn a_primitive_datetime_map_key_validates() {
+        assert!(
+            validate(serde_json::json!([{
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Dictionary",
+                "key": { "$class": "concerto.metamodel@1.0.0.DateTimeMapKeyType" },
+                "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+            }]))
+            .is_ok()
+        );
+    }
+
+    /// `map Dictionary { o String o <root> }`, with no local declaration or
+    /// explicit import of `root`: it resolves only through the implicit
+    /// `concerto@1.0.0` import every non-system model file carries
+    /// (`ModelFile::from_json`, TS `ModelFile.fromAst`).
+    fn validate_root_type_map_value(root: &str) -> crate::error::Result<()> {
+        validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Dictionary",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": object_type(root, "ObjectMapValueType")
+        }]))
+    }
+
+    // TS: `#validate success scenarios - Map Value` "should validate when map
+    // value is an imported asset declaration"
+    // (goodvalue.declaration.root.asset.cto).
+    #[test]
+    fn a_root_asset_map_value_validates() {
+        assert!(validate_root_type_map_value("Asset").is_ok());
+    }
+
+    // TS: "... is an imported concept declaration"
+    // (goodvalue.declaration.root.concept.cto).
+    #[test]
+    fn a_root_concept_map_value_validates() {
+        assert!(validate_root_type_map_value("Concept").is_ok());
+    }
+
+    // TS: "... is an imported event declaration"
+    // (goodvalue.declaration.root.event.cto).
+    #[test]
+    fn a_root_event_map_value_validates() {
+        assert!(validate_root_type_map_value("Event").is_ok());
+    }
+
+    // TS: "... is an imported participant declaration"
+    // (goodvalue.declaration.root.participant.cto).
+    #[test]
+    fn a_root_participant_map_value_validates() {
+        assert!(validate_root_type_map_value("Participant").is_ok());
+    }
+
+    // TS: "... is an imported transaction declaration"
+    // (goodvalue.declaration.root.transaction.cto).
+    #[test]
+    fn a_root_transaction_map_value_validates() {
+        assert!(validate_root_type_map_value("Transaction").is_ok());
+    }
+
+    // TS: `#validate failure scenarios - Map Key` "should throw if ast
+    // contains illegal Map Key Type - Enum" (badkey.declaration.enum.cto:
+    // `enum Phase { o ONE o TWO }` and `map Dictionary { o Phase o String }`):
+    // an enum is not a scalar over String or DateTime, so `MapKeyType.validate`
+    // throws an `IllegalModelException`.
+    #[test]
+    fn an_enum_declaration_as_an_object_map_key_is_rejected() {
+        assert_illegal_model(validate(serde_json::json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Phase",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ONE" },
+                    { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "TWO" }
+                ]
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Dictionary",
+                "key": object_type("Phase", "ObjectMapKeyType"),
+                "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+            }
+        ])));
+    }
+
+    /// `MapPermutation1`, keyed by the bare `kind`, with a String value: the
+    /// AST TS's "should throw if ast contains illegal Map Key Type - <kind>"
+    /// cases hand to `new MapDeclaration`.
+    fn validate_bare_map_key_kind(kind: &str) -> crate::error::Result<()> {
+        validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "MapPermutation1",
+            "key": { "$class": format!("concerto.metamodel@1.0.0.{kind}") },
+            "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+        }]))
+    }
+
+    // TS: "should throw if ast contains illegal Map Key Type - Boolean".
+    #[test]
+    fn a_bare_boolean_map_key_kind_is_rejected() {
+        assert_illegal_model(validate_bare_map_key_kind("BooleanMapKeyType"));
+    }
+
+    // TS: "should throw if ast contains illegal Map Key Type - Long".
+    #[test]
+    fn a_bare_long_map_key_kind_is_rejected() {
+        assert_illegal_model(validate_bare_map_key_kind("LongMapKeyType"));
+    }
+
+    // TS: "should throw if ast contains illegal Map Key Type - Double".
+    #[test]
+    fn a_bare_double_map_key_kind_is_rejected() {
+        assert_illegal_model(validate_bare_map_key_kind("DoubleMapKeyType"));
+    }
+
+    // TS: `#Introspect` "should return the correct value on introspection"
+    // (goodkey.primitive.string.cto: `namespace com.acme@1.0.0`, `map
+    // Dictionary { o String o String }`): `declarationKind()`,
+    // `getFullyQualifiedName()` and `isMapDeclaration()` of the loaded
+    // declaration, the FQN read through the manager's own
+    // `Declaration.getFullyQualifiedName` port.
+    #[test]
+    fn a_loaded_map_declaration_introspects_as_ts_does() {
+        use crate::introspect::DeclarationKind;
+        use crate::model_manager::{Node, ResolutionContext};
+
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "com.acme@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Dictionary",
+                        "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                        "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        let file = manager.model_file_id("com.acme@1.0.0").unwrap();
+        let id = manager.declaration_ids(file).last().unwrap();
+        let declaration = manager.declaration(id).unwrap();
+
+        assert_eq!(declaration.declaration_kind(), "MapDeclaration");
+        assert_eq!(
+            manager
+                .get_fully_qualified_name(&Node::Declaration(id))
+                .unwrap(),
+            "com.acme@1.0.0.Dictionary"
+        );
+        assert!(declaration.is_map_declaration());
     }
 }

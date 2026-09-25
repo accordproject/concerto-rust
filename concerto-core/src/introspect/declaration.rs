@@ -20,7 +20,9 @@ use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::{
     DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
 };
-use crate::model_util::{get_fully_qualified_name, get_short_name, is_valid_identifier};
+use crate::model_util::{
+    MAP_KEY_KINDS, MAP_VALUE_KINDS, get_fully_qualified_name, get_short_name, is_valid_identifier,
+};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents. Its
 /// [`DeclarationKind`] is the metamodel `$class` short name for the kind.
@@ -641,21 +643,6 @@ impl EnumDeclaration {
     }
 }
 
-/// The key kinds the generated [`mm::MapKeyType`] union declares.
-const MM_MAP_KEY_KINDS: [&str; 3] = ["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
-
-/// The value kinds the generated [`mm::MapValueType`] union declares.
-const MM_MAP_VALUE_KINDS: [&str; 8] = [
-    "BooleanMapValueType",
-    "DateTimeMapValueType",
-    "StringMapValueType",
-    "IntegerMapValueType",
-    "LongMapValueType",
-    "DoubleMapValueType",
-    "ObjectMapValueType",
-    "RelationshipMapValueType",
-];
-
 /// A map declaration.
 ///
 /// A map is read for its name, and for the kind (the `$class` short name) and
@@ -790,6 +777,39 @@ impl MapDeclaration {
         }
     }
 
+    /// `MapKeyType.getType` (src/introspect/mapkeytype.ts): the primitive
+    /// name for a `String`/`DateTime` key, or the raw (unresolved) referenced
+    /// type name for an object key, exactly as `processType` sets `this.type`
+    /// from `this.ast.type.name` without consulting the model manager.
+    pub fn key_type_name(&self) -> &str {
+        match self.key_kind() {
+            "DateTimeMapKeyType" => "DateTime",
+            "StringMapKeyType" => "String",
+            _ => self.key_type().map_or("", |t| t.name.as_str()),
+        }
+    }
+
+    /// `MapValueType.getType` (src/introspect/mapvaluetype.ts): the primitive
+    /// name for a primitive value, or the raw (unresolved) referenced type
+    /// name for an object or relationship value.
+    pub fn value_type_name(&self) -> &str {
+        match self.value_kind() {
+            "BooleanMapValueType" => "Boolean",
+            "DateTimeMapValueType" => "DateTime",
+            "StringMapValueType" => "String",
+            "IntegerMapValueType" => "Integer",
+            "LongMapValueType" => "Long",
+            "DoubleMapValueType" => "Double",
+            _ => self.value_type().map_or("", |t| t.name.as_str()),
+        }
+    }
+
+    /// `MapDeclaration.toString` (src/introspect/mapdeclaration.ts):
+    /// `MapDeclaration {id=<fully qualified name>}`.
+    pub fn to_string(fully_qualified_name: &str) -> String {
+        format!("MapDeclaration {{id={fully_qualified_name}}}")
+    }
+
     /// Whether this map's key and value were both representable by the
     /// generated union types (used only by this module's own tests).
     #[cfg(test)]
@@ -847,7 +867,7 @@ fn typed_map(
     key_kind: &str,
     value_kind: &str,
 ) -> Option<mm::MapDeclaration> {
-    if !MM_MAP_KEY_KINDS.contains(&key_kind) || !MM_MAP_VALUE_KINDS.contains(&value_kind) {
+    if !MAP_KEY_KINDS.contains(&key_kind) || !MAP_VALUE_KINDS.contains(&value_kind) {
         return None;
     }
     let mut node = value.clone();
@@ -1418,5 +1438,120 @@ mod tests {
             err.unwrap_err().to_string(),
             "illegal model: invalid MapDeclaration: invalid type: integer `5`, expected a string"
         );
+    }
+
+    /// A `MapDeclaration` with the given key and value nodes.
+    fn map_with(key: serde_json::Value, value: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "MapPermutation1",
+            "key": key,
+            "value": value,
+        })
+    }
+
+    fn kind(short: &str) -> serde_json::Value {
+        serde_json::json!({ "$class": format!("concerto.metamodel@1.0.0.{short}") })
+    }
+
+    fn object_kind(short: &str, type_name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "$class": format!("concerto.metamodel@1.0.0.{short}"),
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": type_name },
+        })
+    }
+
+    // TS: MapDeclaration test/introspect/mapdeclaration.js `#getKey` "should
+    // return the correct Type when called".
+    #[test]
+    fn key_type_name_is_string_for_a_string_key() {
+        let d = decl(map_with(
+            kind("StringMapKeyType"),
+            kind("StringMapValueType"),
+        ));
+        assert_eq!(d.as_map().unwrap().key_type_name(), "String");
+    }
+
+    #[test]
+    fn key_type_name_is_datetime_for_a_datetime_key() {
+        let d = decl(map_with(
+            kind("DateTimeMapKeyType"),
+            kind("StringMapValueType"),
+        ));
+        assert_eq!(d.as_map().unwrap().key_type_name(), "DateTime");
+    }
+
+    // TS: "should return the correct Type when called - Scalar String/DateTime":
+    // an object key's type is the raw referenced name, unresolved.
+    #[test]
+    fn key_type_name_is_the_raw_referenced_name_for_an_object_key() {
+        let d = decl(map_with(
+            object_kind("ObjectMapKeyType", "GUID"),
+            kind("StringMapValueType"),
+        ));
+        assert_eq!(d.as_map().unwrap().key_type_name(), "GUID");
+    }
+
+    // TS: MapDeclaration test/introspect/mapdeclaration.js `#getValue` "should
+    // return the correct Type when called", one case per primitive value kind.
+    #[test]
+    fn value_type_name_covers_every_primitive_kind() {
+        let cases = [
+            ("BooleanMapValueType", "Boolean"),
+            ("DateTimeMapValueType", "DateTime"),
+            ("StringMapValueType", "String"),
+            ("IntegerMapValueType", "Integer"),
+            ("LongMapValueType", "Long"),
+            ("DoubleMapValueType", "Double"),
+        ];
+        for (mm_kind, expected) in cases {
+            let d = decl(map_with(kind("StringMapKeyType"), kind(mm_kind)));
+            assert_eq!(
+                d.as_map().unwrap().value_type_name(),
+                expected,
+                "{mm_kind} should report {expected}"
+            );
+        }
+    }
+
+    // TS: "should return the correct values when called - Scalar
+    // String/DateTime", and the relationship value case: an object or
+    // relationship value's type is the raw referenced name, unresolved.
+    #[test]
+    fn value_type_name_is_the_raw_referenced_name_for_an_object_or_relationship_value() {
+        let d = decl(map_with(
+            kind("StringMapKeyType"),
+            object_kind("ObjectMapValueType", "GUID"),
+        ));
+        assert_eq!(d.as_map().unwrap().value_type_name(), "GUID");
+
+        let d = decl(map_with(
+            kind("StringMapKeyType"),
+            object_kind("RelationshipMapValueType", "Person"),
+        ));
+        assert_eq!(d.as_map().unwrap().value_type_name(), "Person");
+    }
+
+    // TS: `#toString` "should give the correct value for Map Declaration".
+    #[test]
+    fn to_string_matches_ts() {
+        assert_eq!(
+            MapDeclaration::to_string("com.acme@1.0.0.Dictionary"),
+            "MapDeclaration {id=com.acme@1.0.0.Dictionary}"
+        );
+    }
+
+    // TS: `#Introspect` "should return the correct value on introspection".
+    #[test]
+    fn declaration_kind_and_is_map_declaration_agree_with_ts() {
+        let d = decl(map_with(
+            kind("StringMapKeyType"),
+            kind("StringMapValueType"),
+        ));
+        assert_eq!(d.declaration_kind(), "MapDeclaration");
+        assert!(d.is_map_declaration());
+        assert!(!d.is_class_declaration());
+        assert!(!d.is_enum_declaration());
+        assert!(!d.is_scalar_declaration());
     }
 }
