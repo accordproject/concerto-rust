@@ -221,6 +221,56 @@ fn passes_a_correct_fixture_for_each_supported_op() {
         }),
     );
 
+    // DCS (task P2-12): `DecoratorManager.falsyOrEqual` and
+    // `DcsConverter.jsonToYaml`/`yamlToJson` (`ops.rs`'s `PLAIN_OPS`).
+    write_fixture(
+        &dir,
+        "DecoratorManager.falsyOrEqual",
+        "falsy-or-equal-array-intersection",
+        json!({
+            "inputs": { "args": [["one", "two"], ["one", "three"]] },
+            "outcome": { "ok": true }
+        }),
+    );
+    write_fixture(
+        &dir,
+        "DcsConverter.jsonToYaml",
+        "json-to-yaml-simple-command-set",
+        json!({
+            "inputs": { "args": [{
+                "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+                "name": "web",
+                "version": "1.0.0",
+                "commands": [{
+                    "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                    "type": "UPSERT",
+                    "target": { "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget", "declaration": "SSN" },
+                    "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Declaration" }
+                }]
+            }] },
+            "outcome": { "ok": "decoratorCommandsVersion: 0.4.0\nname: web\nversion: 1.0.0\ncommands:\n  - action: UPSERT\n    target:\n      declaration: SSN\n    decorator:\n      name: Declaration\n" }
+        }),
+    );
+    write_fixture(
+        &dir,
+        "DcsConverter.yamlToJson",
+        "yaml-to-json-simple-command-set",
+        json!({
+            "inputs": { "args": ["decoratorCommandsVersion: 0.4.0\nname: web\nversion: 1.0.0\ncommands:\n  - action: UPSERT\n    target:\n      declaration: SSN\n    decorator:\n      name: Declaration\n"] },
+            "outcome": { "ok": {
+                "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+                "name": "web",
+                "version": "1.0.0",
+                "commands": [{
+                    "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                    "type": "UPSERT",
+                    "target": { "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget", "declaration": "SSN" },
+                    "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Declaration", "arguments": [] }
+                }]
+            } }
+        }),
+    );
+
     let (fixtures, load_errors) = fixture::load_all(&dir);
     assert!(
         load_errors.is_empty(),
@@ -228,7 +278,7 @@ fn passes_a_correct_fixture_for_each_supported_op() {
     );
     assert_eq!(
         fixtures.len(),
-        17,
+        20,
         "expected one fixture per write_fixture call"
     );
 

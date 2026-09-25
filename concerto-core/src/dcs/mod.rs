@@ -4,7 +4,9 @@
 //! objects against a loaded [`ModelManager`] — plus [`extractor`], the
 //! companion port of `DecoratorExtractor` (`src/decoratorextractor.ts`) that
 //! runs the same command set model in reverse, pulling decorators back out
-//! of a model into a command set and a vocabulary file.
+//! of a model into a command set and a vocabulary file, and
+//! [`dcsconverter`], the port of `src/dcsconverter.ts`'s `jsonToYaml`/
+//! `yamlToJson` (the short DCS YAML format).
 //!
 //! Both TS classes work on the metamodel AST as plain, dynamically shaped
 //! objects (`ModelFile.getAst()`, mutated with `rfdc` and fed back through
@@ -25,19 +27,27 @@
 //! nor a generic `Serializer` exists in this crate yet (`BaseModelManager`'s
 //! own `addCTOModel`/`getAst`/`fromAst`/`filter` are ledger-classified for
 //! P2-08+P4-08, not this task's P1-04/P1-05/P1-07/P2-07 dependencies), so
-//! that schema-conformance check is not ported here: [`migrate_and_validate`]
-//! runs the migration and, when asked, the per-command [`validate_command`]
-//! checks (both fully RUST-classified and self-contained), but does not
-//! reject a command set that is structurally invalid against `DCS_MODEL`
-//! itself (a JSON shape check `Serializer.fromJSON` would catch, e.g. a
-//! command missing `target` entirely). Ported instead: [`decorate_models`]
+//! that check cannot be *run through* `Serializer.fromJSON` here. Instead,
+//! [`validate_dcs_structure`] hand-checks the command set against the same
+//! `DCS_MODEL` shape directly (required/optional fields, the `CommandType`/
+//! `MapElement` enums) — reachable through [`migrate_and_validate`]'s new
+//! `should_validate` parameter (`DecorateOptions::validate`), matching where
+//! the reference's `shouldValidate` gates both the schema check and, nested
+//! inside it, `shouldValidateCommands`'s per-command semantic check. This
+//! closes the gap the schema-conformance check exists for (rejecting a
+//! command set with no `commands` array, or a command missing `target`),
+//! but its error text, class and location are this port's own, not a
+//! byte-for-byte match of what `Serializer.fromJSON` throws — that remains
+//! unported (module doc comment above). [`decorate_models`] separately
 //! builds its `ModelManager` from real [`ModelFile::ast`] values via
 //! [`ModelManager::add_models`], not from CTO text — the same substitution
 //! `ModelManager::add_model`'s own doc comment already makes for the loader
 //! this borrows.
+pub mod dcsconverter;
 pub mod extractor;
 mod yaml_quote;
 
+pub use dcsconverter::{json_to_yaml, yaml_to_json};
 pub use yaml_quote::{DECORATOR_STRING_TYPE, quote_string_value};
 
 use std::collections::HashMap;
@@ -646,6 +656,19 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         }
     }
 
+    // TS: "the guard above throws unless modelFile was resolved for the
+    // namespace" — this runs whenever both `namespace` and `declaration` are
+    // given, regardless of `property`/`properties`, so a command that names
+    // no property still has its declaration checked.
+    if let (Some(_), Some(declaration)) = (
+        target.get("namespace").and_then(Value::as_str),
+        target.get("declaration").and_then(Value::as_str),
+    ) {
+        let model_file = resolved_model_file.expect("guarded above: namespace resolved or errored");
+        let fqn = format!("{}.{declaration}", model_file.namespace());
+        resolve_type(model_manager, "DecoratorCommand.target.declaration", &fqn)?;
+    }
+
     if target.get("properties").is_some() && target.get("property").is_some() {
         return Err(ContractError::pre_port(
             ErrorKind::Error,
@@ -700,16 +723,23 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
 /// `validateCommand` calls it: `type_name` resolves if it is a primitive, or
 /// if its namespace has a loaded model file that recognises it (as a local
 /// declaration, primitive, or import) under that exact fully-qualified name.
+/// Errors use the reference's own catalogue templates
+/// (`modelmanager-resolvetype-nonsfortype`/`-notypeinnsforcontext`,
+/// `messages/en.json`), so message text matches `BaseModelManager.resolveType`
+/// byte for byte.
 fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) -> Result<()> {
     if model_util::is_primitive_type(type_name) {
         return Ok(());
     }
     let ns = model_util::get_namespace(Some(type_name))?;
     let Some(mf) = model_manager.model_file(ns) else {
-        return Err(ContractError::pre_port(
+        return Err(ContractError::new(
             ErrorKind::IllegalModel,
-            format!("No model namespace for type \"{type_name}\" while validating \"{context}\""),
-            None,
+            "modelmanager-resolvetype-nonsfortype",
+            vec![
+                ("type", type_name.to_string()),
+                ("context", context.to_string()),
+            ],
         )
         .into());
     };
@@ -717,27 +747,199 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
     if mf.resolve_local_type(short).as_deref() == Some(type_name) {
         Ok(())
     } else {
-        Err(ContractError::pre_port(
+        Err(ContractError::new(
             ErrorKind::IllegalModel,
-            format!(
-                "Model namespace \"{}\" has no type \"{type_name}\" while validating \"{context}\"",
-                mf.namespace()
-            ),
-            None,
+            "modelmanager-resolvetype-notypeinnsforcontext",
+            vec![
+                ("context", context.to_string()),
+                ("type", type_name.to_string()),
+                ("namespace", mf.namespace().to_string()),
+            ],
         )
         .into())
     }
 }
 
-/// `DecoratorManager.migrateAndValidate` (`src/decoratormanager.ts`), minus
-/// the `Serializer.fromJSON` schema-conformance check the module doc comment
-/// explains is not yet portable: migrates each command set's `$class` to
-/// [`DCS_VERSION`] when `should_migrate`, then, when `should_validate_commands`,
-/// runs [`validate_command`] over every command of every set.
+fn structural_error(message: impl Into<String>) -> ContractError {
+    ContractError::pre_port(ErrorKind::Error, message.into(), None)
+}
+
+fn require_string_field(obj: &Map<String, Value>, key: &str, context: &str) -> Result<()> {
+    match obj.get(key) {
+        Some(Value::String(_)) => Ok(()),
+        Some(_) => Err(structural_error(format!("{context} must be a string")).into()),
+        None => Err(structural_error(format!("{context} is required")).into()),
+    }
+}
+
+/// A hand-written structural conformance check of `decorator_command_set`
+/// against `DCS_MODEL` (`org.accordproject.decoratorcommands@0.4.0`,
+/// `src/decoratormanager.ts`) — required/optional fields and the
+/// `CommandType`/`MapElement` enums — standing in for
+/// `Serializer.fromJSON(decoratorCommandSet)`, which no generic
+/// `Serializer`/`addCTOModel` exists yet in this crate to run (module doc
+/// comment: `DecoratorManager.validate`/`migrateAndValidate`). Reachable
+/// through [`migrate_and_validate`]'s `should_validate` and
+/// [`DecorateOptions::validate`].
+///
+/// This closes the gap the schema-conformance check exists for — reject a
+/// command set with no `commands` array, a command missing `target`, an
+/// unrecognised `CommandType`/`MapElement` value — but its error text,
+/// class and location are this port's own, not a match for what
+/// `Serializer.fromJSON` throws.
+pub fn validate_dcs_structure(decorator_command_set: &Value) -> Result<()> {
+    let obj = decorator_command_set
+        .as_object()
+        .ok_or_else(|| structural_error("a decorator command set must be an object"))?;
+    require_string_field(obj, "name", "DecoratorCommandSet.name")?;
+    require_string_field(obj, "version", "DecoratorCommandSet.version")?;
+    if let Some(includes) = obj.get("includes") {
+        let arr = includes
+            .as_array()
+            .ok_or_else(|| structural_error("DecoratorCommandSet.includes must be an array"))?;
+        for (i, inc) in arr.iter().enumerate() {
+            let inc_obj = inc.as_object().ok_or_else(|| {
+                structural_error(format!(
+                    "DecoratorCommandSet.includes[{i}] must be an object"
+                ))
+            })?;
+            require_string_field(
+                inc_obj,
+                "name",
+                &format!("DecoratorCommandSet.includes[{i}].name"),
+            )?;
+            require_string_field(
+                inc_obj,
+                "version",
+                &format!("DecoratorCommandSet.includes[{i}].version"),
+            )?;
+        }
+    }
+    let commands = obj
+        .get("commands")
+        .ok_or_else(|| structural_error("DecoratorCommandSet.commands is required"))?
+        .as_array()
+        .ok_or_else(|| structural_error("DecoratorCommandSet.commands must be an array"))?;
+    for (i, command) in commands.iter().enumerate() {
+        validate_command_structure(command, i)?;
+    }
+    Ok(())
+}
+
+fn validate_command_structure(command: &Value, index: usize) -> Result<()> {
+    let obj = command
+        .as_object()
+        .ok_or_else(|| structural_error(format!("commands[{index}] must be an object")))?;
+    let target = obj
+        .get("target")
+        .ok_or_else(|| structural_error(format!("commands[{index}].target is required")))?;
+    validate_command_target_structure(target, index)?;
+    let decorator = obj
+        .get("decorator")
+        .ok_or_else(|| structural_error(format!("commands[{index}].decorator is required")))?;
+    validate_decorator_structure(decorator, index)?;
+    let ty = obj
+        .get("type")
+        .ok_or_else(|| structural_error(format!("commands[{index}].type is required")))?
+        .as_str()
+        .ok_or_else(|| structural_error(format!("commands[{index}].type must be a string")))?;
+    if !matches!(ty, "UPSERT" | "APPEND") {
+        return Err(structural_error(format!(
+            "commands[{index}].type must be UPSERT or APPEND, found {ty:?}"
+        ))
+        .into());
+    }
+    if let Some(dn) = obj.get("decoratorNamespace")
+        && !dn.is_string()
+    {
+        return Err(structural_error(format!(
+            "commands[{index}].decoratorNamespace must be a string"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_command_target_structure(target: &Value, index: usize) -> Result<()> {
+    let obj = target
+        .as_object()
+        .ok_or_else(|| structural_error(format!("commands[{index}].target must be an object")))?;
+    for key in ["namespace", "declaration", "property", "type"] {
+        if let Some(v) = obj.get(key)
+            && !v.is_string()
+        {
+            return Err(structural_error(format!(
+                "commands[{index}].target.{key} must be a string"
+            ))
+            .into());
+        }
+    }
+    if let Some(v) = obj.get("properties") {
+        let arr = v.as_array().ok_or_else(|| {
+            structural_error(format!(
+                "commands[{index}].target.properties must be an array"
+            ))
+        })?;
+        if arr.iter().any(|p| !p.is_string()) {
+            return Err(structural_error(format!(
+                "commands[{index}].target.properties must be an array of strings"
+            ))
+            .into());
+        }
+    }
+    if let Some(v) = obj.get("mapElement") {
+        let s = v.as_str().ok_or_else(|| {
+            structural_error(format!(
+                "commands[{index}].target.mapElement must be a string"
+            ))
+        })?;
+        if !matches!(s, "KEY" | "VALUE" | "KEY_VALUE") {
+            return Err(structural_error(format!(
+                "commands[{index}].target.mapElement must be KEY, VALUE or KEY_VALUE, found {s:?}"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_decorator_structure(decorator: &Value, index: usize) -> Result<()> {
+    let obj = decorator.as_object().ok_or_else(|| {
+        structural_error(format!("commands[{index}].decorator must be an object"))
+    })?;
+    require_string_field(obj, "name", &format!("commands[{index}].decorator.name"))?;
+    if let Some(args) = obj.get("arguments") {
+        let arr = args.as_array().ok_or_else(|| {
+            structural_error(format!(
+                "commands[{index}].decorator.arguments must be an array"
+            ))
+        })?;
+        for (j, arg) in arr.iter().enumerate() {
+            if !arg.is_object() {
+                return Err(structural_error(format!(
+                    "commands[{index}].decorator.arguments[{j}] must be an object"
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `DecoratorManager.migrateAndValidate` (`src/decoratormanager.ts`):
+/// migrates each command set's `$class` to [`DCS_VERSION`] when
+/// `should_migrate`, then, when `should_validate` — matching the reference's
+/// nesting, *only* then — checks each command set against [`DCS_VERSION`]'s
+/// shape with [`validate_dcs_structure`] and, when also
+/// `should_validate_commands`, runs [`validate_command`] over every command.
+/// `should_validate_commands` alone (`should_validate` false) validates
+/// nothing at all, exactly as the reference's `if (shouldValidate) { ...
+/// if (shouldValidateCommands) {...} }` does.
 pub fn migrate_and_validate(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
     should_migrate: bool,
+    should_validate: bool,
     should_validate_commands: bool,
 ) -> Result<()> {
     if should_migrate {
@@ -747,10 +949,13 @@ pub fn migrate_and_validate(
             }
         }
     }
-    if should_validate_commands {
+    if should_validate {
         for command_set in decorator_command_sets.iter() {
-            if let Some(commands) = command_set.get("commands").and_then(Value::as_array) {
-                for command in commands {
+            validate_dcs_structure(command_set)?;
+            if should_validate_commands {
+                // `validate_dcs_structure` already established `commands` is
+                // an array of objects with a `target`.
+                for command in command_set["commands"].as_array().expect("checked above") {
                     validate_command(model_manager, command)?;
                 }
             }
@@ -760,14 +965,17 @@ pub fn migrate_and_validate(
 }
 
 /// Options for [`decorate_models`]. `DecoratorManager.decorateModels`'s
-/// `options` object (`src/decoratormanager.ts`); `validate` alone (schema
-/// conformance with no per-command check) is omitted, since that half is not
-/// ported (the module doc comment).
+/// `options` object (`src/decoratormanager.ts`).
 #[derive(Debug, Clone, Default)]
 pub struct DecorateOptions {
     /// Migrate every command set's `$class` to [`DCS_VERSION`] first.
     pub migrate: bool,
-    /// Run [`validate_command`] over every command first.
+    /// Check every command set against `DCS_MODEL`'s shape first
+    /// ([`validate_dcs_structure`]). Gates [`validate_commands`](Self::validate_commands),
+    /// matching the reference (see [`migrate_and_validate`]'s doc comment).
+    pub validate: bool,
+    /// Run [`validate_command`] over every command, when [`validate`](Self::validate) is
+    /// also set.
     pub validate_commands: bool,
     /// The namespace to use for a decorator (or a type-reference argument)
     /// that names none of its own.
@@ -806,6 +1014,7 @@ pub fn decorate_models(
         model_manager,
         &mut command_sets,
         options.migrate,
+        options.validate,
         options.validate_commands,
     )?;
 
@@ -1268,6 +1477,54 @@ mod tests {
     }
 
     #[test]
+    fn validate_command_rejects_a_declaration_that_does_not_exist() {
+        // `test/decoratormanager.js` "#validateCommand should detect invalid
+        // target declaration": a namespace that resolves but a declaration
+        // that does not, with *no* `property`/`properties` — TS's
+        // `resolveType('DecoratorCommand.target.declaration', fqn)` still
+        // runs and throws (this is what the missing declaration-resolution
+        // check let through silently before this fix).
+        let mgr = sample_manager();
+        let command =
+            json!({ "target": { "namespace": "org.acme@1.0.0", "declaration": "Missing" } });
+        let err = match validate_command(&mgr, &command) {
+            Ok(()) => panic!("expected a declaration-does-not-exist error"),
+            Err(e) => e,
+        };
+        // TS: `No type "org.acme@1.0.0.Missing" in namespace "org.acme@1.0.0"
+        // for "DecoratorCommand.target.declaration".` (golden catalogue text,
+        // `modelmanager-resolvetype-notypeinnsforcontext`).
+        assert_eq!(
+            err.to_string(),
+            "No type \"org.acme@1.0.0.Missing\" in namespace \"org.acme@1.0.0\" for \"DecoratorCommand.target.declaration\"."
+        );
+    }
+
+    #[test]
+    fn validate_command_rejects_an_unrecognised_target_type() {
+        let mgr = sample_manager();
+        let command = json!({ "target": { "type": "concerto.metamodel@1.0.0.Foo" } });
+        let err = match validate_command(&mgr, &command) {
+            Ok(()) => panic!("expected an unrecognised-type error"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("Foo"), "{err}");
+    }
+
+    #[test]
+    fn validate_command_rejects_properties_containing_a_property_that_does_not_exist() {
+        let mgr = sample_manager();
+        let command = json!({
+            "target": { "namespace": "org.acme@1.0.0", "declaration": "Person", "properties": ["name", "nope"] }
+        });
+        let err = match validate_command(&mgr, &command) {
+            Ok(()) => panic!("expected a property-does-not-exist error"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
     fn validate_command_rejects_both_property_and_properties() {
         let mgr = sample_manager();
         let command = json!({ "target": { "property": "a", "properties": ["b"] } });
@@ -1399,5 +1656,139 @@ mod tests {
         let decorators = ast["declarations"][0]["decorators"].as_array().unwrap();
         assert_eq!(decorators.len(), 1);
         assert_eq!(decorators[0]["arguments"][0]["value"], "yes");
+    }
+
+    fn valid_command_set() -> Value {
+        json!({
+            "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+            "name": "web",
+            "version": "1.0.0",
+            "commands": [{
+                "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                "type": "UPSERT",
+                "target": { "namespace": "org.acme@1.0.0", "declaration": "Person" },
+                "decorator": { "name": "Important" }
+            }]
+        })
+    }
+
+    #[test]
+    fn validate_dcs_structure_accepts_a_well_formed_command_set() {
+        assert!(validate_dcs_structure(&valid_command_set()).is_ok());
+    }
+
+    #[test]
+    fn validate_dcs_structure_rejects_a_command_set_with_no_commands_array() {
+        // The bug this closes: `.and_then(Value::as_array)` silently
+        // skipping a missing `commands` (used to make `migrate_and_validate`
+        // accept this).
+        let mut command_set = valid_command_set();
+        command_set.as_object_mut().unwrap().remove("commands");
+        let err = validate_dcs_structure(&command_set).unwrap_err();
+        assert!(err.to_string().contains("commands"), "{err}");
+    }
+
+    #[test]
+    fn validate_dcs_structure_rejects_a_command_missing_target() {
+        let mut command_set = valid_command_set();
+        command_set["commands"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("target");
+        let err = validate_dcs_structure(&command_set).unwrap_err();
+        assert!(err.to_string().contains("target"), "{err}");
+    }
+
+    #[test]
+    fn validate_dcs_structure_rejects_an_unknown_command_type() {
+        let mut command_set = valid_command_set();
+        command_set["commands"][0]["type"] = json!("DELETE");
+        assert!(validate_dcs_structure(&command_set).is_err());
+    }
+
+    #[test]
+    fn validate_dcs_structure_rejects_a_non_object_command_set() {
+        assert!(validate_dcs_structure(&json!("not a command set")).is_err());
+        assert!(validate_dcs_structure(&json!(null)).is_err());
+    }
+
+    #[test]
+    fn migrate_and_validate_with_should_validate_false_accepts_a_structurally_invalid_set_unchanged()
+     {
+        // Matches the reference: `shouldValidateCommands` alone, with
+        // `shouldValidate` false, runs no check at all (TS nests the whole
+        // block, including the per-command loop, inside `if (shouldValidate)`).
+        let mgr = sample_manager();
+        let mut sets = [json!({ "name": "x", "version": "1.0.0" })]; // no "commands" at all
+        assert!(migrate_and_validate(&mgr, &mut sets, false, false, true).is_ok());
+    }
+
+    #[test]
+    fn migrate_and_validate_with_should_validate_true_rejects_a_missing_commands_array() {
+        let mgr = sample_manager();
+        let mut sets = [json!({ "name": "x", "version": "1.0.0" })];
+        let err = migrate_and_validate(&mgr, &mut sets, false, true, false).unwrap_err();
+        assert!(err.to_string().contains("commands"), "{err}");
+    }
+
+    #[test]
+    fn migrate_and_validate_with_should_validate_true_rejects_a_command_missing_target() {
+        let mgr = sample_manager();
+        let mut command_set = valid_command_set();
+        command_set["commands"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("target");
+        let mut sets = [command_set];
+        let err = migrate_and_validate(&mgr, &mut sets, false, true, false).unwrap_err();
+        assert!(err.to_string().contains("target"), "{err}");
+    }
+
+    #[test]
+    fn migrate_and_validate_runs_command_validation_only_when_both_flags_are_set() {
+        let mgr = sample_manager();
+        // A structurally valid command whose target references a namespace
+        // that does not exist: only `validate_command` (semantic) catches
+        // this, and only when both `should_validate` and
+        // `should_validate_commands` are true.
+        let mut command_set = valid_command_set();
+        command_set["commands"][0]["target"] = json!({ "namespace": "does.not.exist@1.0.0" });
+        let mut sets = [command_set.clone()];
+        assert!(migrate_and_validate(&mgr, &mut sets, false, true, false).is_ok());
+
+        let mut sets = [command_set];
+        let err = migrate_and_validate(&mgr, &mut sets, false, true, true).unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn decorate_models_validate_option_rejects_a_structurally_invalid_command_set() {
+        let mgr = sample_manager();
+        let mut command_set = valid_command_set();
+        command_set.as_object_mut().unwrap().remove("commands");
+        let options = DecorateOptions {
+            validate: true,
+            ..Default::default()
+        };
+        let err = decorate_models(&mgr, std::slice::from_ref(&command_set), &options).unwrap_err();
+        assert!(err.to_string().contains("commands"), "{err}");
+    }
+
+    #[test]
+    fn decorate_models_default_options_still_accept_a_structurally_invalid_command_set() {
+        // `validate` defaults to `false` (`DecorateOptions::default()`), so
+        // `decorate_models` on its own does not reject this — matching the
+        // reference, where `options?.validate` is likewise opt-in.
+        let mgr = sample_manager();
+        let mut command_set = valid_command_set();
+        command_set.as_object_mut().unwrap().remove("commands");
+        assert!(
+            decorate_models(
+                &mgr,
+                std::slice::from_ref(&command_set),
+                &DecorateOptions::default()
+            )
+            .is_ok()
+        );
     }
 }

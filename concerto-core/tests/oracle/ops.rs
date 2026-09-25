@@ -37,7 +37,23 @@
 //!   `mfnew` recipe argument, never a `declref`, so it needs no arena
 //!   handle). Every other declaration kind's `declnew` still needs P4-07,
 //!   which closes this in general.
+//! - **DCS (task P2-12), plain-data ops only**: `DecoratorManager.falsyOrEqual`
+//!   and `DcsConverter.jsonToYaml`/`yamlToJson` (`crate::dcs`). Not wired:
+//!   every other `DecoratorManager`/`DcsConverter`/`DecoratorExtractor`
+//!   static either takes or builds a `ModelManager` (`decorateModels`,
+//!   `migrateAndValidate`, `validateCommand`, `validate`, which need
+//!   `exec_handles`' `ModelManager` recipe machinery, P2-08), or mutates a
+//!   plain-data argument in place — `migrateTo`, `canMigrate`,
+//!   `checkForDuplicateDecorators` — whose fixtures compare that mutation
+//!   through `outcome.effects.args` (`compare.rs` already diffs the whole
+//!   outcome, `effects` included, so this would just need each such op's
+//!   dispatch arm to build that shape, not new comparison logic; left for
+//!   whichever task ports the ledger's remaining RUST members of those three
+//!   files). Verified against three hand-authored fixtures in `self_test.rs`
+//!   (this checkout carries no recorded corpus — see
+//!   `replays_the_oracle_corpus`'s doc comment in `main.rs`).
 
+use concerto_core::dcs;
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::declaration::ClassDeclaration;
 use concerto_core::introspect::model_file::ModelFile;
@@ -189,7 +205,7 @@ pub fn exec(h: &Harness, op: &str, inputs: &Inputs) -> Dispatch {
 
 /// The ops whose arguments are plain data only. `None` for any other op.
 fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
-    const PLAIN_OPS: [&str; 14] = [
+    const PLAIN_OPS: [&str; 17] = [
         "ModelUtil.getShortName",
         "ModelUtil.getNamespace",
         "ModelUtil.parseNamespace",
@@ -204,6 +220,17 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         "ModelUtil.isValidMapKey",
         "ModelUtil.isValidMapValue",
         "TypeNotFoundException.new",
+        // DCS (task P2-12): the three `DecoratorManager`/`DcsConverter`
+        // statics that take (and return) plain data only — no `ModelManager`
+        // receiver or handle, so they need none of `exec_handles`' recipe
+        // machinery. `DecoratorManager.decorateModels`/`migrateAndValidate`/
+        // `validateCommand`/`validate` all take or build a `ModelManager` and
+        // are not wired here yet (P2-08's `ModelManager` port, and the
+        // effects-on-a-mutated-argument protocol `migrateTo`/`canMigrate`'s
+        // fixtures would also need, are still open).
+        "DecoratorManager.falsyOrEqual",
+        "DcsConverter.jsonToYaml",
+        "DcsConverter.yamlToJson",
     ];
     if !PLAIN_OPS.contains(&op) {
         return None;
@@ -357,6 +384,40 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
                     "component": component,
                 }
             }))
+        }
+        // `DecoratorManager.falsyOrEqual(test, values)` (`src/decoratormanager.ts`):
+        // `test` is `null`/`undefined`/a string/a string array (a command
+        // target field); `values` is always a string array. TS never
+        // throws here, so the outcome is always `ok`.
+        "DecoratorManager.falsyOrEqual" => {
+            let arg0 = decode::arg(&args, 0);
+            let test = decode::as_value(&arg0).cloned();
+            let arg1 = decode::arg(&args, 1);
+            let Some(Value::Array(values)) = decode::as_value(&arg1) else {
+                bad_args!()
+            };
+            let Some(values): Option<Vec<&str>> = values.iter().map(Value::as_str).collect() else {
+                bad_args!()
+            };
+            Ok(Value::Bool(dcs::falsy_or_equal(test.as_ref(), &values)))
+        }
+        // `DcsConverter.jsonToYaml(dcsJson)` (`src/dcsconverter.ts`, called
+        // through `DecoratorManager.jsonToYaml`'s thin wrapper — the recorder
+        // records at `decoratorManagerStatics`' boundary, `DcsConverter` is
+        // `ops.js`'s own name for the module's directly-recorded statics).
+        "DcsConverter.jsonToYaml" => {
+            let arg0 = decode::arg(&args, 0);
+            let Some(dcs_json) = decode::as_value(&arg0) else {
+                bad_args!()
+            };
+            dcs::json_to_yaml(dcs_json).map(Value::String)
+        }
+        "DcsConverter.yamlToJson" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(yaml_string) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            dcs::yaml_to_json(yaml_string)
         }
         _ => unreachable!("PLAIN_OPS lists every arm"),
     };

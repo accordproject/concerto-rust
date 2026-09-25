@@ -157,7 +157,27 @@ fn would_fold(value: &str) -> bool {
 /// (`DecoratorExtractor.quoteStringValue`)? See the module doc comment for
 /// why every branch but the reference's final "plain, unfolded" one can be
 /// collapsed into `true` here.
+///
+/// `yaml.stringify`'s default schema is `core`, which is where
+/// [`CORE_SCHEMA_TYPES`]' tag-collision check comes from (a plain scalar
+/// that would read back as `null`/a bool/a number must be quoted). Shared
+/// with [`needs_quoting_failsafe`] via [`needs_quoting_with`].
 fn needs_quoting(value: &str) -> bool {
+    needs_quoting_with(value, true)
+}
+
+/// The same decision as [`needs_quoting`], for the `failsafe` schema
+/// (`dcsconverter.ts`'s `yaml.stringify(_, {schema: 'failsafe'})`): drops
+/// the core-schema tag-collision check, since `failsafe` has no
+/// null/bool/int/float tags to collide with (only `str`/`seq`/`map`) —
+/// confirmed against the reference (`yaml@2.8.3`): under `failsafe`,
+/// `"true"`, `"2.5"` and `"null"` all render as unquoted plain scalars,
+/// where the default `core` schema quotes every one of them.
+pub(crate) fn needs_quoting_failsafe(value: &str) -> bool {
+    needs_quoting_with(value, false)
+}
+
+fn needs_quoting_with(value: &str, check_core_schema_types: bool) -> bool {
     if has_control_character(value) {
         return true;
     }
@@ -175,7 +195,7 @@ fn needs_quoting(value: &str) -> bool {
     if DOCUMENT_MARKER.find(value).is_some() {
         return true;
     }
-    if CORE_SCHEMA_TYPES.iter().any(|re| re.find(value).is_some()) {
+    if check_core_schema_types && CORE_SCHEMA_TYPES.iter().any(|re| re.find(value).is_some()) {
         return true;
     }
     would_fold(value)
@@ -190,6 +210,15 @@ fn needs_quoting(value: &str) -> bool {
 /// `Value::String` does.
 fn json_quote(value: &str) -> String {
     serde_json::to_string(value).expect("a &str always serialises")
+}
+
+/// [`json_quote`], for [`dcsconverter`](crate::dcs::dcsconverter): the
+/// double-quoted rendering this crate picks (see
+/// [`dcsconverter::render_scalar_failsafe`](crate::dcs::dcsconverter))
+/// whenever a `failsafe`-schema plain scalar isn't safe
+/// ([`needs_quoting_failsafe`]).
+pub(crate) fn json_quote_for_dcsconverter(value: &str) -> String {
+    json_quote(value)
 }
 
 /// A value safe for embedding in a YAML scalar. String values containing
