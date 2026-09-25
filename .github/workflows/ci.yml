@@ -27,6 +27,12 @@ jobs:
         run: rustup component add rustfmt && cargo fmt -p accordproject-concerto-core -- --check
       - name: Clippy (concerto-core)
         run: rustup component add clippy && cargo clippy -p accordproject-concerto-core --no-deps --all-targets -- -D warnings
+      - name: Format check (concerto-wasm)
+        run: cargo fmt --manifest-path concerto-wasm/Cargo.toml -- --check
+      - name: Clippy (concerto-wasm, wasm32)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo clippy --manifest-path concerto-wasm/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
       - name: Build
         run: cargo build --verbose --workspace --all-targets
       # This job has no oracle fixture corpus (it lives, generated, in an
