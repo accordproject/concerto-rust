@@ -601,6 +601,131 @@ mod tests {
         );
     }
 
+    // ---- P2-02 additions (StringValidator, CollectionSizeValidator) ----
+
+    #[test]
+    fn golden_stringvalidator_constructor_invalidlength() {
+        assert_eq!(
+            contract("stringvalidator-constructor-invalidlength", &[]).message(),
+            "Invalid string length, minLength and-or maxLength must be specified."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_constructor_negativelength() {
+        assert_eq!(
+            contract("stringvalidator-constructor-negativelength", &[]).message(),
+            "minLength and-or maxLength must be positive integers."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_constructor_mingreaterthanmax() {
+        assert_eq!(
+            contract("stringvalidator-constructor-mingreaterthanmax", &[]).message(),
+            "minLength must be less than or equal to maxLength."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_constructor_invalidregex() {
+        assert_eq!(
+            contract(
+                "stringvalidator-constructor-invalidregex",
+                &[(
+                    "message",
+                    "Invalid regular expression: /^[A-z/: unterminated character class"
+                )]
+            )
+            .message(),
+            "Invalid regular expression: /^[A-z/: unterminated character class"
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_validate_belowminlength() {
+        assert_eq!(
+            contract(
+                "stringvalidator-validate-belowminlength",
+                &[("value", "w"), ("minLength", "2")]
+            )
+            .message(),
+            "The string length of 'w' should be at least 2 characters."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_validate_abovemaxlength() {
+        assert_eq!(
+            contract(
+                "stringvalidator-validate-abovemaxlength",
+                &[("value", "ABCD1234567"), ("maxLength", "10")]
+            )
+            .message(),
+            "The string length of 'ABCD1234567' should not exceed 10 characters."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_validate_regexmismatch() {
+        assert_eq!(
+            contract(
+                "stringvalidator-validate-regexmismatch",
+                &[("value", "xyz"), ("regex", "/^[A-z][A-z][0-9]{7}/")]
+            )
+            .message(),
+            "Value 'xyz' failed to match validation regex: /^[A-z][A-z][0-9]{7}/"
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_constructor_nosize() {
+        assert_eq!(
+            contract("collectionsizevalidator-constructor-nosize", &[]).message(),
+            "Invalid collection size, minSize and/or maxSize must be specified."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_constructor_negativesize() {
+        assert_eq!(
+            contract("collectionsizevalidator-constructor-negativesize", &[]).message(),
+            "minSize and/or maxSize must be positive integers."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_constructor_mingreaterthanmax() {
+        assert_eq!(
+            contract("collectionsizevalidator-constructor-mingreaterthanmax", &[]).message(),
+            "minSize must be less than or equal to maxSize."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_validate_belowminsize() {
+        assert_eq!(
+            contract(
+                "collectionsizevalidator-validate-belowminsize",
+                &[("minSize", "2")]
+            )
+            .message(),
+            "Collection must contain at least 2 elements."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_validate_abovemaxsize() {
+        assert_eq!(
+            contract(
+                "collectionsizevalidator-validate-abovemaxsize",
+                &[("maxSize", "3")]
+            )
+            .message(),
+            "Collection must contain no more than 3 elements."
+        );
+    }
+
     #[test]
     fn golden_engine_typeerror_readproperties() {
         assert_eq!(
@@ -622,6 +747,82 @@ mod tests {
             )
             .message(),
             "imp.types.forEach is not a function"
+        );
+    }
+
+    // ---- P2-01 review fix: ResourceId (src/model/resourceid.ts) ----
+
+    #[test]
+    fn golden_resourceid_constructor_missingnamespace() {
+        assert_eq!(
+            contract("resourceid-constructor-missingnamespace", &[]).message(),
+            "Missing namespace"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_constructor_missingtype() {
+        assert_eq!(
+            contract("resourceid-constructor-missingtype", &[]).message(),
+            "Missing type"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_constructor_missingid() {
+        assert_eq!(
+            contract("resourceid-constructor-missingid", &[]).message(),
+            "Missing id"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_parseuri_invalidport() {
+        assert_eq!(
+            contract("resourceid-parseuri-invalidport", &[]).message(),
+            "Invalid port"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_fromuri_invaliduri() {
+        assert_eq!(
+            contract(
+                "resourceid-fromuri-invaliduri",
+                &[(
+                    "uri",
+                    "resource://NOT-A-URI:SUCH-WRONG/org.acme.l1@1.0.0.Person#123"
+                )]
+            )
+            .message(),
+            "Invalid URI: resource://NOT-A-URI:SUCH-WRONG/org.acme.l1@1.0.0.Person#123"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_fromuri_invalidscheme() {
+        assert_eq!(
+            contract(
+                "resourceid-fromuri-invalidscheme",
+                &[("uri", "banana:org.acme.l1@1.0.0.Person#123")]
+            )
+            .message(),
+            "Invalid URI scheme: banana:org.acme.l1@1.0.0.Person#123"
+        );
+    }
+
+    #[test]
+    fn golden_resourceid_fromuri_invalidformat() {
+        assert_eq!(
+            contract(
+                "resourceid-fromuri-invalidformat",
+                &[(
+                    "uri",
+                    "resource://USER:PASSWORD@HOSTNAME:1567/org.acme.l1@1.0.0.Person#123"
+                )]
+            )
+            .message(),
+            "Invalid resource URI format: resource://USER:PASSWORD@HOSTNAME:1567/org.acme.l1@1.0.0.Person#123"
         );
     }
 
@@ -907,6 +1108,30 @@ mod tests {
             )
             .message(),
             "Class \"Foo\" has more than one field named \"bar\"."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_getnestedproperty_doesnotexist() {
+        assert_eq!(
+            contract(
+                "classdeclaration-getnestedproperty-doesnotexist",
+                &[("propertyName", "missing"), ("fqn", "org.acme@1.0.0.Foo")]
+            )
+            .message(),
+            "Property missing does not exist on org.acme@1.0.0.Foo"
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_getnestedproperty_primitiveorenum() {
+        assert_eq!(
+            contract(
+                "classdeclaration-getnestedproperty-primitiveorenum",
+                &[("propertyName", "bar"), ("propertyPath", "foo.bar.baz")]
+            )
+            .message(),
+            "Property bar is a primitive or enum. Invalid property path: foo.bar.baz"
         );
     }
 

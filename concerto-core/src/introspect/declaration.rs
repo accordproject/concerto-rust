@@ -14,10 +14,11 @@ use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, Result};
+use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::{
-    DeclarationKind, Decorated, HasValidators, Named, Typed, declared_class, qualified_class,
+    DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
 };
 use crate::model_util::{
     MAP_KEY_KINDS, MAP_VALUE_KINDS, get_fully_qualified_name, get_short_name, is_valid_identifier,
@@ -90,10 +91,35 @@ macro_rules! class_field {
 /// not cover, so each property is kept as a [`Property`] (itself a newtype
 /// over its generated struct) and the generated struct's own `properties` is
 /// left empty.
+///
+/// Two more things are folded in at load time rather than read verbatim from
+/// the AST:
+///
+/// - `implicit_super_type`: a class whose AST carries no `superType` extends
+///   one implicitly, unless it is the system model's own `Concept`
+///   declaration (the root of the hierarchy, which has none). Which type is
+///   *not* uniformly `Concept` (TS: `ModelFile.fromAst`,
+///   src/introspect/modelfile.ts, not `ClassDeclaration.process`): an
+///   `Asset`/`Participant`/`Transaction`/`Event`-kind class defaults to its
+///   own kind (an asset with no `extends` implicitly extends `Asset`, and so
+///   on); only a `Concept`-kind class (or an enum, [`EnumDeclaration`]) falls
+///   back to `Concept` itself. [`super_type`] returns this whenever the AST
+///   itself has none, so every other member that reads it (resolution,
+///   `validate`, `toString`) sees the same single effective super type TS
+///   keeps in `this.superType`.
+/// - the `$identifier`/`$timestamp` system fields: [`ClassDeclaration::from_json`]
+///   appends them to `properties` the same way `addIdentifierField`/
+///   `addTimestampField` do, so [`own_properties`] carries them like any
+///   other field from here on.
+///
+/// [`super_type`]: ClassDeclaration::super_type
+/// [`own_properties`]: ClassDeclaration::own_properties
 #[derive(Debug, Clone)]
 pub struct ClassDeclaration {
     node: ClassNode,
     properties: Vec<Property>,
+    implicit_super_type: Option<mm::TypeIdentifier>,
+    decorators: Vec<Decorator>,
 }
 
 impl ClassDeclaration {
@@ -113,9 +139,16 @@ impl ClassDeclaration {
         class_field!(&self.node, d => d.is_abstract)
     }
 
-    /// The super type this declaration extends, if it extends one.
+    /// The super type this declaration extends. `None` only for the system
+    /// model's own `Concept` declaration, the root of the hierarchy; every
+    /// other class-like declaration has one, whether the AST names it
+    /// explicitly or, when the AST carries no `superType` at all, implicitly
+    /// (the struct doc comment).
+    ///
+    /// TS: after `ClassDeclaration.process` has run, `this.superType`
+    /// (src/introspect/classdeclaration.ts).
     pub fn super_type(&self) -> Option<&mm::TypeIdentifier> {
-        class_field!(&self.node, d => d.super_type.as_ref())
+        class_field!(&self.node, d => d.super_type.as_ref()).or(self.implicit_super_type.as_ref())
     }
 
     /// The properties declared directly on this type. Inherited properties are
@@ -130,15 +163,28 @@ impl ClassDeclaration {
         class_field!(&self.node, d => d.location.as_ref())
     }
 
-    /// True if the type has an identity, whether system-assigned or explicit.
+    /// True if this class declaration's own AST declares an identity,
+    /// whether system-assigned or explicit. Unlike TS's inherited
+    /// `isIdentified()` (src/introspect/classdeclaration.ts), this does not
+    /// walk the super type chain: it answers the same question as TS's own
+    /// `this.idField`, which is what the callers in this crate that gate on
+    /// it need (the `validate()` block this field controls, PORTING.md 2.1).
+    /// A subtype's *inherited* identity is [`ModelManager::identifier_field_name`]
+    /// (crate::model_manager::ModelManager::identifier_field_name).
     pub fn is_identified(&self) -> bool {
         self.identified().is_some()
     }
 
-    /// The name of the field that provides identity, for a type that is
-    /// identified by one of its own fields (`identified by field`). A
-    /// system-identified type (`identified`) or a type with no identity both
-    /// return `None`.
+    /// The name of the field that provides this class's own identity, for a
+    /// type that is identified by one of its own fields (`identified by
+    /// field`). A system-identified type (`identified`) or a type with no
+    /// own identity both return `None`; unlike
+    /// [`ClassDeclaration::is_identified`], never true from inheritance.
+    ///
+    /// TS: `ClassDeclaration.isExplicitlyIdentified` reduces to this exact
+    /// check (`!!this.idField && this.idField !== '$identifier'`): the
+    /// explicit branch always holds a name other than `$identifier`, so the
+    /// two are equivalent.
     pub fn identifier_field_name(&self) -> Option<&str> {
         match self.identified() {
             Some(mm::Identified::IdentifiedBy(by)) => Some(&by.name),
@@ -146,14 +192,127 @@ impl ClassDeclaration {
         }
     }
 
+    /// [`ClassDeclaration::identifier_field_name`], but also giving
+    /// `$identifier` for a system-identified type. This is the per-class
+    /// step [`ModelManager::identifier_field_name`]
+    /// (crate::model_manager::ModelManager::identifier_field_name) walks up
+    /// the super type chain: own explicit or system identity, or `None` to
+    /// keep climbing.
+    pub(crate) fn own_identifier_field_name(&self) -> Option<&str> {
+        match self.identified() {
+            Some(mm::Identified::IdentifiedBy(by)) => Some(&by.name),
+            Some(mm::Identified::Identified) => Some("$identifier"),
+            None => None,
+        }
+    }
+
     fn identified(&self) -> Option<&mm::Identified> {
         class_field!(&self.node, d => d.identified.as_ref())
     }
 
-    /// Reads the declaration fields into the generated struct for `kind`, then
-    /// each property into a [`Property`]. The properties are read from the
-    /// node itself, so the generated struct is given an empty list.
-    fn from_json(kind: ClassKind, value: &serde_json::Value) -> Result<Self> {
+    /// `true` if this class declaration's own AST declares an *explicit*
+    /// identifier (`identified by field`, never the system `identified`).
+    /// Never true from inheritance, matching [`ClassDeclaration::identifier_field_name`].
+    ///
+    /// TS: `ClassDeclaration.isExplicitlyIdentified` (src/introspect/classdeclaration.ts):
+    /// `!!this.idField && this.idField !== '$identifier'`, which
+    /// [`ClassDeclaration::identifier_field_name`]'s own doc comment already
+    /// notes reduces to this exact check.
+    pub fn is_explicitly_identified(&self) -> bool {
+        self.identifier_field_name().is_some()
+    }
+
+    /// `true` if this class is the definition of an asset.
+    ///
+    /// TS: `ClassDeclaration.isAsset` (src/introspect/classdeclaration.ts):
+    /// `this.type === AssetDeclaration $class`.
+    pub fn is_asset(&self) -> bool {
+        matches!(self.kind(), ClassKind::Asset)
+    }
+
+    /// `true` if this class is the definition of a participant.
+    ///
+    /// TS: `ClassDeclaration.isParticipant`.
+    pub fn is_participant(&self) -> bool {
+        matches!(self.kind(), ClassKind::Participant)
+    }
+
+    /// `true` if this class is the definition of a transaction.
+    ///
+    /// TS: `ClassDeclaration.isTransaction`.
+    pub fn is_transaction(&self) -> bool {
+        matches!(self.kind(), ClassKind::Transaction)
+    }
+
+    /// `true` if this class is the definition of an event.
+    ///
+    /// TS: `ClassDeclaration.isEvent`.
+    pub fn is_event(&self) -> bool {
+        matches!(self.kind(), ClassKind::Event)
+    }
+
+    /// `true` if this class is the definition of a concept.
+    ///
+    /// TS: `ClassDeclaration.isConcept`.
+    pub fn is_concept(&self) -> bool {
+        matches!(self.kind(), ClassKind::Concept)
+    }
+
+    /// `false`: a Rust [`ClassDeclaration`] is one of the five concept-like
+    /// kinds and is never an enum (enums are [`Declaration::Enum`]).
+    ///
+    /// TS: `ClassDeclaration.isEnum` (src/introspect/classdeclaration.ts):
+    /// `this.type === EnumDeclaration $class`, which is never true for one of
+    /// these five kinds; `EnumDeclaration` inherits the method unchanged, so
+    /// the oracle also records `true` results under this op, for an actual
+    /// `EnumDeclaration` receiver — those are `Declaration::is_enum_declaration`
+    /// instead (same check, TS's `this.type` and Rust's variant tag agree).
+    pub fn is_enum(&self) -> bool {
+        false
+    }
+
+    /// `false`: never true for one of the five concept-like kinds, for the
+    /// same reason as [`ClassDeclaration::is_enum`].
+    ///
+    /// TS: `ClassDeclaration.isMapDeclaration`.
+    pub fn is_map_declaration(&self) -> bool {
+        false
+    }
+
+    /// The string representation TS's `ClassDeclaration.toString`
+    /// (src/introspect/classdeclaration.ts) builds: `super_type_name` is the
+    /// raw (unqualified) name TS keeps in `this.superType` — the AST's own
+    /// `superType.name`, or the implicit `'Concept'` — never a resolved FQN.
+    pub fn to_string(fqn: &str, super_type_name: Option<&str>, is_abstract: bool) -> String {
+        let super_part = super_type_name.map_or_else(String::new, |n| format!(" super={n}"));
+        // `EnumDeclaration` overrides `toString`, so a `ClassDeclaration`
+        // receiver is never an enum here (`is_enum` above).
+        format!("ClassDeclaration {{id={fqn}{super_part} enum=false abstract={is_abstract}}}")
+    }
+
+    /// `true` for the system model's own `Concept` declaration: the root of
+    /// the class hierarchy, the one declaration that has no super type at
+    /// all, explicit or implicit.
+    ///
+    /// TS: the exemption in `ClassDeclaration.process`
+    /// (src/introspect/classdeclaration.ts): `this.modelFile.isSystemModelFile()
+    /// && this.name === 'Concept'`.
+    fn is_system_concept(namespace: &str, name: &str) -> bool {
+        is_system_model_namespace(namespace) && name == "Concept"
+    }
+
+    /// Reads the declaration fields into the generated struct for `kind`,
+    /// then each property into a [`Property`]. The properties are read from
+    /// the node itself, so the generated struct is given an empty list, then
+    /// the `$identifier`/`$timestamp` system fields are appended exactly as
+    /// `ClassDeclaration.process`'s `addIdentifierField`/`addTimestampField`
+    /// append them in TS: after the AST's own properties, bypassing the
+    /// per-property `isSystemProperty` guard that rejects a `$`-prefixed name
+    /// from the AST itself. `namespace` is the namespace of the model file
+    /// this declaration is being loaded into, needed for the implicit
+    /// `Concept` super type and to recognise the system model's own
+    /// `Transaction`/`Event` (below).
+    fn from_json(kind: ClassKind, value: &serde_json::Value, namespace: &str) -> Result<Self> {
         let mut fields = value.clone();
         if let Some(object) = fields.as_object_mut() {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
@@ -174,23 +333,121 @@ impl ClassDeclaration {
             }
             ClassKind::Event => ClassNode::Event(serde_json::from_value(fields).map_err(bad)?),
         };
+        let name = class_field!(&node, d => d.name.clone());
+
+        let implicit_super_type = if class_field!(&node, d => d.super_type.is_some())
+            || Self::is_system_concept(namespace, &name)
+        {
+            None
+        } else {
+            // TS: not `ClassDeclaration.process`'s own implicit-`Concept`
+            // fallback (which only ever fires for a `ConceptDeclaration`, an
+            // `EnumDeclaration`, or a scalar/map — none of those wrapped
+            // here — because every other kind's AST already has a
+            // `superType` by the time `process` sees it). `ModelFile.fromAst`
+            // (src/introspect/modelfile.ts) injects it first, per kind, for
+            // exactly the four identified kinds: an `AssetDeclaration` with
+            // no `superType` defaults to `Asset`, a `TransactionDeclaration`
+            // to `Transaction`, an `EventDeclaration` to `Event`, a
+            // `ParticipantDeclaration` to `Participant` — never the generic
+            // `Concept` — so `ClassDeclaration.process`'s own fallback
+            // always finds `this.ast.superType` already set for these four
+            // and takes its *other* branch (`this.superType =
+            // this.ast.superType.name`), not this one. Only `kind ==
+            // ClassKind::Concept` reaches `process`'s own fallback, unset by
+            // `fromAst` (its `case ConceptDeclaration` injects nothing).
+            let implicit_name = match kind {
+                ClassKind::Concept => "Concept",
+                ClassKind::Asset => "Asset",
+                ClassKind::Participant => "Participant",
+                ClassKind::Transaction => "Transaction",
+                ClassKind::Event => "Event",
+            };
+            Some(mm::TypeIdentifier {
+                _class: qualified_class("TypeIdentifier"),
+                name: implicit_name.to_string(),
+                namespace: None,
+                resolved_name: None,
+            })
+        };
+
+        let mut properties = parse_properties(value)?;
+
+        // TS: ClassDeclaration.addIdentifierField, called from `process`
+        // whenever the AST carries an `identified` node (system or
+        // explicit-by-field alike; an explicit `identified by` field is
+        // already in `properties` from the AST, so only the system case adds
+        // one here).
+        if matches!(
+            class_field!(&node, d => d.identified.as_ref()),
+            Some(mm::Identified::Identified)
+        ) {
+            properties.push(Property::String(WithDecorators::new(
+                mm::StringProperty {
+                    name: "$identifier".to_string(),
+                    is_array: false,
+                    is_optional: false,
+                    size_validator: None,
+                    decorators: None,
+                    location: None,
+                    default_value: None,
+                    validator: None,
+                    length_validator: None,
+                },
+                Vec::new(),
+            )));
+        }
+
+        // TS: ClassDeclaration.addTimestampField, called from `process` only
+        // for the system model's own `Transaction`/`Event` declarations
+        // (`this.fqn === 'concerto@1.0.0.Transaction' || ... === '...Event'`);
+        // every other Transaction/Event inherits the field through
+        // `getProperties()` walking up to one of these two. The check is on
+        // `namespace`/`name` alone, not `kind`: like every system root
+        // declaration, `Transaction` and `Event` are themselves
+        // `ConceptDeclaration` nodes in the metamodel AST (`ClassKind::Concept`
+        // here) — a class's *own* `$class` names the kind it was declared
+        // with (`transaction Payment {}` is a `TransactionDeclaration`), not
+        // what it extends, exactly as TS's own `this.ast.$class` is.
+        if is_system_model_namespace(namespace) && (name == "Transaction" || name == "Event") {
+            properties.push(Property::DateTime(WithDecorators::new(
+                mm::DateTimeProperty {
+                    name: "$timestamp".to_string(),
+                    is_array: false,
+                    is_optional: false,
+                    size_validator: None,
+                    decorators: None,
+                    location: None,
+                },
+                Vec::new(),
+            )));
+        }
+
         Ok(Self {
             node,
-            properties: parse_properties(value)?,
+            properties,
+            implicit_super_type,
+            decorators: parse_decorators(value),
         })
     }
+
+    /// The decorators attached to this declaration.
+    ///
+    /// TS: `Decorated.getDecorators` (src/introspect/decorated.ts).
+    pub fn decorators(&self) -> &[Decorator] {
+        &self.decorators
+    }
+}
+
+/// TS: `ModelFile.isSystemModelFile` (src/introspect/modelfile.ts).
+fn is_system_model_namespace(namespace: &str) -> bool {
+    namespace.starts_with("concerto@") || namespace == "concerto"
 }
 
 impl Named for ClassDeclaration {
     /// The declaration's short name (without namespace).
     fn name(&self) -> &str {
         class_field!(&self.node, d => &d.name)
-    }
-}
-
-impl Decorated for ClassDeclaration {
-    fn decorators(&self) -> &[mm::Decorator] {
-        class_field!(&self.node, d => d.decorators.as_deref().unwrap_or(&[]))
     }
 }
 
@@ -245,7 +502,7 @@ fn load_scalar(
     let fqn = get_fully_qualified_name(namespace, name);
     let processed =
         ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
-    let scalar = ScalarDeclaration::new(node, processed);
+    let scalar = ScalarDeclaration::new(node, processed, parse_decorators(value));
     scalar.check_validators()?;
     Ok(scalar)
 }
@@ -265,24 +522,141 @@ pub enum Declaration {
     Map(MapDeclaration),
 }
 
-/// An enumeration declaration: a newtype over the generated
-/// [`mm::EnumDeclaration`].
-#[derive(Debug, Clone, Named, DeclarationKind)]
-#[concerto(kind = "EnumDeclaration")]
-pub struct EnumDeclaration(mm::EnumDeclaration);
+/// An enumeration declaration: the generated [`mm::EnumDeclaration`] plus its
+/// processed decorators (module doc on [`WithDecorators`]), and its values
+/// read as [`Property`] rather than the generated `mm::EnumProperty` list
+/// the node itself still carries — the same reason [`ClassDeclaration`] keeps
+/// its own `properties` apart from its generated node (module doc there):
+/// [`Property`] is what carries each value's own processed decorators, and
+/// TS `Decorated.validate`'s duplicate-decorator and `decoratorValidation`
+/// checks run over an enum's values exactly as they do over a class's
+/// properties (PORTING.md; [`crate::validation`]).
+///
+/// TS's `EnumDeclaration extends ClassDeclaration`
+/// (src/introspect/enumdeclaration.ts) and overrides only `toString` and
+/// `declarationKind`; every other `ClassDeclaration` member — identity,
+/// properties, the implicit `Concept` super type, `isAbstract` and so on —
+/// reaches an enum unchanged. The methods below give this type the same
+/// answers [`ClassDeclaration`] gives, over the metamodel's narrower
+/// `EnumDeclaration` AST shape (no `isAbstract`, `identified` or `superType`
+/// field at all: the grammar never writes them for an enum), so a caller that
+/// needs a class-like fact from either kind can read it the same way (see
+/// `model_manager::ClassLike`).
+#[derive(Debug, Clone)]
+pub struct EnumDeclaration {
+    inner: WithDecorators<mm::EnumDeclaration>,
+    /// The enum's values, read once at load time so
+    /// [`EnumDeclaration::own_properties`] can hand out `&Property`s the
+    /// arena's `PropId`s address, the same way
+    /// [`ClassDeclaration::own_properties`] does.
+    values: Vec<Property>,
+}
+
+impl Named for EnumDeclaration {
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+}
+
+impl DeclarationKind for EnumDeclaration {
+    fn declaration_kind(&self) -> &'static str {
+        "EnumDeclaration"
+    }
+}
+
+impl crate::introspect::Decorated for EnumDeclaration {
+    fn get_decorators(&self) -> &[Decorator] {
+        self.inner.decorators()
+    }
+}
+
+impl EnumDeclaration {
+    fn from_json(value: &serde_json::Value) -> Result<Self> {
+        Ok(Self {
+            inner: WithDecorators::new(
+                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
+                    message: format!("invalid EnumDeclaration: {e}"),
+                    file_name: None,
+                    location: None,
+                })?,
+                parse_decorators(value),
+            ),
+            values: parse_properties(value)?,
+        })
+    }
+
+    /// The enum's values, each carrying its own processed decorators.
+    pub fn values(&self) -> &[Property] {
+        &self.values
+    }
+
+    /// The enum's values.
+    ///
+    /// TS: `ClassDeclaration.getOwnProperties`, inherited unchanged.
+    pub fn own_properties(&self) -> &[Property] {
+        &self.values
+    }
+
+    /// `false`: the metamodel's `EnumDeclaration` AST carries no `isAbstract`
+    /// field, so TS's `this.abstract` (set only when `this.ast.isAbstract` is
+    /// truthy) is never set for one.
+    ///
+    /// TS: `ClassDeclaration.isAbstract`, inherited unchanged.
+    pub fn is_abstract(&self) -> bool {
+        false
+    }
+
+    /// `None`: the metamodel's `EnumDeclaration` AST carries no `identified`
+    /// field, so TS's `this.idField` is never set for one — its identity, like
+    /// every class-like declaration's, can still come from its super type
+    /// (`ModelManager::identifier_field_name` walks past this).
+    ///
+    /// TS: `ClassDeclaration.getIdentifierFieldName`'s own (non-inherited)
+    /// step, `this.idField`, inherited unchanged.
+    pub fn own_identifier_field_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// The source location, if the AST carried one.
+    pub fn location(&self) -> Option<&mm::Range> {
+        self.inner.location.as_ref()
+    }
+
+    /// The implicit `Concept` super type every enum has: the metamodel's
+    /// `EnumDeclaration` AST carries no `superType` field at all (unlike
+    /// [`ClassDeclaration`], whose AST shape allows one), so TS's
+    /// `this.ast.superType` is always falsy for one and `ClassDeclaration.process`
+    /// always takes its implicit branch (`this.superType = 'Concept'`) —
+    /// never the system-root exemption, which only ever applies to the system
+    /// model's own `Concept` declaration, itself a [`ClassDeclaration`], never
+    /// an enum.
+    ///
+    /// TS: `ClassDeclaration.process`'s implicit super type, inherited
+    /// unchanged (src/introspect/classdeclaration.ts).
+    pub fn implicit_super_type(&self) -> mm::TypeIdentifier {
+        mm::TypeIdentifier {
+            _class: qualified_class("TypeIdentifier"),
+            name: "Concept".to_string(),
+            namespace: None,
+            resolved_name: None,
+        }
+    }
+}
 
 /// A map declaration.
 ///
 /// A map is read for its name, and for the kind (the `$class` short name) and
-/// the referenced `type`, if any, of its key and of its value. The map's own
-/// decorators and location, and those of its key and value, are not read.
+/// the referenced `type`, if any, of its key and of its value, plus its own
+/// processed decorators (`Decorated.getDecorators()` is faithful for a map).
+/// The map's own location, and the location and decorators of its key and
+/// value, are not read.
 ///
-/// [`MapDeclaration::Typed`] is a newtype over the generated
+/// [`MapVariant::Typed`] is a newtype over the generated
 /// [`mm::MapDeclaration`]. It is used whenever that struct can hold all four
-/// of those facts; a malformed `decorators` or `location` is left out of it,
-/// because it is not read.
+/// key/value facts; a malformed `decorators` or `location` on the key or
+/// value node is left out of it, because neither is read.
 ///
-/// [`MapDeclaration::Untyped`] keeps the four facts as read from the node. It
+/// [`MapVariant::Untyped`] keeps the four facts as read from the node. It
 /// is used only when the key or the value (or both) is something
 /// `mm::MapKeyType` or `mm::MapValueType` cannot represent:
 ///
@@ -295,10 +669,9 @@ pub struct EnumDeclaration(mm::EnumDeclaration);
 /// Either way, a key or value kind the specification does not allow reaches
 /// semantic validation, which reports it, and a referenced type is checked
 /// there whichever variant holds it.
-#[derive(Debug, Clone, Named, DeclarationKind)]
-#[concerto(kind = "MapDeclaration")]
+#[derive(Debug, Clone, Named)]
 #[allow(clippy::large_enum_variant)]
-pub enum MapDeclaration {
+enum MapVariant {
     /// The key and value are both representable by the generated union types.
     Typed(mm::MapDeclaration),
     /// The key or value is not representable by the generated union types.
@@ -316,25 +689,58 @@ pub enum MapDeclaration {
     },
 }
 
+/// A map declaration: the [`MapVariant`] read from its key and value nodes,
+/// plus its processed decorators (module doc on
+/// [`crate::introspect::decorator::WithDecorators`]; kept as a plain field
+/// here rather than that wrapper, since a map is not a newtype over one
+/// generated node — `MapVariant::Untyped` is not a generated node at all).
+///
+/// TS `MapDeclaration.getDecorators()` reads the same real decorators as any
+/// other declaration; nothing about the key/value fallback above extends to
+/// them.
+#[derive(Debug, Clone)]
+pub struct MapDeclaration {
+    variant: MapVariant,
+    decorators: Vec<Decorator>,
+}
+
+impl Named for MapDeclaration {
+    fn name(&self) -> &str {
+        self.variant.name()
+    }
+}
+
+impl DeclarationKind for MapDeclaration {
+    fn declaration_kind(&self) -> &'static str {
+        "MapDeclaration"
+    }
+}
+
+impl crate::introspect::Decorated for MapDeclaration {
+    fn get_decorators(&self) -> &[Decorator] {
+        &self.decorators
+    }
+}
+
 impl MapDeclaration {
     /// The metamodel `$class` short name of the key node, such as
     /// `StringMapKeyType`.
     pub fn key_kind(&self) -> &str {
-        match self {
-            Self::Typed(m) => match &m.key {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.key {
                 mm::MapKeyType::StringMapKeyType(_) => "StringMapKeyType",
                 mm::MapKeyType::DateTimeMapKeyType(_) => "DateTimeMapKeyType",
                 mm::MapKeyType::ObjectMapKeyType(_) => "ObjectMapKeyType",
             },
-            Self::Untyped { key_kind, .. } => key_kind,
+            MapVariant::Untyped { key_kind, .. } => key_kind,
         }
     }
 
     /// The metamodel `$class` short name of the value node, such as
     /// `ObjectMapValueType`.
     pub fn value_kind(&self) -> &str {
-        match self {
-            Self::Typed(m) => match &m.value {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.value {
                 mm::MapValueType::BooleanMapValueType(_) => "BooleanMapValueType",
                 mm::MapValueType::DateTimeMapValueType(_) => "DateTimeMapValueType",
                 mm::MapValueType::StringMapValueType(_) => "StringMapValueType",
@@ -344,30 +750,30 @@ impl MapDeclaration {
                 mm::MapValueType::ObjectMapValueType(_) => "ObjectMapValueType",
                 mm::MapValueType::RelationshipMapValueType(_) => "RelationshipMapValueType",
             },
-            Self::Untyped { value_kind, .. } => value_kind,
+            MapVariant::Untyped { value_kind, .. } => value_kind,
         }
     }
 
     /// The type the key refers to, for a key that is not a primitive.
     pub fn key_type(&self) -> Option<&mm::TypeIdentifier> {
-        match self {
-            Self::Typed(m) => match &m.key {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.key {
                 mm::MapKeyType::ObjectMapKeyType(k) => Some(&k.type_),
                 _ => None,
             },
-            Self::Untyped { key_type, .. } => key_type.as_ref(),
+            MapVariant::Untyped { key_type, .. } => key_type.as_ref(),
         }
     }
 
     /// The type the value refers to, for a value that is not a primitive.
     pub fn value_type(&self) -> Option<&mm::TypeIdentifier> {
-        match self {
-            Self::Typed(m) => match &m.value {
+        match &self.variant {
+            MapVariant::Typed(m) => match &m.value {
                 mm::MapValueType::ObjectMapValueType(v) => Some(&v.type_),
                 mm::MapValueType::RelationshipMapValueType(v) => Some(&v.type_),
                 _ => None,
             },
-            Self::Untyped { value_type, .. } => value_type.as_ref(),
+            MapVariant::Untyped { value_type, .. } => value_type.as_ref(),
         }
     }
 
@@ -404,6 +810,13 @@ impl MapDeclaration {
         format!("MapDeclaration {{id={fully_qualified_name}}}")
     }
 
+    /// Whether this map's key and value were both representable by the
+    /// generated union types (used only by this module's own tests).
+    #[cfg(test)]
+    fn is_typed(&self) -> bool {
+        matches!(self.variant, MapVariant::Typed(_))
+    }
+
     fn from_json(value: &serde_json::Value) -> Result<Self> {
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid MapDeclaration: {e}"),
@@ -419,19 +832,28 @@ impl MapDeclaration {
         let key_type = type_reference(value.get("key"));
         let value_kind = node_kind(value.get("value"));
         let value_type = type_reference(value.get("value"));
+        let decorators = parse_decorators(value);
 
-        if let Some(typed) = typed_map(value, &key_kind, &value_kind).map(Self::Typed)
-            && typed.key_type().is_some() == key_type.is_some()
-            && typed.value_type().is_some() == value_type.is_some()
-        {
-            return Ok(typed);
+        if let Some(variant) = typed_map(value, &key_kind, &value_kind).map(MapVariant::Typed) {
+            let candidate = Self {
+                variant,
+                decorators: decorators.clone(),
+            };
+            if candidate.key_type().is_some() == key_type.is_some()
+                && candidate.value_type().is_some() == value_type.is_some()
+            {
+                return Ok(candidate);
+            }
         }
-        Ok(Self::Untyped {
-            name,
-            key_kind,
-            key_type,
-            value_kind,
-            value_type,
+        Ok(Self {
+            variant: MapVariant::Untyped {
+                name,
+                key_kind,
+                key_type,
+                value_kind,
+                value_type,
+            },
+            decorators,
         })
     }
 }
@@ -589,18 +1011,12 @@ impl Declaration {
         let kind = get_short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            let class = Self::Class(ClassDeclaration::from_json(class_kind, value)?);
+            let class = Self::Class(ClassDeclaration::from_json(class_kind, value, namespace)?);
             return check_name(class);
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => Self::Enum(EnumDeclaration(
-                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                    message: format!("invalid EnumDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
-                })?,
-            )),
+            "EnumDeclaration" => Self::Enum(EnumDeclaration::from_json(value)?),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)
@@ -911,7 +1327,7 @@ mod tests {
     fn a_well_formed_map_is_typed() {
         let d = decl(map_to_nope(string_key(), serde_json::json!({})));
         let map = d.as_map().unwrap();
-        assert!(matches!(map, MapDeclaration::Typed(_)));
+        assert!(map.is_typed());
         assert_eq!(map.key_kind(), "StringMapKeyType");
         assert_eq!(map.value_kind(), "ObjectMapValueType");
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
@@ -925,7 +1341,7 @@ mod tests {
         ] {
             let d = decl(map_to_nope(string_key(), extra.clone()));
             let map = d.as_map().unwrap();
-            assert!(matches!(map, MapDeclaration::Typed(_)), "{extra}");
+            assert!(map.is_typed(), "{extra}");
             assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
         }
     }
@@ -937,7 +1353,7 @@ mod tests {
             serde_json::json!({}),
         ));
         let map = d.as_map().unwrap();
-        assert!(matches!(map, MapDeclaration::Typed(_)));
+        assert!(map.is_typed());
         assert_eq!(map.key_kind(), "StringMapKeyType");
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
     }
@@ -951,7 +1367,7 @@ mod tests {
             "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
         }));
         let map = m.as_map().expect("map declaration");
-        assert!(matches!(map, MapDeclaration::Untyped { .. }));
+        assert!(!map.is_typed());
         assert_eq!(map.name(), "Lookup");
         assert_eq!(map.key_kind(), "IntegerMapKeyType");
         assert_eq!(map.value_kind(), "StringMapValueType");
@@ -965,7 +1381,7 @@ mod tests {
             serde_json::json!({}),
         ));
         let map = d.as_map().unwrap();
-        assert!(matches!(map, MapDeclaration::Untyped { .. }));
+        assert!(!map.is_typed());
         assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
     }
 

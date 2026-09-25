@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
+use crate::introspect::decorator::{Decorated, Decorator};
 use crate::introspect::validators::NumberValidator;
 use crate::introspect::{
     DeclarationKind, FullyQualified, HasValidators, Named, Typed, check_length, check_pattern,
@@ -77,6 +78,16 @@ impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
     fn default_value(&self) -> Result<Option<Value>, E> {
         Ok(self.ast.get("defaultValue").cloned())
     }
+
+    fn name(&self) -> Result<String, E> {
+        // `this.getName()`: a scalar's short name is its AST `name`.
+        Ok(self
+            .ast
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
 }
 
 /// A scalar declaration loaded into a model file.
@@ -84,6 +95,7 @@ impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
 pub struct ScalarDeclaration {
     node: mm::ScalarDeclaration,
     processed: ProcessedScalar,
+    decorators: Vec<Decorator>,
 }
 
 impl ScalarDeclaration {
@@ -159,9 +171,27 @@ impl ScalarDeclaration {
     }
 
     /// Wraps a loaded node with what [`ScalarDeclaration::process`] computed
-    /// from the same AST.
-    pub(crate) fn new(node: mm::ScalarDeclaration, processed: ProcessedScalar) -> Self {
-        Self { node, processed }
+    /// from the same AST, and its processed decorators (module doc on
+    /// [`crate::introspect::decorator::WithDecorators`]; a scalar keeps them
+    /// as a plain field rather than that wrapper, since it already wraps its
+    /// own `node`).
+    pub(crate) fn new(
+        node: mm::ScalarDeclaration,
+        processed: ProcessedScalar,
+        decorators: Vec<Decorator>,
+    ) -> Self {
+        Self {
+            node,
+            processed,
+            decorators,
+        }
+    }
+
+    /// The decorators attached to this declaration.
+    ///
+    /// TS: `Decorated.getDecorators` (src/introspect/decorated.ts).
+    pub fn decorators(&self) -> &[Decorator] {
+        &self.decorators
     }
 
     /// The generated metamodel node.
@@ -240,6 +270,12 @@ impl Named for ScalarDeclaration {
     /// The scalar's short name.
     fn name(&self) -> &str {
         node_name(&self.node)
+    }
+}
+
+impl Decorated for ScalarDeclaration {
+    fn get_decorators(&self) -> &[Decorator] {
+        self.decorators()
     }
 }
 

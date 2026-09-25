@@ -634,6 +634,12 @@ impl ValidatedElement for JsElement<'_> {
         }
         to_json(&get(&ast, "defaultValue")?)
     }
+
+    fn name(&self) -> Result<String> {
+        // `this.field.getName()`
+        let field = get(self.validator, "field")?;
+        js_string(&call(&field, "getName", &[], "this.field.getName")?)
+    }
 }
 
 impl FullyQualified for JsElement<'_> {
