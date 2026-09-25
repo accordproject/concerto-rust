@@ -2492,6 +2492,50 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
     }
 
+    /// F4 (#152): TS `Decorated.validate` calls each decorator's own
+    /// `.validate()` before the duplicate-name scan; every call site fixed
+    /// by #152 used to run the duplicate-name scan first. With decorator
+    /// validation enabled (`missingDecorator: 'error'`) and a class
+    /// carrying a duplicate decorator whose name is also undeclared, the
+    /// *old* order would find the duplicate first and never reach
+    /// `Decorator.validate` at all — reporting `Duplicate decorator`. The
+    /// fixed order must instead run `Decorator.validate` first and report
+    /// its undeclared-type failure, matching TS's `super.validate()` chain
+    /// (`Decorated.validate` before `ClassDeclaration`'s own checks).
+    #[test]
+    fn undeclared_decorator_is_reported_before_the_duplicate_scan_when_decorator_validation_is_enabled()
+     {
+        use crate::introspect::decorator::DecoratorValidationOptions;
+
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "declarations": [concept(serde_json::json!({
+                        "name": "Product",
+                        "decorators": [
+                            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+                        ]
+                    }))]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.set_decorator_validation(DecoratorValidationOptions {
+            missing_decorator: Some("error".into()),
+            invalid_decorator: None,
+        });
+        let err = manager.validate_models().unwrap_err().to_string();
+        assert!(
+            err.contains("IllegalModelException: Undeclared type"),
+            "{err}"
+        );
+        assert!(!err.contains("Duplicate decorator"), "{err}");
+    }
+
     /// TS: introspect/identifieddeclaration.js, "#identified should create a
     /// system identifier" / "should allow declaring explicit identifier" /
     /// "should allow abstract assets without an identifier": `getProperties()`
