@@ -87,10 +87,16 @@ export function runChecks(engine) {
   let person;
 
   check('a new manager holds the system model', () => {
+    // P1-07b (#101): a fresh manager preloads `concerto.decorator@1.0.0`
+    // before `concerto@1.0.0`, matching TS's
+    // `addDecoratorModel(); addRootModel();`, so it starts with two model
+    // files, decorator first.
     const ids = [...mm.modelFileIds()];
-    assert(ids.length === 1 && ids[0] === 0, `modelFileIds ${ids}`);
-    assert(mm.modelFileId('concerto@1.0.0') === 0, 'concerto@1.0.0 is file 0');
+    assert(ids.length === 2 && ids[0] === 0 && ids[1] === 1, `modelFileIds ${ids}`);
+    assert(mm.modelFileId('concerto.decorator@1.0.0') === 0, 'concerto.decorator@1.0.0 is file 0');
+    assert(mm.modelFileId('concerto@1.0.0') === 1, 'concerto@1.0.0 is file 1');
     assert(typeof mm.declarationId('concerto@1.0.0.Concept') === 'number', 'Concept has a handle');
+    assert(typeof mm.declarationId('concerto.decorator@1.0.0.Decorator') === 'number', 'Decorator has a handle');
     return { generation: mm.generation() };
   });
 
@@ -126,8 +132,12 @@ export function runChecks(engine) {
     const age = JSON.parse(mm.propertySnapshot(props[1]));
     assert(age.declaration === person, 'snapshot declaration');
     assert(JSON.stringify(age.ast) === JSON.stringify(MODEL.declarations[0].properties[1]), 'ast is the loaded node');
+    // P2-04 (#48): enum values get PropIds too, addressed the same way a
+    // class declaration's fields are, one per EnumProperty.
     const color = mm.declarationId('org.example@1.0.0.Color');
-    assert(mm.propertyIds(color).length === 0, 'enum values have no PropId yet (P2-04)');
+    const colorProps = [...mm.propertyIds(color)];
+    assert(colorProps.length === 1, `enum PropId count ${colorProps.length}`);
+    assert(JSON.parse(mm.propertySnapshot(colorProps[0])).name === 'RED', 'enum value name');
   });
 
   check('model file snapshot', () => {
@@ -150,9 +160,12 @@ export function runChecks(engine) {
   });
 
   check('errors leave through the registered factory', () => {
+    // TS `BaseModelManager._throwAlreadyExists` throws a plain `Error`, never
+    // the `IllegalModelException` this port raised before (P2-08b review).
     const dup = thrown(() => mm.addModel(JSON.stringify(MODEL)));
     assert(dup instanceof EngineError, `duplicate namespace threw ${dup}`);
-    assert(dup.payload.kind === 'IllegalModel', `kind ${dup.payload.kind}`);
+    assert(dup.payload.kind === 'Error', `kind ${dup.payload.kind}`);
+    assert(dup.payload.code === 'basemodelmanager-throwalreadyexists', `code ${dup.payload.code}`);
     const bad = new engine.ModelManagerHandle();
     bad.addModel(JSON.stringify(BROKEN));
     const invalid = thrown(() => bad.validateModels());
