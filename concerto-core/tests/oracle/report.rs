@@ -59,7 +59,8 @@ struct RuleCounts {
     harness_error: u64,
     /// `(reason, owner)` to count.
     reasons: BTreeMap<(String, String), u64>,
-    fail_reasons: BTreeMap<String, u64>,
+    /// `(reason, owner)` to count.
+    fail_reasons: BTreeMap<(String, String), u64>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +70,9 @@ struct FixtureProblem {
     source: String,
     path: String,
     detail: String,
+    /// Who owns the failure, for a failure (not a harness error).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -93,7 +97,8 @@ struct RuleReport {
     /// blocks them, most common first.
     unsupported_reasons: Vec<Counted>,
     /// The failures' details with fixture-specific text trimmed, most
-    /// common first.
+    /// common first, each with the owner of the difference (the op's owner
+    /// unless the dispatch attributed it to another task's gap).
     fail_kinds: Vec<Counted>,
 }
 
@@ -204,6 +209,7 @@ fn problem(fixture: &Fixture, detail: String) -> FixtureProblem {
         source: fixture.source.clone(),
         path: fixture.path.display().to_string(),
         detail,
+        owner: None,
     }
 }
 
@@ -248,12 +254,22 @@ impl Recorder {
             .clone();
         let owner = match &verdict {
             Verdict::Pass | Verdict::HarnessError { .. } => None,
-            Verdict::Fail { .. } | Verdict::Unsupported { blocker: None, .. } => Some(op_owner),
-            Verdict::Unsupported {
+            Verdict::Fail { blocker: None, .. } | Verdict::Unsupported { blocker: None, .. } => {
+                Some(op_owner)
+            }
+            Verdict::Fail {
+                blocker: Some(Blocker::Member(member)),
+                ..
+            }
+            | Verdict::Unsupported {
                 blocker: Some(Blocker::Member(member)),
                 ..
             } => Some(owners.owner(member)),
-            Verdict::Unsupported {
+            Verdict::Fail {
+                blocker: Some(Blocker::Owner(owner)),
+                ..
+            }
+            | Verdict::Unsupported {
                 blocker: Some(Blocker::Owner(owner)),
                 ..
             } => Some(owner.clone()),
@@ -275,10 +291,16 @@ impl Recorder {
                     .or_default() += 1;
                 Status::Unsupported
             }
-            Verdict::Fail { kind, detail } => {
+            Verdict::Fail { kind, detail, .. } => {
                 counts.fail += 1;
-                *counts.fail_reasons.entry(kind_of(&detail)).or_default() += 1;
-                self.failures.push(problem(fixture, detail));
+                let owner = owner.unwrap_or_default();
+                *counts
+                    .fail_reasons
+                    .entry((kind_of(&detail), owner.clone()))
+                    .or_default() += 1;
+                let mut failure = problem(fixture, detail);
+                failure.owner = Some(owner);
+                self.failures.push(failure);
                 Status::Fail(kind)
             }
             Verdict::HarnessError { detail } => {
@@ -312,7 +334,7 @@ impl Recorder {
                 unsupported: counts.unsupported,
                 harness_error: counts.harness_error,
                 unsupported_reasons: top(counts.reasons, |(r, o)| (r, Some(o))),
-                fail_kinds: top(counts.fail_reasons, |r| (r, None)),
+                fail_kinds: top(counts.fail_reasons, |(r, o)| (r, Some(o))),
             })
             .collect();
 
@@ -479,7 +501,12 @@ impl Report {
                 rule.op, rule.pass, rule.fail, rule.unsupported, rule.harness_error, rule.owner
             );
             for kind in rule.fail_kinds.iter().take(3) {
-                println!("      fail x{}: {}", kind.count, kind.reason);
+                println!(
+                    "      fail x{}: {} [{}]",
+                    kind.count,
+                    kind.reason,
+                    kind.owner.as_deref().unwrap_or_default()
+                );
             }
             if rule.pass + rule.fail + rule.harness_error == 0
                 && let Some(reason) = rule.unsupported_reasons.first()

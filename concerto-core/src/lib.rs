@@ -15,6 +15,7 @@ extern crate self as concerto_core;
 /// `concerto-macros` crate.
 pub use concerto_macros as derive;
 
+pub mod dcs;
 mod ecma;
 pub mod error;
 pub mod instance;
@@ -22,6 +23,7 @@ pub mod introspect;
 pub mod model_manager;
 pub mod model_util;
 pub mod rootmodel;
+mod semver_range;
 pub mod validation;
 
 pub use error::{ConcertoError, Result};

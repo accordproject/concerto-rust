@@ -20,7 +20,17 @@ pub enum Verdict {
     /// A real behavioural mismatch, or a state divergence while the inputs
     /// were rebuilt on the Rust engine. `kind` is what differs, the part the
     /// baseline records (`report.rs`); `detail` is the full first difference.
-    Fail { kind: FailKind, detail: String },
+    ///
+    /// `blocker` names who owns the difference when it is not the op's own
+    /// owner: set when the dispatch attributed its error to another task's
+    /// code (`Dispatch::RanAttributed`) and TS threw from that code too
+    /// (`ops::Attribution`), resolved like an unsupported fixture's blocker
+    /// (`report.rs`).
+    Fail {
+        kind: FailKind,
+        detail: String,
+        blocker: Option<Blocker>,
+    },
     /// The op, or something these inputs need, has no Rust counterpart yet.
     /// `reason` says what; `blocker` names what blocks it when that is not
     /// the op itself, for its owner (`ledger.rs`).
@@ -94,18 +104,39 @@ pub fn judge_at(fixture: &Fixture, dispatch: Dispatch, window: Option<(f64, f64)
             } else {
                 FailKind::StateDivergence
             };
-            return Verdict::Fail { kind, detail };
+            return Verdict::Fail {
+                kind,
+                detail,
+                blocker: None,
+            };
         }
-        Dispatch::Ran(outcome) => outcome,
+        Dispatch::Ran(outcome) => (outcome, None),
+        Dispatch::RanAttributed(outcome, attribution) => (outcome, Some(attribution)),
     };
+    let (actual, attribution) = actual;
 
     let actual = canonicalise(&actual, &fixture.inputs, window);
     match first_diff(&fixture.outcome.0, &actual, "$") {
         None => Verdict::Pass,
-        Some(detail) => Verdict::Fail {
-            kind: FailKind::of_diff(&detail),
-            detail,
-        },
+        Some(detail) => {
+            let kind = FailKind::of_diff(&detail);
+            let blocker = attribution
+                .filter(|a| {
+                    kind.both_threw()
+                        && fixture
+                            .outcome
+                            .0
+                            .pointer("/error/class")
+                            .and_then(Value::as_str)
+                            .is_some_and(|class| a.ts_error_classes.contains(&class))
+                })
+                .map(|a| a.blocker);
+            Verdict::Fail {
+                kind,
+                blocker,
+                detail,
+            }
+        }
     }
 }
 
@@ -176,6 +207,18 @@ impl FailKind {
         } else {
             Self::ValueMismatch
         }
+    }
+
+    /// Whether this kind means TS and Rust both threw, and only the errors
+    /// differ.
+    pub fn both_threw(self) -> bool {
+        matches!(
+            self,
+            Self::ClassMismatch
+                | Self::MessageMismatch
+                | Self::ComponentMismatch
+                | Self::LocationMismatch
+        )
     }
 
     pub fn as_str(self) -> &'static str {

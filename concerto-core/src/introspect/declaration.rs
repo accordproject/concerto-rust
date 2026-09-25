@@ -13,7 +13,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
-use crate::error::{ConcertoError, Result};
+use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
@@ -120,6 +120,22 @@ pub struct ClassDeclaration {
     properties: Vec<Property>,
     implicit_super_type: Option<mm::TypeIdentifier>,
     decorators: Vec<Decorator>,
+}
+
+/// [`ClassDeclaration::process_decision`]'s result: the `superType`/`idField`
+/// decision `ClassDeclaration.process` (src/introspect/classdeclaration.ts)
+/// makes before its `ast.properties` loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessDecision {
+    /// TS: `this.superType`, once `process()` has set it.
+    pub super_type: Option<String>,
+    /// TS: `this.idField`, once `process()` has set it.
+    pub id_field: Option<String>,
+    /// Whether the view must still call its own `addIdentifierField()`
+    /// (pushes a real `Field` view; kept in TS, P4-07).
+    pub add_identifier_field: bool,
+    /// Whether the view must still call its own `addTimestampField()`.
+    pub add_timestamp_field: bool,
 }
 
 impl ClassDeclaration {
@@ -299,6 +315,97 @@ impl ClassDeclaration {
     /// && this.name === 'Concept'`.
     fn is_system_concept(namespace: &str, name: &str) -> bool {
         is_system_model_namespace(namespace) && name == "Concept"
+    }
+
+    /// TS: the kind-compatibility check in `ClassDeclaration._resolveSuperType`
+    /// (src/introspect/classdeclaration.ts): `classDecl.declarationKind() !==
+    /// 'ConceptDeclaration' && this.declarationKind() !== classDecl.declarationKind()`,
+    /// negated (`true` when compatible — a subtype may always extend a
+    /// concept, and otherwise both sides must be the same kind). Each side is
+    /// the receiver's own `declarationKind()` string
+    /// ([`DeclarationKind::declaration_kind`]); resolving the super type
+    /// declaration itself is a collaborator call the binding still makes.
+    pub fn kinds_compatible(child_kind: &str, super_kind: &str) -> bool {
+        super_kind == "ConceptDeclaration" || child_kind == super_kind
+    }
+
+    /// TS: the super-type identifier redeclaration check in
+    /// `ClassDeclaration.validate` (src/introspect/classdeclaration.ts), the
+    /// block guarded by `superType.isIdentified()` (the caller checks that
+    /// before calling this): `true` when the super type's existing
+    /// identifier cannot be redeclared. Resolving `superType` itself is a
+    /// collaborator call the binding still makes.
+    pub fn identifier_redeclare_conflict(
+        child_is_system_identified: bool,
+        super_is_system_identified: bool,
+        super_is_explicitly_identified: bool,
+    ) -> bool {
+        if child_is_system_identified {
+            !super_is_system_identified
+        } else {
+            super_is_explicitly_identified
+        }
+    }
+
+    /// TS: `ClassDeclaration.isAsset`/`isParticipant`/`isTransaction`/
+    /// `isEvent`/`isConcept`/`isEnum`/`isMapDeclaration`
+    /// (src/introspect/classdeclaration.ts): each compares `this.type` (the
+    /// AST's own `$class`, already set by `process()`) against one metamodel
+    /// `$class`'s short name. `ast_class` is the receiver's `this.type`;
+    /// `want` is the metamodel short name to compare against
+    /// (`"AssetDeclaration"`, …).
+    pub fn is_kind(ast_class: &str, want: &str) -> bool {
+        get_short_name(ast_class) == want
+    }
+
+    /// The `superType`/`idField` decision `ClassDeclaration.process` makes
+    /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
+    /// the loop itself builds `Field`/`RelationshipDeclaration`/
+    /// `EnumValueDeclaration` views, kept in TS). `explicit_super_type` is
+    /// `this.ast.superType.name`, when the AST names one. `identified_class`
+    /// is `this.ast.identified.$class`; `identified_name` is
+    /// `this.ast.identified.name` (only meaningful for an explicit
+    /// `IdentifiedBy`). `fqn` is `this.fqn`, read once `this.name` and
+    /// `this.modelFile` are set (`Declaration.process` runs first).
+    pub fn process_decision(
+        explicit_super_type: Option<&str>,
+        is_system_model_file: bool,
+        name: &str,
+        identified_class: Option<&str>,
+        identified_name: Option<&str>,
+        fqn: &str,
+    ) -> ProcessDecision {
+        let super_type = match explicit_super_type {
+            Some(t) => Some(t.to_string()),
+            None if Self::is_system_concept_file(is_system_model_file, name) => None,
+            None => Some("Concept".to_string()),
+        };
+
+        let (id_field, add_identifier_field) = match identified_class {
+            None => (None, false),
+            Some(class) if get_short_name(class) == "IdentifiedBy" => {
+                (identified_name.map(str::to_string), false)
+            }
+            Some(_) => (Some("$identifier".to_string()), true),
+        };
+
+        let add_timestamp_field =
+            fqn == "concerto@1.0.0.Transaction" || fqn == "concerto@1.0.0.Event";
+
+        ProcessDecision {
+            super_type,
+            id_field,
+            add_identifier_field,
+            add_timestamp_field,
+        }
+    }
+
+    /// `process_decision`'s own exemption test: unlike [`Self::is_system_concept`]
+    /// (which also needs the namespace, not available to the binding at this
+    /// point), the caller already knows whether its model file is the system
+    /// model file.
+    fn is_system_concept_file(is_system_model_file: bool, name: &str) -> bool {
+        is_system_model_file && name == "Concept"
     }
 
     /// Reads the declaration fields into the generated struct for `kind`,
@@ -497,8 +604,9 @@ fn load_scalar(
             });
         }
     };
+    // The name was already checked by `Declaration::from_model_json`
+    // (`check_declaration_name`), TS `Declaration.process`.
     let name = scalar::node_name(&node);
-    check_identifier(name)?;
     let fqn = get_fully_qualified_name(namespace, name);
     let processed =
         ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
@@ -588,6 +696,14 @@ impl EnumDeclaration {
     /// The enum's values, each carrying its own processed decorators.
     pub fn values(&self) -> &[Property] {
         &self.values
+    }
+
+    /// The string representation TS's `EnumDeclaration.toString`
+    /// (src/introspect/enumdeclaration.ts) builds: `'EnumDeclaration {id=' +
+    /// this.getFullyQualifiedName() + '}'`, an override of
+    /// [`ClassDeclaration::to_string`] with no super type or abstract flag.
+    pub fn to_string(fqn: &str) -> String {
+        format!("EnumDeclaration {{id={fqn}}}")
     }
 
     /// The enum's values.
@@ -973,7 +1089,30 @@ impl Declaration {
 fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
     match value.get("properties") {
         None => Ok(Vec::new()),
-        Some(serde_json::Value::Array(arr)) => arr.iter().map(Property::try_from).collect(),
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .map(|property| {
+                // TS: `ClassDeclaration.process`'s loop (classdeclaration.ts,
+                // inherited by `EnumDeclaration`) rejects a system property
+                // name before building that property, with the *declaration's*
+                // `this.ast.location`, not the property's (P2-08: this used to
+                // be left to `Property::try_from`, which has no declaration
+                // location to give).
+                if let Some(name) = property.get("name").and_then(serde_json::Value::as_str)
+                    && crate::model_util::is_system_property(name)
+                {
+                    // The model file's name is filled in by
+                    // `Declaration::from_model_json` (`with_model_file`).
+                    return Err(ContractError::pre_port(
+                        ErrorKind::IllegalModel,
+                        format!("Invalid field name '{name}'"),
+                        value.get("location").cloned(),
+                    )
+                    .into());
+                }
+                Property::try_from(property)
+            })
+            .collect(),
         Some(_) => Err(ConcertoError::IllegalModel {
             message: "'properties' must be an array".into(),
             file_name: None,
@@ -1000,55 +1139,109 @@ impl Declaration {
         namespace: &str,
         file_name: Option<&str>,
     ) -> Result<Self> {
+        // TS: `ModelFile.fromAst`'s `switch (thing.$class)` (modelfile.ts)
+        // matches the *full* metamodel `$class` strings — seven declaration
+        // kinds and exactly six scalar kinds — and sends anything else,
+        // including a missing `$class`, a bare short name or another
+        // namespace's, to its `default` case before any declaration is
+        // constructed (P2-08 review: this used to match the short name
+        // alone, and any `*Scalar`).
         let class = declared_class(value);
-        if class.is_empty() {
-            return Err(ConcertoError::IllegalModel {
-                message: "declaration node is missing its $class".into(),
-                file_name: None,
-                location: None,
-            });
-        }
-        let kind = get_short_name(class);
+        let Some(kind) = class
+            .strip_prefix("concerto.metamodel@1.0.0.")
+            .filter(|kind| is_recognised_kind(kind))
+        else {
+            // The catalogue's own `{type}` is `thing.$class` verbatim,
+            // interpolated as JS does (`undefined` when absent); TS passes
+            // the model file but no location.
+            let shown = value
+                .get("$class")
+                .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "modelfile-constructor-unrecmodelelem",
+                vec![("type", shown)],
+            );
+            err.model_file = Some(file_name.map(str::to_string));
+            return Err(err.into());
+        };
+
+        // TS: `Declaration.process` (declaration.ts), reached through every
+        // declaration kind's own `super.process()` before anything
+        // kind-specific — so an invalid name is reported ahead of, say, a
+        // system property name among a class's fields (P2-08 review).
+        check_declaration_name(value, file_name)?;
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            let class = Self::Class(ClassDeclaration::from_json(class_kind, value, namespace)?);
-            return check_name(class);
+            return Ok(Self::Class(
+                ClassDeclaration::from_json(class_kind, value, namespace)
+                    .map_err(|e| with_model_file(e, file_name))?,
+            ));
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => Self::Enum(EnumDeclaration::from_json(value)?),
+            "EnumDeclaration" => Self::Enum(
+                EnumDeclaration::from_json(value).map_err(|e| with_model_file(e, file_name))?,
+            ),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
-            s if s.ends_with("Scalar") => {
-                Self::Scalar(load_scalar(s, value, namespace, file_name)?)
-            }
-            other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown declaration type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
-            }
+            scalar => Self::Scalar(load_scalar(scalar, value, namespace, file_name)?),
         };
-        check_name(declaration)
+        Ok(declaration)
     }
 }
 
-/// Every declaration name has to be a legal identifier.
-fn check_name(declaration: Declaration) -> Result<Declaration> {
-    check_identifier(declaration.name())?;
-    Ok(declaration)
+/// TS: `ClassDeclaration.process` passes `this.modelFile` to every
+/// `IllegalModelException` it throws, so an `IllegalModel` contract error
+/// raised while a class-like or enum declaration is built names the file
+/// being loaded (`file_name`) unless it already names one.
+fn with_model_file(err: ConcertoError, file_name: Option<&str>) -> ConcertoError {
+    match err {
+        ConcertoError::Contract(mut contract)
+            if contract.kind == ErrorKind::IllegalModel && contract.model_file.is_none() =>
+        {
+            contract.model_file = Some(file_name.map(str::to_string));
+            ConcertoError::Contract(contract)
+        }
+        other => other,
+    }
 }
 
-fn check_identifier(name: &str) -> Result<()> {
-    if is_valid_identifier(name) {
-        Ok(())
-    } else {
-        Err(ConcertoError::IllegalModel {
-            message: format!("invalid identifier: {name}"),
-            file_name: None,
-            location: None,
-        })
+/// The `$class` short names TS `ModelFile.fromAst` recognises, once the
+/// `concerto.metamodel@1.0.0.` prefix has matched.
+fn is_recognised_kind(kind: &str) -> bool {
+    ClassKind::from_short(kind).is_some()
+        || matches!(
+            kind,
+            "EnumDeclaration"
+                | "MapDeclaration"
+                | "BooleanScalar"
+                | "IntegerScalar"
+                | "LongScalar"
+                | "DoubleScalar"
+                | "StringScalar"
+                | "DateTimeScalar"
+        )
+}
+
+/// TS: `Declaration.process`'s name check — `new IllegalModelException(
+/// \`Invalid class name '${this.ast.name}'\`, this.modelFile,
+/// this.ast.location)` when `ModelUtil.isValidIdentifier(this.ast.name)`
+/// fails (an absent name interpolates as `undefined`).
+fn check_declaration_name(value: &serde_json::Value, file_name: Option<&str>) -> Result<()> {
+    let name = value.get("name");
+    if let Some(serde_json::Value::String(name)) = name
+        && is_valid_identifier(name)
+    {
+        return Ok(());
     }
+    let shown = name.map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+    let mut err = ContractError::pre_port(
+        ErrorKind::IllegalModel,
+        format!("Invalid class name '{shown}'"),
+        value.get("location").cloned(),
+    );
+    err.model_file = Some(file_name.map(str::to_string));
+    Err(err.into())
 }
 
 #[cfg(test)]
@@ -1143,8 +1336,13 @@ mod tests {
 
     #[test]
     fn missing_class_is_rejected() {
+        // TS `fromAst`'s `default` case, `thing.$class` interpolated as
+        // `undefined` (P2-08 review: this used to be a pre-port message).
         let err = Declaration::try_from(&serde_json::json!({ "name": "X" }));
-        assert!(err.unwrap_err().to_string().contains("$class"));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Unrecognised model element \"undefined\"."
+        );
     }
 
     #[test]
@@ -1166,11 +1364,97 @@ mod tests {
                 "$class": format!("concerto.metamodel@1.0.0.{kind}"),
                 "name": "1Bad", "isAbstract": false, "properties": []
             }));
-            assert!(
-                err.unwrap_err().to_string().contains("invalid identifier"),
+            assert_eq!(
+                err.unwrap_err().to_string(),
+                "Invalid class name '1Bad'",
                 "{kind} with a bad name should be rejected"
             );
         }
+    }
+
+    /// TS `ModelFile.fromAst` matches the full metamodel `$class` strings
+    /// and the six scalar kinds exactly; anything else — a bare short name,
+    /// another namespace's, an unknown `*Scalar`, a missing `$class` — is
+    /// "Unrecognised model element", ahead of the name check, naming the
+    /// file and no location (P2-08 review).
+    #[test]
+    fn only_the_exact_metamodel_classes_are_recognised() {
+        let cases = [
+            (
+                serde_json::json!("ConceptDeclaration"),
+                "ConceptDeclaration",
+            ),
+            (
+                serde_json::json!("other.ns@1.0.0.ConceptDeclaration"),
+                "other.ns@1.0.0.ConceptDeclaration",
+            ),
+            (
+                serde_json::json!("concerto.metamodel@1.0.0.FooScalar"),
+                "concerto.metamodel@1.0.0.FooScalar",
+            ),
+            (serde_json::Value::Null, "null"),
+        ];
+        for (class, shown) in cases {
+            for name in ["Good", "1bad"] {
+                let err = Declaration::from_model_json(
+                    &serde_json::json!({
+                        "$class": class, "name": name, "isAbstract": false, "properties": [],
+                        "location": {
+                            "$class": "concerto.metamodel@1.0.0.Range",
+                            "start": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 0, "line": 1, "column": 1 },
+                            "end": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 5, "line": 1, "column": 6 }
+                        }
+                    }),
+                    "org.acme@1.0.0",
+                    Some("x.cto"),
+                )
+                .unwrap_err();
+                let ConcertoError::Contract(err) = err else {
+                    panic!("expected a contract error, got {err:?}");
+                };
+                assert_eq!(err.kind, ErrorKind::IllegalModel);
+                assert_eq!(err.location, None);
+                assert_eq!(
+                    err.final_message(),
+                    format!("Unrecognised model element \"{shown}\". File 'x.cto': ")
+                );
+            }
+        }
+        let err = Declaration::from_model_json(
+            &serde_json::json!({ "name": "A" }),
+            "org.acme@1.0.0",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "Unrecognised model element \"undefined\".");
+    }
+
+    /// TS `Declaration.process` checks the name before
+    /// `ClassDeclaration.process` looks at the fields, so a bad name wins
+    /// over a system property name (P2-08 review), and the error names the
+    /// file.
+    #[test]
+    fn an_invalid_class_name_is_reported_before_a_system_field_name() {
+        let err = Declaration::from_model_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "1bad", "isAbstract": false,
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "$class",
+                      "isArray": false, "isOptional": false }
+                ]
+            }),
+            "org.acme@1.0.0",
+            Some("x.cto"),
+        )
+        .unwrap_err();
+        let ConcertoError::Contract(err) = err else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        assert_eq!(
+            err.final_message(),
+            "Invalid class name '1bad' File 'x.cto': "
+        );
     }
 
     #[test]
@@ -1276,18 +1560,19 @@ mod tests {
         );
     }
 
-    /// The pre-port loader accepts a short scalar `$class` (TS
-    /// `ModelFile.fromAst` rejects it; P2-08 ports that), but the ported
-    /// `ScalarDeclaration.process` compares the fully-qualified `$class`, as
-    /// TS does, so the scalar has no type (`getType()` is `null`).
+    /// TS `ModelFile.fromAst` matches the fully-qualified `$class`, so a
+    /// short scalar `$class` is an unrecognised model element (P2-08 review:
+    /// the pre-port loader used to accept it).
     #[test]
-    fn a_scalar_class_may_be_given_as_the_short_name() {
-        let s = decl(serde_json::json!({
+    fn a_scalar_class_given_as_the_short_name_is_unrecognised() {
+        let err = Declaration::try_from(&serde_json::json!({
             "$class": "StringScalar",
             "name": "Email"
         }));
-        assert_eq!(s.declaration_kind(), "StringScalar");
-        assert_eq!(s.as_scalar().unwrap().scalar_type(), None);
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Unrecognised model element \"StringScalar\"."
+        );
     }
 
     #[test]
@@ -1296,9 +1581,10 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.MysteryScalar",
             "name": "X"
         }));
+        // TS `fromAst` lists the six scalar kinds exactly (P2-08 review).
         assert_eq!(
             err.unwrap_err().to_string(),
-            "illegal model: unknown scalar type: MysteryScalar"
+            "Unrecognised model element \"concerto.metamodel@1.0.0.MysteryScalar\"."
         );
     }
 
@@ -1422,22 +1708,22 @@ mod tests {
         assert_eq!(map.key_type().map(|t| t.name.as_str()), Some("K"));
     }
 
+    /// TS `Declaration.process` rejects a missing or non-string name with
+    /// its own "Invalid class name" message before anything map-specific
+    /// (P2-08 review: this used to pin the serde decoding message instead).
     #[test]
-    fn a_map_with_no_name_is_rejected_with_the_serde_message() {
+    fn a_map_with_no_name_is_rejected_as_an_invalid_class_name() {
         let mut node = map_to_nope(string_key(), serde_json::json!({}));
         node.as_object_mut().unwrap().remove("name");
         let err = Declaration::try_from(&node);
         assert_eq!(
             err.unwrap_err().to_string(),
-            "illegal model: invalid MapDeclaration: missing field `name`"
+            "Invalid class name 'undefined'"
         );
 
         let err =
             Declaration::try_from(&map_to_nope(string_key(), serde_json::json!({ "name": 5 })));
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "illegal model: invalid MapDeclaration: invalid type: integer `5`, expected a string"
-        );
+        assert_eq!(err.unwrap_err().to_string(), "Invalid class name '5'");
     }
 
     /// A `MapDeclaration` with the given key and value nodes.

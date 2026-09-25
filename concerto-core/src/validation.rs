@@ -27,13 +27,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
-use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
 use crate::introspect::{DeclarationKind, Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
-use crate::model_util::{self, get_fully_qualified_name, get_namespace, is_primitive_type};
+use crate::model_util::{
+    self, get_fully_qualified_name, get_namespace, get_short_name, is_primitive_type,
+};
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
@@ -44,67 +45,230 @@ fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
     class.location().and_then(crate::error::location_value)
 }
 
-/// [`class_location`], generalised over any top-level declaration. `None` for
-/// an enum, scalar or map declaration: only [`ClassDeclaration`] reads a
-/// `location` field so far (`MapDeclaration`'s own doc comment records that
-/// its `location` is deliberately not read).
-fn declaration_location(declaration: &Declaration) -> Option<serde_json::Value> {
-    match declaration {
-        Declaration::Class(class) => class_location(class),
-        Declaration::Enum(_) | Declaration::Scalar(_) | Declaration::Map(_) => None,
-    }
+/// A property's own AST `location` (TS: `this.ast.location` inside
+/// `Property.validate`/`Decorated.validate`, property.ts/decorated.ts —
+/// `this` there is the property, not its owning class). P2-08 review
+/// carry-over (c) from P2-04's review (#48): earlier code used the owning
+/// class's location for these, before `Property` carried its own.
+fn property_location(property: &Property) -> Option<serde_json::Value> {
+    property.location().and_then(crate::error::location_value)
 }
 
 impl ModelManager {
     /// Validates every loaded model except the root model (`concerto@1.0.0`),
-    /// so user models and the built-in decorator model are checked. Returns `Ok(())` if every model is semantically valid, otherwise
-    /// the first problem found. Namespaces are visited in order so that the
-    /// same set of models always reports the same problem.
+    /// so user models and the built-in decorator model are checked. Returns
+    /// `Ok(())` if every model is semantically valid, otherwise the first
+    /// problem found.
+    ///
+    /// TS: `validateModelFiles` (basemodelmanager.ts) — `for (ns in
+    /// this.modelFiles)`, the order the files were added in. A subclass's
+    /// pass also checks the properties it inherits (`validate_property`), so
+    /// when two files are both invalid the order decides which error comes
+    /// first; P2-08 review: this used to sort by namespace instead.
     pub fn validate_models(&self) -> Result<()> {
-        let mut model_files: Vec<_> = self
+        let model_files = self
             .model_files()
-            .filter(|model_file| !model_file.is_system_namespace())
-            .collect();
-        model_files.sort_by_key(|model_file| model_file.namespace());
+            .filter(|model_file| !model_file.is_system_namespace());
 
         for model_file in model_files {
-            check_import_clashes(model_file)?;
-            check_import_namespaces(model_file)?;
-            check_imported_types_exist(self, model_file)?;
-            // TS: `ModelFile.validate` runs `super.validate()`
-            // (`Decorated.validate`) over the file's own decorators before
-            // validating each declaration (modelfile.ts).
-            check_unique_decorators(model_file, None)?;
-            validate_decorators(self, model_file.namespace(), model_file, None)?;
-            for declaration in model_file.declarations() {
-                declaration.validate(self, model_file.namespace())?;
-            }
+            self.validate_model_file(model_file)?;
         }
         Ok(())
     }
+
+    /// TS `ModelFile.validate()` (modelfile.ts), checked against `self` as
+    /// the file's owning model manager — the same `this.getModelManager()`
+    /// import resolution reaches. [`ModelManager::validate_models`] runs
+    /// this over every loaded file; the oracle's `ModelFile.validate` op
+    /// runs it directly on one (P2-08).
+    ///
+    /// **`model_file` must be the file `self` itself has registered under
+    /// its namespace**, the same object [`ModelManager::model_file`] would
+    /// return: `check_imports` and, through [`ModelManager::resolve_type_name`],
+    /// every super-type and property-type lookup this pass runs, all resolve
+    /// a namespace *through `self`* (`self.model_file(namespace)`), not
+    /// through `model_file` directly. TS's `this.getModelManager()` always
+    /// finds `this` this way, because `this` is a live reference the caller
+    /// already holds; a `model_file` this port reconstructs from an AST
+    /// rather than fetches from `self` is a different value with the same
+    /// content, and `self` has no way to recognise it as "the same file" for
+    /// these lookups if it is not registered — every check that needs to
+    /// resolve *this file's own* namespace back to itself then wrongly
+    /// reports it as undeclared (a caller that cannot guarantee registration
+    /// must check first, as `ops.rs`'s `registered_file` does for the oracle
+    /// dispatch).
+    ///
+    /// In order: (1) `super.validate()` — the file's own decorators
+    /// (`Decorated.validate`); (2) the `getImports()` loop; (3) the
+    /// duplicate-class-name scan ([`check_unique_declaration_names`]):
+    /// `ModelFile::from_json` accepts a second declaration of one name, as
+    /// TS's constructor does, so this is where it is rejected; (4) each
+    /// declaration, in file order — including, first thing, the
+    /// import-clash check every declaration kind reaches through its own
+    /// `super.validate()` chain ([`check_import_clash`]'s doc comment).
+    ///
+    /// Every error but step (3)'s names `model_file` as TS's does
+    /// ([`attach_model_file`]); step (3)'s `IllegalModelException` is
+    /// constructed with no model file at all in TS, so it has no `File
+    /// '<name>'` suffix.
+    pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
+        let attach = |e| attach_model_file(e, model_file);
+        check_unique_decorators(model_file, None).map_err(attach)?;
+        validate_decorators(self, model_file.namespace(), model_file, None).map_err(attach)?;
+        check_imports(self, model_file).map_err(attach)?;
+        check_unique_declaration_names(model_file)?;
+        for declaration in model_file.declarations() {
+            declaration
+                .validate(self, model_file.namespace())
+                .map_err(attach)?;
+        }
+        Ok(())
+    }
+
+    /// TS `modelFile.validate()` for a `ModelFile` whose `getModelManager()`
+    /// is `self` but which `self` may never have registered — `new
+    /// ModelFile(modelManager, ast)` followed directly by `validate()`, or
+    /// `addModelFile`'s validate-before-register. When `self` already holds
+    /// exactly this file (same AST, same file name) under its namespace,
+    /// this is [`ModelManager::validate_model_file`] on that file. Otherwise
+    /// it validates against a scratch copy of `self` with `model_file`
+    /// registered in place of whatever `self` holds under its namespace
+    /// ([`ModelManager::with_model_file_registered`]), so that the file's own
+    /// local types resolve to itself, as TS's `this.getLocalType` does,
+    /// while every import still resolves through the same files `self`
+    /// holds. `self` itself is never changed (P2-08).
+    ///
+    /// One divergence remains, and no oracle fixture reaches it: a file
+    /// *another* file's declarations reach back into during this pass (an
+    /// imported super type whose own super type lives in `model_file`'s
+    /// namespace) sees `model_file` here, where TS would see the file `self`
+    /// actually holds under that namespace.
+    pub fn validate_detached_model_file(&self, model_file: &ModelFile) -> Result<()> {
+        let registered = self.model_file(model_file.namespace());
+        if let Some(registered) = registered
+            && registered.ast() == model_file.ast()
+            && registered.file_name() == model_file.file_name()
+        {
+            return self.validate_model_file(registered);
+        }
+        let scratch = self.with_model_file_registered(model_file)?;
+        let registered = scratch
+            .model_file(model_file.namespace())
+            .expect("with_model_file_registered registers the file under its namespace");
+        scratch.validate_model_file(registered)
+    }
 }
 
-/// A declaration may not take the name of a type the file imports. Importing
-/// from the file's own namespace is caught the same way, because such an import
-/// names a type the file declares.
-fn check_import_clashes(model_file: &ModelFile) -> Result<()> {
-    let imported: HashSet<&str> = model_file
-        .imports()
-        .iter()
-        .flat_map(Import::local_names)
-        .collect();
+/// TS: `ModelFile.validate()`'s "Check if names of the declarations are
+/// unique" loop (modelfile.ts): the first declaration whose fully-qualified
+/// name repeats an earlier one's throws an `IllegalModelException` whose
+/// message is `Duplicate class name <fqn>` — built with no model file and no
+/// location, so neither is set here (and [`ModelManager::validate_model_file`]
+/// does not attach one).
+fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
+    let mut seen = HashSet::new();
     for declaration in model_file.declarations() {
-        if imported.contains(declaration.name()) {
+        if !seen.insert(declaration.name()) {
             return Err(failed(
                 format!(
-                    "Type {} clashes with an imported type with the same name",
-                    declaration.name()
+                    "Duplicate class name {}",
+                    get_fully_qualified_name(model_file.namespace(), declaration.name())
                 ),
-                declaration_location(declaration),
+                None,
             ));
         }
     }
     Ok(())
+}
+
+/// Fills in the current model file's name on an `IllegalModel` contract error
+/// that does not carry one yet.
+///
+/// TS: every `IllegalModelException` raised while validating a model file's
+/// own imports and declarations is constructed with `this.modelFile` (or,
+/// for the file's own checks, `this` itself) — always the file being
+/// validated here, never a different one (`ModelFile.validate`,
+/// `Decorated.validate`, `ClassDeclaration.validate`/`_resolveSuperType`,
+/// `Property.validate`/`RelationshipDeclaration.validate`, all in
+/// src/introspect). The constructor decorates the message with `File
+/// '<name>': ` whenever that file has one (illegalmodelexception.ts) — part
+/// of `ModelFile.getName()`'s contract (P2-08). [`undeclared_type_error`]
+/// already attaches its own file name; this backstops every other check in
+/// this module, which builds a bare [`ConcertoError`] through
+/// [`failed`]/[`catalogue_error`] with no file in scope. A `model_file`
+/// already set (as `undeclared_type_error` sets its own) is left alone, and
+/// only `IllegalModel`-kind contract errors are touched.
+fn attach_model_file(err: ConcertoError, model_file: &ModelFile) -> ConcertoError {
+    match err {
+        ConcertoError::Contract(mut contract)
+            if contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel =>
+        {
+            contract.model_file = Some(model_file.file_name().map(str::to_string));
+            ConcertoError::Contract(contract)
+        }
+        other => other,
+    }
+}
+
+/// A declaration may not take the name of a type its file imports (including
+/// implicitly, from its own namespace, which is caught the same way) —
+/// unless the model manager's `dangerouslyAllowReservedSystemTypeNamesInUserModels`
+/// escape hatch is set and the imported name resolves to one of the five
+/// reserved system declarations.
+///
+/// TS: `Declaration.validate` (declaration.ts, "#648"), reached through every
+/// subtype's own `super.validate()` chain — `ClassDeclaration.validate` (so
+/// every concept-like declaration and, unchanged, `EnumDeclaration`) and
+/// `ScalarDeclaration.validate` both call it first thing, before their own
+/// checks (P2-08). `MapDeclaration` reaches it the same way in TS, but is
+/// P2-06's territory; not called from here.
+fn check_import_clash(
+    manager: &ModelManager,
+    namespace: &str,
+    name: &str,
+    location: Option<serde_json::Value>,
+) -> Result<()> {
+    let Some(model_file) = manager.model_file(namespace) else {
+        return Ok(());
+    };
+    if !model_file.is_imported_type(name) {
+        return Ok(());
+    }
+    if manager.dangerously_allow_reserved_system_type_names_in_user_models()
+        && is_reserved_system_type_import(manager, model_file, name)
+    {
+        return Ok(());
+    }
+    Err(failed(
+        format!("Type '{name}' clashes with an imported type with the same name."),
+        location,
+    ))
+}
+
+/// TS: `Declaration.isReservedSystemTypeImport` (declaration.ts) — `name`,
+/// already known to be an imported type of `model_file`, resolves to a
+/// concept-like declaration (concept, asset, participant, transaction or
+/// event — never an enum, scalar or map) of a system model file.
+fn is_reserved_system_type_import(
+    manager: &ModelManager,
+    model_file: &ModelFile,
+    name: &str,
+) -> bool {
+    let Ok(fqn) = model_file.resolve_import(name) else {
+        return false;
+    };
+    let Ok(declaration) = manager.get_declaration(&fqn) else {
+        return false;
+    };
+    if !declaration.is_class_declaration() {
+        return false;
+    }
+    let Ok(owner_namespace) = get_namespace(Some(&fqn)) else {
+        return false;
+    };
+    manager
+        .model_file(owner_namespace)
+        .is_some_and(ModelFile::is_system_namespace)
 }
 
 impl Validate for Declaration {
@@ -121,8 +285,13 @@ impl Validate for Declaration {
             Declaration::Map(map) => map.validate(manager, namespace),
             Declaration::Enum(enm) => {
                 let fqn = get_fully_qualified_name(namespace, enm.name());
+                // TS: `EnumDeclaration` inherits `ClassDeclaration.validate`
+                // unchanged, whose own `super.validate()` reaches
+                // `Declaration.validate`'s decorator and import-clash checks
+                // before anything class-specific (P2-08).
                 check_unique_decorators(enm, None)?;
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
+                check_import_clash(manager, namespace, enm.name(), None)?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
                 // check, inherited unchanged by `EnumDeclaration` — run in
                 // the same position relative to the decorator checks above
@@ -143,8 +312,19 @@ impl Validate for Declaration {
             }
             Declaration::Scalar(scalar) => {
                 let fqn = get_fully_qualified_name(namespace, scalar.name());
+                // TS: `ScalarDeclaration.validate`'s `super.validate()` goes
+                // straight to `Declaration.validate` (it extends
+                // `Declaration`, not `ClassDeclaration`): decorators, then
+                // the import-clash check (P2-08). Its own further check
+                // (a duplicate-FQN scan over `getModelFile()
+                // .getAllDeclarations()`) is unreachable on this pass:
+                // `ModelFile.validate()` runs the same scan over the same
+                // declarations before validating any of them
+                // (`check_unique_declaration_names`), so a duplicate never
+                // gets this far.
                 check_unique_decorators(scalar, None)?;
-                validate_decorators(manager, namespace, scalar, Some(&fqn))
+                validate_decorators(manager, namespace, scalar, Some(&fqn))?;
+                check_import_clash(manager, namespace, scalar.name(), None)
             }
         }
     }
@@ -152,6 +332,11 @@ impl Validate for Declaration {
 
 impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
+        // TS: `ClassDeclaration.validate`'s `super.validate()`
+        // (classdeclaration.ts) reaches `Declaration.validate`'s import-clash
+        // check ([`check_import_clash`]'s doc comment) before this method's
+        // own super-type block (P2-08).
+        check_import_clash(manager, namespace, self.name(), class_location(self))?;
         check_super_type(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
         check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
@@ -159,22 +344,88 @@ impl Validate for ClassDeclaration {
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_decorators(self, class_location(self))?;
         validate_decorators(manager, namespace, self, Some(&fqn))?;
-        for property in self.own_properties() {
-            check_property_type(manager, namespace, self, property)?;
-            // Neither `Property` nor `Decorator` carries its own `location`
-            // (only `ClassDeclaration` does so far, 7.2), so the owning class's
-            // is the nearest AST node in scope, as for the class's own decorators
-            // above.
-            check_unique_decorators(property, class_location(self))?;
-            validate_decorators(
-                manager,
-                namespace,
-                property,
-                Some(&format!("{fqn}.{}", property.name())),
-            )?;
+        // TS: `for (field of this.getProperties())` — every property, own
+        // and then inherited (`getProperties` walks up the super-type
+        // chain), each validated in this class's own pass (P2-08 review:
+        // this used to loop over `own_properties()` only, so a file
+        // validated on its own never checked what it inherits).
+        for (owner_fqn, property) in manager.get_all_properties(&fqn)? {
+            validate_property(manager, namespace, self, &owner_fqn, &property)?;
         }
         Ok(())
     }
+}
+
+/// TS: one iteration of `ClassDeclaration.validate`'s property loop
+/// (classdeclaration.ts) for `class` in `namespace`, over a property declared
+/// by `owner_fqn` (`class` itself, or one of its super types).
+///
+/// TS picks the declaration `field.validate(classDecl)` runs against: `this`
+/// (`class`) when the field is primitive or declared in `class`'s own
+/// namespace; otherwise the declaration of the field's *type*
+/// (`modelManager.getType(field.getFullyQualifiedTypeName())`, the type name
+/// resolved in the declaring file). `classDecl.getModelFile()` is where
+/// `Property.validate` resolves the type name and which file its errors
+/// name. `Decorated.validate` (the property's own decorators) and
+/// `RelationshipDeclaration.validate`'s lookups use the property's own
+/// parent instead — the declaring file.
+fn validate_property(
+    manager: &ModelManager,
+    namespace: &str,
+    class: &ClassDeclaration,
+    owner_fqn: &str,
+    property: &Property,
+) -> Result<()> {
+    let owner_ns = get_namespace(Some(owner_fqn))?;
+    let owner_name = get_short_name(owner_fqn);
+    let property_fqn = format!("{owner_fqn}.{}", property.name());
+    // `field.getModelFile()`: the declaring file, for an inherited
+    // property's own `Decorated.validate` errors.
+    let owner_file = manager.model_file(owner_ns);
+    let in_owner_file = |e: ConcertoError| match owner_file {
+        Some(file) if owner_ns != namespace => attach_model_file(e, file),
+        _ => e,
+    };
+
+    // TS: `Property.validate` runs `super.validate()` — the `Decorated`
+    // duplicate-decorator check and, when enabled, `Decorator.validate` —
+    // before its own `resolveType` call (property.ts). `check_property_type`
+    // below is that `resolveType`/relationship logic, so the decorator
+    // checks run first here too (P2-08 review carry-over (b) from P2-04's
+    // review, #48).
+    check_unique_decorators(property, property_location(property)).map_err(in_owner_file)?;
+    validate_decorators(manager, owner_ns, property, Some(&property_fqn)).map_err(in_owner_file)?;
+
+    let type_name = property.type_identifier().map(|t| t.name.as_str());
+    let is_primitive = type_name.is_none_or(is_primitive_type);
+    if is_primitive || owner_ns == namespace {
+        return check_property_type(manager, namespace, owner_ns, owner_name, class, property);
+    }
+
+    // `field.getFullyQualifiedTypeName()`: resolved in the declaring file,
+    // a plain `Error` when it does not resolve there; then
+    // `modelManager.getType(typeFqn)`.
+    let type_name = type_name.unwrap_or_default();
+    let Some(type_fqn) = resolve(manager, owner_ns, type_name) else {
+        return Err(ContractError::pre_port(
+            ErrorKind::Error,
+            format!(
+                "Failed to find fully qualified type name for property {} with type {type_name}",
+                property.name()
+            ),
+            None,
+        )
+        .into());
+    };
+    // TS `modelManager.getType(typeFqn)`, with its own two errors.
+    manager.get_type_declaration(&type_fqn)?;
+    let context_ns = get_namespace(Some(&type_fqn))?;
+    check_property_type(manager, context_ns, owner_ns, owner_name, class, property).map_err(|e| {
+        match manager.model_file(context_ns) {
+            Some(file) if context_ns != namespace => attach_model_file(e, file),
+            _ => e,
+        }
+    })
 }
 
 /// Runs [`crate::introspect::decorator::Decorator::validate`] over every
@@ -390,16 +641,33 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
 /// Object and relationship properties must point at a declared type; a
 /// relationship additionally must target an identifiable class, never a
 /// primitive.
+/// `namespace` is the namespace of TS's `classDecl.getModelFile()` — where
+/// the type name is resolved ([`validate_property`]); `owner_ns` and
+/// `owner` name the property's declaring class, for its fully-qualified
+/// name and for `RelationshipDeclaration.validate`'s own target lookup;
+/// `class` is the class whose pass this is, for the last-resort fallback's
+/// location.
 fn check_property_type(
     manager: &ModelManager,
     namespace: &str,
+    owner_ns: &str,
+    owner: &str,
     class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
-    let owner = class.name();
+    let owner_fqn = get_fully_qualified_name(owner_ns, owner);
     let Some(type_identifier) = property.type_identifier() else {
-        return Ok(());
+        // A primitive field: TS's `resolveType` of a primitive always
+        // succeeds, so the size-validator check is all that is left.
+        return check_size_validator_target(&owner_fqn, property, false);
     };
+
+    if is_primitive_type(&type_identifier.name) {
+        // TS: `resolveType` succeeds for a primitive, then `Property.validate`
+        // runs its size-validator check (a primitive is never a map), all
+        // before `RelationshipDeclaration.validate`'s own checks.
+        check_size_validator_target(&owner_fqn, property, false)?;
+    }
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
         // TS: RelationshipDeclaration.validate's own hardcoded message
@@ -412,7 +680,7 @@ fn check_property_type(
                 property.name(),
                 type_identifier.name
             ),
-            class_location(class),
+            property_location(property),
         ));
     }
 
@@ -432,15 +700,37 @@ fn check_property_type(
             manager,
             namespace,
             &type_identifier.name,
-            format!(
-                "property {}.{}",
-                get_fully_qualified_name(namespace, owner),
-                property.name()
-            ),
+            format!("property {owner_fqn}.{}", property.name()),
         ));
     };
 
     let target = manager.get_declaration(&target_fqn).ok();
+    if !is_primitive_type(&type_identifier.name) {
+        // TS: `Property.validate`'s size-validator check runs right after
+        // `resolveType` succeeds and before any relationship-specific check;
+        // a type that `getType` cannot find (swallowed by its try/catch)
+        // counts as not a map.
+        check_size_validator_target(
+            &owner_fqn,
+            property,
+            target.is_some_and(Declaration::is_map_declaration),
+        )?;
+    }
+    // `RelationshipDeclaration.validate` looks its target up from the
+    // property's own parent — the declaring file — not from `classDecl`.
+    // The two agree unless an inherited property is validated in the
+    // context of its type's declaration ([`validate_property`]).
+    let (target_fqn, target) = if owner_ns == namespace {
+        (target_fqn, target)
+    } else {
+        match resolve(manager, owner_ns, &type_identifier.name) {
+            Some(fqn) => {
+                let target = manager.get_declaration(&fqn).ok();
+                (fqn, target)
+            }
+            None => (target_fqn, target),
+        }
+    };
     let Some(target) = target else {
         if property.is_relationship() {
             // TS: `'Relationship ' + this.getName() + ' points to a missing
@@ -476,7 +766,7 @@ fn check_property_type(
                     property.name(),
                     target_fqn
                 ),
-                class_location(class),
+                property_location(property),
             ));
         }
         // Not yet observed for a non-relationship property: TS's own
@@ -487,9 +777,8 @@ fn check_property_type(
         // lookups that could in principle disagree.
         return Err(failed(
             format!(
-                "Undeclared type {} referenced by {}.{}",
+                "Undeclared type {} referenced by {owner}.{}",
                 type_identifier.name,
-                owner,
                 property.name()
             ),
             class_location(class),
@@ -514,22 +803,37 @@ fn check_property_type(
                     property.name(),
                     target_fqn
                 ),
-                class_location(class),
+                property_location(property),
             ));
         }
     }
 
-    if property.size_validator().is_some() && !property.is_array() && !target.is_map_declaration() {
+    Ok(())
+}
+
+/// TS: `Property.validate`'s size-validator check (property.ts): a
+/// `sizeValidator` on a property that is not an array is allowed only when
+/// the property's type resolves to a map declaration (`is_map_type`). Its
+/// own hardcoded message names the property by
+/// `getFullyQualifiedName()` — the owning declaration's fully-qualified name
+/// plus the property's — with `this.ast.location`. TS's `Property`
+/// constructor does not check this (P2-08: the check moved here from
+/// `Property::check_validators`, so a `ModelFile` with such a property still
+/// constructs).
+fn check_size_validator_target(
+    owner_fqn: &str,
+    property: &Property,
+    is_map_type: bool,
+) -> Result<()> {
+    if property.size_validator().is_some() && !property.is_array() && !is_map_type {
         return Err(failed(
             format!(
-                "size validator can only be applied to array or map properties: {}.{}",
-                owner,
+                "size validator can only be applied to array or map properties: {owner_fqn}.{}",
                 property.name()
             ),
-            class_location(class),
+            property_location(property),
         ));
     }
-
     Ok(())
 }
 
@@ -559,49 +863,59 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
     manager.resolve_type_name(namespace, name, None).ok()
 }
 
-/// A file may not import two versions of one namespace, since a short name
-/// could then mean either of them.
-fn check_import_namespaces(model_file: &ModelFile) -> Result<()> {
-    let mut versions: HashMap<String, String> = HashMap::new();
-    for import in model_file.imports() {
-        let (name, version) = split_versioned_namespace(import.namespace())?;
-        match versions.get(&name) {
-            Some(seen) if *seen != version => {
-                // No class-like declaration is in scope for an import check
-                // (`ModelFile` itself carries no `location` field in this
-                // port, 7.2): `None` here is a placeholder, like `failed`'s
-                // doc comment explains, not a claim TS passes none.
-                return Err(failed(
-                    format!(
-                        "Importing types from different versions ({seen} and {version}) of the same namespace {name} is not permitted"
-                    ),
-                    None,
-                ));
-            }
-            _ => {
-                versions.insert(name, version);
-            }
-        }
-    }
-    Ok(())
-}
+/// TS `ModelFile.validate`'s single loop over `this.getImports()`
+/// (modelfile.ts), for every fully-qualified name this file imports (so an
+/// `import ns.{A, B}` is walked once per name, not once per import
+/// statement): the source namespace must be loaded; no earlier import in
+/// this file may have named a different version of the same bare namespace
+/// (the global `concerto` namespace is exempt); and the imported short name
+/// must actually be declared there. `None` for every error's `location`:
+/// `ModelFile` carries no `location` field in this port (7.2), and TS itself
+/// passes none on this path (`this` alone, no `fileLocation` argument).
+fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
+    let mut seen_versions: HashMap<String, Option<String>> = HashMap::new();
+    for import_fqn in model_file.get_imports() {
+        let import_namespace = get_namespace(Some(&import_fqn))?;
+        let import_short_name = get_short_name(&import_fqn);
 
-/// Every imported type must exist in the namespace it is imported from.
-fn check_imported_types_exist(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
-    for import in model_file.imports() {
-        for name in import.imported_names() {
-            let fqn = get_fully_qualified_name(import.namespace(), name);
-            if manager.get_declaration(&fqn).is_err() {
-                // As above (`check_import_namespaces`): no class-like
-                // declaration is in scope for an import check.
-                return Err(failed(
-                    format!(
-                        "Type {name} is not defined in namespace {}",
-                        import.namespace()
-                    ),
-                    None,
-                ));
-            }
+        if manager.model_file(import_namespace).is_none() {
+            return Err(catalogue_error(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", import_fqn.clone())],
+                None,
+            ));
+        }
+
+        let (name, import_version) = split_versioned_namespace(import_namespace)?;
+        let is_global_model = name == "concerto";
+        if let Some(existing) = seen_versions.get(&name)
+            && *existing != Some(import_version.clone())
+            && !is_global_model
+        {
+            return Err(catalogue_error(
+                "modelmanager-gettype-duplicatensimport",
+                vec![
+                    ("namespace", import_namespace.to_string()),
+                    ("version1", existing.clone().unwrap_or_default()),
+                    ("version2", import_version.clone()),
+                ],
+                None,
+            ));
+        }
+        seen_versions.insert(name, Some(import_version));
+
+        let source_file = manager
+            .model_file(import_namespace)
+            .expect("checked registered above");
+        if !source_file.is_local_type(import_short_name) {
+            return Err(catalogue_error(
+                "modelmanager-gettype-notypeinns",
+                vec![
+                    ("type", import_short_name.to_string()),
+                    ("namespace", import_namespace.to_string()),
+                ],
+                None,
+            ));
         }
     }
     Ok(())
@@ -1390,7 +1704,101 @@ mod tests {
             ]),
             serde_json::json!([concept(serde_json::json!({ "name": "Address" }))]),
         );
-        assert!(err.unwrap_err().to_string().contains("clashes"));
+        // TS: test/introspect/modelfile.js, the exact
+        // `IllegalModelException` message `Declaration.validate` throws.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Type 'Address' clashes with an imported type with the same name."
+        );
+    }
+
+    /// TS: test/introspect/modelfile.js "should recognise a user-space type
+    /// with the same name as a Prototype" — every non-system model file
+    /// implicitly imports `Concept`/`Asset`/`Transaction`/`Participant`/
+    /// `Event` from the system namespace (`ModelFile::from_json`'s built-in
+    /// import), so a plain user concept named `Transaction`, with no import
+    /// of its own, still clashes.
+    #[test]
+    fn a_user_declaration_clashes_with_the_implicitly_imported_system_types() {
+        let err = validate(serde_json::json!([concept(
+            serde_json::json!({ "name": "Transaction" })
+        )]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Type 'Transaction' clashes with an imported type with the same name."
+        );
+    }
+
+    /// TS: test/introspect/modelfile.js "should allow a system type name
+    /// when dangerouslyAllowReservedSystemTypeNamesInUserModels is enabled".
+    #[test]
+    fn dangerously_allow_reserved_system_type_names_permits_a_system_name_clash() {
+        let mut manager = ModelManager::new().unwrap();
+        manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "A@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
+                        "name": "Asset",
+                        "isAbstract": false,
+                        "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "assetId" },
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "assetId",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(manager.validate_models().is_ok());
+    }
+
+    /// TS: test/introspect/modelfile.js "should still fail non-system
+    /// clashes when dangerouslyAllowReservedSystemTypeNamesInUserModels is
+    /// enabled" — the escape hatch only bypasses a clash with a *system*
+    /// declaration; an ordinary imported user type still clashes.
+    #[test]
+    fn dangerously_allow_reserved_system_type_names_does_not_permit_other_clashes() {
+        let mut manager = ModelManager::new().unwrap();
+        manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "A@1.0.0",
+                    "declarations": [concept(serde_json::json!({
+                        "name": "B",
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "name",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }))]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "B@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "A@1.0.0", "name": "B" }
+                    ],
+                    "declarations": [concept(serde_json::json!({ "name": "B" }))]
+                }),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            manager.validate_models().unwrap_err().to_string(),
+            "Type 'B' clashes with an imported type with the same name."
+        );
     }
 
     #[test]
@@ -2041,10 +2449,9 @@ mod tests {
                 ]
             }))
         ]));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("size validator can only be applied to array or map")
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "size validator can only be applied to array or map properties: org.example@1.0.0.A.thing"
         );
     }
 
@@ -2229,6 +2636,204 @@ mod tests {
                 .to_string()
                 .contains("Invalid field name")
         );
+    }
+
+    /// A model with two declarations named `A` (a concept, then an asset).
+    fn duplicate_model(namespace: &str) -> serde_json::Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": namespace,
+            "declarations": [
+                concept(serde_json::json!({ "name": "A" })),
+                { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "A",
+                  "isAbstract": false, "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id",
+                      "isArray": false, "isOptional": false }
+                  ],
+                  "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" } }
+            ]
+        })
+    }
+
+    /// Asserts `err` is TS `ModelFile.validate()`'s duplicate-name
+    /// `IllegalModelException`: its exact message, and neither a model file
+    /// nor a location (TS passes neither), even when the file has a name.
+    fn assert_duplicate_class_name(err: ConcertoError, fqn: &str) {
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        assert_eq!(contract.kind, crate::error::ErrorKind::IllegalModel);
+        assert_eq!(contract.model_file, None);
+        assert_eq!(contract.location, None);
+        // The trailing space is TS `IllegalModelException`'s own, from an
+        // empty file/location suffix.
+        assert_eq!(
+            contract.final_message(),
+            format!("Duplicate class name {fqn} ")
+        );
+    }
+
+    /// TS: `ModelFile.validate()`'s duplicate-name scan (P2-08). Loading
+    /// (`add_model`, which never validates — TS `addModelFile(…, true)`)
+    /// accepts the duplicate; the later `validateModelFiles` rejects it.
+    #[test]
+    fn duplicate_declaration_is_accepted_on_load_and_rejected_by_validation() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(&duplicate_model("org.dup@1.0.0"), Some("dup.cto".into()))
+            .expect("loading without validation accepts a duplicate name");
+        let file = manager.model_file("org.dup@1.0.0").unwrap();
+        assert_eq!(file.declarations().len(), 2);
+        assert_duplicate_class_name(
+            manager.validate_model_file(file).unwrap_err(),
+            "org.dup@1.0.0.A",
+        );
+        assert_duplicate_class_name(manager.validate_models().unwrap_err(), "org.dup@1.0.0.A");
+    }
+
+    /// TS `addModelFiles` (validation on) rejects the batch at its
+    /// `validateModelFiles` step, and leaves the manager as it was.
+    #[test]
+    fn add_models_rejects_a_duplicate_declaration_at_validation() {
+        let mut manager = ModelManager::new().unwrap();
+        let model = duplicate_model("org.dup@1.0.0");
+        let err = manager
+            .add_models([(&model, Some("dup.cto".to_string()))])
+            .unwrap_err();
+        assert_duplicate_class_name(err, "org.dup@1.0.0.A");
+        assert!(manager.model_file("org.dup@1.0.0").is_none());
+    }
+
+    /// The duplicate-name scan runs after the import checks and before any
+    /// declaration is validated, as in TS: an undeclared import wins over a
+    /// duplicate, and a duplicate wins over a declaration's own problem.
+    #[test]
+    fn duplicate_declaration_scan_runs_between_imports_and_declarations() {
+        let mut manager = ModelManager::new().unwrap();
+        let mut model = duplicate_model("org.dup@1.0.0");
+        model["declarations"][0]["superType"] = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing"
+        });
+        manager.add_model(&model, None).unwrap();
+        assert_duplicate_class_name(manager.validate_models().unwrap_err(), "org.dup@1.0.0.A");
+
+        let mut manager = ModelManager::new().unwrap();
+        let mut model = duplicate_model("org.dup@1.0.0");
+        model["imports"] = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.ImportType",
+              "namespace": "org.missing@1.0.0", "name": "X" }
+        ]);
+        manager.add_model(&model, None).unwrap();
+        let message = manager.validate_models().unwrap_err().to_string();
+        assert!(!message.contains("Duplicate class name"), "{message}");
+    }
+
+    /// TS `new ModelFile(mm, ast).validate()`: a file its manager never
+    /// registered validates against that manager (imports resolve through
+    /// it, local types through the file itself), and the manager is left
+    /// unchanged.
+    #[test]
+    fn a_detached_model_file_validates_against_its_manager() {
+        use crate::introspect::model_file::ModelFile;
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.common@1.0.0",
+                    "declarations": [concept(serde_json::json!({ "name": "Address" }))]
+                }),
+                None,
+            )
+            .unwrap();
+        let generation = manager.generation();
+        let importing = |declarations: serde_json::Value| {
+            ModelFile::from_json(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.b@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.common@1.0.0", "name": "Address" }
+                    ],
+                    "declarations": declarations
+                }),
+                None,
+            )
+            .unwrap()
+        };
+        let valid = importing(serde_json::json!([
+            concept(serde_json::json!({ "name": "Base" })),
+            concept(serde_json::json!({
+                "name": "Person",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "home",
+                      "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Address" } }
+                ]
+            }))
+        ]));
+        manager.validate_detached_model_file(&valid).unwrap();
+
+        let duplicate = importing(serde_json::json!([
+            concept(serde_json::json!({ "name": "Person" })),
+            concept(serde_json::json!({ "name": "Person" }))
+        ]));
+        assert_duplicate_class_name(
+            manager
+                .validate_detached_model_file(&duplicate)
+                .unwrap_err(),
+            "org.b@1.0.0.Person",
+        );
+        assert!(manager.model_file("org.b@1.0.0").is_none());
+        assert_eq!(manager.generation(), generation);
+    }
+
+    /// TS `Property.validate`'s size-validator check for a primitive field
+    /// and a relationship: construction accepts both (P2-08), validation
+    /// rejects them with TS's exact message — the property's fully-qualified
+    /// name — and before a relationship's own primitive-type check.
+    ///
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// reject size on a non-array String property" / "... Integer property".
+    #[test]
+    fn size_validator_on_a_non_array_primitive_or_relationship_is_rejected_by_validation() {
+        let sized = |class: &str, name: &str, extra: serde_json::Value| {
+            let mut p = serde_json::json!({
+                "$class": format!("concerto.metamodel@1.0.0.{class}"),
+                "name": name, "isArray": false, "isOptional": false,
+                "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                                   "minSize": 1, "maxSize": 5 }
+            });
+            p.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            p
+        };
+        let cases = [
+            sized("StringProperty", "name", serde_json::json!({})),
+            sized("IntegerProperty", "count", serde_json::json!({})),
+            sized(
+                "RelationshipProperty",
+                "owner",
+                serde_json::json!({ "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "String" } }),
+            ),
+        ];
+        for property in cases {
+            let name = property["name"].as_str().unwrap().to_string();
+            let err = validate(serde_json::json!([concept(serde_json::json!({
+                "name": "A",
+                "properties": [property]
+            }))]))
+            .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "size validator can only be applied to array or map properties: org.example@1.0.0.A.{name}"
+                )
+            );
+        }
     }
 
     // --- Additional MapDeclaration/MapKeyType/MapValueType porting (P2-06,
@@ -2653,10 +3258,12 @@ mod tests {
                     "imports": [{
                         "$class": "concerto.metamodel@1.0.0.ImportTypes",
                         "namespace": "child@1.0.0",
-                        "types": [
-                            { "$class": "concerto.metamodel@1.0.0.ImportType", "name": "FullName" },
-                            { "$class": "concerto.metamodel@1.0.0.ImportType", "name": "Child" }
-                        ],
+                        // test/data/aliasing/parent.json: `types` holds the
+                        // declared names as strings (merge with P2-08: this
+                        // used object entries, which `ImportTypes` skips, and
+                        // resolved only through the aliased-import fallthrough
+                        // that P2-08's review carry-over (a) removed).
+                        "types": ["FullName", "Child"],
                         "aliasedTypes": [
                             { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "FullName", "aliasedName": "KidFullName" },
                             { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "Child", "aliasedName": "Kid" }
@@ -2865,5 +3472,185 @@ mod tests {
             "com.acme@1.0.0.Dictionary"
         );
         assert!(declaration.is_map_declaration());
+    }
+
+    /// Two files for the inherited-property tests: `org.a` declares
+    /// `abstract concept X { o String s }` (with `s_extra` merged into the
+    /// property's AST), loaded without validation; `org.b` imports `X` and
+    /// declares `concept Y extends X`, named `b.cto`.
+    fn inherited_property_files(s_extra: serde_json::Value) -> (ModelManager, serde_json::Value) {
+        let mut property = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "s", "isArray": false, "isOptional": false
+        });
+        property
+            .as_object_mut()
+            .unwrap()
+            .extend(s_extra.as_object().unwrap().clone());
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "declarations": [concept(serde_json::json!({
+                        "name": "X", "isAbstract": true, "properties": [property]
+                    }))]
+                }),
+                Some("a.cto".into()),
+            )
+            .unwrap();
+        let b = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.b@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.a@1.0.0", "name": "X" }
+            ],
+            "declarations": [concept(serde_json::json!({
+                "name": "Y",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
+            }))]
+        });
+        (manager, b)
+    }
+
+    /// TS `ClassDeclaration.validate` validates every property from
+    /// `getProperties()`, inherited ones included, in the subclass's own pass:
+    /// validating `b.cto` alone rejects the size validator `X.s` carries, and
+    /// names `b.cto` (`field.validate(this)` for a primitive field) while the
+    /// property's FQN stays `X`'s (P2-08 review).
+    #[test]
+    fn an_inherited_property_is_validated_in_the_subclass_pass() {
+        use crate::introspect::model_file::ModelFile;
+        let (mut manager, b) = inherited_property_files(serde_json::json!({
+            "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                               "minSize": 1, "maxSize": 5 }
+        }));
+        let expected = "size validator can only be applied to array or map properties: \
+                        org.a@1.0.0.X.s File 'b.cto': ";
+        let final_message = |e: ConcertoError| match e {
+            ConcertoError::Contract(c) => c.final_message(),
+            other => panic!("expected a contract error, got {other:?}"),
+        };
+
+        // `new ModelFile(mm, B).validate()`.
+        let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
+        assert_eq!(
+            final_message(manager.validate_detached_model_file(&detached).unwrap_err()),
+            expected
+        );
+
+        // `addModelFile(B)` with validation: B alone is validated.
+        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        let registered = manager.model_file("org.b@1.0.0").unwrap();
+        assert_eq!(
+            final_message(manager.validate_model_file(registered).unwrap_err()),
+            expected
+        );
+
+        // `validateModelFiles`: `a.cto` was added first, so its own error
+        // is still the one reported, not a second copy from `b.cto`'s pass.
+        assert_eq!(
+            final_message(manager.validate_models().unwrap_err()),
+            "size validator can only be applied to array or map properties: \
+             org.a@1.0.0.X.s File 'a.cto': "
+        );
+    }
+
+    /// A valid inherited property passes in the subclass's pass too, and an
+    /// inherited property whose type is declared in the super type's
+    /// namespace (not imported by the subclass's file) is resolved there —
+    /// TS validates it against its type's own declaration.
+    #[test]
+    fn a_valid_inherited_property_passes_the_subclass_pass() {
+        let (mut manager, b) = inherited_property_files(serde_json::json!({}));
+        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        assert!(manager.validate_models().is_ok());
+
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "declarations": [
+                        concept(serde_json::json!({ "name": "Address" })),
+                        concept(serde_json::json!({
+                            "name": "X", "isAbstract": true, "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "home",
+                                  "isArray": false, "isOptional": false,
+                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Address" } }
+                            ]
+                        }))
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        let registered = manager.model_file("org.b@1.0.0").unwrap();
+        assert!(manager.validate_model_file(registered).is_ok());
+        assert!(manager.validate_models().is_ok());
+    }
+
+    /// TS `ClassDeclaration.validate` looks an inherited, other-namespace
+    /// property's type up with `modelManager.getType(typeFqn)`, whose two
+    /// `TypeNotFoundException`s differ by whether the type's namespace is
+    /// loaded at all (P2-08 review).
+    #[test]
+    fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() {
+        let run = |load_c: bool| {
+            let mut manager = ModelManager::new().unwrap();
+            if load_c {
+                manager
+                    .add_model(
+                        &serde_json::json!({
+                            "$class": "concerto.metamodel@1.0.0.Model",
+                            "namespace": "org.c@1.0.0",
+                            "declarations": []
+                        }),
+                        None,
+                    )
+                    .unwrap();
+            }
+            manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "namespace": "org.a@1.0.0",
+                        "imports": [
+                            { "$class": "concerto.metamodel@1.0.0.ImportType",
+                              "namespace": "org.c@1.0.0", "name": "Cc" }
+                        ],
+                        "declarations": [concept(serde_json::json!({
+                            "name": "X", "isAbstract": true, "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "c",
+                                  "isArray": false, "isOptional": false,
+                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Cc" } }
+                            ]
+                        }))]
+                    }),
+                    None,
+                )
+                .unwrap();
+            let (_, b) = inherited_property_files(serde_json::json!({}));
+            manager.add_model(&b, Some("b.cto".into())).unwrap();
+            let file = manager.model_file("org.b@1.0.0").unwrap();
+            let err = manager.validate_model_file(file).unwrap_err();
+            let ConcertoError::Contract(err) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(err.kind, crate::error::ErrorKind::TypeNotFound);
+            err.final_message()
+        };
+        assert_eq!(
+            run(false),
+            "Namespace is not defined for type \"org.c@1.0.0.Cc\"."
+        );
+        assert_eq!(
+            run(true),
+            "Type \"Cc\" is not defined in namespace \"org.c@1.0.0\"."
+        );
     }
 }

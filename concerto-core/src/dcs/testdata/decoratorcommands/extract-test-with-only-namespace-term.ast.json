@@ -1,0 +1,267 @@
+{
+  "$class": "concerto.metamodel@1.0.0.Model",
+  "decorators": [
+    {
+      "$class": "concerto.metamodel@1.0.0.Decorator",
+      "name": "Term",
+      "arguments": [
+        {
+          "$class": "concerto.metamodel@1.0.0.DecoratorString",
+          "value": "my Namespace"
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.Decorator",
+      "name": "Term_Desc",
+      "arguments": [
+        {
+          "$class": "concerto.metamodel@1.0.0.DecoratorString",
+          "value": "my Namespace desc"
+        }
+      ]
+    }
+  ],
+  "namespace": "test@1.0.0",
+  "imports": [],
+  "declarations": [
+    {
+      "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
+      "name": "Dummy",
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.EnumProperty",
+          "name": "One",
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "one"
+            }
+          ]
+        }
+      ],
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "deco"
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.StringScalar",
+      "defaultValue": "000-00-0000",
+      "name": "SSN",
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "scc"
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration",
+      "name": "participantName",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "participantKey",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "M3"
+            }
+          ]
+        }
+      ],
+      "identified": {
+        "$class": "concerto.metamodel@1.0.0.IdentifiedBy",
+        "name": "participantKey"
+      },
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "M1"
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
+      "name": "assetName",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "assetKey",
+          "isArray": false,
+          "isOptional": false
+        }
+      ],
+      "identified": {
+        "$class": "concerto.metamodel@1.0.0.IdentifiedBy",
+        "name": "assetKey"
+      },
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Dummy",
+          "arguments": [
+            {
+              "$class": "concerto.metamodel@1.0.0.DecoratorString",
+              "value": "term1"
+            },
+            {
+              "$class": "concerto.metamodel@1.0.0.DecoratorNumber",
+              "value": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "mapName",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType",
+        "decorators": [
+          {
+            "$class": "concerto.metamodel@1.0.0.Decorator",
+            "name": "deco",
+            "arguments": [
+              {
+                "$class": "concerto.metamodel@1.0.0.DecoratorNumber",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.StringMapValueType"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Person",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "firstName",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Custom"
+            },
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Form",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "inputType"
+                },
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "text"
+                }
+              ]
+            },
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "New"
+            }
+          ]
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "lastName",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Form",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "inputType"
+                },
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "text"
+                }
+              ]
+            },
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "New"
+            }
+          ]
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "bio",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Form",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "inputType"
+                },
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "textArea"
+                }
+              ]
+            },
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "New"
+            }
+          ]
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "ssn",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Form",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "inputType"
+                },
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "text"
+                }
+              ]
+            },
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "New"
+            }
+          ]
+        }
+      ],
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Editable"
+        }
+      ]
+    }
+  ]
+}
