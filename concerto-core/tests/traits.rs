@@ -206,18 +206,16 @@ fn a_string_scalar_with_a_bad_validator_is_rejected_at_load() {
     }));
     assert_eq!(
         length.unwrap_err().to_string(),
-        "illegal model: minLength must be less than or equal to maxLength on Code"
+        "Validator error for field `Code`. Code: minLength must be less than or equal to maxLength."
     );
     let pattern = Declaration::try_from(&json!({
         "$class": format!("{MM}.StringScalar"),
         "name": "Code",
         "validator": { "$class": format!("{MM}.StringRegexValidator"), "pattern": "(", "flags": "" }
     }));
-    assert!(
-        pattern
-            .unwrap_err()
-            .to_string()
-            .starts_with("illegal model: Invalid regular expression on Code")
+    assert_eq!(
+        pattern.unwrap_err().to_string(),
+        "Validator error for field `Code`. Code: Invalid regular expression: /(/: Unterminated group"
     );
 }
 
@@ -253,4 +251,35 @@ fn a_declaration_validates_against_the_loaded_models() {
         "Could not find super type Missing"
     );
     assert!(colour.validate(&manager, "org.example@1.0.0").is_ok());
+}
+
+/// P2-09c/F5: a String scalar's validator is now built by
+/// `ScalarDeclaration::process` through the real `StringValidator`
+/// (`introspect::validators`), exactly like TS's own `new StringValidator(this,
+/// this.ast.validator, this.ast.lengthValidator)` — not the loader's own ad
+/// hoc `check_pattern`/`check_length`, which never applied the validator to
+/// the scalar's own `defaultValue` at all. This pins that: TS's
+/// `StringValidator` constructor validates a truthy `ast.defaultValue`
+/// against its own regex, so a scalar whose default does not match its own
+/// pattern is now rejected at load, the same as TS.
+#[test]
+fn a_string_scalars_default_value_is_checked_against_its_own_validator() {
+    let bad = Declaration::try_from(&json!({
+        "$class": format!("{MM}.StringScalar"),
+        "name": "Code",
+        "validator": { "$class": format!("{MM}.StringRegexValidator"), "pattern": "^[A-Z]+$", "flags": "" },
+        "defaultValue": "not-uppercase"
+    }));
+    assert_eq!(
+        bad.unwrap_err().to_string(),
+        "Validator error for field `Code`. Code: Value 'not-uppercase' failed to match validation regex: /^[A-Z]+$/"
+    );
+
+    let ok = Declaration::try_from(&json!({
+        "$class": format!("{MM}.StringScalar"),
+        "name": "Code",
+        "validator": { "$class": format!("{MM}.StringRegexValidator"), "pattern": "^[A-Z]+$", "flags": "" },
+        "defaultValue": "ABC"
+    }));
+    assert!(ok.is_ok());
 }

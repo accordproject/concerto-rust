@@ -3072,7 +3072,19 @@ fn encode_decorator_argument(arg: &concerto_core::DecoratorArgument) -> Value {
         DecoratorArgument::TypeReference(t) => json!({
             "type": "Identifier",
             "name": t.name,
-            "array": t.array,
+            // TS: `array: thing.isArray` (`Decorator.process`, decorator.ts)
+            // — a `DecoratorTypeReference` node with no `isArray` at all (as
+            // opposed to one with an explicit `isArray: false`) reads as JS
+            // `undefined`, not `null`; `t.array: Option<bool>` collapses
+            // both into `None` (F7, P2-09c), so this always encodes an
+            // absent bound as the oracle's own `undefined` marker, never
+            // `json!(t.array)`'s `null`, matching TS. No fixture in the
+            // corpus writes an explicit `isArray: false`, so the two absent
+            // cases (never set, set `false`) are not distinguished here.
+            "array": match t.array {
+                Some(array) => Value::Bool(array),
+                None => recipe::undefined(),
+            },
         }),
     }
 }
