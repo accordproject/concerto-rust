@@ -84,6 +84,10 @@ pub enum ErrorKind {
     Error,
     /// A JS `TypeError(message)` the V8 engine raises in the TS code.
     JsTypeError,
+    /// A JS `RangeError(message)` the V8 engine raises in the TS code: a
+    /// stack overflow at a TS recursion point that has no cycle check
+    /// (PORTING.md 2.5), always `engine-rangeerror-maxcallstack`.
+    JsRangeError,
     /// `MetamodelException(message)` (`src/metamodelexception.ts`), thrown by
     /// `BaseModelManager.validateAst` (task P3-04,
     /// `concerto_core::instance::metamodel`).
@@ -101,6 +105,7 @@ impl ErrorKind {
             Self::Validation => "ValidationException",
             Self::Error => "Error",
             Self::JsTypeError => "TypeError",
+            Self::JsRangeError => "RangeError",
             Self::Metamodel => "MetamodelException",
         }
     }
@@ -449,6 +454,7 @@ impl ContractError {
             | ErrorKind::Validation
             | ErrorKind::Error
             | ErrorKind::JsTypeError
+            | ErrorKind::JsRangeError
             // TS: `MetamodelException` (src/metamodelexception.ts) is a bare
             // `BaseException(message)`: no suffix, no location.
             | ErrorKind::Metamodel => message,
@@ -471,7 +477,7 @@ impl ContractError {
             ErrorKind::Validator | ErrorKind::Validation | ErrorKind::Metamodel => {
                 Some("@accordproject/concerto-util")
             }
-            ErrorKind::Error | ErrorKind::JsTypeError => None,
+            ErrorKind::Error | ErrorKind::JsTypeError | ErrorKind::JsRangeError => None,
         }
     }
 }
@@ -802,6 +808,18 @@ mod tests {
             .message(),
             "Cannot read properties of undefined (reading '$class')"
         );
+    }
+
+    #[test]
+    fn golden_engine_rangeerror_maxcallstack() {
+        let err = ContractError::new(
+            ErrorKind::JsRangeError,
+            "engine-rangeerror-maxcallstack",
+            Vec::new(),
+        );
+        assert_eq!(err.message(), "Maximum call stack size exceeded");
+        assert_eq!(err.kind.ts_class(), "RangeError");
+        assert_eq!(err.component(), None);
     }
 
     #[test]

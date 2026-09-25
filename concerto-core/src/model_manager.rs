@@ -1009,7 +1009,7 @@ impl ModelManager {
     /// .getFullyQualifiedName()`) — an inherited property's is its super
     /// type's, not `fqn`'s own. Returns an error if the name is not a
     /// concept-like or enum type, a super type cannot be resolved, or the
-    /// inheritance chain is circular.
+    /// inheritance chain is circular (V8's `RangeError`, DV-013).
     ///
     /// TS: `ClassDeclaration.getProperties` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
@@ -1266,6 +1266,13 @@ impl ModelManager {
 
     /// Walks a class's inheritance chain, handing back each
     /// `(full-name, declaration)` pair from the type up to its root.
+    ///
+    /// TS walks this chain by recursion (`ClassDeclaration.getProperties`,
+    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so a
+    /// cyclic chain overflows V8's stack. This walk is a loop with a
+    /// visited set (PORTING.md 2.5 rule 1) and, when it meets a declaration
+    /// again, returns the `RangeError` V8 raises (rule 2), after the same
+    /// earlier checks: a missing or non-class super type still fails first.
     fn super_chain(&self, fqn: &str) -> Result<Vec<(String, ClassLike<'_>)>> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
@@ -1273,11 +1280,13 @@ impl ModelManager {
 
         loop {
             if !visited.insert(current.clone()) {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("circular inheritance detected at {current}"),
-                    file_name: None,
-                    location: None,
-                });
+                // DV-013: TS has no cycle check here and overflows the stack.
+                return Err(ContractError::new(
+                    ErrorKind::JsRangeError,
+                    "engine-rangeerror-maxcallstack",
+                    Vec::new(),
+                )
+                .into());
             }
 
             let class = ClassLike::from_declaration(self.get_declaration(&current)?)
@@ -4057,5 +4066,37 @@ mod tests {
         );
         assert!(mgr.model_file("org.ext@1.0.0").is_none());
         assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
+    }
+
+    /// PORTING.md 2.5 / DV-013: a cyclic chain is V8's stack-overflow
+    /// `RangeError`, as TS's unguarded recursion fails, not a cycle error.
+    #[test]
+    fn circular_inheritance_is_a_range_error() {
+        let concept = |name: &str, sup: &str| {
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": name, "isAbstract": false, "properties": [],
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup } })
+        };
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.cycle@1.0.0",
+                "declarations": [concept("A", "C"), concept("B", "A"), concept("C", "B")]
+            }),
+            None,
+        )
+        .unwrap();
+        for err in [
+            mgr.get_all_properties("org.cycle@1.0.0.A").unwrap_err(),
+            mgr.validate_models().unwrap_err(),
+        ] {
+            let ConcertoError::Contract(c) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(c.kind, ErrorKind::JsRangeError);
+            assert_eq!(c.message(), "Maximum call stack size exceeded");
+            assert_eq!(c.location, None);
+        }
     }
 }

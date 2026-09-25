@@ -230,6 +230,12 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["V8 (property read on null or undefined)"],
     },
     CatalogueEntry {
+        code: "engine-rangeerror-maxcallstack",
+        template: "Maximum call stack size exceeded",
+        renderer: Renderer::Inline,
+        sources: &["V8 (stack overflow at a TS recursion point, PORTING.md 2.5)"],
+    },
+    CatalogueEntry {
         code: "engine-typeerror-notafunction",
         template: "{expression} is not a function",
         renderer: Renderer::Inline,
