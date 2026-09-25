@@ -3253,7 +3253,11 @@ mod tests {
         });
 
         // First-error already catches this (it goes through `check_array`).
-        let err = err_of(validate_instance(&mgr, &garage, &ValidateOptions::default()));
+        let err = err_of(validate_instance(
+            &mgr,
+            &garage,
+            &ValidateOptions::default(),
+        ));
         assert!(err.to_string().contains("items"), "{err}");
 
         // Collect-all must agree: this is not a valid instance.
