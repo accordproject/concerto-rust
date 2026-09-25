@@ -282,6 +282,50 @@ export function runChecks(engine) {
     assert(mm.declarationId('org.example@1.0.0.Person') === person, 'source manager untouched');
   });
 
+  check('modelFileFilter gives the predicate the imported declaration\'s own FQN', () => {
+    // A real cross-file import: `org.example@1.0.0.Person` is not the
+    // relevant namespace here — `Person` belongs to `org.other@1.0.0`
+    // (already loaded above), and `ModelFile::filter` calls the predicate
+    // on it while pruning this file's own `ImportType` (module doc on
+    // `concerto_core::ModelFile::filter`). A predicate keyed by the
+    // importED file's real FQN, not the importING file's namespace, must
+    // see `org.other@1.0.0.Person` and keep the import.
+    const importer = {
+      $class: MM,
+      namespace: 'org.importer@1.0.0',
+      imports: [
+        { $class: `${MM}.ImportType`, namespace: 'org.other@1.0.0', name: 'Person' },
+      ],
+      declarations: [
+        {
+          $class: `${MM}.ConceptDeclaration`, name: 'Holder', isAbstract: false,
+          properties: [
+            {
+              $class: `${MM}.ObjectProperty`, name: 'owner', isArray: false, isOptional: false,
+              type: { $class: `${MM}.TypeIdentifier`, namespace: 'org.other@1.0.0', name: 'Person' },
+            },
+          ],
+        },
+      ],
+    };
+    const importerFile = mm.addModel(JSON.stringify(importer), 'importer.cto');
+    const seen = [];
+    const target = new engine.ModelManagerHandle();
+    const kept = mm.modelFileFilter(importerFile, (fqn) => {
+      seen.push(fqn);
+      return true;
+    }, target);
+    assert(typeof kept === 'number', `filter returned ${kept}`);
+    assert(seen.includes('org.other@1.0.0.Person'), `predicate saw ${JSON.stringify(seen)}`);
+    assert(!seen.includes('org.importer@1.0.0.Person'), `predicate wrongly saw ${JSON.stringify(seen)}`);
+    const snap = JSON.parse(target.modelFileSnapshot(kept));
+    assert(
+      snap.ast.imports.some((imp) => imp.namespace === 'org.other@1.0.0' && imp.name === 'Person'),
+      `import kept ${JSON.stringify(snap.ast.imports)}`,
+    );
+    target.free();
+  });
+
   mm.free();
   return rows;
 }

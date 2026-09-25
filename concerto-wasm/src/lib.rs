@@ -3697,14 +3697,47 @@ impl ModelManagerHandle {
     ) -> std::result::Result<Option<u32>, JsValue> {
         run(|| {
             let file = self.require_file(model_file)?;
-            let namespace = file.namespace().to_string();
+            // `ModelFile::filter`'s predicate carries no namespace of its
+            // own (its doc comment): it is called both on `file`'s own
+            // declarations *and*, while pruning `file`'s imports, on
+            // declarations belonging to a *different* model file
+            // (`source_manager.model_file(ns).get_local_type(...)`). Keying
+            // the fully-qualified name off `file`'s namespace alone would
+            // ask the JS predicate about the wrong FQN for every cross-file
+            // (import) declaration, exactly the failure
+            // `ModelManager::filter`'s own doc comment warns about. So the
+            // real namespace for every declaration reachable from this
+            // filter call is looked up by identity up front, across every
+            // file `self.manager` holds.
+            let fqn_by_decl: std::collections::HashMap<
+                *const concerto_core::introspect::Declaration,
+                String,
+            > = self
+                .manager
+                .model_files()
+                .flat_map(|mf| {
+                    let namespace = mf.namespace();
+                    mf.declarations().iter().map(move |decl| {
+                        (
+                            decl as *const concerto_core::introspect::Declaration,
+                            mu::get_fully_qualified_name(namespace, decl.name()),
+                        )
+                    })
+                })
+                .collect();
+            let file_namespace = file.namespace().to_string();
             let js_err: RefCell<Option<Error>> = RefCell::new(None);
             let filtered = file.filter(
                 |decl| {
                     if js_err.borrow().is_some() {
                         return false;
                     }
-                    let fqn = mu::get_fully_qualified_name(&namespace, decl.name());
+                    let fqn = fqn_by_decl
+                        .get(&(decl as *const concerto_core::introspect::Declaration))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            mu::get_fully_qualified_name(&file_namespace, decl.name())
+                        });
                     match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
                         Ok(v) => v.is_truthy(),
                         Err(e) => {
