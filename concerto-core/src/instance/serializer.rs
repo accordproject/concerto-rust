@@ -731,6 +731,53 @@ mod tests {
         }
     }
 
+    /// DV-015: a non-string `$class` on the top-level document. TS crashes
+    /// with an uncaught `TypeError` (`ModelUtil.getShortName`/`getNamespace`
+    /// call `fqn.lastIndexOf` with no type check); the maintainer accepted
+    /// keeping Rust's clearer, explicit rejection instead of reproducing the
+    /// TS crash (accordproject/concerto-rust#156).
+    #[test]
+    fn a_non_string_class_on_the_document_is_an_explicit_error() {
+        // `null`, `false`, `0` and `""` are falsy in JS and take the earlier
+        // "no $class" branch instead (`serializer-fromjson-noclass`), both
+        // in TS (`if (!jsonObject.$class)`) and here — only a truthy,
+        // non-string `$class` reaches this check.
+        for class in [json!(true), json!(1), json!([]), json!({})] {
+            let json = json!({ "$class": class, "vin": "A" });
+            let error = message(serializer().from_json(
+                &model(),
+                &JsValue::from_json(&json),
+                None,
+                &mut Env,
+            ));
+            assert_eq!(
+                error,
+                format!(
+                    "a $class that is not a string: {}",
+                    JsValue::from_json(&class).to_js_string()
+                )
+            );
+        }
+    }
+
+    /// The same DV-015 check, reached through `JSONPopulator.convertItem`
+    /// (`populator.rs`) for a nested object field rather than the top-level
+    /// document.
+    #[test]
+    fn a_non_string_class_on_a_nested_field_is_an_explicit_error() {
+        let json = json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A",
+            "address": { "$class": true, "city": "Paris" }
+        });
+        let error = message(serializer().from_json(
+            &model(),
+            &JsValue::from_json(&json),
+            None,
+            &mut Env,
+        ));
+        assert_eq!(error, "a $class that is not a string: true");
+    }
+
     #[test]
     fn the_serializer_constructor_checks_its_arguments() {
         assert_eq!(
