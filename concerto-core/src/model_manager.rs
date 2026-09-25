@@ -314,6 +314,11 @@ pub struct ModelManager {
     /// declarations (`Concept`, `Asset`, `Participant`, `Transaction`,
     /// `Event`).
     dangerously_allow_reserved_system_type_names_in_user_models: bool,
+    /// TS `ModelManagerOptions.metamodelValidation` (`basemodelmanager.ts`):
+    /// when truthy, `addModelFile` checks a new model file's AST against the
+    /// metamodel ([`ModelManager::validate_ast`]) before its semantic
+    /// validation. `false` (JS `undefined`) by default. Task P4-08b.
+    metamodel_validation: bool,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -644,6 +649,7 @@ impl ModelManager {
             decorator_validation: self.decorator_validation.clone(),
             dangerously_allow_reserved_system_type_names_in_user_models: self
                 .dangerously_allow_reserved_system_type_names_in_user_models,
+            metamodel_validation: self.metamodel_validation,
             ..Self::default()
         };
         let namespace = model_file.namespace();
@@ -739,6 +745,73 @@ impl ModelManager {
     /// [`Self::set_decorator_validation`] does).
     pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
         self.dangerously_allow_reserved_system_type_names_in_user_models = allow;
+    }
+
+    /// TS: `this.options?.metamodelValidation`, as `addModelFile` reads it
+    /// (JS truthiness). See [`Self::validate_ast`].
+    pub fn metamodel_validation(&self) -> bool {
+        self.metamodel_validation
+    }
+
+    /// Sets the option above, matching the TS constructor's
+    /// `options.metamodelValidation` (there is no separate TS setter; the
+    /// port exposes one the same way [`Self::set_decorator_validation`]
+    /// does). This port's `add_model` never validates (validation is an
+    /// explicit step), so a caller replaying TS's validating `addModelFile`
+    /// runs [`Self::validate_ast`] when this is set, then the new file's
+    /// semantic validation ([`Self::validate_detached_model_file`]).
+    pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+        self.metamodel_validation = metamodel_validation;
+    }
+
+    /// TS `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`,
+    /// task P4-08b): checks `model_file`'s AST against the metamodel,
+    /// resolved through *this* manager.
+    ///
+    /// 1. The version check ([`crate::instance::metamodel::check_version`]):
+    ///    a `MetamodelException` when the AST's `$class` names another
+    ///    metamodel version. Nothing is added.
+    /// 2. Unless this manager already holds `concerto.metamodel@1.0.0`, the
+    ///    cached metamodel file is registered without validation
+    ///    (`this.addModelFile(this.metamodelModelFile, undefined,
+    ///    MetaModelNamespace, true)`), so its types resolve.
+    /// 3. `this.getSerializer().fromJSON(modelFile.getAst())`
+    ///    ([`crate::instance::metamodel::deserialize_ast`]); any failure is a
+    ///    `MetamodelException` with the underlying message.
+    /// 4. On success, the metamodel file added in step 2 is removed again
+    ///    (`this.deleteModelFile(MetaModelNamespace)`).
+    ///
+    /// **A failure in step 3 leaves the metamodel registered**, exactly as TS
+    /// does: its `deleteModelFile` runs after the `try`/`catch` that
+    /// re-throws, so it is never reached when the check fails, and the
+    /// manager keeps `concerto.metamodel@1.0.0` (visible to
+    /// `getModelFiles`, `getAst` and every later `validateAst`, which then
+    /// finds it already there).
+    pub fn validate_ast(&mut self, model_file: &ModelFile) -> Result<()> {
+        use crate::instance::metamodel::{
+            METAMODEL_NAMESPACE, check_version, deserialize_ast, metamodel_model_file,
+        };
+        check_version(model_file.ast())?;
+        let already_has_metamodel = self.model_file(METAMODEL_NAMESPACE).is_some();
+        let files_len = self.files.len();
+        let declarations_len = self.declarations.len();
+        let properties_len = self.properties.len();
+        if !already_has_metamodel {
+            self.insert(metamodel_model_file()?)?;
+        }
+        deserialize_ast(self, model_file.ast())?;
+        if !already_has_metamodel {
+            // `deleteModelFile(MetaModelNamespace)`: the metamodel is the
+            // arena's tail (nothing else was added since step 2), so
+            // removing it is truncating each table back, as `add_models`'s
+            // rollback does; the removal is a mutation of its own.
+            self.files.truncate(files_len);
+            self.declarations.truncate(declarations_len);
+            self.properties.truncate(properties_len);
+            self.namespaces.remove(METAMODEL_NAMESPACE);
+            self.generation += 1;
+        }
+        Ok(())
     }
 
     pub fn generation(&self) -> u64 {
@@ -1773,6 +1846,7 @@ impl ModelManager {
             decorator_validation: self.decorator_validation.clone(),
             dangerously_allow_reserved_system_type_names_in_user_models: self
                 .dangerously_allow_reserved_system_type_names_in_user_models,
+            metamodel_validation: self.metamodel_validation,
             ..Self::default()
         };
         for existing in self.model_files() {

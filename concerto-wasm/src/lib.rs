@@ -3364,6 +3364,40 @@ impl ModelManagerHandle {
         run(|| Ok(self.manager.validate_models()?))
     }
 
+    /// TS `this.options?.metamodelValidation` (P4-08b): whether a
+    /// validating `addModelFile` checks the new file with
+    /// [`Self::validate_ast`] first.
+    #[wasm_bindgen(js_name = metamodelValidation)]
+    pub fn metamodel_validation(&self) -> bool {
+        self.manager.metamodel_validation()
+    }
+
+    /// Sets the constructor's `options.metamodelValidation` (P4-08b).
+    #[wasm_bindgen(js_name = setMetamodelValidation)]
+    pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+        self.manager.set_metamodel_validation(metamodel_validation);
+    }
+
+    /// TS `BaseModelManager.validateAst(modelFile)` (P4-08b), for a model
+    /// file given as its JSON AST text and file name: throws a
+    /// `MetamodelException` when the AST does not conform to the metamodel.
+    /// A failed check leaves the metamodel registered, as TS does, so it
+    /// may bump [`Self::generation`]. Malformed JSON throws a JS
+    /// `SyntaxError`.
+    #[wasm_bindgen(js_name = validateAst)]
+    pub fn validate_ast(
+        &mut self,
+        ast: &str,
+        file_name: Option<String>,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let model_file = ModelFile::from_json(&value, file_name)?;
+            Ok(self.manager.validate_ast(&model_file)?)
+        })
+    }
+
     /// The mutation counter: a snapshot taken at one generation is current
     /// while the generation is unchanged. A JS number (exact up to 2^53).
     pub fn generation(&self) -> f64 {

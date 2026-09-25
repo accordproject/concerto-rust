@@ -21,8 +21,10 @@
 //! Wiring either into a caller's own [`ModelManager`] — TS's
 //! `options.metamodelValidation`, and the temporary add/remove of
 //! `this.metamodelModelFile` so `getType` resolves it — is `SEAM_LEDGER.tsv`'s
-//! other half of this row, task P4-08 (`ModelFile` and `BaseModelManager`
-//! views), not this one.
+//! other half of this row. Task P4-08b (accordproject/concerto-rust#174)
+//! added it as [`ModelManager::validate_ast`] (with
+//! [`ModelManager::set_metamodel_validation`]), built on this module's
+//! [`check_version`], [`metamodel_model_file`] and [`deserialize_ast`].
 
 use serde_json::Value;
 
@@ -31,6 +33,7 @@ use super::factory::InstanceEnv;
 use super::serializer::Serializer;
 use super::value::JsValue;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
 
@@ -109,14 +112,52 @@ pub fn validate_metamodel(ast: &Value) -> Result<()> {
     serializer
         .from_json(&mm, &JsValue::from_json(ast), Some(&options), &mut env)
         .map(|_resource| ())
-        .map_err(|err| {
-            ContractError::new(
-                ErrorKind::Metamodel,
-                "basemodelmanager-validateast-wrapped",
-                vec![("message", ts_message(&err))],
-            )
-            .into()
-        })
+        .map_err(|err| wrapped(&err))
+}
+
+/// `throw new MetamodelException(error.message)`: `validateAst`'s `catch`
+/// block.
+fn wrapped(err: &ConcertoError) -> ConcertoError {
+    ContractError::new(
+        ErrorKind::Metamodel,
+        "basemodelmanager-validateast-wrapped",
+        vec![("message", ts_message(err))],
+    )
+    .into()
+}
+
+/// `BaseModelManager`'s cached `this.metamodelModelFile`: `new
+/// ModelFile(this, MetaModelUtil.metaModelAst, undefined,
+/// MetaModelNamespace)` (`src/basemodelmanager.ts`'s constructor), so its
+/// file name is the namespace itself and it has no CTO definitions.
+pub(crate) fn metamodel_model_file() -> Result<ModelFile> {
+    let metamodel: Value =
+        serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
+    ModelFile::from_json(&metamodel, Some(METAMODEL_NAMESPACE.to_string()))
+}
+
+/// `validateAst`'s structural check against the caller's own model manager
+/// `mm` (which must already hold the metamodel):
+/// `this.getSerializer().fromJSON(modelFile.getAst())`, with the manager's
+/// serializer default options (`baseDefaultOptions`, `{validate: true,
+/// utcOffset}`), not [`validate_metamodel`]'s strict preset — concerto-core
+/// 5.0.0 passes no options here. Any failure is re-thrown as
+/// `MetamodelException(error.message)`.
+///
+/// TS's `Serializer` merges the manager's own constructor options into its
+/// defaults too. None of the keys `Serializer.fromJSON` reads
+/// (`acceptResourcesForRelationships`, `utcOffset`,
+/// `strictQualifiedDateTimes`) can change a metamodel document's outcome —
+/// the metamodel declares no relationship and no `DateTime` property — so
+/// only a manager option `validate: false` would, and no
+/// `ModelManager` in this port carries a serializer option bag.
+pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
+    let serializer = Serializer::new(true, true, None)?;
+    let mut env = FixedEnv;
+    serializer
+        .from_json(mm, &JsValue::from_json(ast), None, &mut env)
+        .map(|_resource| ())
+        .map_err(|err| wrapped(&err))
 }
 
 /// `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`):
@@ -131,6 +172,15 @@ pub fn validate_metamodel(ast: &Value) -> Result<()> {
 /// `modelFile.getAst().$class` is always the metamodel's own `Model` class
 /// — and [`validate_metamodel`] reports the malformed document on its own.
 pub fn validate_ast(ast: &Value) -> Result<()> {
+    check_version(ast)?;
+    validate_metamodel(ast)
+}
+
+/// `validateAst`'s version check: the version of the namespace of `ast`'s
+/// `$class` must be the metamodel's own
+/// (`basemodelmanager-validateast-versionmismatch`). Skipped when `$class`
+/// is missing or not a string ([`validate_ast`]'s doc).
+pub(crate) fn check_version(ast: &Value) -> Result<()> {
     if let Some(class_name) = ast.get("$class").and_then(Value::as_str) {
         let ns = model_util::get_namespace(Some(class_name))?;
         let model_file_version = namespace_version(ns)?;
@@ -147,7 +197,7 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
             .into());
         }
     }
-    validate_metamodel(ast)
+    Ok(())
 }
 
 /// `ModelUtil.parseNamespace(ns).version`.
@@ -410,5 +460,130 @@ mod tests {
             "undeclared": []
         });
         assert!(validate_ast(&ast).is_err());
+    }
+
+    // ---- ModelManager::validate_ast: `validateAst` on a caller's own
+    //      model manager, the `metamodelValidation` option (task P4-08b) ----
+
+    fn namespaces(mm: &ModelManager) -> Vec<String> {
+        mm.model_files()
+            .map(|mf| mf.namespace().to_string())
+            .collect()
+    }
+
+    fn model_file(ast: &Value) -> ModelFile {
+        ModelFile::from_json(ast, Some("test.cto".into())).expect("a well-formed model file")
+    }
+
+    #[test]
+    fn metamodel_validation_is_off_by_default_and_carried_by_scratch_copies() {
+        let mut mm = ModelManager::new().unwrap();
+        assert!(!mm.metamodel_validation());
+        mm.set_metamodel_validation(true);
+        assert!(mm.metamodel_validation());
+        mm.add_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "imports": [],
+                "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(
+            mm.delete_model_file("org.acme@1.0.0")
+                .unwrap()
+                .metamodel_validation()
+        );
+    }
+
+    #[test]
+    fn manager_validate_ast_accepts_a_well_formed_model_and_removes_the_metamodel() {
+        let mut mm = ModelManager::new().unwrap();
+        let before = namespaces(&mm);
+        let mf = model_file(&json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.acme@1.0.0",
+            "imports": [],
+            "declarations": [{
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Person",
+                "isAbstract": false,
+                "properties": [{
+                    "$class": "concerto.metamodel@1.0.0.StringProperty",
+                    "name": "name",
+                    "isArray": false,
+                    "isOptional": false
+                }]
+            }]
+        }));
+        mm.validate_ast(&mf).unwrap();
+        assert_eq!(namespaces(&mm), before);
+        assert!(
+            mm.declaration_id("concerto.metamodel@1.0.0.Model")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn manager_validate_ast_failure_leaves_the_metamodel_registered() {
+        // TS: `validateAst`'s `deleteModelFile(MetaModelNamespace)` follows
+        // the `try`/`catch` that re-throws, so a failed check never reaches it.
+        let mut mm = ModelManager::new().unwrap();
+        let mf = model_file(&json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.acme@1.0.0",
+            "imports": [],
+            "declarations": [],
+            "undeclared": []
+        }));
+        let err = mm
+            .validate_ast(&mf)
+            .expect_err("an undeclared property is invalid");
+        let ConcertoError::Contract(contract) = err else {
+            panic!("expected a Contract error, got {err:?}");
+        };
+        assert_eq!(contract.kind, ErrorKind::Metamodel);
+        let mut expected: Vec<String> =
+            ModelManager::new().map(|fresh| namespaces(&fresh)).unwrap();
+        expected.push(METAMODEL_NAMESPACE.to_string());
+        assert_eq!(namespaces(&mm), expected);
+        assert_eq!(
+            mm.model_file(METAMODEL_NAMESPACE).unwrap().file_name(),
+            Some(METAMODEL_NAMESPACE)
+        );
+        // A later check finds it already there and keeps it.
+        let valid = model_file(&json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.other@1.0.0",
+            "imports": [],
+            "declarations": []
+        }));
+        mm.validate_ast(&valid).unwrap();
+        assert_eq!(namespaces(&mm), expected);
+    }
+
+    #[test]
+    fn manager_validate_ast_version_mismatch_adds_nothing() {
+        let mut mm = ModelManager::new().unwrap();
+        let before = namespaces(&mm);
+        let mf = model_file(&json!({
+            "$class": "concerto.metamodel@99.0.0.Model",
+            "namespace": "org.acme@1.0.0",
+            "imports": [],
+            "declarations": []
+        }));
+        let err = mm
+            .validate_ast(&mf)
+            .expect_err("an unknown metamodel version");
+        let ConcertoError::Contract(contract) = err else {
+            panic!("expected a Contract error, got {err:?}");
+        };
+        assert_eq!(
+            contract.message(),
+            "Model file version 99.0.0 does not match metamodel version 1.0.0"
+        );
+        assert_eq!(namespaces(&mm), before);
     }
 }
