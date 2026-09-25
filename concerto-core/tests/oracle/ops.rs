@@ -367,6 +367,14 @@ const MM_STEP_OPS: [&str; 7] = [
 /// The ops whose inputs hold model managers or their handles.
 fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     let (class, member) = op.split_once('.').unwrap_or((op, ""));
+
+    // `Decorated`'s target may be an `mfref` (P2-07): the generic decode
+    // below turns that into an `Arg::File`, which drops the model manager it
+    // belongs to. Handled separately, ahead of the generic decode.
+    if class == "Decorated" && matches!(member, "getDecorator" | "getDecorators") {
+        return decorated_op(h, member, inputs);
+    }
+
     let dispatched = match (class, member) {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
@@ -408,6 +416,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             m,
             "getFullyQualifiedName" | "getName" | "getNamespace" | "getModelFile"
         ),
+        ("Decorator", m) => matches!(m, "getArguments" | "validate"),
         _ => false,
     };
     if !dispatched {
@@ -530,6 +539,40 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             };
             let r = &session.pool[index];
             Ok(declaration_op(r, id, member))
+        }
+        "Decorator" => {
+            let Some(Arg::Deco(index, parent, position)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Decorator receiver that is not a decoref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(decorator) = parent.decorators(r).and_then(|ds| ds.get(position)) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the decorator was not found at its recorded position".into(),
+                ));
+            };
+            Ok(match member {
+                "getArguments" => ran(Ok(Value::Array(
+                    decorator
+                        .arguments()
+                        .iter()
+                        .map(encode_decorator_argument)
+                        .collect(),
+                ))),
+                _ => {
+                    // TS default: `decoratorValidation` unset, so `validate`
+                    // is a no-op (module doc on `Decorator::validate`); this
+                    // harness does not yet replay a `decoratorValidation`
+                    // option (`UNMODELLED_OPTIONS`), so every fixture it
+                    // reaches runs with the manager's default (disabled).
+                    let namespace = decorated_namespace(r, &parent).unwrap_or_default();
+                    ran(match decorator.validate(&r.mm, &namespace, None) {
+                        Ok(()) => Ok(recipe::undefined()),
+                        Err(e) => Err(to_oracle_error(&e)),
+                    })
+                }
+            })
         }
         _ => unreachable!("`dispatched` lists every class"),
     }
@@ -747,6 +790,88 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
             ran(Ok(r.model_file_summary(namespace).unwrap_or(Value::Null)))
         }
         _ => unreachable!("`dispatched` lists every Declaration member"),
+    }
+}
+
+/// `Decorated.getDecorator`/`getDecorators` (P2-07): the target is a
+/// `declref`, `propref` or `mfref` directly, decoded through
+/// [`Session::decorated_target`] rather than the generic [`Session::decode`]
+/// (module doc on [`exec_handles`]'s early return), since a plain `Arg::File`
+/// would drop the model manager an `mfref` target belongs to.
+fn decorated_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let mut session = Session::new(h);
+    let Some(target) = &inputs.target else {
+        return Ok(unsupported(format!("Decorated.{member} without a target")));
+    };
+    let (index, parent) = session.decorated_target(target)?;
+    let r = &session.pool[index];
+    let Some(decorators) = parent.decorators(r) else {
+        return Err(Fault::Divergence(
+            "state divergence: the decorated element was not found".into(),
+        ));
+    };
+    if member == "getDecorators" {
+        return Ok(ran(Ok(Value::Array(
+            decorators.iter().map(encode_decorator).collect(),
+        ))));
+    }
+    let args = decode::decode_args(&inputs.args)
+        .map_err(|decode::Unsupported(reason)| Fault::Unsupported(reason))?;
+    let name_arg = decode::arg(&args, 0);
+    let Ok(name) = decode::as_str(&name_arg) else {
+        return Ok(unsupported("Decorated.getDecorator with a non-string name"));
+    };
+    let found = decorators.iter().find(|d| d.name() == name);
+    Ok(ran(Ok(found.map_or(Value::Null, encode_decorator))))
+}
+
+/// The namespace a decorated element's model file was loaded under, needed
+/// only to build [`concerto_core::error::ConcertoError`] messages that name
+/// where a decorator's own name failed to resolve — never exercised by a
+/// fixture in this scope, since every one of them runs with the manager's
+/// default (disabled) `decoratorValidation` (module doc on the `"Decorator"`
+/// arm of [`exec_handles`]'s class match).
+fn decorated_namespace(r: &Replayed, parent: &recipe::DecoParent) -> Option<String> {
+    match parent {
+        recipe::DecoParent::File(ns) => Some(ns.clone()),
+        recipe::DecoParent::Decl(id) => {
+            r.mm.model_file_of(*id)
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+        recipe::DecoParent::Prop(id) => {
+            r.mm.parent_of(*id)
+                .and_then(|d| r.mm.model_file_of(d))
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+    }
+}
+
+/// A [`concerto_core::Decorator`] in the oracle's encoding, matching a
+/// recorded `{"@@oracle":"Decorator","name":…,"arguments":[…]}` value.
+fn encode_decorator(d: &concerto_core::Decorator) -> Value {
+    json!({
+        M: "Decorator",
+        "name": d.name(),
+        "arguments": d.arguments().iter().map(encode_decorator_argument).collect::<Vec<_>>(),
+    })
+}
+
+/// One [`concerto_core::DecoratorArgument`] in the oracle's encoding: a
+/// literal as it is, or a type reference as the plain object TS builds
+/// (`{type, name, array}` in `Decorator.process`).
+fn encode_decorator_argument(arg: &concerto_core::DecoratorArgument) -> Value {
+    use concerto_core::DecoratorArgument;
+    match arg {
+        DecoratorArgument::String(s) => Value::String(s.clone()),
+        DecoratorArgument::Number(n) => json!(n),
+        DecoratorArgument::Boolean(b) => Value::Bool(*b),
+        DecoratorArgument::TypeReference(t) => json!({
+            "type": "Identifier",
+            "name": t.name,
+            "array": t.array,
+        }),
     }
 }
 

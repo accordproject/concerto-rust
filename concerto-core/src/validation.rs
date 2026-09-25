@@ -71,6 +71,11 @@ impl ModelManager {
             check_import_clashes(model_file)?;
             check_import_namespaces(model_file)?;
             check_imported_types_exist(self, model_file)?;
+            // TS: `ModelFile.validate` runs `super.validate()`
+            // (`Decorated.validate`) over the file's own decorators before
+            // validating each declaration (modelfile.ts).
+            check_unique_decorators(model_file, None)?;
+            validate_decorators(self, model_file.namespace(), model_file, None)?;
             for declaration in model_file.declarations() {
                 declaration.validate(self, model_file.namespace())?;
             }
@@ -103,13 +108,37 @@ fn check_import_clashes(model_file: &ModelFile) -> Result<()> {
 }
 
 impl Validate for Declaration {
-    /// Class-like and map declarations are the only ones with checks in this
-    /// pass; enum and scalar declarations are checked while loading.
+    /// Class-like and map declarations have their own checks in this pass; an
+    /// enum's are just its decorators (P2-07) and those of its values, since
+    /// nothing else about it needs another declaration in view. A scalar's
+    /// structural checks (its validator, its default value) are fully run
+    /// while loading, but its decorators are not (TS `Decorated.validate`
+    /// still runs from `ScalarDeclaration.validate`, scalardeclaration.ts),
+    /// so this pass checks those the same way it does for an enum.
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         match self {
             Declaration::Class(class) => class.validate(manager, namespace),
             Declaration::Map(map) => map.validate(manager, namespace),
-            Declaration::Enum(_) | Declaration::Scalar(_) => Ok(()),
+            Declaration::Enum(enm) => {
+                let fqn = get_fully_qualified_name(namespace, enm.name());
+                check_unique_decorators(enm, None)?;
+                validate_decorators(manager, namespace, enm, Some(&fqn))?;
+                for value in enm.values() {
+                    check_unique_decorators(value, None)?;
+                    validate_decorators(
+                        manager,
+                        namespace,
+                        value,
+                        Some(&format!("{fqn}.{}", value.name())),
+                    )?;
+                }
+                Ok(())
+            }
+            Declaration::Scalar(scalar) => {
+                let fqn = get_fully_qualified_name(namespace, scalar.name());
+                check_unique_decorators(scalar, None)?;
+                validate_decorators(manager, namespace, scalar, Some(&fqn))
+            }
         }
     }
 }
@@ -117,24 +146,47 @@ impl Validate for Declaration {
 impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         check_super_type(manager, namespace, self)?;
-        check_unique_field_names(
-            manager,
-            self,
-            &get_fully_qualified_name(namespace, self.name()),
-        )?;
+        let fqn = get_fully_qualified_name(namespace, self.name());
+        check_unique_field_names(manager, self, &fqn)?;
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_decorators(self, class_location(self))?;
+        validate_decorators(manager, namespace, self, Some(&fqn))?;
         for property in self.own_properties() {
             check_property_type(manager, namespace, self, property)?;
-            // Neither `Property` nor `mm::Decorator` carries its own `location`
+            // Neither `Property` nor `Decorator` carries its own `location`
             // (only `ClassDeclaration` does so far, 7.2), so the owning class's
             // is the nearest AST node in scope, as for the class's own decorators
             // above.
             check_unique_decorators(property, class_location(self))?;
+            validate_decorators(
+                manager,
+                namespace,
+                property,
+                Some(&format!("{fqn}.{}", property.name())),
+            )?;
         }
         Ok(())
     }
+}
+
+/// Runs [`crate::introspect::decorator::Decorator::validate`] over every
+/// decorator an element carries, when the model manager's
+/// `decoratorValidation` option enables it (TS `Decorator.validate` is a
+/// no-op otherwise, and so is this: P2-07).
+fn validate_decorators(
+    manager: &ModelManager,
+    namespace: &str,
+    element: &impl Decorated,
+    context: Option<&str>,
+) -> Result<()> {
+    if !manager.decorator_validation().is_enabled() {
+        return Ok(());
+    }
+    for decorator in element.get_decorators() {
+        decorator.validate(manager, namespace, context)?;
+    }
+    Ok(())
 }
 
 /// An element may not carry the same decorator twice.
@@ -143,10 +195,10 @@ fn check_unique_decorators(
     location: Option<serde_json::Value>,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for decorator in element.decorators() {
-        if !seen.insert(decorator.name.as_str()) {
+    for decorator in element.get_decorators() {
+        if !seen.insert(decorator.name()) {
             return Err(failed(
-                format!("Duplicate decorator {}", decorator.name),
+                format!("Duplicate decorator {}", decorator.name()),
                 location,
             ));
         }
@@ -536,9 +588,15 @@ const MAP_VALUE_KINDS: &[&str] = &[
 ];
 
 impl Validate for MapDeclaration {
-    /// Checks a map against the key and value types the specification permits.
+    /// Checks a map against the key and value types the specification
+    /// permits, and, like every other declaration (P2-07), that it carries no
+    /// duplicate decorator and that its decorators pass `decoratorValidation`
+    /// when enabled.
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        check_map_types(manager, namespace, self)
+        check_map_types(manager, namespace, self)?;
+        let fqn = get_fully_qualified_name(namespace, self.name());
+        check_unique_decorators(self, None)?;
+        validate_decorators(manager, namespace, self, Some(&fqn))
     }
 }
 
@@ -883,6 +941,106 @@ mod tests {
             ]
         }))]));
         assert!(err.is_ok());
+    }
+
+    /// P2-07: duplicate decorators are now caught on an enum declaration too,
+    /// not only on class-like declarations and their properties.
+    #[test]
+    fn duplicate_decorator_on_an_enum_declaration_is_rejected() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
+            "name": "Colour",
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+            ],
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
+            ]
+        }]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// P2-07: a scalar's own decorators are checked too, matching TS
+    /// `ScalarDeclaration.validate` running `Decorated.validate` via
+    /// `super.validate()`.
+    #[test]
+    fn duplicate_decorator_on_a_scalar_declaration_is_rejected() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.StringScalar",
+            "name": "Email",
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+            ]
+        }]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// P2-07: a map's own decorators are checked too, matching TS
+    /// `MapDeclaration.validate` running `Decorated.validate` via
+    /// `super.validate()`.
+    #[test]
+    fn duplicate_decorator_on_a_map_declaration_is_rejected() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "Lookup",
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+            ],
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+        }]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// P2-07: an enum value's own decorators are checked, matching the doc
+    /// comment on `impl Validate for Declaration` that an enum's checks
+    /// include "those of its values".
+    #[test]
+    fn duplicate_decorator_on_an_enum_value_is_rejected() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
+            "name": "Colour",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED",
+                  "decorators": [
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "hex", "arguments": [] },
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "hex", "arguments": [] }
+                  ] }
+            ]
+        }]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// P2-07: a model file's own decorators (on its `namespace`) are checked
+    /// too, matching TS `ModelFile.validate` running `Decorated.validate` via
+    /// `super.validate()` (modelfile.ts).
+    #[test]
+    fn duplicate_decorator_on_a_namespace_is_rejected() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "decorators": [
+                        { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                        { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+                    ],
+                    "declarations": []
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(
+            manager
+                .validate_models()
+                .unwrap_err()
+                .to_string()
+                .contains("Duplicate decorator")
+        );
     }
 
     #[test]

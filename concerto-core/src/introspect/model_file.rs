@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use crate::error::{ConcertoError, Result};
 use crate::introspect::Named;
 use crate::introspect::declaration::Declaration;
+use crate::introspect::decorator::{Decorated, Decorator, parse_decorators};
 use crate::introspect::import::Import;
 use crate::model_util::{get_fully_qualified_name, is_primitive_type, is_valid_identifier};
 
@@ -29,6 +30,13 @@ pub struct ModelFile {
     local_types: HashMap<String, usize>,
     file_name: Option<String>,
     ast: serde_json::Value,
+    decorators: Vec<Decorator>,
+}
+
+impl Decorated for ModelFile {
+    fn get_decorators(&self) -> &[Decorator] {
+        &self.decorators
+    }
 }
 
 impl ModelFile {
@@ -114,6 +122,7 @@ impl ModelFile {
             declarations,
             local_types,
             file_name,
+            decorators: parse_decorators(value),
             ast: value.clone(),
         })
     }

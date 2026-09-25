@@ -268,6 +268,10 @@ pub struct ModelManager {
     declarations: Vec<DeclSlot>,
     properties: Vec<PropSlot>,
     generation: u64,
+    /// TS `ModelManagerOptions.decoratorValidation`, `DEFAULT_DECORATOR_VALIDATION`
+    /// by default (both fields `None`): see
+    /// [`crate::introspect::decorator::DecoratorValidationOptions`].
+    decorator_validation: crate::introspect::decorator::DecoratorValidationOptions,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -578,6 +582,24 @@ impl ModelManager {
     /// A counter that every mutation of the manager increases. A snapshot of
     /// an element taken at one generation is current while the generation is
     /// unchanged.
+    /// TS: `BaseModelManager.getDecoratorValidation`.
+    pub fn decorator_validation(
+        &self,
+    ) -> &crate::introspect::decorator::DecoratorValidationOptions {
+        &self.decorator_validation
+    }
+
+    /// Sets the decorator validation options, matching the TS constructor's
+    /// `options.decoratorValidation` (there is no separate TS setter; the
+    /// port exposes one so a manager already built can still opt in, as this
+    /// crate's own tests do).
+    pub fn set_decorator_validation(
+        &mut self,
+        options: crate::introspect::decorator::DecoratorValidationOptions,
+    ) {
+        self.decorator_validation = options;
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
