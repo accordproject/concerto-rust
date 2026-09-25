@@ -953,7 +953,30 @@ impl Declaration {
 fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
     match value.get("properties") {
         None => Ok(Vec::new()),
-        Some(serde_json::Value::Array(arr)) => arr.iter().map(Property::try_from).collect(),
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .map(|property| {
+                // TS: `ClassDeclaration.process`'s loop (classdeclaration.ts,
+                // inherited by `EnumDeclaration`) rejects a system property
+                // name before building that property, with the *declaration's*
+                // `this.ast.location`, not the property's (P2-08: this used to
+                // be left to `Property::try_from`, which has no declaration
+                // location to give).
+                if let Some(name) = property.get("name").and_then(serde_json::Value::as_str)
+                    && crate::model_util::is_system_property(name)
+                {
+                    // The model file's name is filled in by
+                    // `Declaration::from_model_json` (`with_model_file`).
+                    return Err(ContractError::pre_port(
+                        ErrorKind::IllegalModel,
+                        format!("Invalid field name '{name}'"),
+                        value.get("location").cloned(),
+                    )
+                    .into());
+                }
+                Property::try_from(property)
+            })
+            .collect(),
         Some(_) => Err(ConcertoError::IllegalModel {
             message: "'properties' must be an array".into(),
             file_name: None,
@@ -991,12 +1014,17 @@ impl Declaration {
         let kind = get_short_name(class);
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            let class = Self::Class(ClassDeclaration::from_json(class_kind, value, namespace)?);
+            let class = Self::Class(
+                ClassDeclaration::from_json(class_kind, value, namespace)
+                    .map_err(|e| with_model_file(e, file_name))?,
+            );
             return check_name(class);
         }
 
         let declaration = match kind {
-            "EnumDeclaration" => Self::Enum(EnumDeclaration::from_json(value)?),
+            "EnumDeclaration" => Self::Enum(
+                EnumDeclaration::from_json(value).map_err(|e| with_model_file(e, file_name))?,
+            ),
             "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
             s if s.ends_with("Scalar") => {
                 Self::Scalar(load_scalar(s, value, namespace, file_name)?)
@@ -1016,6 +1044,22 @@ impl Declaration {
             }
         };
         check_name(declaration)
+    }
+}
+
+/// TS: `ClassDeclaration.process` passes `this.modelFile` to every
+/// `IllegalModelException` it throws, so an `IllegalModel` contract error
+/// raised while a class-like or enum declaration is built names the file
+/// being loaded (`file_name`) unless it already names one.
+fn with_model_file(err: ConcertoError, file_name: Option<&str>) -> ConcertoError {
+    match err {
+        ConcertoError::Contract(mut contract)
+            if contract.kind == ErrorKind::IllegalModel && contract.model_file.is_none() =>
+        {
+            contract.model_file = Some(file_name.map(str::to_string));
+            ConcertoError::Contract(contract)
+        }
+        other => other,
     }
 }
 

@@ -559,6 +559,38 @@ impl ModelManager {
         result
     }
 
+    /// A scratch copy of this manager — same options, same model files in the
+    /// same order — in which `model_file` is registered under its namespace,
+    /// in place of whatever file this manager itself holds there (appended
+    /// last when it holds none). Used to validate a model file that this
+    /// manager never registered ([`ModelManager::validate_detached_model_file`]):
+    /// every check `validate_model_file` runs resolves a namespace *through
+    /// the manager*, so the file under validation must be the one registered
+    /// under its own namespace for its local types to resolve to itself, as
+    /// TS's `this.isLocalType`/`this.getLocalType` always do (P2-08).
+    pub(crate) fn with_model_file_registered(&self, model_file: &ModelFile) -> Result<Self> {
+        let mut scratch = Self {
+            decorator_validation: self.decorator_validation.clone(),
+            dangerously_allow_reserved_system_type_names_in_user_models: self
+                .dangerously_allow_reserved_system_type_names_in_user_models,
+            ..Self::default()
+        };
+        let namespace = model_file.namespace();
+        let mut placed = false;
+        for existing in self.model_files() {
+            if existing.namespace() == namespace {
+                scratch.insert(model_file.clone())?;
+                placed = true;
+            } else {
+                scratch.insert(existing.clone())?;
+            }
+        }
+        if !placed {
+            scratch.insert(model_file.clone())?;
+        }
+        Ok(scratch)
+    }
+
     /// Appends a model file, its declarations and their properties to the
     /// arena, and counts the mutation. Nothing is changed if a handle cannot
     /// be allocated.

@@ -242,24 +242,18 @@ impl TryFrom<&serde_json::Value> for Property {
 }
 
 impl Property {
-    /// Checks a collection size validator, which only an array may carry
-    /// unless `allow_non_array` is set.
+    /// Checks a collection size validator's own bounds, as TS's
+    /// `CollectionSizeValidator` constructor does while the property is
+    /// processed. Whether the property may carry one at all (an array, or a
+    /// map-typed property) is not checked here: TS checks that only in
+    /// `Property.validate` (property.ts), once the property's type can be
+    /// resolved — `check_property_type` in [`crate::validation`] (P2-08: a
+    /// `ModelFile` with such a property must still construct).
     fn check_size_validator(
         name: &str,
-        is_array: bool,
         validator: &Option<mm::CollectionSizeValidator>,
-        allow_non_array: bool,
     ) -> Result<()> {
         if let Some(v) = validator {
-            if !is_array && !allow_non_array {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!(
-                        "size validator can only be applied to array or map properties: {name}"
-                    ),
-                    file_name: None,
-                    location: None,
-                });
-            }
             check_size(name, v)?;
         }
         Ok(())
@@ -280,38 +274,30 @@ impl HasValidators for Property {
                 if let Some(validator) = &p.length_validator {
                     check_length(&p.name, validator)?;
                 }
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+                Self::check_size_validator(&p.name, &p.size_validator)
             }
             Self::Integer(p) => {
                 if let Some(validator) = &p.validator {
                     check_domain(&p.name, validator.lower, validator.upper)?;
                 }
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+                Self::check_size_validator(&p.name, &p.size_validator)
             }
             Self::Long(p) => {
                 if let Some(validator) = &p.validator {
                     check_domain(&p.name, validator.lower, validator.upper)?;
                 }
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+                Self::check_size_validator(&p.name, &p.size_validator)
             }
             Self::Double(p) => {
                 if let Some(validator) = &p.validator {
                     check_domain(&p.name, validator.lower, validator.upper)?;
                 }
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
+                Self::check_size_validator(&p.name, &p.size_validator)
             }
-            Self::Boolean(p) => {
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
-            }
-            Self::DateTime(p) => {
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
-            }
-            Self::Object(p) => {
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, true)
-            }
-            Self::Relationship(p) => {
-                Self::check_size_validator(&p.name, p.is_array, &p.size_validator, false)
-            }
+            Self::Boolean(p) => Self::check_size_validator(&p.name, &p.size_validator),
+            Self::DateTime(p) => Self::check_size_validator(&p.name, &p.size_validator),
+            Self::Object(p) => Self::check_size_validator(&p.name, &p.size_validator),
+            Self::Relationship(p) => Self::check_size_validator(&p.name, &p.size_validator),
             Self::Enum(_) => Ok(()),
         }
     }
@@ -590,14 +576,15 @@ mod tests {
         assert!(Property::try_from(&collection_sized(true, None, Some(5))).is_ok());
     }
 
+    /// TS's `Property` constructor accepts a size validator on a non-array
+    /// property; only `Property.validate` rejects it (property.ts), which
+    /// `crate::validation`'s tests cover. (P2-08 review: this test used to
+    /// assert that construction itself failed.)
     #[test]
-    fn size_validator_on_non_array_is_rejected() {
-        let err = Property::try_from(&collection_sized(false, Some(1), Some(5)));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("size validator can only be applied to array or map")
-        );
+    fn size_validator_on_non_array_is_accepted_at_construction() {
+        let p = Property::try_from(&collection_sized(false, Some(1), Some(5)))
+            .expect("construction accepts a size validator on a non-array property");
+        assert!(p.size_validator().is_some());
     }
 
     #[test]
@@ -653,8 +640,11 @@ mod tests {
         assert_eq!(p.size_validator().unwrap().max_size, Some(3.0));
     }
 
+    /// Construction accepts it (TS `Property` constructor); validation
+    /// rejects it (`crate::validation`'s tests). P2-08 review: this test
+    /// used to assert construction-time rejection.
     #[test]
-    fn size_validator_on_non_array_relationship_is_rejected() {
+    fn size_validator_on_non_array_relationship_is_accepted_at_construction() {
         let json = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
             "name": "owner",
@@ -666,12 +656,9 @@ mod tests {
                 "minSize": 1
             }
         });
-        let err = Property::try_from(&json);
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("size validator can only be applied to array or map")
-        );
+        let p = Property::try_from(&json)
+            .expect("construction accepts a size validator on a non-array relationship");
+        assert!(p.size_validator().is_some());
     }
 
     #[test]
@@ -758,28 +745,6 @@ mod tests {
             err.unwrap_err()
                 .to_string()
                 .starts_with("illegal model: invalid StringProperty: ")
-        );
-    }
-
-    /// Ported from `test/introspect/property.js` #getSizeValidator "should
-    /// reject size on a non-array Integer property" — the same
-    /// `check_size_validator` path `size_validator_on_non_array_is_rejected`
-    /// exercises for a `String` property, checked here for `Integer` too.
-    #[test]
-    fn size_validator_on_non_array_integer_property_is_rejected() {
-        let json = serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.IntegerProperty",
-            "name": "count", "isArray": false, "isOptional": false,
-            "sizeValidator": {
-                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
-                "minSize": 1, "maxSize": 5
-            }
-        });
-        let err = Property::try_from(&json);
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("size validator can only be applied to array or map")
         );
     }
 

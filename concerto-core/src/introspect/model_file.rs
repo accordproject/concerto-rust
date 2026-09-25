@@ -106,11 +106,7 @@ impl ModelFile {
         // that use them (P0-04b).
         let is_system = namespace.starts_with("concerto@") || namespace == "concerto";
         if !is_system {
-            imports.push(Import::try_from(&serde_json::json!({
-                "$class": "concerto.metamodel@1.0.0.ImportTypes",
-                "namespace": "concerto@1.0.0",
-                "types": ["Concept", "Asset", "Transaction", "Participant", "Event"]
-            }))?);
+            imports.push(Import::try_from(&built_in_import())?);
         }
 
         // TS: `ModelFile.fromAst`'s `imports.forEach` loop (modelfile.ts)
@@ -151,19 +147,14 @@ impl ModelFile {
                 for raw in arr {
                     let decl = Declaration::from_model_json(raw, &namespace, file_name.as_deref())
                         .map_err(|e| annotate(e, &file_name))?;
-                    if local_types
-                        .insert(decl.name().to_string(), declarations.len())
-                        .is_some()
-                    {
-                        return Err(ConcertoError::IllegalModel {
-                            message: format!(
-                                "duplicate declaration '{}' in {namespace}",
-                                decl.name()
-                            ),
-                            file_name: file_name.clone(),
-                            location: None,
-                        });
-                    }
+                    // TS: the constructor's `localTypes` loop is a plain
+                    // `Map.set` per declaration, so a second declaration of
+                    // the same name is accepted here and simply replaces the
+                    // first in the lookup (the last one wins), while
+                    // `getAllDeclarations()` still lists both. Only
+                    // `ModelFile.validate()`'s duplicate-name scan rejects it
+                    // (`ModelManager::validate_model_file`, P2-08).
+                    local_types.insert(decl.name().to_string(), declarations.len());
                     declarations.push(decl);
                 }
             }
@@ -197,6 +188,47 @@ impl ModelFile {
             definitions,
             external,
         })
+    }
+
+    /// TS: the argument checks `new ModelFile(modelManager, ast, definitions,
+    /// fileName)` runs before it reads the AST at all, for a caller that
+    /// holds arbitrary JS values rather than this crate's typed arguments (a
+    /// binding, or the oracle harness). Each argument is `None` for JS
+    /// `undefined`. In TS's order, each a plain `Error`:
+    /// `Decorated`'s constructor rejects a falsy `ast` (`ast not
+    /// specified`); `ModelFile`'s rejects an `ast` that is not an object,
+    /// then a truthy `definitions` that is not a string, then a truthy
+    /// `fileName` that is not a string (P2-08).
+    pub fn check_constructor_arguments(
+        ast: Option<&serde_json::Value>,
+        definitions: Option<&serde_json::Value>,
+        file_name: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let truthy = |v: Option<&serde_json::Value>| v.is_some_and(crate::ecma::is_truthy);
+        if !truthy(ast) {
+            return Err(plain_error("ast not specified".into()));
+        }
+        // `typeof ast !== 'object'`: an array is an object too; `null` is
+        // already rejected above as falsy.
+        if !matches!(
+            ast,
+            Some(serde_json::Value::Object(_) | serde_json::Value::Array(_))
+        ) {
+            return Err(plain_error(
+                "ModelFile expects a Concerto model AST as input.".into(),
+            ));
+        }
+        if truthy(definitions) && !matches!(definitions, Some(serde_json::Value::String(_))) {
+            return Err(plain_error(
+                "ModelFile expects an (optional) Concerto model definition as a string.".into(),
+            ));
+        }
+        if truthy(file_name) && !matches!(file_name, Some(serde_json::Value::String(_))) {
+            return Err(plain_error(
+                "ModelFile expects an (optional) filename as a string.".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The full namespace, including the version, e.g. `org.example@1.0.0`.
@@ -378,12 +410,7 @@ impl ModelFile {
     /// visible under any import, carries this file's own name for the
     /// `IllegalModelException` message's `File '…':` decoration, the same as
     /// every check in [`crate::validation`] does; its `imports` parameter is
-    /// this file's imports re-encoded as JSON (an approximation of TS's
-    /// `JSON.stringify(this.imports)` — the generated `ImportType`/`ImportTypes`
-    /// structs carry no `$class` field of their own, module doc on
-    /// [`crate::introspect::import::Import`], so the re-encoding omits it;
-    /// this is reached only when a caller resolves a name its own
-    /// `isImportedType` check did not first confirm).
+    /// TS's `JSON.stringify(this.imports)` ([`ModelFile::imports_json`]).
     pub fn resolve_import(&self, type_name: &str) -> Result<String> {
         self.find_import(type_name).ok_or_else(|| {
             let mut err = ContractError::new(
@@ -391,7 +418,7 @@ impl ModelFile {
                 "modelfile-resolveimport-failfindimp",
                 vec![
                     ("type", type_name.to_string()),
-                    ("imports", imports_json(&self.imports)),
+                    ("imports", self.imports_json()),
                     ("namespace", self.namespace.clone()),
                 ],
             );
@@ -628,19 +655,33 @@ impl ModelFile {
     }
 }
 
-/// A rough re-encoding of a model file's imports as JSON, for
-/// [`ModelFile::resolve_import`]'s error message (its doc comment explains
-/// what it does not reproduce exactly).
-fn imports_json(imports: &[Import]) -> String {
-    let values: Vec<serde_json::Value> = imports
-        .iter()
-        .map(|imp| match imp {
-            Import::Type(t) => serde_json::to_value(t),
-            Import::Types(t) => serde_json::to_value(t),
-        })
-        .map(|v| v.unwrap_or(serde_json::Value::Null))
-        .collect();
-    serde_json::Value::Array(values).to_string()
+/// The system import every non-system model file gets implicitly (TS:
+/// `ModelFile.fromAst`).
+fn built_in_import() -> serde_json::Value {
+    // TS: `fromAst`'s object literal, in its own key order.
+    serde_json::json!({
+        "$class": "concerto.metamodel@1.0.0.ImportTypes",
+        "namespace": "concerto@1.0.0",
+        "types": ["Concept", "Asset", "Transaction", "Participant", "Event"]
+    })
+}
+
+impl ModelFile {
+    /// TS `JSON.stringify(this.imports)`: the AST's own import nodes,
+    /// verbatim and in their own key order (the AST is kept unchanged,
+    /// module doc), followed by the built-in system import `fromAst` appends
+    /// for a non-system file (P2-08 review: this used to re-encode the typed
+    /// imports, which carry no `$class`).
+    fn imports_json(&self) -> String {
+        let mut values = match self.ast.get("imports") {
+            Some(serde_json::Value::Array(imports)) => imports.clone(),
+            _ => Vec::new(),
+        };
+        if values.len() < self.imports.len() {
+            values.push(built_in_import());
+        }
+        serde_json::Value::Array(values).to_string()
+    }
 }
 
 /// TS `ModelFile.isCompatibleVersion` (modelfile.ts): if the AST declares a
@@ -779,20 +820,128 @@ mod tests {
         assert_eq!(mf.resolve_local_type("Missing"), None);
     }
 
+    /// TS: test/introspect/modelfile.js #constructor "should throw when null
+    /// ast provided" / "non object ast" / "invalid definitions" / "invalid
+    /// filename" — each a plain `Error`, checked in TS's order.
     #[test]
-    fn duplicate_declaration_is_rejected() {
+    fn constructor_arguments_are_checked_in_ts_order() {
+        use serde_json::json;
+        let message = |r: Result<()>| match r.unwrap_err() {
+            ConcertoError::Contract(c) => {
+                assert_eq!(c.kind, ErrorKind::Error);
+                c.message()
+            }
+            other => panic!("expected a plain Error, got {other:?}"),
+        };
+        let ast = json!({ "namespace": "org.acme@1.0.0" });
+        assert_eq!(
+            message(ModelFile::check_constructor_arguments(
+                Some(&json!(null)),
+                None,
+                None
+            )),
+            "ast not specified"
+        );
+        assert_eq!(
+            message(ModelFile::check_constructor_arguments(
+                None,
+                Some(&json!({})),
+                None
+            )),
+            "ast not specified"
+        );
+        assert_eq!(
+            message(ModelFile::check_constructor_arguments(
+                Some(&json!(true)),
+                None,
+                None
+            )),
+            "ModelFile expects a Concerto model AST as input."
+        );
+        assert_eq!(
+            message(ModelFile::check_constructor_arguments(
+                Some(&ast),
+                Some(&json!({})),
+                Some(&json!({}))
+            )),
+            "ModelFile expects an (optional) Concerto model definition as a string."
+        );
+        assert_eq!(
+            message(ModelFile::check_constructor_arguments(
+                Some(&ast),
+                None,
+                Some(&json!({}))
+            )),
+            "ModelFile expects an (optional) filename as a string."
+        );
+        // Falsy non-strings are ignored, as TS's `definitions && …` is.
+        ModelFile::check_constructor_arguments(Some(&ast), Some(&json!(null)), Some(&json!("")))
+            .unwrap();
+        ModelFile::check_constructor_arguments(
+            Some(&ast),
+            Some(&json!("cto")),
+            Some(&json!("a.cto")),
+        )
+        .unwrap();
+    }
+
+    /// TS: `ClassDeclaration.process` rejects a system property name with
+    /// the declaration's own `ast.location` and the model file's name.
+    #[test]
+    fn a_system_property_name_is_rejected_with_the_declaration_location() {
+        let location = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Range",
+            "start": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 55, "line": 3, "column": 1 },
+            "end": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 103, "line": 5, "column": 2 }
+        });
         let err = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "declarations": [{
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "C", "isAbstract": false, "location": location,
+                    "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "$class",
+                          "isArray": false, "isOptional": false }
+                    ]
+                }]
+            }),
+            Some("c.cto".into()),
+        )
+        .unwrap_err();
+        let ConcertoError::Contract(err) = err else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        assert_eq!(err.location, Some(location));
+        assert_eq!(
+            err.final_message(),
+            "Invalid field name '$class' File 'c.cto': line 3 column 1, to line 5 column 2. "
+        );
+    }
+
+    /// TS's `ModelFile` constructor accepts two declarations of one name:
+    /// both stay in `getAllDeclarations()`, and the `localTypes` lookup keeps
+    /// the last (a `Map.set` per declaration). Rejecting the duplicate is
+    /// `ModelFile.validate()`'s job (P2-08 review: this test used to assert
+    /// that construction itself failed, which TS never does).
+    #[test]
+    fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
+        let mf = ModelFile::from_json(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.dup@1.0.0",
                 "declarations": [
                     { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "A", "isAbstract": false, "properties": [] },
-                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "A", "isAbstract": false, "properties": [] }
+                    { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "A", "isAbstract": false, "properties": [] }
                 ]
             }),
             None,
-        );
-        assert!(err.is_err());
+        )
+        .expect("TS's constructor accepts a duplicate declaration name");
+        assert_eq!(mf.declarations().len(), 2);
+        assert_eq!(mf.local_index("A"), Some(1));
+        assert!(mf.get_asset_declaration("A").is_some());
     }
 
     #[test]
@@ -893,6 +1042,34 @@ mod tests {
     #[test]
     fn no_concerto_version_at_all_leaves_it_none() {
         assert_eq!(sample().concerto_version(), None);
+    }
+
+    /// TS: test/introspect/modelfile.js #resolveImport "should throw if it
+    /// cannot resolve a type that is not imported": the message lists
+    /// `JSON.stringify(this.imports)` — the AST's own import nodes verbatim,
+    /// then the built-in system import.
+    #[test]
+    fn resolve_import_failure_lists_the_imports_as_ts_stringifies_them() {
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "name": "Wow", "namespace": "org.doge@1.0.0" }
+                ],
+                "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+        let ConcertoError::Contract(err) = mf.resolve_import("Coin").unwrap_err() else {
+            panic!("expected a contract error");
+        };
+        assert_eq!(
+            err.final_message(),
+            "Failed to find \"Coin\" in list of imports \"[[{\"$class\":\"concerto.metamodel@1.0.0.ImportType\",\"name\":\"Wow\",\"namespace\":\"org.doge@1.0.0\"},{\"$class\":\"concerto.metamodel@1.0.0.ImportTypes\",\"namespace\":\"concerto@1.0.0\",\"types\":[\"Concept\",\"Asset\",\"Transaction\",\"Participant\",\"Event\"]}]]\" for namespace \"org.acme@1.0.0\". "
+        );
     }
 
     #[test]

@@ -1302,24 +1302,38 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
 /// for a receiver never added to a manager via `addModelFile` (that is
 /// `ModelManager.addModelFile`, already dispatched).
 fn model_file_new(args: &[Arg]) -> Dispatch {
-    let Some(Arg::Plain(ast)) = args.get(1) else {
-        return unsupported("ModelFile.new with an ast argument that is not plain data");
-    };
-    let definitions = match args.get(2) {
-        None => None,
-        Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => None,
-        Some(Arg::Plain(Value::String(s))) => Some(s.clone()),
-        _ => {
-            return unsupported("ModelFile.new with a definitions argument that is not a string");
+    // Each constructor argument as plain data, `None` for JS `undefined`.
+    let mut plain = [None, None, None];
+    for (slot, (index, what)) in
+        plain
+            .iter_mut()
+            .zip([(1, "ast"), (2, "definitions"), (3, "fileName")])
+    {
+        match args.get(index) {
+            None => {}
+            Some(Arg::Plain(v)) if recipe::is_undefined(v) => {}
+            Some(Arg::Plain(v)) => *slot = Some(v),
+            Some(_) => {
+                return unsupported(format!(
+                    "ModelFile.new with a {what} argument that is not plain data"
+                ));
+            }
         }
+    }
+    let [ast, definitions, file_name_arg] = plain;
+    // TS's own argument checks come first (a plain `Error` each).
+    if let Err(e) = ModelFile::check_constructor_arguments(ast, definitions, file_name_arg) {
+        return ran(Err(to_oracle_error(&e)));
+    }
+    let ast = ast.expect("check_constructor_arguments rejects a missing ast");
+    // A falsy non-string `definitions` passed those checks; TS keeps it as
+    // given, but nothing the oracle compares reads it back (the harness's
+    // `getDefinitions` answers only for a string).
+    let definitions = match definitions {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
     };
-    let file_name_value = match args.get(3) {
-        None => recipe::undefined(),
-        Some(Arg::Plain(v)) => v.clone(),
-        Some(_) => {
-            return unsupported("ModelFile.new with a fileName argument that is not plain data");
-        }
-    };
+    let file_name_value = file_name_arg.cloned().unwrap_or_else(recipe::undefined);
     let file_name = match &file_name_value {
         Value::String(s) => Some(s.clone()),
         _ => None,
@@ -1511,8 +1525,15 @@ fn model_file_op(
                 |node| node_type_value(r, node),
             )
         }
-        "validate" => match registered_file(session, file) {
-            Ok(r) => from_engine(r.mm.validate_model_file(&mf), |()| recipe::undefined()),
+        // TS `modelFile.validate()` needs only `this.getModelManager()`, not
+        // that the manager has registered `this`: a file built with `new
+        // ModelFile(mm, ast)` and validated straight away is the common case
+        // (P2-08). `validate_detached_model_file` validates such a file
+        // against its manager without changing it.
+        "validate" => match owning_manager(session, file) {
+            Ok(r) => from_engine(r.mm.validate_detached_model_file(&mf), |()| {
+                recipe::undefined()
+            }),
             Err(Fault::Unsupported(reason)) => unsupported(reason),
             Err(other) => Dispatch::Fault(other),
         },
@@ -1523,29 +1544,33 @@ fn model_file_op(
 /// `file`'s owning model manager, only when `file` is genuinely the file
 /// registered there under its namespace — the same check
 /// [`recipe::model_file_node`] makes for a receiver that needs a `Node`
-/// handle. `getModelManager`, `getType` and `validate` all need this: TS's
-/// `this.getModelManager()` is only meaningful once a `ModelFile` is the one
-/// its manager actually holds (`ModelManager::resolve_type_name` and the
-/// checks `validate_model_file` runs both look a namespace's file up
-/// *through the manager*, not through `file` directly — P2-08 review: an
-/// `mfnew` receiver that was never added via `addModelFile` fails these
-/// checks with the wrong verdict otherwise, since the manager has no file
-/// under that namespace to find).
+/// handle. `getModelManager` and `getType` use this: `getType`'s
+/// `ModelManager::resolve_type_name` looks a namespace's file up *through
+/// the manager*, not through `file` directly, so an `mfnew` receiver that
+/// was never added via `addModelFile` would resolve with the wrong verdict
+/// (P2-08 review). `validate` does not need it: it uses
+/// `ModelManager::validate_detached_model_file` through [`owning_manager`].
 fn registered_file<'s>(
     session: &'s Session,
     file: &recipe::FileArg,
 ) -> Result<&'s Replayed, Fault> {
+    let r = owning_manager(session, file)?;
+    // Discard the `Node`: only its existence (this namespace resolves to
+    // exactly `file`'s own AST) is wanted here.
+    recipe::model_file_node(r, file)?;
+    Ok(r)
+}
+
+/// `file`'s owning model manager (TS `this.getModelManager()`), whether or
+/// not it has registered `file`.
+fn owning_manager<'s>(session: &'s Session, file: &recipe::FileArg) -> Result<&'s Replayed, Fault> {
     let index = file.mm_index.ok_or_else(|| {
         Fault::Unsupported(
             "a ModelFile op needing the owning model manager, decoded without its pool index"
                 .into(),
         )
     })?;
-    let r = &session.pool[index];
-    // Discard the `Node`: only its existence (this namespace resolves to
-    // exactly `file`'s own AST) is wanted here.
-    recipe::model_file_node(r, file)?;
-    Ok(r)
+    Ok(&session.pool[index])
 }
 
 /// `Introspector.*` ops (P2-08): a thin wrapper over the receiver's own

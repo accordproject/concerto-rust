@@ -664,25 +664,32 @@ fn a_dangling_model_manager_reference_is_a_harness_error() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A validating add after a file that was added without validation cannot
-/// be replayed faithfully while single-file validation is not ported
-/// (`recipe.rs`, "Validation on add"): unsupported, not a guess.
+/// A validating add checks the new file alone, as TS `addModelFile`'s
+/// `modelFile.validate()` does (`recipe.rs`, "Validation on add"; P2-08): an
+/// earlier file added with validation disabled is not re-checked, so an
+/// invalid one does not make the later add fail. (Before `ModelFile.validate`
+/// was ported this case was reported unsupported rather than guessed.)
 #[test]
-fn a_validating_add_after_an_unvalidated_one_is_unsupported() {
+fn a_validating_add_after_an_unvalidated_one_checks_only_the_new_file() {
     let dir = scratch_dir("validate-after-unvalidated");
     let cache = scratch_dir("validate-after-unvalidated-cache");
-    write_cache_entry(&cache, CTO, Some("test.cto"), json!({ "ast": test_ast() }));
+    // The first file's `Car.colour` names a type that does not exist, which
+    // only validation reports.
+    let mut invalid = test_ast();
+    invalid["declarations"][1]["properties"][0]["type"]["name"] = json!("Missing");
+    write_cache_entry(&cache, CTO, Some("test.cto"), json!({ "ast": invalid }));
     let other = "namespace other@1.0.0\n";
+    let other_ast = json!({
+        "$class": "concerto.metamodel@1.0.0.Model",
+        "namespace": "other@1.0.0",
+        "imports": [],
+        "declarations": []
+    });
     write_cache_entry(
         &cache,
         other,
         Some("other.cto"),
-        json!({ "ast": {
-            "$class": "concerto.metamodel@1.0.0.Model",
-            "namespace": "other@1.0.0",
-            "imports": [],
-            "declarations": []
-        } }),
+        json!({ "ast": other_ast }),
     );
     write_fixture(
         &dir,
@@ -690,13 +697,18 @@ fn a_validating_add_after_an_unvalidated_one_is_unsupported() {
         "validate-after-unvalidated",
         json!({
             "inputs": { "target": recipe_with_cto("test.cto", true, "ok"), "args": [other, "other.cto"] },
-            "outcome": { "ok": null }
+            "outcome": { "ok": {
+                "@@oracle": "ModelFile",
+                "namespace": "other@1.0.0",
+                "name": "other.cto",
+                "ast": other_ast
+            } }
         }),
     );
     let verdict = judge_one(&with_cache(&cache), &dir);
     assert!(
-        matches!(verdict, Verdict::Unsupported { .. }),
-        "expected Unsupported, got {verdict:?}"
+        matches!(verdict, Verdict::Pass),
+        "expected Pass, got {verdict:?}"
     );
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_dir_all(&cache);

@@ -22,7 +22,7 @@
 //!
 //! | TS step | Replayed as |
 //! |---|---|
-//! | `addCTOModel`, `addModel` (CTO text or AST), `addModelFile` | `add_model`, then, unless validation is disabled, the new file's validation (below) |
+//! | `addCTOModel`, `addModel` (CTO text or AST), `addModelFile` | `add_model`, then, unless validation is disabled, `validate_model_file` on the new file alone (below) |
 //! | `addModelFiles` | `add_model` per file, then `validate_models` unless validation is disabled; any error restores the files that were there before, as TS does |
 //! | `validateModelFiles` | `validate_models` |
 //! | `clearModelFiles` | a fresh `ModelManager::new()` (TS: `modelFiles = {}`, then the decorator and root models again) |
@@ -30,24 +30,23 @@
 //! | `updateModelFile`, `deleteModelFile`, `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
 //!
 //! **Validation on add.** TS `addModelFile` validates *only the new file*
-//! (`modelFile.validate()`) before registering it. The Rust engine has no
-//! single-file validation yet (`ModelFile.validate` is P2-08's); it only
-//! validates every file (`validate_models`). The two agree exactly when every
-//! file already registered is known to validate on the Rust engine (it was
-//! added with validation, or a later `validateModelFiles` passed): adding a
-//! namespace cannot make another file invalid, so the first error
-//! `validate_models` reports is then the new file's. The harness therefore
-//! replays a validating add as "register, `validate_models`, and on an error
-//! restore the files that were there before" when that holds, and reports the
-//! fixture `unsupported` when it does not, rather than risk blaming the new
-//! file for an older one's error. Removal has no Rust counterpart either, so
+//! (`modelFile.validate()`) before registering it, so a file added earlier
+//! with validation disabled is never re-checked (P2-08: a later
+//! `validateModelFiles` is what rejects it). The harness replays this as
+//! "register, `validate_model_file` on the new file alone, and on an error
+//! restore the files that were there before" — the Rust validation resolves
+//! the file's own namespace through the manager, so it runs once the file is
+//! registered rather than before. Removal has no Rust counterpart, so
 //! restoring rebuilds the manager from the surviving files (all of which
 //! loaded before).
 //!
-//! **Options.** Only `skipLocationNodes` (it selects the cache entry) is
-//! replayed. Any other option with a truthy value changes TS behaviour the
-//! Rust engine does not model yet (`metamodelValidation`, `addMetamodel`,
-//! `decoratorValidation`, ...), so such a recipe is `unsupported`.
+//! **Options.** `skipLocationNodes` (it selects the cache entry) and
+//! `dangerouslyAllowReservedSystemTypeNamesInUserModels` (P2-08:
+//! `ModelManager::set_dangerously_allow_reserved_system_type_names_in_user_models`,
+//! read by `Declaration.validate`) are replayed. Any other option with a
+//! truthy value changes TS behaviour the Rust engine does not model yet
+//! (`metamodelValidation`, `addMetamodel`, `decoratorValidation`, ...), so
+//! such a recipe is `unsupported`.
 //!
 //! # Model files, declarations, properties
 //!
@@ -206,13 +205,15 @@ struct Entry {
     ast: Value,
     file_name: Option<String>,
     nullish_name: Value,
-    known_valid: bool,
 }
 
 /// A replayed model manager.
 pub struct Replayed {
     pub kind: Kind,
     skip_location_nodes: Value,
+    /// TS `options.dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// (JS truthiness), set on every manager this recipe builds or rebuilds.
+    allow_reserved_system_type_names: bool,
     files: Vec<Entry>,
     pub mm: ModelManager,
 }
@@ -707,16 +708,21 @@ fn contains_marker(v: &Value) -> bool {
 /// Model manager options that concerto-core 5.0.0 reads on the paths this
 /// harness replays and the Rust engine does not model yet: metamodel
 /// validation (`basemodelmanager.ts` `addModelFile`), adding the metamodel
-/// (constructor), decorator validation (`Decorated.validate`), reserved
-/// system type names (`declaration.ts`) and a custom `RegExp`
-/// (`stringvalidator.ts`).
-const UNMODELLED_OPTIONS: [&str; 5] = [
+/// (constructor), decorator validation (`Decorated.validate`) and a custom
+/// `RegExp` (`stringvalidator.ts`).
+const UNMODELLED_OPTIONS: [&str; 4] = [
     "metamodelValidation",
     "addMetamodel",
     "decoratorValidation",
-    "dangerouslyAllowReservedSystemTypeNamesInUserModels",
     "regExp",
 ];
+
+/// TS `ModelManagerOptions.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+/// read back as `Boolean(modelFile.getModelManager()?.options?.<this>)` by
+/// `Declaration.validate` (declaration.ts) and modelled by the Rust engine
+/// (P2-08).
+const ALLOW_RESERVED_SYSTEM_TYPE_NAMES: &str =
+    "dangerouslyAllowReservedSystemTypeNamesInUserModels";
 
 /// Options concerto-core 5.0.0 never reads on these paths: `strict`,
 /// `enableMapType` and `importAliasing` are v3/v4 flags no 5.0.0 source file
@@ -741,20 +747,28 @@ fn option_reader(key: &str) -> Option<&'static str> {
         "addMetamodel" => "BaseModelManager.new",
         // `Decorator.validate` reads `mm.getDecoratorValidation()`.
         "decoratorValidation" => "Decorator.validate",
-        // `Declaration.validate` (src/introspect/declaration.ts).
-        "dangerouslyAllowReservedSystemTypeNamesInUserModels" => "Declaration.validate",
         // `StringValidator`'s constructor builds the custom RegExp.
         "regExp" => "StringValidator.new",
         _ => return None,
     })
 }
 
-/// Checks a recipe's options, returning its `skipLocationNodes` (which only
-/// selects the cache entry, i.e. the AST's shape). An unmodelled option with
-/// a truthy value, or an option this harness does not know, is unsupported.
-fn check_options(options: &Value) -> Faulty<Value> {
+/// A recipe's options as the harness replays them: `skipLocationNodes`
+/// (which only selects the cache entry, i.e. the AST's shape) and
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels`.
+struct Options {
+    skip_location_nodes: Value,
+    allow_reserved_system_type_names: bool,
+}
+
+/// Checks a recipe's options. An unmodelled option with a truthy value, or
+/// an option this harness does not know, is unsupported.
+fn check_options(options: &Value) -> Faulty<Options> {
     if is_undefined(options) || options.is_null() {
-        return Ok(Value::Null);
+        return Ok(Options {
+            skip_location_nodes: Value::Null,
+            allow_reserved_system_type_names: false,
+        });
     }
     let Some(map) = options.as_object() else {
         return Err(Fault::Unsupported(
@@ -762,7 +776,9 @@ fn check_options(options: &Value) -> Faulty<Value> {
         ));
     };
     for (key, value) in map {
-        let inert = key == "skipLocationNodes" || INERT_OPTIONS.contains(&key.as_str());
+        let inert = key == "skipLocationNodes"
+            || key == ALLOW_RESERVED_SYSTEM_TYPE_NAMES
+            || INERT_OPTIONS.contains(&key.as_str());
         if !inert && (truthy(value) || !UNMODELLED_OPTIONS.contains(&key.as_str())) {
             let reason =
                 format!("ModelManager option `{key}` is not modelled by the Rust engine yet");
@@ -772,31 +788,48 @@ fn check_options(options: &Value) -> Faulty<Value> {
             });
         }
     }
-    Ok(match map.get("skipLocationNodes") {
-        None => Value::Null,
-        Some(v) if is_undefined(v) => Value::Null,
-        Some(v) => v.clone(),
+    Ok(Options {
+        skip_location_nodes: match map.get("skipLocationNodes") {
+            None => Value::Null,
+            Some(v) if is_undefined(v) => Value::Null,
+            Some(v) => v.clone(),
+        },
+        allow_reserved_system_type_names: map
+            .get(ALLOW_RESERVED_SYSTEM_TYPE_NAMES)
+            .is_some_and(truthy),
     })
 }
 
 impl Replayed {
     /// `new ModelManager(options)`.
     pub fn new(kind: Kind, options: &Value) -> Faulty<Self> {
-        let skip_location_nodes = check_options(options)?;
-        let mm = ModelManager::new()
-            .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
+        let Options {
+            skip_location_nodes,
+            allow_reserved_system_type_names,
+        } = check_options(options)?;
+        let mm = Self::fresh_manager(allow_reserved_system_type_names)?;
         Ok(Self {
             kind,
             skip_location_nodes,
+            allow_reserved_system_type_names,
             files: Vec::new(),
             mm,
         })
     }
 
-    /// The Rust manager rebuilt from `files`, all of which loaded before.
-    fn rebuild(&mut self) -> Faulty<()> {
+    /// `new ModelManager(options)` for this recipe's modelled options.
+    fn fresh_manager(allow_reserved_system_type_names: bool) -> Faulty<ModelManager> {
         let mut mm = ModelManager::new()
             .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
+        mm.set_dangerously_allow_reserved_system_type_names_in_user_models(
+            allow_reserved_system_type_names,
+        );
+        Ok(mm)
+    }
+
+    /// The Rust manager rebuilt from `files`, all of which loaded before.
+    fn rebuild(&mut self) -> Faulty<()> {
+        let mut mm = Self::fresh_manager(self.allow_reserved_system_type_names)?;
         for entry in &self.files {
             mm.add_model(&entry.ast, entry.file_name.clone())
                 .map_err(|e| {
@@ -941,36 +974,30 @@ impl Replayed {
         if let Err(e) = self.mm.add_model(&file.ast, file.file_name.clone()) {
             return Ok(Err(to_oracle_error(&e)));
         }
-        let before_valid = self.files.iter().all(|e| e.known_valid);
         self.files.push(Entry {
             ast: file.ast,
             file_name: file.file_name,
             nullish_name: file.nullish_name,
-            known_valid: false,
         });
+        let ns = ns.unwrap_or_default();
         if validate {
-            if !before_valid {
-                return Err(blocked(
-                    "validating one added model file needs ModelFile.validate, not ported yet, \
-                     and an earlier file was added without validation",
-                    "ModelFile.validate",
-                ));
-            }
-            if let Err(e) = self.mm.validate_models() {
+            // TS: `modelFile.validate()` — the new file alone (module doc,
+            // "Validation on add").
+            let outcome = match self.mm.model_file(&ns) {
+                Some(mf) => self.mm.validate_model_file(mf),
+                None => {
+                    return Err(Fault::Harness(format!(
+                        "a model file that add_model just loaded is not registered under {ns}"
+                    )));
+                }
+            };
+            if let Err(e) = outcome {
                 self.files.pop();
                 self.rebuild()?;
                 return Ok(Err(to_oracle_error(&e)));
             }
-            self.mark_valid();
         }
-        let ns = ns.unwrap_or_default();
         Ok(Ok(self.model_file_summary(&ns).unwrap_or_else(undefined)))
-    }
-
-    fn mark_valid(&mut self) {
-        for entry in &mut self.files {
-            entry.known_valid = true;
-        }
     }
 
     /// Runs one state-changing call (a recipe step, or a fixture whose op is
@@ -1037,10 +1064,7 @@ impl Replayed {
                 self.add_model_files(h, args, validate)
             }
             "validateModelFiles" => match self.mm.validate_models() {
-                Ok(()) => {
-                    self.mark_valid();
-                    Ok(Ok(undefined()))
-                }
+                Ok(()) => Ok(Ok(undefined())),
                 Err(e) => Ok(Err(to_oracle_error(&e))),
             },
             "clearModelFiles" => {
@@ -1077,11 +1101,8 @@ impl Replayed {
                     }
                 }
                 let disable = options.get("disableValidation").is_some_and(truthy);
-                if !disable {
-                    if let Err(e) = self.mm.validate_models() {
-                        return Ok(Err(to_oracle_error(&e)));
-                    }
-                    self.mark_valid();
+                if !disable && let Err(e) = self.mm.validate_models() {
+                    return Ok(Err(to_oracle_error(&e)));
                 }
                 Ok(Ok(undefined()))
             }
@@ -1159,15 +1180,11 @@ impl Replayed {
                 ast,
                 file_name,
                 nullish_name,
-                known_valid: false,
             });
             added.push(ns.unwrap_or_default());
         }
-        if validate {
-            if let Err(e) = self.mm.validate_models() {
-                return restore(self, to_oracle_error(&e));
-            }
-            self.mark_valid();
+        if validate && let Err(e) = self.mm.validate_models() {
+            return restore(self, to_oracle_error(&e));
         }
         Ok(Ok(Value::Array(
             added
