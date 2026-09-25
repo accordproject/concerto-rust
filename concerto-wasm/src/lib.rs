@@ -21,7 +21,14 @@
 //!   collaborators the same way the trial units do, following the TS source
 //!   directly rather than the native method's `ModelManager`-specific
 //!   shortcuts. `Decorated.process`'s `DecoratorFactory` selection is not
-//!   bound: that stays TS (decorator.rs module doc).
+//!   bound: that stays TS (decorator.rs module doc);
+//! - `ModelFile` (P4-08c): `getVersion`, `isSystemModelFile`, `getImports`,
+//!   `isLocalType`, `filter` and `validate`, keyed by the same `ModelFileId`
+//!   handle every other by-file lookup here already uses, plus a detached
+//!   `process`/`fromAst` constructor for a file not yet registered in any
+//!   manager (`modelFileFromAst`, near the bottom of the "ModelFile" section).
+//!   Its declarations need no new handle: they already cross as the arena's
+//!   own `DeclId` (`declarationIds`, `declarationSnapshot`).
 //!
 //! Everything JS-shaped lives here, never in core (PORTING.md 4):
 //! - **argument coercion** (3.5): each binding converts its JS arguments the
@@ -3550,6 +3557,281 @@ impl ModelManagerHandle {
             snapshot(&encode_wire(&result))
         })
     }
+
+    // -----------------------------------------------------------------------
+    // ModelFile (src/introspect/modelfile.ts) — P4-08c
+    //
+    // A model file is not its own handle type: it already has one, the same
+    // `ModelFileId` P1-04's arena gives every loaded file (`modelFileId`,
+    // `modelFileIds`, `modelFileSnapshot`, above), and its declarations
+    // already cross as the arena's own `DeclId` handles (`declarationIds`,
+    // `declarationSnapshot`) — there is nothing new to invent for either.
+    // What was missing is the handful of `ModelFile` members
+    // `modelFileSnapshot`'s plain `{namespace, version, fileName, ast}` does
+    // not already answer: `getVersion` (`version` can be `null`, which the
+    // snapshot's string cannot represent), `isSystemModelFile`, `getImports`
+    // (the resolved fully-qualified names, built-in import included, not
+    // the raw AST `imports` array `modelFileSnapshot` already exposes),
+    // `isLocalType`, `filter` and `validate` — all bound below, keyed by the
+    // same `u32` handle. `process`/`fromAst` are the constructor's own two
+    // calls (modelfile.ts), inseparable in this port
+    // (`ModelFile::from_json_with_definitions` runs both in one pass) and
+    // reached only when a file is not yet registered in any manager
+    // (`modelFileFromAst`, a free function below, since it needs none).
+    // -----------------------------------------------------------------------
+
+    /// TS: `ModelFile.getVersion`. `None` (JS `undefined`) for an unversioned
+    /// namespace — a system model file's, the only one whose namespace may
+    /// carry no `@version` (`ModelFile::version` stores `""` for it; every
+    /// other namespace is required to carry one, `parse_namespace_version`'s
+    /// own check, model_file.rs).
+    #[wasm_bindgen(js_name = modelFileGetVersion)]
+    pub fn model_file_get_version(
+        &self,
+        model_file: u32,
+    ) -> std::result::Result<Option<String>, JsValue> {
+        run(|| {
+            let file = self.require_file(model_file)?;
+            let version = file.version();
+            Ok((!version.is_empty()).then(|| version.to_string()))
+        })
+    }
+
+    /// TS: `ModelFile.isSystemModelFile`.
+    #[wasm_bindgen(js_name = modelFileIsSystemModelFile)]
+    pub fn model_file_is_system_model_file(
+        &self,
+        model_file: u32,
+    ) -> std::result::Result<bool, JsValue> {
+        run(|| Ok(self.require_file(model_file)?.is_system_namespace()))
+    }
+
+    /// TS: `ModelFile.getImports` — the fully-qualified names this file
+    /// imports (the built-in system import included for a non-system file),
+    /// as `ModelFile::get_imports` already resolves them.
+    #[wasm_bindgen(js_name = modelFileGetImports)]
+    pub fn model_file_get_imports(&self, model_file: u32) -> std::result::Result<Array, JsValue> {
+        run(|| {
+            Ok(self
+                .require_file(model_file)?
+                .get_imports()
+                .iter()
+                .map(|n| JsValue::from_str(n))
+                .collect())
+        })
+    }
+
+    /// TS: `ModelFile.isLocalType`.
+    #[wasm_bindgen(js_name = modelFileIsLocalType)]
+    pub fn model_file_is_local_type(
+        &self,
+        model_file: u32,
+        type_name: &str,
+    ) -> std::result::Result<bool, JsValue> {
+        run(|| Ok(self.require_file(model_file)?.is_local_type(type_name)))
+    }
+
+    /// TS: `ModelFile.validate()`, for a model file this manager already
+    /// holds under its own namespace — the common case for a view whose
+    /// `getModelManager()` is this handle (`ModelManager::validate_model_file`).
+    /// Throws the first problem found.
+    #[wasm_bindgen(js_name = modelFileValidate)]
+    pub fn model_file_validate(&self, model_file: u32) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let file = self.require_file(model_file)?;
+            Ok(self.manager.validate_model_file(file)?)
+        })
+    }
+
+    /// TS: `ModelFile.validate()` for a `ModelFile` that need not be the one
+    /// this manager holds under its namespace — `new ModelFile(modelManager,
+    /// ast, …)` followed directly by `validate()`, or the
+    /// validate-before-register path a caller like `BaseModelManager.addModelFile`
+    /// takes (`ModelManager::validate_detached_model_file`). `ast` is the
+    /// model's JSON AST as JSON text (`JSON.stringify(ast)`, `addModel`'s own
+    /// convention); `definitions`/`file_name` mirror the `ModelFile`
+    /// constructor's own optional arguments.
+    #[wasm_bindgen(js_name = modelFileValidateDetached)]
+    pub fn model_file_validate_detached(
+        &self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let file = ModelFile::from_json_with_definitions(&value, definitions, file_name)?;
+            Ok(self.manager.validate_detached_model_file(&file)?)
+        })
+    }
+
+    /// TS: `ModelFile.filter(predicate, modelManager)`, for a model file this
+    /// manager (the source) already holds; `target` is the `modelManager`
+    /// argument — ordinarily a *different*, otherwise-empty manager, since
+    /// `filter`'s own caller (`BaseModelManager.filter`) always builds a
+    /// fresh one before filtering into it; TS never adds the result back to
+    /// the file's own manager, and neither must this (a caller that means to
+    /// keep it in `self` passes `self` as `target` too, but the common case
+    /// is another handle). `predicate` is called with each candidate
+    /// declaration's fully-qualified name — including a declaration of
+    /// *another* file this one imports from, which `filter`'s own import
+    /// pruning reaches (module doc on [`concerto_core::ModelFile::filter`])
+    /// — the same `keep_fqn` convention `ModelManager::filter`
+    /// (`BaseModelManager.filter`) already uses, so the view's own
+    /// `Declaration -> bool` predicate is expected to look its argument back
+    /// up by fully-qualified name (`declarationId`) the way that binding's
+    /// caller must too. A predicate that throws propagates unchanged.
+    ///
+    /// The filtered model file, if any declaration survived, is added to
+    /// `target` exactly as `addModel` would (so its declarations get the
+    /// arena's ordinary handles there) and its handle in `target` is
+    /// returned; `None` (JS `undefined`) if every declaration was filtered
+    /// out, matching TS's `null`.
+    #[wasm_bindgen(js_name = modelFileFilter)]
+    pub fn model_file_filter(
+        &self,
+        model_file: u32,
+        predicate: Function,
+        target: &mut ModelManagerHandle,
+    ) -> std::result::Result<Option<u32>, JsValue> {
+        run(|| {
+            let file = self.require_file(model_file)?;
+            // `ModelFile::filter`'s predicate carries no namespace of its
+            // own (its doc comment): it is called both on `file`'s own
+            // declarations *and*, while pruning `file`'s imports, on
+            // declarations belonging to a *different* model file
+            // (`source_manager.model_file(ns).get_local_type(...)`). Keying
+            // the fully-qualified name off `file`'s namespace alone would
+            // ask the JS predicate about the wrong FQN for every cross-file
+            // (import) declaration, exactly the failure
+            // `ModelManager::filter`'s own doc comment warns about. So the
+            // real namespace for every declaration reachable from this
+            // filter call is looked up by identity up front, across every
+            // file `self.manager` holds.
+            let fqn_by_decl: std::collections::HashMap<
+                *const concerto_core::introspect::Declaration,
+                String,
+            > = self
+                .manager
+                .model_files()
+                .flat_map(|mf| {
+                    let namespace = mf.namespace();
+                    mf.declarations().iter().map(move |decl| {
+                        (
+                            decl as *const concerto_core::introspect::Declaration,
+                            mu::get_fully_qualified_name(namespace, decl.name()),
+                        )
+                    })
+                })
+                .collect();
+            let file_namespace = file.namespace().to_string();
+            let js_err: RefCell<Option<Error>> = RefCell::new(None);
+            let filtered = file.filter(
+                |decl| {
+                    if js_err.borrow().is_some() {
+                        return false;
+                    }
+                    let fqn = fqn_by_decl
+                        .get(&(decl as *const concerto_core::introspect::Declaration))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            mu::get_fully_qualified_name(&file_namespace, decl.name())
+                        });
+                    match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
+                        Ok(v) => v.is_truthy(),
+                        Err(e) => {
+                            *js_err.borrow_mut() = Some(Error::Js(e));
+                            false
+                        }
+                    }
+                },
+                &self.manager,
+            )?;
+            if let Some(err) = js_err.into_inner() {
+                return Err(err);
+            }
+            let Some(filtered) = filtered else {
+                return Ok(None);
+            };
+            let ast = filtered.ast().clone();
+            let ns = filtered.namespace().to_string();
+            let new_file_name = filtered.file_name().map(str::to_string);
+            target.manager.add_model(&ast, new_file_name)?;
+            target
+                .manager
+                .model_file_id(&ns)
+                .map(ModelFileId::index)
+                .map(Some)
+                .ok_or_else(|| {
+                    ConcertoError::TypeNotFound {
+                        type_name: ns.clone(),
+                    }
+                    .into()
+                })
+        })
+    }
+}
+
+impl ModelManagerHandle {
+    /// A model file, by its handle; the same [`unknown`] `TypeNotFound` every
+    /// other by-handle lookup here throws for one that names nothing.
+    fn require_file(&self, model_file: u32) -> Result<&concerto_core::ModelFile> {
+        let id = ModelFileId::from_index(model_file);
+        self.manager
+            .file(id)
+            .ok_or_else(|| unknown(Node::ModelFile(id)))
+    }
+}
+
+/// TS: `new ModelFile(modelManager, ast, definitions, fileName)`, before it
+/// is added to any manager — `process()` then `fromAst(this.ast)`, plus
+/// `isCompatibleVersion()` and the `localTypes` build (the constructor's own
+/// three steps, modelfile.ts). All of it runs in one pass here
+/// (`ModelFile::from_json_with_definitions`); there is no Rust-side way to
+/// call `process()` without immediately `fromAst()`-ing, so the two are one
+/// binding. `ast`, `definitions` and `file_name` are the constructor's own
+/// three arguments, as the JS values a view holds — nullish for an omitted
+/// one — so this throws the same plain `Error`s the constructor's own
+/// argument checks raise before ever reading the AST
+/// (`ModelFile::check_constructor_arguments`), ahead of any error `fromAst`/
+/// `isCompatibleVersion` themselves raise.
+///
+/// Returns the detached file's snapshot, as JSON text: `{namespace, version,
+/// fileName, ast, isSystemModelFile, imports}` (`version` is `null` for an
+/// unversioned namespace, as [`ModelManagerHandle::model_file_get_version`]
+/// is). A file returned this way has no handle: its declarations are not yet
+/// addressable until it is registered in a manager (`ModelManagerHandle::add_model`),
+/// which every caller does before it needs one.
+#[wasm_bindgen(js_name = modelFileFromAst)]
+pub fn model_file_from_ast(
+    ast: JsValue,
+    definitions: JsValue,
+    file_name: JsValue,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let ast_json = to_json(&ast)?;
+        let definitions_json = to_json(&definitions)?;
+        let file_name_json = to_json(&file_name)?;
+        ModelFile::check_constructor_arguments(
+            ast_json.as_ref(),
+            definitions_json.as_ref(),
+            file_name_json.as_ref(),
+        )?;
+        let ast_value = ast_json.unwrap_or(Value::Null);
+        let definitions = definitions.as_string();
+        let file_name = file_name.as_string();
+        let file = ModelFile::from_json_with_definitions(&ast_value, definitions, file_name)?;
+        let version = (!file.version().is_empty()).then(|| file.version().to_string());
+        snapshot(&json!({
+            "namespace": file.namespace(),
+            "version": version,
+            "fileName": file.file_name(),
+            "ast": file.ast(),
+            "isSystemModelFile": file.is_system_namespace(),
+            "imports": file.get_imports(),
+        }))
+    })
 }
 
 // ---------------------------------------------------------------------------
