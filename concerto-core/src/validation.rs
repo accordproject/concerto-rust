@@ -33,7 +33,7 @@ use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
 use crate::introspect::{DeclarationKind, Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
-use crate::model_util::{get_fully_qualified_name, is_primitive_type};
+use crate::model_util::{get_fully_qualified_name, get_namespace, is_primitive_type};
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
@@ -314,7 +314,7 @@ fn check_identifier(
         return Ok(());
     };
     let fqn = get_fully_qualified_name(namespace, class.name());
-    let (_, field) = manager
+    let (owner, field) = manager
         .get_all_properties(&fqn)?
         .into_iter()
         .find(|(_, property)| property.name() == field_name)
@@ -331,7 +331,11 @@ fn check_identifier(
 
     // TS checks the type first, then optionality (classdeclaration.ts
     // `validate`), so an optional non-String identifier reports the type.
-    if !is_string_typed(manager, namespace, &field) {
+    // TS: `idField.getParent().getModelFile().getType(idField.getType())`
+    // resolves the field's type in the file that *declares* the field, which
+    // for an inherited identifier is the super type's, not this class's.
+    let owner_namespace = get_namespace(Some(&owner))?;
+    if !is_string_typed(manager, owner_namespace, &field) {
         return Err(catalogue_error(
             "classdeclaration-validate-identifiernotstring",
             vec![
@@ -1086,6 +1090,77 @@ mod tests {
             )
             .unwrap();
         manager.validate_models()
+    }
+
+    /// `org.a@1.0.0` declares `scalar SSN extends String` and `abstract
+    /// concept Person { o SSN id }`; `org.b@1.0.0` imports only `Person` and
+    /// declares `concept Emp identified by id extends Person {}`, plus
+    /// `extra` (e.g. a shadowing `SSN` of its own). Validates both.
+    fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::error::Result<()> {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "SSN" },
+                        concept(serde_json::json!({
+                            "name": "Person",
+                            "isAbstract": true,
+                            "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "id",
+                                  "isArray": false, "isOptional": false,
+                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "SSN" } }
+                            ]
+                        }))
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        let mut declarations = vec![concept(serde_json::json!({
+            "name": "Emp",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" }
+        }))];
+        declarations.extend(extra.as_array().unwrap().iter().cloned());
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.b@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.a@1.0.0", "name": "Person" }
+                    ],
+                    "declarations": declarations
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models()
+    }
+
+    /// TS resolves an inherited identifier's type in the file that declares
+    /// the field (`idField.getParent().getModelFile()`,
+    /// classdeclaration.ts), so a String scalar the subclass's own file never
+    /// imports still counts.
+    #[test]
+    fn inherited_identifier_scalar_resolves_in_the_declaring_namespace() {
+        let result = validate_inherited_scalar_identifier(serde_json::json!([]));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// A same-named scalar over `Integer` in the subclass's own namespace is
+    /// not the one the inherited field names, so it does not make the
+    /// identifier non-String.
+    #[test]
+    fn inherited_identifier_scalar_ignores_a_shadowing_scalar_in_the_subclass_namespace() {
+        let result = validate_inherited_scalar_identifier(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.IntegerScalar", "name": "SSN" }
+        ]));
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
