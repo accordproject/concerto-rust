@@ -458,6 +458,22 @@ impl CompiledRegex {
     }
 }
 
+/// OD-4: maps a `regress` compile-error reason to V8's own wording, where
+/// known — `regress` and V8 both implement ECMAScript regex syntax, but
+/// describe the same syntax error in their own words. Any reason not in this
+/// table is `regress`'s own text, an `engine` divergence (OD-4;
+/// PORTING.md 3.2) rather than a faithful port until it is recorded and
+/// added here.
+fn v8_regex_reason(regress_reason: &str) -> &str {
+    match regress_reason {
+        // `(` with no closing `)`. Checked against the frozen TS 5.0.0
+        // reference (`migration/oracle/reference`): `new RegExp('(')` throws
+        // `SyntaxError: Invalid regular expression: /(/: Unterminated group`.
+        "Unbalanced parenthesis" => "Unterminated group",
+        other => other,
+    }
+}
+
 /// Whether `flags` is a set of flags the JS `RegExp` constructor accepts:
 /// each character one of `d`, `g`, `i`, `m`, `s`, `u`, `v`, `y`; no character
 /// repeated; and `u`/`v` not combined (they select incompatible Unicode
@@ -575,10 +591,17 @@ impl StringValidator {
                     }),
                     Err(error) => {
                         // OD-4: V8's wording for the reasons `regress` can
-                        // map; any other reason is an `engine` divergence.
+                        // map (P2-08c review: this was reached only by
+                        // `ScalarDeclaration`'s own regex before a Field's
+                        // own `StringValidator` construction was wired in
+                        // here, so no fixture observed an unmapped reason
+                        // until then); any other reason is an `engine`
+                        // divergence.
                         let message = format!(
-                            "Invalid regular expression: /{}/{}: {error}",
-                            v.pattern, v.flags
+                            "Invalid regular expression: /{}/{}: {}",
+                            v.pattern,
+                            v.flags,
+                            v8_regex_reason(&error.to_string())
                         );
                         return Err(report_error(
                             field,

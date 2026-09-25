@@ -1360,6 +1360,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn golden_property_process_noname() {
+        assert_eq!(
+            contract(
+                "property-process-noname",
+                &[(
+                    "ast",
+                    "{\"$class\":\"concerto.metamodel@1.0.0.StringProperty\"}"
+                )]
+            )
+            .message(),
+            "No name for type {\"$class\":\"concerto.metamodel@1.0.0.StringProperty\"}"
+        );
+    }
+
     // TS: `Property.validate`'s own inline template
     // (src/introspect/property.ts:161), checked against the frozen TS 5.0.0
     // reference.

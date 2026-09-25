@@ -183,7 +183,7 @@ fn a_loaded_element_passes_its_validator_checks() {
         "validator": { "$class": format!("{MM}.IntegerDomainValidator"), "lower": 0, "upper": 150 }
     }))
     .unwrap();
-    assert!(property.check_validators().is_ok());
+    assert!(property.check_bound_validators("test@1.0.0.Person").is_ok());
     assert_eq!(property.type_name(), Some("Integer"));
 
     let scalar = declaration(
