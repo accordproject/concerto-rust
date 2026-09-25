@@ -177,9 +177,15 @@ impl Decorator {
             // decorator whose own type is an enum, scalar or map.
             return Ok(());
         };
-        let all_properties = manager.get_all_properties(&fqn)?;
+        // Each property comes paired with its declaring type's name
+        // (`ModelManager::get_all_properties`); only the property is read here.
+        let all_properties: Vec<Property> = manager
+            .get_all_properties(&fqn)?
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
         let (required, optional): (Vec<&Property>, Vec<&Property>) =
-            all_properties.into_iter().partition(|p| !p.is_optional());
+            all_properties.iter().partition(|p| !p.is_optional());
         let ordered: Vec<&Property> = required
             .iter()
             .copied()

@@ -330,6 +330,24 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         // the line-oriented grep this module doc used to give missed it.
         sources: &["src/introspect/classdeclaration.ts:278"],
     },
+    // ---- P2-03 additions (ClassDeclaration.getNestedProperty's own two
+    //      inline templates; #47) ----
+    CatalogueEntry {
+        code: "classdeclaration-getnestedproperty-doesnotexist",
+        template: "Property {propertyName} does not exist on {fqn}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/classdeclaration.ts:586"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-getnestedproperty-primitiveorenum",
+        template: "Property {propertyName} is a primitive or enum. Invalid property path: {propertyPath}",
+        renderer: Renderer::Inline,
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // at the throw site in model_manager.rs): the one throw in
+        // `getNestedProperty` that TS does not build through
+        // `IllegalModelException`.
+        sources: &["src/introspect/classdeclaration.ts:593"],
+    },
     CatalogueEntry {
         code: "instancegenerator-newinstance-noconcreteclass",
         template: "No concrete extending type for \"{type}\".",

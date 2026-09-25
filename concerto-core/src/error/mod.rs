@@ -987,6 +987,30 @@ mod tests {
     }
 
     #[test]
+    fn golden_classdeclaration_getnestedproperty_doesnotexist() {
+        assert_eq!(
+            contract(
+                "classdeclaration-getnestedproperty-doesnotexist",
+                &[("propertyName", "missing"), ("fqn", "org.acme@1.0.0.Foo")]
+            )
+            .message(),
+            "Property missing does not exist on org.acme@1.0.0.Foo"
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_getnestedproperty_primitiveorenum() {
+        assert_eq!(
+            contract(
+                "classdeclaration-getnestedproperty-primitiveorenum",
+                &[("propertyName", "bar"), ("propertyPath", "foo.bar.baz")]
+            )
+            .message(),
+            "Property bar is a primitive or enum. Invalid property path: foo.bar.baz"
+        );
+    }
+
+    #[test]
     fn golden_instancegenerator_newinstance_noconcreteclass() {
         assert_eq!(
             contract(

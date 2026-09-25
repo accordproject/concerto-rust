@@ -25,17 +25,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::import::Import;
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
-use crate::introspect::{Decorated, Named, Typed, Validate};
+use crate::introspect::{DeclarationKind, Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
-use crate::model_util::{get_fully_qualified_name, is_primitive_type};
+use crate::model_util::{get_fully_qualified_name, get_namespace, is_primitive_type};
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
@@ -208,7 +206,23 @@ fn check_unique_decorators(
     Ok(())
 }
 
-/// The super type, if any, must resolve to a declared class.
+/// A class's own super type, short-name kinds exempt from the self-extend
+/// check.
+///
+/// TS: `ClassDeclaration.validate`'s super-type block
+/// (src/introspect/classdeclaration.ts): `['Asset', 'Concept', 'Event',
+/// 'Participant', 'Transaction']`.
+const SELF_EXTENDING_EXEMPT: [&str; 5] =
+    ["Asset", "Concept", "Event", "Participant", "Transaction"];
+
+/// The super type, if any (explicit or implicit `Concept`, `ClassDeclaration`
+/// doc comment), must not be the class's own name (unless it is one of the
+/// five built-in kinds), must resolve to a declared type, and — unless that
+/// type is a concept — must be the same kind as the class itself: an asset
+/// cannot extend a participant, for example.
+///
+/// TS: `ClassDeclaration.validate`'s super-type block, then
+/// `_resolveSuperType` (src/introspect/classdeclaration.ts).
 fn check_super_type(
     manager: &ModelManager,
     namespace: &str,
@@ -217,21 +231,49 @@ fn check_super_type(
     let Some(super_type) = class.super_type() else {
         return Ok(());
     };
-    let resolves_to_class = resolve(manager, namespace, super_type)
-        .and_then(|fqn| manager.get_declaration(&fqn).ok())
-        .is_some_and(|decl| decl.is_class_declaration());
-    if resolves_to_class {
-        Ok(())
-    } else {
-        Err(failed(
+
+    if super_type.name == class.name() && !SELF_EXTENDING_EXEMPT.contains(&super_type.name.as_str())
+    {
+        return Err(catalogue_error(
+            "classdeclaration-validate-selfextending",
+            vec![("class", class.name().to_string())],
+            class_location(class),
+        ));
+    }
+
+    let super_declaration = resolve(manager, namespace, &super_type.name)
+        .and_then(|fqn| manager.get_declaration(&fqn).ok());
+    let Some(super_declaration) = super_declaration else {
+        // TS: `_resolveSuperType`'s hardcoded string, not a catalogue
+        // template (Globalize is never called on this path).
+        return Err(failed(
+            format!("Could not find super type {}", super_type.name),
+            class_location(class),
+        ));
+    };
+
+    // A super type that is not a concept must be the exact same kind as the
+    // subtype. This also covers a super type that resolves to a non-class
+    // declaration (an enum, scalar or map): TS never checks `classDecl` is a
+    // `ClassDeclaration` before comparing `declarationKind()`, so extending
+    // one of those fails here, with the same message, rather than with
+    // "could not find".
+    if super_declaration.declaration_kind() != "ConceptDeclaration"
+        && class.declaration_kind() != super_declaration.declaration_kind()
+    {
+        return Err(failed(
             format!(
-                "Could not find super type {} for {}",
-                super_type.name,
-                class.name()
+                "{} ({}) cannot extend {} ({})",
+                class.declaration_kind(),
+                class.name(),
+                super_declaration.declaration_kind(),
+                super_declaration.name()
             ),
             class_location(class),
-        ))
+        ));
     }
+
+    Ok(())
 }
 
 /// No field name may appear twice once inherited fields are included, so a
@@ -242,14 +284,14 @@ fn check_unique_field_names(
     fqn: &str,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for property in manager.get_all_properties(fqn)? {
-        if !seen.insert(property.name()) {
-            return Err(failed(
-                format!(
-                    "{} has more than one field named {}",
-                    class.name(),
-                    property.name()
-                ),
+    for (_, property) in manager.get_all_properties(fqn)? {
+        if !seen.insert(property.name().to_string()) {
+            return Err(catalogue_error(
+                "classdeclaration-validate-duplicatefieldname",
+                vec![
+                    ("class", class.name().to_string()),
+                    ("fieldName", property.name().to_string()),
+                ],
                 class_location(class),
             ));
         }
@@ -258,7 +300,11 @@ fn check_unique_field_names(
 }
 
 /// A field-provided identifier (`identified by field`) must name a required
-/// field typed as `String` or a String-based scalar.
+/// field typed as `String` or a String-based scalar. The field itself may
+/// come from a super type (TS: `this.getProperty(this.idField)`
+/// — src/introspect/classdeclaration.ts — inherited, unlike
+/// [`ClassDeclaration::identifier_field_name`] itself, which only ever names
+/// one of this class's own fields).
 fn check_identifier(
     manager: &ModelManager,
     namespace: &str,
@@ -267,32 +313,43 @@ fn check_identifier(
     let Some(field_name) = class.identifier_field_name() else {
         return Ok(());
     };
-    let field = class
-        .own_properties()
-        .iter()
-        .find(|property| property.name() == field_name)
+    let fqn = get_fully_qualified_name(namespace, class.name());
+    let (owner, field) = manager
+        .get_all_properties(&fqn)?
+        .into_iter()
+        .find(|(_, property)| property.name() == field_name)
         .ok_or_else(|| {
-            failed(
-                format!(
-                    "Class {} is identified by {field_name}, which it does not declare",
-                    class.name()
-                ),
+            catalogue_error(
+                "classdeclaration-validate-identifiernotproperty",
+                vec![
+                    ("class", class.name().to_string()),
+                    ("idField", field_name.to_string()),
+                ],
                 class_location(class),
             )
         })?;
 
-    if field.is_optional() {
-        return Err(failed(
-            format!("Identifying fields cannot be optional: {field_name}"),
+    // TS checks the type first, then optionality (classdeclaration.ts
+    // `validate`), so an optional non-String identifier reports the type.
+    // TS: `idField.getParent().getModelFile().getType(idField.getType())`
+    // resolves the field's type in the file that *declares* the field, which
+    // for an inherited identifier is the super type's, not this class's.
+    let owner_namespace = get_namespace(Some(&owner))?;
+    if !is_string_typed(manager, owner_namespace, &field) {
+        return Err(catalogue_error(
+            "classdeclaration-validate-identifiernotstring",
+            vec![
+                ("class", class.name().to_string()),
+                ("idField", field_name.to_string()),
+            ],
             class_location(class),
         ));
     }
-    if !is_string_typed(manager, namespace, field) {
+    // TS: hardcoded, not a catalogue template (Globalize is never called on
+    // this path).
+    if field.is_optional() {
         return Err(failed(
-            format!(
-                "Class {} identifier {field_name} must be a String or a String-based scalar",
-                class.name()
-            ),
+            "Identifying fields cannot be optional.".to_string(),
             class_location(class),
         ));
     }
@@ -308,7 +365,7 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
     let Some(type_identifier) = field.type_identifier() else {
         return false;
     };
-    resolve(manager, namespace, type_identifier)
+    resolve(manager, namespace, &type_identifier.name)
         .and_then(|fqn| manager.get_declaration(&fqn).ok())
         .is_some_and(|declaration| declaration.type_name() == Some("String"))
 }
@@ -339,8 +396,10 @@ fn check_property_type(
         ));
     }
 
-    let target = resolve(manager, namespace, type_identifier)
-        .and_then(|fqn| manager.get_declaration(&fqn).ok());
+    let target_fqn = resolve(manager, namespace, &type_identifier.name);
+    let target = target_fqn
+        .as_deref()
+        .and_then(|fqn| manager.get_declaration(fqn).ok());
 
     let Some(target) = target else {
         return Err(failed(
@@ -355,9 +414,14 @@ fn check_property_type(
     };
 
     if property.is_relationship() {
-        let identifiable = target
-            .as_class()
-            .is_some_and(ClassDeclaration::is_identified);
+        // TS: `classDeclaration.isIdentified()` (RelationshipDeclaration.validate,
+        // src/introspect/relationshipdeclaration.ts) — inherited, so a
+        // target that has no identity of its own but extends one that does
+        // (every `Asset`/`Participant`, for one) still counts.
+        let identifiable = target.is_class_declaration()
+            && manager
+                .identifier_field_name(target_fqn.as_deref().expect("target resolved"))?
+                .is_some();
         if !identifiable {
             return Err(failed(
                 format!(
@@ -384,41 +448,30 @@ fn check_property_type(
     Ok(())
 }
 
-/// Resolves a referenced type to a fully-qualified name. A reference that
-/// carries its own namespace is qualified directly; otherwise it is resolved
-/// through the imports and local declarations of `namespace`.
-///
-/// P2-07: a *resolved* metamodel AST (`ModelManager.resolveMetaModel`, which
-/// the CTO parser runs implicitly) keeps `name` as the identifier written in
-/// the source — the local alias, when the reference names an aliased import
-/// (`Child as Kid`) — and puts the type's own declared short name in
-/// `resolvedName` instead. `resolvedName` is the accurate one to qualify with
-/// `namespace`; `name` is the fallback for a reference this typed field
-/// cannot represent (there is no such reference in this scope: OD-3 does not
-/// apply here, since nothing reads the AST as raw JSON to recover a case the
-/// generated type loses).
-fn resolve(
-    manager: &ModelManager,
-    namespace: &str,
-    type_identifier: &mm::TypeIdentifier,
-) -> Option<String> {
-    match &type_identifier.namespace {
-        Some(ns) => {
-            let short = type_identifier
-                .resolved_name
-                .as_deref()
-                .unwrap_or(&type_identifier.name);
-            Some(get_fully_qualified_name(ns, short))
-        }
-        // The error is discarded (`.ok()`) by every caller: they use `None`
-        // to mean "does not resolve" and build their own message (`failed`,
-        // below), so the location `resolve_type_name` would attach to its
-        // own error never surfaces. Passing `None` here is exact, not a
-        // shortcut.
-        None => manager
-            .resolve_type_name(namespace, &type_identifier.name, None)
-            .ok(),
-    }
+/// Resolves a `TypeIdentifier`'s `name` to a fully-qualified name, through
+/// the imports and local declarations of `namespace`.
+fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String> {
+    // TS: every `TypeIdentifier` consumer in the reference — `this.superType
+    // = this.ast.superType.name` (`ClassDeclaration.process`), `this.type =
+    // this.ast.type.name` (`Property.process`, `MapKeyType.process`,
+    // `MapValueType.process`) — keeps only `name`, discarding `namespace`
+    // (and `resolvedName`) outright, then resolves that bare name through
+    // the declaring namespace's own imports (`isImportedType`/
+    // `resolveImport`) or local declarations, never by qualifying `name`
+    // with `ti.namespace` directly. That distinction matters for an aliased
+    // import's `TypeIdentifier`: its `namespace` is the *target*'s (the
+    // import's own `namespace`), while `name` is the local alias, not the
+    // target's own declared name — qualifying `name` with that `namespace`
+    // directly would build `{target namespace}.{alias}`, a name nothing
+    // declares; the alias only resolves correctly by going through the
+    // import list ([`ModelManager::resolve_type_name`], PORTING.md 6.2),
+    // which every caller here now always does.
+    //
+    // The error is discarded (`.ok()`) by every caller: they use `None` to
+    // mean "does not resolve" and build their own message (`failed`,
+    // below), so the location `resolve_type_name` would attach to its own
+    // error never surfaces. Passing `None` here is exact, not a shortcut.
+    manager.resolve_type_name(namespace, name, None).ok()
 }
 
 /// A file may not import two versions of one namespace, since a short name
@@ -476,24 +529,47 @@ fn check_identity_matches_super(
     namespace: &str,
     class: &ClassDeclaration,
 ) -> Result<()> {
-    if !class.is_identified() || class.identifier_field_name().is_some() {
+    // TS: `if (this.idField)` — own identity only; a class with no identity
+    // of its own has nothing to conflict with its super type here (a
+    // subtype that merely inherits identity is not this check's concern).
+    if !class.is_identified() {
         return Ok(());
     }
     let Some(super_type) = class.super_type() else {
         return Ok(());
     };
-    let super_class = resolve(manager, namespace, super_type)
-        .and_then(|fqn| manager.get_declaration(&fqn).ok())
-        .and_then(Declaration::as_class);
-    let Some(super_class) = super_class else {
+    let Some(super_fqn) = resolve(manager, namespace, &super_type.name) else {
+        // An unresolved super type is reported by `check_super_type`.
         return Ok(());
     };
-    if let Some(field) = super_class.identifier_field_name() {
+    let Ok(super_declaration) = manager.get_declaration(&super_fqn) else {
+        return Ok(());
+    };
+    let Some(super_class) = super_declaration.as_class() else {
+        return Ok(());
+    };
+    // TS: `superType.isIdentified()` — inherited, so a direct super type
+    // with no identity of its own but an identified ancestor still gates
+    // this check.
+    let Some(super_id_field) = manager.identifier_field_name(&super_fqn)? else {
+        return Ok(());
+    };
+    // TS: within `if (this.idField)`, `this.isSystemIdentified()` reduces to
+    // whether this class's own `idField` is `$identifier`, since own
+    // identity always wins over inherited in `getIdentifierFieldName`.
+    let this_system_identified = class.identifier_field_name().is_none();
+    // TS: `this.isSystemIdentified()` ? `!superType.isSystemIdentified()` (both
+    // inherited) : `superType.isExplicitlyIdentified()` (the direct super
+    // type's own field, not inherited further).
+    let redeclares = if this_system_identified {
+        super_id_field != "$identifier"
+    } else {
+        super_class.identifier_field_name().is_some()
+    };
+    if redeclares {
         return Err(failed(
             format!(
-                "Super type {} has an explicit identifier {field} that {} cannot redeclare",
-                super_type.name,
-                class.name()
+                "Super class {super_fqn} has an explicit identifier {super_id_field} that cannot be redeclared."
             ),
             class_location(class),
         ));
@@ -557,7 +633,7 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
 
     // An object key names a scalar, which has to be over a String or DateTime.
     if let Some(key) = map.key_type() {
-        let scalar = resolve(manager, namespace, key)
+        let scalar = resolve(manager, namespace, &key.name)
             .and_then(|fqn| manager.get_declaration(&fqn).ok())
             .and_then(Typed::type_name);
         if !matches!(scalar, Some("String") | Some("DateTime")) {
@@ -573,8 +649,8 @@ fn check_map_types(manager: &ModelManager, namespace: &str, map: &MapDeclaration
 
     // An object value names a concept or a scalar, and it has to be declared.
     if let Some(value) = map.value_type() {
-        let declared =
-            resolve(manager, namespace, value).and_then(|fqn| manager.get_declaration(&fqn).ok());
+        let declared = resolve(manager, namespace, &value.name)
+            .and_then(|fqn| manager.get_declaration(&fqn).ok());
         let Some(declared) = declared else {
             return Err(failed(
                 format!(
@@ -619,9 +695,25 @@ fn failed(message: String, location: Option<serde_json::Value>) -> ConcertoError
     ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
 }
 
+/// [`failed`], but through a real message-catalogue entry (PORTING.md 2.1,
+/// 2.2) instead of the `pre-port` stand-in: `code` is a catalogue key whose
+/// template TS builds with `Globalize(...).messageFormatter(code)(params)`,
+/// so this is used only for a check whose TS raises through Globalize, never
+/// for one of TS's own hardcoded strings (those stay on [`failed`]).
+fn catalogue_error(
+    code: &'static str,
+    params: Vec<(&'static str, String)>,
+    location: Option<serde_json::Value>,
+) -> ConcertoError {
+    let mut err = ContractError::new(ErrorKind::IllegalModel, code, params);
+    err.location = location;
+    err.into()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::error::ConcertoError;
+    use crate::introspect::Named;
     use crate::model_manager::ModelManager;
 
     /// Loads `org.example@1.0.0` with the given declarations and validates it.
@@ -770,13 +862,17 @@ mod tests {
 
     #[test]
     fn relationship_to_identified_class_passes() {
+        // A concept (not an asset/participant/transaction/event): the
+        // implicit super type here is `Concept` itself (no properties of its
+        // own to collide with), unlike the four identified kinds, which
+        // implicitly extend their own system kind (P2-03) and so would
+        // already carry a `$identifier` of their own — this test is about
+        // the relationship check, not that.
         let err = validate(serde_json::json!([
-            {
-                "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
-                "name": "Vehicle", "isAbstract": false,
+            concept(serde_json::json!({
+                "name": "Vehicle",
                 "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
-                "properties": []
-            },
+            })),
             concept(serde_json::json!({
                 "name": "Order",
                 "properties": [
@@ -996,6 +1092,77 @@ mod tests {
         manager.validate_models()
     }
 
+    /// `org.a@1.0.0` declares `scalar SSN extends String` and `abstract
+    /// concept Person { o SSN id }`; `org.b@1.0.0` imports only `Person` and
+    /// declares `concept Emp identified by id extends Person {}`, plus
+    /// `extra` (e.g. a shadowing `SSN` of its own). Validates both.
+    fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::error::Result<()> {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "SSN" },
+                        concept(serde_json::json!({
+                            "name": "Person",
+                            "isAbstract": true,
+                            "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "id",
+                                  "isArray": false, "isOptional": false,
+                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "SSN" } }
+                            ]
+                        }))
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        let mut declarations = vec![concept(serde_json::json!({
+            "name": "Emp",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" }
+        }))];
+        declarations.extend(extra.as_array().unwrap().iter().cloned());
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.b@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.a@1.0.0", "name": "Person" }
+                    ],
+                    "declarations": declarations
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models()
+    }
+
+    /// TS resolves an inherited identifier's type in the file that declares
+    /// the field (`idField.getParent().getModelFile()`,
+    /// classdeclaration.ts), so a String scalar the subclass's own file never
+    /// imports still counts.
+    #[test]
+    fn inherited_identifier_scalar_resolves_in_the_declaring_namespace() {
+        let result = validate_inherited_scalar_identifier(serde_json::json!([]));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// A same-named scalar over `Integer` in the subclass's own namespace is
+    /// not the one the inherited field names, so it does not make the
+    /// identifier non-String.
+    #[test]
+    fn inherited_identifier_scalar_ignores_a_shadowing_scalar_in_the_subclass_namespace() {
+        let result = validate_inherited_scalar_identifier(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.IntegerScalar", "name": "SSN" }
+        ]));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
     #[test]
     fn declaration_clashing_with_an_imported_name_is_rejected() {
         let err = validate_with_imports(
@@ -1148,7 +1315,315 @@ mod tests {
                 "properties": []
             }
         ]));
-        assert!(err.unwrap_err().to_string().contains("cannot redeclare"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("cannot be redeclared")
+        );
+    }
+
+    /// TS: introspect/classdeclaration.js, "#validate should throw when an
+    /// super type identifier is redeclared"
+    /// (test/data/parser/classdeclaration.identifierextendsfromsupertype.cto)
+    /// and introspect/identifieddeclaration.js, "#identified should not
+    /// allow overriding explicit identifier with an explicit identifier":
+    /// two classes each explicitly `identified by` their own field is the
+    /// "explicit-over-explicit identity" gap this task closes.
+    #[test]
+    fn an_explicit_identifier_may_not_extend_an_explicit_one() {
+        let err = validate(serde_json::json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "p1",
+                "isAbstract": true,
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "a1" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "a1",
+                      "isArray": false, "isOptional": false }
+                ]
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "p2",
+                "isAbstract": false,
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "p1" },
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "a1" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "a2",
+                      "isArray": false, "isOptional": false }
+                ]
+            }
+        ]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Super class org.example@1.0.0.p1 has an explicit identifier a1 that cannot be redeclared."
+        );
+    }
+
+    /// TS: introspect/identifieddeclaration.js, "#identified should not
+    /// allow overriding system identifier": both `FancyOrder` and the
+    /// `Asset` it implicitly extends declare a bare `identified` (system),
+    /// so each contributes its own synthesised `$identifier` field
+    /// (P2-03, `ClassDeclaration::from_json`) and the two collide as a
+    /// duplicate field name — not the identity-redeclare check, which
+    /// allows a system identifier over a system identifier.
+    #[test]
+    fn a_system_identifier_over_a_system_identifier_collides_as_a_duplicate_field() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "FancyOrder",
+            "isAbstract": false,
+            // The metamodel AST an `asset` with no explicit `extends`
+            // actually carries: the CTO parser (concerto-cto, out of scope
+            // here) fills in `superType: Asset` itself, so
+            // `ClassDeclaration.process`'s implicit-`Concept` fallback never
+            // fires for it.
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Asset", "namespace": "concerto@1.0.0" },
+            "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "sku",
+                  "isArray": false, "isOptional": false }
+            ]
+        }]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Class \"FancyOrder\" has more than one field named \"$identifier\"."
+        );
+    }
+
+    /// TS: introspect/classdeclaration.js "#validation validation of super
+    /// types" (test/data/parser/validation.cto): a `participant` cannot
+    /// extend an `asset`, even though neither names a super type explicitly
+    /// incompatible on its face — the kind-compatibility gap this task
+    /// closes.
+    #[test]
+    fn a_participant_cannot_extend_an_asset() {
+        let err = validate(serde_json::json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "A",
+                "isAbstract": false,
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id",
+                      "isArray": false, "isOptional": false }
+                ]
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration", "name": "B",
+                "isAbstract": false,
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "A" },
+                "properties": []
+            }
+        ]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "ParticipantDeclaration (B) cannot extend AssetDeclaration (A)"
+        );
+    }
+
+    /// A class may extend another of the same kind freely (the
+    /// kind-compatibility check only fires against a *different*, non-concept
+    /// kind).
+    #[test]
+    fn a_participant_may_extend_a_participant() {
+        let err = validate(serde_json::json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration", "name": "A",
+                "isAbstract": true,
+                "properties": []
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration", "name": "B",
+                "isAbstract": false,
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "A" },
+                "properties": []
+            }
+        ]));
+        assert!(err.is_ok());
+    }
+
+    /// TS: `ClassDeclaration.process`'s implicit `Concept` super type
+    /// (src/introspect/classdeclaration.ts): a class whose AST carries no
+    /// `superType` at all still passes `check_super_type`, because it
+    /// implicitly extends `Concept`.
+    #[test]
+    fn a_class_with_no_super_type_implicitly_extends_concept() {
+        assert!(
+            validate(serde_json::json!([concept(
+                serde_json::json!({ "name": "Standalone" })
+            )]))
+            .is_ok()
+        );
+    }
+
+    /// TS: `ClassDeclaration.validate`'s self-extend check
+    /// (src/introspect/classdeclaration.ts).
+    #[test]
+    fn a_class_extending_itself_is_rejected() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Loop",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Loop" }
+        }))]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Class \"Loop\" cannot extend itself."
+        );
+    }
+
+    /// TS: introspect/identifieddeclaration.js, "#identified should create a
+    /// system identifier" / "should allow declaring explicit identifier" /
+    /// "should allow abstract assets without an identifier": `getProperties()`
+    /// (here, [`ModelManager::get_all_properties`]) includes the `$identifier`
+    /// field the system `Asset` declaration carries, whether or not the
+    /// subtype declares its own identity, and
+    /// [`ModelManager::identifier_field_name`] inherits it.
+    #[test]
+    fn an_asset_inherits_the_system_identifier_field() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Order",
+                        "isAbstract": false,
+                        // As the CTO parser fills in for an `asset` with no
+                        // explicit `extends` (out of scope here).
+                        "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Asset", "namespace": "concerto@1.0.0" },
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty", "name": "price",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models().unwrap();
+
+        let properties = manager
+            .get_all_properties("org.example@1.0.0.Order")
+            .unwrap();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
+        assert_eq!(names, ["price", "$identifier"]);
+        assert_eq!(
+            manager
+                .identifier_field_name("org.example@1.0.0.Order")
+                .unwrap()
+                .as_deref(),
+            Some("$identifier")
+        );
+    }
+
+    /// TS: the same file, "should allow declaring explicit identifier": an
+    /// explicitly identified subtype still inherits the ambient
+    /// `$identifier` field from `Asset` ("this allows addition of an
+    /// `$identifier` field from a supertype even if this type is explicitly
+    /// identified", `ClassDeclaration.getProperties`), even though its own
+    /// identity is `sku`.
+    #[test]
+    fn an_explicitly_identified_asset_still_inherits_the_system_identifier_field() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Order",
+                        "isAbstract": false,
+                        // As the CTO parser fills in for an `asset` with no
+                        // explicit `extends` (out of scope here).
+                        "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Asset", "namespace": "concerto@1.0.0" },
+                        "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "sku" },
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "sku",
+                              "isArray": false, "isOptional": false },
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty", "name": "price",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models().unwrap();
+
+        let properties = manager
+            .get_all_properties("org.example@1.0.0.Order")
+            .unwrap();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
+        assert_eq!(names, ["sku", "price", "$identifier"]);
+        assert_eq!(
+            manager
+                .identifier_field_name("org.example@1.0.0.Order")
+                .unwrap()
+                .as_deref(),
+            Some("sku")
+        );
+    }
+
+    /// TS: `ClassDeclaration.addTimestampField`, added only to the system
+    /// model's own `Transaction`/`Event` declarations and inherited from
+    /// there (src/introspect/classdeclaration.ts).
+    #[test]
+    fn a_transaction_inherits_the_system_timestamp_field() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.TransactionDeclaration", "name": "Payment",
+                        "isAbstract": false,
+                        // As the CTO parser fills in for a `transaction`
+                        // with no explicit `extends` (out of scope here).
+                        "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Transaction", "namespace": "concerto@1.0.0" },
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty", "name": "amount",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.validate_models().unwrap();
+
+        let properties = manager
+            .get_all_properties("org.example@1.0.0.Payment")
+            .unwrap();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
+        assert_eq!(names, ["amount", "$timestamp"]);
+    }
+
+    /// A relationship to a class with no identity of its own, but that
+    /// extends one that has (every `Asset`/`Participant`), is valid: the
+    /// inherited-identifier-lookup gap this task closes.
+    ///
+    /// TS: RelationshipDeclaration.validate calls the target's inherited
+    /// `isIdentified()` (src/introspect/relationshipdeclaration.ts).
+    #[test]
+    fn a_relationship_to_a_class_identified_only_through_its_super_type_passes() {
+        let err = validate(serde_json::json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Vehicle",
+                "isAbstract": false,
+                // As the CTO parser fills in for an `asset` with no explicit
+                // `extends` (out of scope here) — the source of Vehicle's
+                // inherited identity this test exercises.
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Asset", "namespace": "concerto@1.0.0" },
+                "properties": []
+            },
+            concept(serde_json::json!({
+                "name": "Fleet",
+                "properties": [{
+                    "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "vehicle",
+                    "isArray": false, "isOptional": false,
+                    "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Vehicle" }
+                }]
+            }))
+        ]));
+        assert!(err.is_ok());
     }
 
     /// A map with the given key and value nodes, beside a String scalar and a
@@ -1276,7 +1751,11 @@ mod tests {
                 { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "id", "isArray": false, "isOptional": false }
             ]
         }))]));
-        assert!(err.unwrap_err().to_string().contains("identifier"));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("the type of the field is not \"String\"")
+        );
     }
 
     #[test]
@@ -1321,6 +1800,26 @@ mod tests {
                 .to_string()
                 .contains("Identifying fields cannot be optional")
         );
+    }
+
+    /// TS `ClassDeclaration.validate` checks `identifiernotstring` before
+    /// "Identifying fields cannot be optional.", so a field that is both
+    /// optional and not a String reports the type.
+    #[test]
+    fn optional_non_string_identifier_reports_the_type_first() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Product",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "productId" },
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "productId", "isArray": false, "isOptional": true }
+            ]
+        }))]));
+        let message = err.unwrap_err().to_string();
+        assert!(
+            message.contains("the type of the field is not \"String\""),
+            "{message}"
+        );
+        assert!(!message.contains("cannot be optional"), "{message}");
     }
 
     #[test]

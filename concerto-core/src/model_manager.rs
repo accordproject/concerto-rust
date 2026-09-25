@@ -37,15 +37,25 @@ use std::ops::Range;
 
 use serde_json::Value;
 
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::declaration::{ClassDeclaration, Declaration};
+use crate::introspect::declaration::{ClassDeclaration, Declaration, EnumDeclaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
 use crate::introspect::{FullyQualified, Named, Typed};
 use crate::model_util::{
-    PRIMITIVE_TYPES, get_fully_qualified_name, get_namespace, get_short_name, is_primitive_type,
+    self, PRIMITIVE_TYPES, get_fully_qualified_name, get_namespace, get_short_name,
+    is_primitive_type,
 };
 use crate::rootmodel::{decorator_model_ast, root_model_ast};
+
+/// The namespaces TS `BaseModelManager.getModelFiles()` leaves out unless it
+/// is asked to include them: the system model, its unversioned name, and the
+/// decorator model. The match is on the exact namespace string.
+///
+/// TS: `EXCLUDE_NS` (src/basemodelmanager.ts).
+const EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
 
 /// The namespace part of a fully-qualified name, `""` when there is none.
 fn namespace_of(fqn: &str) -> &str {
@@ -332,6 +342,75 @@ fn imported_type(model_file: &ModelFile, type_name: &str) -> Option<String> {
     })
 }
 
+/// The class-like facts a `ClassDeclaration` or an `EnumDeclaration` carries,
+/// unified for the members TS defines once on `ClassDeclaration` and
+/// `EnumDeclaration` inherits unchanged (enumdeclaration.ts overrides only
+/// `toString` and `declarationKind`, PORTING.md 1.1 rule 2). The manager's
+/// inheritance-walking members (`super_chain` and everything built on it)
+/// read a declaration through this instead of `Declaration::as_class`, so
+/// that an enum's implicit `Concept` super type, own properties and identity
+/// are seen the same way a concept-like declaration's are.
+#[derive(Clone, Copy)]
+enum ClassLike<'a> {
+    Class(&'a ClassDeclaration),
+    Enum(&'a EnumDeclaration),
+}
+
+impl<'a> ClassLike<'a> {
+    fn from_declaration(declaration: &'a Declaration) -> Option<Self> {
+        match declaration {
+            Declaration::Class(class) => Some(Self::Class(class)),
+            Declaration::Enum(e) => Some(Self::Enum(e)),
+            Declaration::Scalar(_) | Declaration::Map(_) => None,
+        }
+    }
+
+    fn own_properties(&self) -> &'a [Property] {
+        match self {
+            Self::Class(class) => class.own_properties(),
+            Self::Enum(e) => e.own_properties(),
+        }
+    }
+
+    fn own_identifier_field_name(&self) -> Option<&'a str> {
+        match self {
+            Self::Class(class) => class.own_identifier_field_name(),
+            Self::Enum(e) => e.own_identifier_field_name(),
+        }
+    }
+
+    /// The direct super type this declaration's own AST names, or the
+    /// implicit `Concept` — `None` only for the system model's own `Concept`
+    /// declaration.
+    fn super_type(&self) -> Option<mm::TypeIdentifier> {
+        match self {
+            Self::Class(class) => class.super_type().cloned(),
+            Self::Enum(e) => Some(e.implicit_super_type()),
+        }
+    }
+
+    fn location(&self) -> Option<&'a mm::Range> {
+        match self {
+            Self::Class(class) => class.location(),
+            Self::Enum(e) => e.location(),
+        }
+    }
+}
+
+/// TS: `ClassDeclaration._resolveSuperType`/`getProperty`/… all reached
+/// through a receiver whose prototype chain includes `ClassDeclaration`;
+/// reaching one of these members on a scalar or map declaration is not a TS
+/// shape at all (neither extends `ClassDeclaration`), so no fixture or TS
+/// class corresponds to it (PORTING.md 2.3), the same as [`unknown`] and
+/// [`not_a_function`] above.
+fn not_a_class_like(fqn: &str) -> ConcertoError {
+    ConcertoError::IllegalModel {
+        message: format!("{fqn} is not a concept-like or enum declaration"),
+        file_name: None,
+        location: None,
+    }
+}
+
 impl ModelManager {
     /// A fresh manager with both system models already loaded: the decorator
     /// model, then the root model.
@@ -345,12 +424,19 @@ impl ModelManager {
     /// `disableValidation = true` does for both models.
     pub fn new() -> Result<Self> {
         let mut mgr = Self::default();
+        // TS: `decoratorModelFile`/`rootModelFile`
+        // (src/decoratormodelhelper.ts, src/rootmodelhelper.ts) — the
+        // vendored `.cto` file names `addDecoratorModel`/`addRootModel` pass
+        // to `addModelFile`, which `Declaration.getModelFile().getName()`
+        // (and the outer `ModelFile.getName()`) then returns verbatim; not
+        // the namespace, which happens to differ only for these two files
+        // because every other file name in this port comes from the caller.
         let decorator = ModelFile::from_json(
             &decorator_model_ast(),
-            Some("concerto.decorator@1.0.0".into()),
+            Some("concerto_decorator_1.0.0.cto".into()),
         )?;
         mgr.insert(decorator)?;
-        let root = ModelFile::from_json(&root_model_ast(), Some("concerto@1.0.0".into()))?;
+        let root = ModelFile::from_json(&root_model_ast(), Some("concerto_1.0.0.cto".into()))?;
         mgr.insert(root)?;
         Ok(mgr)
     }
@@ -465,7 +551,13 @@ impl ModelManager {
         for (index, declaration) in model_file.declarations().iter().enumerate() {
             let decl_id = DeclId(next_index(self.declarations.len() + declarations.len())?);
             let first = next_index(self.properties.len() + properties.len())?;
-            let own = declaration
+            // Enum values are not arena-addressed `PropId`s yet (P2-04): the
+            // value-level `ClassLike::own_properties` a class-family getter
+            // reads (`get_property`, `get_all_properties`, …) already gives
+            // an enum's values directly, with no `PropId` involved, so
+            // nothing here needs one; a scalar or map declaration has no
+            // properties at all.
+            let own: &[Property] = declaration
                 .as_class()
                 .map_or(&[][..], ClassDeclaration::own_properties);
             properties.extend((0..own.len()).map(|index| PropSlot {
@@ -642,16 +734,290 @@ impl ModelManager {
                 type_name: get_fully_qualified_name(in_namespace, short),
             })
     }
-    /// Every property of a type, gathered by walking from the type up through
-    /// all of its super types. Returns an error if the name is not a
-    /// concept-like type, a super type cannot be resolved, or the inheritance
-    /// chain is circular.
-    pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<&Property>> {
+    /// The name of the field that gives `fqn` its identity: its own, if it
+    /// declares one (explicit `identified by field`, giving that field's
+    /// name, or system `identified`, giving `$identifier`), otherwise its
+    /// nearest super type's, walking up the chain. `None` if nothing from
+    /// `fqn` up to the root declares an identity.
+    ///
+    /// TS: ClassDeclaration.getIdentifierFieldName
+    /// (src/introspect/classdeclaration.ts) — including its two callers that
+    /// are themselves inherited, `isIdentified` (`!!getIdentifierFieldName()`)
+    /// and `isSystemIdentified` (`getIdentifierFieldName() === '$identifier'`),
+    /// which have no separate Rust method: a caller after either compares
+    /// this result directly, the same way TS's own body does. Contrast
+    /// [`ClassDeclaration::identifier_field_name`] and
+    /// [`ClassDeclaration::is_identified`], which read only `fqn`'s own AST,
+    /// the same as TS's own (non-inherited) `idField`.
+    pub fn identifier_field_name(&self, fqn: &str) -> Result<Option<String>> {
         Ok(self
             .super_chain(fqn)?
             .into_iter()
-            .flat_map(|(_, class)| class.own_properties())
+            .find_map(|(_, class)| class.own_identifier_field_name())
+            .map(str::to_string))
+    }
+
+    /// [`ModelManager::identifier_field_name`], as a boolean.
+    ///
+    /// TS: `ClassDeclaration.isIdentified` (src/introspect/classdeclaration.ts):
+    /// `!!this.getIdentifierFieldName()`, inherited unchanged by `EnumDeclaration`.
+    pub fn is_identified(&self, fqn: &str) -> Result<bool> {
+        Ok(self.identifier_field_name(fqn)?.is_some())
+    }
+
+    /// [`ModelManager::identifier_field_name`], `true` only for the system
+    /// `$identifier`.
+    ///
+    /// TS: `ClassDeclaration.isSystemIdentified`: `this.getIdentifierFieldName()
+    /// === '$identifier'`, inherited unchanged by `EnumDeclaration`.
+    pub fn is_system_identified(&self, fqn: &str) -> Result<bool> {
+        Ok(self.identifier_field_name(fqn)?.as_deref() == Some("$identifier"))
+    }
+
+    /// Every property of a type, gathered by walking from the type up through
+    /// all of its super types, each alongside the fully-qualified name of the
+    /// declaration that actually declares it (TS: `Property.getParent()
+    /// .getFullyQualifiedName()`) — an inherited property's is its super
+    /// type's, not `fqn`'s own. Returns an error if the name is not a
+    /// concept-like or enum type, a super type cannot be resolved, or the
+    /// inheritance chain is circular.
+    ///
+    /// TS: `ClassDeclaration.getProperties` (src/introspect/classdeclaration.ts),
+    /// inherited unchanged by `EnumDeclaration`.
+    pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<(String, Property)>> {
+        Ok(self
+            .super_chain(fqn)?
+            .into_iter()
+            .flat_map(|(owner_fqn, class)| {
+                class
+                    .own_properties()
+                    .iter()
+                    .cloned()
+                    .map(move |p| (owner_fqn.clone(), p))
+                    .collect::<Vec<_>>()
+            })
             .collect())
+    }
+
+    /// The property with a given name, own or inherited, or `None` if it does
+    /// not exist, alongside its declaring type's fully-qualified name (see
+    /// [`ModelManager::get_all_properties`]).
+    ///
+    /// TS: `ClassDeclaration.getProperty`, inherited unchanged by `EnumDeclaration`.
+    pub fn get_property(&self, fqn: &str, name: &str) -> Result<Option<(String, Property)>> {
+        Ok(self
+            .get_all_properties(fqn)?
+            .into_iter()
+            .find(|(_, p)| p.name() == name))
+    }
+
+    /// The properties declared directly on `fqn`, not those it inherits.
+    ///
+    /// TS: `ClassDeclaration.getOwnProperties`, inherited unchanged by `EnumDeclaration`.
+    pub fn get_own_properties(&self, fqn: &str) -> Result<Vec<Property>> {
+        let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
+            .ok_or_else(|| not_a_class_like(fqn))?;
+        Ok(class.own_properties().to_vec())
+    }
+
+    /// A nested property, following a dotted path (`a.b.c`) through the
+    /// declared types of each element but the last.
+    ///
+    /// TS: `ClassDeclaration.getNestedProperty` (src/introspect/classdeclaration.ts),
+    /// inherited unchanged by `EnumDeclaration`.
+    pub fn get_nested_property(
+        &self,
+        fqn: &str,
+        property_path: &str,
+    ) -> Result<(String, Property)> {
+        let names: Vec<&str> = property_path.split('.').collect();
+        let mut search_root = fqn.to_string();
+        let mut result = None;
+        for (n, name) in names.iter().enumerate() {
+            let Some((declaring_fqn, property)) = self.get_property(&search_root, name)? else {
+                return Err(ContractError::new(
+                    ErrorKind::IllegalModel,
+                    "classdeclaration-getnestedproperty-doesnotexist",
+                    vec![
+                        ("propertyName", (*name).to_string()),
+                        ("fqn", search_root.clone()),
+                    ],
+                )
+                .into());
+            };
+            let is_last = n == names.len() - 1;
+            if !is_last {
+                // TS: `Property.isTypeEnum` (src/introspect/property.ts):
+                // `this.isPrimitive() ? false : this.getParent().getModelFile()
+                // .getType(this.getType()).isEnum()`. Reached here only for an
+                // object/relationship field (the walk's own `get_property`
+                // already ruled out a missing property, and an intermediate
+                // step is never itself an enum *value* — the field whose
+                // declared type is an enum trips this same check one level
+                // higher, before the walk ever reaches the value), which is
+                // always a `ClassDeclaration`'s own field, so its `PropId` is
+                // always in the arena (`find_property_id`, unlike an enum's
+                // own values, P2-04).
+                let is_enum = !property.is_primitive() && {
+                    let prop_id = self
+                        .find_property_id(&declaring_fqn, name)?
+                        .expect("get_property just found this property");
+                    model_util::is_enum(self, &Node::Property(prop_id))?.unwrap_or(false)
+                };
+                if property.is_primitive() || is_enum {
+                    return Err(ContractError::new(
+                        ErrorKind::Error,
+                        "classdeclaration-getnestedproperty-primitiveorenum",
+                        vec![
+                            ("propertyName", (*name).to_string()),
+                            ("propertyPath", property_path.to_string()),
+                        ],
+                    )
+                    .into());
+                }
+                let prop_id = self
+                    .find_property_id(&declaring_fqn, name)?
+                    .expect("get_property just found this property");
+                search_root = self.get_fully_qualified_type_name(&Node::Property(prop_id))?;
+            }
+            result = Some((declaring_fqn, property));
+        }
+        Ok(result.expect("propertyPath.split('.') always yields at least one name"))
+    }
+
+    /// The [`PropId`] of the property named `name`, declared directly on
+    /// `declaring_fqn` (not inherited — the id-level counterpart of
+    /// [`ModelManager::get_own_properties`]) — for
+    /// [`ModelManager::get_nested_property`]'s recursive step, which needs a
+    /// [`Node::Property`] handle to reach the already-ported
+    /// `model_util::is_enum` and [`ResolutionContext::get_fully_qualified_type_name`].
+    /// Only ever called for a `ClassDeclaration`'s own field (see the
+    /// caller), never for an enum's own values, which have no `PropId` yet
+    /// (P2-04).
+    fn find_property_id(&self, declaring_fqn: &str, name: &str) -> Result<Option<PropId>> {
+        let Some(owner) = self.declaration_id(declaring_fqn) else {
+            return Ok(None);
+        };
+        Ok(self
+            .property_ids(owner)
+            .find(|id| self.property(*id).is_some_and(|p| p.name() == name)))
+    }
+
+    /// The FQN of `fqn`'s direct super type, or `None` when it has none (only
+    /// the system model's own `Concept`).
+    ///
+    /// TS: `ClassDeclaration.getSuperType` (src/introspect/classdeclaration.ts),
+    /// inherited unchanged by `EnumDeclaration`.
+    pub fn get_super_type(&self, fqn: &str) -> Result<Option<String>> {
+        let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
+            .ok_or_else(|| not_a_class_like(fqn))?;
+        self.super_type_fqn(&class, namespace_of(fqn))
+    }
+
+    /// The [`DeclId`] of `fqn`'s direct super type, or `None` when it has
+    /// none.
+    ///
+    /// TS: `ClassDeclaration.getSuperTypeDeclaration`, inherited unchanged by
+    /// `EnumDeclaration`.
+    pub fn get_super_type_declaration(&self, fqn: &str) -> Result<Option<DeclId>> {
+        let Some(super_fqn) = self.get_super_type(fqn)? else {
+            return Ok(None);
+        };
+        Ok(self.declaration_id(&super_fqn))
+    }
+
+    /// Every super type of `fqn`, from its direct super type up to the root,
+    /// as fully-qualified names.
+    ///
+    /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
+    /// by `EnumDeclaration`.
+    pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
+        Ok(self
+            .super_chain(fqn)?
+            .into_iter()
+            .skip(1)
+            .map(|(fqn, _)| fqn)
+            .collect())
+    }
+
+    /// Every class-like or enum declaration loaded, across every model file
+    /// whose namespace is not in [`EXCLUDE_NS`], in registration order — the
+    /// population `getAssignableClassDeclarations` and `getDirectSubclasses`
+    /// search (TS: `new Introspector(modelManager).getClassDeclarations()`,
+    /// src/introspect/introspector.ts, which reads
+    /// `modelManager.getModelFiles()` with no argument, so the system and
+    /// decorator models are left out by their namespace string, not by
+    /// `ModelFile.isSystemModelFile`; then every declaration that is not a
+    /// map or a scalar, which leaves the class-like kinds and
+    /// `EnumDeclaration`).
+    fn all_class_like(&self) -> impl Iterator<Item = (String, DeclId)> + '_ {
+        self.model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .flat_map(move |mf| {
+                let file = self.model_file_id(mf.namespace()).expect("just iterated");
+                self.declaration_ids(file).filter_map(move |id| {
+                    let declaration = self.declaration(id)?;
+                    ClassLike::from_declaration(declaration)?;
+                    Some((format!("{}.{}", mf.namespace(), declaration.name()), id))
+                })
+            })
+    }
+
+    /// `fqn` itself, plus every declaration that (transitively) extends it.
+    ///
+    /// TS: `ClassDeclaration.getAssignableClassDeclarations`, inherited
+    /// unchanged by `EnumDeclaration`.
+    pub fn get_assignable_class_declarations(&self, fqn: &str) -> Result<Vec<String>> {
+        // Builds the same `subclassMap` TS does: every loaded class-like
+        // declaration's direct super type FQN to the declarations that name
+        // it, in the order they were first seen walking the population.
+        let mut subclasses: HashMap<String, Vec<String>> = HashMap::new();
+        for (child_fqn, id) in self.all_class_like() {
+            let class =
+                ClassLike::from_declaration(self.declaration(id).expect("all_class_like found it"))
+                    .expect("all_class_like already filtered to class-like");
+            if let Some(super_fqn) = self.super_type_fqn(&class, namespace_of(&child_fqn))? {
+                subclasses.entry(super_fqn).or_default().push(child_fqn);
+            }
+        }
+        // TS's `collectSubclasses` is a pre-order walk from `[this]` that adds
+        // each declaration to a `Set` (so a later revisit is a no-op) before
+        // recursing into its own direct subclasses.
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
+        let mut stack = vec![fqn.to_string()];
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            let mut children = subclasses.remove(&current).unwrap_or_default();
+            results.push(current);
+            children.reverse();
+            stack.extend(children);
+        }
+        Ok(results)
+    }
+
+    /// Just the declarations that directly extend `fqn`, excluding `fqn`
+    /// itself.
+    ///
+    /// TS: `ClassDeclaration.getDirectSubclasses`, inherited unchanged by
+    /// `EnumDeclaration`.
+    pub fn get_direct_subclasses(&self, fqn: &str) -> Result<Vec<String>> {
+        let mut results = Vec::new();
+        for (child_fqn, id) in self.all_class_like() {
+            let class =
+                ClassLike::from_declaration(self.declaration(id).expect("all_class_like found it"))
+                    .expect("all_class_like already filtered to class-like");
+            if self
+                .super_type_fqn(&class, namespace_of(&child_fqn))?
+                .as_deref()
+                == Some(fqn)
+            {
+                results.push(child_fqn);
+            }
+        }
+        Ok(results)
     }
 
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
@@ -671,7 +1037,7 @@ impl ModelManager {
 
     /// Walks a class's inheritance chain, handing back each
     /// `(full-name, declaration)` pair from the type up to its root.
-    fn super_chain(&self, fqn: &str) -> Result<Vec<(String, &ClassDeclaration)>> {
+    fn super_chain(&self, fqn: &str) -> Result<Vec<(String, ClassLike<'_>)>> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut current = fqn.to_string();
@@ -685,15 +1051,10 @@ impl ModelManager {
                 });
             }
 
-            let class = self.get_declaration(&current)?.as_class().ok_or_else(|| {
-                ConcertoError::IllegalModel {
-                    message: format!("{current} is not a concept-like declaration"),
-                    file_name: None,
-                    location: None,
-                }
-            })?;
+            let class = ClassLike::from_declaration(self.get_declaration(&current)?)
+                .ok_or_else(|| not_a_class_like(&current))?;
 
-            let next = self.super_type_fqn(class, namespace_of(&current))?;
+            let next = self.super_type_fqn(&class, namespace_of(&current))?;
             chain.push((current, class));
             match next {
                 Some(parent) => current = parent,
@@ -706,42 +1067,46 @@ impl ModelManager {
 
     /// Works out the full name of a class's direct super type, resolved in the
     /// namespace where the class is declared.
-    fn super_type_fqn(
-        &self,
-        class: &ClassDeclaration,
-        in_namespace: &str,
-    ) -> Result<Option<String>> {
+    ///
+    /// TS: `this.superType = this.ast.superType.name` (`ClassDeclaration.process`)
+    /// keeps only the AST `TypeIdentifier`'s `name`, discarding `namespace`
+    /// and `resolvedName` — an aliased import's `TypeIdentifier` carries the
+    /// *target* declaration's namespace in `namespace` (with the alias, not
+    /// the target's own name, in `name`), which `resolveImport`'s alias
+    /// lookup needs the whole import list to untangle correctly
+    /// (`this.getModelFile().isImportedType(this.superType)` /
+    /// `resolveImport`, `_resolveSuperType`); qualifying `name` directly with
+    /// `namespace` would build the alias's name in the target namespace,
+    /// which does not exist there. So this always resolves through
+    /// [`ModelManager::resolve_type_name`] (`ModelFile.getType`'s own path,
+    /// PORTING.md 6.2), over `ti.name` alone, the same as the implicit
+    /// `Concept`/`Asset`/… super type already does.
+    fn super_type_fqn(&self, class: &ClassLike<'_>, in_namespace: &str) -> Result<Option<String>> {
         let Some(ti) = class.super_type() else {
             return Ok(None);
         };
-        if let Some(ns) = &ti.namespace {
-            // P2-07: a resolved metamodel AST (`ModelManager.resolveMetaModel`,
-            // which the CTO parser runs implicitly) keeps `name` as the
-            // identifier *written in the source*, which is the local alias
-            // when the super type was imported under one (`Child as Kid`),
-            // and puts the type's own declared short name in `resolvedName`
-            // instead. `resolvedName` is the accurate one to qualify with
-            // `namespace` here; `name` is only the fallback for an AST this
-            // typed field cannot represent (OD-3 does not cover this case, so
-            // this is not a re-read of raw JSON, just picking the right typed
-            // field).
-            let short = ti.resolved_name.as_deref().unwrap_or(&ti.name);
-            return Ok(Some(get_fully_qualified_name(ns, short)));
-        }
-        if let Some(resolved) = &ti.resolved_name {
-            return Ok(Some(resolved.clone()));
-        }
         // TS: ClassDeclaration._resolveSuperType passes `this.ast.location`
         // to every error it raises (src/introspect/classdeclaration.ts); the
         // class whose super type is being resolved is the AST node in scope
         // here, so its `location` is passed on, re-serialised from the typed
         // `mm::Range` by `location_value` (PORTING.md 2.1).
         let location = class.location().and_then(crate::error::location_value);
-        Ok(Some(self.resolve_type_name(
-            in_namespace,
-            &ti.name,
-            location,
-        )?))
+        match self.resolve_type_name(in_namespace, &ti.name, location.clone()) {
+            Ok(fqn) => Ok(Some(fqn)),
+            // TS: `_resolveSuperType`'s own hardcoded `IllegalModelException`
+            // (src/introspect/classdeclaration.ts) — `resolve_type_name`'s
+            // own failure is `TypeNotFound` (`ModelManager.getType`'s shape,
+            // a different TS throw site), so it is remapped here, the same
+            // way `validation.rs`'s `check_super_type` already raises this
+            // exact message (`failed`) for the same TS call.
+            Err(ConcertoError::TypeNotFound { .. }) => Err(ContractError::pre_port(
+                ErrorKind::IllegalModel,
+                format!("Could not find super type {}", ti.name),
+                location,
+            )
+            .into()),
+            Err(other) => Err(other),
+        }
     }
 
     /// The handle of the declaration a model file's `getLocalType(type)`
@@ -812,9 +1177,13 @@ impl ModelManager {
 /// returned. A handle this manager never handed out is an error.
 ///
 /// The answers come from the loader's model state. Where that state is not
-/// yet at parity with TS, so are the answers: the implicit `Concept` super
-/// type (P2-03) is not in [`ResolutionContext::get_all_super_type_declarations`],
-/// and super types resolve as the loader resolves them (P2-03, P2-08).
+/// yet at parity with TS, so are the answers: super types resolve as the
+/// loader resolves them (P2-08). The implicit `Concept` super type (P2-03) is
+/// in every class-like or enum declaration's `super_chain` (`ClassLike`), so
+/// it is in [`ResolutionContext::get_all_super_type_declarations`] too, for
+/// both [`Declaration::Class`] and [`Declaration::Enum`] — TS's
+/// `EnumDeclaration extends ClassDeclaration` gives an enum the same implicit
+/// `Concept` super type (P2-03).
 impl ResolutionContext for ModelManager {
     type Node = Node;
     type Error = ConcertoError;
@@ -849,7 +1218,7 @@ impl ResolutionContext for ModelManager {
             return Err(not_a_function());
         };
         match self.declaration(id).ok_or_else(|| unknown(*declaration))? {
-            Declaration::Class(_) => self
+            Declaration::Class(_) | Declaration::Enum(_) => self
                 .super_chain(&self.declaration_fqn(id)?)?
                 .into_iter()
                 // The chain starts with the type itself.
@@ -860,9 +1229,6 @@ impl ResolutionContext for ModelManager {
                         .ok_or(ConcertoError::TypeNotFound { type_name: fqn })
                 })
                 .collect(),
-            // An enum is a ClassDeclaration in TS whose only super type is the
-            // implicit `Concept`, which the loader does not add yet (P2-03).
-            Declaration::Enum(_) => Ok(Vec::new()),
             Declaration::Scalar(_) | Declaration::Map(_) => Err(not_a_function()),
         }
     }
@@ -1054,11 +1420,163 @@ mod tests {
         mgr
     }
 
+    /// TS: `getDirectSubclasses` builds its population from
+    /// `Introspector.getClassDeclarations()`, which reads
+    /// `modelManager.getModelFiles()` with no argument and so leaves out
+    /// every namespace in `EXCLUDE_NS` (src/basemodelmanager.ts). A fresh
+    /// manager has only those, so nothing directly extends the system root.
+    #[test]
+    fn direct_subclasses_of_a_fresh_manager_leave_out_the_system_models() {
+        let mgr = ModelManager::new().unwrap();
+        assert!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Concept")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Asset")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Only the user declarations extend the system root, in registration
+    /// order: `Person` implicitly, and the enum `Color` implicitly too.
+    /// `Asset`, `Participant`, `Transaction`, `Event` and the decorator
+    /// model's own declarations are not in the population.
+    #[test]
+    fn direct_subclasses_are_only_user_declarations() {
+        let mgr = manager();
+        assert_eq!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Concept").unwrap(),
+            ["org.example@1.0.0.Person", "org.example@1.0.0.Color"]
+        );
+        assert_eq!(
+            mgr.get_direct_subclasses("org.example@1.0.0.Person")
+                .unwrap(),
+            ["org.example@1.0.0.Employee"]
+        );
+    }
+
+    /// TS `collectSubclasses([this])` always adds the receiver itself, so a
+    /// fresh manager's `Concept` is assignable only from itself.
+    #[test]
+    fn assignable_class_declarations_of_a_fresh_manager_leave_out_the_system_models() {
+        let mgr = ModelManager::new().unwrap();
+        assert_eq!(
+            mgr.get_assignable_class_declarations("concerto@1.0.0.Concept")
+                .unwrap(),
+            ["concerto@1.0.0.Concept"]
+        );
+    }
+
+    #[test]
+    fn assignable_class_declarations_are_the_receiver_and_user_declarations() {
+        let mgr = manager();
+        assert_eq!(
+            mgr.get_assignable_class_declarations("concerto@1.0.0.Concept")
+                .unwrap(),
+            [
+                "concerto@1.0.0.Concept",
+                "org.example@1.0.0.Person",
+                "org.example@1.0.0.Employee",
+                "org.example@1.0.0.Manager",
+                "org.example@1.0.0.Color",
+            ]
+        );
+    }
+
+    /// A user asset that implicitly extends the system `Asset` is found; the
+    /// system root declarations themselves are not.
+    #[test]
+    fn a_user_asset_is_the_only_direct_subclass_of_asset() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Car", "isAbstract": false,
+                      "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
+                      "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Asset").unwrap(),
+            ["org.acme@1.0.0.Car"]
+        );
+        assert_eq!(
+            mgr.get_assignable_class_declarations("concerto@1.0.0.Asset")
+                .unwrap(),
+            ["concerto@1.0.0.Asset", "org.acme@1.0.0.Car"]
+        );
+        assert!(
+            mgr.get_direct_subclasses("concerto@1.0.0.Concept")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn preloads_system_model() {
         let mgr = ModelManager::new().unwrap();
         assert!(mgr.get_declaration("concerto@1.0.0.Concept").is_ok());
         assert!(mgr.get_declaration("concerto@1.0.0.Asset").is_ok());
+    }
+
+    /// TS: `ModelFile.fromAst` (src/introspect/modelfile.ts) defaults a
+    /// `superType`-less `AssetDeclaration` to `Asset` itself, not the generic
+    /// `Concept` `ClassDeclaration.process`'s own fallback gives a
+    /// `ConceptDeclaration` — so an asset with no explicit `extends` still
+    /// inherits `Asset`'s own `$identifier` even though it names its own
+    /// explicit identifier too (TS allows the redeclaration-looking overlap
+    /// here specifically because the two are never simultaneously in
+    /// `getProperties()`'s own duplicate-name check only when both are
+    /// literally named `$identifier`, which an explicit `identified by`
+    /// field never is).
+    #[test]
+    fn an_asset_with_no_extends_implicitly_extends_asset_itself() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme.defaults@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "DefaultAsset", "isAbstract": false,
+                      "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "assetId" },
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "assetId", "isArray": false, "isOptional": false },
+                        { "$class": "concerto.metamodel@1.0.0.DoubleProperty", "name": "value", "isArray": false, "isOptional": false }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            mgr.get_super_type("org.acme.defaults@1.0.0.DefaultAsset")
+                .unwrap()
+                .as_deref(),
+            Some("concerto@1.0.0.Asset")
+        );
+        let props = mgr
+            .get_all_properties("org.acme.defaults@1.0.0.DefaultAsset")
+            .unwrap();
+        let names: Vec<(&str, &str)> = props
+            .iter()
+            .map(|(owner, p)| (owner.as_str(), p.name()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("org.acme.defaults@1.0.0.DefaultAsset", "assetId"),
+                ("org.acme.defaults@1.0.0.DefaultAsset", "value"),
+                ("concerto@1.0.0.Asset", "$identifier"),
+            ]
+        );
     }
 
     /// P1-07b: a fresh manager preloads `concerto.decorator@1.0.0` as well as
@@ -1151,7 +1669,7 @@ mod tests {
     fn collects_inherited_properties_in_order() {
         let mgr = manager();
         let props = mgr.get_all_properties("org.example@1.0.0.Manager").unwrap();
-        let names: Vec<&str> = props.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = props.iter().map(|(_, p)| p.name()).collect();
         // Manager's own first, then Employee, then Person up the chain.
         assert_eq!(names, ["title", "salary", "name"]);
     }
@@ -1192,10 +1710,19 @@ mod tests {
         assert!(mgr.get_all_properties("org.broken@1.0.0.Orphan").is_err());
     }
 
+    /// TS: `EnumDeclaration extends ClassDeclaration` inherits
+    /// `getProperties` unchanged, so an enum's values come back the same way
+    /// a class's fields do (P2-03 closes the implicit-`Concept` gap this
+    /// relies on; `Concept` itself has no properties, so an enum's `Color`
+    /// has none to inherit).
     #[test]
-    fn get_all_properties_on_enum_errors() {
+    fn get_all_properties_on_enum_gives_its_values() {
         let mgr = manager();
-        assert!(mgr.get_all_properties("org.example@1.0.0.Color").is_err());
+        let properties = mgr.get_all_properties("org.example@1.0.0.Color").unwrap();
+        let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
+        assert_eq!(names, ["RED"]);
+        assert_eq!(properties[0].0, "org.example@1.0.0.Color");
+        assert!(properties[0].1.is_enum_value());
     }
 
     /// [`manager`] plus `org.other@1.0.0`, which imports from it (and from a
@@ -1425,7 +1952,13 @@ mod tests {
             .collect();
         assert_eq!(
             supers,
-            ["org.example@1.0.0.Employee", "org.example@1.0.0.Person"]
+            [
+                "org.example@1.0.0.Employee",
+                "org.example@1.0.0.Person",
+                // `Person` has no `superType` of its own, so it implicitly
+                // extends `Concept` (P2-03, `ClassDeclaration` doc comment).
+                "concerto@1.0.0.Concept"
+            ]
         );
         let declarations = mgr
             .get_all_declarations(&file_node(&mgr, "org.other@1.0.0"))
