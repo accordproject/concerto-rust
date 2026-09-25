@@ -34,12 +34,26 @@
 //! everything else. They record owner decisions that the ledger doesn't
 //! express yet.
 //!
+//! # Finding the ledger (PORTING.md OD-7)
+//!
 //! The ledger is read from the checkout the corpus lives in
-//! (`<fixtures>/../../ledger/`); without it only steps 3 and 4 apply.
+//! (`<fixtures>/../../ledger/SEAM_LEDGER.tsv`), or from `$CONCERTO_ORACLE_LEDGER`
+//! directly when that is set (the TSV file itself, not a directory).
+//!
+//! **A missing or unreadable ledger fails the run.** Without it, owner
+//! attribution silently degrades to steps 3 and 4 above: every `stays-ts`
+//! member is misreported, most often as `unowned` (accordproject/concerto-rust#132:
+//! extracting the canonical corpus tarball into a checkout without the
+//! integration branch's `migration/ledger/` sent `unowned` from 530 to
+//! 1,336 and made `stays-ts` disappear, while pass/fail/regression verdicts
+//! and `baseline.tsv` stayed correct). [`Ledger::load`] panics rather than
+//! fall back, naming the path it tried. Set `CONCERTO_ORACLE_NO_LEDGER=1` to
+//! opt out explicitly and run with the degraded fallback anyway (a warning
+//! is still printed).
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The owner of something no task in the ledger or PORTING.md names.
 pub const UNOWNED: &str = "unowned";
@@ -122,22 +136,89 @@ fn family_owner(class: &str) -> Option<&'static str> {
     }
 }
 
+/// How to get a ledger, or opt out, for every "no ledger" failure
+/// (accordproject/concerto-rust#132).
+const LEDGER_HELP: &str = "Extract the canonical oracle corpus (it includes migration/ledger/) \
+     into a `concerto` checkout of claude/tender-pascal-ocwf9q, or copy migration/ledger/ from \
+     that branch next to the corpus; point CONCERTO_ORACLE_LEDGER at the SEAM_LEDGER.tsv file \
+     directly if it lives somewhere else; or set CONCERTO_ORACLE_NO_LEDGER=1 to run with the \
+     degraded PORTING.md-op-family/unowned fallback instead.";
+
 impl Ledger {
+    /// Loads the ledger for `fixtures_dir`'s corpus (see the module doc),
+    /// reading `$CONCERTO_ORACLE_LEDGER` and `$CONCERTO_ORACLE_NO_LEDGER`
+    /// from the environment. Panics when the ledger cannot be found or read,
+    /// unless the opt-out is set. See [`Self::load_with`] for the pure
+    /// logic, which the harness's own tests drive directly instead of
+    /// mutating process-wide env vars.
     pub fn load(fixtures_dir: &Path) -> Self {
-        let Some(path) = fixtures_dir
+        let configured = std::env::var("CONCERTO_ORACLE_LEDGER")
+            .ok()
+            .map(PathBuf::from);
+        let opt_out = std::env::var("CONCERTO_ORACLE_NO_LEDGER").is_ok_and(|v| v == "1");
+        Self::load_with(fixtures_dir, configured.as_deref(), opt_out)
+    }
+
+    /// [`Self::load`]'s logic with the env vars passed in directly:
+    /// `configured` is `$CONCERTO_ORACLE_LEDGER` (the SEAM_LEDGER.tsv file
+    /// itself, not a directory), and `opt_out` is
+    /// `$CONCERTO_ORACLE_NO_LEDGER=1`.
+    pub(crate) fn load_with(fixtures_dir: &Path, configured: Option<&Path>, opt_out: bool) -> Self {
+        let (path, source) = Self::locate(fixtures_dir, configured);
+        let parsed = path
+            .as_deref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|text| Self::parse(&text));
+        parsed.unwrap_or_else(|| Self::missing(path.as_deref(), source, opt_out))
+    }
+
+    /// Where the ledger should be, and why: `configured` if given
+    /// (`$CONCERTO_ORACLE_LEDGER`), otherwise
+    /// `<fixtures_dir>/../../ledger/SEAM_LEDGER.tsv` (the checkout the
+    /// corpus lives in). `None` only when `fixtures_dir` has no grandparent
+    /// to derive that default path from.
+    fn locate(fixtures_dir: &Path, configured: Option<&Path>) -> (Option<PathBuf>, &'static str) {
+        if let Some(path) = configured {
+            return (Some(path.to_path_buf()), "$CONCERTO_ORACLE_LEDGER");
+        }
+        let path = fixtures_dir
             .parent()
             .and_then(Path::parent)
-            .map(|migration| migration.join("ledger").join("SEAM_LEDGER.tsv"))
-        else {
-            return Self::default();
+            .map(|migration| migration.join("ledger").join("SEAM_LEDGER.tsv"));
+        (path, "<fixtures>/../../ledger/SEAM_LEDGER.tsv")
+    }
+
+    /// No usable ledger was found at `path` (or no path could even be
+    /// derived, when `path` is `None`). Panics naming what was tried, unless
+    /// `opt_out` is set, in which case it prints a warning and returns the
+    /// degraded fallback ledger ([`Self::default`]: op-family owners and
+    /// `unowned` only, no `stays-ts`).
+    fn missing(path: Option<&Path>, source: &str, opt_out: bool) -> Self {
+        let tried = match path {
+            Some(p) => format!("{} ({source})", p.display()),
+            None => format!(
+                "nowhere ({source}: the fixtures directory has no grandparent to derive it from)"
+            ),
         };
-        let Ok(text) = fs::read_to_string(path) else {
+        if opt_out {
+            eprintln!(
+                "oracle harness: WARNING: no seam ledger at {tried}. CONCERTO_ORACLE_NO_LEDGER=1 \
+                 is set, so owner attribution falls back to PORTING.md's op families and \
+                 `unowned` (`stays-ts` will not appear in the report)."
+            );
             return Self::default();
-        };
+        }
+        panic!(
+            "oracle harness: no seam ledger found at {tried}, so owner attribution (`stays-ts` \
+             vs an op-family owner vs `unowned`) would be silently wrong. {LEDGER_HELP}"
+        );
+    }
+
+    /// Parses a `SEAM_LEDGER.tsv`'s text. `None` when the header is missing
+    /// one of the columns this harness reads.
+    fn parse(text: &str) -> Option<Self> {
         let mut lines = text.lines();
-        let Some(header) = lines.next() else {
-            return Self::default();
-        };
+        let header = lines.next()?;
         let columns: Vec<&str> = header.split('\t').collect();
         let col = |name: &str| columns.iter().position(|c| *c == name);
         let (
@@ -154,7 +235,7 @@ impl Ledger {
             col("planned_task"),
         )
         else {
-            return Self::default();
+            return None;
         };
         let mut ledger = Self::default();
         for line in lines {
@@ -197,7 +278,7 @@ impl Ledger {
                 owners.tasks.insert((*task).to_string());
             }
         }
-        ledger
+        Some(ledger)
     }
 
     /// The owner of an op or member (`<Class>.<member>`): a task such as
