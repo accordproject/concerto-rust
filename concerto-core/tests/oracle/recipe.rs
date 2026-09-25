@@ -227,6 +227,13 @@ pub enum Arg {
     SelfMm,
     Decl(usize, DeclId),
     Prop(usize, PropId),
+    /// A validator reached through a property (`validatorref` with a
+    /// `propref` owner): the property's model manager pool index, the
+    /// property itself, and which validator it names (`"validator"`, the
+    /// regex/length or numeric-domain one; `"size"`, the collection-size
+    /// one) — `ops.rs` rebuilds the actual validator from these, since no
+    /// production `Property`/`Field` API returns one yet (P2-04/P2-05).
+    Validator(usize, PropId, String),
     /// An array that holds encoded values (a list of model files).
     List(Vec<Arg>),
 }
@@ -302,6 +309,10 @@ impl<'h> Session<'h> {
             "propref" => {
                 let (mm, id) = self.propref(v)?;
                 Ok(Arg::Prop(mm, id))
+            }
+            "validatorref" => {
+                let (mm, id, part) = self.validatorref(v)?;
+                Ok(Arg::Validator(mm, id, part))
             }
             "blob" => Err(Fault::Harness("unresolved blob".into())),
             other => {
@@ -496,6 +507,31 @@ impl<'h> Session<'h> {
         match mm.property(id) {
             Some(p) if p.name() == name => Ok((owner, id)),
             _ => Err(not_found()),
+        }
+    }
+
+    /// A `validatorref`: which validator (`part`) of which property
+    /// (`owner`, a `propref`). A `declref`-owned `validatorref` (a scalar
+    /// declaration's own validator) has no fixture in the corpus today and
+    /// is reported the same way any other unhandled `@@oracle` kind is.
+    fn validatorref(&mut self, v: &Value) -> Faulty<(usize, PropId, String)> {
+        let part = v
+            .get("part")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Fault::Harness("validatorref without part".into()))?
+            .to_string();
+        let owner = v
+            .get("owner")
+            .ok_or_else(|| Fault::Harness("validatorref without owner".into()))?;
+        match owner.get(M).and_then(Value::as_str) {
+            Some("propref") => {
+                let (mm, id) = self.propref(owner)?;
+                Ok((mm, id, part))
+            }
+            _ => Err(blocked(
+                "a validator whose owner is not a property has no Rust handle yet",
+                "Validator.new",
+            )),
         }
     }
 }
@@ -990,6 +1026,7 @@ impl Clone for Arg {
             Self::SelfMm => Self::SelfMm,
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
+            Self::Validator(m, p, part) => Self::Validator(*m, *p, part.clone()),
             Self::List(items) => Self::List(items.clone()),
         }
     }

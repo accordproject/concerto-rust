@@ -458,6 +458,23 @@ impl CompiledRegex {
     }
 }
 
+/// Whether `flags` is a set of flags the JS `RegExp` constructor accepts:
+/// each character one of `d`, `g`, `i`, `m`, `s`, `u`, `v`, `y`; no character
+/// repeated; and `u`/`v` not combined (they select incompatible Unicode
+/// modes).
+///
+/// PORTING.md section 3.2 ("Flags"): "With any other flag, the JS constructor
+/// throws `Invalid flags supplied to RegExp constructor '<flags>'`."
+fn valid_js_regex_flags(flags: &str) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    for c in flags.chars() {
+        if !"dgimsuvy".contains(c) || !seen.insert(c) {
+            return false;
+        }
+    }
+    !(seen.contains(&'u') && seen.contains(&'v'))
+}
+
 /// A validator that enforces a string's length and/or that it matches a
 /// regular expression.
 ///
@@ -530,19 +547,18 @@ impl StringValidator {
 
         let regex = match validator {
             None => None,
-            Some(v) => match regress::Regex::with_flags(v.pattern.as_str(), v.flags.as_str()) {
-                Ok(regex) => Some(CompiledRegex {
-                    pattern: v.pattern.clone(),
-                    flags: v.flags.clone(),
-                    regex,
-                }),
-                Err(error) => {
-                    // OD-4: V8's wording for the reasons `regress` can map;
-                    // any other reason is an `engine` divergence.
-                    let message = format!(
-                        "Invalid regular expression: /{}/{}: {error}",
-                        v.pattern, v.flags
-                    );
+            Some(v) => {
+                // PORTING.md section 3.2 ("Flags"): `new RegExp(pattern,
+                // flags)` validates `flags` itself before ever touching
+                // `pattern`, throwing `Invalid flags supplied to RegExp
+                // constructor '<flags>'` for a duplicate, unrecognised, or
+                // mutually-exclusive (`u` with `v`) flag. `regress::Flags`
+                // (and so `regress::Regex::with_flags`) silently ignores
+                // anything it does not recognise instead of rejecting it, so
+                // that check has to happen here.
+                if !valid_js_regex_flags(v.flags.as_str()) {
+                    let message =
+                        format!("Invalid flags supplied to RegExp constructor '{}'", v.flags);
                     return Err(report_error(
                         field,
                         Some(&field.name()?),
@@ -551,7 +567,29 @@ impl StringValidator {
                         vec![("message", message)],
                     ));
                 }
-            },
+                match regress::Regex::with_flags(v.pattern.as_str(), v.flags.as_str()) {
+                    Ok(regex) => Some(CompiledRegex {
+                        pattern: v.pattern.clone(),
+                        flags: v.flags.clone(),
+                        regex,
+                    }),
+                    Err(error) => {
+                        // OD-4: V8's wording for the reasons `regress` can
+                        // map; any other reason is an `engine` divergence.
+                        let message = format!(
+                            "Invalid regular expression: /{}/{}: {error}",
+                            v.pattern, v.flags
+                        );
+                        return Err(report_error(
+                            field,
+                            Some(&field.name()?),
+                            REGEX_VALIDATOR_EXCEPTION,
+                            "stringvalidator-constructor-invalidregex",
+                            vec![("message", message)],
+                        ));
+                    }
+                }
+            }
         };
 
         let built = Self {
@@ -804,6 +842,26 @@ mod tests {
     fn string_validator_rejects_an_invalid_regex() {
         let err = string_validator(Some(("^[A-z", "")), None).unwrap_err();
         assert!(err.to_string().contains("Validator error for field"));
+    }
+
+    #[test]
+    fn string_validator_rejects_invalid_regex_flags() {
+        for flags in ["x", "gg", "uv", "vu", "iI"] {
+            let err = string_validator(Some(("foo", flags)), None).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!(
+                    "Invalid flags supplied to RegExp constructor '{flags}'"
+                )),
+                "flags {flags:?} should be rejected: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_validator_accepts_every_valid_regex_flag_once() {
+        assert!(string_validator(Some(("foo", "dgimsy")), None).is_ok());
+        assert!(string_validator(Some(("foo", "u")), None).is_ok());
+        assert!(string_validator(Some(("foo", "v")), None).is_ok());
     }
 
     #[test]

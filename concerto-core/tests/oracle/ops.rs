@@ -32,6 +32,7 @@
 use concerto_core::error::{ConcertoError, ErrorKind};
 use concerto_core::introspect::Declaration;
 use concerto_core::introspect::scalar::ScalarValidator;
+use concerto_core::introspect::validators::Validator;
 use concerto_core::model_manager::{ModelManager, Node, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use serde_json::{Value, json};
@@ -379,6 +380,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
+        ("NumberValidator" | "StringValidator", m) => matches!(m, "validate" | "compatibleWith"),
+        ("CollectionSizeValidator", m) => {
+            matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
+        }
         _ => false,
     };
     if !dispatched {
@@ -467,7 +472,275 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 })),
             })
         }
+        "NumberValidator" => {
+            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a NumberValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let Validator::Number(nv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a NumberValidator".into(),
+                ));
+            };
+            Ok(match member {
+                "validate" => {
+                    let id = arg_nullable_str(&args, 0)?;
+                    let value = arg_nullable_f64(&args, 1)?;
+                    from_engine(nv.validate(&elem, id.as_deref(), value), |()| {
+                        recipe::undefined()
+                    })
+                }
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(nv.compatible_with(other.as_ref()))))
+                }
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "StringValidator" => {
+            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a StringValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let Validator::String(sv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a StringValidator".into(),
+                ));
+            };
+            Ok(match member {
+                "validate" => {
+                    let id = arg_nullable_str(&args, 0)?;
+                    let value = arg_nullable_str(&args, 1)?;
+                    from_engine(sv.validate(&elem, id.as_deref(), value.as_deref()), |()| {
+                        recipe::undefined()
+                    })
+                }
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(sv.compatible_with(other.as_ref()))))
+                }
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "CollectionSizeValidator" => {
+            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a CollectionSizeValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, _elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let Validator::CollectionSize(cv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a CollectionSizeValidator"
+                        .into(),
+                ));
+            };
+            Ok(match member {
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(cv.compatible_with(other.as_ref()))))
+                }
+                "getMinSize" => ran(Ok(cv.min_size().map_or_else(recipe::undefined, |v| json!(v)))),
+                "getMaxSize" => ran(Ok(cv.max_size().map_or_else(recipe::undefined, |v| json!(v)))),
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
         _ => unreachable!("`dispatched` lists every class"),
+    }
+}
+
+/// A property, captured just enough to rebuild one of its validators for
+/// this harness's own replay: only what `FullyQualified`/`ValidatedElement`
+/// need to report a validator error, snapshotted at the point the validator
+/// is rebuilt. No production `Property`/`Field` API returns a built
+/// validator yet — that wiring is P2-04/P2-05 (PORTING.md 6.2) — so the
+/// harness rebuilds one straight from the property's own AST fields, which
+/// are already public, each time a `NumberValidator`/`StringValidator`/
+/// `CollectionSizeValidator` fixture needs one.
+struct PropertyElement {
+    fqn: String,
+    name: String,
+    default_value: Option<Value>,
+}
+
+impl concerto_core::introspect::FullyQualified for PropertyElement {
+    type Error = ConcertoError;
+
+    fn fully_qualified_name(&self) -> Result<String, ConcertoError> {
+        Ok(self.fqn.clone())
+    }
+}
+
+impl concerto_core::model_manager::ValidatedElement for PropertyElement {
+    fn default_value(&self) -> Result<Option<Value>, ConcertoError> {
+        Ok(self.default_value.clone())
+    }
+
+    fn name(&self) -> Result<String, ConcertoError> {
+        Ok(self.name.clone())
+    }
+}
+
+/// `property.ast.defaultValue`: the property kinds that carry one (`String`,
+/// `Integer`, `Long`, `Double`), or `None` (JS `null`/`undefined`) for a kind
+/// that has none.
+fn property_default_value(prop: &concerto_core::introspect::Property) -> Option<Value> {
+    use concerto_core::introspect::Property;
+    match prop {
+        Property::String(p) => p.default_value.clone().map(Value::String),
+        Property::Integer(p) => p.default_value.map(|v| json!(v)),
+        Property::Long(p) => p.default_value.map(|v| json!(v)),
+        Property::Double(p) => p.default_value.map(|v| json!(v)),
+        _ => None,
+    }
+}
+
+/// Rebuilds the validator a `validatorref` names (`part`: `"validator"`, the
+/// regex/length or numeric-domain one; `"size"`, the collection-size one)
+/// from its owning property (`mm_idx`/`prop_id`), plus the [`PropertyElement`]
+/// the property's own AST fields feed it with.
+///
+/// A build failure here is a real [`Fault::Divergence`], not an
+/// [`Fault::Unsupported`]: the property already loaded successfully (its own
+/// ad hoc `check_pattern`/`check_length`/`check_domain`/`check_size` checks
+/// passed when its model manager was rebuilt), so rebuilding the equivalent
+/// `Validator` from the same AST must succeed too, or the two disagree.
+fn build_validator(
+    session: &Session,
+    mm_idx: usize,
+    prop_id: concerto_core::model_manager::PropId,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    use concerto_core::introspect::Property;
+    use concerto_core::introspect::Named;
+
+    let r = session.pool.get(mm_idx).ok_or_else(|| {
+        Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
+    })?;
+    let prop = r.mm.property(prop_id).ok_or_else(|| {
+        Fault::Divergence("state divergence: the validatorref's property was not found".into())
+    })?;
+    let fqn = r
+        .mm
+        .get_fully_qualified_name(&Node::Property(prop_id))
+        .map_err(|e| {
+            Fault::Divergence(format!(
+                "computing the validatorref property's fully qualified name: {e}"
+            ))
+        })?;
+    let elem = PropertyElement {
+        fqn,
+        name: prop.name().to_string(),
+        default_value: property_default_value(prop),
+    };
+
+    let validator = match part {
+        "size" => {
+            let ast = prop.size_validator().ok_or_else(|| {
+                Fault::Divergence(
+                    "state divergence: the validatorref's property has no size validator".into(),
+                )
+            })?;
+            let built = concerto_core::introspect::validators::CollectionSizeValidator::new(
+                &elem, ast,
+            )
+            .map_err(|e| Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}")))?;
+            Validator::CollectionSize(built)
+        }
+        "validator" => match prop {
+            Property::String(p) => {
+                let built = concerto_core::introspect::validators::StringValidator::new(
+                    &elem,
+                    p.validator.as_ref(),
+                    p.length_validator.as_ref(),
+                )
+                .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
+                Validator::String(built)
+            }
+            Property::Integer(p) => {
+                let ast = p
+                    .validator
+                    .as_ref()
+                    .map_or(Value::Null, |v| serde_json::to_value(v).expect("domain validator serializes"));
+                let built = concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                    .map_err(|e| Fault::Divergence(format!("rebuilding NumberValidator: {e}")))?;
+                Validator::Number(built)
+            }
+            Property::Long(p) => {
+                let ast = p
+                    .validator
+                    .as_ref()
+                    .map_or(Value::Null, |v| serde_json::to_value(v).expect("domain validator serializes"));
+                let built = concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                    .map_err(|e| Fault::Divergence(format!("rebuilding NumberValidator: {e}")))?;
+                Validator::Number(built)
+            }
+            Property::Double(p) => {
+                let ast = p
+                    .validator
+                    .as_ref()
+                    .map_or(Value::Null, |v| serde_json::to_value(v).expect("domain validator serializes"));
+                let built = concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                    .map_err(|e| Fault::Divergence(format!("rebuilding NumberValidator: {e}")))?;
+                Validator::Number(built)
+            }
+            _ => {
+                return Err(Fault::Unsupported(
+                    "a `validator` part on a property kind with no ported validator".into(),
+                ));
+            }
+        },
+        other => {
+            return Err(Fault::Unsupported(format!(
+                "a validatorref part {other:?} with no Rust counterpart"
+            )));
+        }
+    };
+    Ok((validator, elem))
+}
+
+/// `NumberValidator.validate`/`StringValidator.validate`'s first argument
+/// (`identifier`): a nullable string.
+fn arg_nullable_str(args: &[Arg], index: usize) -> Faulty<Option<String>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Plain(Value::String(s))) => Ok(Some(s.clone())),
+        _ => Err(Fault::Unsupported(
+            "expected a nullable string argument".into(),
+        )),
+    }
+}
+
+/// `NumberValidator.validate`'s value argument: a nullable number.
+fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Plain(v)) if v.is_number() => Ok(v.as_f64()),
+        _ => Err(Fault::Unsupported(
+            "expected a nullable number argument".into(),
+        )),
+    }
+}
+
+/// `compatibleWith`'s `other` argument: `null`, or another `validatorref`,
+/// rebuilt the same way the receiver was.
+fn arg_other_validator(
+    session: &Session,
+    args: &[Arg],
+    index: usize,
+) -> Faulty<Option<Validator>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Validator(mm_idx, prop_id, part)) => {
+            build_validator(session, *mm_idx, *prop_id, part).map(|(v, _)| Some(v))
+        }
+        _ => Err(Fault::Unsupported(
+            "expected a validator or null argument".into(),
+        )),
     }
 }
 
