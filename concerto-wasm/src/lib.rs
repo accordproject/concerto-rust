@@ -1159,7 +1159,9 @@ pub fn property_validate(
         .unwrap_or(JsValue::UNDEFINED);
     let body = || -> Result<()> {
         let property_type = get(&property, "type")?;
-        if !nullish(&property_type) {
+        // TS: `if(this.type)` — a JS truthiness check (an empty-string type
+        // is falsy and skips resolution), not a nullish check.
+        if property_type.is_truthy() {
             let fqn = js_string(&call(
                 &property,
                 "getFullyQualifiedName",
@@ -1179,7 +1181,9 @@ pub fn property_validate(
         let array = get(&property, "array")?.is_truthy();
         if !nullish(&size_validator) && !array {
             let mut is_map_type = false;
-            if !nullish(&property_type) {
+            // TS: `if(this.type && !this.isPrimitive())` — same truthiness
+            // check as above.
+            if property_type.is_truthy() {
                 let is_primitive =
                     call(&property, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
                 if !is_primitive
@@ -1369,7 +1373,10 @@ pub fn relationship_declaration_validate(
         // effect here.
         let property_type = call(&view, "getType", &[], "this.getType")?;
 
-        if nullish(&property_type) {
+        // TS: `if(!this.getType())` — a JS truthiness check, so an
+        // empty-string type (falsy) must hit this branch too, not just
+        // null/undefined.
+        if !property_type.is_truthy() {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-notype",
@@ -2418,7 +2425,12 @@ pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> 
             &[type_name_ast],
             "modelFile.getType",
         )?;
-        let valid = mu::is_valid_map_key_scalar(&JsContext, Some(&decl))?;
+        // `modelFile.getType` returns `null` when the type is not found (not
+        // a thrown error), and TS's `isValidMapKeyScalar(decl)` optional-
+        // chains off that (`decl?.isScalarDeclaration?.()`), so a nullish
+        // `decl` here must become `None`, not `Some` of a JS null.
+        let decl_opt = if nullish(&decl) { None } else { Some(&decl) };
+        let valid = mu::is_valid_map_key_scalar(&JsContext, decl_opt)?;
         if valid != Some(true) {
             let parent = get(&view, "parent")?;
             let parent_name = js_string(&get(&parent, "name")?)?;
