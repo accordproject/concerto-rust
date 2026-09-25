@@ -16,10 +16,8 @@ use serde_json::Value;
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::decorator::{Decorated, Decorator};
-use crate::introspect::validators::NumberValidator;
-use crate::introspect::{
-    DeclarationKind, FullyQualified, HasValidators, Named, Typed, check_length, check_pattern,
-};
+use crate::introspect::validators::{NumberValidator, StringValidator};
+use crate::introspect::{DeclarationKind, FullyQualified, HasValidators, Named, Typed};
 use crate::model_manager::{ResolutionContext, ValidatedElement};
 use crate::model_util::is_primitive_type;
 
@@ -33,10 +31,11 @@ pub enum ScalarValidator {
     /// Double scalars.
     Number(NumberValidator),
     /// `new StringValidator(this, this.ast.validator, this.ast.lengthValidator)`,
-    /// for String scalars. `StringValidator` is ported in P2-02; until then the
-    /// port records the arguments TS passes (`None` is `undefined`) and the
-    /// caller builds the validator: the loader runs its own checks, and the
-    /// WASM view builds the TS `StringValidator`.
+    /// for String scalars. [`ScalarDeclaration::process`] builds (and so
+    /// validates) the real `StringValidator` (P2-09c/F5) purely for that
+    /// side effect and discards it: this variant still just records the
+    /// arguments TS passes (`None` is `undefined`), since the WASM view
+    /// builds its own TS-facing `StringValidator` from them.
     String {
         /// `this.ast.validator`.
         validator: Option<Value>,
@@ -149,6 +148,36 @@ impl ScalarDeclaration {
                 )?))
             }
             Some("String") if truthy("validator") || truthy("lengthValidator") => {
+                // TS: `this.validator = new StringValidator(this, this.ast.validator,
+                // this.ast.lengthValidator)` — built eagerly here, exactly like the
+                // `NumberValidator` arm above (F5: this used to be deferred to a
+                // loader-only, ad hoc `check_pattern`/`check_length` pass — see
+                // `HasValidators::check_validators` below — that neither this
+                // scalar's own `defaultValue` (TS validates it right here, in the
+                // constructor) nor `build_standalone`'s callers ever ran).
+                let element = ScalarElement {
+                    ast,
+                    fully_qualified_name,
+                };
+                let bad = |e: serde_json::Error| -> E {
+                    ContractError::new(
+                        ErrorKind::IllegalModel,
+                        "scalardeclaration-process-invalidvalidator",
+                        vec![("message", e.to_string())],
+                    )
+                    .into()
+                };
+                let validator = ast
+                    .get("validator")
+                    .map(|v| serde_json::from_value::<mm::StringRegexValidator>(v.clone()))
+                    .transpose()
+                    .map_err(bad)?;
+                let length_validator = ast
+                    .get("lengthValidator")
+                    .map(|v| serde_json::from_value::<mm::StringLengthValidator>(v.clone()))
+                    .transpose()
+                    .map_err(bad)?;
+                StringValidator::new(&element, validator.as_ref(), length_validator.as_ref())?;
                 Some(ScalarValidator::String {
                     validator: ast.get("validator").cloned(),
                     length_validator: ast.get("lengthValidator").cloned(),
@@ -231,31 +260,15 @@ impl ScalarDeclaration {
         file_name: Option<&str>,
         ast: &Value,
     ) -> crate::error::Result<(String, ProcessedScalar)> {
-        let name = ast.get("name").and_then(Value::as_str).unwrap_or_default();
-        let fqn = crate::model_util::get_fully_qualified_name(namespace, name);
+        let fqn = crate::model_util::get_fully_qualified_name(
+            namespace,
+            ast.get("name").and_then(Value::as_str).unwrap_or_default(),
+        );
+        // F5: `process` itself now builds (and so validates) the scalar's
+        // `StringValidator` eagerly, exactly as it already did for
+        // `NumberValidator`, so there is nothing left to check here.
         let processed =
             Self::process::<crate::error::ConcertoError>(ast, file_name, &|| Ok(fqn.clone()))?;
-        // `HasValidators::check_validators`, over the raw AST `process` already
-        // read rather than a loaded node's typed one (only a `String` scalar
-        // has anything left to check here; the number check already ran
-        // inside `process`, as the constructor it ports).
-        if let Some(ScalarValidator::String {
-            validator,
-            length_validator,
-        }) = &processed.validator
-        {
-            let bad = |e: serde_json::Error| crate::error::ConcertoError::IllegalModel {
-                message: format!("invalid string validator: {e}"),
-                file_name: None,
-                location: None,
-            };
-            if let Some(v) = validator {
-                check_pattern(name, &serde_json::from_value(v.clone()).map_err(bad)?)?;
-            }
-            if let Some(v) = length_validator {
-                check_length(name, &serde_json::from_value(v.clone()).map_err(bad)?)?;
-            }
-        }
         Ok((fqn, processed))
     }
 
@@ -367,20 +380,13 @@ impl Typed for ScalarDeclaration {
 }
 
 impl HasValidators for ScalarDeclaration {
-    /// `StringValidator` is not ported yet (P2-02): the checks its constructor
-    /// makes on a String scalar are still the loader's own. A Number
-    /// validator is checked by [`ScalarDeclaration::process`], which builds it.
+    /// F5: both a Number and a String scalar's validator are now built (and
+    /// so checked) eagerly by [`ScalarDeclaration::process`], exactly as TS's
+    /// own constructor does — this no longer has anything left to check on
+    /// top of that. Kept as a documented no-op rather than removed, since it
+    /// is still called from the loader (`introspect::declaration`) and is
+    /// part of this crate's public API.
     fn check_validators(&self) -> crate::error::Result<()> {
-        if let (Some(ScalarValidator::String { .. }), mm::ScalarDeclaration::StringScalar(s)) =
-            (self.validator(), &self.node)
-        {
-            if let Some(validator) = &s.validator {
-                check_pattern(&s.name, validator)?;
-            }
-            if let Some(validator) = &s.length_validator {
-                check_length(&s.name, validator)?;
-            }
-        }
         Ok(())
     }
 }

@@ -323,7 +323,7 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
 /// [`failed`]/[`catalogue_error`] with no file in scope. A `model_file`
 /// already set (as `undeclared_type_error` sets its own) is left alone, and
 /// only `IllegalModel`-kind contract errors are touched.
-fn attach_model_file(err: ConcertoError, model_file: &ModelFile) -> ConcertoError {
+pub(crate) fn attach_model_file(err: ConcertoError, model_file: &ModelFile) -> ConcertoError {
     match err {
         ConcertoError::Contract(mut contract)
             if contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel =>
@@ -2534,6 +2534,57 @@ mod tests {
             "{err}"
         );
         assert!(!err.contains("Duplicate decorator"), "{err}");
+    }
+
+    /// DV-016 (P2-09c/F6, gap-audit finding): TS `Decorator.validate` catches
+    /// its own `try` block's errors (including its own `invalidDecorator`
+    /// throws) in one outer `catch`, and re-reports the caught error through
+    /// `handleError(missingDecorator, err)` — which re-decorates an already
+    /// fully-formatted `IllegalModelException` (`this.getParent().
+    /// getModelFile()` attaches the file to it a second time), so with
+    /// `missingDecorator: "error"` the `"File '<name>': "` suffix appears
+    /// twice. Ported faithfully: `DIVERGENCES.md` DV-016,
+    /// accordproject/concerto-rust#179 tracks the TS-side fix.
+    #[test]
+    fn a_decorator_validation_error_carries_the_file_suffix_twice_like_ts() {
+        use crate::introspect::decorator::DecoratorValidationOptions;
+
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "test@1.0.0",
+                    "declarations": [concept(serde_json::json!({
+                        "name": "Person",
+                        "properties": [{
+                            "$class": "concerto.metamodel@1.0.0.StringProperty",
+                            "name": "ssn", "isArray": false, "isOptional": false,
+                            "decorators": [
+                                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Hide", "arguments": [] }
+                            ]
+                        }]
+                    }))]
+                }),
+                Some("test.cto".into()),
+            )
+            .unwrap();
+        manager.set_decorator_validation(DecoratorValidationOptions {
+            missing_decorator: Some("error".into()),
+            invalid_decorator: Some("error".into()),
+        });
+        let err = manager.validate_models().unwrap_err();
+        // TS's own `IllegalModelException` constructor attaches the file
+        // suffix at *construction*, so it shows up in the fully-decorated
+        // message (`final_message`, what the oracle compares), not in the
+        // raw `Display`/`message()` this crate's other call sites use.
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected a Contract error, got {err:?}");
+        };
+        assert_eq!(
+            contract.final_message(),
+            "IllegalModelException: Undeclared type \"Hide\" in \"test@1.0.0.Person.ssn\". File 'test.cto':  File 'test.cto': "
+        );
     }
 
     /// TS: introspect/identifieddeclaration.js, "#identified should create a

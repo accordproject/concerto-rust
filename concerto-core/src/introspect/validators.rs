@@ -6,10 +6,11 @@
 //! `Validator.reportError` it needs. P2-02 ports `StringValidator` (with the
 //! `regress` crate for ECMAScript-compatible regex semantics, PORTING.md
 //! section 3 and OD-4) and `CollectionSizeValidator`, plus every validator's
-//! `compatibleWith`. Wiring `ScalarDeclaration` and `Property` to build these
-//! instead of running their own ad hoc checks (`introspect::check_pattern`
-//! and friends) is left to the tasks that own those types (P2-04, P2-05):
-//! this module only has to exist and behave correctly for them to call into.
+//! `compatibleWith`. `ScalarDeclaration` and `Property` build these instead
+//! of running their own ad hoc checks: `Property` was wired in by P2-04/P2-05
+//! (`check_bound_validators`), and `ScalarDeclaration` (`process`, for its
+//! `StringValidator`) last, by P2-09c/F5 — `introspect::check_pattern` and
+//! `check_length`, the ad hoc checks this replaced, are gone.
 
 use std::fmt;
 

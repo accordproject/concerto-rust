@@ -157,7 +157,12 @@ impl Decorator {
         }
         match self.try_validate(manager, namespace, context, options) {
             Ok(()) => Ok(()),
-            Err(problem) => self.rethrow(options.missing_decorator.as_deref(), problem),
+            Err(problem) => self.rethrow(
+                manager,
+                namespace,
+                options.missing_decorator.as_deref(),
+                problem,
+            ),
         }
     }
 
@@ -207,7 +212,7 @@ impl Decorator {
                 "Decorator {} has too few arguments. Required properties are: [{names}]",
                 self.name
             );
-            self.report_invalid(options, message)?;
+            self.report_invalid(manager, namespace, options, message)?;
         }
         for (n, arg) in args.iter().enumerate() {
             if n >= ordered.len() {
@@ -220,7 +225,7 @@ impl Decorator {
                     "Decorator {} has too many arguments. Properties are: [{names}]",
                     self.name
                 );
-                self.report_invalid(options, message)?;
+                self.report_invalid(manager, namespace, options, message)?;
                 continue;
             }
             self.check_argument(manager, namespace, ordered[n], arg, options)?;
@@ -251,7 +256,7 @@ impl Decorator {
         manager
             .resolve_type_name(namespace, &self.name, self.location.clone())
             .map_err(|_| {
-                ContractError::new(
+                let err: ConcertoError = ContractError::new(
                     ErrorKind::IllegalModel,
                     "modelfile-resolvetype-undecltype",
                     vec![
@@ -259,8 +264,34 @@ impl Decorator {
                         ("context", context.unwrap_or("undefined").to_string()),
                     ],
                 )
-                .into()
+                .into();
+                // DV-016: TS `mf.resolveType(...)` throws `new IllegalModelException(
+                // message, this, fileLocation)` — `this` is the model file `mf` is
+                // called on, so the "File '<name>': " suffix is already part of this
+                // error's own message by the time `Decorator.validate`'s `catch`
+                // re-wraps it. Reproducing that requires this error to carry its own
+                // model file *now*, not only once the caller backstops it later.
+                self.attach_file(manager, namespace, err)
             })
+    }
+
+    /// `manager.model_file(namespace)`, attached to `err` the way
+    /// [`crate::validation::attach_model_file`] backstops every other check in
+    /// this module — reused here (rather than deferring to that backstop) so
+    /// an error this module builds already carries its file *before*
+    /// [`Self::rethrow`] re-reports it, matching TS's `this`/`this.getParent().
+    /// getModelFile()`, which is resolved synchronously at each throw site
+    /// (DV-016).
+    fn attach_file(
+        &self,
+        manager: &ModelManager,
+        namespace: &str,
+        err: ConcertoError,
+    ) -> ConcertoError {
+        match manager.model_file(namespace) {
+            Some(model_file) => crate::validation::attach_model_file(err, model_file),
+            None => err,
+        }
     }
 
     /// One argument against the property it lines up with, by position.
@@ -278,6 +309,8 @@ impl Decorator {
             Some("Integer") | Some("Double") | Some("Long") => {
                 if !matches!(arg, DecoratorArgument::Number(_)) {
                     self.report_invalid(
+                        manager,
+                        namespace,
                         options,
                         format!(
                             "Decorator {} has invalid decorator argument. Expected number. Found {}, with value {}",
@@ -289,6 +322,8 @@ impl Decorator {
             Some("String") => {
                 if !matches!(arg, DecoratorArgument::String(_)) {
                     self.report_invalid(
+                        manager,
+                        namespace,
                         options,
                         format!(
                             "Decorator {} has invalid decorator argument. Expected string. Found {}, with value {}",
@@ -300,6 +335,8 @@ impl Decorator {
             Some("Boolean") => {
                 if !matches!(arg, DecoratorArgument::Boolean(_)) {
                     self.report_invalid(
+                        manager,
+                        namespace,
                         options,
                         format!(
                             "Decorator {} has invalid decorator argument. Expected boolean. Found {}, with value {}",
@@ -328,6 +365,8 @@ impl Decorator {
             _ => None,
         }) else {
             return self.report_invalid(
+                manager,
+                namespace,
                 options,
                 format!(
                     "Decorator {} has invalid decorator argument. Expected object. Found {}, with value {}",
@@ -346,6 +385,8 @@ impl Decorator {
 
         match resolved {
             None => self.report_invalid(
+                manager,
+                namespace,
                 options,
                 format!(
                     "Decorator {} references a type {} which has not been defined/imported.",
@@ -361,6 +402,8 @@ impl Decorator {
                     .unwrap_or_else(|_| declared_type.to_string());
                 if !manager.is_assignable_to(&type_fqn, &property_fqn)? {
                     self.report_invalid(
+                        manager,
+                        namespace,
                         options,
                         format!(
                             "Decorator {} references a type {} which cannot be assigned to the declared type {property_fqn}",
@@ -376,21 +419,37 @@ impl Decorator {
     /// TS: `this.handleError(validationOptions.invalidDecorator, err)`.
     fn report_invalid(
         &self,
+        manager: &ModelManager,
+        namespace: &str,
         options: &DecoratorValidationOptions,
         message: String,
     ) -> std::result::Result<(), ConcertoError> {
-        self.handle(options.invalid_decorator.as_deref(), message)
+        self.handle(
+            manager,
+            namespace,
+            options.invalid_decorator.as_deref(),
+            message,
+        )
     }
 
     /// `handleError(level, err)`: logs (not yet ported; nothing observes it),
     /// then throws only when `level` is the exact string `"error"`.
+    ///
+    /// TS: `new IllegalModelException(err, this.getParent().getModelFile(),
+    /// this.ast.location)` — the file is attached right here, at construction
+    /// (DV-016), not only once the caller backstops it later: that is what
+    /// makes [`Self::rethrow`]'s own double-wrap carry the file suffix
+    /// twice, exactly as TS's does.
     fn handle(
         &self,
+        manager: &ModelManager,
+        namespace: &str,
         level: Option<&str>,
         message: String,
     ) -> std::result::Result<(), ConcertoError> {
         if level == Some("error") {
-            return Err(illegal_model(message, self.location.clone()));
+            let err = illegal_model(message, self.location.clone());
+            return Err(self.attach_file(manager, namespace, err));
         }
         Ok(())
     }
@@ -403,14 +462,23 @@ impl Decorator {
     /// whose message is the caught one, coerced to a string the way a JS
     /// template literal coerces an `Error`: `"<name>: <message>"`. This is a
     /// real double-wrap in the TS reference (`new IllegalModelException(err, ...)`
-    /// with `err` an `Error`, not a string), not a simplification.
-    fn rethrow(&self, level: Option<&str>, problem: ConcertoError) -> Result<()> {
+    /// with `err` an `Error`, not a string), not a simplification. That caught
+    /// error's own message already carries its own "File '…': " suffix
+    /// (`Self::handle`/`Self::resolve_own_name` attach it eagerly, same as
+    /// TS), and this rethrow attaches the *same* file again to its own new
+    /// exception — so a caller with `missingDecorator: "error"` sees the
+    /// suffix twice over, faithfully (DV-016, DIVERGENCES.md).
+    fn rethrow(
+        &self,
+        manager: &ModelManager,
+        namespace: &str,
+        level: Option<&str>,
+        problem: ConcertoError,
+    ) -> Result<()> {
         if level == Some("error") {
             let (class, message) = js_class_and_message(&problem);
-            return Err(illegal_model(
-                format!("{class}: {message}"),
-                self.location.clone(),
-            ));
+            let err = illegal_model(format!("{class}: {message}"), self.location.clone());
+            return Err(self.attach_file(manager, namespace, err));
         }
         Ok(())
     }
