@@ -1080,10 +1080,17 @@ fn named_js_error(name: &str, text: &str) -> JsValue {
 /// failure, a plain `Error` that coerces the same way TS's caught value
 /// would): the `IllegalModelException` construction, its "File '...': "
 /// decoration and the log call are never reimplemented here, so they cannot
-/// drift from TS's. Only a raw host/JS failure reading a collaborator (a
-/// stubbed parent in a white-box test that does not behave like a real one)
-/// is not wrapped the way TS's outer `catch` re-reports every thrown value
-/// through `missingDecorator`: it is passed through as its own exception.
+/// drift from TS's. TS's outer `catch` re-reports *every* thrown value —
+/// including a raw host `TypeError` from reading a collaborator that does
+/// not behave like a real model element (e.g. a decorator named after a
+/// primitive, so `mf.getType` resolves it to a type with no
+/// `getProperties`) — through `missingDecorator`, so both of this binding's
+/// [`Error`] variants are routed the same way: a [`Error::Contract`] (a host
+/// `TypeError` this module's own `call`/`get` raised, or any other core
+/// error [`try_validate_decorator`]'s collaborators produced) is first
+/// turned into the JS exception it would coerce to ([`throw`], the same
+/// mapping the whole binding uses to leave the module), so `handleError`
+/// sees the same kind of value TS's `catch (err)` would have caught.
 #[wasm_bindgen(js_name = decoratorValidate)]
 pub fn decorator_validate(
     view: JsValue,
@@ -1111,7 +1118,10 @@ pub fn decorator_validate(
         match try_validate_decorator(&view, &model_file, context_name.as_deref(), &invalid) {
             Ok(()) => Ok(()),
             Err(Error::Js(caught)) => handle_error(&view, &missing, &caught),
-            Err(err @ Error::Contract(_)) => Err(err),
+            Err(err @ Error::Contract(_)) => {
+                let caught = throw(err, Some(&model_file));
+                handle_error(&view, &missing, &caught)
+            }
         }
     };
     body().map_err(|e| throw(e, Some(&model_file)))
@@ -1268,7 +1278,7 @@ fn check_type_reference_argument(
     let is_type_reference = js_typeof(arg) == "object"
         && opt_get(arg, "type")?.as_string().as_deref() == Some("Identifier");
     if !is_type_reference {
-        return report_invalid(
+        report_invalid(
             view,
             invalid,
             format!(
@@ -1276,8 +1286,16 @@ fn check_type_reference_argument(
                 js_typeof(arg),
                 json_stringify(arg)?,
             ),
-        );
+        )?;
     }
+    // TS: `handleError` above only throws when the decorator validation
+    // option is `'error'` (a `?` propagation here, matching TS's `throw`),
+    // so under `'warn'` control falls through to here with no
+    // `return`/`else` guarding it in the TS `default:` arm, even though
+    // `arg` may still not be a type reference. `typeReference.name` is a
+    // direct (non-optional) property read of `arg`, which is exactly what
+    // `get` already reproduces: V8's own `TypeError` for a nullish `arg`,
+    // `undefined` for a non-object `arg`.
     let type_name = js_string(&get(arg, "name")?)?;
     // TS: `mf.getType(typeReference.name)` — non-throwing.
     let Some(type_decl) = JsContext.get_type(model_file, Some(&type_name))? else {
