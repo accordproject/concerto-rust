@@ -553,6 +553,13 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         // at the throw site in model_manager.rs).
         sources: &["src/introspect/property.ts:218"],
     },
+    // ---- P4-07 additions (Property.process's own inline template; #66) ----
+    CatalogueEntry {
+        code: "property-process-invalidname",
+        template: "Invalid property name '{name}'",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/property.ts:86"],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",

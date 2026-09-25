@@ -51,6 +51,7 @@ use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
+use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
@@ -1088,6 +1089,39 @@ pub fn collection_size_validator_compatible_with(
         let this = collection_size_validator(&view)?;
         let other = collection_size_validator(&other)?;
         Ok(this.compatible_with(Some(&Validator::CollectionSize(other))))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Property (src/introspect/property.ts) — P4-07
+// ---------------------------------------------------------------------------
+
+/// TS: Property.process, after `super.process()`. Returns the snapshot
+/// `{name, type, array, optional}`; `type` is omitted (not merely `null`)
+/// when the AST `$class` is `EnumProperty`, since that is the one case where
+/// TS never assigns `this.type` (property.rs module doc on
+/// [`property::ProcessedProperty`]). `this.sizeValidator` is not part of the
+/// snapshot: the view still builds it directly by constructing a
+/// `CollectionSizeValidator`, whose own binding already ports that TS
+/// constructor.
+#[wasm_bindgen(js_name = propertyProcess)]
+pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    let body = || -> Result<JsValue> {
+        let ast = to_json(&get(&view, "ast")?)?.unwrap_or(Value::Null);
+        let processed = property::process::<Error>(&ast)?;
+        let mut snapshot = serde_json::Map::new();
+        snapshot.insert("name".to_string(), json!(processed.name));
+        if processed.type_set {
+            snapshot.insert("type".to_string(), json!(processed.property_type));
+        }
+        snapshot.insert("array".to_string(), json!(processed.array));
+        snapshot.insert("optional".to_string(), json!(processed.optional));
+        Ok(to_js(&Value::Object(snapshot)))
+    };
+    body().map_err(|e| {
+        let model_file = call(&view, "getModelFile", &[], "this.getModelFile")
+            .unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
     })
 }
 

@@ -1153,6 +1153,14 @@ mod tests {
     }
 
     #[test]
+    fn golden_property_process_invalidname() {
+        assert_eq!(
+            contract("property-process-invalidname", &[("name", "1bad")]).message(),
+            "Invalid property name '1bad'"
+        );
+    }
+
+    #[test]
     fn golden_instancegenerator_newinstance_noconcreteclass() {
         assert_eq!(
             contract(

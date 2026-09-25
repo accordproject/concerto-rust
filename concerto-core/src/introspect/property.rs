@@ -11,15 +11,99 @@
 //! with the declarations come from the traits in [`crate::introspect`].
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+use serde_json::Value;
 
 use crate::derive::Named;
-use crate::error::{ConcertoError, Result};
+use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::decorator::{Decorated, Decorator, WithDecorators, parse_decorators};
 use crate::introspect::{
     HasValidators, Named, Typed, check_domain, check_length, check_pattern, check_size,
     declared_class,
 };
 use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
+
+/// What `Property.process` computes, after `super.process()` (which belongs
+/// to `Decorated`).
+///
+/// TS: `Property.process` (src/introspect/property.ts). `property_type` is
+/// `this.type`; `type_set` says whether TS assigns `this.type` at all —
+/// the `EnumProperty` arm of the source switch falls through without an
+/// assignment, so `this.type` is left `undefined` there, which the WASM view
+/// tells apart from the explicit `null` an `ObjectProperty` with no `type`
+/// AST node gets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessedProperty {
+    /// `this.name`.
+    pub name: String,
+    /// `this.type`, when the switch sets it.
+    pub property_type: Option<String>,
+    /// Whether the switch sets `this.type` at all (`false` for `EnumProperty`).
+    pub type_set: bool,
+    /// `this.array`.
+    pub array: bool,
+    /// `this.optional`.
+    pub optional: bool,
+}
+
+/// Computes `Property.process`'s fields directly from the AST, in the TS
+/// order: the identifier check, the name, the `$class` switch for `type`,
+/// then `array` and `optional`. `this.sizeValidator` is not computed here:
+/// TS builds it by constructing a `CollectionSizeValidator`, which the WASM
+/// view still does directly (its own binding already ports the TS
+/// constructor).
+///
+/// TS: `Property.process` (src/introspect/property.ts)
+pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
+    let name = ast
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !is_valid_identifier(&name) {
+        return Err(ContractError::new(
+            ErrorKind::IllegalModel,
+            "property-process-invalidname",
+            vec![("name", name)],
+        )
+        .into());
+    }
+
+    let class = ast.get("$class").and_then(Value::as_str).unwrap_or_default();
+    let short = get_short_name(class);
+    let object_or_relationship_type = || {
+        ast.get("type")
+            .and_then(|t| t.get("name"))
+            .and_then(Value::as_str)
+            .map(String::from)
+    };
+    let (property_type, type_set): (Option<String>, bool) = match short {
+        "BooleanProperty" => (Some("Boolean".to_string()), true),
+        "DateTimeProperty" => (Some("DateTime".to_string()), true),
+        "DoubleProperty" => (Some("Double".to_string()), true),
+        "IntegerProperty" => (Some("Integer".to_string()), true),
+        "LongProperty" => (Some("Long".to_string()), true),
+        "StringProperty" => (Some("String".to_string()), true),
+        "ObjectProperty" => (object_or_relationship_type(), true),
+        "RelationshipProperty" => (object_or_relationship_type(), true),
+        // `EnumProperty`, or anything else: the TS switch has no matching
+        // `case`, so `this.type` is left unassigned.
+        _ => (None, false),
+    };
+
+    let array = ast.get("isArray").and_then(Value::as_bool).unwrap_or(false);
+    let optional = ast
+        .get("isOptional")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(ProcessedProperty {
+        name,
+        property_type,
+        type_set,
+        array,
+        optional,
+    })
+}
 
 /// A single property of a concept-like or enum declaration. Each variant also
 /// carries its processed decorators (module doc on
@@ -309,6 +393,60 @@ impl HasValidators for Property {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_derives_type_array_and_optional() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "email",
+            "isArray": true,
+            "isOptional": true
+        }))
+        .expect("valid");
+        assert_eq!(processed.name, "email");
+        assert_eq!(processed.property_type.as_deref(), Some("String"));
+        assert!(processed.type_set);
+        assert!(processed.array);
+        assert!(processed.optional);
+    }
+
+    #[test]
+    fn process_object_property_type_is_the_referenced_name() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+            "name": "address",
+            "isArray": false,
+            "isOptional": false,
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Address" }
+        }))
+        .expect("valid");
+        assert_eq!(processed.property_type.as_deref(), Some("Address"));
+    }
+
+    #[test]
+    fn process_enum_property_leaves_type_unset() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.EnumProperty",
+            "name": "RED"
+        }))
+        .expect("valid");
+        assert!(!processed.type_set);
+        assert_eq!(processed.property_type, None);
+        assert!(!processed.array);
+        assert!(!processed.optional);
+    }
+
+    #[test]
+    fn process_rejects_an_invalid_identifier() {
+        let err = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "1bad",
+            "isArray": false,
+            "isOptional": false
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid property name '1bad'"));
+    }
 
     fn prop(json: serde_json::Value) -> Property {
         Property::try_from(&json).expect("valid property")
