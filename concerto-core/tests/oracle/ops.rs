@@ -2315,6 +2315,34 @@ fn command_sets(arg: Option<&Value>) -> Faulty<(Vec<Value>, bool)> {
     })
 }
 
+/// `DecoratorManager.validate`'s optional `modelFiles`: absent, or a list
+/// of model files, each rebuilt as TS's `ModelFile` would be.
+fn model_files_arg(args: &[Arg], index: usize) -> Faulty<Option<Vec<ModelFile>>> {
+    let items = match args.get(index) {
+        None => return Ok(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) || v.is_null() => return Ok(None),
+        Some(Arg::List(items)) => items,
+        Some(_) => {
+            return Err(Fault::Unsupported(
+                "DecoratorManager.validate with modelFiles that are not a list of model files"
+                    .into(),
+            ));
+        }
+    };
+    let file = |item: &Arg| match item {
+        Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone()).map_err(|e| {
+            Fault::Divergence(format!(
+                "input construction failed: new ModelFile: {}",
+                to_oracle_error(&e).message
+            ))
+        }),
+        _ => Err(Fault::Unsupported(
+            "DecoratorManager.validate with a modelFiles entry that is not a model file".into(),
+        )),
+    };
+    items.iter().map(file).collect::<Faulty<Vec<_>>>().map(Some)
+}
+
 /// A model manager a DCS op returned, for a `derived` recipe
 /// (`recipe.rs`): the manager, and whether it was validated when built.
 pub struct DerivedModelManager {
@@ -2337,6 +2365,7 @@ pub fn derive_model_manager(
         matches!(
             *m,
             "decorateModels"
+                | "validate"
                 | "extractDecorators"
                 | "extractVocabularies"
                 | "extractNonVocabDecorators"
@@ -2344,7 +2373,8 @@ pub fn derive_model_manager(
     }) else {
         return Ok(None);
     };
-    let expected_path = (member != "decorateModels").then(|| json!(["modelManager"]));
+    let expected_path =
+        (!matches!(member, "decorateModels" | "validate")).then(|| json!(["modelManager"]));
     if path.cloned() != expected_path {
         return Err(Fault::Harness(format!(
             "a model manager derived from {op} at an unexpected path {path:?}"
@@ -2362,6 +2392,20 @@ pub fn derive_model_manager(
         .iter()
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
+    if member == "validate" {
+        let Some(command_set) = plain_arg(&args, 0)? else {
+            return Err(Fault::Unsupported(
+                "DecoratorManager.validate without a command set".into(),
+            ));
+        };
+        let files = model_files_arg(&args, 1)?;
+        let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
+        let mm = dcs::validate(&command_set, refs.as_deref()).map_err(failed)?;
+        return Ok(Some(DerivedModelManager {
+            mm,
+            validated: true,
+        }));
+    }
     let Some(Arg::Mm(index)) = args.first() else {
         return Err(Fault::Unsupported(format!(
             "{op} with a first argument that is not a model manager recipe"
@@ -2527,34 +2571,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                     "DecoratorManager.validate without a command set",
                 ));
             };
-            // `modelFiles`: absent, or a list of model files.
-            let files: Option<Vec<ModelFile>> = match args.get(1) {
-                None => None,
-                Some(Arg::Plain(v)) if recipe::is_undefined(v) || v.is_null() => None,
-                Some(Arg::List(items)) => Some(
-                    items
-                        .iter()
-                        .map(|item| match item {
-                            Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone())
-                                .map_err(|e| {
-                                    Fault::Divergence(format!(
-                                        "input construction failed: new ModelFile: {}",
-                                        to_oracle_error(&e).message
-                                    ))
-                                }),
-                            _ => Err(Fault::Unsupported(
-                                "DecoratorManager.validate with a modelFiles entry that is not a model file"
-                                    .into(),
-                            )),
-                        })
-                        .collect::<Faulty<Vec<_>>>()?,
-                ),
-                Some(_) => {
-                    return Ok(unsupported(
-                        "DecoratorManager.validate with modelFiles that are not a list of model files",
-                    ));
-                }
-            };
+            let files = model_files_arg(&args, 1)?;
             let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
             let outcome = dcs::validate(&command_set, refs.as_deref())
                 .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
