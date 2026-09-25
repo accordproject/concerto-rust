@@ -78,6 +78,16 @@ impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
     fn default_value(&self) -> Result<Option<Value>, E> {
         Ok(self.ast.get("defaultValue").cloned())
     }
+
+    fn name(&self) -> Result<String, E> {
+        // `this.getName()`: a scalar's short name is its AST `name`.
+        Ok(self
+            .ast
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
 }
 
 /// A scalar declaration loaded into a model file.
@@ -182,6 +192,71 @@ impl ScalarDeclaration {
     /// TS: `Decorated.getDecorators` (src/introspect/decorated.ts).
     pub fn decorators(&self) -> &[Decorator] {
         &self.decorators
+    }
+
+    /// Validates a scalar declaration's AST the way TS
+    /// `new ScalarDeclaration(modelFile, ast)` does, and returns its fully
+    /// qualified name (`Declaration`'s constructor: `super(ast); this.modelFile
+    /// = modelFile; this.process();`, where `super(ast)` only stores the AST
+    /// and reads `ast.name`).
+    ///
+    /// This does not build a [`ScalarDeclaration`]: unlike the loader
+    /// (`introspect::declaration`), which only ever sees an AST the metamodel
+    /// crate's generated `mm::ScalarDeclaration` accepts, this runs over
+    /// whatever AST the caller has, including one with no `$class` a real
+    /// scalar carries (PORTING.md 1.2, OD-3: "a member that TS runs over any
+    /// JS object reads the AST as `serde_json::Value`", exactly like
+    /// [`ScalarDeclaration::process`]) — the oracle harness replays
+    /// `ScalarDeclaration.new` fixtures recorded from a `ModelFile` built
+    /// directly, before `ModelManager.addModelFiles` runs, and several unit
+    /// tests build the AST by hand (PORTING.md 6.2: "a recipe the pre-port
+    /// loader cannot replay is the unit's problem").
+    pub fn validate_new(
+        namespace: &str,
+        file_name: Option<&str>,
+        ast: &Value,
+    ) -> crate::error::Result<String> {
+        Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
+    }
+
+    /// The same construction as [`ScalarDeclaration::validate_new`], but
+    /// returning what [`ScalarDeclaration::process`] computed as well as the
+    /// fully qualified name, for callers that need `getType`, `getValidator`
+    /// or `getDefaultValue` on a scalar built this way (the oracle harness's
+    /// `declnew` fixtures: a later call on a `new ScalarDeclaration(modelFile,
+    /// ast)` receiver never added to its model file, so it re-encodes the
+    /// same recipe rather than a `declref`).
+    pub fn build_standalone(
+        namespace: &str,
+        file_name: Option<&str>,
+        ast: &Value,
+    ) -> crate::error::Result<(String, ProcessedScalar)> {
+        let name = ast.get("name").and_then(Value::as_str).unwrap_or_default();
+        let fqn = crate::model_util::get_fully_qualified_name(namespace, name);
+        let processed =
+            Self::process::<crate::error::ConcertoError>(ast, file_name, &|| Ok(fqn.clone()))?;
+        // `HasValidators::check_validators`, over the raw AST `process` already
+        // read rather than a loaded node's typed one (only a `String` scalar
+        // has anything left to check here; the number check already ran
+        // inside `process`, as the constructor it ports).
+        if let Some(ScalarValidator::String {
+            validator,
+            length_validator,
+        }) = &processed.validator
+        {
+            let bad = |e: serde_json::Error| crate::error::ConcertoError::IllegalModel {
+                message: format!("invalid string validator: {e}"),
+                file_name: None,
+                location: None,
+            };
+            if let Some(v) = validator {
+                check_pattern(name, &serde_json::from_value(v.clone()).map_err(bad)?)?;
+            }
+            if let Some(v) = length_validator {
+                check_length(name, &serde_json::from_value(v.clone()).map_err(bad)?)?;
+            }
+        }
+        Ok((fqn, processed))
     }
 
     /// The generated metamodel node.
@@ -307,5 +382,212 @@ impl HasValidators for ScalarDeclaration {
             }
         }
         Ok(())
+    }
+}
+
+/// Ported TS tests (PORTING.md 6.1). `scalardeclaration.js` is this unit's
+/// own test file; `#accept`, `#getName`, `#getNamespace` and every constant
+/// marker (`#isIdentified`, `#isAsset`, …) belong to `Declaration` (ledger:
+/// TS, `not ported (Declaration)`) and are not ported here. `scalars.js`
+/// (the other TS file this task's issue names) tests only
+/// `Field.getScalarField`/`isTypeScalar` (ledger: `Field`, P2-04):
+/// `not ported (Field)`, nothing in that file is this unit's own member.
+#[cfg(test)]
+#[allow(clippy::result_large_err)] // ContractError is fine as a by-value test Err; production code always boxes it as ConcertoError::Contract.
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const NS: &str = METAMODEL_NAMESPACE;
+
+    // ScalarDeclaration > Primitive type name conflict
+    // TS: "should throw an error when scalar name is a primitive type"
+    #[test]
+    fn throws_when_scalar_name_is_a_primitive_type() {
+        for primitive in ["String", "Integer", "Boolean", "DateTime", "Double", "Long"] {
+            let ast = json!({
+                "name": primitive,
+                "$class": format!("{NS}.StringScalar"),
+            });
+            let err = ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!())
+                .expect_err("a scalar named like a primitive must be rejected");
+            assert_eq!(err.kind, ErrorKind::IllegalModel);
+            assert_eq!(
+                err.message(),
+                format!("Invalid scalar name '{primitive}'. Name conflicts with primitive type.")
+            );
+        }
+    }
+
+    // TS: "should not throw when scalar name is valid"
+    #[test]
+    fn does_not_throw_for_a_valid_scalar_name() {
+        let ast = json!({
+            "name": "ValidScalar",
+            "$class": format!("{NS}.StringScalar"),
+        });
+        assert!(
+            ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!()).is_ok()
+        );
+    }
+
+    // ScalarDeclaration#getName (Declaration's own member, not ported here)
+    // also asserts toString(), which this unit does port.
+    // TS: "#getName should return the scalar name"
+    #[test]
+    fn to_string_matches_the_ts_format() {
+        assert_eq!(
+            ScalarDeclaration::to_string("com.hyperledger.testing@1.0.0.suchName"),
+            "ScalarDeclaration {id=com.hyperledger.testing@1.0.0.suchName}"
+        );
+    }
+
+    // TS: "#getValidator should return the validator"
+    // (test/data/parser/scalardeclaration.ssn.cto:
+    //  `scalar SSN extends String default="000-00-0000" regex=/\d{3}-\d{2}-\d{4}/`)
+    #[test]
+    fn get_validator_returns_the_string_validator_for_a_regex_scalar() {
+        let ast = json!({
+            "$class": format!("{NS}.StringScalar"),
+            "name": "SSN",
+            "defaultValue": "000-00-0000",
+            "validator": {
+                "$class": format!("{NS}.StringRegexValidator"),
+                "pattern": "\\d{3}-\\d{2}-\\d{4}",
+                "flags": "",
+            },
+        });
+        let processed = ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!())
+            .expect("a valid regex validator must not error");
+        let Some(ScalarValidator::String {
+            validator: Some(v), ..
+        }) = processed.validator
+        else {
+            panic!("expected a String validator carrying the AST's `validator`");
+        };
+        assert_eq!(
+            v.get("pattern").and_then(Value::as_str),
+            Some("\\d{3}-\\d{2}-\\d{4}")
+        );
+    }
+
+    // TS: "#getDefaultValue should return the default value"
+    #[test]
+    fn default_value_is_read_from_the_ast() {
+        let ast = json!({
+            "$class": format!("{NS}.StringScalar"),
+            "name": "SSN",
+            "defaultValue": "000-00-0000",
+        });
+        let processed =
+            ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!()).unwrap();
+        assert_eq!(processed.default_value, Some(json!("000-00-0000")));
+    }
+
+    // TS: "#getDefaultValue should return the default value for falsy cases"
+    // (test/data/parser/scalardeclaration.ssn.cto:
+    //  `scalar BoolWithDefault extends Boolean default=false`)
+    #[test]
+    fn default_value_keeps_a_falsy_but_present_value() {
+        let ast = json!({
+            "$class": format!("{NS}.BooleanScalar"),
+            "name": "BoolWithDefault",
+            "defaultValue": false,
+        });
+        let processed =
+            ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!()).unwrap();
+        assert_eq!(processed.default_value, Some(json!(false)));
+    }
+
+    // TS: "#getDefaultValue should return null"
+    // (test/data/parser/scalardeclaration.permutations.cto:
+    //  `scalar StringScalar extends String`, no default)
+    #[test]
+    fn default_value_is_none_when_absent() {
+        let ast = json!({
+            "$class": format!("{NS}.StringScalar"),
+            "name": "StringScalar",
+        });
+        let processed =
+            ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!()).unwrap();
+        assert_eq!(processed.default_value, None);
+    }
+
+    // `ScalarDeclaration.validate` has no direct TS `it()`: TS only ever
+    // reaches it through `ModelFile`/`ModelManager` loading, so its own-op
+    // oracle fixtures are cross-op ones under `ModelManager.addCTOModel`,
+    // deferred to P2-08 (PORTING.md 6.2). This exercises it directly through
+    // a minimal `ResolutionContext` double instead, as AGENTS.md asks for a
+    // unit test of every ported method.
+    struct FakeCtx {
+        names: Vec<&'static str>,
+    }
+
+    impl ResolutionContext for FakeCtx {
+        type Node = u32;
+        type Error = ContractError;
+
+        fn get_type(
+            &self,
+            _model_file: &u32,
+            _type_name: Option<&str>,
+        ) -> Result<Option<u32>, ContractError> {
+            unreachable!()
+        }
+        fn get_all_super_type_declarations(
+            &self,
+            _declaration: &u32,
+        ) -> Result<Vec<u32>, ContractError> {
+            unreachable!()
+        }
+        fn get_fully_qualified_name(&self, declaration: &u32) -> Result<String, ContractError> {
+            Ok(self.names[*declaration as usize].to_string())
+        }
+        fn get_fully_qualified_type_name(&self, _property: &u32) -> Result<String, ContractError> {
+            unreachable!()
+        }
+        fn get_parent(&self, _property: &u32) -> Result<u32, ContractError> {
+            unreachable!()
+        }
+        fn get_model_file(&self, _declaration: &u32) -> Result<u32, ContractError> {
+            Ok(0)
+        }
+        fn get_type_name(&self, _property: &u32) -> Result<Option<String>, ContractError> {
+            unreachable!()
+        }
+        fn is_enum(&self, _declaration: &u32) -> Result<bool, ContractError> {
+            unreachable!()
+        }
+        fn is_map_declaration(&self, _declaration: &u32) -> Result<Option<bool>, ContractError> {
+            unreachable!()
+        }
+        fn is_scalar_declaration(&self, _declaration: &u32) -> Result<Option<bool>, ContractError> {
+            unreachable!()
+        }
+        fn get_ast_class(&self, _declaration: &u32) -> Result<Option<String>, ContractError> {
+            unreachable!()
+        }
+        fn get_all_declarations(&self, _model_file: &u32) -> Result<Vec<u32>, ContractError> {
+            Ok((0..self.names.len() as u32).collect())
+        }
+    }
+
+    #[test]
+    fn validate_rejects_a_duplicate_fully_qualified_name() {
+        let ctx = FakeCtx {
+            names: vec!["org.acme@1.0.0.A", "org.acme@1.0.0.B", "org.acme@1.0.0.A"],
+        };
+        let err = ScalarDeclaration::validate(&ctx, &2)
+            .expect_err("a duplicate fully qualified name must be rejected");
+        assert_eq!(err.code, "scalardeclaration-validate-duplicateclassname");
+        assert_eq!(err.message(), "Duplicate class name org.acme@1.0.0.A");
+    }
+
+    #[test]
+    fn validate_accepts_unique_fully_qualified_names() {
+        let ctx = FakeCtx {
+            names: vec!["org.acme@1.0.0.A", "org.acme@1.0.0.B"],
+        };
+        assert!(ScalarDeclaration::validate(&ctx, &0).is_ok());
     }
 }

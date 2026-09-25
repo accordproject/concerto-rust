@@ -335,18 +335,30 @@ static getShortName(fqn) {
   carries `/* istanbul ignore if */`, and the module-level `rust` constant
   `/* istanbul ignore next */`, so ts mode's coverage counts exactly the
   statements, branches and functions it counted before (checked in the
-  trial: the uncovered counts did not change). The views load the shim with
-  `require`, and `tsconfig.build.json` excludes `src/engine`, so tsc emits no
-  `.d.ts` for it and the API snapshot stays identical. The consequence is
-  that `dist/` does not carry the shim yet; OD-11. `scripts/build-esm.js`
-  honours the same exclude, so the ESM builds compile exactly the CJS
-  build's modules (no `dist/esm*/engine/`, and no change to the chunk graph).
+  trial: the uncovered counts did not change). The views load the shim through
+  `loadEngine` (below), and `tsconfig.build.json` excludes `src/engine`, so the
+  declaration build emits no `.d.ts` for it and the API snapshot stays
+  identical. The shim still ships, as JavaScript only (OD-11, P4-11):
+  `tsconfig.build.internal.json` compiles `src/engine/` into `dist/engine/`
+  with `declaration: false`, and `scripts/build-esm.js` leaves it out of the
+  public ESM pass and builds it into `dist/esm*/engine/` in a pass of its own.
+  That pass keeps the engine's chunks inside `engine/` and every public module
+  the engine imports external (pointing at the public `.mjs`, so the engine
+  shares its instances and classes). The public ESM modules and their shared
+  chunks are therefore exactly what they were without the engine, and the
+  engine's own `require` calls keep esbuild's `__require` shim inside
+  `engine/`, never in a chunk the public modules import. Rust mode runs
+  through the CommonJS `dist/` only: through the public ESM and browser entry
+  points (`dist/esm/index.mjs`, `dist/esm-browser/index.mjs`) `loadEngine`'s
+  `module.require` does not exist, so that path is deferred to P4-11a
+  (accordproject/concerto-rust#115).
 - **Why `loadEngine` and not `require('./engine')`:** a downstream bundler
   (esbuild, webpack, rollup) resolves every string-literal `require` it sees,
-  even behind a runtime guard that is false in ts mode. With `dist/` lacking
-  `engine/`, a literal specifier made every Node bundle of the package fail
-  in ts mode (`Could not resolve "./engine"`), a regression the review of the
-  trial caught. `loadEngine` hides the specifier from all of them without a
+  even behind a runtime guard that is false in ts mode. In the trial, when
+  `dist/` lacked `engine/`, a literal specifier made every Node bundle of the
+  package fail in ts mode (`Could not resolve "./engine"`), a regression the
+  review caught; now that `dist/` ships `engine/`, a literal specifier would
+  instead pull the engine into every ts-mode bundle. `loadEngine` hides the specifier from all of them without a
   new diagnostic: its argument is not a literal and it never names the bare
   `require` (esbuild's ESM output would otherwise add a `__require` shim,
   which webpack reports as a critical dependency); `module.require` loads
@@ -355,9 +367,15 @@ static getShortName(fqn) {
   Checked in the trial: esbuild and webpack bundles of `dist/index.js`,
   `dist/esm/index.mjs` and `dist/esm-browser/index.mjs`, and rollup of
   `dist/index.js`, build with the same errors (none) and warnings as before
-  the flag; only the guards' own bytes are added. When P4-02 ships the shim
-  in `dist/` (OD-11), bundling must still leave the engine module out of a
-  ts-mode bundle, so keep the non-literal load.
+  the flag; only the guards' own bytes are added. `dist/` ships the shim
+  (OD-11, P4-11), and a ts-mode bundle must still leave the engine out, so
+  keep the non-literal load. The same rule holds for the public ESM chunks: a
+  bundle of `dist/esm` or `dist/esm-browser` must build with the same errors
+  and warnings as before (checked in P4-11 with webpack `--target node` on
+  `dist/esm/index.mjs` and `--target web` on `dist/esm-browser/index.mjs`),
+  which is why the engine is built in its own esbuild pass and no `__require`
+  shim appears outside `dist/esm*/engine/`. P4-11a (#115) must keep this when
+  it makes the ESM views reach `engine/*.mjs`.
 - The rust-mode runs cover the ignored code instead: the unit's test files
   in rust mode (6.2) and the WASM replay of the oracle.
 
@@ -1093,8 +1111,11 @@ A unit is accountable for two sets of fixtures.
     `CONCERTO_ORACLE_DIR=<concerto>/migration/oracle CONCERTO_CTO_CACHE=<file> [ORACLE_OP=<prefix>] cargo test -p accordproject-concerto-core --test oracle -- --nocapture`,
     with the cache written by
     `ORACLE_REFERENCE_DIR=<installed reference> node migration/oracle/bin/cto-cache.js --op <Class>. --out <file>`.
-    With `CONCERTO_ORACLE_DIR` unset and no corpus next to the checkout, it
-    passes with a notice, so that CI without the corpus stays green (OD-7).
+    With neither `CONCERTO_ORACLE_FIXTURES` nor `CONCERTO_ORACLE_DIR` set and
+    no corpus next to the checkout, the test fails: a run that replayed no
+    fixture never reads as a pass. `CONCERTO_ORACLE_SKIP=1` opts out
+    explicitly, and the test is then reported as `ignored`; CI, which has no
+    corpus, sets it (OD-7).
   - **Ops of the unit's classes that the unit does not port** (TS rows such
     as `ScalarDeclaration.isAbstract`, which have fixtures) are listed in the
     harness and counted as "not replayed", never as a pass or a failure. Any
@@ -1389,11 +1410,11 @@ named task.
 | OD-4 | The message for an invalid regex comes from the engine (V8 in TS, `regress` in Rust). No fixture or unit test observes it today. | Rust reports `kind = Validator`, `errorType = RegexValidatorException`, with V8's wording (`Invalid regular expression: /<source>/<flags>: <reason>`) for the reasons that regress can map. Record any other reason as an `engine` divergence. | P2-02 |
 | OD-5 | Which en.json keys belong in the Rust catalogue? `composer-*`, `whereastvalidator-*`, `like` and `test-*` have no throw site in concerto-core. | Port every key used by a RUST or HYBRID member, plus `factory-newinstance-*` (#32 point 4) and `typenotfounderror-defaultmessage`. Do not port unused keys. `Globalize` stays TS and keeps en.json for them. | P1-05 |
 | OD-6 | The ledger at `accordproject/concerto` commit `c48423c` applies #32 points 1, 2 and 9 (new D1 denominator; `w_tests`/`direct_tests`/`needs_fallback` in place of `coupled_tests`), but `classification.js` does not yet apply points 3 to 8: Factory model checks are still TS, `quoteStringValue` is HYBRID, DCS rows point only at P4-09, and the `Serializer.toJSON`/`fromJSON` reasons still describe a Serializer-level visitor path that option B forbids. Also, the P2-12 brief lists "the DCS/YAML converter", but the ledger keeps `dcsconverter.ts` TS (`yaml` npm lib). | Wherever a row's classification or reason differs from any decision in section 5 (points 3 to 8), section 5 overrides the TSV until `classification.js` applies them and the ledger is re-run. For everything else, including the fallback rows (`needs_fallback=true`, 1.4) and the D1 figures (85.3% full weight, 57.2% RUST only, denominator 6498.5), the TSV and SUMMARY at `c48423c` are authoritative as published. P2-12 does the DCS rows. The Factory helper is planned as P3-01 (Rust) and P4-10 (view). `dcsconverter.ts` stays TS unless the maintainer extends #32 point 5 to cover it. | P2-12 / maintainer |
-| OD-7 | How does the native harness find the corpus, and how does a task run one op? | Set an env var `CONCERTO_ORACLE_DIR`, defaulting to `../concerto/migration/oracle`, and a filter env var `ORACLE_OP=<Class>.<member>` (a prefix match), run with `cargo test -p accordproject-concerto-core --test oracle`. The trial also reads `CONCERTO_CTO_CACHE` (the cache file), and passes with a notice when neither the variable nor the default corpus exists, because concerto-rust's CI has no corpus; P1-07 decides whether CI fetches one instead. | P1-07 |
+| OD-7 | How does the native harness find the corpus, and how does a task run one op? | Set an env var `CONCERTO_ORACLE_DIR`, defaulting to `../concerto/migration/oracle`, and a filter env var `ORACLE_OP=<Class>.<member>` (a prefix match), run with `cargo test -p accordproject-concerto-core --test oracle`. The trial also reads `CONCERTO_CTO_CACHE` (the cache file), and passed with a notice when neither the variable nor the default corpus existed. Since then a missing corpus fails the test, and `CONCERTO_ORACLE_SKIP=1` opts out explicitly (the test is reported as `ignored`, not passed); concerto-rust's CI has no corpus and sets it. | P1-07 |
 | OD-8 | New dependencies | `regress` (required by the plan), `indexmap` (3.7) and `ryu-js` (3.1) are pre-approved for `concerto-core`; the trial added `regress` and `ryu-js`. `concerto-wasm` uses `wasm-bindgen` (pinned `=0.2.128`, the CLI version), `js-sys` and `serde_json`, as the spike did. Anything else needs architect approval on the issue. | this rulebook |
 | OD-9 | How does the native harness rebuild the fixtures whose inputs are CTO text (13,006 of 15,037, section 6.2), when CTO parsing stays in JS? | P1-07 adds a JS generator in `migration/oracle/` that runs the frozen `concerto-cto` 5.0.0 parser (the one the oracle recorded with) over every CTO text in the corpus, fixture recipes and blobs included. It writes a CTO→AST cache keyed by the SHA-256 of the exact CTO text and the parser arguments that affect the AST, storing either the AST or the recorded `ParseException`. The cache is committed next to the corpus and regenerated whenever the corpus is re-recorded. A check fails if any CTO text in the corpus has no cache entry. The native harness replays an `addCTOModel` step as `add_model` with the cached AST, and never parses CTO in Rust. | P1-07 |
 | OD-10 | How are cross-op error fixtures attributed to a unit (section 6.2)? | The P1-07 harness writes an attribution index, `fixture id → catalogue key → src/<file>.ts:<line> → unit`, by matching each error fixture's class and final message against the catalogue (2.2, 2.3). It lists fixtures with no match or several matches as unattributed. The index is regenerated whenever the catalogue changes, and each P2 or P3 PR quotes its unit's slice of it, split into due and deferred (6.2). | P1-07 |
-| OD-11 | How does the shim ship in `dist/`? The trial keeps `src/engine/` out of the declaration build (`tsconfig.build.json` excludes it, and the views `require` it) so that the `.d.ts` snapshot does not move; so `dist/` has no shim, and rust mode runs only from `src/` (ts-node), as the tests and the oracle do. The views load it through `loadEngine` (1.5), never a literal `require('./engine')`, so bundling `dist/` in ts mode is unchanged; `scripts/build-esm.js` honours the exclude too. | P4-02 includes `src/engine/` in the build and regenerates the snapshot once, with the maintainer's sign-off that its only change is the new internal `engine/*.d.ts` files (or teaches the snapshot to skip `src/engine/`). The views' `never`-typed guard keeps every public signature as it is either way. | P4-02, P4-11 |
+| OD-11 | How does the shim ship in `dist/`? The trial keeps `src/engine/` out of the declaration build (`tsconfig.build.json` excludes it, and the views `require` it) so that the `.d.ts` snapshot does not move; so, in the trial, `dist/` had no shim and rust mode ran only from `src/` (ts-node). The views load it through `loadEngine` (1.5), never a literal `require('./engine')`, so bundling `dist/` in ts mode is unchanged; `scripts/build-esm.js` honours the exclude too. | **Settled (P4-11):** the shim ships as JavaScript only, with no `.d.ts`. `tsconfig.build.json` keeps excluding `src/engine/`, so the snapshot does not move; `tsconfig.build.internal.json` (`declaration: false`) compiles it into `dist/engine/`; `scripts/build-esm.js` builds it into `dist/esm*/engine/` in a separate esbuild pass with the public modules external, so the public ESM output and its chunks are unchanged. The views keep the non-literal `loadEngine` and the `never`-typed guard, so every public signature stays as it is. Rust mode works through the CommonJS `dist/`; through the public ESM and browser entry points it is deferred to P4-11a (#115), by the maintainer's decision. | P4-02, P4-11, P4-11a |
 | OD-12 | Snapshot pass-back or handles, and one context trait or two? The trial's views hand the JS object back and the binding reads the cached fields; the arena will hand a `DeclId`/`PropId` instead. The trial also added `ValidatedElement` next to `ResolutionContext`. | Keep the snapshot fields as the view's state either way (getters read them, 1.5); P1-04 replaces the pass-back with handles and a `generation()` counter, and decides whether `ValidatedElement` becomes `ResolutionContext` methods on a `Node`. **Settled in P1-04:** the arena has `ModelFileId`/`DeclId`/`PropId` handles and `generation()`; the binding moves to them in P4-01. `ValidatedElement` stays a separate trait, because a validator is built while its element is constructed, before the element has a handle. | P1-04 |
 
 ---

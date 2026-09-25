@@ -601,6 +601,131 @@ mod tests {
         );
     }
 
+    // ---- P2-02 additions (StringValidator, CollectionSizeValidator) ----
+
+    #[test]
+    fn golden_stringvalidator_constructor_invalidlength() {
+        assert_eq!(
+            contract("stringvalidator-constructor-invalidlength", &[]).message(),
+            "Invalid string length, minLength and-or maxLength must be specified."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_constructor_negativelength() {
+        assert_eq!(
+            contract("stringvalidator-constructor-negativelength", &[]).message(),
+            "minLength and-or maxLength must be positive integers."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_constructor_mingreaterthanmax() {
+        assert_eq!(
+            contract("stringvalidator-constructor-mingreaterthanmax", &[]).message(),
+            "minLength must be less than or equal to maxLength."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_constructor_invalidregex() {
+        assert_eq!(
+            contract(
+                "stringvalidator-constructor-invalidregex",
+                &[(
+                    "message",
+                    "Invalid regular expression: /^[A-z/: unterminated character class"
+                )]
+            )
+            .message(),
+            "Invalid regular expression: /^[A-z/: unterminated character class"
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_validate_belowminlength() {
+        assert_eq!(
+            contract(
+                "stringvalidator-validate-belowminlength",
+                &[("value", "w"), ("minLength", "2")]
+            )
+            .message(),
+            "The string length of 'w' should be at least 2 characters."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_validate_abovemaxlength() {
+        assert_eq!(
+            contract(
+                "stringvalidator-validate-abovemaxlength",
+                &[("value", "ABCD1234567"), ("maxLength", "10")]
+            )
+            .message(),
+            "The string length of 'ABCD1234567' should not exceed 10 characters."
+        );
+    }
+
+    #[test]
+    fn golden_stringvalidator_validate_regexmismatch() {
+        assert_eq!(
+            contract(
+                "stringvalidator-validate-regexmismatch",
+                &[("value", "xyz"), ("regex", "/^[A-z][A-z][0-9]{7}/")]
+            )
+            .message(),
+            "Value 'xyz' failed to match validation regex: /^[A-z][A-z][0-9]{7}/"
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_constructor_nosize() {
+        assert_eq!(
+            contract("collectionsizevalidator-constructor-nosize", &[]).message(),
+            "Invalid collection size, minSize and/or maxSize must be specified."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_constructor_negativesize() {
+        assert_eq!(
+            contract("collectionsizevalidator-constructor-negativesize", &[]).message(),
+            "minSize and/or maxSize must be positive integers."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_constructor_mingreaterthanmax() {
+        assert_eq!(
+            contract("collectionsizevalidator-constructor-mingreaterthanmax", &[]).message(),
+            "minSize must be less than or equal to maxSize."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_validate_belowminsize() {
+        assert_eq!(
+            contract(
+                "collectionsizevalidator-validate-belowminsize",
+                &[("minSize", "2")]
+            )
+            .message(),
+            "Collection must contain at least 2 elements."
+        );
+    }
+
+    #[test]
+    fn golden_collectionsizevalidator_validate_abovemaxsize() {
+        assert_eq!(
+            contract(
+                "collectionsizevalidator-validate-abovemaxsize",
+                &[("maxSize", "3")]
+            )
+            .message(),
+            "Collection must contain no more than 3 elements."
+        );
+    }
+
     #[test]
     fn golden_engine_typeerror_readproperties() {
         assert_eq!(

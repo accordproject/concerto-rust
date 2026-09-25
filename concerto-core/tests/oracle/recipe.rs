@@ -58,14 +58,21 @@
 //! name as `codec.js` checks them. `decoref` (P2-07) becomes a
 //! [`DecoParent`] plus its position, resolved against its parent's processed
 //! decorators at dispatch time (`ops.rs`); its `parent` must itself be a
-//! `declref`, `propref` or `mfref`. `declnew`, map key/value `propref`s,
-//! `validatorref`, `typed`, `factory`, `serializer`,
+//! `declref`, `propref` or `mfref`. A `declnew` (a declaration built
+//! directly via `new Cls(modelFile, ast)`, never added to `modelFile`) is
+//! rebuilt with `ScalarDeclaration::build_standalone` when `cls` is
+//! `ScalarDeclaration` (P2-05); any other `cls` is `unsupported`, for its own
+//! owner. Map key/value `propref`s, `validatorref`, `typed`, `factory`,
+//! `serializer`,
 //! `introspector`, `predicate` and `decoratorfactory` have no Rust
 //! counterpart yet: `unsupported`.
 
 use std::collections::HashMap;
 
-use concerto_core::introspect::{Declaration, DeclarationKind, ModelFile, Named};
+use concerto_core::introspect::scalar::ProcessedScalar;
+use concerto_core::introspect::{
+    Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
+};
 use concerto_core::model_manager::{DeclId, ModelFileId, ModelManager, Node, PropId};
 use serde_json::{Value, json};
 
@@ -213,8 +220,8 @@ pub struct Replayed {
 /// A model file argument, rebuilt from `mfref` or `mfnew`.
 #[derive(Debug, Clone)]
 pub struct FileArg {
-    ast: Value,
-    file_name: Option<String>,
+    pub(crate) ast: Value,
+    pub(crate) file_name: Option<String>,
     nullish_name: Value,
 }
 
@@ -230,6 +237,20 @@ pub enum Arg {
     SelfMm,
     Decl(usize, DeclId),
     Prop(usize, PropId),
+    /// A declaration built directly via `new` (`declnew`), never added to its
+    /// model file: `ScalarDeclaration::build_standalone`'s result, computed
+    /// eagerly here as TS runs the constructor while decoding the receiver.
+    DeclNew {
+        fqn: String,
+        processed: ProcessedScalar,
+    },
+    /// A validator reached through a property (`validatorref` with a
+    /// `propref` owner): the property's model manager pool index, the
+    /// property itself, and which validator it names (`"validator"`, the
+    /// regex/length or numeric-domain one; `"size"`, the collection-size
+    /// one) — `ops.rs` rebuilds the actual validator from these, since no
+    /// production `Property`/`Field` API returns one yet (P2-04/P2-05).
+    Validator(usize, PropId, String),
     /// A decorator: the pool index of its model manager, which of its
     /// declaration/property/model-file's decorators it is, and its position
     /// (P2-07).
@@ -315,9 +336,14 @@ impl<'h> Session<'h> {
                 let (mm, id) = self.declref(v)?;
                 Ok(Arg::Decl(mm, id))
             }
+            "declnew" => self.declnew(v, self_mm),
             "propref" => {
                 let (mm, id) = self.propref(v)?;
                 Ok(Arg::Prop(mm, id))
+            }
+            "validatorref" => {
+                let (mm, id, part) = self.validatorref(v)?;
+                Ok(Arg::Validator(mm, id, part))
             }
             "decoref" => {
                 let (mm, parent, index) = self.decoref(v)?;
@@ -452,6 +478,36 @@ impl<'h> Session<'h> {
         })
     }
 
+    /// A declaration built directly via `new` (`{cls, mf, ast}`, never added
+    /// to `mf`): `codec.js`'s `decodeDecl` runs `new Cls(mf, ast)` while
+    /// decoding, so a constructor failure here is "input construction
+    /// failed", the same convention as `file()`'s `new ModelFile`. Only
+    /// `ScalarDeclaration` is a recorded `declnew` class so far (P2-05); any
+    /// other is `unsupported` for its own owner.
+    fn declnew(&mut self, v: &Value, self_mm: Option<&Replayed>) -> Faulty<Arg> {
+        let cls = v.get("cls").and_then(Value::as_str).unwrap_or_default();
+        if cls != "ScalarDeclaration" {
+            return Err(blocked(
+                format!("a declaration built directly via `new {cls}(...)`, not ported yet"),
+                format!("{cls}.new"),
+            ));
+        }
+        let mf = v
+            .get("mf")
+            .ok_or_else(|| Fault::Harness("declnew without mf".into()))?;
+        let file = self.file(mf, self_mm)?;
+        let ast = v.get("ast").cloned().unwrap_or(Value::Null);
+        let namespace = file
+            .ast
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let (fqn, processed) =
+            ScalarDeclaration::build_standalone(namespace, file.file_name.as_deref(), &ast)
+                .map_err(|e| divergence_from(&to_oracle_error(&e), "new ScalarDeclaration"))?;
+        Ok(Arg::DeclNew { fqn, processed })
+    }
+
     fn declref(&mut self, v: &Value) -> Faulty<(usize, DeclId)> {
         let mf = v
             .get("mf")
@@ -519,6 +575,30 @@ impl<'h> Session<'h> {
         }
     }
 
+    /// A `validatorref`: which validator (`part`) of which property
+    /// (`owner`, a `propref`). A `declref`-owned `validatorref` (a scalar
+    /// declaration's own validator) has no fixture in the corpus today and
+    /// is reported the same way any other unhandled `@@oracle` kind is.
+    fn validatorref(&mut self, v: &Value) -> Faulty<(usize, PropId, String)> {
+        let part = v
+            .get("part")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Fault::Harness("validatorref without part".into()))?
+            .to_string();
+        let owner = v
+            .get("owner")
+            .ok_or_else(|| Fault::Harness("validatorref without owner".into()))?;
+        match owner.get(M).and_then(Value::as_str) {
+            Some("propref") => {
+                let (mm, id) = self.propref(owner)?;
+                Ok((mm, id, part))
+            }
+            _ => Err(blocked(
+                "a validator whose owner is not a property has no Rust handle yet",
+                "Validator.new",
+            )),
+        }
+    }
     /// A `decoref`: `{parent, index}`, `parent` being a `declref`, `propref`
     /// or `mfref` (P2-07).
     fn decoref(&mut self, v: &Value) -> Faulty<(usize, DecoParent, usize)> {
@@ -1065,6 +1145,11 @@ impl Clone for Arg {
             Self::SelfMm => Self::SelfMm,
             Self::Decl(m, d) => Self::Decl(*m, *d),
             Self::Prop(m, p) => Self::Prop(*m, *p),
+            Self::DeclNew { fqn, processed } => Self::DeclNew {
+                fqn: fqn.clone(),
+                processed: processed.clone(),
+            },
+            Self::Validator(m, p, part) => Self::Validator(*m, *p, part.clone()),
             Self::Deco(m, parent, i) => Self::Deco(*m, parent.clone(), *i),
             Self::List(items) => Self::List(items.clone()),
         }

@@ -96,10 +96,12 @@ pub(crate) fn check_domain<T: PartialOrd>(
 
 /// Checks that a string regex validator compiles.
 ///
-/// Patterns come from the JavaScript runtime, so the engine here is one that
-/// takes the same constructs, lookahead and backreferences among them.
+/// Patterns and flags come from the JavaScript runtime, so P2-02 compiles
+/// them with `regress` (ECMAScript semantics, PORTING.md section 3), the
+/// same engine [`validators::StringValidator`] uses, rather than a
+/// general-purpose Rust regex engine.
 pub(crate) fn check_pattern(owner: &str, validator: &mm::StringRegexValidator) -> Result<()> {
-    fancy_regex::Regex::new(&validator.pattern)
+    regress::Regex::with_flags(validator.pattern.as_str(), validator.flags.as_str())
         .map_err(|error| illegal(format!("Invalid regular expression on {owner}: {error}")))?;
     Ok(())
 }
