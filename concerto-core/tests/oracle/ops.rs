@@ -200,11 +200,24 @@ pub enum Dispatch {
     /// The op ran: `{"ok": …}` or `{"error": …}`, in the oracle's outcome
     /// shape.
     Ran(Value),
-    /// The op ran, but its outcome rests on a part of the engine another
-    /// task owns and has not ported to TS parity yet: if it differs from
-    /// TS, the failure is attributed to that owner rather than the op's.
-    RanAttributed(Value, recipe::Blocker),
+    /// The op ran and threw from a part of the engine another task owns:
+    /// if TS threw too, from that part ([`Attribution`]), and the two errors
+    /// differ, the failure is that owner's (`compare.rs`). Any other
+    /// difference stays the op's own.
+    RanAttributed(Value, Attribution),
     Fault(Fault),
+}
+
+/// Who owns a Rust error that came from another task's code, and the TS
+/// exception classes that code raises: a failure is attributed to
+/// `blocker` only when TS threw one of `ts_error_classes` too (both sides
+/// threw from the same place, and only the error differs). When TS
+/// succeeded, or threw something else, Rust's error is the op's own bug
+/// (a wrong decorated AST, a stand-in rejecting valid input).
+#[derive(Debug)]
+pub struct Attribution {
+    pub blocker: recipe::Blocker,
+    pub ts_error_classes: &'static [&'static str],
 }
 
 fn ran(outcome: recipe::Outcome) -> Dispatch {
@@ -1998,7 +2011,7 @@ fn ran_with_effects(
     outcome: recipe::Outcome,
     before: &[Option<Value>],
     after: &[Option<Value>],
-    attributed: Option<recipe::Blocker>,
+    attributed: Option<Attribution>,
 ) -> Dispatch {
     let mut effects = serde_json::Map::new();
     for (i, (b, a)) in before.iter().zip(after).enumerate() {
@@ -2018,9 +2031,9 @@ fn ran_with_effects(
     attributed_dispatch(out, attributed)
 }
 
-fn attributed_dispatch(outcome: Value, attributed: Option<recipe::Blocker>) -> Dispatch {
+fn attributed_dispatch(outcome: Value, attributed: Option<Attribution>) -> Dispatch {
     match attributed {
-        Some(blocker) => Dispatch::RanAttributed(outcome, blocker),
+        Some(attribution) => Dispatch::RanAttributed(outcome, attribution),
         None => Dispatch::Ran(outcome),
     }
 }
@@ -2034,12 +2047,10 @@ const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
 
 /// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
 /// when it is exactly the error the structural stand-in raises for one of
-/// the command sets it checked: TS reaches the same point with the ported
-/// `$class` and `getType` steps, then fails (or not) in `ResourceValidator`.
-fn attribute_stand_in(
-    outcome: &recipe::Outcome,
-    command_sets: &[Value],
-) -> Option<recipe::Blocker> {
+/// the command sets it checked, and TS threw the `ValidationException` that
+/// resource validation raises: TS reaches the same point with the ported
+/// `$class` and `getType` steps, then fails there.
+fn attribute_stand_in(outcome: &recipe::Outcome, command_sets: &[Value]) -> Option<Attribution> {
     let Err(error) = outcome else {
         return None;
     };
@@ -2050,7 +2061,10 @@ fn attribute_stand_in(
             let stand_in = to_oracle_error(stand_in);
             stand_in.class == error.class && stand_in.message == error.message
         })
-        .map(|_| recipe::Blocker::Owner(RESOURCE_VALIDATION_OWNER.into()))
+        .map(|_| Attribution {
+            blocker: recipe::Blocker::Owner(RESOURCE_VALIDATION_OWNER.into()),
+            ts_error_classes: &["ValidationException"],
+        })
 }
 
 /// A plain argument, or `None` for JS `undefined` (absent or the
@@ -2508,16 +2522,19 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                     let applied = dcs::apply_decoration(&r.mm, &prepared, &options);
                     // An error that goes away when `fromAst`'s final
                     // `validateModelFiles` is skipped came from model
-                    // validation (`ModelFile.validate`), not from the DCS
-                    // engine: its text is that validator's.
+                    // validation (`ModelFile.validate`): its text is that
+                    // validator's, when TS failed model validation too
+                    // (an `IllegalModelException`).
                     if applied.is_err() {
                         let unvalidated = dcs::DecorateOptions {
                             disable_metamodel_validation: Some(true),
                             ..options.clone()
                         };
                         if dcs::apply_decoration(&r.mm, &prepared, &unvalidated).is_ok() {
-                            model_validation =
-                                Some(recipe::Blocker::Member("ModelFile.validate".into()));
+                            model_validation = Some(Attribution {
+                                blocker: recipe::Blocker::Member("ModelFile.validate".into()),
+                                ts_error_classes: &["IllegalModelException"],
+                            });
                         }
                     }
                     applied
