@@ -601,16 +601,6 @@ impl<'h> Session<'h> {
         }
         let (owner, decl) = self.declref(decl)?;
         let mm = &self.pool[owner].mm;
-        if matches!(mm.declaration(decl), Some(Declaration::Enum(_))) {
-            // An enum's values are not yet `Property`s with their own
-            // `PropId` (module doc on `PropId`): they stay `mm::EnumProperty`
-            // inside the generated `EnumDeclaration` node until P2-04 gives
-            // them one.
-            return Err(blocked(
-                "an enum value has no Rust handle yet (P2-04)",
-                "EnumValueDeclaration.new",
-            ));
-        }
         let index = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
         let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
         let not_found =

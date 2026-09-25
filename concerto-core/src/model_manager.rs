@@ -229,9 +229,10 @@ handle! {
 }
 
 handle! {
-    /// A handle to a property of a class declaration loaded into a
-    /// [`ModelManager`]. The values of an enum declaration have no handle
-    /// yet: they are not [`Property`] values until P2-04 ports them.
+    /// A handle to a property of a class declaration, or a value of an enum
+    /// declaration (P2-04), loaded into a [`ModelManager`]. Both are
+    /// [`Property`] values, addressed the same way, through the unified
+    /// [`ClassLike::own_properties`].
     PropId
 }
 
@@ -558,15 +559,14 @@ impl ModelManager {
         for (index, declaration) in model_file.declarations().iter().enumerate() {
             let decl_id = DeclId(next_index(self.declarations.len() + declarations.len())?);
             let first = next_index(self.properties.len() + properties.len())?;
-            // Enum values are not arena-addressed `PropId`s yet (P2-04): the
-            // value-level `ClassLike::own_properties` a class-family getter
-            // reads (`get_property`, `get_all_properties`, …) already gives
-            // an enum's values directly, with no `PropId` involved, so
-            // nothing here needs one; a scalar or map declaration has no
+            // P2-04: an enum's values get arena-addressed `PropId`s the same
+            // way a class declaration's own fields do, through the unified
+            // `ClassLike::own_properties` (both `ClassDeclaration` and
+            // `EnumDeclaration` are class-like, module doc on `ClassLike`);
+            // a scalar or map declaration is neither, so it has no
             // properties at all.
-            let own: &[Property] = declaration
-                .as_class()
-                .map_or(&[][..], ClassDeclaration::own_properties);
+            let own: &[Property] = ClassLike::from_declaration(declaration)
+                .map_or(&[][..], |class| class.own_properties());
             properties.extend((0..own.len()).map(|index| PropSlot {
                 declaration: decl_id,
                 index,
@@ -651,11 +651,12 @@ impl ModelManager {
         self.file(slot.model_file)?.declarations().get(slot.index)
     }
 
-    /// The property a handle names.
+    /// The property a handle names. Resolves through [`ClassLike`] so that
+    /// an enum's own values (P2-04), addressed the same as a class
+    /// declaration's fields (`insert`'s doc comment), resolve here too.
     pub fn property(&self, id: PropId) -> Option<&Property> {
         let slot = self.properties.get(id.slot())?;
-        self.declaration(slot.declaration)?
-            .as_class()?
+        ClassLike::from_declaration(self.declaration(slot.declaration)?)?
             .own_properties()
             .get(slot.index)
     }
@@ -695,6 +696,26 @@ impl ModelManager {
         self.properties
             .get(property.slot())
             .map(|slot| slot.declaration)
+    }
+
+    /// A property's own `defaultValue`, read straight off its raw AST (P2-04).
+    ///
+    /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
+    /// `this.ast.defaultValue` regardless of the property's kind, with
+    /// `Util.isNull` treating a JSON `null` the same as an absent key. The
+    /// generated `mm::DateTimeProperty` carries no `defaultValue` field at
+    /// all (the official metamodel does not declare one there, unlike the
+    /// other five field kinds), so a typed per-variant read would silently
+    /// lose a `DateTime` field's default; reading the raw AST instead, the
+    /// same as TS, keeps it. `None` for a handle the manager never handed
+    /// out, matching every other `PropId` lookup here.
+    pub fn property_default_value(&self, id: PropId) -> Option<&Value> {
+        let slot = self.properties.get(id.slot())?;
+        self.declaration_ast(slot.declaration)?
+            .get("properties")?
+            .get(slot.index)?
+            .get("defaultValue")
+            .filter(|v| !v.is_null())
     }
 
     /// Looks up a declaration by its fully-qualified name.
@@ -862,9 +883,9 @@ impl ModelManager {
                 // step is never itself an enum *value* — the field whose
                 // declared type is an enum trips this same check one level
                 // higher, before the walk ever reaches the value), which is
-                // always a `ClassDeclaration`'s own field, so its `PropId` is
-                // always in the arena (`find_property_id`, unlike an enum's
-                // own values, P2-04).
+                // always a `ClassDeclaration`'s own field (an enum value is
+                // never itself an intermediate step of a nested path), so
+                // its `PropId` is always in the arena (`find_property_id`).
                 let is_enum = !property.is_primitive() && {
                     let prop_id = self
                         .find_property_id(&declaring_fqn, name)?
@@ -899,8 +920,8 @@ impl ModelManager {
     /// [`Node::Property`] handle to reach the already-ported
     /// `model_util::is_enum` and [`ResolutionContext::get_fully_qualified_type_name`].
     /// Only ever called for a `ClassDeclaration`'s own field (see the
-    /// caller), never for an enum's own values, which have no `PropId` yet
-    /// (P2-04).
+    /// caller); works the same for an enum's own values (P2-04), though the
+    /// caller never reaches one.
     fn find_property_id(&self, declaring_fqn: &str, name: &str) -> Result<Option<PropId>> {
         let Some(owner) = self.declaration_id(declaring_fqn) else {
             return Ok(None);
@@ -1289,18 +1310,26 @@ impl ResolutionContext for ModelManager {
                     .transpose()?,
             },
         };
-        // TODO(#48): TS: Property.getFullyQualifiedTypeName
-        // (src/introspect/property.ts:218) throws `ErrorKind::Error` with the
-        // inline template `'Failed to find fully qualified type name for
-        // property ' + this.name + ' with type ' + this.type` here
-        // (ModelFile.getFullyQualifiedTypeName itself returns null and never
-        // throws). P2-04 ports Property.getFullyQualifiedTypeName and adds
-        // that template and its golden test to the catalogue (PORTING.md
-        // 6.3). Until then the already-ported ModelUtil.isAssignableTo
-        // (model_util.rs) reaches this natively as `TypeNotFound`, where TS
-        // throws `Error`.
-        resolved.ok_or_else(|| ConcertoError::TypeNotFound {
-            type_name: type_name.unwrap_or("null").to_string(),
+        // TS: Property.getFullyQualifiedTypeName (src/introspect/property.ts:218)
+        // throws a plain `Error` (`ErrorKind::Error`, not
+        // `IllegalModelException`) with its own inline template
+        // (`property-getfullyqualifiedtypename-notfound`) when
+        // `ModelFile.getFullyQualifiedTypeName` returns `null` — which it
+        // does, rather than throwing, so this is the one throw site for
+        // both. `this.type` is JS `null` for an enum value (P2-04) and
+        // renders as the literal string `null`, matching `+ this.type`'s
+        // own string coercion.
+        resolved.ok_or_else(|| {
+            let field = self.property(id).expect("checked above");
+            ContractError::new(
+                ErrorKind::Error,
+                "property-getfullyqualifiedtypename-notfound",
+                vec![
+                    ("name", field.name().to_string()),
+                    ("type", type_name.unwrap_or("null").to_string()),
+                ],
+            )
+            .into()
         })
     }
 
@@ -1425,6 +1454,65 @@ mod tests {
         )
         .unwrap();
         mgr
+    }
+
+    /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
+    /// `this.ast.defaultValue` straight off the raw AST, for every field kind
+    /// — including `DateTimeProperty`, which the official metamodel does not
+    /// declare a `defaultValue` field on at all (module doc on
+    /// [`ModelManager::property_default_value`]), so a typed per-variant read
+    /// would silently drop one. Covers a present string default, an absent
+    /// one, one explicitly `null` in the AST (also `None`, the same as
+    /// absent: `Field.getDefaultValue`'s own doc says falsy-but-not-`false`
+    /// values are still returned, but TS's `null` and `undefined` are
+    /// indistinguishable through a plain property read, and `filter(!is_null)`
+    /// is this port's chosen way to collapse the two), and a `DateTime`
+    /// field's, which is the case this method exists for.
+    #[test]
+    fn property_default_value_reads_the_raw_ast_including_datetime() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Order", "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "status",
+                          "isArray": false, "isOptional": true, "defaultValue": "OPEN" },
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "note",
+                          "isArray": false, "isOptional": true },
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "nulled",
+                          "isArray": false, "isOptional": true, "defaultValue": null },
+                        { "$class": "concerto.metamodel@1.0.0.DateTimeProperty", "name": "placedAt",
+                          "isArray": false, "isOptional": true, "defaultValue": "2020-01-01T00:00:00.000Z" }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+
+        let prop = |name: &str| {
+            mgr.find_property_id("org.example@1.0.0.Order", name)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name} not found"))
+        };
+
+        assert_eq!(
+            mgr.property_default_value(prop("status")),
+            Some(&serde_json::json!("OPEN"))
+        );
+        assert_eq!(mgr.property_default_value(prop("note")), None);
+        assert_eq!(mgr.property_default_value(prop("nulled")), None);
+        assert_eq!(
+            mgr.property_default_value(prop("placedAt")),
+            Some(&serde_json::json!("2020-01-01T00:00:00.000Z"))
+        );
+        assert!(
+            mgr.property_default_value(PropId::from_index(u32::MAX))
+                .is_none()
+        );
     }
 
     /// TS: `getDirectSubclasses` builds its population from
@@ -1839,9 +1927,14 @@ mod tests {
         assert_eq!(mgr.property(props[0]).unwrap().name(), "salary");
         assert_eq!(mgr.parent_of(props[0]), Some(employee));
 
-        // Enum values are not properties yet (P2-04).
+        // An enum's own values get `PropId`s too (P2-04), addressed the same
+        // way a class declaration's fields are.
         let color = mgr.declaration_id("org.example@1.0.0.Color").unwrap();
-        assert_eq!(mgr.property_ids(color).count(), 0);
+        let color_props: Vec<PropId> = mgr.property_ids(color).collect();
+        assert_eq!(color_props.len(), 1);
+        assert_eq!(mgr.property(color_props[0]).unwrap().name(), "RED");
+        assert!(mgr.property(color_props[0]).unwrap().is_enum_value());
+        assert_eq!(mgr.parent_of(color_props[0]), Some(color));
         // Model files are listed in load order: the decorator model, then the
         // root model (P1-07b, matching TS's `addDecoratorModel(); addRootModel();`).
         let namespaces: Vec<&str> = mgr.model_files().map(ModelFile::namespace).collect();
@@ -1852,6 +1945,103 @@ mod tests {
                 "concerto@1.0.0",
                 "org.example@1.0.0"
             ]
+        );
+    }
+
+    /// `child@1.0.0.Child { o Integer age }`, imported into `parent@1.0.0` as
+    /// `Kid` (`import child@1.0.0.{Child as Kid}`); `parent@1.0.0`'s own
+    /// `Child` concept has a `kid` field of that aliased type. The TS
+    /// original (`test/introspect/property.js` "Property - Test for
+    /// property types using Import Aliasing", `test/data/aliasing/*.cto`;
+    /// P2-04, issue #48) builds this over `ModelManager.resolveMetaModel`,
+    /// which this port does not have yet (P2-08); this is the same shape
+    /// built directly from AST, the only difference this suite's own three
+    /// assertions can see (none of them reads a decorator or a resolved
+    /// type reference, the only things `resolveMetaModel` would add).
+    fn aliasing_manager() -> ModelManager {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "child@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Child", "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "age", "isArray": false, "isOptional": false }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "parent@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "child@1.0.0",
+                      "types": ["Child"],
+                      "aliasedTypes": [
+                        { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "Child", "aliasedName": "Kid" }
+                      ] }
+                ],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Child", "isAbstract": false,
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "kid", "isArray": false, "isOptional": false,
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Kid" } }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        mgr
+    }
+
+    /// TS: `property.getType().should.equal('Kid')` — the alias, not the
+    /// target's own name, since `Property.process` keeps only `this.ast.type.name`
+    /// (property.ts).
+    #[test]
+    fn an_aliased_import_s_property_keeps_the_local_alias_as_its_type() {
+        let mgr = aliasing_manager();
+        let child = mgr.declaration_id("parent@1.0.0.Child").unwrap();
+        let kid = mgr
+            .property_ids(child)
+            .find(|id| mgr.property(*id).unwrap().name() == "kid")
+            .unwrap();
+        assert_eq!(mgr.property(kid).unwrap().type_name(), Some("Kid"));
+    }
+
+    /// TS: `property.getFullyQualifiedTypeName().should.equal('child@1.0.0.Child')`
+    /// — resolved through the import alias to the type it actually names.
+    #[test]
+    fn an_aliased_import_s_property_resolves_its_fully_qualified_type_name() {
+        let mgr = aliasing_manager();
+        let child = mgr.declaration_id("parent@1.0.0.Child").unwrap();
+        let kid = mgr
+            .property_ids(child)
+            .find(|id| mgr.property(*id).unwrap().name() == "kid")
+            .unwrap();
+        assert_eq!(
+            mgr.get_fully_qualified_type_name(&Node::Property(kid))
+                .unwrap(),
+            "child@1.0.0.Child"
+        );
+    }
+
+    /// TS: `property.getFullyQualifiedName().should.equal('parent@1.0.0.Child.kid')`.
+    #[test]
+    fn an_aliased_import_s_property_has_its_own_fully_qualified_name() {
+        let mgr = aliasing_manager();
+        let child = mgr.declaration_id("parent@1.0.0.Child").unwrap();
+        let kid = mgr
+            .property_ids(child)
+            .find(|id| mgr.property(*id).unwrap().name() == "kid")
+            .unwrap();
+        assert_eq!(
+            mgr.get_fully_qualified_name(&Node::Property(kid)).unwrap(),
+            "parent@1.0.0.Child.kid"
         );
     }
 
