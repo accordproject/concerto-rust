@@ -141,8 +141,8 @@ impl ModelManager {
         import_scope: &ModelManager,
     ) -> Result<()> {
         let attach = |e| attach_model_file(e, model_file);
-        check_unique_decorators(model_file, None).map_err(attach)?;
         validate_decorators(self, model_file.namespace(), model_file, None).map_err(attach)?;
+        check_unique_decorators(model_file, None).map_err(attach)?;
         check_imports(import_scope, model_file).map_err(attach)?;
         check_unique_declaration_names(model_file)?;
         for declaration in model_file.declarations() {
@@ -343,10 +343,10 @@ fn attach_model_file(err: ConcertoError, model_file: &ModelFile) -> ConcertoErro
 ///
 /// TS: `Declaration.validate` (declaration.ts, "#648"), reached through every
 /// subtype's own `super.validate()` chain — `ClassDeclaration.validate` (so
-/// every concept-like declaration and, unchanged, `EnumDeclaration`) and
-/// `ScalarDeclaration.validate` both call it first thing, before their own
-/// checks (P2-08). `MapDeclaration` reaches it the same way in TS, but is
-/// P2-06's territory; not called from here.
+/// every concept-like declaration and, unchanged, `EnumDeclaration`),
+/// `ScalarDeclaration.validate` and `MapDeclaration.validate` all call it
+/// after their own decorator checks and before anything else (P2-08; the
+/// `MapDeclaration` call site was added by #152, closing finding F2).
 fn check_import_clash(
     manager: &ModelManager,
     namespace: &str,
@@ -413,9 +413,12 @@ impl Validate for Declaration {
                 // TS: `EnumDeclaration` inherits `ClassDeclaration.validate`
                 // unchanged, whose own `super.validate()` reaches
                 // `Declaration.validate`'s decorator and import-clash checks
-                // before anything class-specific (P2-08).
-                check_unique_decorators(enm, None)?;
+                // before anything class-specific (P2-08). Within the
+                // decorator checks, `Decorated.validate` runs each
+                // decorator's own `.validate()` before the duplicate-name
+                // scan (F4, #152).
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
+                check_unique_decorators(enm, None)?;
                 check_import_clash(manager, namespace, enm.name(), enum_location(enm))?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
                 // check, inherited unchanged by `EnumDeclaration` — run in
@@ -425,13 +428,13 @@ impl Validate for Declaration {
                 // closing the "enum duplicate values" gap of plan §1.2).
                 check_unique_field_names(manager, enm.name(), None, &fqn)?;
                 for value in enm.values() {
-                    check_unique_decorators(value, None)?;
                     validate_decorators(
                         manager,
                         namespace,
                         value,
                         Some(&format!("{fqn}.{}", value.name())),
                     )?;
+                    check_unique_decorators(value, None)?;
                 }
                 Ok(())
             }
@@ -446,9 +449,11 @@ impl Validate for Declaration {
                 // `ModelFile.validate()` runs the same scan over the same
                 // declarations before validating any of them
                 // (`check_unique_declaration_names`), so a duplicate never
-                // gets this far.
-                check_unique_decorators(scalar, None)?;
+                // gets this far. Within the decorator checks, `Decorated
+                // .validate` runs each decorator's own `.validate()` before
+                // the duplicate-name scan (F4, #152).
                 validate_decorators(manager, namespace, scalar, Some(&fqn))?;
+                check_unique_decorators(scalar, None)?;
                 check_import_clash(manager, namespace, scalar.name(), None)
             }
         }
@@ -457,13 +462,19 @@ impl Validate for Declaration {
 
 impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
+        let fqn = get_fully_qualified_name(namespace, self.name());
         // TS: `ClassDeclaration.validate`'s `super.validate()`
-        // (classdeclaration.ts) reaches `Declaration.validate`'s import-clash
-        // check ([`check_import_clash`]'s doc comment) before this method's
-        // own super-type block (P2-08).
+        // (classdeclaration.ts) reaches `Declaration.validate`'s
+        // `super.validate()` first — `Decorated.validate`'s decorator checks
+        // (each decorator's own `.validate()`, then the duplicate-name scan,
+        // F4, #152) — and only then `Declaration.validate`'s own
+        // import-clash check ([`check_import_clash`]'s doc comment), before
+        // this method's own super-type block (P2-08, reordered #152: this
+        // used to run the decorator checks last).
+        validate_decorators(manager, namespace, self, Some(&fqn))?;
+        check_unique_decorators(self, class_location(self))?;
         check_import_clash(manager, namespace, self.name(), class_location(self))?;
         check_super_type(manager, namespace, self)?;
-        let fqn = get_fully_qualified_name(namespace, self.name());
         // TS: the `if (this.idField)` identity block — `check_identifier`'s
         // not-a-property/not-a-string/optional checks, then
         // `check_identity_matches_super`'s super-type redeclare check — runs
@@ -477,8 +488,6 @@ impl Validate for ClassDeclaration {
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
-        check_unique_decorators(self, class_location(self))?;
-        validate_decorators(manager, namespace, self, Some(&fqn))?;
         // TS: `for (field of this.getProperties())` — every property, own
         // and then inherited (`getProperties` walks up the super-type
         // chain), each validated in this class's own pass (P2-08 review:
@@ -522,14 +531,14 @@ fn validate_property(
         _ => e,
     };
 
-    // TS: `Property.validate` runs `super.validate()` — the `Decorated`
-    // duplicate-decorator check and, when enabled, `Decorator.validate` —
-    // before its own `resolveType` call (property.ts). `check_property_type`
-    // below is that `resolveType`/relationship logic, so the decorator
-    // checks run first here too (P2-08 review carry-over (b) from P2-04's
-    // review, #48).
-    check_unique_decorators(property, property_location(property)).map_err(in_owner_file)?;
+    // TS: `Property.validate` runs `super.validate()` — `Decorated.validate`:
+    // each decorator's own `.validate()` when enabled, then the
+    // duplicate-decorator scan (F4, #152) — before its own `resolveType`
+    // call (property.ts). `check_property_type` below is that
+    // `resolveType`/relationship logic, so the decorator checks run first
+    // here too (P2-08 review carry-over (b) from P2-04's review, #48).
     validate_decorators(manager, owner_ns, property, Some(&property_fqn)).map_err(in_owner_file)?;
+    check_unique_decorators(property, property_location(property)).map_err(in_owner_file)?;
 
     let type_name = property.type_identifier().map(|t| t.name.as_str());
     let is_primitive = type_name.is_none_or(is_primitive_type);
@@ -1139,17 +1148,23 @@ impl Validate for MapDeclaration {
     /// when enabled.
     ///
     /// TS: `MapDeclaration.validate` (src/introspect/mapdeclaration.ts) is
-    /// `super.validate(); this.key.validate(); this.value.validate()`; the
+    /// `super.validate(); this.key.validate(); this.value.validate()`, where
+    /// `super.validate()` is `Declaration.validate` — `Decorated.validate`'s
+    /// decorator checks (each decorator's own `.validate()`, then the
+    /// duplicate-name scan, F4), then the import-clash check — run before
+    /// the key and value checks (F2, F3, #152: this used to run the key and
+    /// value checks first, and never ran the import-clash check at all). The
     /// oracle op `MapDeclaration.validate` exercises this whole sequence,
     /// while `MapKeyType.validate` and `MapValueType.validate` exercise
     /// [`validate_map_key`] and [`validate_map_value`] in isolation (see
     /// `tests/oracle/ops.rs`).
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        validate_map_key(manager, namespace, self)?;
-        validate_map_value(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
+        validate_decorators(manager, namespace, self, Some(&fqn))?;
         check_unique_decorators(self, None)?;
-        validate_decorators(manager, namespace, self, Some(&fqn))
+        check_import_clash(manager, namespace, self.name(), None)?;
+        validate_map_key(manager, namespace, self)?;
+        validate_map_value(manager, namespace, self)
     }
 }
 
@@ -1721,6 +1736,79 @@ mod tests {
             "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
         }]));
         assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// F2 (#152): TS `MapDeclaration.validate` is `super.validate(); this.key
+    /// .validate(); this.value.validate()`, and `super.validate()`
+    /// (`Declaration.validate`) runs the import-clash check — which the Rust
+    /// engine never ran for a map at all before this fix. A map named like
+    /// an imported type must be rejected, the same as any other declaration
+    /// (`declaration_clashing_with_an_imported_name_is_rejected`).
+    #[test]
+    fn a_map_declaration_clashing_with_an_imported_name_is_rejected() {
+        let err = validate_with_imports(
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.common@1.0.0", "name": "Address" }
+            ]),
+            serde_json::json!([{
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                "name": "Address",
+                "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+            }]),
+        );
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Type 'Address' clashes with an imported type with the same name."
+        );
+    }
+
+    /// F3 (#152): TS checks a map's own decorators (as part of `super
+    /// .validate()`) before its key and its value; the Rust engine used to
+    /// check the key and value first. A map with both a duplicate decorator
+    /// and an illegal key must report the duplicate decorator.
+    #[test]
+    fn duplicate_decorator_is_reported_before_the_key_and_value_checks() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "Lookup",
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+            ],
+            // Neither String nor DateTime: illegal, and would normally be
+            // reported by `validate_map_key` ("Scalar must be one of...").
+            "key": { "$class": "concerto.metamodel@1.0.0.ObjectMapKeyType",
+                     "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Lookup" } },
+            "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+        }]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// F2/F3 (#152), combined: a map whose name clashes with an import and
+    /// which also has an illegal key must report the import clash, not the
+    /// key error — matching TS's `super.validate()` (decorators, then
+    /// import clash) running fully before `this.key.validate()`.
+    #[test]
+    fn map_import_clash_is_reported_before_the_key_check() {
+        let err = validate_with_imports(
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.common@1.0.0", "name": "Address" }
+            ]),
+            serde_json::json!([{
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                "name": "Address",
+                "key": { "$class": "concerto.metamodel@1.0.0.ObjectMapKeyType",
+                         "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Address" } },
+                "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+            }]),
+        );
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Type 'Address' clashes with an imported type with the same name."
+        );
     }
 
     /// P2-07: an enum value's own decorators are checked, matching the doc
@@ -2360,6 +2448,48 @@ mod tests {
             err.unwrap_err().to_string(),
             "Class \"Loop\" cannot extend itself."
         );
+    }
+
+    /// F1 (#152): TS `ClassDeclaration.validate`'s `super.validate()` reaches
+    /// `Decorated.validate`'s duplicate-decorator scan before this method's
+    /// own self-extend check. A class with both faults must report the
+    /// duplicate decorator, not the self-extending super type — pinning the
+    /// order so a future change can't quietly move the decorator checks back
+    /// to the end, as they used to run before this fix.
+    #[test]
+    fn duplicate_decorator_is_reported_before_a_self_extending_super_type() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Loop",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Loop" },
+            "decorators": [
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+            ]
+        }))]));
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
+    }
+
+    /// F1 (#152): the same ordering, against `check_import_clash` rather
+    /// than the self-extend check — a class named like an imported type
+    /// (see `declaration_clashing_with_an_imported_name_is_rejected`
+    /// below), with a duplicate decorator, must report the duplicate
+    /// decorator.
+    #[test]
+    fn duplicate_decorator_is_reported_before_an_import_clash() {
+        let err = validate_with_imports(
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.common@1.0.0", "name": "Address" }
+            ]),
+            serde_json::json!([concept(serde_json::json!({
+                "name": "Address",
+                "decorators": [
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+                ]
+            }))]),
+        );
+        assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
     }
 
     /// TS: introspect/identifieddeclaration.js, "#identified should create a
