@@ -36,6 +36,7 @@
 use std::cell::RefCell;
 
 use concerto_core::error::{ContractError, ErrorKind};
+use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
 use concerto_core::introspect::validators::{NumberValidator, Validator};
@@ -607,6 +608,59 @@ pub fn model_util_is_valid_map_key_scalar(decl: JsValue) -> std::result::Result<
 #[wasm_bindgen(js_name = modelUtilIsValidMapValue)]
 pub fn model_util_is_valid_map_value(value: JsValue) -> std::result::Result<bool, JsValue> {
     run(|| Ok(mu::is_valid_map_value(class_node(&value)?.as_ref())?))
+}
+
+// ---------------------------------------------------------------------------
+// ResourceId (src/model/resourceid.ts)
+// ---------------------------------------------------------------------------
+
+/// TS: ResourceId.fromURI. `legacyNamespace`/`legacyType` are the optional,
+/// nullable legacy-format arguments; a nullish value is `None`, matching how
+/// TS reads an omitted parameter.
+#[wasm_bindgen(js_name = resourceIdFromURI)]
+pub fn resource_id_from_uri(
+    uri: JsValue,
+    legacy_namespace: JsValue,
+    legacy_type: JsValue,
+) -> std::result::Result<JsValue, JsValue> {
+    run(|| {
+        let uri = js_string(&uri)?;
+        let legacy_namespace = if nullish(&legacy_namespace) {
+            None
+        } else {
+            Some(js_string(&legacy_namespace)?)
+        };
+        let legacy_type = if nullish(&legacy_type) {
+            None
+        } else {
+            Some(js_string(&legacy_type)?)
+        };
+        let id = ResourceId::from_uri(&uri, legacy_namespace.as_deref(), legacy_type.as_deref())?;
+        let out = Object::new();
+        set(&out, "namespace", &JsValue::from_str(&id.namespace));
+        set(&out, "type", &JsValue::from_str(&id.type_name));
+        set(&out, "id", &JsValue::from_str(&id.id));
+        Ok(out.into())
+    })
+}
+
+/// TS: ResourceId.prototype.toURI. Takes the view's `namespace`/`type`/`id`
+/// fields rather than a handle: `ResourceId` is a plain value object (the
+/// ledger's HYBRID constructor row), so the view still holds its own state
+/// and only the URI encoding runs in Rust.
+#[wasm_bindgen(js_name = resourceIdToURI)]
+pub fn resource_id_to_uri(
+    namespace: JsValue,
+    type_name: JsValue,
+    id: JsValue,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let namespace = js_string(&namespace)?;
+        let type_name = js_string(&type_name)?;
+        let id = js_string(&id)?;
+        let resource = ResourceId::new(namespace, type_name, id)?;
+        Ok(resource.to_uri())
+    })
 }
 
 // ---------------------------------------------------------------------------
