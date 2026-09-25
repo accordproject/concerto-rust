@@ -95,9 +95,9 @@ fn class_declarations_and_properties_carry_their_decorators() {
     let class = concept.as_class().unwrap();
     let names = |decorated: &dyn Decorated| -> Vec<String> {
         decorated
-            .decorators()
+            .get_decorators()
             .iter()
-            .map(|d| d.name.clone())
+            .map(|d| d.name().to_string())
             .collect()
     };
     assert_eq!(names(class), ["Term", "Hidden"]);
@@ -109,6 +109,70 @@ fn class_declarations_and_properties_carry_their_decorators() {
         json!({ "name": "Bare", "isAbstract": false, "properties": [] }),
     );
     assert!(bare.as_class().unwrap().decorators().is_empty());
+}
+
+/// P2-07: a scalar's and a map's own decorators are faithful, matching TS
+/// `Decorated.getDecorators()` on a scalar or a map declaration (neither is
+/// covered by any oracle `Decorated.*` fixture, which all target a class, an
+/// enum, a property or a model file).
+#[test]
+fn scalar_and_map_declarations_carry_their_own_decorators() {
+    let names = |decorated: &dyn Decorated| -> Vec<String> {
+        decorated
+            .get_decorators()
+            .iter()
+            .map(|d| d.name().to_string())
+            .collect()
+    };
+
+    let scalar = declaration(
+        "StringScalar",
+        json!({ "name": "Email", "decorators": [decorator("PII")] }),
+    );
+    assert_eq!(names(&scalar), ["PII"]);
+    assert_eq!(names(scalar.as_scalar().unwrap()), ["PII"]);
+
+    let map = declaration(
+        "MapDeclaration",
+        json!({
+            "name": "Dictionary",
+            "decorators": [decorator("Term")],
+            "key": { "$class": format!("{MM}.StringMapKeyType") },
+            "value": { "$class": format!("{MM}.StringMapValueType") }
+        }),
+    );
+    assert_eq!(names(&map), ["Term"]);
+    assert_eq!(names(map.as_map().unwrap()), ["Term"]);
+}
+
+/// P2-07: an enum's values carry their own decorators too, the same way a
+/// class's properties do.
+#[test]
+fn enum_values_carry_their_own_decorators() {
+    let enumeration = declaration(
+        "EnumDeclaration",
+        json!({
+            "name": "Colour",
+            "properties": [{
+                "$class": format!("{MM}.EnumProperty"),
+                "name": "RED",
+                "decorators": [decorator("Hex")]
+            }]
+        }),
+    );
+    let values = match &enumeration {
+        Declaration::Enum(enm) => enm.values(),
+        other => panic!("expected an enum, got {other:?}"),
+    };
+    assert_eq!(values.len(), 1);
+    assert_eq!(
+        values[0]
+            .get_decorators()
+            .iter()
+            .map(|d| d.name())
+            .collect::<Vec<_>>(),
+        ["Hex"]
+    );
 }
 
 #[test]

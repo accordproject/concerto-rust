@@ -26,7 +26,8 @@ mod validation;
 
 pub use error::{ConcertoError, Result};
 pub use introspect::{
-    ClassDeclaration, ClassKind, Declaration, DeclarationKind, Decorated, FullyQualified,
-    HasValidators, Import, ModelFile, Named, Property, ScalarDeclaration, Typed, Validate,
+    ClassDeclaration, ClassKind, Declaration, DeclarationKind, Decorated, Decorator,
+    DecoratorArgument, DecoratorValidationOptions, FullyQualified, HasValidators, Import,
+    ModelFile, Named, Property, ScalarDeclaration, TypeReferenceArgument, Typed, Validate,
 };
 pub use model_manager::ModelManager;
