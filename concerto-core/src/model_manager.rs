@@ -279,6 +279,19 @@ struct PropSlot {
     index: usize,
 }
 
+/// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
+/// `FileLoader` returns it, before it becomes a [`ModelFile`] —
+/// [`ModelManager::update_external_models`]' input.
+#[derive(Debug, Clone)]
+pub struct ModelFileSource {
+    /// The model's metamodel AST.
+    pub ast: Value,
+    /// Its CTO source text, when it has one.
+    pub definitions: Option<String>,
+    /// Its file name (a downloaded file's starts with `@`).
+    pub file_name: Option<String>,
+}
+
 /// Owns a set of model files and resolves types across them.
 #[derive(Debug, Default)]
 pub struct ModelManager {
@@ -1740,6 +1753,49 @@ impl ModelManager {
         Ok(scratch)
     }
 
+    /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
+    /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
+    /// stays in JS). `external_models` is what
+    /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
+    /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
+    /// then registered without validation — `updateModelFile(mf, name,
+    /// true)` when its namespace is already registered (by `self` or an
+    /// earlier download in the same batch), `addModelFile(mf, null, name,
+    /// true)` otherwise — and finally every registered model file is
+    /// validated (`validateModelFiles`). The model files are returned in the
+    /// same order, as TS's `externalModelFiles`.
+    ///
+    /// Any error leaves `self` exactly as it was, as TS's `catch` restores
+    /// `this.modelFiles` before rethrowing.
+    pub fn update_external_models(
+        &mut self,
+        external_models: impl IntoIterator<Item = ModelFileSource>,
+    ) -> Result<Vec<ModelFile>> {
+        let mut updated: Option<Self> = None;
+        let mut registered = Vec::new();
+        for source in external_models {
+            let current = updated.as_ref().unwrap_or(self);
+            let mf = ModelFile::from_json_with_definitions(
+                &source.ast,
+                source.definitions,
+                source.file_name,
+            )?;
+            let next = if current.model_file(mf.namespace()).is_some() {
+                current.update_model_file(mf.clone(), false)?
+            } else {
+                // `addModelFile`'s already-exists check cannot fire here.
+                current.with_model_file_registered(&mf)?
+            };
+            updated = Some(next);
+            registered.push(mf);
+        }
+        updated.as_ref().unwrap_or(self).validate_models()?;
+        if let Some(updated) = updated {
+            *self = updated;
+        }
+        Ok(registered)
+    }
+
     /// The rollback core of [`ModelManager::add_models`] and
     /// [`ModelManager::filter`]: inserts every already-built `files` in
     /// order, then, unless `validate` is false, runs
@@ -2168,7 +2224,9 @@ mod metamodel_util {
                     );
                 }
                 Some("ImportTypes") => {
-                    let model_file = model_file.ok_or_else(undefined_declarations)?;
+                    // TS only reads `modelFile.declarations` inside
+                    // `imp.types.forEach`, so an import of no types from an
+                    // unregistered namespace does not throw.
                     let aliases: HashMap<&str, &str> = imp
                         .get("aliasedTypes")
                         .and_then(Value::as_array)
@@ -2188,6 +2246,7 @@ mod metamodel_util {
                         .flatten()
                     {
                         let Some(ty) = ty.as_str() else { continue };
+                        let model_file = model_file.ok_or_else(undefined_declarations)?;
                         if find_declaration(model_file, ty).is_none() {
                             return Err(declaration_not_found(ty, namespace));
                         }
@@ -3021,6 +3080,37 @@ mod tests {
             err.to_string(),
             "Declaration Nope in namespace org.example@1.0.0 not found"
         );
+    }
+
+    /// TS's `createNameTable` only reads the target model inside
+    /// `imp.types.forEach`, so an `ImportTypes` of no types from a namespace
+    /// that is not registered resolves; one naming a type is a `TypeError`.
+    #[test]
+    fn resolve_meta_model_accepts_an_empty_import_types_from_an_unknown_namespace() {
+        let mgr = manager();
+        let model = |types: serde_json::Value| {
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.lonely@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                      "namespace": "org.missing@1.0.0", "types": types }
+                ],
+                "declarations": []
+            })
+        };
+        assert_eq!(
+            mgr.resolve_meta_model(&model(serde_json::json!([])))
+                .unwrap(),
+            model(serde_json::json!([]))
+        );
+        let err = mgr
+            .resolve_meta_model(&model(serde_json::json!(["Thing"])))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ConcertoError::Contract(ref c) if c.kind == ErrorKind::JsTypeError
+        ));
     }
 
     /// [`manager`] plus `org.clean@1.0.0`, which imports `Person` from it
@@ -3892,5 +3982,80 @@ mod tests {
         let mgr = manager();
         let err = mgr.delete_model_file("org.nope@1.0.0").unwrap_err();
         assert_eq!(err.to_string(), "Model file does not exist");
+    }
+
+    /// A downloaded `org.ext@1.0.0` declaring `E` (and `extra` when given),
+    /// as `updateExternalModels`' downloader returns it.
+    fn external(declarations: serde_json::Value) -> ModelFileSource {
+        ModelFileSource {
+            ast: serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.ext@1.0.0",
+                "declarations": declarations
+            }),
+            definitions: Some("namespace org.ext@1.0.0".into()),
+            file_name: Some("@example.com.ext.cto".into()),
+        }
+    }
+
+    fn concept(name: &str) -> serde_json::Value {
+        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": name, "isAbstract": false, "properties": [] })
+    }
+
+    #[test]
+    fn update_external_models_adds_then_updates_a_namespace() {
+        let mut mgr = manager();
+        let added = mgr
+            .update_external_models([external(serde_json::json!([concept("E")]))])
+            .unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].file_name(), Some("@example.com.ext.cto"));
+        assert!(mgr.get_declaration("org.ext@1.0.0.E").is_ok());
+        assert!(mgr.model_file("org.ext@1.0.0").unwrap().is_external());
+
+        // The same namespace again replaces it, in place.
+        mgr.update_external_models([external(serde_json::json!([concept("F")]))])
+            .unwrap();
+        assert!(mgr.get_declaration("org.ext@1.0.0.F").is_ok());
+        assert!(mgr.get_declaration("org.ext@1.0.0.E").is_err());
+        assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
+    }
+
+    #[test]
+    fn update_external_models_with_nothing_downloaded_still_validates() {
+        let mut mgr = manager();
+        assert!(mgr.update_external_models([]).unwrap().is_empty());
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.bad@1.0.0",
+                "declarations": [{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "B", "isAbstract": false,
+                    "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" },
+                    "properties": [] }]
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(mgr.update_external_models([]).is_err());
+    }
+
+    #[test]
+    fn update_external_models_rolls_back_when_validation_fails() {
+        let mut mgr = manager();
+        let broken = serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "E", "isAbstract": false,
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" },
+            "properties": [] }]);
+        assert!(
+            mgr.update_external_models([
+                external(serde_json::json!([concept("E")])),
+                external(broken)
+            ])
+            .is_err()
+        );
+        assert!(mgr.model_file("org.ext@1.0.0").is_none());
+        assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
     }
 }

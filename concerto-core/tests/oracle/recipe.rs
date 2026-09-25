@@ -84,7 +84,9 @@ use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
 };
-use concerto_core::model_manager::{DeclId, ModelFileId, ModelManager, Node, PropId};
+use concerto_core::model_manager::{
+    DeclId, ModelFileId, ModelFileSource, ModelManager, Node, PropId,
+};
 use concerto_core::model_util;
 use serde_json::{Value, json};
 
@@ -1515,6 +1517,164 @@ impl Replayed {
         }
     }
 
+    /// TS `BaseModelManager.updateExternalModels(options, fileDownloader)`
+    /// (P2-08b). The ledger makes it HYBRID: the download stays in JS, the
+    /// rest is [`ModelManager::update_external_models`]. The fixtures record
+    /// the download's network responses (`inputs.net`, URL -> `{status,
+    /// body}`), not the ASTs it produced, so the JS half is replayed here as
+    /// the default downloader runs it over those responses —
+    /// `FileDownloader.downloadExternalDependencies` with a
+    /// `DefaultFileLoader` (concerto-util) — only as far as the corpus
+    /// exercises it; anything past that is `unsupported`:
+    ///
+    /// - the jobs are every `MetaModelUtil.getExternalImports` URI of every
+    ///   `getModelFiles()` model, in order (more than one is `unsupported`:
+    ///   `PromisePool` returns results in completion order);
+    /// - `github://x` is fetched as `https://raw.githubusercontent.com/x`,
+    ///   `http(s)://` as itself, and any other scheme fails
+    ///   `CompositeFileLoader.load`; a non-2xx response fails
+    ///   `HTTPFileLoader.load`; either error is rethrown by
+    ///   `handleJobError` as `Failed to load model file. Job: <url> Details:
+    ///   Error: <message>`;
+    /// - a 2xx body is `processFile('@' + host + path with / as ., body)`,
+    ///   through the P1-07a CTO cache, whose builder does not collect `net`
+    ///   bodies: a body with no entry is `unsupported` for P1-07a. A
+    ///   downloaded model with external imports of its own (the recursive
+    ///   walk) is `unsupported`.
+    ///
+    /// A download failure happens before anything is registered, so the
+    /// manager is left as it was, as TS's `catch` leaves it.
+    pub fn update_external_models(
+        &mut self,
+        h: &Harness,
+        args: &[Arg],
+        net: Option<&Value>,
+    ) -> Faulty<Outcome> {
+        if self.kind != Kind::ModelManager {
+            return Err(Fault::Unsupported(format!(
+                "updateExternalModels on a {}",
+                self.kind.ctor()
+            )));
+        }
+        if args.len() > 1 {
+            return Err(Fault::Unsupported(
+                "updateExternalModels with a custom fileDownloader".into(),
+            ));
+        }
+        let jobs: Vec<String> = self
+            .mm
+            .model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .flat_map(|mf| external_import_uris(mf.ast()))
+            .collect();
+        if jobs.len() > 1 {
+            return Err(Fault::Unsupported(
+                "updateExternalModels with more than one download job (JS PromisePool \
+                 returns them in completion order)"
+                    .into(),
+            ));
+        }
+        let mut sources = Vec::new();
+        for url in jobs {
+            let failed = |message: String| {
+                Ok(Err(OracleError {
+                    class: "Error".into(),
+                    message: format!(
+                        "Failed to load model file. Job: {url} Details: Error: {message}"
+                    ),
+                    location: None,
+                    component: None,
+                }))
+            };
+            let fetched = if let Some(rest) = url.strip_prefix("github://") {
+                format!("https://raw.githubusercontent.com/{rest}")
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                url.clone()
+            } else {
+                return failed(format!(
+                    "Failed to find a model file loader that can handle: {url}"
+                ));
+            };
+            let Some(response) = net.and_then(|n| n.get(&fetched)) else {
+                return Err(Fault::Unsupported(format!(
+                    "updateExternalModels fetching {fetched}, which has no recorded response"
+                )));
+            };
+            let status = response.get("status").and_then(Value::as_u64);
+            let body = response.get("body").and_then(Value::as_str);
+            let (Some(status), Some(body)) = (status, body) else {
+                return Err(Fault::Harness(format!(
+                    "a recorded response for {fetched} without a status and a body"
+                )));
+            };
+            if !(200..300).contains(&status) {
+                return failed(format!("HTTP request failed with status: {status}"));
+            }
+            let name = downloaded_file_name(&fetched);
+            let cache = h
+                .cache
+                .as_ref()
+                .ok_or_else(|| Fault::Harness("no CTO -> AST cache (build-cto-cache.js)".into()))?;
+            let ast = match cache.lookup(body, Some(&name), &self.skip_location_nodes) {
+                Ok(CacheEntry::Ast(ast)) => ast,
+                Ok(CacheEntry::Error(_)) => {
+                    return Err(Fault::Unsupported(
+                        "updateExternalModels downloading a model that fails to parse".into(),
+                    ));
+                }
+                Err(_) => {
+                    return Err(Fault::Blocked(
+                        "updateExternalModels: the downloaded CTO (a recorded `net` response \
+                         body) has no CTO cache entry; the P1-07a cache builder does not collect \
+                         `net` bodies"
+                            .into(),
+                        Blocker::Owner("P1-07a".into()),
+                    ));
+                }
+            };
+            if external_import_uris(&ast).next().is_some() {
+                return Err(Fault::Unsupported(
+                    "updateExternalModels downloading a model with external imports of its own"
+                        .into(),
+                ));
+            }
+            sources.push(ModelFileSource {
+                ast,
+                definitions: Some(body.to_string()),
+                file_name: Some(name),
+            });
+        }
+        let registered = match self.mm.update_external_models(sources) {
+            Ok(registered) => registered,
+            Err(e) => return Ok(Err(to_oracle_error(&e))),
+        };
+        let mut summaries = Vec::new();
+        for mf in registered {
+            let entry = Entry {
+                ast: mf.ast().clone(),
+                file_name: mf.file_name().map(str::to_string),
+                nullish_name: undefined(),
+                definitions: mf.definitions().map(str::to_string),
+            };
+            let ns = mf.namespace();
+            match self
+                .files
+                .iter_mut()
+                .find(|e| e.ast.get("namespace").and_then(Value::as_str) == Some(ns))
+            {
+                Some(existing) => *existing = entry,
+                None => self.files.push(entry),
+            }
+            summaries.push(json!({
+                M: "ModelFile",
+                "namespace": ns,
+                "name": mf.file_name().map_or_else(undefined, |n| json!(n)),
+                "ast": mf.ast(),
+            }));
+        }
+        Ok(Ok(Value::Array(summaries)))
+    }
+
     /// Runs one state-changing call (a recipe step, or a fixture whose op is
     /// that call) on this model manager. `Ok(Err(_))` is the engine's error
     /// outcome; `Err(_)` means the call could not be replayed.
@@ -1840,6 +2000,72 @@ pub fn ast_of(mm: &ModelManager, include_concerto_namespaces: bool) -> Value {
         .map(|mf| mf.ast().clone())
         .collect();
     json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
+}
+
+/// TS `Object.values(MetaModelUtil.getExternalImports(ast))`
+/// (concerto-metamodel): the `uri` of every import that has one, keyed by
+/// the import's first fully-qualified name (a later import with the same key
+/// replaces the earlier one's URI, in the earlier one's place).
+fn external_import_uris(ast: &Value) -> impl Iterator<Item = String> + use<> {
+    let mut keyed: Vec<(String, String)> = Vec::new();
+    for imp in ast
+        .get("imports")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(uri) = imp
+            .get("uri")
+            .and_then(Value::as_str)
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let ns = imp
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("undefined");
+        let class = imp
+            .get("$class")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let first = match class.rsplit('.').next() {
+            Some("ImportAll") => "*".to_string(),
+            Some("ImportType") => imp
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("undefined")
+                .to_string(),
+            _ => imp
+                .get("types")
+                .and_then(Value::as_array)
+                .and_then(|t| t.first())
+                .and_then(Value::as_str)
+                .unwrap_or("undefined")
+                .to_string(),
+        };
+        let key = format!("{ns}.{first}");
+        match keyed.iter_mut().find(|(k, _)| *k == key) {
+            Some(existing) => existing.1 = uri.to_string(),
+            None => keyed.push((key, uri.to_string())),
+        }
+    }
+    keyed.into_iter().map(|(_, uri)| uri)
+}
+
+/// `HTTPFileLoader.load`'s name for a downloaded file: `'@' + (url.host +
+/// url.pathname).replace(/\//g, '.')`.
+fn downloaded_file_name(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (host, path) = match rest.split_once('/') {
+        Some((host, path)) => (host, format!("/{path}")),
+        None => (rest, "/".to_string()),
+    };
+    format!(
+        "@{}",
+        format!("{}{path}", host.to_ascii_lowercase()).replace('/', ".")
+    )
 }
 
 /// The handle of a model file registered in `r`, as a [`Node`].
