@@ -4407,7 +4407,10 @@ mod tests {
                       "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
                     { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Valid",
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
-                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ValuePointsAtAMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": object_type("Valid", "ObjectMapValueType") }
                 ]
             }),
             None,
@@ -4431,6 +4434,21 @@ mod tests {
         // would wrongly reject.
         assert!(manager.validate_detached_map_key(&mf, 3).is_ok());
         assert!(manager.validate_detached_map_value(&mf, 3).is_ok());
+
+        // `validate_detached_map_value`'s own rejecting case (P5-06:
+        // cargo-mutants found `validate_detached_map_value -> Ok(())`
+        // survived the two checks above, since neither of their values is
+        // ever actually rejected — only [`validate_map_value`]'s own
+        // "MapDeclaration as Map Type Value" check, on a value that points
+        // at another map, both proves this wrapper propagates a real
+        // `validate_map_value` error and distinguishes it from the mutant).
+        assert!(
+            manager
+                .validate_detached_map_value(&mf, 4)
+                .unwrap_err()
+                .to_string()
+                .contains("MapDeclaration as Map Type Value is not supported")
+        );
 
         // Not a map at all: `detached_map`'s own bound, same message shape
         // as the out-of-bounds case.
