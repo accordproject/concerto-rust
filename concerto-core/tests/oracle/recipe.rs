@@ -33,15 +33,19 @@
 //! | `addDecoratorFactory` | `unsupported`: the Rust engine has no counterpart yet |
 //!
 //! **Validation on add.** TS `addModelFile` validates *only the new file*
-//! (`modelFile.validate()`) before registering it, so a file added earlier
+//! (`modelFile.validate()`) *before* registering it, so a file added earlier
 //! with validation disabled is never re-checked (P2-08: a later
-//! `validateModelFiles` is what rejects it). The harness replays this as
-//! "register, `validate_model_file` on the new file alone, and on an error
-//! restore the files that were there before" — the Rust validation resolves
-//! the file's own namespace through the manager, so it runs once the file is
-//! registered rather than before. Removal has no Rust counterpart, so
-//! restoring rebuilds the manager from the surviving files (all of which
-//! loaded before).
+//! `validateModelFiles` is what rejects it), and a self-import cannot yet
+//! resolve through the manager (P2-08d, accordproject/concerto-rust#151).
+//! The harness replays this as "validate the new file with
+//! [`ModelManager::validate_detached_model_file`] against the manager as it
+//! stands (before registering), then register" — matching TS's own order,
+//! including its duplicate-namespace check firing first regardless of
+//! validation (`add_model_with_definitions`'s own check, unconditional).
+//! Validation failing leaves the manager untouched, since nothing is
+//! registered yet; removal has no Rust counterpart, so a later step that
+//! must undo a registered file still rebuilds the manager from the
+//! surviving files (all of which loaded before).
 //!
 //! **Options.** `skipLocationNodes` (it selects the cache entry) and
 //! `dangerouslyAllowReservedSystemTypeNamesInUserModels` (P2-08:
@@ -1602,12 +1606,47 @@ impl Replayed {
 
     /// TS `addModelFile(modelFile, cto, fileName, disableValidation)` for a
     /// model file built from `ast` (see the module doc for validation).
+    ///
+    /// **Validation on add, corrected (P2-08d, accordproject/concerto-rust#151).**
+    /// TS validates the new file *before* registering it
+    /// (`if (!this.modelFiles[ns]) { if (!disableValidation) { modelFile.validate(); }
+    /// this.modelFiles[ns] = modelFile; } else { this._throwAlreadyExists(...); }`),
+    /// so a duplicate namespace is rejected first, exactly as it is here
+    /// (`add_model_with_definitions`'s own check, below, unconditionally),
+    /// and — only for a genuinely new namespace — `modelFile.validate()`
+    /// runs while `this.modelFiles` still lacks this file's own namespace:
+    /// an import naming it (a self-import) cannot resolve. Replayed the
+    /// same way, via [`ModelManager::validate_detached_model_file`], which
+    /// checks `getImports()` against `self.mm` as it stands here (not yet
+    /// holding this namespace) while still resolving the file's own local
+    /// types, the same as `self.mm.validate_model_file` would once
+    /// registered (that function's doc comment). A namespace already
+    /// registered skips straight to `add_model_with_definitions`, which
+    /// raises TS's `_throwAlreadyExists` for it, matching TS's order.
     fn add_file(&mut self, file: FileArg, validate: bool) -> Faulty<Outcome> {
         let ns = file
             .ast
             .get("namespace")
             .and_then(Value::as_str)
             .map(str::to_string);
+        if validate {
+            let already_registered = ns
+                .as_deref()
+                .is_some_and(|ns| self.mm.model_file(ns).is_some());
+            if !already_registered {
+                let mf = match ModelFile::from_json_with_definitions(
+                    &file.ast,
+                    file.definitions.clone(),
+                    file.file_name.clone(),
+                ) {
+                    Ok(mf) => mf,
+                    Err(e) => return Ok(Err(to_oracle_error(&e))),
+                };
+                if let Err(e) = self.mm.validate_detached_model_file(&mf) {
+                    return Ok(Err(to_oracle_error(&e)));
+                }
+            }
+        }
         if let Err(e) = self.mm.add_model_with_definitions(
             &file.ast,
             file.definitions.clone(),
@@ -1622,23 +1661,6 @@ impl Replayed {
             definitions: file.definitions,
         });
         let ns = ns.unwrap_or_default();
-        if validate {
-            // TS: `modelFile.validate()` — the new file alone (module doc,
-            // "Validation on add").
-            let outcome = match self.mm.model_file(&ns) {
-                Some(mf) => self.mm.validate_model_file(mf),
-                None => {
-                    return Err(Fault::Harness(format!(
-                        "a model file that add_model just loaded is not registered under {ns}"
-                    )));
-                }
-            };
-            if let Err(e) = outcome {
-                self.files.pop();
-                self.rebuild()?;
-                return Ok(Err(to_oracle_error(&e)));
-            }
-        }
         Ok(Ok(self.model_file_summary(&ns).unwrap_or_else(undefined)))
     }
 
