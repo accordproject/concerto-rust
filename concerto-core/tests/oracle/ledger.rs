@@ -60,8 +60,11 @@ pub const STAYS_TS: &str = "stays-ts";
 ///   ("argument checks only"), but the plan owner decided it goes to Rust
 ///   (PLAN.md 3: the Serializer's per-field checks go to Rust; P4-10 only
 ///   adds the fast path, so it consumes rather than owns them), under
-///   P3-01b since the split. This is member-level only: `toJSON` and
-///   `fromJSON` keep their ledger owner, `P3-01+P4-10`.
+///   P3-01b since the split.
+/// - `Serializer.toJSON` and `fromJSON`: the ledger says `P3-01+P4-10`;
+///   P3-01's share of them is P3-01b's since the split (#124: "retarget
+///   the `Serializer.fromJSON`/`toJSON` member owners where the ledger says
+///   `P3-01+P4-10`"). P4-10 (the view) consumes the port.
 /// - The `Resource`/`Identifiable` members that mutate the instance
 ///   (`setPropertyValue`, `addArrayValue`, `setIdentifier`) or serialize it
 ///   (`Resource.toJSON`, `getSerializer().toJSON(this)`): P3-01b too, by the
@@ -69,6 +72,8 @@ pub const STAYS_TS: &str = "stays-ts";
 const PLAN_OWNER_OVERRIDES: &[(&str, &str)] = &[
     ("Factory", "P3-01b"),
     ("Serializer.new", "P3-01b"),
+    ("Serializer.toJSON", "P3-01b"),
+    ("Serializer.fromJSON", "P3-01b"),
     ("Resource.setPropertyValue", "P3-01b"),
     ("Resource.addArrayValue", "P3-01b"),
     ("Resource.toJSON", "P3-01b"),

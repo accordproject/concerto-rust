@@ -79,6 +79,7 @@ mod compare;
 mod cto_cache;
 mod decode;
 mod fixture;
+mod instances;
 mod ledger;
 mod ops;
 mod recipe;
@@ -206,8 +207,10 @@ fn run(fixtures_dir: &Path) {
         {
             continue;
         }
+        let start = instances::now_ms();
         let dispatch = ops::exec(&harness, &fx.op, &fx.inputs);
-        let verdict = compare::judge(fx, dispatch);
+        let end = instances::now_ms();
+        let verdict = compare::judge_at(fx, dispatch, Some((start, end)));
         recorder.record(fx, verdict, &harness.ledger);
     }
 

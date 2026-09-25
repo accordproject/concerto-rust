@@ -109,7 +109,7 @@ use crate::model_util;
 
 /// TS `SerializerOptions`, the two fields `ResourceValidator`'s constructor
 /// reads (`resourcevalidator.ts` lines 53-58).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ValidateOptions {
     /// TS `options.convertResourcesToRelationships`.
     pub convert_resources_to_relationships: bool,
@@ -140,6 +140,20 @@ pub fn validate_instance(
     value: &Value,
     options: &ValidateOptions,
 ) -> Result<()> {
+    validate_instance_from(mm, value, options, String::new())
+}
+
+/// [`validate_instance`], with the `rootResourceIdentifier` the caller
+/// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
+/// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
+/// sets none, which a report made before the walk sets one prints as
+/// `undefined`.
+pub fn validate_instance_from(
+    mm: &ModelManager,
+    value: &Value,
+    options: &ValidateOptions,
+    root_resource_identifier: String,
+) -> Result<()> {
     let declared_fqn = value
         .get("$class")
         .and_then(Value::as_str)
@@ -159,10 +173,40 @@ pub fn validate_instance(
     let mut params = Params {
         mm,
         options,
-        root_resource_identifier: String::new(),
+        root_resource_identifier,
         current_identifier: None,
     };
     visit_class_declaration(&mut params, &declared_fqn, value)
+}
+
+/// Validates one property value, as `ValidatedResource.setPropertyValue`
+/// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
+/// parameters)` with `value` alone on the stack and the instance's
+/// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
+/// accordproject/concerto-rust#124).
+///
+/// `owner_fqn` is the declaration that declares `property` (its
+/// `getParent()`), as [`ModelManager::get_property`] reports it.
+///
+/// TS: `field.accept(this.$validator, parameters)` in
+/// `ValidatedResource.setPropertyValue`/`addArrayValue`
+/// (src/model/validatedresource.ts), which dispatches to
+/// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
+pub fn validate_property_value(
+    mm: &ModelManager,
+    owner_fqn: &str,
+    property: &Property,
+    value: &Value,
+    root_resource_identifier: String,
+    options: &ValidateOptions,
+) -> Result<()> {
+    let mut params = Params {
+        mm,
+        options,
+        root_resource_identifier,
+        current_identifier: None,
+    };
+    visit_property(&mut params, owner_fqn, property, value)
 }
 
 // ---------------------------------------------------------------------
@@ -519,13 +563,13 @@ fn visit_field(
     // `if(field.getSizeValidator() && obj instanceof Map)`: only reachable
     // when the field's own declared type is itself a map (`Kind::MapTyped`).
     if let (Some(sv), Kind::MapTyped(_)) = (property.size_validator(), kind)
-        && let Some(obj) = as_js_object(value)
+        && let Some(entries) = map_entries(value)
     {
         let elem = FieldElement::new(p.mm, owner_fqn, property);
         CollectionSizeValidator::new(&elem, sv)?.validate(
             &elem,
             Some(p.root_resource_identifier.as_str()),
-            obj.len() as f64,
+            entries.len() as f64,
         )?;
     }
 
@@ -712,6 +756,57 @@ pub const RELATIONSHIP_TAG: &str = "$$relationship";
 /// where `null` gives `'object'` and `null`.
 pub const UNDEFINED_TAG: &str = "$$undefined";
 
+/// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
+/// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
+/// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
+/// `reportFieldTypeViolation` prints it with `value.toString()`.
+pub const NUMBER_TAG: &str = "$$number";
+
+/// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
+/// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
+/// its keys keep their JS type (a number key is not a string), and a plain
+/// object is told apart from a `Map` (`obj instanceof Map`).
+pub const MAP_TAG: &str = "$$map";
+
+/// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
+pub fn js_special_number(text: &str) -> Value {
+    serde_json::json!({ NUMBER_TAG: text })
+}
+
+/// The value that stands for a JS `Map` ([`MAP_TAG`]).
+pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
+    serde_json::json!({
+        MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
+    })
+}
+
+/// The JS spelling of a [`NUMBER_TAG`] value.
+fn special_number(value: &Value) -> Option<&str> {
+    let o = value.as_object()?;
+    if o.len() != 1 {
+        return None;
+    }
+    o.get(NUMBER_TAG)?.as_str()
+}
+
+/// The entries of a [`MAP_TAG`] value.
+fn map_entries(value: &Value) -> Option<Vec<(&Value, &Value)>> {
+    let o = value.as_object()?;
+    if o.len() != 1 {
+        return None;
+    }
+    let entries = o.get(MAP_TAG)?.as_array()?;
+    Some(
+        entries
+            .iter()
+            .filter_map(|e| {
+                let pair = e.as_array()?;
+                Some((pair.first()?, pair.get(1)?))
+            })
+            .collect(),
+    )
+}
+
 /// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
 pub fn js_undefined() -> Value {
     serde_json::json!({ UNDEFINED_TAG: true })
@@ -726,7 +821,7 @@ pub fn is_js_undefined(value: &Value) -> bool {
 
 /// `value` as a JS object, which a JS `undefined` ([`UNDEFINED_TAG`]) is not.
 fn as_js_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
-    if is_js_undefined(value) {
+    if is_js_undefined(value) || special_number(value).is_some() {
         None
     } else {
         value.as_object()
@@ -739,6 +834,14 @@ fn as_js_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
 /// left out, as `JSON.stringify` does.
 fn js_json_stringify(value: &Value) -> Option<String> {
     fn plain(value: &Value) -> Value {
+        // A non-finite number is `null`; a `Map` has no own enumerable
+        // properties (`{}`).
+        if special_number(value).is_some() {
+            return Value::Null;
+        }
+        if map_entries(value).is_some() {
+            return Value::Object(serde_json::Map::new());
+        }
         match value {
             Value::Array(items) => Value::Array(
                 items
@@ -799,6 +902,11 @@ fn is_populated_datetime(value: &Value) -> bool {
 /// native-`Date`-parsing fallback's own accepted formats, e.g. `"May 1,
 /// 2020"`) is rejected, which is stricter than TS in that one corner.
 fn parses_as_dayjs(value: &Value) -> bool {
+    // `dayjs.utc(undefined)` is the current time, which is valid (task
+    // P3-01b: a `Map` `DateTime` value that is `undefined`).
+    if is_js_undefined(value) {
+        return true;
+    }
     match value {
         Value::Number(_) => value.as_f64().is_some_and(f64::is_finite),
         Value::String(s) => {
@@ -967,7 +1075,7 @@ fn visit_enum_declaration(p: &Params, enum_fqn: &str, value: &Value) -> Result<(
         return Err(invalid_enum_value(
             &p.root_resource_identifier,
             enum_decl.name(),
-            value,
+            &identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value)),
         ));
     }
     Ok(())
@@ -1081,7 +1189,8 @@ fn check_relationship(
 
 /// TS: `ResourceValidator.visitMapDeclaration` (resourcevalidator.ts:178).
 fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result<()> {
-    let Some(obj) = as_js_object(value) else {
+    // `if (!((obj instanceof Map)))`: only a [`MAP_TAG`] value is a `Map`.
+    let Some(entries) = map_entries(value) else {
         // `'Expected a Map, but found ' + JSON.stringify(obj)`:
         // `JSON.stringify(undefined)` is `undefined`, which `+` spells out.
         return Err(ContractError::new(
@@ -1104,8 +1213,10 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
         .into());
     };
     let key_is_scalar = map_key_is_scalar(p.mm, map_fqn, map)?;
-    for (key, value) in obj {
-        if model_util::is_system_property(key) {
+    for (key, value) in entries {
+        // `ModelUtil.isSystemProperty(key)`: an `includes`, so only a string
+        // key can be one.
+        if key.as_str().is_some_and(model_util::is_system_property) {
             continue;
         }
         check_map_type(
@@ -1114,7 +1225,7 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
             map.key_kind(),
             map.key_type(),
             key_is_scalar,
-            &Value::String(key.clone()),
+            key,
         )?;
         check_map_type(
             p,
@@ -1324,6 +1435,9 @@ fn js_typeof(value: &Value) -> &'static str {
     if is_js_undefined(value) {
         return "undefined";
     }
+    if special_number(value).is_some() {
+        return "number";
+    }
     match value {
         Value::String(_) => "string",
         Value::Number(_) => "number",
@@ -1341,6 +1455,12 @@ fn js_typeof(value: &Value) -> &'static str {
 fn js_to_string(value: &Value) -> String {
     if is_js_undefined(value) {
         return "undefined".to_string();
+    }
+    if let Some(n) = special_number(value) {
+        return n.to_string();
+    }
+    if map_entries(value).is_some() {
+        return "[object Map]".to_string();
     }
     match value {
         Value::Array(items) => items
@@ -1375,6 +1495,11 @@ fn field_value_param(value: &Value) -> String {
     if is_js_undefined(value) {
         // Falsy: left as `undefined`, which the formatter spells out.
         return "undefined".to_string();
+    }
+    // `typeof value === 'number' && !isFinite(value)`: `value.toString()`
+    // (`NaN` is falsy and left as it is, which prints the same).
+    if let Some(n) = special_number(value) {
+        return n.to_string();
     }
     if ecma::is_truthy(value) {
         js_json_stringify(value).unwrap_or_else(|| "undefined".to_string())
@@ -1530,13 +1655,15 @@ fn empty_identifier(resource_id: &str) -> ConcertoError {
 /// TS: `ResourceValidator.reportInvalidEnumValue` (resourcevalidator.ts:619).
 /// `field_name` is the `field.getName()` TS reads, which is the enum
 /// declaration's name ([`visit_enum_declaration`]).
-fn invalid_enum_value(resource_id: &str, field_name: &str, value: &Value) -> ConcertoError {
+/// `value` is the JS `String(obj)` of the value, which for a `Resource`
+/// or a `Relationship` is its own `toString()`.
+fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> ConcertoError {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-invalidenumvalue",
         vec![
             ("resourceId", resource_id.to_string()),
-            ("value", js_to_string(value)),
+            ("value", value.to_string()),
             ("fieldName", field_name.to_string()),
         ],
     )
@@ -2027,16 +2154,68 @@ mod tests {
     #[test]
     fn a_string_map_with_string_values_passes() {
         let mgr = fixture();
-        let map = json!({ "a": "1", "b": "2" });
+        let map = js_map(vec![(json!("a"), json!("1")), (json!("b"), json!("2"))]);
         validate_map(&mgr, "org.acme@1.0.0.StringMap", &map).unwrap();
     }
 
     #[test]
     fn a_string_map_with_a_non_string_value_is_rejected() {
         let mgr = fixture();
-        let map = json!({ "a": 1 });
+        let map = js_map(vec![(json!("a"), json!(1))]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.StringMap", &map));
         assert!(err.to_string().contains("Expected Type of String"), "{err}");
+    }
+
+    /// Task P3-01b: a `Map` key keeps its JS type, so a number key of a
+    /// `String`-keyed map is reported (`found '1234'`).
+    #[test]
+    fn a_string_map_with_a_number_key_is_rejected() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!(1234), json!("Lorem"))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.StringMap", &map));
+        assert!(err.to_string().contains("but found '1234'"), "{err}");
+    }
+
+    /// Task P3-01b: a key spelt like the `undefined` marker is an ordinary
+    /// key, not a JS `undefined`.
+    #[test]
+    fn a_map_key_spelt_like_the_undefined_marker_is_an_ordinary_key() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!(UNDEFINED_TAG), json!("x"))]);
+        validate_map(&mgr, "org.acme@1.0.0.StringMap", &map).unwrap();
+    }
+
+    /// Task P3-01b: `obj instanceof Map` — a plain object is not a `Map`.
+    #[test]
+    fn a_plain_object_is_not_a_map() {
+        let mgr = fixture();
+        let err = err_of(validate_map(
+            &mgr,
+            "org.acme@1.0.0.StringMap",
+            &json!({ "a": "1" }),
+        ));
+        assert!(
+            err.to_string()
+                .contains("Expected a Map, but found {\"a\":\"1\"}"),
+            "{err}"
+        );
+    }
+
+    /// Task P3-01b: `dayjs.utc(undefined)` is the current time, so an
+    /// `undefined` value of a `DateTime` map passes.
+    #[test]
+    fn an_undefined_datetime_map_value_passes() {
+        assert!(parses_as_dayjs(&js_undefined()));
+    }
+
+    /// Task P3-01b: a non-finite number is printed with `toString()`.
+    #[test]
+    fn a_non_finite_number_is_printed_with_to_string() {
+        assert_eq!(
+            field_value_param(&js_special_number("-Infinity")),
+            "-Infinity"
+        );
+        assert_eq!(js_typeof(&js_special_number("NaN")), "number");
     }
 
     /// Bug fix (plan §1.2 gap list): a map value whose declared type
@@ -2044,14 +2223,14 @@ mod tests {
     #[test]
     fn a_map_with_a_valid_enum_value_passes() {
         let mgr = fixture();
-        let map = json!({ "a": "RED" });
+        let map = js_map(vec![(json!("a"), json!("RED"))]);
         validate_map(&mgr, "org.acme@1.0.0.ColorMap", &map).unwrap();
     }
 
     #[test]
     fn a_map_with_an_invalid_enum_value_is_rejected() {
         let mgr = fixture();
-        let map = json!({ "a": "PURPLE" });
+        let map = js_map(vec![(json!("a"), json!("PURPLE"))]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ColorMap", &map));
         assert!(err.to_string().contains("Invalid enum value"), "{err}");
     }
@@ -2063,9 +2242,10 @@ mod tests {
     #[test]
     fn a_map_with_a_relationship_typed_value_accepts_a_nested_resource() {
         let mgr = fixture();
-        let map = json!({
-            "a": { "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1 }
-        });
+        let map = js_map(vec![(
+            json!("a"),
+            json!({ "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1 }),
+        )]);
         validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map).unwrap();
     }
 

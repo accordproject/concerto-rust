@@ -638,6 +638,15 @@ impl StringValidator {
         self.regex.as_ref().map(ToString::to_string)
     }
 
+    /// Whether a value matches the regex; `true` when there is none.
+    ///
+    /// TS: StringValidator.matchesRegex (src/introspect/stringvalidator.ts),
+    /// ported as a helper for `Factory.newResource`'s identifier check
+    /// (PORTING.md 7.2, #32 point 4).
+    pub fn matches_regex(&self, value: &str) -> bool {
+        self.regex.as_ref().is_none_or(|regex| regex.matches(value))
+    }
+
     /// Checks an instance value. `None` is JS `null`, which is always
     /// accepted. String length is measured in UTF-16 code units, as JS
     /// `String.prototype.length` counts them.

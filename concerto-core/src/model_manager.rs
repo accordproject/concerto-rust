@@ -843,6 +843,28 @@ impl ModelManager {
             })
     }
 
+    /// TS: ModelFile.getFullyQualifiedTypeName (src/introspect/modelfile.ts):
+    /// a primitive's own name, an imported name's fully-qualified name, a
+    /// local declaration's fully-qualified name, or `None` (JS `null`), for
+    /// `type_name` as written in the model file of `namespace`. `None` too
+    /// when no model file has that namespace.
+    pub fn model_file_fully_qualified_type_name(
+        &self,
+        namespace: &str,
+        type_name: &str,
+    ) -> Option<String> {
+        let mf = self.model_file(namespace)?;
+        if crate::model_util::is_primitive_type(type_name) {
+            return Some(type_name.to_string());
+        }
+        if let Some(fqn) = imported_type(mf, type_name) {
+            return Some(fqn);
+        }
+        let file = self.model_file_id(namespace)?;
+        let id = self.local_type(file, type_name)?;
+        self.declaration_fqn(id).ok()
+    }
+
     /// Resolves a short name, as written inside `in_namespace`, to its
     /// fully-qualified name, using the primitives, local declarations and named
     /// imports the model file can see.
