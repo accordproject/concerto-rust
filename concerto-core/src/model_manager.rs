@@ -1159,7 +1159,11 @@ impl ModelManager {
     /// as fully-qualified names.
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
-    /// by `EnumDeclaration`.
+    /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
+    /// `super_chain`, so it returns the same `ErrorKind::JsRangeError`
+    /// DV-013 documents for `getProperties`/`getProperty`/
+    /// `getIdentifierFieldName` — unobserved by any fixture, accepted on
+    /// accordproject/concerto-rust#151.
     pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         Ok(self
             .super_chain(fqn)?
@@ -1251,6 +1255,11 @@ impl ModelManager {
 
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
+    ///
+    /// On a cyclic inheritance chain this walks `super_chain`, so it returns
+    /// the same `ErrorKind::JsRangeError` DV-013 documents for
+    /// `getProperties`/`getProperty`/`getIdentifierFieldName` — unobserved by
+    /// any fixture, accepted on accordproject/concerto-rust#151.
     pub fn is_assignable_to(&self, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
         if sub_fqn == super_fqn {
             return Ok(true);
