@@ -226,6 +226,62 @@ export function runChecks(engine) {
     assert(typeof engine.init === 'function', 'init is exported');
   });
 
+  // P4-08c: the ModelFile bindings, keyed by the same model file handle.
+  check('modelFile getters', () => {
+    assert(mm.modelFileGetVersion(file) === '1.0.0', 'getVersion');
+    assert(mm.modelFileIsSystemModelFile(file) === false, 'isSystemModelFile (user file)');
+    const concertoFile = mm.modelFileId('concerto@1.0.0');
+    assert(mm.modelFileIsSystemModelFile(concertoFile) === true, 'isSystemModelFile (system file)');
+    assert(mm.modelFileGetVersion(concertoFile) === '1.0.0', 'getVersion (system file, versioned namespace)');
+    const imports = [...mm.modelFileGetImports(file)];
+    assert(imports.includes('concerto@1.0.0.Concept'), `getImports ${imports}`);
+    assert(mm.modelFileIsLocalType(file, 'Person') === true, 'isLocalType Person');
+    assert(mm.modelFileIsLocalType(file, 'Nope') === false, 'isLocalType Nope');
+  });
+
+  check('modelFileValidate accepts the loaded model', () => {
+    mm.modelFileValidate(file);
+  });
+
+  check('modelFileValidateDetached validates a not-yet-registered file', () => {
+    mm.modelFileValidateDetached(JSON.stringify({ ...MODEL, namespace: 'org.detached@1.0.0' }), undefined, undefined);
+    const invalid = thrown(() => mm.modelFileValidateDetached(JSON.stringify(BROKEN), undefined, undefined));
+    assert(invalid instanceof EngineError, `detached validate threw ${invalid}`);
+  });
+
+  check('modelFileFromAst builds a detached snapshot', () => {
+    const snap = JSON.parse(engine.modelFileFromAst(MODEL, undefined, 'inline.cto'));
+    assert(snap.namespace === 'org.example@1.0.0', `namespace ${snap.namespace}`);
+    assert(snap.version === '1.0.0', `version ${snap.version}`);
+    assert(snap.fileName === 'inline.cto', `fileName ${snap.fileName}`);
+    assert(snap.isSystemModelFile === false, 'isSystemModelFile');
+    assert(snap.imports.includes('concerto@1.0.0.Concept'), `imports ${snap.imports}`);
+    // An unversioned namespace (only ever legal for the bare `concerto`
+    // system namespace) reports `version: null`, matching TS's `undefined`.
+    const bareSnap = JSON.parse(engine.modelFileFromAst({ ...MODEL, namespace: 'concerto' }, undefined, undefined));
+    assert(bareSnap.version === null, `bare-namespace version ${bareSnap.version}`);
+    const bad = thrown(() => engine.modelFileFromAst(null, undefined, undefined));
+    assert(bad instanceof EngineError && bad.payload.code === 'pre-port', `bad ast threw ${bad}`);
+  });
+
+  check('modelFileFilter keeps only the predicate\'s declarations', () => {
+    const target = new engine.ModelManagerHandle();
+    const kept = mm.modelFileFilter(file, (fqn) => fqn === 'org.example@1.0.0.Person', target);
+    assert(typeof kept === 'number', `filter returned ${kept}`);
+    const ids = [...target.declarationIds(kept)];
+    assert(ids.length === 1, `filtered declarationIds ${ids}`);
+    assert(JSON.parse(target.declarationSnapshot(ids[0])).name === 'Person', 'kept declaration');
+    const other = new engine.ModelManagerHandle();
+    const dropped = mm.modelFileFilter(file, () => false, other);
+    assert(dropped === undefined, `filter-to-nothing returned ${dropped}`);
+    const threw = thrown(() => mm.modelFileFilter(file, () => { throw new Error('nope'); }, other));
+    assert(threw.message === 'nope', `predicate error propagated as ${threw}`);
+    target.free();
+    other.free();
+    // The source manager (and the file's own handle within it) is unchanged.
+    assert(mm.declarationId('org.example@1.0.0.Person') === person, 'source manager untouched');
+  });
+
   mm.free();
   return rows;
 }
