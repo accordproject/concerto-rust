@@ -340,7 +340,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "modelfile-resolveimport-failfindimp",
         template: "Failed to find \"{type}\" in list of imports \"[{imports}]\" for namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        // ModelFile.resolveImport (RUST); not yet called. `imports` is
+        // ModelFile.resolveImport (RUST). `imports` is
         // `JSON.stringify(this.imports)` (3.1).
         sources: &["src/introspect/modelfile.ts:373"],
     },

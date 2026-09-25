@@ -291,6 +291,16 @@ pub struct ModelManager {
     /// by default (both fields `None`): see
     /// [`crate::introspect::decorator::DecoratorValidationOptions`].
     decorator_validation: crate::introspect::decorator::DecoratorValidationOptions,
+    /// TS `ModelManagerOptions.dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// (`basemodelmanager.ts`), read back as `modelFile.getModelManager()
+    /// ?.options?.dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// (`Declaration.validate`, declaration.ts). `false` (JS `undefined`,
+    /// falsy) by default: a transitional escape hatch that lets a user model
+    /// redeclare a name it also imports from the system namespace, so long as
+    /// the imported name resolves to one of the five reserved system
+    /// declarations (`Concept`, `Asset`, `Participant`, `Transaction`,
+    /// `Event`).
+    dangerously_allow_reserved_system_type_names_in_user_models: bool,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -553,6 +563,38 @@ impl ModelManager {
         result
     }
 
+    /// A scratch copy of this manager — same options, same model files in the
+    /// same order — in which `model_file` is registered under its namespace,
+    /// in place of whatever file this manager itself holds there (appended
+    /// last when it holds none). Used to validate a model file that this
+    /// manager never registered ([`ModelManager::validate_detached_model_file`]):
+    /// every check `validate_model_file` runs resolves a namespace *through
+    /// the manager*, so the file under validation must be the one registered
+    /// under its own namespace for its local types to resolve to itself, as
+    /// TS's `this.isLocalType`/`this.getLocalType` always do (P2-08).
+    pub(crate) fn with_model_file_registered(&self, model_file: &ModelFile) -> Result<Self> {
+        let mut scratch = Self {
+            decorator_validation: self.decorator_validation.clone(),
+            dangerously_allow_reserved_system_type_names_in_user_models: self
+                .dangerously_allow_reserved_system_type_names_in_user_models,
+            ..Self::default()
+        };
+        let namespace = model_file.namespace();
+        let mut placed = false;
+        for existing in self.model_files() {
+            if existing.namespace() == namespace {
+                scratch.insert(model_file.clone())?;
+                placed = true;
+            } else {
+                scratch.insert(existing.clone())?;
+            }
+        }
+        if !placed {
+            scratch.insert(model_file.clone())?;
+        }
+        Ok(scratch)
+    }
+
     /// Appends a model file, its declarations and their properties to the
     /// arena, and counts the mutation. Nothing is changed if a handle cannot
     /// be allocated.
@@ -618,6 +660,20 @@ impl ModelManager {
         self.decorator_validation = options;
     }
 
+    /// TS: `modelFile.getModelManager()?.options?.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+    /// coerced with `Boolean(...)` (`Declaration.validate`, declaration.ts).
+    pub fn dangerously_allow_reserved_system_type_names_in_user_models(&self) -> bool {
+        self.dangerously_allow_reserved_system_type_names_in_user_models
+    }
+
+    /// Sets the escape hatch above, matching the TS constructor's
+    /// `options.dangerouslyAllowReservedSystemTypeNamesInUserModels` (there is
+    /// no separate TS setter; the port exposes one the same way
+    /// [`Self::set_decorator_validation`] does).
+    pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.dangerously_allow_reserved_system_type_names_in_user_models = allow;
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -674,6 +730,26 @@ impl ModelManager {
             .map(DeclId)
     }
 
+    /// Every class-like or enum declaration across every loaded model file
+    /// whose namespace is not in [`EXCLUDE_NS`], in file order and then
+    /// declaration order — a map or scalar declaration is left out, as is
+    /// the decorator and root models' own declarations (P2-08 review: this
+    /// previously iterated every loaded file, `EXCLUDE_NS` included, which
+    /// put system declarations like `Concept` into the result).
+    ///
+    /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
+    /// `modelFile.getAllDeclarations().filter(d =>
+    /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
+    /// over `modelManager.getModelFiles()` — which, called with no argument,
+    /// already leaves the system and decorator models out by their
+    /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
+    /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
+    /// [`Self::all_class_like`], which [`Self::get_assignable_class_declarations`]
+    /// and [`Self::get_direct_subclasses`] already search this same way.
+    pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
+        self.all_class_like().map(|(_, id)| id)
+    }
+
     /// The handles of a class declaration's own properties, in the order they
     /// are declared. None for any other declaration, or for a handle the
     /// manager never handed out.
@@ -720,6 +796,38 @@ impl ModelManager {
             .get(slot.index)?
             .get("defaultValue")
             .filter(|v| !v.is_null())
+    }
+
+    /// TS `BaseModelManager.getType(qualifiedName)` (basemodelmanager.ts):
+    /// the model file registered under the name's namespace, then that
+    /// file's own `getType(qualifiedName)`, each failure its own
+    /// `TypeNotFoundException` — `Namespace is not defined for type "<fqn>".`
+    /// when no file holds the namespace, `Type "<short>" is not defined in
+    /// namespace "<ns>".` when the file has no such type (P2-08 review).
+    pub fn get_type_declaration(&self, qualified_name: &str) -> Result<DeclId> {
+        let namespace = get_namespace(Some(qualified_name))?;
+        let Some(file) = self.model_file_id(namespace) else {
+            return Err(ContractError::type_not_found(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", qualified_name.to_string())],
+                qualified_name.to_string(),
+                None,
+            )
+            .into());
+        };
+        match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(qualified_name))? {
+            Some(Node::Declaration(id)) => Ok(id),
+            _ => Err(ContractError::type_not_found(
+                "modelmanager-gettype-notypeinns",
+                vec![
+                    ("type", get_short_name(qualified_name).to_string()),
+                    ("namespace", namespace.to_string()),
+                ],
+                qualified_name.to_string(),
+                None,
+            )
+            .into()),
+        }
     }
 
     /// Looks up a declaration by its fully-qualified name.
@@ -1950,6 +2058,58 @@ mod tests {
                 "org.example@1.0.0"
             ]
         );
+    }
+
+    /// TS: `Introspector.getClassDeclarations` (test/introspect/introspector.js).
+    #[test]
+    fn class_declarations_span_every_loaded_model_file_and_include_enums() {
+        let mgr = manager();
+        let names: Vec<&str> = mgr
+            .class_declarations()
+            .map(|id| mgr.declaration(id).unwrap().name())
+            .collect();
+        // Every user declaration, including the enum `Color` — TS's
+        // `!isMapDeclaration?.() && !isScalarDeclaration?.()` leaves an enum
+        // in, only a map or scalar out.
+        for name in ["Person", "Employee", "Manager", "Color"] {
+            assert!(names.contains(&name), "{name} missing from {names:?}");
+        }
+        // `Introspector.getClassDeclarations` reads
+        // `modelManager.getModelFiles()` with no argument, which leaves out
+        // the built-in decorator and root models by namespace (`EXCLUDE_NS`,
+        // src/basemodelmanager.ts) — so their own class-like declarations,
+        // such as the root model's `Concept`, are not in the result.
+        assert!(!names.contains(&"Concept"));
+    }
+
+    /// A map or scalar declaration is left out of `class_declarations`, the
+    /// same way `Introspector.getClassDeclarations` leaves them out of TS's
+    /// `instanceof ClassDeclaration` filter.
+    #[test]
+    fn class_declarations_exclude_maps_and_scalars() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.mapscalar@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Postcode" },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Person",
+                      "isAbstract": false, "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = mgr
+            .class_declarations()
+            .map(|id| mgr.declaration(id).unwrap().name())
+            .filter(|n| ["Postcode", "Lookup", "Person"].contains(n))
+            .collect();
+        assert_eq!(names, ["Person"]);
     }
 
     /// `child@1.0.0.Child { o Integer age }`, imported into `parent@1.0.0` as
