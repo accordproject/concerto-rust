@@ -1077,7 +1077,11 @@ pub fn collection_size_validator_validate(
         };
         // `+value`: JS ToNumber.
         let value = value.unchecked_into_f64();
-        validator.validate(&JsElement { validator: &view }, identifier.as_deref(), value)
+        validator.validate(
+            &JsElement { validator: &view },
+            identifier.as_deref(),
+            value,
+        )
     })
 }
 
@@ -1129,8 +1133,8 @@ pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> 
         Ok(to_js(&Value::Object(snapshot)))
     };
     body().map_err(|e| {
-        let model_file = call(&view, "getModelFile", &[], "this.getModelFile")
-            .unwrap_or(JsValue::UNDEFINED);
+        let model_file =
+            call(&view, "getModelFile", &[], "this.getModelFile").unwrap_or(JsValue::UNDEFINED);
         throw(e, Some(&model_file))
     })
 }
@@ -1178,17 +1182,16 @@ pub fn property_validate(
             if !nullish(&property_type) {
                 let is_primitive =
                     call(&property, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
-                if !is_primitive {
-                    if let Ok(resolved) = call(
+                if !is_primitive
+                    && let Ok(resolved) = call(
                         &model_file,
                         "getType",
-                        &[property_type.clone()],
+                        std::slice::from_ref(&property_type),
                         "modelFile.getType",
-                    ) {
-                        if let Some(v) = call_optional(&resolved, "isMapDeclaration")? {
-                            is_map_type = v.is_truthy();
-                        }
-                    }
+                    )
+                    && let Some(v) = call_optional(&resolved, "isMapDeclaration")?
+                {
+                    is_map_type = v.is_truthy();
                 }
             }
             if !is_map_type {
@@ -1261,8 +1264,8 @@ pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
         })))
     };
     body().map_err(|e| {
-        let model_file = call(&view, "getModelFile", &[], "this.getModelFile")
-            .unwrap_or(JsValue::UNDEFINED);
+        let model_file =
+            call(&view, "getModelFile", &[], "this.getModelFile").unwrap_or(JsValue::UNDEFINED);
         throw(e, Some(&model_file))
     })
 }
@@ -1406,7 +1409,7 @@ pub fn relationship_declaration_validate(
             let resolved = call(
                 &parent_model_file,
                 "getType",
-                &[property_type.clone()],
+                std::slice::from_ref(&property_type),
                 "modelFile.getType",
             )?;
             if !nullish(&resolved) {
@@ -1417,17 +1420,14 @@ pub fn relationship_declaration_validate(
             "getModelManager",
             &[],
             "modelFile.getModelManager",
-        ) {
-            if let Ok(resolved) = call(
-                &model_manager,
-                "getType",
-                &[JsValue::from_str(&fqtn)],
-                "modelManager.getType",
-            ) {
-                if !nullish(&resolved) {
-                    class_declaration = Some(resolved);
-                }
-            }
+        ) && let Ok(resolved) = call(
+            &model_manager,
+            "getType",
+            &[JsValue::from_str(&fqtn)],
+            "modelManager.getType",
+        ) && !nullish(&resolved)
+        {
+            class_declaration = Some(resolved);
         }
 
         let Some(class_declaration) = class_declaration else {
@@ -2041,7 +2041,12 @@ pub fn class_declaration_get_properties(
     declaration: JsValue,
 ) -> std::result::Result<Array, JsValue> {
     let body = || -> Result<Array> {
-        let own = call(&declaration, "getOwnProperties", &[], "this.getOwnProperties")?;
+        let own = call(
+            &declaration,
+            "getOwnProperties",
+            &[],
+            "this.getOwnProperties",
+        )?;
         let result = Array::new();
         for property in Array::from(&own).iter() {
             result.push(&property);
@@ -2058,12 +2063,7 @@ pub fn class_declaration_get_properties(
                 ast_location(&declaration)?,
             ));
         }
-        let inherited = call(
-            &class_decl,
-            "getProperties",
-            &[],
-            "classDecl.getProperties",
-        )?;
+        let inherited = call(&class_decl, "getProperties", &[], "classDecl.getProperties")?;
         for property in Array::from(&inherited).iter() {
             result.push(&property);
         }
@@ -2096,10 +2096,10 @@ fn get_class_declarations(model_manager: &JsValue) -> Result<Vec<JsValue>> {
             "modelFile.getAllDeclarations",
         )?;
         for declaration in Array::from(&declarations).iter() {
-            let is_map = call_optional(&declaration, "isMapDeclaration")?
-                .is_some_and(|v| v.is_truthy());
-            let is_scalar = call_optional(&declaration, "isScalarDeclaration")?
-                .is_some_and(|v| v.is_truthy());
+            let is_map =
+                call_optional(&declaration, "isMapDeclaration")?.is_some_and(|v| v.is_truthy());
+            let is_scalar =
+                call_optional(&declaration, "isScalarDeclaration")?.is_some_and(|v| v.is_truthy());
             if !is_map && !is_scalar {
                 result.push(declaration);
             }
@@ -2265,12 +2265,14 @@ pub fn class_declaration_get_nested_property(
             if n < names.len() - 1 {
                 let is_primitive =
                     call(&property, "isPrimitive", &[], "result.isPrimitive")?.is_truthy();
-                let is_enum =
-                    call(&property, "isTypeEnum", &[], "result.isTypeEnum")?.is_truthy();
+                let is_enum = call(&property, "isTypeEnum", &[], "result.isTypeEnum")?.is_truthy();
                 if is_primitive || is_enum {
                     return Err(plain_error(
                         "classdeclaration-getnestedproperty-primitiveorenum",
-                        vec![("propertyName", (*name).to_string()), ("propertyPath", path.clone())],
+                        vec![
+                            ("propertyName", (*name).to_string()),
+                            ("propertyPath", path.clone()),
+                        ],
                     ));
                 }
                 let type_fqn = call(
