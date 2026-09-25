@@ -3042,6 +3042,11 @@ fn decorated_namespace(r: &Replayed, parent: &recipe::DecoParent) -> Option<Stri
                 .and_then(|f| r.mm.file(f))
                 .map(|f| f.namespace().to_string())
         }
+        recipe::DecoParent::MapPart(id, _) => {
+            r.mm.model_file_of(*id)
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
     }
 }
 

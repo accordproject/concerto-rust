@@ -87,10 +87,16 @@ export function runChecks(engine) {
   let person;
 
   check('a new manager holds the system model', () => {
+    // P1-07b (#101): a fresh manager preloads `concerto.decorator@1.0.0`
+    // before `concerto@1.0.0`, matching TS's
+    // `addDecoratorModel(); addRootModel();`, so it starts with two model
+    // files, decorator first.
     const ids = [...mm.modelFileIds()];
-    assert(ids.length === 1 && ids[0] === 0, `modelFileIds ${ids}`);
-    assert(mm.modelFileId('concerto@1.0.0') === 0, 'concerto@1.0.0 is file 0');
+    assert(ids.length === 2 && ids[0] === 0 && ids[1] === 1, `modelFileIds ${ids}`);
+    assert(mm.modelFileId('concerto.decorator@1.0.0') === 0, 'concerto.decorator@1.0.0 is file 0');
+    assert(mm.modelFileId('concerto@1.0.0') === 1, 'concerto@1.0.0 is file 1');
     assert(typeof mm.declarationId('concerto@1.0.0.Concept') === 'number', 'Concept has a handle');
+    assert(typeof mm.declarationId('concerto.decorator@1.0.0.Decorator') === 'number', 'Decorator has a handle');
     return { generation: mm.generation() };
   });
 
@@ -126,8 +132,12 @@ export function runChecks(engine) {
     const age = JSON.parse(mm.propertySnapshot(props[1]));
     assert(age.declaration === person, 'snapshot declaration');
     assert(JSON.stringify(age.ast) === JSON.stringify(MODEL.declarations[0].properties[1]), 'ast is the loaded node');
+    // P2-04 (#48): enum values get PropIds too, addressed the same way a
+    // class declaration's fields are, one per EnumProperty.
     const color = mm.declarationId('org.example@1.0.0.Color');
-    assert(mm.propertyIds(color).length === 0, 'enum values have no PropId yet (P2-04)');
+    const colorProps = [...mm.propertyIds(color)];
+    assert(colorProps.length === 1, `enum PropId count ${colorProps.length}`);
+    assert(JSON.parse(mm.propertySnapshot(colorProps[0])).name === 'RED', 'enum value name');
   });
 
   check('model file snapshot', () => {
@@ -150,9 +160,12 @@ export function runChecks(engine) {
   });
 
   check('errors leave through the registered factory', () => {
+    // TS `BaseModelManager._throwAlreadyExists` throws a plain `Error`, never
+    // the `IllegalModelException` this port raised before (P2-08b review).
     const dup = thrown(() => mm.addModel(JSON.stringify(MODEL)));
     assert(dup instanceof EngineError, `duplicate namespace threw ${dup}`);
-    assert(dup.payload.kind === 'IllegalModel', `kind ${dup.payload.kind}`);
+    assert(dup.payload.kind === 'Error', `kind ${dup.payload.kind}`);
+    assert(dup.payload.code === 'basemodelmanager-throwalreadyexists', `code ${dup.payload.code}`);
     const bad = new engine.ModelManagerHandle();
     bad.addModel(JSON.stringify(BROKEN));
     const invalid = thrown(() => bad.validateModels());
@@ -211,6 +224,106 @@ export function runChecks(engine) {
 
   check('init() resolves on a loaded module', () => {
     assert(typeof engine.init === 'function', 'init is exported');
+  });
+
+  // P4-08c: the ModelFile bindings, keyed by the same model file handle.
+  check('modelFile getters', () => {
+    assert(mm.modelFileGetVersion(file) === '1.0.0', 'getVersion');
+    assert(mm.modelFileIsSystemModelFile(file) === false, 'isSystemModelFile (user file)');
+    const concertoFile = mm.modelFileId('concerto@1.0.0');
+    assert(mm.modelFileIsSystemModelFile(concertoFile) === true, 'isSystemModelFile (system file)');
+    assert(mm.modelFileGetVersion(concertoFile) === '1.0.0', 'getVersion (system file, versioned namespace)');
+    const imports = [...mm.modelFileGetImports(file)];
+    assert(imports.includes('concerto@1.0.0.Concept'), `getImports ${imports}`);
+    assert(mm.modelFileIsLocalType(file, 'Person') === true, 'isLocalType Person');
+    assert(mm.modelFileIsLocalType(file, 'Nope') === false, 'isLocalType Nope');
+  });
+
+  check('modelFileValidate accepts the loaded model', () => {
+    mm.modelFileValidate(file);
+  });
+
+  check('modelFileValidateDetached validates a not-yet-registered file', () => {
+    mm.modelFileValidateDetached(JSON.stringify({ ...MODEL, namespace: 'org.detached@1.0.0' }), undefined, undefined);
+    const invalid = thrown(() => mm.modelFileValidateDetached(JSON.stringify(BROKEN), undefined, undefined));
+    assert(invalid instanceof EngineError, `detached validate threw ${invalid}`);
+  });
+
+  check('modelFileFromAst builds a detached snapshot', () => {
+    const snap = JSON.parse(engine.modelFileFromAst(MODEL, undefined, 'inline.cto'));
+    assert(snap.namespace === 'org.example@1.0.0', `namespace ${snap.namespace}`);
+    assert(snap.version === '1.0.0', `version ${snap.version}`);
+    assert(snap.fileName === 'inline.cto', `fileName ${snap.fileName}`);
+    assert(snap.isSystemModelFile === false, 'isSystemModelFile');
+    assert(snap.imports.includes('concerto@1.0.0.Concept'), `imports ${snap.imports}`);
+    // An unversioned namespace (only ever legal for the bare `concerto`
+    // system namespace) reports `version: null`, matching TS's `undefined`.
+    const bareSnap = JSON.parse(engine.modelFileFromAst({ ...MODEL, namespace: 'concerto' }, undefined, undefined));
+    assert(bareSnap.version === null, `bare-namespace version ${bareSnap.version}`);
+    const bad = thrown(() => engine.modelFileFromAst(null, undefined, undefined));
+    assert(bad instanceof EngineError && bad.payload.code === 'pre-port', `bad ast threw ${bad}`);
+  });
+
+  check('modelFileFilter keeps only the predicate\'s declarations', () => {
+    const target = new engine.ModelManagerHandle();
+    const kept = mm.modelFileFilter(file, (fqn) => fqn === 'org.example@1.0.0.Person', target);
+    assert(typeof kept === 'number', `filter returned ${kept}`);
+    const ids = [...target.declarationIds(kept)];
+    assert(ids.length === 1, `filtered declarationIds ${ids}`);
+    assert(JSON.parse(target.declarationSnapshot(ids[0])).name === 'Person', 'kept declaration');
+    const other = new engine.ModelManagerHandle();
+    const dropped = mm.modelFileFilter(file, () => false, other);
+    assert(dropped === undefined, `filter-to-nothing returned ${dropped}`);
+    const threw = thrown(() => mm.modelFileFilter(file, () => { throw new Error('nope'); }, other));
+    assert(threw.message === 'nope', `predicate error propagated as ${threw}`);
+    target.free();
+    other.free();
+    // The source manager (and the file's own handle within it) is unchanged.
+    assert(mm.declarationId('org.example@1.0.0.Person') === person, 'source manager untouched');
+  });
+
+  check('modelFileFilter gives the predicate the imported declaration\'s own FQN', () => {
+    // A real cross-file import: `org.example@1.0.0.Person` is not the
+    // relevant namespace here — `Person` belongs to `org.other@1.0.0`
+    // (already loaded above), and `ModelFile::filter` calls the predicate
+    // on it while pruning this file's own `ImportType` (module doc on
+    // `concerto_core::ModelFile::filter`). A predicate keyed by the
+    // importED file's real FQN, not the importING file's namespace, must
+    // see `org.other@1.0.0.Person` and keep the import.
+    const importer = {
+      $class: MM,
+      namespace: 'org.importer@1.0.0',
+      imports: [
+        { $class: `${MM}.ImportType`, namespace: 'org.other@1.0.0', name: 'Person' },
+      ],
+      declarations: [
+        {
+          $class: `${MM}.ConceptDeclaration`, name: 'Holder', isAbstract: false,
+          properties: [
+            {
+              $class: `${MM}.ObjectProperty`, name: 'owner', isArray: false, isOptional: false,
+              type: { $class: `${MM}.TypeIdentifier`, namespace: 'org.other@1.0.0', name: 'Person' },
+            },
+          ],
+        },
+      ],
+    };
+    const importerFile = mm.addModel(JSON.stringify(importer), 'importer.cto');
+    const seen = [];
+    const target = new engine.ModelManagerHandle();
+    const kept = mm.modelFileFilter(importerFile, (fqn) => {
+      seen.push(fqn);
+      return true;
+    }, target);
+    assert(typeof kept === 'number', `filter returned ${kept}`);
+    assert(seen.includes('org.other@1.0.0.Person'), `predicate saw ${JSON.stringify(seen)}`);
+    assert(!seen.includes('org.importer@1.0.0.Person'), `predicate wrongly saw ${JSON.stringify(seen)}`);
+    const snap = JSON.parse(target.modelFileSnapshot(kept));
+    assert(
+      snap.ast.imports.some((imp) => imp.namespace === 'org.other@1.0.0' && imp.name === 'Person'),
+      `import kept ${JSON.stringify(snap.ast.imports)}`,
+    );
+    target.free();
   });
 
   mm.free();

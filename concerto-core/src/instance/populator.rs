@@ -585,6 +585,7 @@ impl<'a> Populator<'a> {
         if !type_name.is_truthy() {
             type_name = JsValue::String(field.fully_qualified_type_name());
         }
+        // DV-015: see instance/serializer.rs from_json.
         let Some(type_name) = type_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::Error,
@@ -725,6 +726,7 @@ impl<'a> Populator<'a> {
                 ],
             ));
         }
+        // DV-015: see instance/serializer.rs from_json.
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::Error,
@@ -829,5 +831,31 @@ mod tests {
         ));
         assert!(primitive_field_valid("Unknown", &JsValue::Number(1.0)));
         assert!(primitive_field_valid("Unknown", &JsValue::Null));
+    }
+
+    /// DV-009 / accordproject/concerto-rust#169 (P5-05 fuzz cluster T1c):
+    /// non-strict `Serializer.fromJSON` accepts a `DateTime` string with an
+    /// embedded NUL, as `dayjs.rs`'s `date_parse` now truncates there like
+    /// V8 does; `strictQualifiedDateTimes` still rejects it, because
+    /// `strict_qualified_date_time`'s anchored regex never matches a NUL —
+    /// the fix does not widen what the strict path accepts.
+    #[test]
+    fn datetime_with_embedded_nul() {
+        let s = "1970-01-01T00:00:00.000+00:00\u{0}";
+        let non_strict = PopulatorOptions {
+            accept_resources_for_relationships: false,
+            utc_offset: JsValue::Number(0.0),
+            strict_qualified_date_times: false,
+            deserialize: DeserializeOptions::default(),
+        };
+        let result = convert_primitive("DateTime", &JsValue::String(s.into()), &non_strict, "$.t");
+        assert!(result.is_ok(), "non-strict should accept: {result:?}");
+
+        let strict = PopulatorOptions {
+            strict_qualified_date_times: true,
+            ..non_strict
+        };
+        let result = convert_primitive("DateTime", &JsValue::String(s.into()), &strict, "$.t");
+        assert!(result.is_err(), "strict should still reject: {result:?}");
     }
 }
