@@ -53,10 +53,12 @@
 //! read by `Declaration.validate`) and `decoratorValidation` (P2-08b:
 //! `ModelManager::set_decorator_validation`, read by `Decorator.validate`;
 //! P2-09b gave the harness its own recognised key for it, having previously
-//! rejected it outright) are replayed. Any other option with a truthy value
-//! changes TS behaviour the Rust engine does not model yet
-//! (`metamodelValidation`, `addMetamodel`, `regExp`), so such a recipe is
-//! `unsupported`.
+//! rejected it outright) and `metamodelValidation` (P4-08b:
+//! `ModelManager::set_metamodel_validation`; a validating add runs
+//! `ModelManager::validate_ast` on the new file first, as TS's
+//! `addModelFile` does) are replayed. Any other option with a truthy value
+//! changes TS behaviour the Rust engine does not model yet (`addMetamodel`,
+//! `regExp`), so such a recipe is `unsupported`.
 //!
 //! # Model files, declarations, properties
 //!
@@ -88,6 +90,7 @@
 
 use std::collections::HashMap;
 
+use concerto_core::instance::METAMODEL_NAMESPACE;
 use concerto_core::instance::validate::{
     DAYJS_TAG, RELATIONSHIP_TAG, js_map, js_special_number, js_undefined,
 };
@@ -250,6 +253,9 @@ pub struct Replayed {
     /// TS `options.decoratorValidation` (P2-09b), set on every manager this
     /// recipe builds or rebuilds.
     decorator_validation: DecoratorValidationOptions,
+    /// TS `options.metamodelValidation` (P4-08b, JS truthiness), set on
+    /// every manager this recipe builds or rebuilds.
+    metamodel_validation: bool,
     files: Vec<Entry>,
     pub mm: ModelManager,
 }
@@ -1281,14 +1287,22 @@ fn typed_field_value(v: &Value) -> Faulty<Value> {
 }
 
 /// Model manager options that concerto-core 5.0.0 reads on the paths this
-/// harness replays and the Rust engine does not model yet: metamodel
-/// validation (`basemodelmanager.ts` `addModelFile`), adding the metamodel
-/// (constructor) and a custom `RegExp` (`stringvalidator.ts`).
+/// harness replays and the Rust engine does not model yet: adding the
+/// metamodel (constructor) and a custom `RegExp` (`stringvalidator.ts`).
+/// `metamodelValidation` (`basemodelmanager.ts` `addModelFile`) used to be
+/// here too; P4-08b modelled it (`ModelManager::set_metamodel_validation`)
+/// and gave it its own recognised key, `METAMODEL_VALIDATION`.
 /// `decoratorValidation` (`Decorated.validate`) used to be here too; the
 /// engine has modelled it since P2-08b (`ModelManager::set_decorator_validation`),
 /// so P2-09b moved it to its own recognised key below, alongside
 /// `ALLOW_RESERVED_SYSTEM_TYPE_NAMES`.
-const UNMODELLED_OPTIONS: [&str; 3] = ["metamodelValidation", "addMetamodel", "regExp"];
+const UNMODELLED_OPTIONS: [&str; 2] = ["addMetamodel", "regExp"];
+
+/// TS `ModelManagerOptions.metamodelValidation`, read by `addModelFile` as
+/// `this.options?.metamodelValidation` (JS truthiness) and modelled by the
+/// Rust engine since P4-08b (`ModelManager::set_metamodel_validation`,
+/// `ModelManager::validate_ast`).
+const METAMODEL_VALIDATION: &str = "metamodelValidation";
 
 /// TS `ModelManagerOptions.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
 /// read back as `Boolean(modelFile.getModelManager()?.options?.<this>)` by
@@ -1322,8 +1336,6 @@ const INERT_OPTIONS: [&str; 5] = [
 /// The TS member that reads an unmodelled option, whose owner ports it.
 fn option_reader(key: &str) -> Option<&'static str> {
     Some(match key {
-        // `addModelFile` -> `validateAst` (src/basemodelmanager.ts).
-        "metamodelValidation" => "BaseModelManager.validateAst",
         // The constructor adds the metamodel file.
         "addMetamodel" => "BaseModelManager.new",
         // `StringValidator`'s constructor builds the custom RegExp.
@@ -1359,12 +1371,13 @@ fn decode_decorator_validation(value: &Value) -> Faulty<DecoratorValidationOptio
 
 /// A recipe's options as the harness replays them: `skipLocationNodes`
 /// (which only selects the cache entry, i.e. the AST's shape),
-/// `dangerouslyAllowReservedSystemTypeNamesInUserModels` and
-/// `decoratorValidation`.
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+/// `decoratorValidation` and `metamodelValidation`.
 struct Options {
     skip_location_nodes: Value,
     allow_reserved_system_type_names: bool,
     decorator_validation: DecoratorValidationOptions,
+    metamodel_validation: bool,
 }
 
 /// Checks a recipe's options. An unmodelled option with a truthy value, or
@@ -1375,6 +1388,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
             skip_location_nodes: Value::Null,
             allow_reserved_system_type_names: false,
             decorator_validation: DecoratorValidationOptions::default(),
+            metamodel_validation: false,
         });
     }
     let Some(map) = options.as_object() else {
@@ -1386,6 +1400,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
         let inert = key == "skipLocationNodes"
             || key == ALLOW_RESERVED_SYSTEM_TYPE_NAMES
             || key == DECORATOR_VALIDATION
+            || key == METAMODEL_VALIDATION
             || INERT_OPTIONS.contains(&key.as_str());
         if !inert && (truthy(value) || !UNMODELLED_OPTIONS.contains(&key.as_str())) {
             let reason =
@@ -1410,6 +1425,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
             Some(v) if is_undefined(v) || v.is_null() => DecoratorValidationOptions::default(),
             Some(v) => decode_decorator_validation(v)?,
         },
+        metamodel_validation: map.get(METAMODEL_VALIDATION).is_some_and(truthy),
     })
 }
 
@@ -1420,10 +1436,12 @@ impl Replayed {
             skip_location_nodes,
             allow_reserved_system_type_names,
             decorator_validation,
+            metamodel_validation,
         } = check_options(options)?;
         let mm = Self::fresh_manager(
             allow_reserved_system_type_names,
             decorator_validation.clone(),
+            metamodel_validation,
         )?;
         Ok(Self {
             kind,
@@ -1431,6 +1449,7 @@ impl Replayed {
             skip_location_nodes,
             allow_reserved_system_type_names,
             decorator_validation,
+            metamodel_validation,
             files: Vec::new(),
             mm,
         })
@@ -1470,6 +1489,7 @@ impl Replayed {
                 .mm
                 .dangerously_allow_reserved_system_type_names_in_user_models(),
             decorator_validation: derived.mm.decorator_validation().clone(),
+            metamodel_validation: derived.mm.metamodel_validation(),
             files,
             mm: derived.mm,
         }
@@ -1479,6 +1499,7 @@ impl Replayed {
     fn fresh_manager(
         allow_reserved_system_type_names: bool,
         decorator_validation: DecoratorValidationOptions,
+        metamodel_validation: bool,
     ) -> Faulty<ModelManager> {
         let mut mm = ModelManager::new()
             .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::new"))?;
@@ -1486,6 +1507,7 @@ impl Replayed {
         mm.set_dangerously_allow_reserved_system_type_names_in_user_models(
             allow_reserved_system_type_names,
         );
+        mm.set_metamodel_validation(metamodel_validation);
         Ok(mm)
     }
 
@@ -1494,6 +1516,7 @@ impl Replayed {
         let mut mm = Self::fresh_manager(
             self.allow_reserved_system_type_names,
             self.decorator_validation.clone(),
+            self.metamodel_validation,
         )?;
         for entry in &self.files {
             mm.add_model_with_definitions(
@@ -1529,10 +1552,12 @@ impl Replayed {
             skip_location_nodes: self.skip_location_nodes.clone(),
             allow_reserved_system_type_names: self.allow_reserved_system_type_names,
             decorator_validation: self.decorator_validation.clone(),
+            metamodel_validation: self.metamodel_validation,
             files: self.files.clone(),
             mm: Self::fresh_manager(
                 self.allow_reserved_system_type_names,
                 self.decorator_validation.clone(),
+                self.metamodel_validation,
             )?,
         };
         let entry = Entry {
@@ -1732,6 +1757,28 @@ impl Replayed {
                     Ok(mf) => mf,
                     Err(e) => return Ok(Err(to_oracle_error(&e))),
                 };
+                // P4-08b: `if (this.options?.metamodelValidation) {
+                // this.validateAst(modelFile); }`, before the semantic
+                // check.
+                if self.metamodel_validation {
+                    let had_metamodel = self.mm.model_file(METAMODEL_NAMESPACE).is_some();
+                    if let Err(e) = self.mm.validate_ast(&mf) {
+                        // A failed check leaves the metamodel registered
+                        // (`ModelManager::validate_ast`'s doc, as TS does);
+                        // track it like any other file so a rebuild keeps it.
+                        if !had_metamodel
+                            && let Some(metamodel) = self.mm.model_file(METAMODEL_NAMESPACE)
+                        {
+                            self.files.push(Entry {
+                                ast: metamodel.ast().clone(),
+                                file_name: metamodel.file_name().map(str::to_string),
+                                nullish_name: undefined(),
+                                definitions: None,
+                            });
+                        }
+                        return Ok(Err(to_oracle_error(&e)));
+                    }
+                }
                 if let Err(e) = self.mm.validate_detached_model_file(&mf) {
                     return Ok(Err(to_oracle_error(&e)));
                 }
