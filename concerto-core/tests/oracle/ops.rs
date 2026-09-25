@@ -44,8 +44,8 @@ use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
-use concerto_core::introspect::{Declaration, Named, Validate};
-use concerto_core::model_manager::{DeclId, ModelManager, Node, ResolutionContext};
+use concerto_core::introspect::{Declaration, Named, Typed, Validate};
+use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use serde_json::{Value, json};
 
@@ -431,6 +431,32 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             "getFullyQualifiedName" | "getName" | "getNamespace" | "getModelFile"
         ),
         ("Decorator", m) => matches!(m, "getArguments" | "validate"),
+        // P2-04: `Property`'s own members (Field, RelationshipDeclaration and
+        // EnumValueDeclaration all inherit these unchanged, module doc on
+        // `property_op`), plus the `Field`-only members (getDefaultValue,
+        // getValidator, isTypeScalar, getScalarField — never reached by a
+        // relationship or an enum value, which are not `Field`s in TS) and
+        // the two `toString` overrides.
+        ("Property", m) => matches!(
+            m,
+            "getName"
+                | "getType"
+                | "isArray"
+                | "isOptional"
+                | "getFullyQualifiedTypeName"
+                | "getFullyQualifiedName"
+                | "getNamespace"
+                | "getParent"
+                | "getSizeValidator"
+                | "isPrimitive"
+                | "isTypeEnum"
+        ),
+        ("Field", m) => matches!(
+            m,
+            "getDefaultValue" | "getValidator" | "isTypeScalar" | "getScalarField"
+        ),
+        ("RelationshipDeclaration", "toString") => true,
+        ("EnumDeclaration", "toString") => true,
         _ => false,
     };
     if !dispatched {
@@ -711,6 +737,70 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     })
                 }
             })
+        }
+        "Property" | "Field" => {
+            let Some(Arg::Prop(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Property/Field receiver that is not a propref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(property) = r.mm.property(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the property handle does not resolve".into(),
+                ));
+            };
+            if class == "Field" && property_ctor(property) != "Field" {
+                // TS: `getDefaultValue`/`getValidator`/`isTypeScalar`/
+                // `getScalarField` are defined only on `Field`, which
+                // `RelationshipDeclaration` and `EnumValueDeclaration` do not
+                // extend (module doc on `property_op`) — not a fixture this
+                // op family owns.
+                return Ok(unsupported(
+                    "Field op on a receiver that is not a Field (relationship or enum value)",
+                ));
+            }
+            Ok(property_op(r, id, property, member))
+        }
+        "RelationshipDeclaration" => {
+            let Some(Arg::Prop(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a RelationshipDeclaration receiver that is not a propref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(property) = r.mm.property(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the property handle does not resolve".into(),
+                ));
+            };
+            if !property.is_relationship() {
+                return Ok(unsupported(
+                    "RelationshipDeclaration.toString on a receiver that is not a relationship",
+                ));
+            }
+            Ok(relationship_to_string(r, id, property))
+        }
+        "EnumDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "an EnumDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Enum(_)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as an enum".into(),
+                ));
+            };
+            let fqn =
+                r.mm.get_fully_qualified_name(&Node::Declaration(id))
+                    .expect("a resolved declref always names a loaded declaration");
+            // TS: `EnumDeclaration.toString` (enumdeclaration.ts): `'EnumDeclaration
+            // {id=' + this.getFullyQualifiedName() + '}'`.
+            Ok(ran(Ok(Value::String(format!(
+                "EnumDeclaration {{id={fqn}}}"
+            )))))
         }
         _ => unreachable!("`dispatched` lists every class"),
     }
@@ -1137,6 +1227,242 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
         }
         _ => unreachable!("`dispatched` lists every Declaration member"),
     }
+}
+
+/// `Property.*` ops (P2-04, issue #48), plus the `Field`-only members
+/// (`getDefaultValue`, `getValidator`, `isTypeScalar`, `getScalarField`):
+/// every member `Field`, `RelationshipDeclaration` and
+/// `EnumValueDeclaration` inherit unchanged from `Property`
+/// (src/introspect/property.ts), so `id`/`property` may be any one of the
+/// three kinds for the base members; the caller (`exec_handles`) already
+/// gates the `Field`-only members to a receiver that is not a relationship
+/// or an enum value.
+fn property_op(r: &Replayed, id: PropId, property: &Property, member: &str) -> Dispatch {
+    let node = Node::Property(id);
+    match member {
+        "getName" => ran(Ok(Value::String(property.name().to_string()))),
+        "getType" => ran(Ok(property
+            .type_name()
+            .map_or(Value::Null, |t| Value::String(t.to_string())))),
+        "isArray" => ran(Ok(Value::Bool(property.is_array()))),
+        "isOptional" => ran(Ok(Value::Bool(property.is_optional()))),
+        "getFullyQualifiedTypeName" => {
+            from_engine(r.mm.get_fully_qualified_type_name(&node), Value::String)
+        }
+        "getFullyQualifiedName" => from_engine(r.mm.get_fully_qualified_name(&node), Value::String),
+        "getNamespace" => {
+            // TS: `getParent().getNamespace()`, `ClassDeclaration`'s own
+            // (inherited from `Declaration`): its model file's namespace.
+            let Some(namespace) =
+                r.mm.parent_of(id)
+                    .and_then(|parent| r.mm.model_file_of(parent))
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the property's parent model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(Value::String(namespace.to_string())))
+        }
+        "getParent" => {
+            let Some(parent) = r.mm.parent_of(id) else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the property's parent does not resolve".into(),
+                ));
+            };
+            ran(Ok(r.declaration_summary(parent).unwrap_or(Value::Null)))
+        }
+        "getSizeValidator" => ran(Ok(match property.size_validator() {
+            None => Value::Null,
+            Some(_) => json!({ M: "Validator", "ctor": "CollectionSizeValidator" }),
+        })),
+        "isPrimitive" => ran(Ok(Value::Bool(property.is_primitive()))),
+        "isTypeEnum" => from_engine(is_type_enum(r, id, property), Value::Bool),
+        "getDefaultValue" => ran(Ok(r
+            .mm
+            .property_default_value(id)
+            .cloned()
+            .unwrap_or(Value::Null))),
+        "getValidator" => ran(Ok(field_validator_summary(property))),
+        "isTypeScalar" => from_engine(is_type_scalar(r, id, property), Value::Bool),
+        "getScalarField" => get_scalar_field(r, id, property),
+        _ => unreachable!("`dispatched` lists every Property/Field member"),
+    }
+}
+
+/// `RelationshipDeclaration.toString` (P2-04): the one override besides
+/// `getName` et al. (`Property.toString` does not exist; TS's own default
+/// `Object.prototype.toString` is never called by any op this harness
+/// dispatches).
+///
+/// TS: `'RelationshipDeclaration {name=' + this.name + ', type=' +
+/// this.getFullyQualifiedTypeName() + ', array=' + this.array + ',
+/// optional=' + this.optional + '}'` (relationshipdeclaration.ts).
+fn relationship_to_string(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    from_engine(
+        r.mm.get_fully_qualified_type_name(&Node::Property(id)),
+        |fqn| {
+            Value::String(format!(
+                "RelationshipDeclaration {{name={}, type={}, array={}, optional={}}}",
+                property.name(),
+                fqn,
+                property.is_array(),
+                property.is_optional(),
+            ))
+        },
+    )
+}
+
+/// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
+/// ? false : this.getParent().getModelFile().getType(this.getType()).isEnum()`.
+fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+    if property.is_primitive() {
+        return Ok(false);
+    }
+    let type_node = resolve_property_type(r, id, property)?;
+    r.mm.is_enum(&type_node)
+}
+
+/// TS: `Field.isTypeScalar` (src/introspect/field.ts): `this.isPrimitive() ?
+/// false : (…resolveType…, type.isScalarDeclaration?.())`. The `resolveType`
+/// call only re-checks what `getType` below already needs to resolve to
+/// answer, so it is not replayed separately (PORTING.md 6.2).
+fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+    if property.is_primitive() {
+        return Ok(false);
+    }
+    let type_node = resolve_property_type(r, id, property)?;
+    Ok(r.mm.is_scalar_declaration(&type_node)?.unwrap_or(false))
+}
+
+/// `getParent().getModelFile().getType(getType())`, the resolution both
+/// `isTypeEnum` and `isTypeScalar` (and `getScalarField`) build on: a
+/// non-primitive property's declared type, resolved in its parent
+/// declaration's own model file.
+fn resolve_property_type(
+    r: &Replayed,
+    id: PropId,
+    property: &Property,
+) -> Result<Node, ConcertoError> {
+    let unknown_parent = || ConcertoError::IllegalModel {
+        message: "property has no resolvable parent".into(),
+        file_name: None,
+        location: None,
+    };
+    let parent = r.mm.parent_of(id).ok_or_else(unknown_parent)?;
+    let file = r.mm.model_file_of(parent).ok_or_else(unknown_parent)?;
+    let type_name = property.type_name();
+    r.mm.get_type(&Node::ModelFile(file), type_name)?
+        .ok_or_else(|| ConcertoError::TypeNotFound {
+            type_name: type_name.unwrap_or("null").to_string(),
+        })
+}
+
+/// TS: `Field.getValidator` (src/introspect/field.ts): a `NumberValidator` for
+/// Integer/Long/Double, a `StringValidator` for String (from either its regex
+/// or its length validator, or both), `null` otherwise.
+fn field_validator_summary(property: &Property) -> Value {
+    let has_number_validator = match property {
+        Property::Integer(p) => p.validator.is_some(),
+        Property::Long(p) => p.validator.is_some(),
+        Property::Double(p) => p.validator.is_some(),
+        _ => false,
+    };
+    if has_number_validator {
+        return json!({ M: "Validator", "ctor": "NumberValidator" });
+    }
+    if let Property::String(p) = property
+        && (p.validator.is_some() || p.length_validator.is_some())
+    {
+        return json!({ M: "Validator", "ctor": "StringValidator" });
+    }
+    Value::Null
+}
+
+/// TS: `Field.getScalarField` (src/introspect/field.ts): unboxes a field
+/// whose type is a scalar declaration into a synthetic `Field` built from the
+/// scalar's own AST — `JSON.parse(JSON.stringify(type.ast))` with `$class`
+/// swapped for the matching `*Property` class and `name` set back to this
+/// field's own name — then `array` overwritten from this field's own
+/// `isArray()`. The synthetic field is never registered (it has no `PropId`
+/// of its own, `mm::ScalarDeclaration`'s own doc comment), so its outcome is
+/// its `{ctor, fqn}` summary the same way a `getProperty` result is encoded;
+/// its `fqn` is identical to the original field's own (same parent, same
+/// name), since neither changes.
+fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    match is_type_scalar(r, id, property) {
+        Ok(true) => {}
+        Ok(false) => {
+            // TS: `throw new Error(\`Field ${this.name} is not a scalar property.\`)`.
+            return ran(Err(OracleError {
+                class: "Error".into(),
+                message: format!("Field {} is not a scalar property.", property.name()),
+                location: None,
+                component: None,
+            }));
+        }
+        Err(e) => return ran(Err(to_oracle_error(&e))),
+    }
+    let type_node = match resolve_property_type(r, id, property) {
+        Ok(node) => node,
+        Err(e) => return ran(Err(to_oracle_error(&e))),
+    };
+    let Node::Declaration(scalar_id) = type_node else {
+        return unsupported("getScalarField: the resolved type is not a declaration");
+    };
+    let Some(Declaration::Scalar(scalar)) = r.mm.declaration(scalar_id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: getScalarField's resolved type did not load as a scalar".into(),
+        ));
+    };
+    let scalar_ast = match serde_json::to_value(scalar.ast()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Dispatch::Fault(Fault::Harness(format!(
+                "getScalarField: the scalar's own AST did not re-serialise: {e}"
+            )));
+        }
+    };
+    let scalar_class = scalar_ast.get("$class").and_then(Value::as_str);
+    let property_class = match scalar_class {
+        Some("concerto.metamodel@1.0.0.BooleanScalar") => {
+            "concerto.metamodel@1.0.0.BooleanProperty"
+        }
+        Some("concerto.metamodel@1.0.0.IntegerScalar") => {
+            "concerto.metamodel@1.0.0.IntegerProperty"
+        }
+        Some("concerto.metamodel@1.0.0.LongScalar") => "concerto.metamodel@1.0.0.LongProperty",
+        Some("concerto.metamodel@1.0.0.DoubleScalar") => "concerto.metamodel@1.0.0.DoubleProperty",
+        Some("concerto.metamodel@1.0.0.StringScalar") => "concerto.metamodel@1.0.0.StringProperty",
+        Some("concerto.metamodel@1.0.0.DateTimeScalar") => {
+            "concerto.metamodel@1.0.0.DateTimeProperty"
+        }
+        other => {
+            return Dispatch::Fault(Fault::Divergence(format!(
+                "state divergence: getScalarField's resolved type has an unrecognized scalar $class {other:?}"
+            )));
+        }
+    };
+    let mut field_ast = scalar_ast;
+    field_ast["$class"] = Value::String(property_class.to_string());
+    field_ast["name"] = Value::String(property.name().to_string());
+    field_ast["isArray"] = Value::Bool(property.is_array());
+    let synthetic = match Property::try_from(&field_ast) {
+        Ok(p) => p,
+        Err(e) => return ran(Err(to_oracle_error(&e))),
+    };
+    let Some(parent) = r.mm.parent_of(id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the property's parent does not resolve".into(),
+        ));
+    };
+    let Ok(owner_fqn) = r.mm.get_fully_qualified_name(&Node::Declaration(parent)) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the property's parent has no fully-qualified name".into(),
+        ));
+    };
+    ran(Ok(property_summary(&owner_fqn, &synthetic)))
 }
 
 /// `Decorated.getDecorator`/`getDecorators` (P2-07): the target is a

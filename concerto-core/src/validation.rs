@@ -123,6 +123,13 @@ impl Validate for Declaration {
                 let fqn = get_fully_qualified_name(namespace, enm.name());
                 check_unique_decorators(enm, None)?;
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
+                // TS: `ClassDeclaration.validate`'s duplicate-field-name
+                // check, inherited unchanged by `EnumDeclaration` — run in
+                // the same position relative to the decorator checks above
+                // and the per-value checks below as TS's single `validate()`
+                // body runs it relative to its own two neighbours (P2-04,
+                // closing the "enum duplicate values" gap of plan §1.2).
+                check_unique_field_names(manager, enm.name(), None, &fqn)?;
                 for value in enm.values() {
                     check_unique_decorators(value, None)?;
                     validate_decorators(
@@ -147,7 +154,7 @@ impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         check_super_type(manager, namespace, self)?;
         let fqn = get_fully_qualified_name(namespace, self.name());
-        check_unique_field_names(manager, self, &fqn)?;
+        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_decorators(self, class_location(self))?;
@@ -278,9 +285,19 @@ fn check_super_type(
 
 /// No field name may appear twice once inherited fields are included, so a
 /// subtype cannot silently redeclare a field from a super type.
+///
+/// TS: `ClassDeclaration.validate`'s `uniquePropertyNames` loop
+/// (classdeclaration.ts), inherited unchanged by `EnumDeclaration` — an
+/// enum's values are properties too (`getProperties()`), so two values of
+/// the same name in one enum are rejected exactly the way two same-named
+/// fields on a class are, with the same message and catalogue code
+/// (`declaration_name`/`location` let both callers share this one check;
+/// see [`ClassDeclaration::validate`] and the `Declaration::Enum` arm of
+/// [`Validate for Declaration`]).
 fn check_unique_field_names(
     manager: &ModelManager,
-    class: &ClassDeclaration,
+    declaration_name: &str,
+    location: Option<serde_json::Value>,
     fqn: &str,
 ) -> Result<()> {
     let mut seen = HashSet::new();
@@ -289,10 +306,10 @@ fn check_unique_field_names(
             return Err(catalogue_error(
                 "classdeclaration-validate-duplicatefieldname",
                 vec![
-                    ("class", class.name().to_string()),
+                    ("class", declaration_name.to_string()),
                     ("fieldName", property.name().to_string()),
                 ],
-                class_location(class),
+                location,
             ));
         }
     }
@@ -385,11 +402,14 @@ fn check_property_type(
     };
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
+        // TS: RelationshipDeclaration.validate's own hardcoded message
+        // (src/introspect/relationshipdeclaration.ts): `'Relationship ' +
+        // this.getName() + ' cannot be to the primitive type ' +
+        // this.getType()` — no owner clause.
         return Err(failed(
             format!(
-                "Relationship {} on {} cannot be to the primitive type {}",
+                "Relationship {} cannot be to the primitive type {}",
                 property.name(),
-                owner,
                 type_identifier.name
             ),
             class_location(class),
@@ -397,11 +417,74 @@ fn check_property_type(
     }
 
     let target_fqn = resolve(manager, namespace, &type_identifier.name);
-    let target = target_fqn
-        .as_deref()
-        .and_then(|fqn| manager.get_declaration(fqn).ok());
 
+    let Some(target_fqn) = target_fqn else {
+        // TS: `Property.validate` runs `classDecl.getModelFile().resolveType(
+        // 'property ' + this.getFullyQualifiedName(), this.type)` before any
+        // relationship-specific check (property.ts) — `RelationshipDeclaration
+        // .validate` calls it through `super.validate(classDecl)` first thing.
+        // `resolveType` (modelfile.ts) is the same import/local lookup
+        // `resolve` above does; when the type name does not resolve through
+        // it at all, this is the error every property kind raises — a
+        // relationship never reaches its own "points to a missing type" check
+        // below, because `resolveType` throws first.
+        return Err(undeclared_type_error(
+            manager,
+            namespace,
+            &type_identifier.name,
+            format!(
+                "property {}.{}",
+                get_fully_qualified_name(namespace, owner),
+                property.name()
+            ),
+        ));
+    };
+
+    let target = manager.get_declaration(&target_fqn).ok();
     let Some(target) = target else {
+        if property.is_relationship() {
+            // TS: `'Relationship ' + this.getName() + ' points to a missing
+            // type ' + this.getFullyQualifiedTypeName()`
+            // (relationshipdeclaration.ts), reached only once `resolveType`
+            // above has already succeeded (the type resolves through
+            // import/local lookup, so `target_fqn` is always known here) and
+            // the declaration lookup `RelationshipDeclaration.validate` does
+            // on top of that — `getModelFile().getType(...)` in the same
+            // namespace, `getModelManager().getType(...)` otherwise, swallowed
+            // into `null` on error — still comes back empty.
+            //
+            // No unit test reaches this branch: through the full
+            // `validate_models` pipeline, `target_fqn` (via [`resolve`],
+            // ultimately `ModelFile::resolve_local_type`) and
+            // `manager.get_declaration` always agree. A local name in
+            // `resolve_local_type`'s `local_types` map is built straight from
+            // the file's own declarations, the same list `get_declaration`
+            // reads; an imported name is checked against the *target*
+            // namespace's declarations by [`check_imported_types_exist`],
+            // which every model file's own imports are run through before any
+            // of its declarations validate. So an import naming a
+            // non-existent type is rejected earlier, with a different
+            // message, before a relationship of that file ever reaches this
+            // check. This mirrors TS: real divergence between `resolveType`
+            // and the later `getType` lookup needs the try/catch around
+            // `getModelManager().getType(...)` to swallow a *different* kind
+            // of failure than "undeclared", which the current port does not
+            // yet model.
+            return Err(failed(
+                format!(
+                    "Relationship {} points to a missing type {}",
+                    property.name(),
+                    target_fqn
+                ),
+                class_location(class),
+            ));
+        }
+        // Not yet observed for a non-relationship property: TS's own
+        // `Property.validate` has no declaration lookup beyond `resolveType`
+        // above, which just succeeded, so this is unreached in practice. Kept
+        // as a defensive pre-port fallback rather than an `unreachable!`,
+        // since `resolve` and `get_declaration` are still two separate Rust
+        // lookups that could in principle disagree.
         return Err(failed(
             format!(
                 "Undeclared type {} referenced by {}.{}",
@@ -418,16 +501,18 @@ fn check_property_type(
         // src/introspect/relationshipdeclaration.ts) — inherited, so a
         // target that has no identity of its own but extends one that does
         // (every `Asset`/`Participant`, for one) still counts.
-        let identifiable = target.is_class_declaration()
-            && manager
-                .identifier_field_name(target_fqn.as_deref().expect("target resolved"))?
-                .is_some();
+        let identifiable =
+            target.is_class_declaration() && manager.identifier_field_name(&target_fqn)?.is_some();
         if !identifiable {
+            // TS: `'Relationship ' + this.getName() + ' must be to a class
+            // that has an identifier, but this is to ' +
+            // this.getFullyQualifiedTypeName()` — no owner clause, and with
+            // the target's own fully-qualified name appended.
             return Err(failed(
                 format!(
-                    "Relationship {} on {} must be to a class that has an identifier",
+                    "Relationship {} must be to a class that has an identifier, but this is to {}",
                     property.name(),
-                    owner
+                    target_fqn
                 ),
                 class_location(class),
             ));
@@ -710,6 +795,39 @@ fn catalogue_error(
     err.into()
 }
 
+/// `modelfile-resolvetype-undecltype`: TS's `ModelFile.resolveType` (module
+/// doc on [`resolve`]) — a type name that resolves through neither the
+/// primitive list, an import, nor a local declaration. `context` is TS's own
+/// `context` argument verbatim (e.g. `'property ' + this.getFullyQualifiedName()`,
+/// `Property.validate`, property.ts); no `location`, since `resolveType`'s own
+/// callers on this path never pass its optional `fileLocation` third argument.
+///
+/// TS passes `this` (the `ModelFile`) as the exception's `modelFile` argument
+/// (`IllegalModelException` constructor), which the message ends with
+/// `modelFile.getName()` for, when the file was given a name — `namespace`'s
+/// own [`ModelFile::file_name`], read fresh through `manager` rather than
+/// threaded in by every caller, since a property's declaring class always
+/// carries its namespace already.
+fn undeclared_type_error(
+    manager: &ModelManager,
+    namespace: &str,
+    type_name: &str,
+    context: String,
+) -> ConcertoError {
+    let mut err = ContractError::new(
+        ErrorKind::IllegalModel,
+        "modelfile-resolvetype-undecltype",
+        vec![("type", type_name.to_string()), ("context", context)],
+    );
+    err.model_file = Some(
+        manager
+            .model_file(namespace)
+            .and_then(ModelFile::file_name)
+            .map(str::to_string),
+    );
+    err.into()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::error::ConcertoError;
@@ -837,7 +955,13 @@ mod tests {
                   "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Double" } }
             ]
         }))]));
-        assert!(err.unwrap_err().to_string().contains("primitive type"));
+        // TS (relationshipdeclaration.ts): `'Relationship ' + this.getName()
+        // + ' cannot be to the primitive type ' + this.getType()` — no
+        // owner clause.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Relationship total cannot be to the primitive type Double"
+        );
     }
 
     #[test]
@@ -853,10 +977,14 @@ mod tests {
                 ]
             }))
         ]));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("must be to a class that has an identifier")
+        // TS: `'Relationship ' + this.getName() + ' must be to a class that
+        // has an identifier, but this is to ' +
+        // this.getFullyQualifiedTypeName()` — no owner clause, with the
+        // target's own fully-qualified name appended.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Relationship shipTo must be to a class that has an identifier, \
+             but this is to org.example@1.0.0.Address"
         );
     }
 
@@ -885,6 +1013,36 @@ mod tests {
         assert!(err.is_ok());
     }
 
+    /// TS: `RelationshipDeclaration.validate` calls `super.validate(classDecl)`
+    /// first (relationshipdeclaration.ts), which is `Property.validate`'s own
+    /// `classDecl.getModelFile().resolveType('property ' +
+    /// this.getFullyQualifiedName(), this.type)` (property.ts) — the
+    /// structural check every property kind shares. `Ghost` resolves through
+    /// neither an import nor a local declaration, so `resolveType` throws the
+    /// catalogue's `modelfile-resolvetype-undecltype` message
+    /// (modelfile.ts) before `RelationshipDeclaration`'s own "points to a
+    /// missing type" check (which needs a type that *did* resolve) ever
+    /// runs. Evidence: conformance fixture
+    /// `concepts/models/RELATIONSHIP_002/relationship_002_type_not_exist.cto`
+    /// (oracle id `0708cadc678cefd55e7c5e12`, `ModelManager.addCTOModel`) —
+    /// this was a P2-04 review blocker: the branch below used to fire the
+    /// relationship-specific message for this unresolvable case too.
+    #[test]
+    fn relationship_to_unresolvable_type_fails_with_the_undeclared_type_message() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Order",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "ship",
+                  "isArray": false, "isOptional": false,
+                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" } }
+            ]
+        }))]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Undeclared type \"Ghost\" in \"property org.example@1.0.0.Order.ship\"."
+        );
+    }
+
     #[test]
     fn object_property_of_undeclared_type_fails() {
         let err = validate(serde_json::json!([concept(serde_json::json!({
@@ -895,7 +1053,13 @@ mod tests {
                   "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "LineItem" } }
             ]
         }))]));
-        assert!(err.unwrap_err().to_string().contains("Undeclared type"));
+        // Same shared `Property.validate` → `resolveType` check as the
+        // relationship case above (property.ts, modelfile.ts): a
+        // non-relationship property gets the identical catalogue message.
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Undeclared type \"LineItem\" in \"property org.example@1.0.0.Order.line\"."
+        );
     }
 
     #[test]
@@ -1388,6 +1552,52 @@ mod tests {
         );
     }
 
+    /// P2-04 (plan §1.2's "enum duplicate ... values" gap; issue #48):
+    /// `EnumDeclaration` inherits `ClassDeclaration.validate` unchanged, so
+    /// two values of the same name in one enum are rejected exactly like two
+    /// same-named fields on a class — same catalogue code, same message.
+    /// Checked against the frozen TS 5.0.0 reference
+    /// (`migration/oracle/reference`): `ModelManager.addCTOModel` on
+    ///
+    /// ```cto
+    /// namespace org.acme.enumdup@1.0.0
+    /// enum Status {
+    ///   o ACTIVE
+    ///   o ACTIVE
+    /// }
+    /// ```
+    ///
+    /// raises `IllegalModelException: Class "Status" has more than one field
+    /// named "ACTIVE".`, matching this test verbatim.
+    #[test]
+    fn duplicate_enum_value_name_is_rejected() {
+        let err = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Status",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" },
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" }
+            ]
+        }]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Class \"Status\" has more than one field named \"ACTIVE\"."
+        );
+    }
+
+    /// The non-duplicate case: distinct enum value names load and validate
+    /// cleanly, the same as the reference.
+    #[test]
+    fn distinct_enum_value_names_pass() {
+        let ok = validate(serde_json::json!([{
+            "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Status",
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" },
+                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "INACTIVE" }
+            ]
+        }]));
+        assert!(ok.is_ok());
+    }
+
     /// TS: introspect/classdeclaration.js "#validation validation of super
     /// types" (test/data/parser/validation.cto): a `participant` cannot
     /// extend an `asset`, even though neither names a super type explicitly
@@ -1729,6 +1939,104 @@ mod tests {
                 .to_string()
                 .contains("must be a concept or a scalar")
         );
+    }
+
+    /// P2-04 (issue #48): `Property.validate`'s size-validator check
+    /// (property.ts) allows a non-array size validator only when the
+    /// property's own type is a map declaration — checked here only once
+    /// the target type is known, which is why it is a `validate_models`
+    /// check (`check_property_type`) rather than a load-time one
+    /// (`Property::check_validators`, which only knows the property's own
+    /// AST, not what its type resolves to).
+    ///
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// reject size on a non-array, non-map object property".
+    #[test]
+    fn size_validator_on_a_non_array_object_property_of_a_non_map_type_is_rejected() {
+        let err = validate(serde_json::json!([
+            concept(serde_json::json!({ "name": "B" })),
+            concept(serde_json::json!({
+                "name": "A",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "thing",
+                      "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "B" },
+                      "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 5 } }
+                ]
+            }))
+        ]));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("size validator can only be applied to array or map")
+        );
+    }
+
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// allow size on a map-typed property".
+    #[test]
+    fn size_validator_on_a_non_array_object_property_of_a_map_type_is_allowed() {
+        let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+        let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+        let err = validate(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "M", "key": key, "value": value },
+            concept(serde_json::json!({
+                "name": "A",
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "data",
+                      "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "M" },
+                      "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 5 } }
+                ]
+            }))
+        ]));
+        assert!(err.is_ok());
+    }
+
+    /// Ported from `test/introspect/property.js` #getSizeValidator "should
+    /// allow size on a map-typed property imported from another namespace":
+    /// the map declaration and the property pointing at it are in different
+    /// namespaces, so resolving the property's type needs the import list,
+    /// not just the local declarations `validate`'s own helpers build.
+    #[test]
+    fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "maps@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "PhoneBook",
+                          "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                          "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "t@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "maps@1.0.0", "name": "PhoneBook" }
+                    ],
+                    "declarations": [concept(serde_json::json!({
+                        "name": "A",
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "contacts",
+                              "isArray": false, "isOptional": false,
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "PhoneBook" },
+                              "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 10 } }
+                        ]
+                    }))]
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(manager.validate_models().is_ok());
     }
 
     #[test]
