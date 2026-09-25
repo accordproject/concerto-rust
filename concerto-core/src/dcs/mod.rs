@@ -42,6 +42,8 @@
 //! over every model. That is `BaseModelManager`'s (P2-08/P4-08) and is not
 //! ported, so this port reads the unresolved AST; see [`decorate_models`].
 pub mod dcsconverter;
+#[cfg(test)]
+mod decoratormanager_tests;
 pub mod extractor;
 mod yaml_quote;
 
