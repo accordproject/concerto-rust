@@ -776,6 +776,20 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["src/serializer/jsonpopulator.ts:93"],
     },
     CatalogueEntry {
+        code: "jsonpopulator-rejectunknownkeys-unknownproperties",
+        template: "Unexpected properties for type {fqn}: {properties}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "accordproject/concerto#1273 rejectUnknownKeys (no TS call site; the text of jsonpopulator-validateproperties-unexpectedproperties)",
+        ],
+    },
+    CatalogueEntry {
+        code: "jsonpopulator-rejectrequirednull-requirednull",
+        template: "Expected value at path `{path}` to be of type `{type}`, but got null",
+        renderer: Renderer::Inline,
+        sources: &["accordproject/concerto#1273 rejectRequiredNull (no TS call site)"],
+    },
+    CatalogueEntry {
         code: "jsonpopulator-visitfield-notarray",
         template: "Expected value at path `{path}` to be an array of type `{type}`",
         renderer: Renderer::Inline,

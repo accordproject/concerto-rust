@@ -285,6 +285,47 @@ pub struct ContractError {
     pub model_file: Option<Option<String>>,
     /// `Validator` only: what `Validator.reportError` adds.
     pub validator: Option<ValidatorReport>,
+    /// `ValidationException.details` (accordproject/concerto#1273): one
+    /// entry per violation the error reports, for callers that enumerate
+    /// them instead of parsing the message. Empty for every error that is
+    /// not a [`DeserializeOptions`](crate::instance::DeserializeOptions)
+    /// rejection.
+    pub details: Vec<ValidationDetail>,
+}
+
+/// The `code` of a [`ValidationDetail`] (accordproject/concerto#1273).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailCode {
+    /// A key the declaration does not declare, rejected by
+    /// `reject_unknown_keys`.
+    UnknownProperty,
+    /// A required property explicitly set to `null`, rejected by
+    /// `reject_required_null`.
+    TypeViolation,
+}
+
+impl DetailCode {
+    /// The code as #1273 spells it (`UNKNOWN_PROPERTY`, `TYPE_VIOLATION`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownProperty => "UNKNOWN_PROPERTY",
+            Self::TypeViolation => "TYPE_VIOLATION",
+        }
+    }
+}
+
+/// One structured violation in [`ContractError::details`]: #1273's
+/// `{ path, code, expected, actual }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationDetail {
+    /// The JSON path of the offending value (`$.declarations[0].name`).
+    pub path: String,
+    /// What kind of violation it is.
+    pub code: DetailCode,
+    /// The type the model expects there, when it expects one.
+    pub expected: Option<String>,
+    /// What the document holds there, when the violation is about it.
+    pub actual: Option<String>,
 }
 
 impl ContractError {
@@ -297,6 +338,7 @@ impl ContractError {
             location: None,
             model_file: None,
             validator: None,
+            details: Vec::new(),
         }
     }
 
@@ -318,6 +360,7 @@ impl ContractError {
             location,
             model_file: None,
             validator: None,
+            details: Vec::new(),
         }
     }
 
@@ -337,6 +380,7 @@ impl ContractError {
             location,
             model_file: None,
             validator: None,
+            details: Vec::new(),
         }
     }
 
@@ -1501,6 +1545,41 @@ mod tests {
             .message(),
             "Unexpected properties for type org.acme@1.0.0.C: a, b"
         );
+    }
+
+    // ---- P3-02: DeserializeOptions (accordproject/concerto#1273) ----
+
+    #[test]
+    fn golden_jsonpopulator_rejectunknownkeys_unknownproperties() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-rejectunknownkeys-unknownproperties",
+                &[("fqn", "org.acme@1.0.0.C"), ("properties", "a, b")]
+            )
+            .message(),
+            "Unexpected properties for type org.acme@1.0.0.C: a, b"
+        );
+    }
+
+    #[test]
+    fn golden_jsonpopulator_rejectrequirednull_requirednull() {
+        assert_eq!(
+            contract(
+                "jsonpopulator-rejectrequirednull-requirednull",
+                &[
+                    ("path", "$.declarations[0].properties[0].name"),
+                    ("type", "String")
+                ]
+            )
+            .message(),
+            "Expected value at path `$.declarations[0].properties[0].name` to be of type `String`, but got null"
+        );
+    }
+
+    #[test]
+    fn detail_codes_are_spelled_as_in_1273() {
+        assert_eq!(DetailCode::UnknownProperty.as_str(), "UNKNOWN_PROPERTY");
+        assert_eq!(DetailCode::TypeViolation.as_str(), "TYPE_VIOLATION");
     }
 
     #[test]

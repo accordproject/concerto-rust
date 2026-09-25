@@ -1693,6 +1693,7 @@ fn illegal_model_error(message: String, location: Option<Value>) -> Error {
         location,
         model_file: Some(None),
         validator: None,
+        details: Vec::new(),
     }
     .into()
 }
@@ -2182,6 +2183,7 @@ pub fn class_declaration_get_nested_property(
                     location: ast_location(&declaration)?,
                     model_file: Some(None),
                     validator: None,
+                    details: Vec::new(),
                 }
                 .into());
             }

@@ -204,7 +204,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::error::{DetailCode, ValidationDetail};
     use crate::instance::dayjs::Dayjs;
+    use crate::instance::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
     use crate::instance::value::InstanceKind;
 
     struct Env;
@@ -537,6 +539,196 @@ mod tests {
             )),
             "The instance with id ABC trying to add array item wheels which is not declared as an array in the model."
         );
+    }
+
+    // ---- P3-02: accordproject/concerto#1273's scenario table ----
+
+    fn contract_error(result: Result<Instance>) -> crate::error::ContractError {
+        match result {
+            Err(ConcertoError::Contract(e)) => *e,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    /// `from_json` with `options`' flags, plus `validate`.
+    fn deserialize(
+        json: serde_json::Value,
+        options: DeserializeOptions,
+        validate: bool,
+    ) -> Result<Instance> {
+        let mut options = options.serializer_options();
+        options.insert("validate".to_string(), JsValue::Bool(validate));
+        serializer().from_json(
+            &model(),
+            &JsValue::from_json(&json),
+            Some(&options),
+            &mut Env,
+        )
+    }
+
+    const DEFAULT: DeserializeOptions = DeserializeOptions {
+        reject_unknown_keys: false,
+        reject_required_null: false,
+    };
+    const UNKNOWN_KEYS: DeserializeOptions = DeserializeOptions {
+        reject_unknown_keys: true,
+        reject_required_null: false,
+    };
+    const REQUIRED_NULL: DeserializeOptions = DeserializeOptions {
+        reject_unknown_keys: false,
+        reject_required_null: true,
+    };
+
+    fn unknown_property(path: &str) -> ValidationDetail {
+        ValidationDetail {
+            path: path.to_string(),
+            code: DetailCode::UnknownProperty,
+            expected: None,
+            actual: None,
+        }
+    }
+
+    /// Row 1: an unknown field set to `null`.
+    #[test]
+    fn an_unknown_null_field_is_ignored_unless_unknown_keys_are_rejected() {
+        let json = json!({ "$class": "org.acme@1.0.0.Car", "vin": "A", "extra": null });
+        for options in [DEFAULT, REQUIRED_NULL] {
+            let car = deserialize(json.clone(), options, true).expect("a car");
+            assert_eq!(car.get("extra"), &JsValue::Undefined);
+        }
+        for options in [UNKNOWN_KEYS, STRICT_VALIDATE_OPTIONS] {
+            let error = contract_error(deserialize(json.clone(), options, true));
+            assert_eq!(error.kind, ErrorKind::Validation);
+            assert_eq!(
+                error.message(),
+                "Unexpected properties for type org.acme@1.0.0.Car: extra"
+            );
+            assert_eq!(error.details, vec![unknown_property("$.extra")]);
+        }
+    }
+
+    /// Row 2: an unknown field set to a value. The default keeps the legacy
+    /// error (no details); the flag reports every unknown key, `null` ones
+    /// included, as a detail of its own.
+    #[test]
+    fn an_unknown_field_with_a_value_is_always_an_error() {
+        let json = json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A",
+            "extra": "x", "other": null,
+            "address": { "$class": "org.acme@1.0.0.Address", "city": "Paris", "zip": 1 }
+        });
+        for options in [DEFAULT, REQUIRED_NULL] {
+            let error = contract_error(deserialize(json.clone(), options, true));
+            assert_eq!(
+                error.code,
+                "jsonpopulator-validateproperties-unexpectedproperties"
+            );
+            assert_eq!(
+                error.message(),
+                "Unexpected properties for type org.acme@1.0.0.Car: extra"
+            );
+            assert!(error.details.is_empty());
+        }
+        for options in [UNKNOWN_KEYS, STRICT_VALIDATE_OPTIONS] {
+            let error = contract_error(deserialize(json.clone(), options, true));
+            assert_eq!(
+                error.code,
+                "jsonpopulator-rejectunknownkeys-unknownproperties"
+            );
+            assert_eq!(
+                error.message(),
+                "Unexpected properties for type org.acme@1.0.0.Car: extra, other"
+            );
+            assert_eq!(
+                error.details,
+                vec![unknown_property("$.extra"), unknown_property("$.other")]
+            );
+        }
+        // A nested declaration reports its own path.
+        let nested = json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A",
+            "address": { "$class": "org.acme@1.0.0.Address", "city": "Paris", "zip": null }
+        });
+        let error = contract_error(deserialize(nested, UNKNOWN_KEYS, true));
+        assert_eq!(error.details, vec![unknown_property("$.address.zip")]);
+    }
+
+    /// Row 3: a required field set to `null`.
+    #[test]
+    fn a_required_null_field_fails_at_once_only_when_rejected() {
+        let json = json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A",
+            "address": { "$class": "org.acme@1.0.0.Address", "city": null }
+        });
+        for options in [DEFAULT, UNKNOWN_KEYS] {
+            // Dropped by the populator, then reported by the validator.
+            let error = contract_error(deserialize(json.clone(), options, true));
+            assert_ne!(error.code, "jsonpopulator-rejectrequirednull-requirednull");
+            assert!(error.details.is_empty());
+            // With `validate: false`, the document hydrates without it.
+            let car = deserialize(json.clone(), options, false).expect("a car");
+            let JsValue::Instance(address) = car.get("address") else {
+                panic!("an address");
+            };
+            assert_eq!(address.get("city"), &JsValue::Undefined);
+        }
+        for options in [REQUIRED_NULL, STRICT_VALIDATE_OPTIONS] {
+            for validate in [true, false] {
+                let error = contract_error(deserialize(json.clone(), options, validate));
+                assert_eq!(error.kind, ErrorKind::Validation);
+                assert_eq!(
+                    error.message(),
+                    "Expected value at path `$.address.city` to be of type `String`, but got null"
+                );
+                assert_eq!(
+                    error.details,
+                    vec![ValidationDetail {
+                        path: "$.address.city".to_string(),
+                        code: DetailCode::TypeViolation,
+                        expected: Some("String".to_string()),
+                        actual: Some("null".to_string()),
+                    }]
+                );
+            }
+        }
+    }
+
+    /// Row 4: an optional field set to `null` is skipped under every option.
+    #[test]
+    fn an_optional_null_field_is_always_skipped() {
+        let json = json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A",
+            "wheels": null, "address": null, "owner": null
+        });
+        for options in [
+            DEFAULT,
+            UNKNOWN_KEYS,
+            REQUIRED_NULL,
+            STRICT_VALIDATE_OPTIONS,
+        ] {
+            let car = deserialize(json.clone(), options, true).expect("a car");
+            assert_eq!(car.get("wheels"), &JsValue::Undefined);
+            assert_eq!(car.get("address"), &JsValue::Undefined);
+        }
+    }
+
+    /// The preset is both flags, and the flags only change the outcome for
+    /// the rows above: a valid document populates the same under each.
+    #[test]
+    fn the_strict_preset_accepts_a_valid_document() {
+        for options in [
+            DEFAULT,
+            UNKNOWN_KEYS,
+            REQUIRED_NULL,
+            STRICT_VALIDATE_OPTIONS,
+        ] {
+            let mut serializer_options = options.serializer_options();
+            serializer_options.insert("validate".to_string(), JsValue::Bool(true));
+            let car = serializer()
+                .from_json(&model(), &car_json(), Some(&serializer_options), &mut Env)
+                .expect("a car");
+            assert_eq!(car.get("wheels"), &JsValue::Number(4.0));
+        }
     }
 
     #[test]
