@@ -274,12 +274,17 @@ mod tests {
     /// property anywhere in the document fails validation.
     /// `concerto-validate-rs`'s own hand-rolled structural check caught
     /// this only by accident of its shape checks; here it is
-    /// `STRICT_VALIDATE_OPTIONS.reject_unknown_keys` (accordproject/
-    /// concerto#1273, task P3-02) that does the rejecting, deliberately —
-    /// without the strict preset this same document would be accepted, its
-    /// two extra keys (`isOptional` on the declaration, `propertyType` on
-    /// the property) silently dropped, which is `Serializer.fromJSON`'s
-    /// default (non-strict) behaviour both in TS and in this port.
+    /// `populator::validate_properties` (called unconditionally by
+    /// `visitClassDeclaration`, in both TS and this port) that rejects it
+    /// — *not* `STRICT_VALIDATE_OPTIONS`. This
+    /// document's two extra keys (`isOptional` on the declaration,
+    /// `propertyType` on the property) are both non-null, and a non-null
+    /// unknown key is rejected by `Serializer.fromJSON`'s default
+    /// (non-strict) behaviour too, in TS and in this port alike — see
+    /// `super::deserialize`'s own divergence table ("Unknown field =
+    /// non-null" is an error under the default). The strict preset's own,
+    /// real effect on unknown keys is exercised below by
+    /// `null_extra_property_rejected_only_under_the_strict_preset`.
     #[test]
     fn extra_properties_rejected_under_the_strict_preset() {
         let ast = json!({
@@ -308,6 +313,58 @@ mod tests {
         assert!(
             result.is_err(),
             "extra properties should fail validation under the strict preset: {result:?}"
+        );
+    }
+
+    /// The strict preset's actual, provable effect on unknown keys, and the
+    /// test that would fail if `validate_metamodel` stopped applying
+    /// `STRICT_VALIDATE_OPTIONS` (e.g. `Some(&options)` dropped to `None`).
+    /// Per `super::deserialize`'s own divergence table, an unknown property
+    /// set to `null` is *ignored* by default (it never reaches
+    /// `populator::validate_properties`, since `get_assignable_properties`
+    /// drops nullish values before that check runs) and rejected only when
+    /// `STRICT_VALIDATE_OPTIONS.reject_unknown_keys` is set — unlike a
+    /// non-null unknown property, which `extra_properties_rejected_under_
+    /// the_strict_preset` above shows fails either way, strict or not.
+    ///
+    /// The first assertion calls `validate_metamodel` itself (which always
+    /// applies the strict preset) and expects it to reject the document.
+    /// The second calls the underlying serializer directly with the
+    /// default (non-strict) options, on the identical document, and expects
+    /// it to accept it — establishing that the first assertion's failure is
+    /// really due to the strict preset, not some other check.
+    #[test]
+    fn null_extra_property_rejected_only_under_the_strict_preset() {
+        let ast = json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "test.namespace@1.0.0",
+            "imports": [],
+            "declarations": [
+                {
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "TestConcept",
+                    "isAbstract": false,
+                    "unknownKey": null,
+                    "properties": []
+                }
+            ]
+        });
+
+        let strict_result = validate_metamodel(&ast);
+        assert!(
+            strict_result.is_err(),
+            "a null unknown property should be rejected by validate_metamodel, \
+             which applies the strict preset: {strict_result:?}"
+        );
+
+        let mm = metamodel_model_manager().expect("metamodel model manager");
+        let serializer = Serializer::new(true, true, None).expect("serializer");
+        let mut env = FixedEnv;
+        let default_result = serializer.from_json(&mm, &JsValue::from_json(&ast), None, &mut env);
+        assert!(
+            default_result.is_ok(),
+            "the same null unknown property should be ignored under the \
+             (non-strict) default options: {default_result:?}"
         );
     }
 
