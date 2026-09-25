@@ -136,6 +136,81 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "src/introspect/numbervalidator.ts:115",
         ],
     },
+    // ---- P2-02 additions (StringValidator, CollectionSizeValidator) ----
+    CatalogueEntry {
+        code: "stringvalidator-constructor-invalidlength",
+        template: "Invalid string length, minLength and-or maxLength must be specified.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:65"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-constructor-negativelength",
+        template: "minLength and-or maxLength must be positive integers.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:67"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-constructor-mingreaterthanmax",
+        template: "minLength must be less than or equal to maxLength.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:71"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-constructor-invalidregex",
+        // Not a TS template: the message is whatever the regex engine threw
+        // (V8 in TS, `regress` here), passed through verbatim (OD-4).
+        template: "{message}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:84"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-validate-belowminlength",
+        template: "The string length of '{value}' should be at least {minLength} characters.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:104"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-validate-abovemaxlength",
+        template: "The string length of '{value}' should not exceed {maxLength} characters.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:107"],
+    },
+    CatalogueEntry {
+        code: "stringvalidator-validate-regexmismatch",
+        template: "Value '{value}' failed to match validation regex: {regex}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/stringvalidator.ts:111"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-constructor-nosize",
+        template: "Invalid collection size, minSize and/or maxSize must be specified.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:50"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-constructor-negativesize",
+        template: "minSize and/or maxSize must be positive integers.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:52"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-constructor-mingreaterthanmax",
+        template: "minSize must be less than or equal to maxSize.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:56"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-validate-belowminsize",
+        template: "Collection must contain at least {minSize} elements.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:69"],
+    },
+    CatalogueEntry {
+        code: "collectionsizevalidator-validate-abovemaxsize",
+        template: "Collection must contain no more than {maxSize} elements.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/collectionsizevalidator.ts:71"],
+    },
     CatalogueEntry {
         code: "scalardeclaration-process-primitivename",
         template: "Invalid scalar name '{scalarName}'. Name conflicts with primitive type.",
@@ -330,6 +405,24 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         // the line-oriented grep this module doc used to give missed it.
         sources: &["src/introspect/classdeclaration.ts:278"],
     },
+    // ---- P2-03 additions (ClassDeclaration.getNestedProperty's own two
+    //      inline templates; #47) ----
+    CatalogueEntry {
+        code: "classdeclaration-getnestedproperty-doesnotexist",
+        template: "Property {propertyName} does not exist on {fqn}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/classdeclaration.ts:586"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-getnestedproperty-primitiveorenum",
+        template: "Property {propertyName} is a primitive or enum. Invalid property path: {propertyPath}",
+        renderer: Renderer::Inline,
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // at the throw site in model_manager.rs): the one throw in
+        // `getNestedProperty` that TS does not build through
+        // `IllegalModelException`.
+        sources: &["src/introspect/classdeclaration.ts:593"],
+    },
     CatalogueEntry {
         code: "instancegenerator-newinstance-noconcreteclass",
         template: "No concrete extending type for \"{type}\".",
@@ -401,6 +494,54 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         template: "Instance \"{resourceId}\" has a property \"{propertyName}\" with type \"{objectType}\" that is not derived from \"{fieldType}\".",
         renderer: Renderer::Globalize,
         sources: &["src/serializer/resourcevalidator.ts:668"],
+    },
+    // ---- P2-01 review fix: ResourceId (`src/model/resourceid.ts`), the
+    //      ledger group's SEAM_LEDGER.tsv planned_task P2-01+P4-03 members
+    //      the first P2-01 pass left unported (parseUri, the constructor,
+    //      fromURI, toURI). None of these are en.json/Globalize keys, so
+    //      none is in the OD-5 scope test; each is an inline template
+    //      (2.2 step 2), ported with its unit in this same PR (6.3). ----
+    CatalogueEntry {
+        code: "resourceid-constructor-missingnamespace",
+        template: "Missing namespace",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:122"],
+    },
+    CatalogueEntry {
+        code: "resourceid-constructor-missingtype",
+        template: "Missing type",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:125"],
+    },
+    CatalogueEntry {
+        code: "resourceid-constructor-missingid",
+        template: "Missing id",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:128"],
+    },
+    CatalogueEntry {
+        code: "resourceid-parseuri-invalidport",
+        template: "Invalid port",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:89"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invaliduri",
+        template: "Invalid URI: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:156"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invalidscheme",
+        template: "Invalid URI scheme: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:162"],
+    },
+    CatalogueEntry {
+        code: "resourceid-fromuri-invalidformat",
+        template: "Invalid resource URI format: {uri}",
+        renderer: Renderer::Inline,
+        sources: &["src/model/resourceid.ts:165"],
     },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {

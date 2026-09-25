@@ -55,18 +55,24 @@
 //! with `ModelFile::from_json` (TS `new ModelFile(mm, ast, definitions,
 //! fileName)`), a failure being "input construction failed" (a failure).
 //! `declref` and `propref` become [`Node`] handles by position, checked by
-//! name as `codec.js` checks them. A `declnew` (a declaration built directly
-//! via `new Cls(modelFile, ast)`, never added to `modelFile`) is rebuilt with
-//! `ScalarDeclaration::build_standalone` when `cls` is `ScalarDeclaration`
-//! (P2-05); any other `cls` is `unsupported`, for its own owner. Map key/value
-//! `propref`s, `decoref`, `validatorref`, `typed`, `factory`, `serializer`,
+//! name as `codec.js` checks them. `decoref` (P2-07) becomes a
+//! [`DecoParent`] plus its position, resolved against its parent's processed
+//! decorators at dispatch time (`ops.rs`); its `parent` must itself be a
+//! `declref`, `propref` or `mfref`. A `declnew` (a declaration built
+//! directly via `new Cls(modelFile, ast)`, never added to `modelFile`) is
+//! rebuilt with `ScalarDeclaration::build_standalone` when `cls` is
+//! `ScalarDeclaration` (P2-05); any other `cls` is `unsupported`, for its own
+//! owner. Map key/value `propref`s, `validatorref`, `typed`, `factory`,
+//! `serializer`,
 //! `introspector`, `predicate` and `decoratorfactory` have no Rust
 //! counterpart yet: `unsupported`.
 
 use std::collections::HashMap;
 
 use concerto_core::introspect::scalar::ProcessedScalar;
-use concerto_core::introspect::{Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration};
+use concerto_core::introspect::{
+    Declaration, DeclarationKind, ModelFile, Named, ScalarDeclaration,
+};
 use concerto_core::model_manager::{DeclId, ModelFileId, ModelManager, Node, PropId};
 use serde_json::{Value, json};
 
@@ -238,8 +244,28 @@ pub enum Arg {
         fqn: String,
         processed: ProcessedScalar,
     },
+    /// A validator reached through a property (`validatorref` with a
+    /// `propref` owner): the property's model manager pool index, the
+    /// property itself, and which validator it names (`"validator"`, the
+    /// regex/length or numeric-domain one; `"size"`, the collection-size
+    /// one) — `ops.rs` rebuilds the actual validator from these, since no
+    /// production `Property`/`Field` API returns one yet (P2-04/P2-05).
+    Validator(usize, PropId, String),
+    /// A decorator: the pool index of its model manager, which of its
+    /// declaration/property/model-file's decorators it is, and its position
+    /// (P2-07).
+    Deco(usize, DecoParent, usize),
     /// An array that holds encoded values (a list of model files).
     List(Vec<Arg>),
+}
+
+/// What a `decoref`'s `parent` names (P2-07).
+#[derive(Debug, Clone)]
+pub enum DecoParent {
+    Decl(DeclId),
+    Prop(PropId),
+    /// A model file's own decorators, by namespace.
+    File(String),
 }
 
 /// One decoding session: `dctx` in `codec.js`.
@@ -314,6 +340,14 @@ impl<'h> Session<'h> {
             "propref" => {
                 let (mm, id) = self.propref(v)?;
                 Ok(Arg::Prop(mm, id))
+            }
+            "validatorref" => {
+                let (mm, id, part) = self.validatorref(v)?;
+                Ok(Arg::Validator(mm, id, part))
+            }
+            "decoref" => {
+                let (mm, parent, index) = self.decoref(v)?;
+                Ok(Arg::Deco(mm, parent, index))
             }
             "blob" => Err(Fault::Harness("unresolved blob".into())),
             other => {
@@ -526,9 +560,19 @@ impl<'h> Session<'h> {
             ));
         }
         let (owner, decl) = self.declref(decl)?;
+        let mm = &self.pool[owner].mm;
+        if matches!(mm.declaration(decl), Some(Declaration::Enum(_))) {
+            // An enum's values are not yet `Property`s with their own
+            // `PropId` (module doc on `PropId`): they stay `mm::EnumProperty`
+            // inside the generated `EnumDeclaration` node until P2-04 gives
+            // them one.
+            return Err(blocked(
+                "an enum value has no Rust handle yet (P2-04)",
+                "EnumValueDeclaration.new",
+            ));
+        }
         let index = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
         let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
-        let mm = &self.pool[owner].mm;
         let not_found =
             || Fault::Divergence(format!("state divergence: property {name} not found"));
         let id = mm
@@ -538,6 +582,85 @@ impl<'h> Session<'h> {
         match mm.property(id) {
             Some(p) if p.name() == name => Ok((owner, id)),
             _ => Err(not_found()),
+        }
+    }
+
+    /// A `validatorref`: which validator (`part`) of which property
+    /// (`owner`, a `propref`). A `declref`-owned `validatorref` (a scalar
+    /// declaration's own validator) has no fixture in the corpus today and
+    /// is reported the same way any other unhandled `@@oracle` kind is.
+    fn validatorref(&mut self, v: &Value) -> Faulty<(usize, PropId, String)> {
+        let part = v
+            .get("part")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Fault::Harness("validatorref without part".into()))?
+            .to_string();
+        let owner = v
+            .get("owner")
+            .ok_or_else(|| Fault::Harness("validatorref without owner".into()))?;
+        match owner.get(M).and_then(Value::as_str) {
+            Some("propref") => {
+                let (mm, id) = self.propref(owner)?;
+                Ok((mm, id, part))
+            }
+            _ => Err(blocked(
+                "a validator whose owner is not a property has no Rust handle yet",
+                "Validator.new",
+            )),
+        }
+    }
+    /// A `decoref`: `{parent, index}`, `parent` being a `declref`, `propref`
+    /// or `mfref` (P2-07).
+    fn decoref(&mut self, v: &Value) -> Faulty<(usize, DecoParent, usize)> {
+        let parent = v
+            .get("parent")
+            .ok_or_else(|| Fault::Harness("decoref without parent".into()))?;
+        let index = usize::try_from(v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX))
+            .unwrap_or(usize::MAX);
+        let (owner, target) = self.decorated_target(parent)?;
+        Ok((owner, target, index))
+    }
+
+    /// An element that can carry decorators, targeted directly (the receiver
+    /// of `Decorated.getDecorator`/`getDecorators`) or as a `decoref`'s
+    /// `parent` (P2-07): a `declref`, `propref` or `mfref`.
+    pub fn decorated_target(&mut self, v: &Value) -> Faulty<(usize, DecoParent)> {
+        match v.get(M).and_then(Value::as_str) {
+            Some("declref") => {
+                let (owner, id) = self.declref(v)?;
+                Ok((owner, DecoParent::Decl(id)))
+            }
+            Some("propref") => {
+                let (owner, id) = self.propref(v)?;
+                Ok((owner, DecoParent::Prop(id)))
+            }
+            Some("mfref") => {
+                let mm_node = v
+                    .get("mm")
+                    .ok_or_else(|| Fault::Harness("mfref without mm".into()))?;
+                let owner = self.mm_index(mm_node)?;
+                let ns = v
+                    .get("ns")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Ok((owner, DecoParent::File(ns)))
+            }
+            _ => Err(Fault::Unsupported(
+                "a decorated element this harness cannot rebuild (mfnew/declnew)".into(),
+            )),
+        }
+    }
+}
+
+impl DecoParent {
+    /// The decorators this names, read from a replayed model manager.
+    pub fn decorators<'a>(&self, r: &'a Replayed) -> Option<&'a [concerto_core::Decorator]> {
+        use concerto_core::Decorated;
+        match self {
+            Self::Decl(id) => r.mm.declaration(*id).map(Decorated::get_decorators),
+            Self::Prop(id) => r.mm.property(*id).map(Decorated::get_decorators),
+            Self::File(ns) => r.mm.model_file(ns).map(Decorated::get_decorators),
         }
     }
 }
@@ -1036,6 +1159,8 @@ impl Clone for Arg {
                 fqn: fqn.clone(),
                 processed: processed.clone(),
             },
+            Self::Validator(m, p, part) => Self::Validator(*m, *p, part.clone()),
+            Self::Deco(m, parent, i) => Self::Deco(*m, parent.clone(), *i),
             Self::List(items) => Self::List(items.clone()),
         }
     }

@@ -39,9 +39,13 @@
 //!   which closes this in general.
 
 use concerto_core::error::{ConcertoError, ErrorKind};
-use concerto_core::introspect::Declaration;
+use concerto_core::introspect::declaration::ClassDeclaration;
+use concerto_core::introspect::model_file::ModelFile;
+use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
-use concerto_core::model_manager::{ModelManager, Node, ResolutionContext};
+use concerto_core::introspect::validators::Validator;
+use concerto_core::introspect::{Declaration, Named, Validate};
+use concerto_core::model_manager::{DeclId, ModelManager, Node, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use serde_json::{Value, json};
 
@@ -373,6 +377,14 @@ const MM_STEP_OPS: [&str; 7] = [
 /// The ops whose inputs hold model managers or their handles.
 fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     let (class, member) = op.split_once('.').unwrap_or((op, ""));
+
+    // `Decorated`'s target may be an `mfref` (P2-07): the generic decode
+    // below turns that into an `Arg::File`, which drops the model manager it
+    // belongs to. Handled separately, ahead of the generic decode.
+    if class == "Decorated" && matches!(member, "getDecorator" | "getDecorators") {
+        return decorated_op(h, member, inputs);
+    }
+
     let dispatched = match (class, member) {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
@@ -388,6 +400,37 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "new" | "toString" | "getType" | "getValidator" | "getDefaultValue"
             )
         }
+        ("NumberValidator" | "StringValidator", m) => matches!(m, "validate" | "compatibleWith"),
+        ("CollectionSizeValidator", m) => {
+            matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
+        }
+        ("ClassDeclaration", m) => matches!(
+            m,
+            "isAbstract"
+                | "isIdentified"
+                | "isSystemIdentified"
+                | "isExplicitlyIdentified"
+                | "getIdentifierFieldName"
+                | "getOwnProperties"
+                | "getProperties"
+                | "getProperty"
+                | "getSuperType"
+                | "getSuperTypeDeclaration"
+                | "getAllSuperTypeDeclarations"
+                | "getAssignableClassDeclarations"
+                | "getDirectSubclasses"
+                | "getNestedProperty"
+                | "isEnum"
+                | "isEvent"
+                | "isMapDeclaration"
+                | "toString"
+                | "validate"
+        ),
+        ("Declaration", m) => matches!(
+            m,
+            "getFullyQualifiedName" | "getName" | "getNamespace" | "getModelFile"
+        ),
+        ("Decorator", m) => matches!(m, "getArguments" | "validate"),
         _ => false,
     };
     if !dispatched {
@@ -421,7 +464,11 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "ScalarDeclaration.new with a declaration AST that is not plain data",
             ));
         };
-        let namespace = file.ast.get("namespace").and_then(Value::as_str).unwrap_or("");
+        let namespace = file
+            .ast
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         return Ok(from_engine(
             concerto_core::introspect::ScalarDeclaration::validate_new(
                 namespace,
@@ -515,6 +562,156 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "a ScalarDeclaration receiver that is not a declref or declnew".into(),
             )),
         },
+        "NumberValidator" => {
+            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a NumberValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let Validator::Number(nv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a NumberValidator".into(),
+                ));
+            };
+            Ok(match member {
+                "validate" => {
+                    let id = arg_nullable_str(&args, 0)?;
+                    let value = arg_nullable_f64(&args, 1)?;
+                    from_engine(nv.validate(&elem, id.as_deref(), value), |()| {
+                        recipe::undefined()
+                    })
+                }
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(nv.compatible_with(other.as_ref()))))
+                }
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "StringValidator" => {
+            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a StringValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let Validator::String(sv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a StringValidator".into(),
+                ));
+            };
+            Ok(match member {
+                "validate" => {
+                    let id = arg_nullable_str(&args, 0)?;
+                    let value = arg_nullable_str(&args, 1)?;
+                    from_engine(sv.validate(&elem, id.as_deref(), value.as_deref()), |()| {
+                        recipe::undefined()
+                    })
+                }
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(sv.compatible_with(other.as_ref()))))
+                }
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "CollectionSizeValidator" => {
+            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a CollectionSizeValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, _elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let Validator::CollectionSize(cv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a CollectionSizeValidator"
+                        .into(),
+                ));
+            };
+            Ok(match member {
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(cv.compatible_with(other.as_ref()))))
+                }
+                "getMinSize" => ran(Ok(cv
+                    .min_size()
+                    .map_or_else(recipe::undefined, |v| json!(v)))),
+                "getMaxSize" => ran(Ok(cv
+                    .max_size()
+                    .map_or_else(recipe::undefined, |v| json!(v)))),
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "ClassDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ClassDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(declaration) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration handle does not resolve".into(),
+                ));
+            };
+            if !matches!(declaration, Declaration::Class(_) | Declaration::Enum(_)) {
+                // TS: every one of these members is defined on
+                // `ClassDeclaration`, inherited unchanged by `EnumDeclaration`
+                // (module doc); a scalar or map declaration has no such
+                // method at all — not a fixture this op family owns.
+                return Ok(unsupported(
+                    "ClassDeclaration op on a receiver that is neither class-like nor an enum",
+                ));
+            }
+            let fqn =
+                r.mm.get_fully_qualified_name(&Node::Declaration(id))
+                    .expect("a resolved declref always names a loaded declaration");
+            Ok(class_declaration_op(r, id, &fqn, member, &args))
+        }
+        "Declaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Declaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            Ok(declaration_op(r, id, member))
+        }
+        "Decorator" => {
+            let Some(Arg::Deco(index, parent, position)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Decorator receiver that is not a decoref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(decorator) = parent.decorators(r).and_then(|ds| ds.get(position)) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the decorator was not found at its recorded position".into(),
+                ));
+            };
+            Ok(match member {
+                "getArguments" => ran(Ok(Value::Array(
+                    decorator
+                        .arguments()
+                        .iter()
+                        .map(encode_decorator_argument)
+                        .collect(),
+                ))),
+                _ => {
+                    // TS default: `decoratorValidation` unset, so `validate`
+                    // is a no-op (module doc on `Decorator::validate`); this
+                    // harness does not yet replay a `decoratorValidation`
+                    // option (`UNMODELLED_OPTIONS`), so every fixture it
+                    // reaches runs with the manager's default (disabled).
+                    let namespace = decorated_namespace(r, &parent).unwrap_or_default();
+                    ran(match decorator.validate(&r.mm, &namespace, None) {
+                        Ok(()) => Ok(recipe::undefined()),
+                        Err(e) => Err(to_oracle_error(&e)),
+                    })
+                }
+            })
+        }
         _ => unreachable!("`dispatched` lists every class"),
     }
 }
@@ -531,6 +728,496 @@ fn scalar_validator_summary(validator: Option<&ScalarValidator>) -> Value {
         Some(ScalarValidator::String { .. }) => {
             json!({ M: "Validator", "ctor": "StringValidator" })
         }
+    }
+}
+
+/// A property, captured just enough to rebuild one of its validators for
+/// this harness's own replay: only what `FullyQualified`/`ValidatedElement`
+/// need to report a validator error, snapshotted at the point the validator
+/// is rebuilt. No production `Property`/`Field` API returns a built
+/// validator yet — that wiring is P2-04/P2-05 (PORTING.md 6.2) — so the
+/// harness rebuilds one straight from the property's own AST fields, which
+/// are already public, each time a `NumberValidator`/`StringValidator`/
+/// `CollectionSizeValidator` fixture needs one.
+struct PropertyElement {
+    fqn: String,
+    name: String,
+    default_value: Option<Value>,
+}
+
+impl concerto_core::introspect::FullyQualified for PropertyElement {
+    type Error = ConcertoError;
+
+    fn fully_qualified_name(&self) -> Result<String, ConcertoError> {
+        Ok(self.fqn.clone())
+    }
+}
+
+impl concerto_core::model_manager::ValidatedElement for PropertyElement {
+    fn default_value(&self) -> Result<Option<Value>, ConcertoError> {
+        Ok(self.default_value.clone())
+    }
+
+    fn name(&self) -> Result<String, ConcertoError> {
+        Ok(self.name.clone())
+    }
+}
+
+/// `property.ast.defaultValue`: the property kinds that carry one (`String`,
+/// `Integer`, `Long`, `Double`), or `None` (JS `null`/`undefined`) for a kind
+/// that has none.
+fn property_default_value(prop: &concerto_core::introspect::Property) -> Option<Value> {
+    use concerto_core::introspect::Property;
+    match prop {
+        Property::String(p) => p.default_value.clone().map(Value::String),
+        Property::Integer(p) => p.default_value.map(|v| json!(v)),
+        Property::Long(p) => p.default_value.map(|v| json!(v)),
+        Property::Double(p) => p.default_value.map(|v| json!(v)),
+        _ => None,
+    }
+}
+
+/// Rebuilds the validator a `validatorref` names (`part`: `"validator"`, the
+/// regex/length or numeric-domain one; `"size"`, the collection-size one)
+/// from its owning property (`mm_idx`/`prop_id`), plus the [`PropertyElement`]
+/// the property's own AST fields feed it with.
+///
+/// A build failure here is a real [`Fault::Divergence`], not an
+/// [`Fault::Unsupported`]: the property already loaded successfully (its own
+/// ad hoc `check_pattern`/`check_length`/`check_domain`/`check_size` checks
+/// passed when its model manager was rebuilt), so rebuilding the equivalent
+/// `Validator` from the same AST must succeed too, or the two disagree.
+fn build_validator(
+    session: &Session,
+    mm_idx: usize,
+    prop_id: concerto_core::model_manager::PropId,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    use concerto_core::introspect::Named;
+    use concerto_core::introspect::Property;
+
+    let r = session.pool.get(mm_idx).ok_or_else(|| {
+        Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
+    })?;
+    let prop = r.mm.property(prop_id).ok_or_else(|| {
+        Fault::Divergence("state divergence: the validatorref's property was not found".into())
+    })?;
+    let fqn =
+        r.mm.get_fully_qualified_name(&Node::Property(prop_id))
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "computing the validatorref property's fully qualified name: {e}"
+                ))
+            })?;
+    let elem = PropertyElement {
+        fqn,
+        name: prop.name().to_string(),
+        default_value: property_default_value(prop),
+    };
+
+    let validator = match part {
+        "size" => {
+            let ast = prop.size_validator().ok_or_else(|| {
+                Fault::Divergence(
+                    "state divergence: the validatorref's property has no size validator".into(),
+                )
+            })?;
+            let built =
+                concerto_core::introspect::validators::CollectionSizeValidator::new(&elem, ast)
+                    .map_err(|e| {
+                        Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}"))
+                    })?;
+            Validator::CollectionSize(built)
+        }
+        "validator" => match prop {
+            Property::String(p) => {
+                let built = concerto_core::introspect::validators::StringValidator::new(
+                    &elem,
+                    p.validator.as_ref(),
+                    p.length_validator.as_ref(),
+                )
+                .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
+                Validator::String(built)
+            }
+            Property::Integer(p) => {
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
+                Validator::Number(built)
+            }
+            Property::Long(p) => {
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
+                Validator::Number(built)
+            }
+            Property::Double(p) => {
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
+                Validator::Number(built)
+            }
+            _ => {
+                return Err(Fault::Unsupported(
+                    "a `validator` part on a property kind with no ported validator".into(),
+                ));
+            }
+        },
+        other => {
+            return Err(Fault::Unsupported(format!(
+                "a validatorref part {other:?} with no Rust counterpart"
+            )));
+        }
+    };
+    Ok((validator, elem))
+}
+
+/// `NumberValidator.validate`/`StringValidator.validate`'s first argument
+/// (`identifier`): a nullable string.
+fn arg_nullable_str(args: &[Arg], index: usize) -> Faulty<Option<String>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Plain(Value::String(s))) => Ok(Some(s.clone())),
+        _ => Err(Fault::Unsupported(
+            "expected a nullable string argument".into(),
+        )),
+    }
+}
+
+/// `NumberValidator.validate`'s value argument: a nullable number.
+fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Plain(v)) if v.is_number() => Ok(v.as_f64()),
+        _ => Err(Fault::Unsupported(
+            "expected a nullable number argument".into(),
+        )),
+    }
+}
+
+/// `compatibleWith`'s `other` argument: `null`, or another `validatorref`,
+/// rebuilt the same way the receiver was.
+fn arg_other_validator(session: &Session, args: &[Arg], index: usize) -> Faulty<Option<Validator>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Validator(mm_idx, prop_id, part)) => {
+            build_validator(session, *mm_idx, *prop_id, part).map(|(v, _)| Some(v))
+        }
+        _ => Err(Fault::Unsupported(
+            "expected a validator or null argument".into(),
+        )),
+    }
+}
+
+/// The `ctor` an oracle `Property` summary carries for `p` (README "Value
+/// encoding", `codec.js`'s `encodable.js`): the TS class that would have
+/// constructed it, from its own kind (a property's kind, unlike a
+/// declaration's, never needs a receiver's model file to tell, PORTING.md
+/// 6.2).
+fn property_ctor(p: &Property) -> &'static str {
+    if p.is_enum_value() {
+        "EnumValueDeclaration"
+    } else if p.is_relationship() {
+        "RelationshipDeclaration"
+    } else {
+        "Field"
+    }
+}
+
+/// The outcome-only `Property` summary (`makeOutputEncoder`): `{ctor, fqn}`.
+/// `owner_fqn` is the fully-qualified name of the declaration that actually
+/// declares `p` — its `Property.getParent().getFullyQualifiedName()` — which
+/// for an inherited property is its super type's, not the type the walk
+/// started from ([`ModelManager::get_all_properties`]'s doc comment).
+fn property_summary(owner_fqn: &str, p: &Property) -> Value {
+    json!({
+        M: "Property",
+        "ctor": property_ctor(p),
+        "fqn": format!("{owner_fqn}.{}", p.name()),
+    })
+}
+
+/// Every fully-qualified super type name `get_all_super_type_names` (or
+/// `get_assignable_class_declarations`/`get_direct_subclasses`) gives, each
+/// resolved back to its declaration and encoded the outcome-only way
+/// (`declaration_summary`).
+fn declaration_summaries(r: &Replayed, fqns: &[String]) -> Value {
+    Value::Array(
+        fqns.iter()
+            .map(|fqn| {
+                let id =
+                    r.mm.declaration_id(fqn)
+                        .expect("a name this manager's own walk produced is always loaded");
+                r.declaration_summary(id)
+                    .expect("declaration_id just resolved it")
+            })
+            .collect(),
+    )
+}
+
+/// `ClassDeclaration.*`/`EnumDeclaration`-inherited ops (module doc): every
+/// member TS defines once on `ClassDeclaration`, which `EnumDeclaration`
+/// (src/introspect/enumdeclaration.ts) inherits unchanged except `toString`
+/// and `declarationKind` — so `fqn` here may equally be a concept-like
+/// declaration or an enum (`exec_handles`'s own gate on `declaration`).
+fn class_declaration_op(
+    r: &Replayed,
+    id: DeclId,
+    fqn: &str,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    let declaration =
+        r.mm.declaration(id)
+            .expect("the caller just resolved this handle");
+    let arg_str = |i: usize| match args.get(i) {
+        Some(Arg::Plain(Value::String(s))) => Some(s.as_str()),
+        _ => None,
+    };
+    match member {
+        "isAbstract" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_abstract(),
+                Declaration::Enum(e) => e.is_abstract(),
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "isIdentified" => from_engine(r.mm.is_identified(fqn), Value::Bool),
+        "isSystemIdentified" => from_engine(r.mm.is_system_identified(fqn), Value::Bool),
+        "isExplicitlyIdentified" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_explicitly_identified(),
+                // An enum's AST never carries `identified` (own_identifier_field_name).
+                Declaration::Enum(_) => false,
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "getIdentifierFieldName" => from_engine(r.mm.identifier_field_name(fqn), |name| {
+            name.map_or(Value::Null, Value::String)
+        }),
+        "getOwnProperties" => from_engine(r.mm.get_own_properties(fqn), |props| {
+            Value::Array(props.iter().map(|p| property_summary(fqn, p)).collect())
+        }),
+        "getProperties" => from_engine(r.mm.get_all_properties(fqn), |props| {
+            Value::Array(
+                props
+                    .iter()
+                    .map(|(owner, p)| property_summary(owner, p))
+                    .collect(),
+            )
+        }),
+        "getProperty" => {
+            let Some(name) = arg_str(0) else {
+                return unsupported("getProperty with a name that is not a string");
+            };
+            from_engine(r.mm.get_property(fqn, name), |found| {
+                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, &p))
+            })
+        }
+        "getSuperType" => from_engine(r.mm.get_super_type(fqn), |name| {
+            name.map_or(Value::Null, Value::String)
+        }),
+        "getSuperTypeDeclaration" => from_engine(r.mm.get_super_type_declaration(fqn), |found| {
+            found
+                .and_then(|id| r.declaration_summary(id))
+                .unwrap_or(Value::Null)
+        }),
+        "getAllSuperTypeDeclarations" => from_engine(r.mm.get_all_super_type_names(fqn), |names| {
+            declaration_summaries(r, &names)
+        }),
+        "getAssignableClassDeclarations" => {
+            from_engine(r.mm.get_assignable_class_declarations(fqn), |names| {
+                declaration_summaries(r, &names)
+            })
+        }
+        "getDirectSubclasses" => from_engine(r.mm.get_direct_subclasses(fqn), |names| {
+            declaration_summaries(r, &names)
+        }),
+        "getNestedProperty" => {
+            let Some(path) = arg_str(0) else {
+                return unsupported("getNestedProperty with a path that is not a string");
+            };
+            from_engine(r.mm.get_nested_property(fqn, path), |(owner, p)| {
+                property_summary(&owner, &p)
+            })
+        }
+        "isEnum" => ran(Ok(Value::Bool(declaration.is_enum_declaration()))),
+        "isEvent" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_event(),
+                Declaration::Enum(_) => false,
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "isMapDeclaration" => ran(Ok(Value::Bool(declaration.is_map_declaration()))),
+        "toString" => {
+            let Declaration::Class(class) = declaration else {
+                // `EnumDeclaration` overrides `toString` (module doc): the
+                // oracle records that override as its own op
+                // (`EnumDeclaration.toString`), never reaching here.
+                return unsupported("ClassDeclaration.toString on an enum receiver");
+            };
+            let super_name = class.super_type().map(|ti| ti.name.as_str());
+            ran(Ok(Value::String(ClassDeclaration::to_string(
+                fqn,
+                super_name,
+                class.is_abstract(),
+            ))))
+        }
+        "validate" => {
+            let namespace =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+                    .expect("a resolved declref's declaration always has a model file");
+            // TS: `validate()` returns nothing (`undefined`), never `null`.
+            from_engine(declaration.validate(&r.mm, namespace), |()| {
+                recipe::undefined()
+            })
+        }
+        _ => unreachable!("`dispatched` lists every ClassDeclaration member"),
+    }
+}
+
+/// `Declaration.*` ops that reach every kind of declaration unchanged
+/// (module doc): none of them is overridden anywhere in the hierarchy.
+fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
+    let Some(declaration) = r.mm.declaration(id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the declaration handle does not resolve".into(),
+        ));
+    };
+    match member {
+        "getFullyQualifiedName" => from_engine(
+            r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+            Value::String,
+        ),
+        "getName" => ran(Ok(Value::String(declaration.name().to_string()))),
+        "getNamespace" => {
+            let Some(namespace) =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the declaration's model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(Value::String(namespace.to_string())))
+        }
+        "getModelFile" => {
+            let Some(namespace) =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the declaration's model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(r.model_file_summary(namespace).unwrap_or(Value::Null)))
+        }
+        _ => unreachable!("`dispatched` lists every Declaration member"),
+    }
+}
+
+/// `Decorated.getDecorator`/`getDecorators` (P2-07): the target is a
+/// `declref`, `propref` or `mfref` directly, decoded through
+/// [`Session::decorated_target`] rather than the generic [`Session::decode`]
+/// (module doc on [`exec_handles`]'s early return), since a plain `Arg::File`
+/// would drop the model manager an `mfref` target belongs to.
+fn decorated_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let mut session = Session::new(h);
+    let Some(target) = &inputs.target else {
+        return Ok(unsupported(format!("Decorated.{member} without a target")));
+    };
+    let (index, parent) = session.decorated_target(target)?;
+    let r = &session.pool[index];
+    let Some(decorators) = parent.decorators(r) else {
+        return Err(Fault::Divergence(
+            "state divergence: the decorated element was not found".into(),
+        ));
+    };
+    if member == "getDecorators" {
+        return Ok(ran(Ok(Value::Array(
+            decorators.iter().map(encode_decorator).collect(),
+        ))));
+    }
+    let args = decode::decode_args(&inputs.args)
+        .map_err(|decode::Unsupported(reason)| Fault::Unsupported(reason))?;
+    let name_arg = decode::arg(&args, 0);
+    let Ok(name) = decode::as_str(&name_arg) else {
+        return Ok(unsupported("Decorated.getDecorator with a non-string name"));
+    };
+    let found = decorators.iter().find(|d| d.name() == name);
+    Ok(ran(Ok(found.map_or(Value::Null, encode_decorator))))
+}
+
+/// The namespace a decorated element's model file was loaded under, needed
+/// only to build [`concerto_core::error::ConcertoError`] messages that name
+/// where a decorator's own name failed to resolve — never exercised by a
+/// fixture in this scope, since every one of them runs with the manager's
+/// default (disabled) `decoratorValidation` (module doc on the `"Decorator"`
+/// arm of [`exec_handles`]'s class match).
+fn decorated_namespace(r: &Replayed, parent: &recipe::DecoParent) -> Option<String> {
+    match parent {
+        recipe::DecoParent::File(ns) => Some(ns.clone()),
+        recipe::DecoParent::Decl(id) => {
+            r.mm.model_file_of(*id)
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+        recipe::DecoParent::Prop(id) => {
+            r.mm.parent_of(*id)
+                .and_then(|d| r.mm.model_file_of(d))
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+    }
+}
+
+/// A [`concerto_core::Decorator`] in the oracle's encoding, matching a
+/// recorded `{"@@oracle":"Decorator","name":…,"arguments":[…]}` value.
+fn encode_decorator(d: &concerto_core::Decorator) -> Value {
+    json!({
+        M: "Decorator",
+        "name": d.name(),
+        "arguments": d.arguments().iter().map(encode_decorator_argument).collect::<Vec<_>>(),
+    })
+}
+
+/// One [`concerto_core::DecoratorArgument`] in the oracle's encoding: a
+/// literal as it is, or a type reference as the plain object TS builds
+/// (`{type, name, array}` in `Decorator.process`).
+fn encode_decorator_argument(arg: &concerto_core::DecoratorArgument) -> Value {
+    use concerto_core::DecoratorArgument;
+    match arg {
+        DecoratorArgument::String(s) => Value::String(s.clone()),
+        DecoratorArgument::Number(n) => json!(n),
+        DecoratorArgument::Boolean(b) => Value::Bool(*b),
+        DecoratorArgument::TypeReference(t) => json!({
+            "type": "Identifier",
+            "name": t.name,
+            "array": t.array,
+        }),
     }
 }
 

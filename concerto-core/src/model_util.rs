@@ -724,4 +724,162 @@ mod tests {
             Err("Unrecognized imports ImportAll".to_string())
         );
     }
+
+    /// One test function per `it()` in `test/modelutil.js` (P0-02 tag `B`),
+    /// named after its `describe`/`it` titles, so `grep` finds the port of
+    /// each assertion (PORTING.md 10.11). The 6 `#isAssignableTo` cases are
+    /// tagged `W` (they stub `ModelFile`/`Property`/`ModelManager` with
+    /// sinon): `ModelUtil.isAssignableTo` is exercised instead against a real
+    /// arena-backed `ModelManager` in `model_manager::tests::
+    /// ported_members_run_on_the_arena` and `model_manager::tests`'
+    /// `is_assignable_to` cases, and the W tests themselves remain listed,
+    /// not yet lifted, in `migration/ledger/SUMMARY.md` §10 (task P2-10).
+    mod ts_modelutil_js {
+        use super::*;
+
+        // #isPrimitiveType > check isPrimitiveType
+        #[test]
+        fn is_primitive_type_check_is_primitive_type() {
+            assert!(!is_primitive_type("org.acme.baz@1.0.0.Foo"));
+            assert!(is_primitive_type("Boolean"));
+            assert!(is_primitive_type("Integer"));
+            assert!(is_primitive_type("Long"));
+            assert!(is_primitive_type("DateTime"));
+            assert!(is_primitive_type("String"));
+        }
+
+        // #getShortName > should handle a name with a namespace
+        #[test]
+        fn get_short_name_should_handle_a_name_with_a_namespace() {
+            assert_eq!(get_short_name("org.acme.baz@1.0.0.Foo"), "Foo");
+        }
+
+        // #getShortName > should handle a name without a namespace
+        #[test]
+        fn get_short_name_should_handle_a_name_without_a_namespace() {
+            assert_eq!(get_short_name("Foo"), "Foo");
+        }
+
+        // #getNamespace > check getNamespace
+        #[test]
+        fn get_namespace_check_get_namespace() {
+            assert_eq!(
+                get_namespace(Some("org.acme.baz@1.0.0.Foo")).unwrap(),
+                "org.acme.baz@1.0.0"
+            );
+            assert_eq!(get_namespace(Some("Foo")).unwrap(), "");
+        }
+
+        // #capitalizeFirstLetter > should handle a single lower case letter
+        #[test]
+        fn capitalize_first_letter_should_handle_a_single_lower_case_letter() {
+            assert_eq!(capitalize_first_letter("a"), "A");
+        }
+
+        // #capitalizeFirstLetter > should handle a single upper case letter
+        #[test]
+        fn capitalize_first_letter_should_handle_a_single_upper_case_letter() {
+            assert_eq!(capitalize_first_letter("A"), "A");
+        }
+
+        // #capitalizeFirstLetter > should handle a string of lower case letters
+        #[test]
+        fn capitalize_first_letter_should_handle_a_string_of_lower_case_letters() {
+            assert_eq!(capitalize_first_letter("abcdef"), "Abcdef");
+        }
+
+        // #capitalizeFirstLetter > should handle a string of mixed case letters
+        #[test]
+        fn capitalize_first_letter_should_handle_a_string_of_mixed_case_letters() {
+            assert_eq!(capitalize_first_letter("aBcDeF"), "ABcDeF");
+        }
+
+        // #getFullyQualifiedName > valid inputs
+        #[test]
+        fn get_fully_qualified_name_valid_inputs() {
+            assert_eq!(
+                get_fully_qualified_name("a.namespace", "type"),
+                "a.namespace.type"
+            );
+        }
+
+        // #getFullyQualifiedName > empty namespace should return the type with no leading dot
+        #[test]
+        fn get_fully_qualified_name_empty_namespace_should_return_the_type_with_no_leading_dot() {
+            assert_eq!(get_fully_qualified_name("", "type"), "type");
+        }
+
+        // #removeNamespaceVersionFromFullyQualifiedName > valid inputs
+        #[test]
+        fn remove_namespace_version_from_fully_qualified_name_valid_inputs() {
+            assert_eq!(
+                remove_namespace_version_from_fully_qualified_name(Some("org.acme@1.0.0.Person"))
+                    .unwrap(),
+                "org.acme.Person"
+            );
+        }
+
+        // #removeNamespaceVersionFromFullyQualifiedName > primtive type [sic]
+        #[test]
+        fn remove_namespace_version_from_fully_qualified_name_primitive_type() {
+            assert_eq!(
+                remove_namespace_version_from_fully_qualified_name(Some("String")).unwrap(),
+                "String"
+            );
+        }
+
+        // #parseNamespace > valid, with version
+        #[test]
+        fn parse_namespace_valid_with_version() {
+            let ParsedNamespace::Full {
+                name,
+                escaped_namespace,
+                version,
+                version_parsed,
+            } = parse_namespace(Some("org.acme@1.0.0"), false).unwrap()
+            else {
+                unreachable!("version parsing is not disabled")
+            };
+            assert_eq!(name, "org.acme");
+            assert_eq!(escaped_namespace, "org.acme_1.0.0");
+            assert_eq!(version.as_deref(), Some("1.0.0"));
+            assert_eq!(version_parsed.unwrap().major, 1.0);
+        }
+
+        // #parseNamespace > valid, with version validation disabled
+        #[test]
+        fn parse_namespace_valid_with_version_validation_disabled() {
+            // TS calls `parseNamespace('org.acme@1.0.x', {
+            // disableVersionParsing: true })`; `1.0.x` is never validated as a
+            // semver, and the result carries `name` only (no
+            // `escapedNamespace`/`version`/`versionParsed` properties).
+            let ParsedNamespace::NameOnly { name } =
+                parse_namespace(Some("org.acme@1.0.x"), true).unwrap()
+            else {
+                unreachable!("version parsing is disabled")
+            };
+            assert_eq!(name, "org.acme");
+        }
+
+        // #parseNamespace > invalid (null)
+        #[test]
+        fn parse_namespace_invalid_null() {
+            let err = parse_namespace(None, false).unwrap_err();
+            assert!(err.to_string().contains("Namespace is null"), "{err}");
+        }
+
+        // #parseNamespace > invalid (org.acme@1.0.0@2.3)
+        #[test]
+        fn parse_namespace_invalid_two_at_signs() {
+            let err = parse_namespace(Some("org.acme@1.0.0@2.3"), false).unwrap_err();
+            assert!(err.to_string().contains("Invalid namespace"), "{err}");
+        }
+
+        // #parseNamespace > invalid version
+        #[test]
+        fn parse_namespace_invalid_version() {
+            let err = parse_namespace(Some("org.acme@1.1.2+.123"), false).unwrap_err();
+            assert!(err.to_string().contains("Invalid namespace"), "{err}");
+        }
+    }
 }
