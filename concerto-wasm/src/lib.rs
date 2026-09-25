@@ -3328,6 +3328,21 @@ impl ModelManagerHandle {
         })
     }
 
+    /// TS `ModelManager`'s `dangerouslyAllowReservedSystemTypeNamesInUserModels`
+    /// option (`ModelManager::set_dangerously_allow_reserved_system_type_names_in_user_models`).
+    /// Additive: [`Self::new`] takes no options and leaves this `false`, so
+    /// every existing caller is unaffected. A view must call this before
+    /// [`Self::add_model_with_definitions`] validates a model that relies on
+    /// it — otherwise that call's `ModelManager::validate_detached_model_file`
+    /// check (P4-08a, accordproject/concerto-rust#173) runs with the option
+    /// off, unlike native `add_model(s)`, and rejects a system type name the
+    /// caller meant to allow.
+    #[wasm_bindgen(js_name = setDangerouslyAllowReservedSystemTypeNamesInUserModels)]
+    pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.manager
+            .set_dangerously_allow_reserved_system_type_names_in_user_models(allow);
+    }
+
     /// Loads a model from its JSON AST, passed as JSON text (the view calls
     /// `JSON.stringify(ast)`: spike REPORT §3), and returns the handle of its
     /// model file. Malformed JSON throws a JS `SyntaxError`.
