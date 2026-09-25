@@ -4726,7 +4726,7 @@ ModelManager.fromAst	6b2963681152f24e8334562b	fail:unexpected-error
 ModelManager.fromAst	6cb7471b74d34ad19e6c5a69	pass
 ModelManager.fromAst	7b9fc1eca8208827732709eb	fail:class-mismatch
 ModelManager.fromAst	7baa7b3dede700df9ff46df3	fail:message-mismatch
-ModelManager.fromAst	7c285f5ae956fdd1ec6097cb	fail:message-mismatch
+ModelManager.fromAst	7c285f5ae956fdd1ec6097cb	pass
 ModelManager.fromAst	81611c59a730271c6f367bee	pass
 ModelManager.fromAst	81d7021f96037f3a3f5ffb5c	pass
 ModelManager.fromAst	8335247dee104b114d18afa8	pass

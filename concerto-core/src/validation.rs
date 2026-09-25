@@ -56,15 +56,19 @@ fn property_location(property: &Property) -> Option<serde_json::Value> {
 
 impl ModelManager {
     /// Validates every loaded model except the root model (`concerto@1.0.0`),
-    /// so user models and the built-in decorator model are checked. Returns `Ok(())` if every model is semantically valid, otherwise
-    /// the first problem found. Namespaces are visited in order so that the
-    /// same set of models always reports the same problem.
+    /// so user models and the built-in decorator model are checked. Returns
+    /// `Ok(())` if every model is semantically valid, otherwise the first
+    /// problem found.
+    ///
+    /// TS: `validateModelFiles` (basemodelmanager.ts) — `for (ns in
+    /// this.modelFiles)`, the order the files were added in. A subclass's
+    /// pass also checks the properties it inherits (`validate_property`), so
+    /// when two files are both invalid the order decides which error comes
+    /// first; P2-08 review: this used to sort by namespace instead.
     pub fn validate_models(&self) -> Result<()> {
-        let mut model_files: Vec<_> = self
+        let model_files = self
             .model_files()
-            .filter(|model_file| !model_file.is_system_namespace())
-            .collect();
-        model_files.sort_by_key(|model_file| model_file.namespace());
+            .filter(|model_file| !model_file.is_system_namespace());
 
         for model_file in model_files {
             self.validate_model_file(model_file)?;
@@ -340,25 +344,87 @@ impl Validate for ClassDeclaration {
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_decorators(self, class_location(self))?;
         validate_decorators(manager, namespace, self, Some(&fqn))?;
-        for property in self.own_properties() {
-            // TS: `Property.validate` runs `super.validate()` — the
-            // `Decorated` duplicate-decorator check and, when enabled,
-            // `Decorator.validate` — before its own `resolveType` call
-            // (property.ts). `check_property_type` below is that
-            // `resolveType`/relationship logic, so the decorator checks run
-            // first here too (P2-08 review carry-over (b) from P2-04's
-            // review, #48).
-            check_unique_decorators(property, property_location(property))?;
-            validate_decorators(
-                manager,
-                namespace,
-                property,
-                Some(&format!("{fqn}.{}", property.name())),
-            )?;
-            check_property_type(manager, namespace, self, property)?;
+        // TS: `for (field of this.getProperties())` — every property, own
+        // and then inherited (`getProperties` walks up the super-type
+        // chain), each validated in this class's own pass (P2-08 review:
+        // this used to loop over `own_properties()` only, so a file
+        // validated on its own never checked what it inherits).
+        for (owner_fqn, property) in manager.get_all_properties(&fqn)? {
+            validate_property(manager, namespace, self, &owner_fqn, &property)?;
         }
         Ok(())
     }
+}
+
+/// TS: one iteration of `ClassDeclaration.validate`'s property loop
+/// (classdeclaration.ts) for `class` in `namespace`, over a property declared
+/// by `owner_fqn` (`class` itself, or one of its super types).
+///
+/// TS picks the declaration `field.validate(classDecl)` runs against: `this`
+/// (`class`) when the field is primitive or declared in `class`'s own
+/// namespace; otherwise the declaration of the field's *type*
+/// (`modelManager.getType(field.getFullyQualifiedTypeName())`, the type name
+/// resolved in the declaring file). `classDecl.getModelFile()` is where
+/// `Property.validate` resolves the type name and which file its errors
+/// name. `Decorated.validate` (the property's own decorators) and
+/// `RelationshipDeclaration.validate`'s lookups use the property's own
+/// parent instead — the declaring file.
+fn validate_property(
+    manager: &ModelManager,
+    namespace: &str,
+    class: &ClassDeclaration,
+    owner_fqn: &str,
+    property: &Property,
+) -> Result<()> {
+    let owner_ns = get_namespace(Some(owner_fqn))?;
+    let owner_name = get_short_name(owner_fqn);
+    let property_fqn = format!("{owner_fqn}.{}", property.name());
+    // `field.getModelFile()`: the declaring file, for an inherited
+    // property's own `Decorated.validate` errors.
+    let owner_file = manager.model_file(owner_ns);
+    let in_owner_file = |e: ConcertoError| match owner_file {
+        Some(file) if owner_ns != namespace => attach_model_file(e, file),
+        _ => e,
+    };
+
+    // TS: `Property.validate` runs `super.validate()` — the `Decorated`
+    // duplicate-decorator check and, when enabled, `Decorator.validate` —
+    // before its own `resolveType` call (property.ts). `check_property_type`
+    // below is that `resolveType`/relationship logic, so the decorator
+    // checks run first here too (P2-08 review carry-over (b) from P2-04's
+    // review, #48).
+    check_unique_decorators(property, property_location(property)).map_err(in_owner_file)?;
+    validate_decorators(manager, owner_ns, property, Some(&property_fqn)).map_err(in_owner_file)?;
+
+    let type_name = property.type_identifier().map(|t| t.name.as_str());
+    let is_primitive = type_name.is_none_or(is_primitive_type);
+    if is_primitive || owner_ns == namespace {
+        return check_property_type(manager, namespace, owner_ns, owner_name, class, property);
+    }
+
+    // `field.getFullyQualifiedTypeName()`: resolved in the declaring file,
+    // a plain `Error` when it does not resolve there; then
+    // `modelManager.getType(typeFqn)`.
+    let type_name = type_name.unwrap_or_default();
+    let Some(type_fqn) = resolve(manager, owner_ns, type_name) else {
+        return Err(ContractError::pre_port(
+            ErrorKind::Error,
+            format!(
+                "Failed to find fully qualified type name for property {} with type {type_name}",
+                property.name()
+            ),
+            None,
+        )
+        .into());
+    };
+    manager.get_declaration(&type_fqn)?;
+    let context_ns = get_namespace(Some(&type_fqn))?;
+    check_property_type(manager, context_ns, owner_ns, owner_name, class, property).map_err(|e| {
+        match manager.model_file(context_ns) {
+            Some(file) if context_ns != namespace => attach_model_file(e, file),
+            _ => e,
+        }
+    })
 }
 
 /// Runs [`crate::introspect::decorator::Decorator::validate`] over every
@@ -574,24 +640,32 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
 /// Object and relationship properties must point at a declared type; a
 /// relationship additionally must target an identifiable class, never a
 /// primitive.
+/// `namespace` is the namespace of TS's `classDecl.getModelFile()` — where
+/// the type name is resolved ([`validate_property`]); `owner_ns` and
+/// `owner` name the property's declaring class, for its fully-qualified
+/// name and for `RelationshipDeclaration.validate`'s own target lookup;
+/// `class` is the class whose pass this is, for the last-resort fallback's
+/// location.
 fn check_property_type(
     manager: &ModelManager,
     namespace: &str,
+    owner_ns: &str,
+    owner: &str,
     class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
-    let owner = class.name();
+    let owner_fqn = get_fully_qualified_name(owner_ns, owner);
     let Some(type_identifier) = property.type_identifier() else {
         // A primitive field: TS's `resolveType` of a primitive always
         // succeeds, so the size-validator check is all that is left.
-        return check_size_validator_target(namespace, class, property, false);
+        return check_size_validator_target(&owner_fqn, property, false);
     };
 
     if is_primitive_type(&type_identifier.name) {
         // TS: `resolveType` succeeds for a primitive, then `Property.validate`
         // runs its size-validator check (a primitive is never a map), all
         // before `RelationshipDeclaration.validate`'s own checks.
-        check_size_validator_target(namespace, class, property, false)?;
+        check_size_validator_target(&owner_fqn, property, false)?;
     }
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
@@ -625,11 +699,7 @@ fn check_property_type(
             manager,
             namespace,
             &type_identifier.name,
-            format!(
-                "property {}.{}",
-                get_fully_qualified_name(namespace, owner),
-                property.name()
-            ),
+            format!("property {owner_fqn}.{}", property.name()),
         ));
     };
 
@@ -640,12 +710,26 @@ fn check_property_type(
         // a type that `getType` cannot find (swallowed by its try/catch)
         // counts as not a map.
         check_size_validator_target(
-            namespace,
-            class,
+            &owner_fqn,
             property,
             target.is_some_and(Declaration::is_map_declaration),
         )?;
     }
+    // `RelationshipDeclaration.validate` looks its target up from the
+    // property's own parent — the declaring file — not from `classDecl`.
+    // The two agree unless an inherited property is validated in the
+    // context of its type's declaration ([`validate_property`]).
+    let (target_fqn, target) = if owner_ns == namespace {
+        (target_fqn, target)
+    } else {
+        match resolve(manager, owner_ns, &type_identifier.name) {
+            Some(fqn) => {
+                let target = manager.get_declaration(&fqn).ok();
+                (fqn, target)
+            }
+            None => (target_fqn, target),
+        }
+    };
     let Some(target) = target else {
         if property.is_relationship() {
             // TS: `'Relationship ' + this.getName() + ' points to a missing
@@ -692,9 +776,8 @@ fn check_property_type(
         // lookups that could in principle disagree.
         return Err(failed(
             format!(
-                "Undeclared type {} referenced by {}.{}",
+                "Undeclared type {} referenced by {owner}.{}",
                 type_identifier.name,
-                owner,
                 property.name()
             ),
             class_location(class),
@@ -737,16 +820,14 @@ fn check_property_type(
 /// `Property::check_validators`, so a `ModelFile` with such a property still
 /// constructs).
 fn check_size_validator_target(
-    namespace: &str,
-    class: &ClassDeclaration,
+    owner_fqn: &str,
     property: &Property,
     is_map_type: bool,
 ) -> Result<()> {
     if property.size_validator().is_some() && !property.is_array() && !is_map_type {
         return Err(failed(
             format!(
-                "size validator can only be applied to array or map properties: {}.{}",
-                get_fully_qualified_name(namespace, class.name()),
+                "size validator can only be applied to array or map properties: {owner_fqn}.{}",
                 property.name()
             ),
             property_location(property),
@@ -3390,5 +3471,125 @@ mod tests {
             "com.acme@1.0.0.Dictionary"
         );
         assert!(declaration.is_map_declaration());
+    }
+
+    /// Two files for the inherited-property tests: `org.a` declares
+    /// `abstract concept X { o String s }` (with `s_extra` merged into the
+    /// property's AST), loaded without validation; `org.b` imports `X` and
+    /// declares `concept Y extends X`, named `b.cto`.
+    fn inherited_property_files(s_extra: serde_json::Value) -> (ModelManager, serde_json::Value) {
+        let mut property = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "s", "isArray": false, "isOptional": false
+        });
+        property
+            .as_object_mut()
+            .unwrap()
+            .extend(s_extra.as_object().unwrap().clone());
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "declarations": [concept(serde_json::json!({
+                        "name": "X", "isAbstract": true, "properties": [property]
+                    }))]
+                }),
+                Some("a.cto".into()),
+            )
+            .unwrap();
+        let b = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.b@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.a@1.0.0", "name": "X" }
+            ],
+            "declarations": [concept(serde_json::json!({
+                "name": "Y",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
+            }))]
+        });
+        (manager, b)
+    }
+
+    /// TS `ClassDeclaration.validate` validates every property from
+    /// `getProperties()`, inherited ones included, in the subclass's own pass:
+    /// validating `b.cto` alone rejects the size validator `X.s` carries, and
+    /// names `b.cto` (`field.validate(this)` for a primitive field) while the
+    /// property's FQN stays `X`'s (P2-08 review).
+    #[test]
+    fn an_inherited_property_is_validated_in_the_subclass_pass() {
+        use crate::introspect::model_file::ModelFile;
+        let (mut manager, b) = inherited_property_files(serde_json::json!({
+            "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                               "minSize": 1, "maxSize": 5 }
+        }));
+        let expected = "size validator can only be applied to array or map properties: \
+                        org.a@1.0.0.X.s File 'b.cto': ";
+        let final_message = |e: ConcertoError| match e {
+            ConcertoError::Contract(c) => c.final_message(),
+            other => panic!("expected a contract error, got {other:?}"),
+        };
+
+        // `new ModelFile(mm, B).validate()`.
+        let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
+        assert_eq!(
+            final_message(manager.validate_detached_model_file(&detached).unwrap_err()),
+            expected
+        );
+
+        // `addModelFile(B)` with validation: B alone is validated.
+        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        let registered = manager.model_file("org.b@1.0.0").unwrap();
+        assert_eq!(
+            final_message(manager.validate_model_file(registered).unwrap_err()),
+            expected
+        );
+
+        // `validateModelFiles`: `a.cto` was added first, so its own error
+        // is still the one reported, not a second copy from `b.cto`'s pass.
+        assert_eq!(
+            final_message(manager.validate_models().unwrap_err()),
+            "size validator can only be applied to array or map properties: \
+             org.a@1.0.0.X.s File 'a.cto': "
+        );
+    }
+
+    /// A valid inherited property passes in the subclass's pass too, and an
+    /// inherited property whose type is declared in the super type's
+    /// namespace (not imported by the subclass's file) is resolved there —
+    /// TS validates it against its type's own declaration.
+    #[test]
+    fn a_valid_inherited_property_passes_the_subclass_pass() {
+        let (mut manager, b) = inherited_property_files(serde_json::json!({}));
+        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        assert!(manager.validate_models().is_ok());
+
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "declarations": [
+                        concept(serde_json::json!({ "name": "Address" })),
+                        concept(serde_json::json!({
+                            "name": "X", "isAbstract": true, "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "home",
+                                  "isArray": false, "isOptional": false,
+                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Address" } }
+                            ]
+                        }))
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        let registered = manager.model_file("org.b@1.0.0").unwrap();
+        assert!(manager.validate_model_file(registered).is_ok());
+        assert!(manager.validate_models().is_ok());
     }
 }

@@ -497,8 +497,9 @@ fn load_scalar(
             });
         }
     };
+    // The name was already checked by `Declaration::from_model_json`
+    // (`check_declaration_name`), TS `Declaration.process`.
     let name = scalar::node_name(&node);
-    check_identifier(name)?;
     let fqn = get_fully_qualified_name(namespace, name);
     let processed =
         ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
@@ -1033,12 +1034,24 @@ impl Declaration {
         }
         let kind = get_short_name(class);
 
+        // TS: `Declaration.process` (declaration.ts), reached through every
+        // declaration kind's own `super.process()` before anything
+        // kind-specific — so an invalid name is reported ahead of, say, a
+        // system property name among a class's fields (P2-08 review). Only
+        // for a `$class` `ModelFile.fromAst` recognises: for any other, its
+        // `default` case throws before a declaration is constructed.
+        let known = ClassKind::from_short(kind).is_some()
+            || matches!(kind, "EnumDeclaration" | "MapDeclaration")
+            || kind.ends_with("Scalar");
+        if known {
+            check_declaration_name(value, file_name)?;
+        }
+
         if let Some(class_kind) = ClassKind::from_short(kind) {
-            let class = Self::Class(
+            return Ok(Self::Class(
                 ClassDeclaration::from_json(class_kind, value, namespace)
                     .map_err(|e| with_model_file(e, file_name))?,
-            );
-            return check_name(class);
+            ));
         }
 
         let declaration = match kind {
@@ -1063,7 +1076,7 @@ impl Declaration {
                 return Err(err.into());
             }
         };
-        check_name(declaration)
+        Ok(declaration)
     }
 }
 
@@ -1083,22 +1096,25 @@ fn with_model_file(err: ConcertoError, file_name: Option<&str>) -> ConcertoError
     }
 }
 
-/// Every declaration name has to be a legal identifier.
-fn check_name(declaration: Declaration) -> Result<Declaration> {
-    check_identifier(declaration.name())?;
-    Ok(declaration)
-}
-
-fn check_identifier(name: &str) -> Result<()> {
-    if is_valid_identifier(name) {
-        Ok(())
-    } else {
-        Err(ConcertoError::IllegalModel {
-            message: format!("invalid identifier: {name}"),
-            file_name: None,
-            location: None,
-        })
+/// TS: `Declaration.process`'s name check — `new IllegalModelException(
+/// \`Invalid class name '${this.ast.name}'\`, this.modelFile,
+/// this.ast.location)` when `ModelUtil.isValidIdentifier(this.ast.name)`
+/// fails (an absent name interpolates as `undefined`).
+fn check_declaration_name(value: &serde_json::Value, file_name: Option<&str>) -> Result<()> {
+    let name = value.get("name");
+    if let Some(serde_json::Value::String(name)) = name
+        && is_valid_identifier(name)
+    {
+        return Ok(());
     }
+    let shown = name.map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+    let mut err = ContractError::pre_port(
+        ErrorKind::IllegalModel,
+        format!("Invalid class name '{shown}'"),
+        value.get("location").cloned(),
+    );
+    err.model_file = Some(file_name.map(str::to_string));
+    Err(err.into())
 }
 
 #[cfg(test)]
@@ -1216,11 +1232,40 @@ mod tests {
                 "$class": format!("concerto.metamodel@1.0.0.{kind}"),
                 "name": "1Bad", "isAbstract": false, "properties": []
             }));
-            assert!(
-                err.unwrap_err().to_string().contains("invalid identifier"),
+            assert_eq!(
+                err.unwrap_err().to_string(),
+                "Invalid class name '1Bad'",
                 "{kind} with a bad name should be rejected"
             );
         }
+    }
+
+    /// TS `Declaration.process` checks the name before
+    /// `ClassDeclaration.process` looks at the fields, so a bad name wins
+    /// over a system property name (P2-08 review), and the error names the
+    /// file.
+    #[test]
+    fn an_invalid_class_name_is_reported_before_a_system_field_name() {
+        let err = Declaration::from_model_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "1bad", "isAbstract": false,
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "$class",
+                      "isArray": false, "isOptional": false }
+                ]
+            }),
+            "org.acme@1.0.0",
+            Some("x.cto"),
+        )
+        .unwrap_err();
+        let ConcertoError::Contract(err) = err else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        assert_eq!(
+            err.final_message(),
+            "Invalid class name '1bad' File 'x.cto': "
+        );
     }
 
     #[test]
@@ -1472,22 +1517,22 @@ mod tests {
         assert_eq!(map.key_type().map(|t| t.name.as_str()), Some("K"));
     }
 
+    /// TS `Declaration.process` rejects a missing or non-string name with
+    /// its own "Invalid class name" message before anything map-specific
+    /// (P2-08 review: this used to pin the serde decoding message instead).
     #[test]
-    fn a_map_with_no_name_is_rejected_with_the_serde_message() {
+    fn a_map_with_no_name_is_rejected_as_an_invalid_class_name() {
         let mut node = map_to_nope(string_key(), serde_json::json!({}));
         node.as_object_mut().unwrap().remove("name");
         let err = Declaration::try_from(&node);
         assert_eq!(
             err.unwrap_err().to_string(),
-            "illegal model: invalid MapDeclaration: missing field `name`"
+            "Invalid class name 'undefined'"
         );
 
         let err =
             Declaration::try_from(&map_to_nope(string_key(), serde_json::json!({ "name": 5 })));
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "illegal model: invalid MapDeclaration: invalid type: integer `5`, expected a string"
-        );
+        assert_eq!(err.unwrap_err().to_string(), "Invalid class name '5'");
     }
 
     /// A `MapDeclaration` with the given key and value nodes.
