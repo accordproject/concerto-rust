@@ -128,14 +128,11 @@ fn handle_arguments(argument: &Value) -> Yaml {
                 Yaml::Scalar(js_value_to_string(rn)),
             ));
         }
+        // `String(argument.isArray)`: `"undefined"` when it has none.
         let is_array = argument
             .get("isArray")
-            .cloned()
-            .unwrap_or(Value::Bool(false));
-        type_reference.push((
-            "isArray".to_string(),
-            Yaml::Scalar(js_value_to_string(&is_array)),
-        ));
+            .map_or_else(|| "undefined".to_string(), js_value_to_string);
+        type_reference.push(("isArray".to_string(), Yaml::Scalar(is_array)));
         return Yaml::Map(vec![(
             "typeReference".to_string(),
             Yaml::Map(type_reference),
@@ -195,50 +192,77 @@ fn handle_command(command: &Value) -> Yaml {
 /// `jsonToYaml` (`src/dcsconverter.ts`): renders a `DecoratorCommandSet`
 /// object as the short DCS YAML format.
 pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
-    let class = dcs_json
-        .get("$class")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            pre_port("dcsconverter.jsonToYaml: decoratorCommandSet has no \"$class\"")
-        })?;
-    let dcs_namespace = model_util::get_namespace(Some(class))?;
+    // `ModelUtil.getNamespace(dcsJson.$class)`: a missing (or any falsy)
+    // `$class` is its "FQN is invalid." error.
+    if dcs_json.is_null() {
+        return Err(ContractError::new(
+            ErrorKind::JsTypeError,
+            "engine-typeerror-readproperties",
+            vec![
+                ("value", "null".to_string()),
+                ("property", "$class".to_string()),
+            ],
+        )
+        .into());
+    }
+    let class = dcs_json.get("$class").and_then(Value::as_str);
+    let dcs_namespace = model_util::get_namespace(class.filter(|c| !c.is_empty()))?;
+    // `ModelUtil.parseNamespace(dcsNamespace).version`, `undefined` for an
+    // unversioned namespace.
     let version = match model_util::parse_namespace(Some(dcs_namespace), false)? {
         ParsedNamespace::Full { version, .. } => version,
         ParsedNamespace::NameOnly { .. } => None,
-    }
-    .ok_or_else(|| {
-        pre_port(format!(
-            "dcsconverter.jsonToYaml: unversioned namespace \"{dcs_namespace}\""
-        ))
-    })?;
+    };
+    // `dcsJson.commands.map(handleCommands)`.
+    let commands = match dcs_json.get("commands") {
+        Some(Value::Array(commands)) => commands,
+        None | Some(Value::Null) => {
+            return Err(ContractError::new(
+                ErrorKind::JsTypeError,
+                "engine-typeerror-readproperties",
+                vec![
+                    (
+                        "value",
+                        if dcs_json.get("commands").is_none() {
+                            "undefined"
+                        } else {
+                            "null"
+                        }
+                        .to_string(),
+                    ),
+                    ("property", "map".to_string()),
+                ],
+            )
+            .into());
+        }
+        Some(_) => {
+            return Err(ContractError::new(
+                ErrorKind::JsTypeError,
+                "engine-typeerror-notafunction",
+                vec![("expression", "dcsJson.commands.map".to_string())],
+            )
+            .into());
+        }
+    };
 
-    let name = dcs_json
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let cs_version = dcs_json
-        .get("version")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let commands = dcs_json
-        .get("commands")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            pre_port("dcsconverter.jsonToYaml: decoratorCommandSet has no \"commands\" array")
-        })?;
-
-    let root = Yaml::Map(vec![
-        (
+    // `yaml.stringify` leaves out a key whose value is `undefined`.
+    let mut entries = Vec::new();
+    if let Some(version) = version {
+        entries.push((
             "decoratorCommandsVersion".to_string(),
             Yaml::Scalar(version),
-        ),
-        ("name".to_string(), Yaml::Scalar(name.to_string())),
-        ("version".to_string(), Yaml::Scalar(cs_version.to_string())),
-        (
-            "commands".to_string(),
-            Yaml::Seq(commands.iter().map(handle_command).collect()),
-        ),
-    ]);
+        ));
+    }
+    for key in ["name", "version"] {
+        if let Some(v) = dcs_json.get(key) {
+            entries.push((key.to_string(), Yaml::Scalar(js_value_to_string(v))));
+        }
+    }
+    entries.push((
+        "commands".to_string(),
+        Yaml::Seq(commands.iter().map(handle_command).collect()),
+    ));
+    let root = Yaml::Map(entries);
 
     let mut out = String::new();
     emit_map(root_entries(&root), 0, &mut out);
@@ -701,15 +725,29 @@ pub fn yaml_to_json(yaml_string: &str) -> Result<Value> {
             pre_port("dcsconverter.yamlToJson: expected a mapping at the document root").into(),
         );
     };
-    let dcs_version = yaml_scalar(&entries, "decoratorCommandsVersion")?;
+    // `'…@' + parsedJson.decoratorCommandsVersion`: `undefined` when absent.
+    let dcs_version = match yaml_get(&entries, "decoratorCommandsVersion") {
+        None => "undefined".to_string(),
+        Some(_) => yaml_scalar(&entries, "decoratorCommandsVersion")?,
+    };
     let dcs_namespace = format!("org.accordproject.decoratorcommands@{dcs_version}");
-    let name = yaml_scalar(&entries, "name")?;
-    let version = yaml_scalar(&entries, "version")?;
+    // `parsedJson.commands.map(...)`.
     let commands = match yaml_get(&entries, "commands") {
         Some(Yaml::Seq(items)) => items
             .iter()
             .map(|c| restore_command(&dcs_namespace, c))
             .collect::<Result<Vec<_>>>()?,
+        None => {
+            return Err(ContractError::new(
+                ErrorKind::JsTypeError,
+                "engine-typeerror-readproperties",
+                vec![
+                    ("value", "undefined".to_string()),
+                    ("property", "map".to_string()),
+                ],
+            )
+            .into());
+        }
         _ => return Err(pre_port("dcsconverter.yamlToJson: missing \"commands\" sequence").into()),
     };
 
@@ -721,8 +759,13 @@ pub fn yaml_to_json(yaml_string: &str) -> Result<Value> {
             "DecoratorCommandSet",
         )),
     );
-    out.insert("name".to_string(), Value::String(name));
-    out.insert("version".to_string(), Value::String(version));
+    // `name: parsedJson.name`, `version: parsedJson.version`: a key left
+    // `undefined` in TS is left out here.
+    for key in ["name", "version"] {
+        if yaml_get(&entries, key).is_some() {
+            out.insert(key.to_string(), Value::String(yaml_scalar(&entries, key)?));
+        }
+    }
     out.insert("commands".to_string(), Value::Array(commands));
     Ok(Value::Object(out))
 }
@@ -985,13 +1028,26 @@ mod tests {
     #[test]
     fn yaml_to_json_rejects_malformed_yaml() {
         assert!(yaml_to_json("not: a: dcs\n  - broken").is_err());
-        assert!(yaml_to_json("name: x\nversion: 1.0.0\ncommands: []").is_err());
+    }
+
+    /// `yamlToJson` itself does not check the command set: with no
+    /// `decoratorCommandsVersion`, TS builds the `$class` from `undefined`
+    /// and leaves the checking to `DecoratorManager.yamlToJson`.
+    #[test]
+    fn yaml_to_json_builds_the_class_from_an_absent_version_as_undefined() {
+        let out = yaml_to_json("name: x\nversion: 1.0.0\ncommands: []").unwrap();
+        assert_eq!(
+            out["$class"],
+            "org.accordproject.decoratorcommands@undefined.DecoratorCommandSet"
+        );
+        assert!(
+            crate::dcs::validated_yaml_to_json("name: x\nversion: 1.0.0\ncommands: []").is_err()
+        );
     }
 
     /// `test/decoratormanager.js` "#jsonToYaml should throw error if input
-    /// is not valid DCS JSON" (via `DecoratorManager.jsonToYaml`, a thin
-    /// wrapper this crate's re-exported [`crate::dcs::json_to_yaml`] stands
-    /// in for).
+    /// is not valid DCS JSON", through `DecoratorManager.jsonToYaml`
+    /// ([`crate::dcs::validated_json_to_yaml`]).
     #[test]
     fn json_to_yaml_rejects_every_reference_invalid_input() {
         for invalid in [
@@ -1001,14 +1057,15 @@ mod tests {
             serde_json::json!({ "name": "test", "version": "1.0.0" }),
         ] {
             assert!(
-                json_to_yaml(&invalid).is_err(),
+                crate::dcs::validated_json_to_yaml(&invalid).is_err(),
                 "expected an error for {invalid}"
             );
         }
     }
 
     /// `test/decoratormanager.js` "#yamlToJson should throw error if input
-    /// is not valid DCS YAML".
+    /// is not valid DCS YAML", through `DecoratorManager.yamlToJson`
+    /// ([`crate::dcs::validated_yaml_to_json`]).
     #[test]
     fn yaml_to_json_rejects_every_reference_invalid_input() {
         for invalid in [
@@ -1017,7 +1074,7 @@ mod tests {
             "name: test\nversion: 1.0.0\ncommands: []\n",
         ] {
             assert!(
-                yaml_to_json(invalid).is_err(),
+                crate::dcs::validated_yaml_to_json(invalid).is_err(),
                 "expected an error for {invalid:?}"
             );
         }

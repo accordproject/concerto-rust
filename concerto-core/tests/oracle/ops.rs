@@ -37,21 +37,26 @@
 //!   `mfnew` recipe argument, never a `declref`, so it needs no arena
 //!   handle). Every other declaration kind's `declnew` still needs P4-07,
 //!   which closes this in general.
-//! - **DCS (task P2-12), plain-data ops only**: `DecoratorManager.falsyOrEqual`
-//!   and `DcsConverter.jsonToYaml`/`yamlToJson` (`crate::dcs`). Not wired:
-//!   every other `DecoratorManager`/`DcsConverter`/`DecoratorExtractor`
-//!   static either takes or builds a `ModelManager` (`decorateModels`,
-//!   `migrateAndValidate`, `validateCommand`, `validate`, which need
-//!   `exec_handles`' `ModelManager` recipe machinery, P2-08), or mutates a
-//!   plain-data argument in place — `migrateTo`, `canMigrate`,
-//!   `checkForDuplicateDecorators` — whose fixtures compare that mutation
-//!   through `outcome.effects.args` (`compare.rs` already diffs the whole
-//!   outcome, `effects` included, so this would just need each such op's
-//!   dispatch arm to build that shape, not new comparison logic; left for
-//!   whichever task ports the ledger's remaining RUST members of those three
-//!   files). Verified against three hand-authored fixtures in `self_test.rs`
-//!   (this checkout carries no recorded corpus — see
-//!   `replays_the_oracle_corpus`'s doc comment in `main.rs`).
+//! - **DCS (task P2-12)**: `DecoratorManager.falsyOrEqual` and
+//!   `DcsConverter.jsonToYaml`/`yamlToJson` as plain data (`exec_plain`);
+//!   and, through `decorator_manager_op`, `DecoratorManager.decorateModels`,
+//!   `extractDecorators`, `extractVocabularies`, `extractNonVocabDecorators`,
+//!   `validate`, `jsonToYaml`, `yamlToJson`, `migrateTo` and
+//!   `executePropertyCommand` (`concerto_core::dcs`). An argument these
+//!   mutate in TS (the command sets `migrate` rewrites, the options
+//!   `skipValidationAndResolution` sets, `migrateTo`'s command set,
+//!   `executePropertyCommand`'s property) is compared through
+//!   `outcome.effects.args`, as the recorder records it. `decorateModels` and
+//!   the `extract*` statics read `getAst(true, …)` in TS, which resolves the
+//!   metamodel (`BaseModelManager.resolveMetaModel`, not ported: P2-08):
+//!   a fixture whose models that resolution would change is `unsupported`
+//!   for that owner, once every step before it has been compared
+//!   (`resolution_changes_nothing`). A model manager `derived` from one of
+//!   these ops is rebuilt by replaying it (`derive_model_manager`).
+//!   `migrateAndValidate`, `validateCommand`, `canMigrate` and
+//!   `checkForDuplicateDecorators` have no fixtures of their own (the
+//!   recorder only records the outermost call), so they are compared
+//!   through `decorateModels`.
 
 use concerto_core::dcs;
 use concerto_core::error::{ConcertoError, ErrorKind};
@@ -220,14 +225,9 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         "ModelUtil.isValidMapKey",
         "ModelUtil.isValidMapValue",
         "TypeNotFoundException.new",
-        // DCS (task P2-12): the three `DecoratorManager`/`DcsConverter`
-        // statics that take (and return) plain data only — no `ModelManager`
-        // receiver or handle, so they need none of `exec_handles`' recipe
-        // machinery. `DecoratorManager.decorateModels`/`migrateAndValidate`/
-        // `validateCommand`/`validate` all take or build a `ModelManager` and
-        // are not wired here yet (P2-08's `ModelManager` port, and the
-        // effects-on-a-mutated-argument protocol `migrateTo`/`canMigrate`'s
-        // fixtures would also need, are still open).
+        // DCS (task P2-12): the `DecoratorManager`/`DcsConverter` statics
+        // that take and return plain data only and mutate nothing; the other
+        // `DecoratorManager` statics go through `decorator_manager_op`.
         "DecoratorManager.falsyOrEqual",
         "DcsConverter.jsonToYaml",
         "DcsConverter.yamlToJson",
@@ -444,6 +444,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     // belongs to. Handled separately, ahead of the generic decode.
     if class == "Decorated" && matches!(member, "getDecorator" | "getDecorators") {
         return decorated_op(h, member, inputs);
+    }
+
+    if class == "DecoratorManager" && DECORATOR_MANAGER_OPS.contains(&member) {
+        return decorator_manager_op(h, member, inputs);
     }
 
     let dispatched = match (class, member) {
@@ -1230,6 +1234,587 @@ fn decorated_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> 
     };
     let found = decorators.iter().find(|d| d.name() == name);
     Ok(ran(Ok(found.map_or(Value::Null, encode_decorator))))
+}
+
+/// The `DecoratorManager` statics (task P2-12) this harness replays beyond
+/// the plain-data `falsyOrEqual` (`exec_plain`).
+const DECORATOR_MANAGER_OPS: [&str; 9] = [
+    "decorateModels",
+    "extractDecorators",
+    "extractVocabularies",
+    "extractNonVocabDecorators",
+    "validate",
+    "jsonToYaml",
+    "yamlToJson",
+    "migrateTo",
+    "executePropertyCommand",
+];
+
+/// An `ok`/`error` outcome plus `effects.args`: the arguments TS mutated,
+/// each recorded with its value after the call (`recorder.js` records an
+/// argument whose plain encoding changed, and only then).
+fn ran_with_effects(
+    outcome: recipe::Outcome,
+    before: &[Option<Value>],
+    after: &[Option<Value>],
+) -> Dispatch {
+    let mut effects = serde_json::Map::new();
+    for (i, (b, a)) in before.iter().zip(after).enumerate() {
+        if let (Some(b), Some(a)) = (b, a)
+            && b != a
+        {
+            effects.insert(i.to_string(), a.clone());
+        }
+    }
+    let mut out = match outcome {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({ "error": error.to_value() }),
+    };
+    if !effects.is_empty() {
+        out["effects"] = json!({ "args": effects });
+    }
+    Dispatch::Ran(out)
+}
+
+/// A plain argument, or `None` for JS `undefined` (absent or the
+/// `undefined` marker).
+fn plain_arg(args: &[Arg], index: usize) -> Faulty<Option<Value>> {
+    match args.get(index) {
+        None => Ok(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => Ok(None),
+        Some(Arg::Plain(v)) => Ok(Some(v.clone())),
+        Some(_) => Err(Fault::Unsupported(format!(
+            "a handle where DecoratorManager takes plain data (argument {index})"
+        ))),
+    }
+}
+
+/// `decorateModels`' `options` object as [`dcs::DecorateOptions`]: every
+/// flag read for its JS truthiness, except the two `disable*` flags, whose
+/// explicit `false` `skipValidationAndResolution` rejects (`=== false`).
+fn decorate_options(options: Option<&Value>) -> dcs::DecorateOptions {
+    let get = |key: &str| {
+        options
+            .and_then(|o| o.get(key))
+            .filter(|v| !recipe::is_undefined(v))
+    };
+    let flag = |key: &str| get(key).is_some_and(recipe::truthy);
+    let tri = |key: &str| match get(key) {
+        Some(Value::Bool(false)) => Some(false),
+        Some(v) if recipe::truthy(v) => Some(true),
+        _ => None,
+    };
+    dcs::DecorateOptions {
+        migrate: flag("migrate"),
+        validate: flag("validate"),
+        validate_commands: flag("validateCommands"),
+        default_namespace: get("defaultNamespace").cloned(),
+        skip_validation_and_resolution: flag("skipValidationAndResolution"),
+        disable_metamodel_resolution: tri("disableMetamodelResolution"),
+        disable_metamodel_validation: tri("disableMetamodelValidation"),
+    }
+}
+
+/// `extractDecorators`' (and its two siblings') `options`, spread over
+/// `{removeDecoratorsFromModel: false, locale: 'en'}`.
+fn extract_options(options: Option<&Value>) -> dcs::ExtractOptions {
+    let mut out = dcs::ExtractOptions::default();
+    if let Some(Value::Object(o)) = options {
+        if let Some(v) = o.get("removeDecoratorsFromModel") {
+            out.remove_decorators_from_model = recipe::truthy(v);
+        }
+        if let Some(v) = o.get("locale") {
+            // `locale: ${this.locale}` in the vocabulary text.
+            out.locale = if recipe::is_undefined(v) {
+                "undefined".to_string()
+            } else {
+                match v {
+                    Value::String(s) => s.clone(),
+                    Value::Null => "null".to_string(),
+                    other => other.to_string(),
+                }
+            };
+        }
+    }
+    out
+}
+
+/// Whether `BaseModelManager.resolveMetaModel` (not ported: P2-08/P4-08)
+/// would leave every model of `mm` unchanged, so that a DCS op which reads
+/// `getAst(true, …)` in TS is replayed exactly by one that reads the
+/// unresolved AST. `MetaModelUtil.resolveLocalNames` (concerto-metamodel)
+/// builds a name table from each model's imports, which throws for an
+/// import whose namespace or declaration is not loaded, then only rewrites
+/// super types, object/relationship property and map types, decorator type
+/// references and scalar declarations (it adds their `namespace`). So it is
+/// the identity when every import resolves and no user model holds any of
+/// those nodes, nor any model a decorator type reference. The system models'
+/// own super types are rewritten too, but no DCS op's result carries them:
+/// `fromAst` skips those namespaces, and their decorators have no type
+/// references.
+fn resolution_changes_nothing(mm: &ModelManager) -> bool {
+    const MM: &str = "concerto.metamodel@1.0.0.";
+    fn class_of(v: &Value) -> &str {
+        v.get("$class").and_then(Value::as_str).unwrap_or_default()
+    }
+    fn has_type_reference_decorator(node: &Value) -> bool {
+        node.get("decorators")
+            .and_then(Value::as_array)
+            .is_some_and(|ds| {
+                ds.iter().any(|d| {
+                    d.get("arguments")
+                        .and_then(Value::as_array)
+                        .is_some_and(|args| {
+                            args.iter().any(|a| {
+                                class_of(a) == "concerto.metamodel@1.0.0.DecoratorTypeReference"
+                            })
+                        })
+                })
+            })
+    }
+    let rewritten = |node: &Value| {
+        let class = class_of(node).strip_prefix(MM).unwrap_or_default();
+        matches!(
+            class,
+            "ObjectProperty"
+                | "RelationshipProperty"
+                | "ObjectMapKeyType"
+                | "ObjectMapValueType"
+                | "RelationshipMapValueType"
+                | "StringScalar"
+                | "BooleanScalar"
+                | "DateTimeScalar"
+                | "DoubleScalar"
+                | "LongScalar"
+                | "IntegerScalar"
+        ) || node.get("superType").is_some()
+    };
+    for mf in mm.model_files() {
+        let ast = mf.ast();
+        for imp in ast
+            .get("imports")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(target) = imp
+                .get("namespace")
+                .and_then(Value::as_str)
+                .and_then(|ns| mm.model_file(ns))
+            else {
+                return false;
+            };
+            let declared = |name: &Value| {
+                target
+                    .ast()
+                    .get("declarations")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ds| ds.iter().any(|d| d.get("name") == Some(name)))
+            };
+            let resolves = match class_of(imp).strip_prefix(MM) {
+                Some("ImportType") => imp.get("name").is_some_and(declared),
+                Some("ImportTypes") => imp
+                    .get("types")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ts| ts.iter().all(declared)),
+                _ => true,
+            };
+            if !resolves {
+                return false;
+            }
+        }
+        let system = recipe::is_system_namespace(mf.namespace());
+        let mut nodes = vec![ast];
+        for decl in ast
+            .get("declarations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            nodes.push(decl);
+            nodes.extend(
+                decl.get("properties")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            );
+            nodes.extend(decl.get("key"));
+            nodes.extend(decl.get("value"));
+        }
+        for node in nodes {
+            if has_type_reference_decorator(node) || (!system && rewritten(node)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// `DecoratorExtractor.filterOutDecorators` returns `undefined` when it
+/// strips every decorator (`removeDecoratorsFromModel` with `EXTRACT_ALL`),
+/// and TS assigns that back: the node keeps a `decorators` key whose value
+/// is `undefined`, which the oracle records as the `undefined` marker. A
+/// Rust AST has no `undefined`, so the extractor removes the key instead
+/// (the same nullish spelling `recipe.rs` restores for file names): put the
+/// marker back wherever the source model had a `decorators` key that the
+/// extracted model no longer has.
+fn restore_undefined_decorators(source: &ModelManager, summary: &mut Value) {
+    fn restore(src: &Value, out: &mut Value) {
+        if src.get("decorators").is_some()
+            && let Some(map) = out.as_object_mut()
+            && !map.contains_key("decorators")
+        {
+            map.insert("decorators".into(), recipe::undefined());
+        }
+    }
+    let Some(models) = summary
+        .pointer_mut("/ast/models")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for model in models {
+        let Some(src) = model
+            .get("namespace")
+            .and_then(Value::as_str)
+            .filter(|ns| !recipe::is_system_namespace(ns))
+            .and_then(|ns| source.model_file(ns))
+            .map(ModelFile::ast)
+        else {
+            continue;
+        };
+        restore(src, model);
+        let (Some(src_decls), Some(out_decls)) = (
+            src.get("declarations").and_then(Value::as_array),
+            model.get_mut("declarations").and_then(Value::as_array_mut),
+        ) else {
+            continue;
+        };
+        for (src_decl, out_decl) in src_decls.iter().zip(out_decls.iter_mut()) {
+            restore(src_decl, out_decl);
+            for key in ["key", "value"] {
+                if let (Some(s), Some(o)) = (src_decl.get(key), out_decl.get_mut(key)) {
+                    restore(s, o);
+                }
+            }
+            if let (Some(sp), Some(op)) = (
+                src_decl.get("properties").and_then(Value::as_array),
+                out_decl.get_mut("properties").and_then(Value::as_array_mut),
+            ) {
+                for (s, o) in sp.iter().zip(op.iter_mut()) {
+                    restore(s, o);
+                }
+            }
+        }
+    }
+}
+
+fn blocked_on_resolution(op: &str) -> Fault {
+    Fault::Blocked(
+        format!(
+            "{op} reads getAst(true, …), whose metamodel resolution (resolveMetaModel) is not \
+             ported and would change these models"
+        ),
+        recipe::Blocker::Member("BaseModelManager.resolveMetaModel".into()),
+    )
+}
+
+/// `decorateModels`' `decoratorCommandSet` argument as a list:
+/// `Array.isArray(x) ? x : [x]`, after the `!x || x?.length === 0` early
+/// return (an empty list here). The flag says whether it was a list.
+fn command_sets(arg: Option<&Value>) -> Faulty<(Vec<Value>, bool)> {
+    Ok(match arg {
+        Some(Value::Array(items)) => (items.clone(), true),
+        Some(v) if recipe::truthy(v) => {
+            if !v.is_object() {
+                return Err(Fault::Unsupported(
+                    "decorateModels with a command set that is neither an object nor an array"
+                        .into(),
+                ));
+            }
+            (vec![v.clone()], false)
+        }
+        _ => (Vec::new(), false),
+    })
+}
+
+/// A model manager a DCS op returned, for a `derived` recipe
+/// (`recipe.rs`): the manager, and whether it was validated when built.
+pub struct DerivedModelManager {
+    pub mm: ModelManager,
+    pub validated: bool,
+}
+
+/// Replays the op a `derived` model manager recipe was returned by, when
+/// it is a DCS op this harness replays: `decorateModels` (the result
+/// itself) or one of the three `extract*` statics (their `modelManager`).
+/// `None` for any other op. TS only derives a recipe from a call that
+/// succeeded, so a Rust failure here is a state divergence.
+pub fn derive_model_manager(
+    h: &Harness,
+    op: &str,
+    inputs: &Inputs,
+    path: Option<&Value>,
+) -> Faulty<Option<DerivedModelManager>> {
+    let Some(member) = op.strip_prefix("DecoratorManager.").filter(|m| {
+        matches!(
+            *m,
+            "decorateModels"
+                | "extractDecorators"
+                | "extractVocabularies"
+                | "extractNonVocabDecorators"
+        )
+    }) else {
+        return Ok(None);
+    };
+    let expected_path = (member != "decorateModels").then(|| json!(["modelManager"]));
+    if path.cloned() != expected_path {
+        return Err(Fault::Harness(format!(
+            "a model manager derived from {op} at an unexpected path {path:?}"
+        )));
+    }
+    let failed = |e: ConcertoError| {
+        Fault::Divergence(format!(
+            "state divergence: {op}, which returned this model manager in TS, failed: {}",
+            to_oracle_error(&e).message
+        ))
+    };
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    let Some(Arg::Mm(index)) = args.first() else {
+        return Err(Fault::Unsupported(format!(
+            "{op} with a first argument that is not a model manager recipe"
+        )));
+    };
+    let r = &session.pool[*index];
+    if member == "decorateModels" {
+        let (mut sets, _) = command_sets(plain_arg(&args, 1)?.as_ref())?;
+        let mut options = decorate_options(plain_arg(&args, 2)?.as_ref());
+        let Some(prepared) =
+            dcs::prepare_decoration(&r.mm, &mut sets, &mut options).map_err(failed)?
+        else {
+            return Err(Fault::Harness(format!(
+                "a model manager derived from {op} with no command sets, which returns its input"
+            )));
+        };
+        if options.disable_metamodel_resolution != Some(true) && !resolution_changes_nothing(&r.mm)
+        {
+            return Err(blocked_on_resolution(op));
+        }
+        let mm = dcs::apply_decoration(&r.mm, &prepared, &options).map_err(failed)?;
+        return Ok(Some(DerivedModelManager {
+            mm,
+            validated: options.disable_metamodel_validation != Some(true),
+        }));
+    }
+    if !resolution_changes_nothing(&r.mm) {
+        return Err(blocked_on_resolution(op));
+    }
+    let options = extract_options(plain_arg(&args, 1)?.as_ref());
+    let result = match member {
+        "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
+        "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
+        _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+    }
+    .map_err(failed)?;
+    Ok(Some(DerivedModelManager {
+        mm: result.model_manager,
+        validated: true,
+    }))
+}
+
+/// `DecoratorManager` statics (task P2-12) whose inputs include a model
+/// manager or that mutate a plain argument (`effects`).
+fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let op = format!("DecoratorManager.{member}");
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    let err = |e: ConcertoError| to_oracle_error(&e);
+
+    match member {
+        "decorateModels" => {
+            let Some(Arg::Mm(index)) = args.first() else {
+                return Err(Fault::Unsupported(
+                    "decorateModels with a first argument that is not a model manager recipe"
+                        .into(),
+                ));
+            };
+            let r = &session.pool[*index];
+            let sets_arg = plain_arg(&args, 1)?;
+            let options_arg = plain_arg(&args, 2)?;
+            let (mut sets, is_list) = command_sets(sets_arg.as_ref())?;
+            let mut options = decorate_options(options_arg.as_ref());
+            let prepared = dcs::prepare_decoration(&r.mm, &mut sets, &mut options);
+            let sets_after = sets_arg.as_ref().map(|_| {
+                if is_list {
+                    Value::Array(sets.clone())
+                } else {
+                    sets.first().cloned().unwrap_or(Value::Null)
+                }
+            });
+            let options_after = options_arg.clone().map(|mut o| {
+                if options.skip_validation_and_resolution
+                    && options.disable_metamodel_resolution == Some(true)
+                    && options.disable_metamodel_validation == Some(true)
+                    && let Some(map) = o.as_object_mut()
+                {
+                    map.insert("disableMetamodelResolution".into(), Value::Bool(true));
+                    map.insert("disableMetamodelValidation".into(), Value::Bool(true));
+                }
+                o
+            });
+            let before = [None, sets_arg.clone(), options_arg.clone()];
+            let after = [None, sets_after, options_after];
+            let outcome = match prepared {
+                Err(e) => Err(err(e)),
+                // TS returns the model manager it was given.
+                Ok(None) => Ok(recipe::summary_of(r.kind, &r.mm)),
+                Ok(Some(prepared)) => {
+                    if options.disable_metamodel_resolution != Some(true)
+                        && !resolution_changes_nothing(&r.mm)
+                    {
+                        return Err(blocked_on_resolution(&op));
+                    }
+                    dcs::apply_decoration(&r.mm, &prepared, &options)
+                        .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                        .map_err(err)
+                }
+            };
+            Ok(ran_with_effects(outcome, &before, &after))
+        }
+        "extractDecorators" | "extractVocabularies" | "extractNonVocabDecorators" => {
+            let Some(Arg::Mm(index)) = args.first() else {
+                return Err(Fault::Unsupported(format!(
+                    "{op} with a first argument that is not a model manager recipe"
+                )));
+            };
+            let r = &session.pool[*index];
+            let options = extract_options(plain_arg(&args, 1)?.as_ref());
+            if !resolution_changes_nothing(&r.mm) {
+                return Err(blocked_on_resolution(&op));
+            }
+            let result = match member {
+                "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
+                "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
+                _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+            };
+            Ok(ran(result.map_err(err).map(|res| {
+                let mut summary =
+                    recipe::summary_of(recipe::Kind::ModelManager, &res.model_manager);
+                restore_undefined_decorators(&r.mm, &mut summary);
+                let mut out = serde_json::Map::new();
+                out.insert("modelManager".into(), summary);
+                if member != "extractVocabularies" {
+                    out.insert(
+                        "decoratorCommandSet".into(),
+                        Value::Array(res.decorator_command_set),
+                    );
+                }
+                if member != "extractNonVocabDecorators" {
+                    out.insert(
+                        "vocabularies".into(),
+                        Value::Array(res.vocabularies.into_iter().map(Value::String).collect()),
+                    );
+                }
+                Value::Object(out)
+            })))
+        }
+        "validate" => {
+            let Some(command_set) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.validate without a command set",
+                ));
+            };
+            // `modelFiles`: absent, or a list of model files.
+            let files: Option<Vec<ModelFile>> = match args.get(1) {
+                None => None,
+                Some(Arg::Plain(v)) if recipe::is_undefined(v) || v.is_null() => None,
+                Some(Arg::List(items)) => Some(
+                    items
+                        .iter()
+                        .map(|item| match item {
+                            Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone())
+                                .map_err(|e| {
+                                    Fault::Divergence(format!(
+                                        "input construction failed: new ModelFile: {}",
+                                        to_oracle_error(&e).message
+                                    ))
+                                }),
+                            _ => Err(Fault::Unsupported(
+                                "DecoratorManager.validate with a modelFiles entry that is not a model file"
+                                    .into(),
+                            )),
+                        })
+                        .collect::<Faulty<Vec<_>>>()?,
+                ),
+                Some(_) => {
+                    return Ok(unsupported(
+                        "DecoratorManager.validate with modelFiles that are not a list of model files",
+                    ));
+                }
+            };
+            let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
+            Ok(from_engine(
+                dcs::validate(&command_set, refs.as_deref()),
+                |mm| recipe::summary_of(recipe::Kind::ModelManager, &mm),
+            ))
+        }
+        "jsonToYaml" => {
+            let Some(json_input) = plain_arg(&args, 0)? else {
+                return Ok(unsupported("DecoratorManager.jsonToYaml without an input"));
+            };
+            Ok(from_engine(
+                dcs::validated_json_to_yaml(&json_input),
+                Value::String,
+            ))
+        }
+        "yamlToJson" => {
+            let Some(Value::String(yaml_input)) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.yamlToJson with a non-string input",
+                ));
+            };
+            Ok(from_engine(dcs::validated_yaml_to_json(&yaml_input), |v| v))
+        }
+        "migrateTo" => {
+            let Some(mut command_set) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.migrateTo without a command set",
+                ));
+            };
+            let before = [Some(command_set.clone())];
+            let outcome = dcs::migrate_to(&mut command_set)
+                .map(|()| command_set.clone())
+                .map_err(err);
+            Ok(ran_with_effects(outcome, &before, &[Some(command_set)]))
+        }
+        "executePropertyCommand" => {
+            let (Some(mut property), Some(command)) = (plain_arg(&args, 0)?, plain_arg(&args, 1)?)
+            else {
+                return Ok(unsupported(
+                    "DecoratorManager.executePropertyCommand without a property and a command",
+                ));
+            };
+            let before = [Some(property.clone()), Some(command.clone())];
+            let outcome = dcs::execute_property_command(&mut property, &command)
+                .map(|()| recipe::undefined())
+                .map_err(err);
+            Ok(ran_with_effects(
+                outcome,
+                &before,
+                &[Some(property), Some(command)],
+            ))
+        }
+        _ => unreachable!("DECORATOR_MANAGER_OPS lists every member"),
+    }
 }
 
 /// The namespace a decorated element's model file was loaded under, needed

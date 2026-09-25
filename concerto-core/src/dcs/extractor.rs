@@ -8,7 +8,6 @@
 //!
 //! Like [`super`], this stays on the untyped metamodel AST
 //! ([`serde_json::Value`]) throughout, matching the reference.
-use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
@@ -70,7 +69,9 @@ struct TargetOptions<'a> {
 
 /// `DecoratorExtractor` (`src/decoratorextractor.ts`).
 pub struct DecoratorExtractor {
-    extraction_dictionary: HashMap<String, Vec<ExtractedDecorators>>,
+    /// `this.extractionDictionary`, a JS object keyed by namespace: kept in
+    /// insertion order, the order `Object.keys` then walks it in.
+    extraction_dictionary: Vec<(String, Vec<ExtractedDecorators>)>,
     remove_decorators_from_model: bool,
     locale: String,
     dcs_version: String,
@@ -90,7 +91,7 @@ impl DecoratorExtractor {
         action: Action,
     ) -> Self {
         Self {
-            extraction_dictionary: HashMap::new(),
+            extraction_dictionary: Vec::new(),
             remove_decorators_from_model,
             locale: locale.into(),
             dcs_version: dcs_version.into(),
@@ -117,10 +118,16 @@ impl DecoratorExtractor {
             map_element: options.map_element.unwrap_or_default().to_string(),
             decorators: decorators.to_vec(),
         };
-        self.extraction_dictionary
-            .entry(key.to_string())
-            .or_default()
-            .push(entry);
+        match self
+            .extraction_dictionary
+            .iter_mut()
+            .find(|(k, _)| k == key)
+        {
+            Some((_, entries)) => entries.push(entry),
+            None => self
+                .extraction_dictionary
+                .push((key.to_string(), vec![entry])),
+        }
     }
 
     /// `DecoratorExtractor.transformNonVocabularyDecorators`
@@ -685,9 +692,17 @@ impl DecoratorExtractor {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        // `new ModelManager()` then `fromAst(this.updatedModelAst)`: every
+        // model but the system ones (already preloaded), then validated.
         let mut model_manager = ModelManager::new()?;
-        let refs: Vec<(&Value, Option<String>)> = models.iter().map(|m| (m, None)).collect();
-        model_manager.add_models(refs)?;
+        for model in models.iter().filter(|m| {
+            !m.get("namespace")
+                .and_then(Value::as_str)
+                .is_some_and(|ns| crate::model_manager::EXCLUDE_NS.contains(&ns))
+        }) {
+            model_manager.add_model(model, None)?;
+        }
+        model_manager.validate_models()?;
 
         let (decorator_command_set, vocabularies) = self.transform_decorators_and_vocabularies()?;
         Ok(ExtractResult {
