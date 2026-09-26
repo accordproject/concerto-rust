@@ -132,10 +132,23 @@ fn wrapped(err: &ConcertoError) -> ConcertoError {
 /// ModelFile(this, MetaModelUtil.metaModelAst, undefined,
 /// MetaModelNamespace)` (`src/basemodelmanager.ts`'s constructor), so its
 /// file name is the namespace itself and it has no CTO definitions.
+///
+/// Loaded once per thread and cloned on every later call (P5-06:
+/// `validateAst` registers it on every call); a load error is returned, and
+/// not cached, exactly as an uncached load would return it.
 pub(crate) fn metamodel_model_file() -> Result<ModelFile> {
+    thread_local! {
+        static METAMODEL_MODEL_FILE: std::cell::RefCell<Option<ModelFile>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    if let Some(model_file) = METAMODEL_MODEL_FILE.with(|cache| cache.borrow().clone()) {
+        return Ok(model_file);
+    }
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    ModelFile::from_json(&metamodel, Some(METAMODEL_NAMESPACE.to_string()))
+    let model_file = ModelFile::from_json(&metamodel, Some(METAMODEL_NAMESPACE.to_string()))?;
+    METAMODEL_MODEL_FILE.with(|cache| *cache.borrow_mut() = Some(model_file.clone()));
+    Ok(model_file)
 }
 
 /// `validateAst`'s structural check against the caller's own model manager

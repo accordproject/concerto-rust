@@ -421,10 +421,28 @@ impl ClassDeclaration {
     /// `Concept` super type and to recognise the system model's own
     /// `Transaction`/`Event` (below).
     fn from_json(kind: ClassKind, value: &serde_json::Value, namespace: &str) -> Result<Self> {
-        let mut fields = value.clone();
-        if let Some(object) = fields.as_object_mut() {
-            object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
-        }
+        // The declaration's own fields, with `properties` replaced by an
+        // empty list: copied field by field so the property nodes (read
+        // separately below) are never cloned just to be thrown away (P5-06).
+        // Key order is kept exactly as a whole-node clone followed by an
+        // `insert` would leave it (`properties` in place, or appended).
+        let fields = match value.as_object() {
+            Some(object) => {
+                let mut copy = serde_json::Map::with_capacity(object.len() + 1);
+                for (key, field) in object {
+                    if key == "properties" {
+                        copy.insert(key.clone(), serde_json::Value::Array(Vec::new()));
+                    } else {
+                        copy.insert(key.clone(), field.clone());
+                    }
+                }
+                if !object.contains_key("properties") {
+                    copy.insert("properties".into(), serde_json::Value::Array(Vec::new()));
+                }
+                serde_json::Value::Object(copy)
+            }
+            None => value.clone(),
+        };
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {}: {e}", kind.declaration_kind()),
             file_name: None,
@@ -593,23 +611,25 @@ fn load_scalar(
         file_name: None,
         location: None,
     };
-    let v = value.clone();
+    let v = value;
     let node = match short {
         "BooleanScalar" => {
-            mm::ScalarDeclaration::BooleanScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::BooleanScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "IntegerScalar" => {
-            mm::ScalarDeclaration::IntegerScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::IntegerScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
-        "LongScalar" => mm::ScalarDeclaration::LongScalar(serde_json::from_value(v).map_err(bad)?),
+        "LongScalar" => {
+            mm::ScalarDeclaration::LongScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
+        }
         "DoubleScalar" => {
-            mm::ScalarDeclaration::DoubleScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::DoubleScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "StringScalar" => {
-            mm::ScalarDeclaration::StringScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::StringScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "DateTimeScalar" => {
-            mm::ScalarDeclaration::DateTimeScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::DateTimeScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         other => {
             return Err(ConcertoError::IllegalModel {
@@ -697,10 +717,12 @@ impl EnumDeclaration {
     fn from_json(value: &serde_json::Value) -> Result<Self> {
         Ok(Self {
             inner: WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                    message: format!("invalid EnumDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
+                serde::Deserialize::deserialize(value).map_err(|e: serde_json::Error| {
+                    ConcertoError::IllegalModel {
+                        message: format!("invalid EnumDeclaration: {e}"),
+                        file_name: None,
+                        location: None,
+                    }
                 })?,
                 parse_decorators(value),
             ),
@@ -976,7 +998,7 @@ impl MapDeclaration {
             location: None,
         };
         let name: String = match value.get("name") {
-            Some(name) => serde_json::from_value(name.clone()).map_err(bad)?,
+            Some(name) => serde::Deserialize::deserialize(name).map_err(bad)?,
             None => return Err(bad(serde_json::Error::missing_field("name"))),
         };
 
@@ -1104,15 +1126,14 @@ fn typed_map(
 /// Removes a `decorators` or `location` entry that does not deserialize into
 /// its generated type.
 fn drop_unreadable_annotations(node: &mut serde_json::Map<String, serde_json::Value>) {
-    if node
-        .get("decorators")
-        .is_some_and(|d| serde_json::from_value::<Option<Vec<mm::Decorator>>>(d.clone()).is_err())
-    {
+    if node.get("decorators").is_some_and(|d| {
+        <Option<Vec<mm::Decorator>> as serde::Deserialize>::deserialize(d).is_err()
+    }) {
         node.remove("decorators");
     }
     if node
         .get("location")
-        .is_some_and(|l| serde_json::from_value::<Option<mm::Range>>(l.clone()).is_err())
+        .is_some_and(|l| <Option<mm::Range> as serde::Deserialize>::deserialize(l).is_err())
     {
         node.remove("location");
     }
