@@ -1866,6 +1866,120 @@ mod tests {
         assert_eq!(contract.message(), "Duplicate decorator undefined");
     }
 
+    /// #218 clusters #2-#5 (DV-017, maintainer-accepted): a
+    /// `RelationshipProperty` whose `type` is missing or `null` makes TS's
+    /// `Property.process` throw a `TypeError` from the `ModelFile`
+    /// constructor; Rust rejects the model at `add_model` with an
+    /// `IllegalModelException` naming the property, the file and the node's
+    /// location. The document is the P5-05 minimised reproducer.
+    #[test]
+    fn a_relationship_with_a_missing_or_null_type_is_rejected_at_load() {
+        let position = |offset: u32, line: u32, column: u32| {
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Position",
+                                "offset": offset, "line": line, "column": column })
+        };
+        for (ty, file_name) in [
+            (None, Some("relationship003.cto")),
+            (Some(serde_json::Value::Null), Some("relationship003.cto")),
+            (None, None),
+            (Some(serde_json::Value::Null), None),
+        ] {
+            let mut relationship = serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+                "name": "dept", "isArray": false, "isOptional": false,
+                "location": { "$class": "concerto.metamodel@1.0.0.Range",
+                              "start": position(109, 5, 3), "end": position(131, 6, 1) }
+            });
+            if let Some(ty) = &ty {
+                relationship["type"] = ty.clone();
+            }
+            let mut manager = ModelManager::new().unwrap();
+            let err = manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "decorators": [],
+                        "namespace": "org.example.relationship003.invalid@1.0.0",
+                        "imports": [],
+                        "declarations": [
+                            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                              "name": "Employee", "isAbstract": false,
+                              "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+                              "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                                  "name": "id", "isArray": false, "isOptional": false },
+                                relationship
+                              ] },
+                            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                              "name": "Department", "isAbstract": false,
+                              "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "code" },
+                              "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                                  "name": "code", "isArray": false, "isOptional": false }
+                              ] }
+                        ]
+                    }),
+                    file_name.map(String::from),
+                )
+                .unwrap_err();
+            let ConcertoError::Contract(contract) = &err else {
+                panic!("expected an IllegalModelException, got {err:?}");
+            };
+            assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ty:?}");
+            assert_eq!(contract.code, "property-process-relationshipnotype");
+            let suffix = match file_name {
+                Some(f) => format!("File '{f}': line"),
+                None => "Line".to_string(),
+            };
+            assert_eq!(
+                contract.final_message(),
+                format!(
+                    "Relationship dept must have a type {suffix} 5 column 3, to line 6 column 1. "
+                )
+            );
+        }
+    }
+
+    /// #218 cluster #6: a class whose super type name is `""`. TS's
+    /// `getProperties` tests `this.superType !== null`, so `""` is still
+    /// resolved, is not found, and `validate` throws "Could not find super
+    /// type " (with the empty name). The native path already agrees; the
+    /// rust-mode `classDeclarationGetProperties` binding tested truthiness
+    /// and skipped it (fixed in concerto-wasm).
+    #[test]
+    fn an_empty_super_type_name_is_not_found() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": [],
+                    "namespace": "org.vehicle@1.0.0",
+                    "imports": [],
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Manufactured", "isAbstract": true, "properties": [] },
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Vehicle", "isAbstract": true,
+                          "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                              "name": "name", "isArray": false, "isOptional": false }
+                          ],
+                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                                         "name": "", "namespace": "org.vehicle@1.0.0" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        let err = manager.validate_models().unwrap_err();
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.kind, ErrorKind::IllegalModel);
+        assert_eq!(contract.message(), "Could not find super type ");
+    }
+
     /// A one-character string is a single `undefined`-named decorator in TS:
     /// no duplicate, so the model is accepted (#218).
     #[test]
