@@ -834,6 +834,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn golden_engine_typeerror_inoperator() {
+        assert_eq!(
+            contract(
+                "engine-typeerror-inoperator",
+                &[("key", "$class"), ("value", "true")]
+            )
+            .message(),
+            "Cannot use 'in' operator to search for '$class' in true"
+        );
+    }
+
     // ---- P2-01 review fix: ResourceId (src/model/resourceid.ts) ----
 
     #[test]

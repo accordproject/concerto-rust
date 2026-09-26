@@ -547,6 +547,69 @@ export function runChecks(engine) {
     ));
   });
 
+  // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's
+  // `MapValueType.processType` (mapvaluetype.ts) is `if (!('type' in ast))`
+  // then `if (!('$class' in ast.type) || !('name' in ast.type))`. `'type' in
+  // ast` is true whenever the key is merely present, even set to `null`, so
+  // that must NOT raise the "must contain property 'type'"
+  // `IllegalModelException` — it must fall through to the second check,
+  // where `ast.type` being anything other than a JS object (`null`, a
+  // boolean, a number, a string) makes the `in` operator itself throw a
+  // `TypeError`, not an `IllegalModelException`. Verified live against the
+  // TS reference (ts-node vs. the built `concerto-wasm` package,
+  // `CONCERTO_ENGINE=rust`) for every shape below.
+  check("mapValueTypeProcess raises the 'in' operator TypeError for a non-object type, not the missing-property IllegalModelException", () => {
+    const parent = { name: 'M' };
+    const mockView = (type) => ({
+      ast: { $class: `${MM}.ObjectMapValueType`, type },
+      parent,
+    });
+
+    for (const [type, rendered] of [
+      [null, 'null'],
+      [true, 'true'],
+      [false, 'false'],
+      [0, '0'],
+      [1e21, '1e+21'],
+      ['__proto__', '__proto__'],
+      ['', ''],
+    ]) {
+      const err = thrown(() => engine.mapValueTypeProcess(mockView(type)));
+      assert(err instanceof EngineError, `type:${JSON.stringify(type)} threw ${err}`);
+      assert(err.payload.kind === 'JsTypeError', `type:${JSON.stringify(type)} kind ${err.payload.kind}`);
+      assert(
+        err.message === `Cannot use 'in' operator to search for '$class' in ${rendered}`,
+        `type:${JSON.stringify(type)} message ${err.message}`,
+      );
+    }
+
+    // A missing `type` key (not present at all) still raises the ordinary
+    // "must contain property 'type'" IllegalModelException.
+    const missing = thrown(() => engine.mapValueTypeProcess({ ast: { $class: `${MM}.ObjectMapValueType` }, parent }));
+    assert(missing instanceof EngineError, `missing type threw ${missing}`);
+    assert(missing.payload.kind === 'IllegalModel', `missing type kind ${missing.payload.kind}`);
+    assert(
+      missing.message === "ObjectMapValueType must contain property 'type', for MapDeclaration named M",
+      `missing type message ${missing.message}`,
+    );
+
+    // An array or a plain object (both real JS objects) does not throw a
+    // TypeError; it falls through to the "malformed type" rejection.
+    for (const type of [[], {}]) {
+      const err = thrown(() => engine.mapValueTypeProcess(mockView(type)));
+      assert(err instanceof EngineError, `type:${JSON.stringify(type)} threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `type:${JSON.stringify(type)} kind ${err.payload.kind}`);
+      assert(
+        err.message === "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named M",
+        `type:${JSON.stringify(type)} message ${err.message}`,
+      );
+    }
+
+    // Sanity: a genuinely well-formed type still processes.
+    const ok = engine.mapValueTypeProcess(mockView({ $class: `${MM}.TypeIdentifier`, name: 'Foo' }));
+    assert(ok === 'Foo', `well-formed type -> ${JSON.stringify(ok)}`);
+  });
+
   // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS interpolates the
   // raw `this.ast.name` into a template literal in every one of
   // `MapDeclaration.process`'s own messages, which applies JS `ToString` —

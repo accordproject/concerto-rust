@@ -2830,14 +2830,43 @@ pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsV
         };
         let type_name = match short_class(&class) {
             "ObjectMapValueType" | "RelationshipMapValueType" => {
+                // TS: `!('type' in ast)`. `ast` is a genuine JS object here
+                // (its own `$class` was just read as a real string above),
+                // so the `in` operator itself cannot throw on this check; it
+                // is exactly "does the key exist", true whenever `type` is
+                // present at all — including an explicit `type: null`, which
+                // is present, not missing. `get` returns real `undefined`
+                // only for a key that is not there at all, so testing that
+                // directly (not `nullish`, which also matches a present
+                // `null`) is what keeps the two apart
+                // (accordproject/concerto-rust#219 stage-2 T2c: `nullish`
+                // here wrongly took the "missing type" branch for a present
+                // `type: null`, which TS does not).
                 let ast_type = get(&ast, "type")?;
-                if nullish(&ast_type) {
+                if ast_type.is_undefined() {
                     return Err(ContractError::new(
                         ErrorKind::IllegalModel,
                         "mapvaluetype-process-missingtype",
                         vec![("name", parent_name)],
                     )
                     .into());
+                }
+                // TS: `!('$class' in ast.type) || !('name' in ast.type)`.
+                // Unlike the check above, `ast.type` is NOT guaranteed to be
+                // an object here — a fuzzed AST can set it to `null`, a
+                // boolean, a number or a string — and the ECMAScript `in`
+                // operator throws a `TypeError` when its right-hand side is
+                // not an object (an array or a plain object does not throw;
+                // it just falls through to the "malformed type" rejection
+                // below like any other object missing both keys).
+                if !ast_type.is_object() && !ast_type.is_function() {
+                    return Err(type_error(
+                        "engine-typeerror-inoperator",
+                        vec![
+                            ("key", "$class".to_string()),
+                            ("value", js_string(&ast_type)?),
+                        ],
+                    ));
                 }
                 let type_class = get(&ast_type, "$class")?;
                 let type_name_field = get(&ast_type, "name")?;

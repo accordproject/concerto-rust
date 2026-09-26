@@ -249,6 +249,18 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["V8 (call of a non-function)"],
     },
+    CatalogueEntry {
+        code: "engine-typeerror-inoperator",
+        template: "Cannot use 'in' operator to search for '{key}' in {value}",
+        renderer: Renderer::Inline,
+        // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): `MapValueType
+        // .processType`'s `'$class' in ast.type`/`'name' in ast.type`
+        // (src/introspect/mapvaluetype.ts) throws this whenever
+        // `ast.type` is present but is not itself a JS object (a JSON
+        // `null`, boolean, number or string) — the ECMAScript `in` operator
+        // requires an object right-hand side.
+        sources: &["V8 ('in' operator with a non-object right-hand side)"],
+    },
     // ---- P1-05 additions ----
     CatalogueEntry {
         code: "typenotfounderror-defaultmessage",

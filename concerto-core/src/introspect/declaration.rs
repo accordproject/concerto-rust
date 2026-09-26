@@ -10,7 +10,6 @@
 //! matching on the node's `$class`.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
@@ -505,6 +504,20 @@ impl ClassDeclaration {
         let mut explicit_null_super_type = false;
         if let Some(object) = fields.as_object_mut() {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
+
+            // TS reads `this.ast.name` as a plain field access, coerced only
+            // by `ID_REGEX.test`'s `ToString` (`check_declaration_name`,
+            // this declaration's own caller, already accepts exactly that
+            // coercion — accordproject/concerto-rust#219 stage-2 T2c). The
+            // generated struct's `name: String` would otherwise reject
+            // anything but a literal JSON string outright here, before ever
+            // reaching a property of this class — the same shape of bug
+            // `superType.name`/`identified.name` needed normalizing for,
+            // just above this same object.
+            let coerced_name = object
+                .get("name")
+                .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+            object.insert("name".into(), serde_json::Value::String(coerced_name));
 
             if let Some(serde_json::Value::Object(super_type_object)) =
                 object.get("superType").cloned()
@@ -1154,15 +1167,18 @@ impl MapDeclaration {
     }
 
     fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
-        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-            message: format!("invalid MapDeclaration: {e}"),
-            file_name: None,
-            location: None,
-        };
-        let name: String = match value.get("name") {
-            Some(name) => serde::Deserialize::deserialize(name).map_err(bad)?,
-            None => return Err(bad(serde_json::Error::missing_field("name"))),
-        };
+        // TS reads `this.ast.name` as a plain field access — never required
+        // to already be a string — and only ever consumes it through
+        // template-literal `ToString` interpolation (every message below).
+        // `check_declaration_name` (the caller, `Declaration::from_json`)
+        // already accepts exactly the same coercions
+        // (accordproject/concerto-rust#219 stage-2 T2c), so requiring a
+        // literal JSON string here (or a present key at all) would reject a
+        // name `check_declaration_name` just let through — a missing key is
+        // JS `undefined`, whose `ToString` is the literal text `"undefined"`.
+        let name = value
+            .get("name")
+            .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
 
         // TS `MapDeclaration.process` (src/introspect/mapdeclaration.ts): a
         // missing key or value node, an invalid `MapKeyType`, or an invalid
@@ -1231,12 +1247,44 @@ impl MapDeclaration {
         // well-formed `type` (a `TypeIdentifier` with `$class` and `name`).
         if value_kind == "ObjectMapValueType" || value_kind == "RelationshipMapValueType" {
             let value_node = value_node.unwrap();
-            let type_node = value_node.get("type").filter(|v| !v.is_null());
-            let Some(type_node) = type_node else {
+            // TS: `!('type' in ast)`. `ast` (this `MapValueType`'s own node,
+            // i.e. `value_node`) is always a genuine JS object by the time
+            // we're inside this branch — `value_kind` was itself read from
+            // its `$class`, which only a real object can carry — so the `in`
+            // operator here cannot itself throw; it is exactly "does the key
+            // exist", true whenever the `type` key is present at all,
+            // regardless of its value. An explicit `type: null` is present,
+            // not missing, and must NOT take this branch
+            // (accordproject/concerto-rust#219 stage-2 T2c remaining scope:
+            // the previous `.filter(|v| !v.is_null())` wrongly treated a
+            // present `null` the same as an absent key).
+            let Some(type_node) = value_node.get("type") else {
                 return Err(illegal_model(format!(
                     "ObjectMapValueType must contain property 'type', for MapDeclaration named {name}"
                 )));
             };
+            // TS: `!('$class' in ast.type) || !('name' in ast.type)`. Unlike
+            // the check above, `ast.type` here is NOT guaranteed to be an
+            // object — a fuzzed AST can set it to a JSON `null`, boolean,
+            // number or string — and the ECMAScript `in` operator throws a
+            // `TypeError` when its right-hand side is not an object (a JSON
+            // array IS a JS object for `in`'s purposes, so it falls through
+            // to the ordinary "must contain property" rejection below like
+            // any other object missing both keys).
+            if !matches!(
+                type_node,
+                serde_json::Value::Object(_) | serde_json::Value::Array(_)
+            ) {
+                return Err(ContractError::new(
+                    ErrorKind::JsTypeError,
+                    "engine-typeerror-inoperator",
+                    vec![
+                        ("key", "$class".to_string()),
+                        ("value", crate::ecma::to_js_string(type_node)),
+                    ],
+                )
+                .into());
+            }
             let class_field = type_node.get("$class");
             let name_field = type_node.get("name");
             if class_field.is_none() || name_field.is_none() {
@@ -1557,15 +1605,28 @@ fn is_recognised_kind(kind: &str) -> bool {
 /// fails (an absent name interpolates as `undefined`).
 fn check_declaration_name(value: &serde_json::Value, file_name: Option<&str>) -> Result<()> {
     let name = value.get("name");
-    if let Some(serde_json::Value::String(name)) = name
-        && is_valid_identifier(name)
-    {
+    // TS: `ModelUtil.isValidIdentifier(this.ast.name)` runs `ID_REGEX.test`,
+    // and `RegExp.prototype.test` coerces its argument with `ToString`
+    // (DV-002) before matching — the same coercion `crate::ecma::to_js_string`
+    // performs, not "must already be a JS string". A fuzzed, non-string
+    // `name` that still stringifies to a valid identifier (for example a
+    // single-element array `["C"]`, whose `ToString` is `"C"`) is accepted
+    // exactly as TS accepts it, not rejected outright the way requiring
+    // `serde_json::Value::String` up front used to
+    // (accordproject/concerto-rust#219 stage-2 T2c: this was masking a
+    // fuzzed model's real divergence downstream — an unrecognised property
+    // `$class` — behind a spurious, TS never raises, "Invalid class name"
+    // rejection here instead). A missing key is JS `undefined`, whose
+    // `ToString` is the literal text `"undefined"` (itself a valid
+    // identifier, so accepted, as `check_declaration_name`'s callers already
+    // relied on for the "Unrecognised model element" ordering).
+    let coerced = name.map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+    if is_valid_identifier(&coerced) {
         return Ok(());
     }
-    let shown = name.map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
     let mut err = ContractError::pre_port(
         ErrorKind::IllegalModel,
-        format!("Invalid class name '{shown}'"),
+        format!("Invalid class name '{coerced}'"),
         value.get("location").cloned(),
     );
     err.model_file = Some(file_name.map(str::to_string));
@@ -1917,6 +1978,35 @@ mod tests {
         );
     }
 
+    /// The minimised repro for accordproject/concerto-rust#219's
+    /// 871-case `ModelManager.fromAst` cluster (stage-2 T2c triage): a
+    /// declaration `name` of `["C"]` (a single-element array — TS's
+    /// `ID_REGEX.test` coerces it with `ToString` to the valid identifier
+    /// `"C"`, so TS never rejects the name) together with a property whose
+    /// `$class` is not a recognised property kind. Before the fix, Rust's
+    /// `check_declaration_name` required the AST's `name` to already be a
+    /// JS string and rejected anything else outright, so it never reached
+    /// the property check at all; verified live against the TS reference
+    /// (`ts-node` vs. the built `concerto-wasm` package, `CONCERTO_ENGINE=
+    /// rust`) that both now raise the identical `IllegalModelException`
+    /// naming the unrecognised property `$class`, not a `TypeError`.
+    #[test]
+    fn a_non_string_but_identifier_shaped_name_does_not_mask_an_unrecognised_property() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": ["C"],
+            "isAbstract": false,
+            "properties": [
+                { "$class": "concerto.metamodel@1", "name": "foo", "isArray": false, "isOptional": false }
+            ]
+        }))
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Unrecognised model element \"concerto.metamodel@1\"."
+        );
+    }
+
     #[test]
     fn scalar_reports_its_concrete_kind() {
         let s = decl(serde_json::json!({
@@ -2157,6 +2247,94 @@ mod tests {
         ));
     }
 
+    /// TS `'type' in ast` is true whenever the key is merely PRESENT, even
+    /// set to `null` — this must NOT take the "must contain property
+    /// 'type'" branch above (accordproject/concerto-rust#219 stage-2 T2c: a
+    /// previous `.filter(|v| !v.is_null())` wrongly treated a present
+    /// `null` the same as an absent key). `'$class' in ast.type` then
+    /// throws, since `null` is not a JS object.
+    #[test]
+    fn an_object_map_value_with_a_null_type_is_an_in_operator_type_error() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "M",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": {
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": null
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            &err,
+            ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+        ));
+        assert_eq!(
+            err.to_string(),
+            "Cannot use 'in' operator to search for '$class' in null"
+        );
+    }
+
+    /// Same shape, for every other JSON primitive the ECMAScript `in`
+    /// operator rejects as a non-object right-hand side: a `TypeError`
+    /// whose message renders the primitive with the same `ToString` any
+    /// other engine-raised message uses (accordproject/concerto-rust#219).
+    #[test]
+    fn an_object_map_value_with_a_primitive_type_is_an_in_operator_type_error() {
+        for (type_value, rendered) in [
+            (serde_json::json!(true), "true"),
+            (serde_json::json!(false), "false"),
+            (serde_json::json!(0), "0"),
+            (serde_json::json!(1e21), "1e+21"),
+            (serde_json::json!("__proto__"), "__proto__"),
+            (serde_json::json!(""), ""),
+        ] {
+            let err = Declaration::try_from(&serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                "name": "M",
+                "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                "value": {
+                    "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                    "type": type_value
+                }
+            }))
+            .unwrap_err();
+            assert!(matches!(
+                &err,
+                ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+            ));
+            assert_eq!(
+                err.to_string(),
+                format!("Cannot use 'in' operator to search for '$class' in {rendered}")
+            );
+        }
+    }
+
+    /// A JSON array IS a JS object for `in`'s purposes (unlike `null` or a
+    /// primitive), so it does not throw: it just has neither `$class` nor
+    /// `name`, so the ordinary "must contain property" `IllegalModelException`
+    /// applies, exactly as for any other object missing both keys.
+    #[test]
+    fn an_object_map_value_type_that_is_an_array_does_not_throw_a_type_error() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "M",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": {
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": []
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            &err,
+            ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+        ));
+        assert!(err.to_string().contains(
+            "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named M"
+        ));
+    }
+
     #[test]
     fn a_type_on_a_primitive_map_key_is_still_kept() {
         let d = decl(map_to_nope(
@@ -2176,14 +2354,24 @@ mod tests {
     /// (P2-08 review: this used to pin the serde decoding message instead).
     #[test]
     fn a_map_with_no_name_is_rejected_as_an_invalid_class_name() {
+        // TS: `ModelUtil.isValidIdentifier(this.ast.name)` runs
+        // `ID_REGEX.test`, which coerces its argument with `ToString`
+        // (DV-002) before matching. A missing `name` key is JS `undefined`,
+        // whose `ToString` is the literal text `"undefined"` — itself a
+        // valid identifier — so TS does NOT reject this at construction
+        // (verified live against the TS reference: `ModelManager.fromAst`
+        // succeeds for a `MapDeclaration` with no `name` key at all).
+        // accordproject/concerto-rust#219 stage-2 T2c: this test used to
+        // pin the earlier, incorrect behaviour (requiring a literal JSON
+        // string up front, unconditionally rejecting anything else).
         let mut node = map_to_nope(string_key(), serde_json::json!({}));
         node.as_object_mut().unwrap().remove("name");
-        let err = Declaration::try_from(&node);
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "Invalid class name 'undefined'"
-        );
+        let d = Declaration::try_from(&node).expect("a missing name is a valid identifier in TS");
+        assert_eq!(d.name(), "undefined");
 
+        // `5`'s `ToString` is `"5"`, not a valid identifier (an identifier
+        // cannot start with a digit), so this is still rejected exactly as
+        // before.
         let err =
             Declaration::try_from(&map_to_nope(string_key(), serde_json::json!({ "name": 5 })));
         assert_eq!(err.unwrap_err().to_string(), "Invalid class name '5'");
