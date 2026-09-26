@@ -3529,8 +3529,11 @@ impl ModelManagerHandle {
 
     /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
     /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`.
-    /// The namespace of the first loaded model file (registration order)
-    /// whose `getName()` equals `file_name`; `undefined` if none does
+    /// The namespace of the first loaded, non-system model file
+    /// (registration order; the built-in decorator and root models are
+    /// excluded, as `getModelFiles()`'s default argument excludes them)
+    /// whose `getName()` equals `file_name`; `undefined` if none does,
+    /// including when `file_name` names one of those system files
     /// (P2-11b-U4). The caller looks the namespace up in its own
     /// `this.modelFiles`, the way `getModelFile(namespace)` already does.
     #[wasm_bindgen(js_name = modelManagerGetModelFileByFileName)]

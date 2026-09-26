@@ -3322,9 +3322,11 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
         "getNamespaces" => ran(Ok(json!(r.namespaces()))),
         // P2-11b-U4: `BaseModelManager.getModelFileByFileName(fileName)` —
         // `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`,
-        // i.e. the first loaded file (registration order) whose `getName()`
-        // matches, or JS `undefined` (never `null`) if none does
-        // (`ModelManager::model_file_by_file_name`).
+        // i.e. the first loaded, non-system file (registration order,
+        // `getModelFiles()`'s default excludes the built-in decorator and
+        // root models) whose `getName()` matches, or JS `undefined` (never
+        // `null`) if none does, including when `fileName` names one of
+        // those system files (`ModelManager::model_file_by_file_name`).
         "getModelFileByFileName" => match plain(0) {
             // TS `mf.getName() === fileName`: an omitted or explicitly
             // `undefined` argument never strictly-equals a registered
