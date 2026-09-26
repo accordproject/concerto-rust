@@ -259,7 +259,7 @@ pub fn exec(h: &Harness, op: &str, inputs: &Inputs) -> Dispatch {
 
 /// The ops whose arguments are plain data only. `None` for any other op.
 fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
-    const PLAIN_OPS: [&str; 17] = [
+    const PLAIN_OPS: [&str; 18] = [
         "ModelUtil.getShortName",
         "ModelUtil.getNamespace",
         "ModelUtil.parseNamespace",
@@ -274,6 +274,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         "ModelUtil.isValidMapKey",
         "ModelUtil.isValidMapValue",
         "TypeNotFoundException.new",
+        "SecurityException.new",
         // DCS (task P2-12): the `DecoratorManager`/`DcsConverter` statics
         // that take and return plain data only and mutate nothing; the other
         // `DecoratorManager` statics go through `decorator_manager_op`.
@@ -474,6 +475,27 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
                     "message": message,
                     "location": Value::Null,
                     "component": component,
+                }
+            }))
+        }
+        // `new SecurityException(message)` (src/securityexception.ts): pure string
+        // handling over its own arguments. The TS reference does not throw here:
+        // the constructed exception is itself the `ok` value, which codec.js
+        // encodes as `{"@@oracle": "error", "error": {...}}`.
+        "SecurityException.new" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(message) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            // TS: SecurityException extends BaseException, which defaults
+            // component to '@accordproject/concerto-util'.
+            Ok(json!({
+                M: "error",
+                "error": {
+                    "class": "SecurityException",
+                    "message": message,
+                    "location": Value::Null,
+                    "component": "@accordproject/concerto-util",
                 }
             }))
         }
@@ -734,6 +756,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             m,
             "getType" | "getNamespace" | "getFullyQualifiedType" | "getClassDeclaration"
         ),
+        ("TypeNotFoundException", m) => matches!(m, "getTypeName"),
         _ => false,
     };
     if !dispatched {
@@ -750,6 +773,27 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         .iter()
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
+
+    // `getTypeName()` (src/typenotfoundexception.ts) returns the
+    // constructor's `typeName` argument unchanged; the receiver is an
+    // `errnew` node (task P2-11b-U5). Only a string `typeName` is replayed:
+    // TS hands back whatever was passed, `undefined` included.
+    if class == "TypeNotFoundException" && member == "getTypeName" {
+        return Ok(match &target {
+            Some(Arg::Error {
+                class,
+                args: ctor_args,
+            }) if class == "TypeNotFoundException" => match ctor_args.first() {
+                Some(Value::String(type_name)) => ran(Ok(Value::String(type_name.clone()))),
+                _ => unsupported(
+                    "TypeNotFoundException.getTypeName with a typeName that is not a string",
+                ),
+            },
+            _ => unsupported(
+                "TypeNotFoundException.getTypeName on a receiver that is not a TypeNotFoundException",
+            ),
+        });
+    }
 
     // `new ScalarDeclaration(modelFile, ast)` (PORTING.md 6.2): the receiver
     // is built directly from a `ModelFile` recipe argument, never registered

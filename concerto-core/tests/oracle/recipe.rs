@@ -356,6 +356,14 @@ pub enum Arg {
     /// `Resource.validate` and the `Identifiable`/`Typed`/`Relationship`
     /// accessors are dispatched from this.
     Typed(usize, DecodedInstance),
+    /// An exception built from plain constructor arguments (`"errnew"`,
+    /// README "Value encoding"; codec.js rebuilds it as `new <cls>(...args)`):
+    /// the class name and the constructor arguments as recorded. The
+    /// receiver of `TypeNotFoundException.getTypeName` (task P2-11b-U5).
+    Error {
+        class: String,
+        args: Vec<Value>,
+    },
 }
 
 /// What a `declref` resolved to: a handle into an already-registered model
@@ -520,6 +528,22 @@ impl<'h> Session<'h> {
             },
             "mm" => self.replay(v).map(Arg::Mm),
             "mmref" => self.mmref(v).map(Arg::Mm),
+            // codec.js throws a HarnessError for an unknown class or a
+            // non-array `args`: a malformed node, not an engine outcome.
+            "errnew" => {
+                let class = v
+                    .get("cls")
+                    .and_then(Value::as_str)
+                    .filter(|c| matches!(*c, "TypeNotFoundException" | "SecurityException"))
+                    .ok_or_else(|| Fault::Harness("malformed errnew node".into()))?
+                    .to_string();
+                let args = v
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| Fault::Harness("malformed errnew node".into()))?
+                    .clone();
+                Ok(Arg::Error { class, args })
+            }
             // TS `Introspector` (src/introspect/introspector.ts) is a thin
             // wrapper that stores its `ModelManager` and delegates every
             // member to it (P2-08): its handle is just that manager's own
@@ -2360,6 +2384,10 @@ impl Clone for Arg {
             Self::List(items) => Self::List(items.clone()),
             Self::Typed(m, inst) => Self::Typed(*m, inst.clone()),
             Self::Predicate(names) => Self::Predicate(names.clone()),
+            Self::Error { class, args } => Self::Error {
+                class: class.clone(),
+                args: args.clone(),
+            },
         }
     }
 }

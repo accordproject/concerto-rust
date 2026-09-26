@@ -9664,6 +9664,8 @@ ScalarDeclaration.toString	cec30d648d244ba6b395a3da	pass
 ScalarDeclaration.toString	fae654f7b4ea26c19d5c9d08	pass
 ScalarDeclaration.validate	91f0bfe1c8da7d4a86575afe	pass
 ScalarDeclaration.validate	a9b6f55e1a4ba52fdbd332c8	pass
+SecurityException.new	1b8d376dff10a8d540102996	pass
+SecurityException.new	2221163291e3cf6e9814f92e	pass
 Serializer.fromJSON	0006215a0b2130f79bf5758f	pass
 Serializer.fromJSON	0007942979ec36496f7a8718	pass
 Serializer.fromJSON	0057430c2ae133e0d3a1d6bb	pass
@@ -13743,6 +13745,9 @@ StringValidator.validate	e158c2201a404dd8f74184a6	pass
 StringValidator.validate	f6dfc812305a41c6991f8940	pass
 StringValidator.validate	f71cc55469dc430642db0045	pass
 StringValidator.validate	fc4acc202ee4e70457b55a13	pass
+TypeNotFoundException.getTypeName	7164eda385ddc35d9130cb0d	pass
+TypeNotFoundException.getTypeName	7ac64908479ee5aac08065a5	pass
+TypeNotFoundException.getTypeName	b62fa7845406539bc85682f7	pass
 TypeNotFoundException.new	01fb341790c626c1ab55127a	pass
 TypeNotFoundException.new	0560994f85e9ded2a0fc590d	pass
 TypeNotFoundException.new	114fcc734bb6e07dda61bd61	pass
