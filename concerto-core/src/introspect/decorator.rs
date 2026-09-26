@@ -72,6 +72,16 @@ pub enum DecoratorArgument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decorator {
     name: String,
+    /// Whether the AST node has a `name` at all. TS's `this.name =
+    /// ast.name` leaves `name` `undefined` for a node without one, which
+    /// includes every element a malformed, non-array `decorators` value
+    /// yields ([`parse_decorators`]), and `Decorated.validate` then tells
+    /// such a name apart from every string one (its `Set`) and prints it
+    /// as `undefined` (`Duplicate decorator undefined`).
+    /// [`Decorator::name`] still reads `""` for it, as it always has.
+    /// Only the duplicate-decorator check ([`Decorator::js_name`]) tells the
+    /// two apart (accordproject/concerto-rust#218).
+    name_present: bool,
     arguments: Vec<DecoratorArgument>,
     /// `this.ast.location`, copied verbatim (PORTING.md 2.1).
     location: Option<Value>,
@@ -87,6 +97,7 @@ impl Decorator {
     /// `DecoratorNumber` or `DecoratorBoolean`, by construction of the CTO
     /// grammar and the AST codec).
     pub fn from_ast(ast: &Value) -> Self {
+        let name_present = ast.get("name").is_some();
         let name = ast
             .get("name")
             .and_then(Value::as_str)
@@ -99,6 +110,7 @@ impl Decorator {
             .unwrap_or_default();
         Decorator {
             name,
+            name_present,
             arguments,
             location: ast.get("location").cloned(),
         }
@@ -109,6 +121,14 @@ impl Decorator {
     /// TS: `Decorator.getName`.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The name as TS's `Decorator.getName()` holds it for
+    /// `Decorated.validate`'s duplicate check: `None` for a node with no
+    /// `name` at all (JS `undefined`), which is a different `Set` entry from
+    /// every string name, `""` included.
+    pub(crate) fn js_name(&self) -> Option<&str> {
+        self.name_present.then_some(self.name.as_str())
     }
 
     /// The arguments given to this decorator, in order.
@@ -561,17 +581,34 @@ fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
     }
 }
 
-/// The decorators found on a raw AST node's `decorators` array, or empty if
+/// The decorators found on a raw AST node's `decorators` value, or empty if
 /// it has none.
 ///
 /// TS: `Decorated.process` (src/introspect/decorated.ts), the part that is
 /// not about picking a `DecoratorFactory`'s decorator over the default (that
-/// stays TS, module doc).
+/// stays TS, module doc). TS does not check that `ast.decorators` is an
+/// array: `if (this.ast.decorators)`, then `for (n = 0; n <
+/// this.ast.decorators.length; n++) new Decorator(this,
+/// this.ast.decorators[n])`. So a non-empty *string* there is iterated one
+/// UTF-16 code unit at a time, and each code unit becomes a `Decorator`
+/// whose `ast.name` is `undefined` (a string has no `name`). Two or more
+/// such decorators then fail `Decorated.validate`'s duplicate check with
+/// `Duplicate decorator undefined`, and that exception is ported here
+/// (accordproject/concerto-rust#218). Any other non-array value
+/// (a number, a boolean, `null`, an empty string) has no `length` and so
+/// yields no decorators, as it always has here. A JSON object with a
+/// `length` key of its own is not followed: TS would index it by
+/// `"0"`, `"1"`, ... and crash with a `TypeError` on a missing element,
+/// which is outside this port's scope.
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
-    ast.get("decorators")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().map(Decorator::from_ast).collect())
-        .unwrap_or_default()
+    match ast.get("decorators") {
+        Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
+        Some(Value::String(s)) => s
+            .encode_utf16()
+            .map(|_| Decorator::from_ast(&Value::Null))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Wraps a generated metamodel node together with its processed decorators
