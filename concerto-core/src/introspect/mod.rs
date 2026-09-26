@@ -28,10 +28,6 @@
 //! ([`DeclarationKind`]) or decorators ([`Decorated`]), is a trait, derived
 //! where it is the same over every variant (see [`crate::derive`]).
 
-use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-
-use crate::error::{ConcertoError, Result};
-
 pub mod declaration;
 pub mod decorator;
 pub mod field;
@@ -65,49 +61,4 @@ const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 /// `concerto.metamodel@1.0.0.StringMapKeyType` for `StringMapKeyType`.
 pub(crate) fn qualified_class(short: &str) -> String {
     format!("{METAMODEL_NAMESPACE}.{short}")
-}
-
-/// Builds a [`ConcertoError::IllegalModel`] for a malformed validator.
-fn illegal(message: String) -> ConcertoError {
-    ConcertoError::IllegalModel {
-        message,
-        file_name: None,
-        location: None,
-    }
-}
-
-/// Checks that a string regex validator compiles.
-///
-/// Patterns and flags come from the JavaScript runtime, so P2-02 compiles
-/// them with `regress` (ECMAScript semantics, PORTING.md section 3), the
-/// same engine [`validators::StringValidator`] uses, rather than a
-/// general-purpose Rust regex engine.
-pub(crate) fn check_pattern(owner: &str, validator: &mm::StringRegexValidator) -> Result<()> {
-    regress::Regex::with_flags(validator.pattern.as_str(), validator.flags.as_str())
-        .map_err(|error| illegal(format!("Invalid regular expression on {owner}: {error}")))?;
-    Ok(())
-}
-
-/// Checks a string length validator. At least one bound must be given, neither
-/// bound may be negative, and a minimum may not exceed the maximum.
-pub(crate) fn check_length(owner: &str, validator: &mm::StringLengthValidator) -> Result<()> {
-    let (min, max) = (validator.min_length, validator.max_length);
-    if min.is_none() && max.is_none() {
-        return Err(illegal(format!(
-            "Invalid string length on {owner}, minLength and-or maxLength must be specified"
-        )));
-    }
-    if min.is_some_and(|value| value < 0.0) || max.is_some_and(|value| value < 0.0) {
-        return Err(illegal(format!(
-            "minLength and-or maxLength must be positive integers on {owner}"
-        )));
-    }
-    if let (Some(min), Some(max)) = (min, max)
-        && min > max
-    {
-        return Err(illegal(format!(
-            "minLength must be less than or equal to maxLength on {owner}"
-        )));
-    }
-    Ok(())
 }
