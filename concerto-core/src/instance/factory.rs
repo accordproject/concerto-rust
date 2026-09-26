@@ -174,6 +174,7 @@ fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<Strin
                 &element,
                 sp.validator.as_ref(),
                 sp.length_validator.as_ref(),
+                None,
             )?
         }
         (
@@ -203,7 +204,7 @@ fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<Strin
                 .as_ref()
                 .map(|v| serde_json::from_value(v.clone()).map_err(bad))
                 .transpose()?;
-            StringValidator::new(&element, Some(&regex), length.as_ref())?
+            StringValidator::new(&element, Some(&regex), length.as_ref(), None)?
         }
         _ => return Ok(None),
     };

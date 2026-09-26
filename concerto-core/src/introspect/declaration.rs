@@ -721,8 +721,21 @@ impl ClassDeclaration {
         // validator, so checking every property here (not just the AST's
         // own) is a no-op for them.
         let fqn = get_fully_qualified_name(namespace, &name);
-        for property in &properties {
-            property.check_bound_validators(&fqn)?;
+        // `raw_properties`, indexed the same way `parse_properties` walked
+        // `value.get("properties")` to build `properties`, is each
+        // property's own AST node — needed so a fuzzed `sizeValidator`/
+        // `lengthValidator` bound compares with JS's untyped `>`, not a
+        // value already coerced to `f64` (accordproject/concerto-rust#219,
+        // [`Property::check_bound_validators`]'s own doc comment). The two
+        // synthesized system fields pushed above sit past the end of this
+        // array, so they correctly get `None` (they never carry a
+        // validator, this comment's own paragraph above).
+        let raw_properties = value
+            .get("properties")
+            .and_then(serde_json::Value::as_array);
+        for (index, property) in properties.iter().enumerate() {
+            let raw = raw_properties.and_then(|properties| properties.get(index));
+            property.check_bound_validators(&fqn, raw)?;
         }
 
         Ok(Self {
@@ -1707,6 +1720,41 @@ mod tests {
         assert!(c.own_properties().is_empty());
     }
 
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): end to end
+    /// through the real `ClassDeclaration::from_json` parse path (not just
+    /// [`super::super::property::tests`]'s direct
+    /// `Property::check_bound_validators` unit tests), proving the raw
+    /// per-property AST this module now threads through
+    /// (`raw_properties`/`check_bound_validators`'s own `raw` parameter)
+    /// actually reaches the property that owns it. `sizeValidator.minSize:
+    /// "aaaa…"` and `maxSize: [1]` (the fuzz-triage minimised repro
+    /// `7b9fc1eca8208827732709eb`) both stringify under JS `ToPrimitive`
+    /// (`[1]` to `"1"`), so TS's raw `>` compares them as strings
+    /// (`"aaaa…" > "1"` is `true`) and rejects the model — a comparison
+    /// after coercing each bound to a number first (`NaN` for the
+    /// non-numeric string) would wrongly accept it instead.
+    #[test]
+    fn a_class_with_a_raw_string_compared_size_validator_mismatch_is_rejected() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "properties": [{
+                "$class": "concerto.metamodel@1.0.0.StringProperty",
+                "name": "tags", "isArray": true, "isOptional": false,
+                "sizeValidator": {
+                    "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                    "minSize": "aaaaaaaaaaaaaaaaaaaaa",
+                    "maxSize": [1]
+                }
+            }]
+        }))
+        .expect_err("TS rejects this model; the raw string comparison must too");
+        assert!(
+            err.to_string()
+                .contains("minSize must be less than or equal to maxSize")
+        );
+    }
+
     /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"):
     /// `identified.name` values that are falsy but not nullish — `0`,
     /// `false`, `""` — must load with no id field at all too, exactly like
@@ -2332,6 +2380,38 @@ mod tests {
         ));
         assert!(err.to_string().contains(
             "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named M"
+        ));
+    }
+
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c, 103-case residual
+    /// gap on the WASM-hybrid production path — this native engine's own
+    /// `type_node.get(key)` already gets the "present, even if null" rule
+    /// right, so this pins that it stays right): a *present*
+    /// `type.$class: null` is not a missing key (TS's `'$class' in
+    /// ast.type` is true), so it must fall through past the "must contain
+    /// property" check to the `$class !== 'TypeIdentifier'` one and raise
+    /// "type $class must be of TypeIdentifier" — not the wrong,
+    /// too-early "must contain property" message a `nullish`-style presence
+    /// check would give (the bug this issue's WASM binding had).
+    #[test]
+    fn an_object_map_value_type_with_a_present_null_class_reports_the_wrong_class_not_a_missing_property()
+     {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "M",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": {
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": { "$class": null, "name": "Foo" }
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            &err,
+            ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+        ));
+        assert!(err.to_string().contains(
+            "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named M"
         ));
     }
 

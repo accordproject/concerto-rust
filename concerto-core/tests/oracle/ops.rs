@@ -1533,6 +1533,7 @@ fn scalar_declaration_validator(
                 &elem,
                 regex.as_ref(),
                 length.as_ref(),
+                None,
             )
             .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
             Validator::String(built)
@@ -1582,11 +1583,10 @@ fn build_property_validator(
                     "state divergence: the validatorref's property has no size validator".into(),
                 )
             })?;
-            let built =
-                concerto_core::introspect::validators::CollectionSizeValidator::new(&elem, ast)
-                    .map_err(|e| {
-                        Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}"))
-                    })?;
+            let built = concerto_core::introspect::validators::CollectionSizeValidator::new(
+                &elem, ast, None,
+            )
+            .map_err(|e| Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}")))?;
             Validator::CollectionSize(built)
         }
         "validator" => match prop {
@@ -1595,6 +1595,7 @@ fn build_property_validator(
                     &elem,
                     p.validator.as_ref(),
                     p.length_validator.as_ref(),
+                    None,
                 )
                 .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
                 Validator::String(built)

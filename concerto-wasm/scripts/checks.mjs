@@ -610,6 +610,40 @@ export function runChecks(engine) {
     assert(ok === 'Foo', `well-formed type -> ${JSON.stringify(ok)}`);
   });
 
+  // accordproject/concerto-rust#219 (P5-05 stage-2 T2c, 103-case residual
+  // gap): the same "present, even if null" rule as the outer `type` key
+  // above (`!('type' in ast)`) applies to `!('$class' in ast.type) ||
+  // !('name' in ast.type)` too — a *present* `ast.type.$class: null` must
+  // NOT raise the "must contain property" `IllegalModelException`; it must
+  // fall through to the `$class !== 'TypeIdentifier'` check and raise
+  // "type $class must be of TypeIdentifier" instead. The fuzz-triage
+  // minimised repro `value.type.$class = null` on
+  // `gaps/ModelManager.fromAst/15c7357c92f6ae8ae942ab59.json`. Verified
+  // live against the TS reference (ts-node vs. the built `concerto-wasm`
+  // package, `CONCERTO_ENGINE=rust`).
+  check("mapValueTypeProcess treats a present, null type.$class/type.name as present, not missing", () => {
+    const parent = { name: 'M' };
+    const mockView = (type) => ({
+      ast: { $class: `${MM}.ObjectMapValueType`, type },
+      parent,
+    });
+
+    const nullClass = thrown(() => engine.mapValueTypeProcess(mockView({ $class: null, name: 'Foo' })));
+    assert(nullClass instanceof EngineError, `type.$class:null threw ${nullClass}`);
+    assert(nullClass.payload.kind === 'IllegalModel', `type.$class:null kind ${nullClass.payload.kind}`);
+    assert(
+      nullClass.message === "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named M",
+      `type.$class:null message ${nullClass.message}`,
+    );
+
+    // A present, null `name` passes both presence checks (the `$class` here
+    // IS `TypeIdentifier`) and simply stringifies, like TS's own
+    // `String(this.ast.type.name)` does for `null` -> `"null"` — it must
+    // not throw at all.
+    const nullName = engine.mapValueTypeProcess(mockView({ $class: `${MM}.TypeIdentifier`, name: null }));
+    assert(nullName === 'null', `type.name:null -> ${JSON.stringify(nullName)}`);
+  });
+
   // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS interpolates the
   // raw `this.ast.name` into a template literal in every one of
   // `MapDeclaration.process`'s own messages, which applies JS `ToString` —
@@ -672,6 +706,49 @@ export function runChecks(engine) {
     assert(notAnObject.minLength === null && notAnObject.maxLength === null, `lengthValidator:[10] -> ${JSON.stringify(notAnObject)}`);
 
     return { size, length, oneBoundOnly, regex, notAnObject };
+  });
+
+  // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's own
+  // `this.minSize > this.maxSize` (`this.minLength > this.maxLength`)
+  // compares the two bounds completely untouched — a fuzz-mutated bound
+  // that is itself a non-numeric string can turn this into a *string*
+  // comparison (both operands' `ToPrimitive` staying/becoming strings,
+  // `[1]` -> `"1"`), not the always-`NaN`, always-`false` comparison
+  // converting each side to a number first would give. These are the
+  // fuzz-triage minimised repros (`stage2/triage-clusters.json`)
+  // `7b9fc1eca8208827732709eb` and `15270a3d46ae76b3adf549eb`.
+  check('collectionSizeValidatorNew/stringValidatorNew compare a non-numeric bound with JS\'s untyped >, not a value already coerced to a number', () => {
+    const field = { getName: () => 'tags' };
+    const decl = { getFullyQualifiedName: () => 'ns.Field.tags' };
+    const view = { field, getFieldOrScalarDeclaration: () => decl };
+
+    // `minSize: "aaaa…"`, `maxSize: [1]`: `[1]`'s `ToPrimitive` is `"1"`, so
+    // both sides are strings and JS compares them lexicographically
+    // (`'a'` > `'1'`), rejecting the model — a plain numeric comparison
+    // (`ToNumber("aaaa…")` is `NaN`) would wrongly accept it instead.
+    const size = thrown(() => engine.collectionSizeValidatorNew(
+      view, { minSize: 'aaaaaaaaaaaaaaaaaaaaa', maxSize: [1] },
+    ));
+    assert(size instanceof EngineError, `size threw ${size}`);
+    assert(
+      size.message === 'Validator error for field `tags`. ns.Field.tags: minSize must be less than or equal to maxSize.',
+      `size message ${size.message}`,
+    );
+
+    // `minLength: "__proto__"`, `maxLength: [10]`: same shape, for
+    // `StringValidator`'s length bounds.
+    const length = thrown(() => engine.stringValidatorNew(
+      view, null, { minLength: '__proto__', maxLength: [10] },
+    ));
+    assert(length instanceof EngineError, `length threw ${length}`);
+    assert(
+      length.message === 'Validator error for field `tags`. ns.Field.tags: minLength must be less than or equal to maxLength.',
+      `length message ${length.message}`,
+    );
+
+    // Sanity: two real, in-order numeric bounds still construct fine.
+    const ok = engine.collectionSizeValidatorNew(view, { minSize: 1, maxSize: 10 });
+    assert(ok.minSize === 1 && ok.maxSize === 10, `well-formed bounds -> ${JSON.stringify(ok)}`);
   });
 
   // #218: two rust-mode view bindings, driven with minimal stand-in views.

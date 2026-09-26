@@ -170,7 +170,12 @@ impl ScalarDeclaration {
                 let validator = validators::regex_validator_from_ast(ast.get("validator"));
                 let length_validator =
                     validators::length_validator_from_ast(ast.get("lengthValidator"));
-                StringValidator::new(&element, validator.as_ref(), length_validator.as_ref())?;
+                StringValidator::new(
+                    &element,
+                    validator.as_ref(),
+                    length_validator.as_ref(),
+                    ast.get("lengthValidator"),
+                )?;
                 Some(ScalarValidator::String {
                     validator: ast.get("validator").cloned(),
                     length_validator: ast.get("lengthValidator").cloned(),

@@ -595,6 +595,7 @@ impl Property {
         fqn: &str,
         name: &str,
         validator: Option<&mm::CollectionSizeValidator>,
+        raw: Option<&Value>,
     ) -> Result<()> {
         let Some(v) = validator else { return Ok(()) };
         let element = BoundElement {
@@ -602,7 +603,7 @@ impl Property {
             name,
             default_value: None,
         };
-        validators::CollectionSizeValidator::new(&element, v)?;
+        validators::CollectionSizeValidator::new(&element, v, raw)?;
         Ok(())
     }
 
@@ -625,14 +626,29 @@ impl Property {
     /// non-array Integer/Long/Double/String, its own domain or
     /// length-and-regex validator — the same order as this method's own
     /// `match`.
-    pub fn check_bound_validators(&self, class_fqn: &str) -> Result<()> {
+    ///
+    /// `raw` is this property's own AST node, when the caller has it (only
+    /// [`super::declaration::ClassDeclaration::from_json`] does — it is what
+    /// lets [`validators::CollectionSizeValidator::new`]/
+    /// [`validators::StringValidator::new`] compare a fuzzed `sizeValidator`/
+    /// `lengthValidator`'s `minSize`/`maxSize`/`minLength`/`maxLength` with
+    /// JS's own untyped `>` instead of a value already coerced to `f64`
+    /// (accordproject/concerto-rust#219): `None` falls back to the `f64`
+    /// comparison, the same question for already-validated data.
+    pub fn check_bound_validators(&self, class_fqn: &str, raw: Option<&Value>) -> Result<()> {
         let name = self.name().to_string();
         // TS: `Validator.getFieldOrScalarDeclaration().getFullyQualifiedName()`
         // — a property's own, `<namespace>.<Class>.<property>` (property.ts
         // `getFullyQualifiedName`), not its owning class's.
         let fqn = format!("{class_fqn}.{name}");
         let fqn = fqn.as_str();
-        Self::check_size_validator(fqn, &name, self.size_validator())?;
+        let raw_field = |key: &str| raw.and_then(|r| r.get(key));
+        Self::check_size_validator(
+            fqn,
+            &name,
+            self.size_validator(),
+            raw_field("sizeValidator"),
+        )?;
         let element = |default_value: Option<Value>| BoundElement {
             fqn,
             name: &name,
@@ -645,6 +661,7 @@ impl Property {
                     &element(default_value),
                     p.validator.as_ref(),
                     p.length_validator.as_ref(),
+                    raw_field("lengthValidator"),
                 )?;
                 Ok(())
             }
@@ -1131,7 +1148,7 @@ mod tests {
         assert!(Property::try_from(&matching(r"^.+@.+\..+$")).is_ok());
         for pattern in ["*invalid", "[unclosed", "(unclosed"] {
             let p = Property::try_from(&matching(pattern)).expect("construction accepts it");
-            let err = p.check_bound_validators("test@1.0.0.Box");
+            let err = p.check_bound_validators("test@1.0.0.Box", None);
             assert!(
                 err.unwrap_err().to_string().contains("regular expression"),
                 "{pattern} should be rejected"
@@ -1143,7 +1160,7 @@ mod tests {
     fn range_lower_above_upper_is_rejected() {
         let p =
             Property::try_from(&ranged(Some(10.0), Some(5.0))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("Lower bound"));
     }
 
@@ -1157,7 +1174,7 @@ mod tests {
     #[test]
     fn range_without_either_bound_is_rejected() {
         let p = Property::try_from(&ranged(None, None)).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("lower and-or upper"));
     }
 
@@ -1219,15 +1236,66 @@ mod tests {
     #[test]
     fn negative_string_length_is_rejected() {
         let p = Property::try_from(&sized(Some(-1), Some(5))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
     #[test]
     fn string_length_min_above_max_is_rejected() {
         let p = Property::try_from(&sized(Some(10), Some(5))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("minLength"));
+    }
+
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): the fuzz-triage
+    /// minimised repro `15270a3d46ae76b3adf549eb` — a `lengthValidator` with
+    /// `minLength: "__proto__"` and `maxLength: [10]`. TS's own
+    /// `this.minLength > this.maxLength` compares these two *raw* AST values
+    /// with JS's untyped `>`: `ToPrimitive([10])` is the string `"10"`, and
+    /// since both sides are then strings, JS compares them lexicographically
+    /// (`"__proto__" > "10"` is `true`, `'_'`'s code point exceeding
+    /// `'1'`'s), so TS rejects the model. Coercing each bound to a number
+    /// first (`ToNumber("__proto__")` is `NaN`) makes the comparison always
+    /// false, so Rust used to wrongly accept this model — the raw AST
+    /// comparison this test pins fixes that.
+    #[test]
+    fn string_length_min_above_max_by_raw_string_comparison_is_rejected() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "text", "isArray": false, "isOptional": false,
+            "lengthValidator": {
+                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+                "minLength": "__proto__",
+                "maxLength": [10]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        let err = p
+            .check_bound_validators("test@1.0.0.Box", Some(&raw))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("minLength must be less than or equal to maxLength")
+        );
+    }
+
+    /// The same fixture, but checked with no raw AST (as every call site but
+    /// `ClassDeclaration::from_json` passes): without the raw comparison,
+    /// each bound coerces to `NaN` and the order check never fires — the
+    /// pre-existing, still-correct behaviour for already-validated data.
+    #[test]
+    fn string_length_min_above_max_by_raw_string_comparison_is_accepted_without_raw_ast() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "text", "isArray": false, "isOptional": false,
+            "lengthValidator": {
+                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+                "minLength": "__proto__",
+                "maxLength": [10]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        assert!(p.check_bound_validators("test@1.0.0.Box", None).is_ok());
     }
 
     #[test]
@@ -1276,7 +1344,7 @@ mod tests {
     fn size_validator_min_above_max_is_rejected() {
         let p = Property::try_from(&collection_sized(true, Some(10), Some(2)))
             .expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(
             err.unwrap_err()
                 .to_string()
@@ -1284,11 +1352,59 @@ mod tests {
         );
     }
 
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): the fuzz-triage
+    /// minimised repro `7b9fc1eca8208827732709eb` — a `sizeValidator` with
+    /// `minSize: "aaaa…"` and `maxSize: [1]`. As
+    /// [`string_length_min_above_max_by_raw_string_comparison_is_rejected`]'s
+    /// doc comment explains for `lengthValidator`: `ToPrimitive([1])` is the
+    /// string `"1"`, so TS's raw `this.minSize > this.maxSize` becomes a
+    /// string comparison (`"aaaa…" > "1"` is `true`), not the always-false
+    /// `NaN` comparison converting each side to a number first would give.
+    #[test]
+    fn size_validator_min_above_max_by_raw_string_comparison_is_rejected() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "tags", "isArray": true, "isOptional": false,
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": "aaaaaaaaaaaaaaaaaaaaa",
+                "maxSize": [1]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        let err = p
+            .check_bound_validators("test@1.0.0.Box", Some(&raw))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("minSize must be less than or equal to maxSize")
+        );
+    }
+
+    /// The same fixture, but checked with no raw AST (as every call site but
+    /// `ClassDeclaration::from_json` passes): without the raw comparison,
+    /// each bound coerces to `NaN` and the order check never fires — the
+    /// pre-existing, still-correct behaviour for already-validated data.
+    #[test]
+    fn size_validator_min_above_max_by_raw_string_comparison_is_accepted_without_raw_ast() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "tags", "isArray": true, "isOptional": false,
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": "aaaaaaaaaaaaaaaaaaaaa",
+                "maxSize": [1]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        assert!(p.check_bound_validators("test@1.0.0.Box", None).is_ok());
+    }
+
     #[test]
     fn size_validator_negative_bounds_rejected() {
         let p = Property::try_from(&collection_sized(true, Some(-1), Some(5)))
             .expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
@@ -1597,7 +1713,7 @@ mod tests {
             }
         }))
         .expect("try_from itself does not build the validator")
-        .check_bound_validators("ns.C")
+        .check_bound_validators("ns.C", None)
         .unwrap_err();
         assert!(err.to_string().contains("must be specified"));
     }

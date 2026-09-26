@@ -1009,10 +1009,22 @@ pub fn string_validator_new(
     run(|| {
         let regex_ast = string_regex_ast(&validator)?;
         let length_ast = string_length_ast(&length_validator)?;
+        // The raw `lengthValidator` AST itself, not just its typed
+        // `{minLength, maxLength}` snapshot (`length_ast` above): a
+        // fuzz-mutated `minLength`/`maxLength` needs JS's own untyped `>`
+        // comparison, not one against a value already coerced to `f64`
+        // (accordproject/concerto-rust#219). `nullish` mirrors
+        // `string_length_ast`'s own guard: no AST, no raw value to compare.
+        let raw_length_ast = if nullish(&length_validator) {
+            None
+        } else {
+            to_json(&length_validator)?
+        };
         let built = StringValidator::new(
             &JsElement { validator: &view },
             regex_ast.as_ref(),
             length_ast.as_ref(),
+            raw_length_ast.as_ref(),
         )?;
         Ok(to_js(&json!({
             "minLength": built.min_length(),
@@ -1049,6 +1061,11 @@ fn string_validator(view: &JsValue) -> Result<StringValidator> {
         &JsElement { validator: view },
         regex_ast.as_ref(),
         length_ast.as_ref(),
+        // No raw AST to re-compare here: this rebuilds the validator from a
+        // view whose construction already succeeded, so `minLength`/
+        // `maxLength` are already the real, in-order numbers a prior,
+        // successful `stringValidatorNew` call normalised.
+        None,
     )
 }
 
@@ -1109,7 +1126,16 @@ pub fn collection_size_validator_new(
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
         let typed = collection_size_ast(&ast)?;
-        let built = CollectionSizeValidator::new(&JsElement { validator: &view }, &typed)?;
+        // The raw `sizeValidator` AST itself, not just its typed `{minSize,
+        // maxSize}` snapshot (`typed` above): a fuzz-mutated `minSize`/
+        // `maxSize` needs JS's own untyped `>` comparison, not one against a
+        // value already coerced to `f64` (accordproject/concerto-rust#219).
+        let raw_ast = to_json(&ast)?;
+        let built = CollectionSizeValidator::new(
+            &JsElement { validator: &view },
+            &typed,
+            raw_ast.as_ref(),
+        )?;
         Ok(to_js(&json!({
             "minSize": built.min_size(),
             "maxSize": built.max_size(),
@@ -1120,7 +1146,11 @@ pub fn collection_size_validator_new(
 /// Rebuilds the validator from `view.validator`, the AST `super()` cached.
 fn collection_size_validator(view: &JsValue) -> Result<CollectionSizeValidator> {
     let ast = collection_size_ast(&get(view, "validator")?)?;
-    CollectionSizeValidator::new(&JsElement { validator: view }, &ast)
+    // No raw AST to re-compare here: this rebuilds the validator from a view
+    // whose construction already succeeded, so `minSize`/`maxSize` are
+    // already the real, in-order numbers a prior, successful
+    // `collectionSizeValidatorNew` call normalised.
+    CollectionSizeValidator::new(&JsElement { validator: view }, &ast, None)
 }
 
 /// TS: CollectionSizeValidator.validate. `value` is compared as JS `<`/`>`
@@ -2870,7 +2900,19 @@ pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsV
                 }
                 let type_class = get(&ast_type, "$class")?;
                 let type_name_field = get(&ast_type, "name")?;
-                if nullish(&type_class) || nullish(&type_name_field) {
+                // TS: `!('$class' in ast.type) || !('name' in ast.type)` —
+                // a key-presence check, not a nullish one
+                // (accordproject/concerto-rust#219 stage-2 T2c: this used
+                // `nullish`, which wrongly took the "malformed type" branch
+                // below for a present `type.$class: null`/`type.name: null`,
+                // when TS's `in` sees the key, skips this branch, and goes
+                // on to the `$class !== 'TypeIdentifier'` check instead —
+                // the same "missing key" vs "present but null" distinction
+                // this function's own `ast_type.is_undefined()` check above
+                // already gets right for the outer `type` key). `get`
+                // returns real `undefined` only for a key that is not there
+                // at all, exactly like the outer check.
+                if type_class.is_undefined() || type_name_field.is_undefined() {
                     return Err(ContractError::new(
                         ErrorKind::IllegalModel,
                         "mapvaluetype-process-malformedtype",

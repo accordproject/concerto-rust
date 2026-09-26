@@ -611,7 +611,7 @@ fn visit_field(
         && let Some(entries) = map_entries(value)
     {
         let elem = FieldElement::new(p.mm, owner_fqn, property);
-        CollectionSizeValidator::new(&elem, sv)?.validate(
+        CollectionSizeValidator::new(&elem, sv, None)?.validate(
             &elem,
             Some(p.root_resource_identifier.as_str()),
             entries.len() as f64,
@@ -636,7 +636,7 @@ fn check_enum(
         let items = value.as_array().expect("just checked is_array");
         if let Some(sv) = property.size_validator() {
             let elem = FieldElement::new(p.mm, owner_fqn, property);
-            CollectionSizeValidator::new(&elem, sv)?.validate(
+            CollectionSizeValidator::new(&elem, sv, None)?.validate(
                 &elem,
                 Some(p.root_resource_identifier.as_str()),
                 items.len() as f64,
@@ -665,7 +665,7 @@ fn check_array(
     let items = value.as_array().expect("just checked is_array");
     if let Some(sv) = property.size_validator() {
         let elem = FieldElement::new(p.mm, owner_fqn, property);
-        CollectionSizeValidator::new(&elem, sv)?.validate(
+        CollectionSizeValidator::new(&elem, sv, None)?.validate(
             &elem,
             Some(p.root_resource_identifier.as_str()),
             items.len() as f64,
@@ -718,8 +718,13 @@ fn check_primitive_item(
     match property {
         Property::String(sp) => {
             if sp.validator.is_some() || sp.length_validator.is_some() {
-                StringValidator::new(&elem, sp.validator.as_ref(), sp.length_validator.as_ref())?
-                    .validate(&elem, identifier.as_deref(), value.as_str())?;
+                StringValidator::new(
+                    &elem,
+                    sp.validator.as_ref(),
+                    sp.length_validator.as_ref(),
+                    None,
+                )?
+                .validate(&elem, identifier.as_deref(), value.as_str())?;
             }
         }
         Property::Integer(ip) => {
@@ -1052,11 +1057,8 @@ fn check_scalar_item(
                 .as_ref()
                 .map(|v| serde_json::from_value(v.clone()).map_err(bad))
                 .transpose()?;
-            StringValidator::new(&elem, validator.as_ref(), length_validator.as_ref())?.validate(
-                &elem,
-                identifier.as_deref(),
-                value.as_str(),
-            )?;
+            StringValidator::new(&elem, validator.as_ref(), length_validator.as_ref(), None)?
+                .validate(&elem, identifier.as_deref(), value.as_str())?;
         }
         None => {}
     }
@@ -1186,7 +1188,7 @@ fn visit_relationship(
         let items = value.as_array().expect("just checked is_array");
         if let Some(sv) = property.size_validator() {
             let elem = FieldElement::new(p.mm, owner_fqn, property);
-            CollectionSizeValidator::new(&elem, sv)?.validate(
+            CollectionSizeValidator::new(&elem, sv, None)?.validate(
                 &elem,
                 Some(p.root_resource_identifier.as_str()),
                 items.len() as f64,
@@ -2283,7 +2285,7 @@ fn collect_property(
         // `validate_property_value`.
         if let Some(sv) = property.size_validator() {
             let elem = FieldElement::new(c.mm, owner_fqn, property);
-            if let Ok(validator) = CollectionSizeValidator::new(&elem, sv)
+            if let Ok(validator) = CollectionSizeValidator::new(&elem, sv, None)
                 && let Err(e) = validator.validate(&elem, None, items.len() as f64)
             {
                 c.push_error(pointer.to_string(), e);
