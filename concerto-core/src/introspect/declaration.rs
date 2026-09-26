@@ -14,7 +14,7 @@ use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
+use crate::introspect::decorator::{Decorator, WithDecorators, null_decorator, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::{
@@ -436,7 +436,28 @@ impl ClassDeclaration {
     /// `Concept` super type and to recognise the system model's own
     /// `Transaction`/`Event` (below).
     fn from_json(kind: ClassKind, value: &serde_json::Value, namespace: &str) -> Result<Self> {
-        let mut fields = value.clone();
+        // The declaration's own fields, with `properties` replaced by an
+        // empty list: copied field by field so the property nodes (read
+        // separately below) are never cloned just to be thrown away (P5-06).
+        // Key order is kept exactly as a whole-node clone followed by an
+        // `insert` would leave it (`properties` in place, or appended).
+        let mut fields = match value.as_object() {
+            Some(object) => {
+                let mut copy = serde_json::Map::with_capacity(object.len() + 1);
+                for (key, field) in object {
+                    if key == "properties" {
+                        copy.insert(key.clone(), serde_json::Value::Array(Vec::new()));
+                    } else {
+                        copy.insert(key.clone(), field.clone());
+                    }
+                }
+                if !object.contains_key("properties") {
+                    copy.insert("properties".into(), serde_json::Value::Array(Vec::new()));
+                }
+                serde_json::Value::Object(copy)
+            }
+            None => value.clone(),
+        };
         // TS reads `this.ast.superType.name`/`this.ast.identified.name` as
         // plain field accesses, never guarded against a bad shape, so a
         // fuzzed `name: null` or an altogether missing `name` key never
@@ -734,23 +755,25 @@ fn load_scalar(
         file_name: None,
         location: None,
     };
-    let v = value.clone();
+    let v = value;
     let node = match short {
         "BooleanScalar" => {
-            mm::ScalarDeclaration::BooleanScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::BooleanScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "IntegerScalar" => {
-            mm::ScalarDeclaration::IntegerScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::IntegerScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
-        "LongScalar" => mm::ScalarDeclaration::LongScalar(serde_json::from_value(v).map_err(bad)?),
+        "LongScalar" => {
+            mm::ScalarDeclaration::LongScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
+        }
         "DoubleScalar" => {
-            mm::ScalarDeclaration::DoubleScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::DoubleScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "StringScalar" => {
-            mm::ScalarDeclaration::StringScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::StringScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "DateTimeScalar" => {
-            mm::ScalarDeclaration::DateTimeScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::DateTimeScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         other => {
             return Err(ConcertoError::IllegalModel {
@@ -836,12 +859,27 @@ impl crate::introspect::Decorated for EnumDeclaration {
 
 impl EnumDeclaration {
     fn from_json(value: &serde_json::Value) -> Result<Self> {
+        // DV-018: TS builds each enum value (`Decorated.process` first) in
+        // `ClassDeclaration.process`, so a `null` decorator node on a value is
+        // an `IllegalModelException`, not the serde message the whole-node
+        // deserialization below would give. When one is present, the values
+        // are built first, which reports it, or an earlier value's own error,
+        // in TS's order.
+        if value
+            .get("properties")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| values.iter().any(|v| null_decorator(v).is_some()))
+        {
+            parse_properties(value)?;
+        }
         Ok(Self {
             inner: WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                    message: format!("invalid EnumDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
+                serde::Deserialize::deserialize(value).map_err(|e: serde_json::Error| {
+                    ConcertoError::IllegalModel {
+                        message: format!("invalid EnumDeclaration: {e}"),
+                        file_name: None,
+                        location: None,
+                    }
                 })?,
                 parse_decorators(value),
             ),
@@ -1110,14 +1148,14 @@ impl MapDeclaration {
         matches!(self.variant, MapVariant::Typed(_))
     }
 
-    fn from_json(value: &serde_json::Value) -> Result<Self> {
+    fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid MapDeclaration: {e}"),
             file_name: None,
             location: None,
         };
         let name: String = match value.get("name") {
-            Some(name) => serde_json::from_value(name.clone()).map_err(bad)?,
+            Some(name) => serde::Deserialize::deserialize(name).map_err(bad)?,
             None => return Err(bad(serde_json::Error::missing_field("name"))),
         };
 
@@ -1159,6 +1197,19 @@ impl MapDeclaration {
             return Err(illegal_model(format!(
                 "MapDeclaration must contain valid MapValueType, for MapDeclaration {name}"
             )));
+        }
+
+        // TS then builds `new MapKeyType(this, this.ast.key)` and `new
+        // MapValueType(this, this.ast.value)`, each of whose `process` starts
+        // with `super.process()` (`Decorated.process`): a `null` decorator
+        // node on the key, then on the value (DV-018, `null_decorator`), is
+        // reported ahead of the value type's own checks below, naming the
+        // model file.
+        for node in [key_node.unwrap(), value_node.unwrap()] {
+            if let Some(mut err) = null_decorator(node) {
+                err.model_file = Some(file_name.map(str::to_string));
+                return Err(err.into());
+            }
         }
 
         // TS `MapValueType.processType` (src/introspect/mapvaluetype.ts): an
@@ -1245,15 +1296,14 @@ fn typed_map(
 /// Removes a `decorators` or `location` entry that does not deserialize into
 /// its generated type.
 fn drop_unreadable_annotations(node: &mut serde_json::Map<String, serde_json::Value>) {
-    if node
-        .get("decorators")
-        .is_some_and(|d| serde_json::from_value::<Option<Vec<mm::Decorator>>>(d.clone()).is_err())
-    {
+    if node.get("decorators").is_some_and(|d| {
+        <Option<Vec<mm::Decorator>> as serde::Deserialize>::deserialize(d).is_err()
+    }) {
         node.remove("decorators");
     }
     if node
         .get("location")
-        .is_some_and(|l| serde_json::from_value::<Option<mm::Range>>(l.clone()).is_err())
+        .is_some_and(|l| <Option<mm::Range> as serde::Deserialize>::deserialize(l).is_err())
     {
         node.remove("location");
     }
@@ -1427,6 +1477,13 @@ impl Declaration {
         // declaration kind's own `super.process()` before anything
         // kind-specific — so an invalid name is reported ahead of, say, a
         // system property name among a class's fields (P2-08 review).
+        // `Declaration.process` itself starts with `super.process()`
+        // (`Decorated.process`), so a `null` decorator node (DV-018,
+        // `null_decorator`) is reported ahead of the name.
+        if let Some(mut err) = null_decorator(value) {
+            err.model_file = Some(file_name.map(str::to_string));
+            return Err(err.into());
+        }
         check_declaration_name(value, file_name)?;
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
@@ -1440,7 +1497,7 @@ impl Declaration {
             "EnumDeclaration" => Self::Enum(
                 EnumDeclaration::from_json(value).map_err(|e| with_model_file(e, file_name))?,
             ),
-            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
+            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value, file_name)?),
             scalar => Self::Scalar(load_scalar(scalar, value, namespace, file_name)?),
         };
         Ok(declaration)

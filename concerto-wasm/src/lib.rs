@@ -64,7 +64,7 @@ use concerto_core::instance::{
 use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{
-    Decorator, DecoratorArgument, DecoratorValidationOptions,
+    self, Decorator, DecoratorArgument, DecoratorValidationOptions,
 };
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
@@ -1141,6 +1141,183 @@ pub fn collection_size_validator_compatible_with(
 // Property (src/introspect/property.ts) — P4-07
 // ---------------------------------------------------------------------------
 
+/// The snapshot [`property_process`] returns for a processed property.
+fn property_snapshot(processed: &property::ProcessedProperty) -> Value {
+    let mut snapshot = serde_json::Map::new();
+    snapshot.insert("name".to_string(), json!(processed.name));
+    if processed.type_set {
+        snapshot.insert("type".to_string(), json!(processed.property_type));
+    }
+    snapshot.insert("array".to_string(), json!(processed.array));
+    snapshot.insert("optional".to_string(), json!(processed.optional));
+    Value::Object(snapshot)
+}
+
+/// The snapshot [`field_process`] returns for a processed field.
+fn field_snapshot(processed: &field::ProcessedField) -> Value {
+    let validator = match &processed.validator {
+        None => Value::Null,
+        Some(ScalarValidator::Number(v)) => {
+            let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
+            if let Value::Object(map) = &mut snapshot {
+                map.insert("kind".to_string(), json!("NumberValidator"));
+            }
+            snapshot
+        }
+        Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
+    };
+    json!({
+        "validator": validator,
+        "defaultValue": processed.default_value,
+    })
+}
+
+/// P5-06: the [`property_process`] and [`field_process`] snapshots of every
+/// property of every declaration of a model file, computed in one call from
+/// the model's JSON AST text (`JSON.stringify(ast)`), so that a `ModelFile`
+/// view built in rust mode crosses the boundary once for all of its
+/// properties instead of twice per property. Returns JSON text: an array
+/// aligned with `ast.declarations`, holding, for a declaration with a
+/// `properties` array, an array aligned with it of `{p, f}` entries (`p`
+/// the `propertyProcess` snapshot, `f` the `fieldProcess` one for a
+/// property whose `type` is what `p` sets) and otherwise `null`.
+///
+/// Never throws: any property whose own binding would throw (or that is not
+/// a JSON object) gets `null` instead of an entry, as does a field whose
+/// `fieldProcess` would, and `undefined` comes back for text that is not a
+/// model AST, so the view falls back to the per-property bindings, which
+/// raise every error exactly as before. A property whose `p` entry leaves
+/// `type` unset (TS never assigns it) gets the `f` its fresh view would:
+/// computed with no type.
+#[wasm_bindgen(js_name = modelFilePropertySnapshots)]
+pub fn model_file_property_snapshots(ast: &str) -> Option<String> {
+    // Only the fields `property::process`/`field::process` read are parsed;
+    // anything this light shape cannot read (a declaration or property that
+    // is not an object, a `properties` that is not an array, a duplicate
+    // key) fails the whole batch, and the view falls back to the
+    // per-property bindings for every property.
+    let model: LightModel = serde_json::from_str(ast).ok()?;
+    let declarations = model.declarations?;
+    // Written out directly rather than built as a `Value` first: the
+    // entries are small and many, and building them was most of the cost.
+    let mut out = String::with_capacity(ast.len() / 4);
+    out.push('[');
+    for (i, declaration) in declarations.into_iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match declaration.properties {
+            None => out.push_str("null"),
+            Some(properties) => {
+                out.push('[');
+                for (j, property) in properties.into_iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    write_property_entry(&mut out, &property.into_value())?;
+                }
+                out.push(']');
+            }
+        }
+    }
+    out.push(']');
+    Some(out)
+}
+
+/// A model AST, as far as [`model_file_property_snapshots`] reads it.
+#[derive(serde::Deserialize)]
+struct LightModel {
+    declarations: Option<Vec<LightDeclaration>>,
+}
+
+/// A declaration, as far as [`model_file_property_snapshots`] reads it.
+#[derive(serde::Deserialize)]
+struct LightDeclaration {
+    properties: Option<Vec<LightProperty>>,
+}
+
+/// A property node, keeping only the keys `property::process` and
+/// `field::process` read. A `null` value reads as absent, which both treat
+/// the same way (`as_str`/`as_bool`/truthiness/`!Util.isNull`).
+#[derive(serde::Deserialize)]
+#[allow(non_snake_case)]
+struct LightProperty {
+    #[serde(rename = "$class")]
+    class: Option<Value>,
+    name: Option<Value>,
+    #[serde(rename = "type")]
+    type_: Option<Value>,
+    isArray: Option<Value>,
+    isOptional: Option<Value>,
+    validator: Option<Value>,
+    lengthValidator: Option<Value>,
+    defaultValue: Option<Value>,
+}
+
+impl LightProperty {
+    /// The property as the JSON object the per-property bindings would
+    /// have read those keys from.
+    fn into_value(self) -> Value {
+        let mut map = serde_json::Map::new();
+        for (key, value) in [
+            ("$class", self.class),
+            ("name", self.name),
+            ("type", self.type_),
+            ("isArray", self.isArray),
+            ("isOptional", self.isOptional),
+            ("validator", self.validator),
+            ("lengthValidator", self.lengthValidator),
+            ("defaultValue", self.defaultValue),
+        ] {
+            if let Some(value) = value {
+                map.insert(key.to_string(), value);
+            }
+        }
+        Value::Object(map)
+    }
+}
+
+/// Appends one `{p, f}` entry of [`model_file_property_snapshots`] (or
+/// `null`) to `out` as JSON text: the same JSON `property_snapshot` and
+/// `field_snapshot` serialise to.
+fn write_property_entry(out: &mut String, ast: &Value) -> Option<()> {
+    let Ok(processed) = property::process::<Error>(ast) else {
+        out.push_str("null");
+        return Some(());
+    };
+    out.push_str("{\"p\":{\"name\":");
+    out.push_str(&serde_json::to_string(&processed.name).ok()?);
+    if processed.type_set {
+        out.push_str(",\"type\":");
+        out.push_str(&serde_json::to_string(&processed.property_type).ok()?);
+    }
+    out.push_str(if processed.array {
+        ",\"array\":true"
+    } else {
+        ",\"array\":false"
+    });
+    out.push_str(if processed.optional {
+        ",\"optional\":true}"
+    } else {
+        ",\"optional\":false}"
+    });
+    let property_type = if processed.type_set {
+        processed.property_type.as_deref()
+    } else {
+        None
+    };
+    // A field error names the view's fully-qualified name, which only the
+    // view knows: never produced here (the entry falls back instead).
+    let no_fqn = || -> Result<String> { Err(Error::Js(JsValue::UNDEFINED)) };
+    out.push_str(",\"f\":");
+    match field::process(property_type, ast, &no_fqn) {
+        Ok(field) => out.push_str(&serde_json::to_string(&field_snapshot(&field)).ok()?),
+        Err(_) => out.push_str("null"),
+    }
+    out.push('}');
+    Some(())
+}
+
 /// TS: Property.process, after `super.process()`. Returns the snapshot
 /// `{name, type, array, optional}`; `type` is omitted (not merely `null`)
 /// when the AST `$class` is `EnumProperty`, since that is the one case where
@@ -1154,14 +1331,7 @@ pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> 
     let body = || -> Result<JsValue> {
         let ast = to_json(&get(&view, "ast")?)?.unwrap_or(Value::Null);
         let processed = property::process::<Error>(&ast)?;
-        let mut snapshot = serde_json::Map::new();
-        snapshot.insert("name".to_string(), json!(processed.name));
-        if processed.type_set {
-            snapshot.insert("type".to_string(), json!(processed.property_type));
-        }
-        snapshot.insert("array".to_string(), json!(processed.array));
-        snapshot.insert("optional".to_string(), json!(processed.optional));
-        Ok(to_js(&Value::Object(snapshot)))
+        Ok(to_js(&property_snapshot(&processed)))
     };
     body().map_err(|e| {
         let model_file =
@@ -1282,21 +1452,7 @@ pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
             )?)
         };
         let processed = field::process(property_type.as_deref(), &ast, &fqn)?;
-        let validator = match &processed.validator {
-            None => Value::Null,
-            Some(ScalarValidator::Number(v)) => {
-                let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
-                if let Value::Object(map) = &mut snapshot {
-                    map.insert("kind".to_string(), json!("NumberValidator"));
-                }
-                snapshot
-            }
-            Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
-        };
-        Ok(to_js(&json!({
-            "validator": validator,
-            "defaultValue": processed.default_value,
-        })))
+        Ok(to_js(&field_snapshot(&processed)))
     };
     body().map_err(|e| {
         let model_file =
@@ -2179,8 +2335,11 @@ pub fn class_declaration_get_property(
         if !nullish(&own) {
             return Ok(own);
         }
+        // TS tests `this.superType !== null` (classdeclaration.ts), not
+        // truthiness: an empty-string or `undefined` super type still goes
+        // on to be resolved (#218).
         let super_type = get(&declaration, "superType")?;
-        if !super_type.is_truthy() {
+        if super_type.is_null() {
             return Ok(JsValue::NULL);
         }
         let class_decl = resolve_named_type(&declaration, &super_type)?;
@@ -2208,8 +2367,12 @@ pub fn class_declaration_get_properties(
         for property in Array::from(&own).iter() {
             result.push(&property);
         }
+        // TS tests `this.superType !== null` (classdeclaration.ts), not
+        // truthiness: an empty-string or `undefined` super type still goes
+        // on to be resolved, fails to, and throws "Could not find super
+        // type" (#218).
         let super_type = get(&declaration, "superType")?;
-        if !super_type.is_truthy() {
+        if super_type.is_null() {
             return Ok(result);
         }
         let class_decl = resolve_named_type(&declaration, &super_type)?;
@@ -2693,8 +2856,36 @@ pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue
 /// TS: Decorator.process. Builds `{name, arguments}` from the raw AST node,
 /// through the P2-07 port ([`Decorator::from_ast`]); needs no collaborator
 /// call.
+///
+/// DV-018 (maintainer-accepted, accordproject/concerto-rust#218): a `null`
+/// or `undefined` node, where TS's `this.ast.name` (decorator.ts:139) throws
+/// a `TypeError`, is an `IllegalModelException` instead
+/// ([`decorator::not_an_object`], the error native Rust raises for the same
+/// node). `view` is the `Decorator` being processed, optional so that an
+/// older caller passing the AST alone still works: when given, its
+/// `getParent().getModelFile()` is the model file the exception names, as
+/// TS's `Decorator.handleError` passes it.
 #[wasm_bindgen(js_name = decoratorProcess)]
-pub fn decorator_process(ast: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn decorator_process(ast: JsValue, view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    if ast.is_null() || ast.is_undefined() {
+        let mut err = decorator::not_an_object(if ast.is_null() { "null" } else { "undefined" });
+        err.model_file = Some(None);
+        let model_file = if view.is_undefined() || view.is_null() {
+            None
+        } else {
+            call(&view, "getParent", &[], "this.getParent")
+                .and_then(|parent| {
+                    call(
+                        &parent,
+                        "getModelFile",
+                        &[],
+                        "this.getParent().getModelFile",
+                    )
+                })
+                .ok()
+        };
+        return Err(throw(err.into(), model_file.as_ref()));
+    }
     run(|| {
         let ast_json = to_json(&ast)?.unwrap_or(Value::Null);
         let decorator = Decorator::from_ast(&ast_json);
@@ -3490,6 +3681,13 @@ impl InstanceEnv for JsInstanceEnv {
 #[wasm_bindgen]
 pub struct ModelManagerHandle {
     manager: ModelManager,
+    /// Bumped by every `&mut self` binding (and by [`Self::model_file_filter`]
+    /// on its `target`), so a view can cache what it read from this handle
+    /// for as long as the epoch is unchanged ([`Self::epoch`], P5-06). Unlike
+    /// [`ModelManager::generation`], it never goes back: `updateModelFile`/
+    /// `deleteModelFile` replace the whole manager, restarting its
+    /// generation count.
+    epoch: u64,
 }
 
 #[wasm_bindgen]
@@ -3500,6 +3698,7 @@ impl ModelManagerHandle {
         run(|| {
             Ok(Self {
                 manager: ModelManager::new()?,
+                epoch: 0,
             })
         })
     }
@@ -3515,6 +3714,7 @@ impl ModelManagerHandle {
     /// caller meant to allow.
     #[wasm_bindgen(js_name = setDangerouslyAllowReservedSystemTypeNamesInUserModels)]
     pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.epoch += 1;
         self.manager
             .set_dangerously_allow_reserved_system_type_names_in_user_models(allow);
     }
@@ -3528,6 +3728,7 @@ impl ModelManagerHandle {
         ast: &str,
         file_name: Option<String>,
     ) -> std::result::Result<u32, JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -3566,6 +3767,7 @@ impl ModelManagerHandle {
     /// Sets the constructor's `options.metamodelValidation` (P4-08b).
     #[wasm_bindgen(js_name = setMetamodelValidation)]
     pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+        self.epoch += 1;
         self.manager.set_metamodel_validation(metamodel_validation);
     }
 
@@ -3587,6 +3789,7 @@ impl ModelManagerHandle {
         &mut self,
         options: &JsValue,
     ) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
         run(|| {
             let missing_decorator = level_option(options, "missingDecorator")?;
             let invalid_decorator = level_option(options, "invalidDecorator")?;
@@ -3611,12 +3814,24 @@ impl ModelManagerHandle {
         ast: &str,
         file_name: Option<String>,
     ) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let model_file = ModelFile::from_json(&value, file_name)?;
+            let model_file = ModelFile::from_owned_json_with_definitions(value, None, file_name)?;
             Ok(self.manager.validate_ast(&model_file)?)
         })
+    }
+
+    /// The handle's own mutation counter (P5-06): bumped by every binding
+    /// that can change this handle, and never reset, so anything a view
+    /// read from the handle is still current while the epoch is unchanged.
+    /// Additive; a JS number (exact up to 2^53).
+    pub fn epoch(&self) -> f64 {
+        // Precision loss only past 2^53 mutations.
+        #[allow(clippy::cast_precision_loss)]
+        let epoch = self.epoch as f64;
+        epoch
     }
 
     /// The mutation counter: a snapshot taken at one generation is current
@@ -3850,6 +4065,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
         validate: bool,
     ) -> std::result::Result<u32, JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -3867,7 +4083,7 @@ impl ModelManagerHandle {
                 self.manager.validate_detached_model_file(&candidate)?;
             }
             self.manager
-                .add_model_with_definitions(&value, definitions, file_name)?;
+                .add_owned_model_with_definitions(value, definitions, file_name)?;
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
@@ -3931,6 +4147,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
         validate: bool,
     ) -> std::result::Result<u32, JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -3956,6 +4173,7 @@ impl ModelManagerHandle {
     /// Mirrors TS `BaseModelManager.deleteModelFile(namespace)` (P4-08).
     #[wasm_bindgen(js_name = deleteModelFile)]
     pub fn delete_model_file(&mut self, namespace: &str) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
         run(|| {
             self.manager = self.manager.delete_model_file(namespace)?;
             Ok(())
@@ -4084,7 +4302,7 @@ impl ModelManagerHandle {
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let file = ModelFile::from_json_with_definitions(&value, definitions, file_name)?;
+            let file = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
             Ok(self.manager.validate_detached_model_file(&file)?)
         })
     }
@@ -4118,6 +4336,7 @@ impl ModelManagerHandle {
         predicate: Function,
         target: &mut ModelManagerHandle,
     ) -> std::result::Result<Option<u32>, JsValue> {
+        target.epoch += 1;
         run(|| {
             let file = self.require_file(model_file)?;
             // `ModelFile::filter`'s predicate carries no namespace of its
