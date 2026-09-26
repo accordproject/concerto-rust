@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::Named;
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
-use crate::introspect::decorator::{Decorated, Decorator, parse_decorators};
+use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
 use crate::introspect::import::Import;
 use crate::model_util::{
     self, get_fully_qualified_name, get_short_name, is_primitive_type, is_valid_identifier,
@@ -73,6 +73,41 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
+        let mut model_file = Self::load(value, definitions, file_name)?;
+        model_file.ast = value.clone();
+        Ok(model_file)
+    }
+
+    /// [`ModelFile::from_json_with_definitions`], taking ownership of the
+    /// AST so it is kept without being copied (P5-06: a caller that has just
+    /// parsed the AST from JSON text, such as the WASM binding, has no other
+    /// use for it). Same result, same errors, in the same order.
+    pub fn from_owned_json_with_definitions(
+        value: serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<Self> {
+        let mut model_file = Self::load(&value, definitions, file_name)?;
+        model_file.ast = value;
+        Ok(model_file)
+    }
+
+    /// The body of [`ModelFile::from_json_with_definitions`], leaving
+    /// [`ModelFile::ast`] `Null` for the caller to fill in.
+    fn load(
+        value: &serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<Self> {
+        // TS: the constructor's `this.process()` (`Decorated.process`, the
+        // model file's own decorators) runs before `fromAst`. DV-018: a
+        // `null` decorator node is an `IllegalModelException` naming this
+        // file, where TS crashes (`null_decorator`).
+        if let Some(mut err) = null_decorator(value) {
+            err.model_file = Some(file_name.clone());
+            return Err(err.into());
+        }
+
         let namespace = value
             .get("namespace")
             .and_then(|v| v.as_str())
@@ -190,7 +225,7 @@ impl ModelFile {
             local_types,
             file_name,
             decorators: parse_decorators(value),
-            ast: value.clone(),
+            ast: serde_json::Value::Null,
             concerto_version,
             definitions,
             external,

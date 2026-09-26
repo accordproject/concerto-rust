@@ -486,6 +486,20 @@ pub fn is_scalar<C: ResolutionContext>(
 /// assert!(!is_valid_identifier("1st"));
 /// ```
 pub fn is_valid_identifier(name: &str) -> bool {
+    // P5-06 fast path: a non-empty ASCII `[A-Za-z$_][A-Za-z0-9$_]*` name is
+    // always a match (ASCII letters are `\p{Lu}`/`\p{Ll}`, ASCII digits
+    // `\p{Nd}`, and `$`/`_` are listed), so only names outside that subset
+    // pay for the regex. The subset only ever answers `true`, so the regex
+    // alone still decides every rejection.
+    let bytes = name.as_bytes();
+    if let Some((first, rest)) = bytes.split_first()
+        && (first.is_ascii_alphabetic() || *first == b'$' || *first == b'_')
+        && rest
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'$' || *b == b'_')
+    {
+        return true;
+    }
     ID_REGEX.find(name).is_some()
 }
 
@@ -658,6 +672,32 @@ mod tests {
     #[test]
     fn id_regex_compiles() {
         assert!(regress::Regex::with_flags(ID_PATTERN, "u").is_ok());
+    }
+
+    #[test]
+    fn is_valid_identifier_fast_path_agrees_with_the_regex() {
+        // P5-06: every answer the ASCII fast path gives is the regex's own.
+        let alphabet: Vec<char> = (0x20u8..0x7f).map(char::from).collect();
+        let mut names = vec![String::new()];
+        for first in &alphabet {
+            names.push(first.to_string());
+            for second in ['a', 'Z', '0', '9', '$', '_', '-', ' ', '.', '\\', '\u{e9}'] {
+                names.push(format!("{first}{second}"));
+                names.push(format!("{first}{second}x"));
+            }
+        }
+        names.extend([
+            r"\u0041bc".to_string(),
+            "a\u{0663}".to_string(),
+            "\u{e9}t\u{e9}".to_string(),
+        ]);
+        for name in names {
+            assert_eq!(
+                is_valid_identifier(&name),
+                ID_REGEX.find(&name).is_some(),
+                "{name:?}"
+            );
+        }
     }
 
     #[test]

@@ -36,6 +36,9 @@ js-sys = "0.3"
 # serde_json` (P4-10): the fast path parses every JS number the view
 # `JSON.stringify`s, and must get back the exact same double.
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
+# P5-06: `modelFilePropertySnapshots` reads only the property fields it needs
+# out of a model AST, skipping the rest unparsed (`IgnoredAny`).
+serde = { version = "1.0", features = ["derive"] }
 
 [lints.clippy]
 # A panic on the boundary path poisons the object it happened in (spike
@@ -45,8 +48,11 @@ expect_used = "deny"
 indexing_slicing = "deny"
 panic = "deny"
 
+# P5-06 (accordproject/concerto-rust#220): optimised for speed, not size
+# (`opt-level = "z"` before); build.sh's `wasm-opt` likewise runs `-O3`. The
+# module stays well inside build.sh's size budget.
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"

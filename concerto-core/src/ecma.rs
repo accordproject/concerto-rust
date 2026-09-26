@@ -74,6 +74,18 @@ impl Primitive {
     }
 }
 
+/// ECMAScript `ToNumber` of a JSON value: a number as itself, `null` as `0`,
+/// a boolean as `1`/`0`, a string through [`string_to_number`], and an array
+/// or object through `ToPrimitive`'s `ToString` text (JSON has no `valueOf`
+/// override) then [`string_to_number`] of that — the same primitive
+/// [`less_than`]/[`greater_than`] already build, exposed directly for a
+/// caller that needs the number itself rather than a comparison (e.g. a
+/// fuzz-mutated model AST's numeric validator bound, read with no type check
+/// at all by the TS reference: DV-002/accordproject/concerto-rust#217).
+pub(crate) fn to_number(value: &Value) -> f64 {
+    Primitive::of(value).to_number()
+}
+
 /// ECMAScript `a < b` (IsLessThan, left first). Two strings compare by UTF-16
 /// code units; otherwise both sides go through `ToNumber`, and a `NaN` on
 /// either side makes the comparison false.
@@ -270,6 +282,18 @@ mod tests {
         assert_eq!(to_js_string(&json!(5)), "5");
         assert_eq!(to_js_string(&json!([1, null, "a"])), "1,,a");
         assert_eq!(to_js_string(&json!({"a": 1})), "[object Object]");
+    }
+
+    #[test]
+    fn to_number_follows_js() {
+        assert_eq!(to_number(&json!(null)), 0.0);
+        assert_eq!(to_number(&json!(true)), 1.0);
+        assert_eq!(to_number(&json!(false)), 0.0);
+        assert_eq!(to_number(&json!("42")), 42.0);
+        assert!(to_number(&json!("abc")).is_nan());
+        assert_eq!(to_number(&json!([10])), 10.0);
+        assert_eq!(to_number(&json!([])), 0.0);
+        assert!(to_number(&json!({"a": 1})).is_nan());
     }
 
     #[test]

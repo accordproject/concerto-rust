@@ -598,9 +598,13 @@ fn check_unique_decorators(
 ) -> Result<()> {
     let mut seen = HashSet::new();
     for decorator in element.get_decorators() {
-        if !seen.insert(decorator.name()) {
+        // TS keys its `Set` on `getName()` and interpolates it into the
+        // message as is, so a decorator with no `name` at all is its own
+        // entry and reads `undefined` (accordproject/concerto-rust#218).
+        let name = decorator.js_name();
+        if !seen.insert(name) {
             return Err(failed(
-                format!("Duplicate decorator {}", decorator.name()),
+                format!("Duplicate decorator {}", name.unwrap_or("undefined")),
                 location,
             ));
         }
@@ -1483,6 +1487,101 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("super type"));
     }
 
+    /// accordproject/concerto-rust#217 review finding 1, on the validating
+    /// `addModelFile` path (`ModelManager::add_model`, not just the pure
+    /// `process_decision`/`classDeclarationProcess` fuzz path in
+    /// `introspect::declaration`'s own tests): an explicit `name: null`
+    /// still loads and validates cleanly, exactly like having no `superType`
+    /// node — TS's `this.superType` ends up `null` here, which every
+    /// `!== null` guard reads as "nothing to resolve".
+    #[test]
+    fn super_type_with_an_explicit_null_name_has_no_super_type_and_validates() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Employee",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": null }
+        }))]));
+        assert!(err.is_ok());
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2, on the same
+    /// validating `addModelFile` path: a `superType` node with no `name` key
+    /// at all must still fail — TS's `this.superType` ends up `undefined`
+    /// here, not `null`, so it is NOT read as "nothing to resolve"; it is a
+    /// real, if unresolvable, super type name, and TS's own string
+    /// concatenation turns it into the literal text `"undefined"` in the
+    /// error it raises. This must load and fail with that same message
+    /// (`Could not find super type undefined`), not a raw decode error like
+    /// `missing field \`name\`` — an earlier version of this fix's `from_json`
+    /// pre-processing produced that generic error instead of a proper
+    /// `IllegalModelException`, and never got as far as `super_type_that_is_missing_fails`'s
+    /// ordinary "unresolvable super type" path above.
+    #[test]
+    fn super_type_with_no_name_key_fails_with_could_not_find_super_type_undefined() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Employee",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" }
+        }))]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Could not find super type undefined"
+        );
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2, second half (the
+    /// "only half fixed" half), on the same validating `addModelFile` path:
+    /// a `superType.name` that is falsy but not `null` — `0` or `false` — is
+    /// a different shape from an explicit `null`
+    /// ([`super_type_with_an_explicit_null_name_has_no_super_type_and_validates`]):
+    /// it must still fail to resolve, exactly like the missing-name-key case
+    /// above, with the falsy value's own `ToString` text in the message. An
+    /// earlier version of this fix folded `0`/`false` into "no super type",
+    /// which let a model TS itself rejects (`Could not find super type
+    /// 0`/`Could not find super type false`, raised from
+    /// `ClassDeclaration.getProperties`, which guards only on
+    /// `this.superType !== null`) load and validate with no error at all.
+    #[test]
+    fn super_type_with_a_falsy_non_nullish_name_fails_with_could_not_find_super_type() {
+        for (name, expected) in [
+            (serde_json::json!(0), "Could not find super type 0"),
+            (serde_json::json!(false), "Could not find super type false"),
+        ] {
+            let err = validate(serde_json::json!([concept(serde_json::json!({
+                "name": "Employee",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name }
+            }))]));
+            assert_eq!(
+                err.unwrap_err().to_string(),
+                expected,
+                "superType.name {name:?}"
+            );
+        }
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"),
+    /// on the same validating `addModelFile` path: `identified.name` values
+    /// that are falsy but not nullish — `0`, `false`, `""` — must validate
+    /// cleanly too, exactly like an explicit `null`. TS's `this.idField` is
+    /// read everywhere downstream (including the "does not contain this
+    /// property" check `check_identifier` ports) with a plain truthiness
+    /// test, so none of these three ever becomes a property name to look
+    /// up — before this fix, the class had no field named `"0"`/`"false"`/
+    /// `""` either, but `check_identifier` still ran and failed with exactly
+    /// that message; TS itself never runs the check at all.
+    #[test]
+    fn identified_by_a_falsy_non_nullish_name_has_no_id_field_and_validates() {
+        for name in [
+            serde_json::json!(0),
+            serde_json::json!(false),
+            serde_json::json!(""),
+        ] {
+            let err = validate(serde_json::json!([concept(serde_json::json!({
+                "name": "Manufactured",
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": name }
+            }))]));
+            assert!(err.is_ok(), "identified.name {name:?} -> {err:?}");
+        }
+    }
+
     /// PORTING.md 2.1: `failed`'s `location` is the failing class's own AST
     /// `location`, copied verbatim, not hard-coded to `None` (P1-05 exit
     /// condition).
@@ -1791,6 +1890,432 @@ mod tests {
             }))
         ]));
         assert!(err.is_ok());
+    }
+
+    /// accordproject/concerto-rust#218 cluster #1, minimised: the P5-05 fuzz
+    /// seed `data/ModelManager.fromAst/6287c8da05a81a766dd6845b.json`
+    /// (the `carResolved` pair of models) with `models[1].decorators` set to
+    /// the string `"💥emoji"`. TS's `Decorated.process` iterates that string
+    /// by UTF-16 code unit, each unit becoming a decorator whose name is
+    /// `undefined`, so `Decorated.validate` rejects it as a duplicate. The
+    /// repro goes through the same steps as the oracle's native
+    /// `ModelManager.fromAst` (`add_model` per model, then
+    /// `validate_models`).
+    #[test]
+    fn string_decorators_on_a_model_are_duplicate_undefined_decorators() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": [],
+                    "namespace": "org.vehicle@1.0.0",
+                    "imports": [],
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Manufactured", "isAbstract": true, "properties": [] },
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Vehicle", "isAbstract": true,
+                          "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                              "name": "name", "isArray": false, "isOptional": false },
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+                              "name": "range", "isArray": false, "isOptional": false }
+                          ],
+                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                                         "name": "Manufactured", "namespace": "org.vehicle@1.0.0" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": "\u{1F4A5}emoji",
+                    "namespace": "org.car@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.vehicle@1.0.0", "name": "Vehicle" }
+                    ],
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Car", "isAbstract": false,
+                          "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+                              "name": "mileage", "isArray": false, "isOptional": false }
+                          ],
+                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                                         "name": "Vehicle", "namespace": "org.vehicle@1.0.0" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        let err = manager.validate_models().unwrap_err();
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.kind, ErrorKind::IllegalModel);
+        assert_eq!(contract.message(), "Duplicate decorator undefined");
+    }
+
+    /// #218 clusters #2-#5 (DV-017, maintainer-accepted): a
+    /// `RelationshipProperty` whose `type` is missing or `null` makes TS's
+    /// `Property.process` throw a `TypeError` from the `ModelFile`
+    /// constructor; Rust rejects the model at `add_model` with an
+    /// `IllegalModelException` naming the property, the file and the node's
+    /// location. The document is the P5-05 minimised reproducer.
+    #[test]
+    fn a_relationship_with_a_missing_or_null_type_is_rejected_at_load() {
+        let position = |offset: u32, line: u32, column: u32| {
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Position",
+                                "offset": offset, "line": line, "column": column })
+        };
+        for (ty, file_name) in [
+            (None, Some("relationship003.cto")),
+            (Some(serde_json::Value::Null), Some("relationship003.cto")),
+            (None, None),
+            (Some(serde_json::Value::Null), None),
+        ] {
+            let mut relationship = serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+                "name": "dept", "isArray": false, "isOptional": false,
+                "location": { "$class": "concerto.metamodel@1.0.0.Range",
+                              "start": position(109, 5, 3), "end": position(131, 6, 1) }
+            });
+            if let Some(ty) = &ty {
+                relationship["type"] = ty.clone();
+            }
+            let mut manager = ModelManager::new().unwrap();
+            let err = manager
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "decorators": [],
+                        "namespace": "org.example.relationship003.invalid@1.0.0",
+                        "imports": [],
+                        "declarations": [
+                            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                              "name": "Employee", "isAbstract": false,
+                              "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+                              "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                                  "name": "id", "isArray": false, "isOptional": false },
+                                relationship
+                              ] },
+                            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                              "name": "Department", "isAbstract": false,
+                              "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "code" },
+                              "properties": [
+                                { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                                  "name": "code", "isArray": false, "isOptional": false }
+                              ] }
+                        ]
+                    }),
+                    file_name.map(String::from),
+                )
+                .unwrap_err();
+            let ConcertoError::Contract(contract) = &err else {
+                panic!("expected an IllegalModelException, got {err:?}");
+            };
+            assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ty:?}");
+            assert_eq!(contract.code, "property-process-relationshipnotype");
+            let suffix = match file_name {
+                Some(f) => format!("File '{f}': line"),
+                None => "Line".to_string(),
+            };
+            assert_eq!(
+                contract.final_message(),
+                format!(
+                    "Relationship dept must have a type {suffix} 5 column 3, to line 6 column 1. "
+                )
+            );
+        }
+    }
+
+    /// #218 (DV-018, maintainer-accepted): a `null` element in any
+    /// `decorators` array makes TS's `Decorator.process` throw a `TypeError`
+    /// (decorator.ts:139) from the `ModelFile` constructor; Rust rejects the
+    /// model at `add_model` with an `IllegalModelException` naming the file
+    /// (a `null` node has no location). Covers every decorated element: the
+    /// model file, a class, a property, an enum value, a scalar, a map and
+    /// its key and value types.
+    #[test]
+    fn a_null_decorator_is_rejected_at_load_wherever_it_sits() {
+        let mut model = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "decorators": [],
+            "namespace": "org.example@1.0.0",
+            "imports": [],
+            "declarations": [
+                { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                  "name": "Person", "isAbstract": false, "decorators": [],
+                  "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                      "name": "id", "isArray": false, "isOptional": false, "decorators": [] }
+                  ] },
+                { "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
+                  "name": "Colour", "decorators": [],
+                  "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED", "decorators": [] }
+                  ] },
+                { "$class": "concerto.metamodel@1.0.0.StringScalar",
+                  "name": "Code", "decorators": [] },
+                { "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                  "name": "Dictionary", "decorators": [],
+                  "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType", "decorators": [] },
+                  "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType", "decorators": [] } }
+            ]
+        });
+        ModelManager::new()
+            .unwrap()
+            .add_model(&model, Some("test.cto".into()))
+            .expect("the unmutated model loads");
+        let sites: [&[&str]; 8] = [
+            &["decorators"],
+            &["declarations", "0", "decorators"],
+            &["declarations", "0", "properties", "0", "decorators"],
+            &["declarations", "1", "decorators"],
+            &["declarations", "1", "properties", "0", "decorators"],
+            &["declarations", "2", "decorators"],
+            &["declarations", "3", "key", "decorators"],
+            &["declarations", "3", "value", "decorators"],
+        ];
+        for site in sites {
+            let pointer = format!("/{}", site.join("/"));
+            // A `null` after a well-formed decorator: TS builds the first,
+            // then crashes on the second.
+            *model.pointer_mut(&pointer).unwrap() = serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Hide" },
+                null
+            ]);
+            for file_name in [Some("test.cto"), None] {
+                let err = ModelManager::new()
+                    .unwrap()
+                    .add_model(&model, file_name.map(String::from))
+                    .unwrap_err();
+                let ConcertoError::Contract(contract) = &err else {
+                    panic!("{pointer}: expected an IllegalModelException, got {err:?}");
+                };
+                assert_eq!(contract.kind, ErrorKind::IllegalModel, "{pointer}");
+                assert_eq!(contract.code, "decorator-process-notobject", "{pointer}");
+                let suffix = match file_name {
+                    Some(f) => format!(" File '{f}': "),
+                    None => " ".to_string(),
+                };
+                assert_eq!(
+                    contract.final_message(),
+                    format!("Invalid decorator. Expected object. Found null{suffix}"),
+                    "{pointer}"
+                );
+                // The owned load path (P5-06, used by the WASM binding)
+                // shares `ModelFile::load`, so it rejects the same node with
+                // the same error.
+                let owned = ModelManager::new()
+                    .unwrap()
+                    .add_owned_model_with_definitions(
+                        model.clone(),
+                        None,
+                        file_name.map(String::from),
+                    )
+                    .unwrap_err();
+                assert_eq!(format!("{owned:?}"), format!("{err:?}"), "{pointer}");
+            }
+            *model.pointer_mut(&pointer).unwrap() = serde_json::json!([]);
+        }
+    }
+
+    /// DV-018 keeps TS's order: `Decorated.process` runs first in each
+    /// element's own `process`, so a `null` decorator on an element is
+    /// reported ahead of that element's other checks (an invalid class name,
+    /// DV-017's typeless relationship), but after an earlier element's.
+    #[test]
+    fn a_null_decorator_is_reported_in_ts_order() {
+        let load = |declarations: serde_json::Value| {
+            ModelManager::new()
+                .unwrap()
+                .add_model(
+                    &serde_json::json!({
+                        "$class": "concerto.metamodel@1.0.0.Model",
+                        "namespace": "org.example@1.0.0",
+                        "imports": [],
+                        "declarations": declarations
+                    }),
+                    Some("test.cto".into()),
+                )
+                .unwrap_err()
+                .to_string()
+        };
+        let null_decorator = "Invalid decorator. Expected object. Found null";
+        let msg = load(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+              "name": "1bad", "isAbstract": false, "decorators": [null], "properties": [] }
+        ]));
+        assert!(msg.contains(null_decorator), "{msg}");
+        let msg = load(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+              "name": "Person", "isAbstract": false,
+              "properties": [
+                { "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+                  "name": "dept", "isArray": false, "isOptional": false, "decorators": [null] }
+              ] }
+        ]));
+        assert!(msg.contains(null_decorator), "{msg}");
+        // An earlier declaration's own error still comes first.
+        let msg = load(serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+              "name": "1bad", "isAbstract": false, "properties": [] },
+            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+              "name": "Person", "isAbstract": false, "decorators": [null], "properties": [] }
+        ]));
+        assert!(msg.contains("Invalid class name '1bad'"), "{msg}");
+    }
+
+    /// Only a `null` node crashes TS. Any other non-object element (a
+    /// number, a string, a boolean) becomes a nameless decorator there, so
+    /// DV-018 does not reject it.
+    #[test]
+    fn a_non_null_non_object_decorator_is_not_dv_018() {
+        for element in [
+            serde_json::json!(5),
+            serde_json::json!("x"),
+            serde_json::json!(true),
+        ] {
+            let result = ModelManager::new().unwrap().add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": [element],
+                    "namespace": "org.example@1.0.0",
+                    "imports": [],
+                    "declarations": []
+                }),
+                None,
+            );
+            if let Err(ConcertoError::Contract(contract)) = &result {
+                assert_ne!(contract.code, "decorator-process-notobject", "{element}");
+            }
+        }
+    }
+
+    /// #218 cluster #6: a class whose super type name is `""`. TS's
+    /// `getProperties` tests `this.superType !== null`, so `""` is still
+    /// resolved, is not found, and `validate` throws "Could not find super
+    /// type " (with the empty name). The native path already agrees; the
+    /// rust-mode `classDeclarationGetProperties` binding tested truthiness
+    /// and skipped it (fixed in concerto-wasm).
+    #[test]
+    fn an_empty_super_type_name_is_not_found() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": [],
+                    "namespace": "org.vehicle@1.0.0",
+                    "imports": [],
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Manufactured", "isAbstract": true, "properties": [] },
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Vehicle", "isAbstract": true,
+                          "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                              "name": "name", "isArray": false, "isOptional": false }
+                          ],
+                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                                         "name": "", "namespace": "org.vehicle@1.0.0" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        let err = manager.validate_models().unwrap_err();
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.kind, ErrorKind::IllegalModel);
+        assert_eq!(contract.message(), "Could not find super type ");
+    }
+
+    /// A one-character string is a single `undefined`-named decorator in TS:
+    /// no duplicate, so the model is accepted (#218).
+    #[test]
+    fn single_code_unit_string_decorators_are_accepted() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "decorators": "x",
+                    "declarations": []
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(manager.validate_models().is_ok());
+    }
+
+    /// Loads a model with no declarations whose own `decorators` value is
+    /// `decorators`, and validates it.
+    fn validate_model_decorators(decorators: serde_json::Value) -> crate::error::Result<()> {
+        let mut manager = ModelManager::new().unwrap();
+        manager.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "decorators": decorators,
+                "declarations": []
+            }),
+            None,
+        )?;
+        manager.validate_models()
+    }
+
+    /// A one-character string is a single `undefined`-named decorator in TS:
+    /// no duplicate, so the model is accepted; an empty string is falsy and
+    /// yields none (#218).
+    #[test]
+    fn single_code_unit_or_empty_string_decorators_are_accepted() {
+        assert!(validate_model_decorators(serde_json::json!("x")).is_ok());
+        assert!(validate_model_decorators(serde_json::json!("")).is_ok());
+    }
+
+    /// A decorator node with no `name` reads `undefined` in the message, as
+    /// TS's does, whether it came from a string's code unit or from a
+    /// nameless node in a real array (#218).
+    #[test]
+    fn nameless_model_decorators_are_duplicate_undefined_decorators() {
+        for decorators in [
+            serde_json::json!("ab"),
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] }
+            ]),
+        ] {
+            let err = validate_model_decorators(decorators).unwrap_err();
+            let ConcertoError::Contract(contract) = &err else {
+                panic!("expected an IllegalModelException, got {err:?}");
+            };
+            assert_eq!(contract.message(), "Duplicate decorator undefined");
+        }
+    }
+
+    /// TS's `Set` tells a missing name (`undefined`) apart from `""`, so one
+    /// of each is not a duplicate; two empty names still are (#218).
+    #[test]
+    fn a_missing_and_an_empty_decorator_name_are_distinct() {
+        let nameless =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] });
+        let empty = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "", "arguments": [] });
+        assert!(validate_model_decorators(serde_json::json!([nameless, empty])).is_ok());
+        let err = validate_model_decorators(serde_json::json!([empty, empty])).unwrap_err();
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.message(), "Duplicate decorator ");
     }
 
     #[test]
