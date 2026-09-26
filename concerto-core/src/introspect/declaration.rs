@@ -14,7 +14,7 @@ use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
+use crate::introspect::decorator::{Decorator, WithDecorators, null_decorator, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::{
@@ -362,12 +362,32 @@ impl ClassDeclaration {
     /// The `superType`/`idField` decision `ClassDeclaration.process` makes
     /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
     /// the loop itself builds `Field`/`RelationshipDeclaration`/
-    /// `EnumValueDeclaration` views, kept in TS). `explicit_super_type` is
-    /// `this.ast.superType.name`, when the AST names one. `identified_class`
-    /// is `this.ast.identified.$class`; `identified_name` is
-    /// `this.ast.identified.name` (only meaningful for an explicit
-    /// `IdentifiedBy`). `fqn` is `this.fqn`, read once `this.name` and
-    /// `this.modelFile` are set (`Declaration.process` runs first).
+    /// `EnumValueDeclaration` views, kept in TS). TS: `if (this.ast.superType)
+    /// { this.superType = this.ast.superType.name; } else if (!(isSystemModelFile
+    /// && name === 'Concept')) { this.superType = 'Concept'; }` — a truthiness
+    /// test on the AST *node*, not on its `name`.
+    ///
+    /// `explicit_super_type` tells this function only whether that outer
+    /// truthiness test took the first branch at all (`Some`) or fell through
+    /// to the implicit-default branch (`None`) — **not** what
+    /// `this.ast.superType.name` itself was. When the outer node is truthy,
+    /// TS's own plain, unconditional assignment (`this.superType =
+    /// this.ast.superType.name`) can leave `this.superType` as a string, but
+    /// also as `undefined`, `null`, a number, a boolean, or any other JSON
+    /// value the AST carries; a bare `Option<&str>` cannot represent all of
+    /// those (accordproject/concerto-rust#217, #219), so a caller that needs
+    /// that raw value on its own snapshot (the WASM binding does) threads it
+    /// through separately and never reads `ProcessDecision::super_type` on
+    /// this branch at all — this function's own `Some(t) => Some(t.to_string())`
+    /// exists only to keep the type honest for direct unit testing and any
+    /// caller that genuinely has nothing more specific than a string; the
+    /// binding passes a placeholder here and ignores what comes back.
+    /// `identified_class` is `this.ast.identified.$class`; `identified_name`
+    /// is `this.ast.identified.name`, again exactly as given (only
+    /// meaningful for an explicit `IdentifiedBy`, and subject to the same
+    /// raw-value caveat as `explicit_super_type`). `fqn` is `this.fqn`, read
+    /// once `this.name` and `this.modelFile` are set (`Declaration.process`
+    /// runs first).
     pub fn process_decision(
         explicit_super_type: Option<&str>,
         is_system_model_file: bool,
@@ -421,9 +441,155 @@ impl ClassDeclaration {
     /// `Concept` super type and to recognise the system model's own
     /// `Transaction`/`Event` (below).
     fn from_json(kind: ClassKind, value: &serde_json::Value, namespace: &str) -> Result<Self> {
-        let mut fields = value.clone();
+        // The declaration's own fields, with `properties` replaced by an
+        // empty list: copied field by field so the property nodes (read
+        // separately below) are never cloned just to be thrown away (P5-06).
+        // Key order is kept exactly as a whole-node clone followed by an
+        // `insert` would leave it (`properties` in place, or appended).
+        let mut fields = match value.as_object() {
+            Some(object) => {
+                let mut copy = serde_json::Map::with_capacity(object.len() + 1);
+                for (key, field) in object {
+                    if key == "properties" {
+                        copy.insert(key.clone(), serde_json::Value::Array(Vec::new()));
+                    } else {
+                        copy.insert(key.clone(), field.clone());
+                    }
+                }
+                if !object.contains_key("properties") {
+                    copy.insert("properties".into(), serde_json::Value::Array(Vec::new()));
+                }
+                serde_json::Value::Object(copy)
+            }
+            None => value.clone(),
+        };
+        // TS reads `this.ast.superType.name`/`this.ast.identified.name` as
+        // plain field accesses, never guarded against a bad shape, so a
+        // fuzzed `name: null` or an altogether missing `name` key never
+        // stops the AST from *loading* in TS (only what `this.superType`/
+        // `this.idField` become afterwards). The generated `TypeIdentifier`/
+        // `IdentifiedBy` structs both require `name: String`, so the strict
+        // decode just below would reject either shape outright before any
+        // of that TS-shaped handling gets a chance to run
+        // (accordproject/concerto-rust#217, review findings 1 and 2). Both
+        // shapes are normalized here, before the decode, into whatever the
+        // parsed `node` needs to carry so the rest of this function (and
+        // [`Self::super_type`] downstream) reaches the same outcome TS does:
+        // - an explicit `superType.name: null` becomes "no `superType` node
+        //   at all" (TS: `this.superType` ends up exactly `null`, and every
+        //   `!== null` guard downstream skips it) — this must NOT fall
+        //   through to the implicit-default super type below, which only
+        //   ever fires when the AST has no `superType` node in the first
+        //   place; `explicit_null_super_type` carries that distinction
+        //   forward.
+        // - a `superType` node with no `name` key at all becomes a
+        //   `TypeIdentifier` literally named `"undefined"` (TS:
+        //   `this.superType` ends up `undefined`, which every `!== null`
+        //   guard downstream treats as a real, if unresolvable, super type
+        //   name — string concatenation coerces it to the literal text
+        //   `"undefined"` wherever TS builds an error message from it).
+        //   This still leaves the ordinary "could not find super type"
+        //   resolution ([`crate::validation::check_super_type`]) to raise
+        //   the exact TS message, rather than this function raising its own
+        //   parse error.
+        // - an `identified.name` that is falsy — not just `null` or an
+        //   altogether missing `name` key, but also `0`, `false` and `""`
+        //   (accordproject/concerto-rust#217, review finding 2, the "only
+        //   half fixed" half: `this.idField` is read everywhere downstream
+        //   with a plain truthiness check, `if (this.idField)`, so every
+        //   falsy value reads the same there as "absent" — none of them
+        //   ever become a property name TS goes on to look up) — becomes
+        //   "no `identified` node at all" too; unlike `superType`, no
+        //   `explicit_null_*` flag is needed, since nothing downstream ever
+        //   needs to tell one falsy shape from another here.
+        let mut explicit_null_super_type = false;
         if let Some(object) = fields.as_object_mut() {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
+
+            if let Some(serde_json::Value::Object(super_type_object)) =
+                object.get("superType").cloned()
+            {
+                match super_type_object.get("name") {
+                    Some(serde_json::Value::Null) => {
+                        object.remove("superType");
+                        explicit_null_super_type = true;
+                    }
+                    None => {
+                        let mut patched = super_type_object;
+                        patched
+                            .insert("name".into(), serde_json::Value::String("undefined".into()));
+                        object.insert("superType".into(), serde_json::Value::Object(patched));
+                    }
+                    Some(serde_json::Value::String(_)) => {}
+                    Some(name) if !crate::ecma::is_truthy(name) => {
+                        // A falsy, non-nullish `name` (`0`, `false` — `""` is
+                        // already a `String` and takes the branch above,
+                        // unchanged): TS's `this.superType =
+                        // this.ast.superType.name` is a plain assignment,
+                        // taken exactly as given, and this specific shape is
+                        // NOT "no super type at all" the way an explicit
+                        // `null` is. `_resolveSuperType`'s own `!this.superType`
+                        // check does short-circuit on the falsiness without
+                        // throwing, but `validate`'s `this.getProperties()`
+                        // does not go through `_resolveSuperType`: it guards
+                        // only on `this.superType !== null` (`0`/`false` are
+                        // both `!== null`), resolves it directly, finds
+                        // nothing, and throws `Could not find super type ` +
+                        // `this.superType` — JS `+` coercing the falsy value
+                        // with the same `ToString` `to_js_string` performs
+                        // (accordproject/concerto-rust#217, review finding 2,
+                        // second half; the JS-binding twin of this fix is
+                        // `concerto-wasm`'s `classDeclarationProcess`).
+                        // Patching the AST to the coerced string before the
+                        // strict decode below lets the ordinary
+                        // "could not find super type" resolution
+                        // ([`crate::validation::check_super_type`]) raise
+                        // that exact message, instead of this function
+                        // failing to decode `false`/`0` as the `String` the
+                        // generated `TypeIdentifier` requires.
+                        let coerced = crate::ecma::to_js_string(name);
+                        let mut patched = super_type_object;
+                        patched.insert("name".into(), serde_json::Value::String(coerced));
+                        object.insert("superType".into(), serde_json::Value::Object(patched));
+                    }
+                    Some(_) => {
+                        // A truthy non-string `name` (an array, a non-zero
+                        // number, `true`, ...): TS never stringifies
+                        // `this.superType`, and only reaches a `TypeError`
+                        // once resolution calls a string method on it
+                        // (`ModelFile.getLocalType`'s `type.startsWith`).
+                        // Reproducing that exact `TypeError` from a plain
+                        // AST decode error isn't attempted here; the
+                        // implementer/reviewer of accordproject/concerto-rust#217
+                        // scoped this shape's native-decode divergence out
+                        // (it is covered on the JS-binding side, the fuzzer's
+                        // actual path, by `classDeclarationProcess`'s
+                        // `receiver` call).
+                    }
+                }
+            }
+
+            let identified_is_falsy_named_identified_by = matches!(
+                object.get("identified"),
+                Some(serde_json::Value::Object(identified_object))
+                    if get_short_name(
+                        identified_object
+                            .get("$class")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                    ) == "IdentifiedBy"
+                        // TS: `this.ast.identified.name` read with no type
+                        // check at all, then only ever tested for
+                        // truthiness (`if (this.idField)`) — a missing key
+                        // reads as `undefined`, exactly as falsy as an
+                        // explicit `null`/`0`/`false`/`""` there.
+                        && !identified_object
+                            .get("name")
+                            .is_some_and(crate::ecma::is_truthy)
+            );
+            if identified_is_falsy_named_identified_by {
+                object.remove("identified");
+            }
         }
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {}: {e}", kind.declaration_kind()),
@@ -443,7 +609,8 @@ impl ClassDeclaration {
         };
         let name = class_field!(&node, d => d.name.clone());
 
-        let implicit_super_type = if class_field!(&node, d => d.super_type.is_some())
+        let implicit_super_type = if explicit_null_super_type
+            || class_field!(&node, d => d.super_type.is_some())
             || Self::is_system_concept(namespace, &name)
         {
             None
@@ -593,23 +760,25 @@ fn load_scalar(
         file_name: None,
         location: None,
     };
-    let v = value.clone();
+    let v = value;
     let node = match short {
         "BooleanScalar" => {
-            mm::ScalarDeclaration::BooleanScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::BooleanScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "IntegerScalar" => {
-            mm::ScalarDeclaration::IntegerScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::IntegerScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
-        "LongScalar" => mm::ScalarDeclaration::LongScalar(serde_json::from_value(v).map_err(bad)?),
+        "LongScalar" => {
+            mm::ScalarDeclaration::LongScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
+        }
         "DoubleScalar" => {
-            mm::ScalarDeclaration::DoubleScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::DoubleScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "StringScalar" => {
-            mm::ScalarDeclaration::StringScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::StringScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         "DateTimeScalar" => {
-            mm::ScalarDeclaration::DateTimeScalar(serde_json::from_value(v).map_err(bad)?)
+            mm::ScalarDeclaration::DateTimeScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         other => {
             return Err(ConcertoError::IllegalModel {
@@ -695,12 +864,27 @@ impl crate::introspect::Decorated for EnumDeclaration {
 
 impl EnumDeclaration {
     fn from_json(value: &serde_json::Value) -> Result<Self> {
+        // DV-018: TS builds each enum value (`Decorated.process` first) in
+        // `ClassDeclaration.process`, so a `null` decorator node on a value is
+        // an `IllegalModelException`, not the serde message the whole-node
+        // deserialization below would give. When one is present, the values
+        // are built first, which reports it, or an earlier value's own error,
+        // in TS's order.
+        if value
+            .get("properties")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| values.iter().any(|v| null_decorator(v).is_some()))
+        {
+            parse_properties(value)?;
+        }
         Ok(Self {
             inner: WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
-                    message: format!("invalid EnumDeclaration: {e}"),
-                    file_name: None,
-                    location: None,
+                serde::Deserialize::deserialize(value).map_err(|e: serde_json::Error| {
+                    ConcertoError::IllegalModel {
+                        message: format!("invalid EnumDeclaration: {e}"),
+                        file_name: None,
+                        location: None,
+                    }
                 })?,
                 parse_decorators(value),
             ),
@@ -969,14 +1153,14 @@ impl MapDeclaration {
         matches!(self.variant, MapVariant::Typed(_))
     }
 
-    fn from_json(value: &serde_json::Value) -> Result<Self> {
+    fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid MapDeclaration: {e}"),
             file_name: None,
             location: None,
         };
         let name: String = match value.get("name") {
-            Some(name) => serde_json::from_value(name.clone()).map_err(bad)?,
+            Some(name) => serde::Deserialize::deserialize(name).map_err(bad)?,
             None => return Err(bad(serde_json::Error::missing_field("name"))),
         };
 
@@ -993,8 +1177,17 @@ impl MapDeclaration {
         let illegal_model = |message: String| -> ConcertoError {
             ContractError::pre_port(ErrorKind::IllegalModel, message, None).into()
         };
-        let key_node = value.get("key").filter(|v| !v.is_null());
-        let value_node = value.get("value").filter(|v| !v.is_null());
+        // TS: `if (!this.ast.key || !this.ast.value)` — plain JS truthiness
+        // of the whole node, not merely "present and not JSON `null`": a
+        // fuzz-mutated `key`/`value` of `false`, `0`, or `""` is exactly as
+        // falsy as a missing or `null` one, and must fail this same check,
+        // not fall through to `node_kind`/`isValidMapKey`'s own rejection
+        // instead (`MapDeclaration must contain valid MapKeyType`) —
+        // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): a `key: 0` or
+        // `key: false`, previously kept by an `is_null`-only filter,
+        // reported the wrong one of the two messages.
+        let key_node = value.get("key").filter(|v| crate::ecma::is_truthy(v));
+        let value_node = value.get("value").filter(|v| crate::ecma::is_truthy(v));
         if key_node.is_none() || value_node.is_none() {
             return Err(illegal_model(format!(
                 "MapDeclaration must contain Key & Value properties {name}"
@@ -1018,6 +1211,19 @@ impl MapDeclaration {
             return Err(illegal_model(format!(
                 "MapDeclaration must contain valid MapValueType, for MapDeclaration {name}"
             )));
+        }
+
+        // TS then builds `new MapKeyType(this, this.ast.key)` and `new
+        // MapValueType(this, this.ast.value)`, each of whose `process` starts
+        // with `super.process()` (`Decorated.process`): a `null` decorator
+        // node on the key, then on the value (DV-018, `null_decorator`), is
+        // reported ahead of the value type's own checks below, naming the
+        // model file.
+        for node in [key_node.unwrap(), value_node.unwrap()] {
+            if let Some(mut err) = null_decorator(node) {
+                err.model_file = Some(file_name.map(str::to_string));
+                return Err(err.into());
+            }
         }
 
         // TS `MapValueType.processType` (src/introspect/mapvaluetype.ts): an
@@ -1104,15 +1310,14 @@ fn typed_map(
 /// Removes a `decorators` or `location` entry that does not deserialize into
 /// its generated type.
 fn drop_unreadable_annotations(node: &mut serde_json::Map<String, serde_json::Value>) {
-    if node
-        .get("decorators")
-        .is_some_and(|d| serde_json::from_value::<Option<Vec<mm::Decorator>>>(d.clone()).is_err())
-    {
+    if node.get("decorators").is_some_and(|d| {
+        <Option<Vec<mm::Decorator>> as serde::Deserialize>::deserialize(d).is_err()
+    }) {
         node.remove("decorators");
     }
     if node
         .get("location")
-        .is_some_and(|l| serde_json::from_value::<Option<mm::Range>>(l.clone()).is_err())
+        .is_some_and(|l| <Option<mm::Range> as serde::Deserialize>::deserialize(l).is_err())
     {
         node.remove("location");
     }
@@ -1286,6 +1491,13 @@ impl Declaration {
         // declaration kind's own `super.process()` before anything
         // kind-specific — so an invalid name is reported ahead of, say, a
         // system property name among a class's fields (P2-08 review).
+        // `Declaration.process` itself starts with `super.process()`
+        // (`Decorated.process`), so a `null` decorator node (DV-018,
+        // `null_decorator`) is reported ahead of the name.
+        if let Some(mut err) = null_decorator(value) {
+            err.model_file = Some(file_name.map(str::to_string));
+            return Err(err.into());
+        }
         check_declaration_name(value, file_name)?;
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
@@ -1299,7 +1511,7 @@ impl Declaration {
             "EnumDeclaration" => Self::Enum(
                 EnumDeclaration::from_json(value).map_err(|e| with_model_file(e, file_name))?,
             ),
-            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
+            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value, file_name)?),
             scalar => Self::Scalar(load_scalar(scalar, value, namespace, file_name)?),
         };
         Ok(declaration)
@@ -1392,6 +1604,138 @@ mod tests {
 
         assert!(d.is_class_declaration());
         assert!(!d.is_enum_declaration());
+    }
+
+    /// accordproject/concerto-rust#217 review finding 1: `declarations[0].superType
+    /// = {$class: TypeIdentifier, name: null}` must still load
+    /// (`mm.addModelFile(new ModelFile(mm, ast))` loads fine in TS), not
+    /// throw `invalid type: null, expected a string` from a strict decode of
+    /// the whole declaration. TS ends up with `this.superType` exactly
+    /// `null` here, which reads as "no super type at all" — distinct from
+    /// having no `superType` node at all, which falls back to the implicit
+    /// `'Concept'` default instead ([`parses_concept_with_typed_properties`]
+    /// vs this).
+    #[test]
+    fn an_explicit_null_super_type_name_loads_with_no_super_type() {
+        let d = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": null },
+            "properties": []
+        }));
+
+        let c = d.as_class().expect("class");
+        assert!(c.super_type().is_none());
+    }
+
+    /// [`an_explicit_null_super_type_name_loads_with_no_super_type`], for
+    /// `identified: {$class: IdentifiedBy, name: null}`: TS's
+    /// `this.idField = this.ast.identified.name` also ends up `null` here,
+    /// read by a plain truthiness check (`if (this.idField)`), so this loads
+    /// with no id field at all — not a decode error either.
+    #[test]
+    fn an_explicit_null_identified_name_loads_with_no_id_field() {
+        let d = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": null },
+            "properties": []
+        }));
+
+        let c = d.as_class().expect("class");
+        assert!(c.own_properties().is_empty());
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"):
+    /// `identified.name` values that are falsy but not nullish — `0`,
+    /// `false`, `""` — must load with no id field at all too, exactly like
+    /// an explicit `null` ([`an_explicit_null_identified_name_loads_with_no_id_field`]).
+    /// TS's `this.idField = this.ast.identified.name` is a plain assignment,
+    /// taken exactly as given, and every downstream read of it —
+    /// `if (this.idField)` — is a plain truthiness check: `0`/`false`/`""`
+    /// are all falsy there, so none of them ever become a property name TS
+    /// goes on to look up. Before this fix, `from_json` only special-cased
+    /// an explicit `null`, so these three loaded with the field name kept
+    /// verbatim ("0"/"false"/"") and then failed `check_identifier` with
+    /// "does not contain this property" — a model TS loads with no error at
+    /// all.
+    #[test]
+    fn a_falsy_non_nullish_identified_name_loads_with_no_id_field() {
+        for name in [
+            serde_json::json!(0),
+            serde_json::json!(false),
+            serde_json::json!(""),
+        ] {
+            let d = decl(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Person",
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": name },
+                "properties": []
+            }));
+
+            let c = d.as_class().expect("class");
+            assert!(
+                !c.is_identified(),
+                "identified.name {name:?} -> is_identified"
+            );
+        }
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2: a `superType` node
+    /// with no `name` key at all (as opposed to an explicit `name: null`,
+    /// the test above) must load as an explicit, if unresolvable, super type
+    /// literally named `"undefined"` — TS's `this.superType` ends up
+    /// `undefined` here, not `null`, and every downstream `!== null` guard
+    /// treats that as a real name still needing resolution, eventually
+    /// failing with `Could not find super type undefined` rather than
+    /// silently reading as "no super type". This must also not fall back to
+    /// the implicit `'Concept'` default, which only fires when the AST has
+    /// no `superType` node in the first place.
+    #[test]
+    fn an_explicit_super_type_node_with_no_name_key_loads_as_the_literal_text_undefined() {
+        let d = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" },
+            "properties": []
+        }));
+
+        let c = d.as_class().expect("class");
+        assert_eq!(c.super_type().map(|t| t.name.as_str()), Some("undefined"));
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2, second half (the
+    /// "only half fixed" half): a `superType.name` that is falsy but not
+    /// `null` — `0` or `false` — is a **different** shape from an explicit
+    /// `null` ([`an_explicit_null_super_type_name_loads_with_no_super_type`]):
+    /// it must still load as an explicit, unresolvable super type (not "no
+    /// super type at all"), the same way the missing-name-key case above
+    /// does. An earlier version of this fix folded these into "no super
+    /// type", which let Rust accept a model TS itself rejects with
+    /// `Could not find super type 0`/`Could not find super type false`
+    /// (`ClassDeclaration.getProperties`, called from `validate`, guards
+    /// only on `this.superType !== null` — true for both `0` and `false` —
+    /// not on truthiness).
+    #[test]
+    fn a_falsy_non_nullish_super_type_name_loads_as_an_unresolvable_super_type() {
+        for (name, expected) in [
+            (serde_json::json!(0), "0"),
+            (serde_json::json!(false), "false"),
+        ] {
+            let d = decl(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Person",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name },
+                "properties": []
+            }));
+
+            let c = d.as_class().expect("class");
+            assert_eq!(
+                c.super_type().map(|t| t.name.as_str()),
+                Some(expected),
+                "superType.name {name:?}"
+            );
+        }
     }
 
     #[test]
@@ -2003,5 +2347,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["onMap"]
         );
+    }
+
+    /// When a caller has an explicit super type value on hand (even a
+    /// placeholder), `process_decision` returns it verbatim and never
+    /// substitutes the implicit `'Concept'` default — the "has a `superType`
+    /// node at all" signal is `Some(_)` itself, not this string's content.
+    /// The real WASM binding (`classDeclarationProcess`) never reads this
+    /// value for that branch: it threads the AST's own raw
+    /// `superType.name` (which might be `undefined`, `null`, a number, …)
+    /// straight through to its snapshot instead, exactly because a bare
+    /// `Option<&str>` cannot represent every JSON shape a fuzzed AST can put
+    /// there (accordproject/concerto-rust#217, #219) — telling `undefined`
+    /// apart from an explicit `null` (both "no super type to resolve" in
+    /// different ways: TS's `_resolveSuperType`/`getProperties` treat a
+    /// `null` `this.superType` as nothing to resolve, but leave `undefined`
+    /// to fail resolution and raise "Could not find super type undefined")
+    /// is that caller's job, verified at the binding/smoke-check level, not
+    /// this pure decision function's.
+    #[test]
+    fn an_explicit_super_type_is_returned_verbatim_not_defaulted() {
+        let decision =
+            ClassDeclaration::process_decision(Some("placeholder"), false, "C", None, None, "ns.C");
+        assert_eq!(decision.super_type.as_deref(), Some("placeholder"));
+    }
+
+    /// The AST naming no `superType` node at all takes the implicit
+    /// `'Concept'` default.
+    #[test]
+    fn an_absent_super_type_node_takes_the_implicit_default() {
+        let decision = ClassDeclaration::process_decision(None, false, "C", None, None, "ns.C");
+        assert_eq!(decision.super_type.as_deref(), Some("Concept"));
+    }
+
+    /// The system model's own `Concept` declaration is still the one
+    /// exemption from the implicit default.
+    #[test]
+    fn the_system_concept_declaration_has_no_implicit_super_type() {
+        let decision = ClassDeclaration::process_decision(
+            None,
+            true,
+            "Concept",
+            None,
+            None,
+            "concerto@1.0.0.Concept",
+        );
+        assert_eq!(decision.super_type, None);
     }
 }

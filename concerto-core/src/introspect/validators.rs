@@ -83,6 +83,127 @@ fn report_error<F: ValidatedElement>(
     err.into()
 }
 
+/// A validator sub-object's `key`, read the way TS's own `CollectionSizeValidator`/
+/// `StringValidator` constructors read `minSize`/`maxSize`/`minLength`/
+/// `maxLength` — a plain, untyped property read, never a parse — coerced
+/// through ECMAScript `ToNumber` ([`ecma::to_number`]) exactly as every use
+/// of the bound (a `< 0`/`>` comparison, `??`/`===null` checks) already
+/// coerces it. `None` for a missing key or an explicit JSON `null` alike
+/// (OD-3, the same collapse [`CollectionSizeValidator::new`]/[`StringValidator::new`]'s
+/// own doc comments already accept for this pair of fields), `Some` for
+/// anything else — including a fuzz-mutated non-number (a string, a bool, an
+/// array, an object), which `to_number` turns into a real `f64` (`NaN` when
+/// there is no sensible numeric reading), never a decode failure
+/// (accordproject/concerto-rust#217): every comparison downstream already
+/// treats `NaN` as "never crossed", the same outcome TS's own comparison
+/// against the untouched mutated value gives.
+fn validator_number_field(ast: &Value, key: &str) -> Option<f64> {
+    match ast.get(key) {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(ecma::to_number(value)),
+    }
+}
+
+/// A validator sub-object's string field (`StringRegexValidator`'s `pattern`/
+/// `flags`), read the way `new RegExp(validator.pattern, validator.flags)`
+/// reads them: a missing key is `undefined`, which the `RegExp` constructor
+/// special-cases to the empty string (never the literal text `"undefined"`
+/// `ToString` would give); anything else — a present `null`, a number, an
+/// array, an object, or a fuzz-mutated non-string of any kind
+/// (accordproject/concerto-rust#217) — goes through the same
+/// [`ecma::to_js_string`] coercion `ToString` gives it.
+fn validator_string_field(ast: &Value, key: &str) -> String {
+    match ast.get(key) {
+        None => String::new(),
+        Some(value) => ecma::to_js_string(value),
+    }
+}
+
+/// Builds a [`mm::CollectionSizeValidator`] straight from the raw
+/// `sizeValidator` AST node, bypassing `serde`'s strict decode of its
+/// `minSize`/`maxSize` fields (which requires an actual JSON number) the way
+/// [`validator_number_field`]'s doc comment describes. `$class` is never read
+/// by any behaviour this crate ports (only kept for a faithful struct), so a
+/// non-string or absent one is coerced/defaulted the same permissive way.
+/// `raw` is `ast.get("sizeValidator")`; `None` (the key absent) and an
+/// explicit JSON `null` both give `None`, matching `serde`'s own
+/// `Option<T>` field semantics for the well-formed AST this replaces.
+///
+/// TS: this is `ClassDeclaration.process`'s properties loop constructing a
+/// `Field`/`Property`, whose own `sizeValidator` is a
+/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
+/// (property.ts/field.ts) — the AST node itself, read with no type check.
+/// `pub`, not `pub(crate)`: concerto-wasm's own `collectionSizeValidatorNew`
+/// binding is TS's *other* call site for this exact constructor (`Property.process`
+/// builds the view directly, per this module's own doc comment on
+/// [`CollectionSizeValidator::new`]) and needs the same leniency
+/// (accordproject/concerto-rust#217) — a fuzz-mutated `minSize`/`maxSize`
+/// there hits `serde`'s strict decode just as surely as it did here, since
+/// that binding decoded the raw AST the same strict way before calling
+/// through to [`CollectionSizeValidator::new`].
+pub fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::CollectionSizeValidator {
+        _class: validator_string_field(raw, "$class"),
+        min_size: validator_number_field(raw, "minSize"),
+        max_size: validator_number_field(raw, "maxSize"),
+    })
+}
+
+/// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
+/// `lengthValidator` (`mm::StringLengthValidator`, `{minLength, maxLength}`).
+/// `pub` for the same reason as [`size_validator_from_ast`]: concerto-wasm's
+/// `stringValidatorNew` binding is TS's own call site for
+/// `new StringValidator(...)` and needs the same leniency.
+pub fn length_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringLengthValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::StringLengthValidator {
+        _class: validator_string_field(raw, "$class"),
+        min_length: length_bound_field(raw, "minLength"),
+        max_length: length_bound_field(raw, "maxLength"),
+    })
+}
+
+/// [`validator_number_field`], but for `StringLengthValidator`'s own
+/// `minLength`/`maxLength` specifically, which — unlike `CollectionSizeValidator`'s
+/// `minSize`/`maxSize` (that function's own doc comment) — TS reads with a
+/// plain optional chain (`lengthValidator?.minLength`), never `??`
+/// (`StringValidator`'s doc comment on its own fields): an explicit JSON
+/// `null` and an absent key are *not* the same value there. Only an explicit
+/// `null` on *both* bounds trips `StringValidator::new`'s "must be
+/// specified" check (a strict `this.minLength === null` identity, not a
+/// truthiness test), so this keeps that state as `None`; an absent key (or,
+/// accordproject/concerto-rust#217, a `lengthValidator` that is not even an
+/// object — a fuzz-mutated bool/array/number/string — so *every* key reads
+/// as absent) leaves TS's own `this.minLength` as `undefined`, never
+/// `null`, so this gives `Some(f64::NAN)` rather than `None`: not `None`, so
+/// it never wrongly joins the both-`null` check, and `NaN` makes every
+/// later magnitude comparison false, the same outcome `undefined` gives
+/// each of them (TS guards every one with `?? 0` or `!== undefined`; IEEE754
+/// `NaN` comparisons are always false, matching both).
+fn length_bound_field(ast: &Value, key: &str) -> Option<f64> {
+    match ast.get(key) {
+        Some(Value::Null) => None,
+        None => Some(f64::NAN),
+        Some(value) => Some(ecma::to_number(value)),
+    }
+}
+
+/// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
+/// `validator` (`mm::StringRegexValidator`, `{pattern, flags}`) —
+/// [`validator_string_field`]'s doc comment covers the `pattern`/`flags`
+/// coercion, which mirrors `new RegExp(validator.pattern, validator.flags)`
+/// rather than a plain `ToString`. `pub` for the same reason as
+/// [`size_validator_from_ast`].
+pub fn regex_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringRegexValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::StringRegexValidator {
+        _class: validator_string_field(raw, "$class"),
+        pattern: validator_string_field(raw, "pattern"),
+        flags: validator_string_field(raw, "flags"),
+    })
+}
+
 /// A validator that keeps non-null numbers between two bounds, inclusive.
 ///
 /// A bound is the AST value as given (`None` is JS `null`). The metamodel
@@ -424,7 +545,7 @@ impl CollectionSizeValidator {
 struct CompiledRegex {
     pattern: String,
     flags: String,
-    regex: regress::Regex,
+    regex: std::sync::Arc<regress::Regex>,
 }
 
 impl PartialEq for CompiledRegex {
@@ -438,6 +559,40 @@ impl fmt::Display for CompiledRegex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "/{}/{}", self.pattern, self.flags)
     }
+}
+
+thread_local! {
+    /// Compiled `StringValidator` regexes by `(pattern, flags)` (P5-06): a
+    /// validator is rebuilt for every string field an instance check visits,
+    /// and `regress` compilation dominated that. Only successful
+    /// compilations are kept, so an error is always produced (and worded)
+    /// by a fresh compile, exactly as without the cache.
+    static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<(String, String), std::sync::Arc<regress::Regex>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The cache is cleared when it reaches this many entries, so a process
+/// that sees an unbounded stream of distinct patterns stays bounded.
+const REGEX_CACHE_LIMIT: usize = 1024;
+
+/// `regress::Regex::with_flags(pattern, flags)`, memoised in [`REGEX_CACHE`].
+fn compile_regex(
+    pattern: &str,
+    flags: &str,
+) -> std::result::Result<std::sync::Arc<regress::Regex>, regress::Error> {
+    let key = (pattern.to_string(), flags.to_string());
+    if let Some(regex) = REGEX_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return Ok(regex);
+    }
+    let regex = std::sync::Arc::new(regress::Regex::with_flags(pattern, flags)?);
+    REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= REGEX_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, regex.clone());
+    });
+    Ok(regex)
 }
 
 impl CompiledRegex {
@@ -584,7 +739,7 @@ impl StringValidator {
                         vec![("message", message)],
                     ));
                 }
-                match regress::Regex::with_flags(v.pattern.as_str(), v.flags.as_str()) {
+                match compile_regex(v.pattern.as_str(), v.flags.as_str()) {
                     Ok(regex) => Some(CompiledRegex {
                         pattern: v.pattern.clone(),
                         flags: v.flags.clone(),
@@ -754,15 +909,41 @@ impl StringValidator {
             return false;
         }
 
-        match (self.min_length, other.min_length) {
-            (None, Some(_)) => return false,
-            (Some(this), Some(other)) if this < other => return false,
-            _ => {}
+        // TS: `isNull(thisMinLength)` (`NullUtil.isNull`, which is true for
+        // both `undefined` and `null`) — unlike the constructor's own
+        // bound-order checks above (which read `min_length`/`max_length`
+        // straight as `f64`s and rely on a `NaN` comparison already being
+        // `false`, the same outcome an absent/null TS bound gives), this
+        // method's own `isNull` calls make the absent-vs-null distinction
+        // `length_bound_field` preserves in `Some`/`None` (accordproject/concerto-rust#217's
+        // "must be specified" corner) invisible again: an absent-key `NaN`
+        // sentinel is exactly as "no bound" here as an explicit-`null`
+        // `None` is, so both must take the same branch below (P5-05-T2a
+        // review: this fell out of sync with `length_bound_field`'s new
+        // `Some(NaN)` state and silently passed a widened `Some(NaN)` bound
+        // as compatible with a narrower real one, oracle
+        // `StringValidator.compatibleWith` fixtures `0a5c036e…`, `9741b5ff…`,
+        // `acec2eb1…`, `b95d5042…`).
+        fn is_null_bound(bound: Option<f64>) -> bool {
+            bound.is_none_or(f64::is_nan)
         }
-        match (self.max_length, other.max_length) {
-            (None, Some(_)) => return false,
-            (Some(this), Some(other)) if this > other => return false,
-            _ => {}
+        let this_min_null = is_null_bound(self.min_length);
+        let other_min_null = is_null_bound(other.min_length);
+        if this_min_null && !other_min_null {
+            return false;
+        }
+        if !this_min_null && !other_min_null && self.min_length.unwrap() < other.min_length.unwrap()
+        {
+            return false;
+        }
+        let this_max_null = is_null_bound(self.max_length);
+        let other_max_null = is_null_bound(other.max_length);
+        if this_max_null && !other_max_null {
+            return false;
+        }
+        if !this_max_null && !other_max_null && self.max_length.unwrap() > other.max_length.unwrap()
+        {
+            return false;
         }
         true
     }
@@ -1168,6 +1349,61 @@ mod tests {
         let this_no_min = string_validator(None, Some((None, Some(100.0)))).unwrap();
         let other_has_min = string_validator(None, Some((Some(1.0), Some(100.0)))).unwrap();
         assert!(!this_no_min.compatible_with(Some(&Validator::String(other_has_min))));
+    }
+
+    /// [`string_validator_length_compatibility`], but for an *absent*
+    /// `minLength`/`maxLength` key specifically, built the way a real
+    /// fixture reaches `StringValidator::new` — through
+    /// `validators::length_validator_from_ast` (`Property::try_from`'s own
+    /// call site) — rather than `length_ast`'s straight `serde` decode
+    /// (whose `None` is always an absent key already, never reaching
+    /// `length_bound_field`'s `Some(f64::NAN)` sentinel for one). A
+    /// regression here (P5-05-T2a review) let a widened `Some(NaN)` bound
+    /// (from an absent key) silently compare as `false` against any real
+    /// bound in `compatible_with`'s old `(Some(this), Some(other)) if this <
+    /// other` arm, wrongly treating "no bound at all" as compatible with a
+    /// narrower one, instead of taking the `isNull` branch this validator's
+    /// own explicit-`null` (`length_ast`) case above already covers.
+    #[test]
+    fn string_validator_length_compatibility_with_an_absent_bound_matches_an_explicit_null_one() {
+        fn length_validator_via_ast(min: Option<f64>, max: Option<f64>) -> StringValidator {
+            let mut ast =
+                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
+            if let Some(min) = min {
+                ast["minLength"] = min.into();
+            }
+            if let Some(max) = max {
+                ast["maxLength"] = max.into();
+            }
+            let length = length_validator_from_ast(Some(&ast));
+            StringValidator::new(&field(), None, length.as_ref()).unwrap()
+        }
+
+        // `this` has no lower bound at all (the `minLength` key is simply
+        // absent, not explicitly `null`); `other` has a real one. `this`
+        // accepts shorter strings than `other` allows, so it must not be
+        // compatible with it — the same verdict the explicit-`null` case
+        // (`string_validator_length_compatibility`'s `this_no_min`) already
+        // gets.
+        let this_no_min = length_validator_via_ast(None, Some(100.0));
+        let other_has_min = length_validator_via_ast(Some(1.0), Some(100.0));
+        assert!(!this_no_min.compatible_with(Some(&Validator::String(other_has_min))));
+
+        // The symmetric case for maxLength.
+        let this_no_max = length_validator_via_ast(Some(1.0), None);
+        let other_has_max = length_validator_via_ast(Some(1.0), Some(10.0));
+        assert!(!this_no_max.compatible_with(Some(&Validator::String(other_has_max))));
+
+        // Both absent on `this`, both real on `other`: still incompatible.
+        let this_no_bounds = length_validator_via_ast(None, None);
+        let other_both = length_validator_via_ast(Some(1.0), Some(100.0));
+        assert!(!this_no_bounds.compatible_with(Some(&Validator::String(other_both))));
+
+        // Both sides have the *same* absent bound: compatible, matching the
+        // "no constraint on either side" case `compatible_with` already
+        // covers for two explicit `None`s.
+        let both_no_min = length_validator_via_ast(None, Some(100.0));
+        assert!(this_no_min.compatible_with(Some(&Validator::String(both_no_min))));
     }
 
     // ---- StringValidator: accessors ----

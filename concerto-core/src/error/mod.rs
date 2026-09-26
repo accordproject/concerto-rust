@@ -1386,6 +1386,16 @@ mod tests {
         );
     }
 
+    // Not a TS template: DIVERGENCES.md DV-018 (maintainer-accepted, #218),
+    // Rust's replacement for TS's `TypeError` on a `null` decorator node.
+    #[test]
+    fn golden_decorator_process_notobject() {
+        assert_eq!(
+            contract("decorator-process-notobject", &[("value", "null")]).message(),
+            "Invalid decorator. Expected object. Found null"
+        );
+    }
+
     // TS: `Property.validate`'s own inline template
     // (src/introspect/property.ts:161), checked against the frozen TS 5.0.0
     // reference.

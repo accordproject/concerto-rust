@@ -361,6 +361,256 @@ export function runChecks(engine) {
     return { errorMessage: err.message };
   });
 
+  // accordproject/concerto-rust#217/#219 (superseding an earlier, less
+  // accurate version of this check): TS assigns `this.superType =
+  // this.ast.superType.name` verbatim (a plain assignment, never a
+  // `.toString()` or template-literal coercion), so `this.superType` itself
+  // ends up whatever raw JS value that read produces — `undefined` for a
+  // `superType` node with no `name` key, `null` for an explicit `name:
+  // null`, the number/boolean/array itself for anything else — and
+  // `classDeclarationProcess` must reproduce that raw value on its own
+  // `superType` field unstringified, not a `.toString()`'d approximation of
+  // it. (Whether TS goes on to *resolve* that value into a real declaration
+  // — throwing `Could not find super type undefined`/`TypeError:
+  // type.startsWith is not a function` along the way for a value that can
+  // never resolve — is a separate, later step this function does not take;
+  // `classDeclarationGetProperties`/`classDeclarationGetProperty`'s own
+  // checks above, and `classDeclarationProcess keeps this.ast.superType.name
+  // raw (#219)` below, cover that.) An `identified.name` that is `null`
+  // stays `null` for the same reason, read downstream with a plain
+  // truthiness check.
+  check('classDeclarationProcess tells a missing superType.name from an explicit null apart', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Foo',
+      fqn: 'org.example@1.0.0.Foo',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const noName = engine.classDeclarationProcess(mockDeclaration({ superType: {}, properties: [] }));
+    assert(
+      noName.superType === undefined,
+      `superType:{} -> superType ${JSON.stringify(noName.superType)}`,
+    );
+
+    const nullName = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: null }, properties: [] }),
+    );
+    assert(nullName.superType === null, `superType.name:null -> superType ${JSON.stringify(nullName.superType)}`);
+
+    const nullIdField = engine.classDeclarationProcess(
+      mockDeclaration({
+        identified: { $class: `${MM}.IdentifiedBy`, name: null },
+        properties: [],
+      }),
+    );
+    assert(nullIdField.idField === null, `identified.name:null -> idField ${JSON.stringify(nullIdField.idField)}`);
+
+    // Sanity: an ordinary, present superType name still resolves normally.
+    const named = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: 'Base' }, properties: [] }),
+    );
+    assert(named.superType === 'Base', `superType.name:"Base" -> superType ${JSON.stringify(named.superType)}`);
+
+    return { noName, nullName, nullIdField, named };
+  });
+
+  // accordproject/concerto-rust#217/#219: a falsy but non-nullish
+  // `identified.name` (`0`, `false`, `""`) is a plain assignment in TS too,
+  // read downstream with a truthiness check (`if (this.idField)`), so it
+  // must come back as that exact raw falsy value, not a stringified
+  // truthy-looking substitute (`"0"`, `"false"`) a property lookup would
+  // then wrongly go on to look for.
+  check('classDeclarationProcess treats a falsy, non-nullish identified.name as no id field', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Manufactured',
+      fqn: 'org.example@1.0.0.Manufactured',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const results = {};
+    for (const name of [0, false, '']) {
+      const result = engine.classDeclarationProcess(
+        mockDeclaration({
+          identified: { $class: `${MM}.IdentifiedBy`, name },
+          properties: [],
+        }),
+      );
+      assert(
+        Object.is(result.idField, name),
+        `identified.name:${JSON.stringify(name)} -> idField ${JSON.stringify(result.idField)}`,
+      );
+      results[JSON.stringify(name)] = result;
+    }
+    return results;
+  });
+
+  // accordproject/concerto-rust#217/#219: same theme, on `superType.name` —
+  // a falsy but non-nullish name (`0`, `false`) is a *different* shape from
+  // an explicit `null` (the check above): TS's plain assignment leaves
+  // `this.superType` as that exact raw falsy value, not `null` and not a
+  // stringified `"0"`/`"false"`. Folding it into `null` would make Rust
+  // treat "has an unresolvable super type" as "has none at all" — the
+  // reverse of this issue's own ts=ok/rust=error shape; stringifying it
+  // would let a property lookup resolve a name TS's own resolution can
+  // never find.
+  check('classDeclarationProcess treats a falsy, non-nullish superType.name as an unresolvable super type', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Employee',
+      fqn: 'org.example@1.0.0.Employee',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const results = {};
+    for (const name of [0, false]) {
+      const result = engine.classDeclarationProcess(
+        mockDeclaration({
+          superType: { $class: `${MM}.TypeIdentifier`, name },
+          properties: [],
+        }),
+      );
+      assert(
+        Object.is(result.superType, name),
+        `superType.name:${JSON.stringify(name)} -> superType ${JSON.stringify(result.superType)}`,
+      );
+      results[JSON.stringify(name)] = result;
+    }
+    return results;
+  });
+
+  // accordproject/concerto-rust#217/#219: a *truthy* non-string
+  // `superType.name` (an array, a non-zero number, `true`, ...) is the other
+  // shape TS never stringifies — `this.superType` stays that raw value.
+  // `classDeclarationProcess` itself never resolves or reads it as a string
+  // (no `.toString()`/`.startsWith()` call here), so it must not throw for
+  // this shape either — only a later resolution step
+  // (`ModelFile.getLocalType`'s `type.startsWith(...)`, outside this
+  // function) can ever raise `TypeError: type.startsWith is not a function`
+  // for it. An earlier version of this check wrongly expected
+  // `classDeclarationProcess` itself to raise that `TypeError`.
+  check('classDeclarationProcess keeps a truthy non-string superType.name raw, not stringified or resolved', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Car',
+      fqn: 'org.example@1.0.0.Car',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const result = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: ['Vehicle'] }, properties: [] }),
+    );
+    assert(
+      Array.isArray(result.superType) && result.superType.length === 1 && result.superType[0] === 'Vehicle',
+      `superType.name:["Vehicle"] -> superType ${JSON.stringify(result.superType)}`,
+    );
+
+    return { superType: result.superType };
+  });
+
+  // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's own check in
+  // `MapDeclaration.process` is `if (!this.ast.key || !this.ast.value)` —
+  // plain JS truthiness of the whole node — so a fuzz-mutated `key`/`value`
+  // of `false`, `0`, `null` or `""` must raise the same "must contain Key &
+  // Value properties" message a missing one does, not fall through to
+  // `isValidMapKey`/`isValidMapValue`'s own, differently-worded rejection
+  // (or, for `null`, crash reading a property of it) the way a check that
+  // only excluded JS `undefined` did.
+  check('mapDeclarationProcess treats a falsy key or value the same as a missing one', () => {
+    const modelFile = { getName: () => 'maps.cto' };
+    const mockView = (key, value) => ({
+      ast: { name: 'M', key, value },
+      modelFile,
+      getModelFile: () => modelFile,
+    });
+
+    for (const key of [false, 0, '', null]) {
+      const err = thrown(() => engine.mapDeclarationProcess(
+        mockView(key, { $class: `${MM}.StringMapValueType` }),
+      ));
+      assert(err instanceof EngineError, `key:${JSON.stringify(key)} threw ${err}`);
+      assert(err.payload.code === 'mapdeclaration-process-missingkeyvalue', `key:${JSON.stringify(key)} code ${err.payload.code}`);
+      assert(err.message === 'MapDeclaration must contain Key & Value properties M', `key:${JSON.stringify(key)} message ${err.message}`);
+    }
+    for (const value of [false, 0, '', null]) {
+      const err = thrown(() => engine.mapDeclarationProcess(
+        mockView({ $class: `${MM}.StringMapKeyType` }, value),
+      ));
+      assert(err instanceof EngineError, `value:${JSON.stringify(value)} threw ${err}`);
+      assert(err.payload.code === 'mapdeclaration-process-missingkeyvalue', `value:${JSON.stringify(value)} code ${err.payload.code}`);
+    }
+    // Sanity: a genuinely valid key/value still passes.
+    engine.mapDeclarationProcess(mockView(
+      { $class: `${MM}.StringMapKeyType` },
+      { $class: `${MM}.StringMapValueType` },
+    ));
+  });
+
+  // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS interpolates the
+  // raw `this.ast.name` into a template literal in every one of
+  // `MapDeclaration.process`'s own messages, which applies JS `ToString` —
+  // a missing `name` key stringifies to the literal text `"undefined"`, an
+  // explicit `null` to `"null"`, neither to an empty string.
+  check('mapDeclarationProcess stringifies a missing or null name like TS, not as empty', () => {
+    const modelFile = { getName: () => 'maps.cto' };
+    for (const [name, expectedSuffix] of [[undefined, 'undefined'], [null, 'null']]) {
+      const ast = { key: false, value: { $class: `${MM}.StringMapValueType` } };
+      if (name !== undefined) { ast.name = name; }
+      const err = thrown(() => engine.mapDeclarationProcess({ ast, modelFile, getModelFile: () => modelFile }));
+      assert(err instanceof EngineError, `name:${JSON.stringify(name)} threw ${err}`);
+      assert(
+        err.message === `MapDeclaration must contain Key & Value properties ${expectedSuffix}`,
+        `name:${JSON.stringify(name)} message ${err.message}`,
+      );
+    }
+  });
+
+  // accordproject/concerto-rust#217 (T2a, adversarial review finding 1):
+  // `collectionSizeValidatorNew`/`stringValidatorNew` used to decode
+  // `sizeValidator`/`lengthValidator`/`validator` with `serde`'s strict,
+  // typed `Deserialize` (a JSON number/string required for `minSize`/
+  // `maxSize`/`minLength`/`maxLength`/`pattern`/`flags`), while TS's own
+  // `CollectionSizeValidator`/`StringValidator` constructors
+  // (collectionsizevalidator.ts, stringvalidator.ts) read every one of
+  // these completely untyped: a fuzz-mutated bound that is present but not
+  // a JSON number (or string, for `pattern`/`flags`) must coerce through
+  // ECMAScript semantics, not fail the whole property's `process()`.
+  check('collectionSizeValidatorNew/stringValidatorNew coerce a wrongly-typed bound instead of throwing', () => {
+    const view = {};
+
+    // `minSize: true` -> `Number(true)` is `1`, a valid (if unusual) bound;
+    // TS never rejects it for being the wrong JSON type.
+    const size = engine.collectionSizeValidatorNew(view, { minSize: true });
+    assert(size.minSize === 1 && size.maxSize === null, `sizeValidator minSize:true -> ${JSON.stringify(size)}`);
+
+    // `lengthValidator.minLength: true`, same coercion.
+    const length = engine.stringValidatorNew(view, null, { minLength: true });
+    assert(length.minLength === 1 && length.maxLength === null, `lengthValidator minLength:true -> ${JSON.stringify(length)}`);
+
+    // `lengthValidator.maxLength` deleted (absent), `minLength` a real
+    // number: TS's own `isNull(minLength) && isNull(maxLength)` is false
+    // (minLength isn't null), so the "must be specified" check never
+    // fires — this must not throw just because maxLength is absent.
+    const oneBoundOnly = engine.stringValidatorNew(view, null, { minLength: 5 });
+    assert(oneBoundOnly.minLength === 5, `lengthValidator minLength:5 (maxLength absent) -> ${JSON.stringify(oneBoundOnly)}`);
+
+    // `validator.pattern: true` (a non-string pattern): `RegExp`'s own
+    // `ToString` coercion (`String(true)` -> `"true"`, a valid pattern)
+    // applies, not a decode failure.
+    const regex = engine.stringValidatorNew(view, { pattern: true, flags: '' }, null);
+    assert(regex.minLength === null && regex.maxLength === null, `validator pattern:true -> ${JSON.stringify(regex)}`);
+
+    // A `lengthValidator` that is not even an object (a fuzz-mutated array,
+    // matching a recorded cluster's minimised repro `lengthValidator: [10]`):
+    // every key on it reads as absent, so this behaves as "no length
+    // bounds at all" rather than throwing.
+    const notAnObject = engine.stringValidatorNew(view, null, [10]);
+    assert(notAnObject.minLength === null && notAnObject.maxLength === null, `lengthValidator:[10] -> ${JSON.stringify(notAnObject)}`);
+
+    return { size, length, oneBoundOnly, regex, notAnObject };
+  });
+
   // #218: two rust-mode view bindings, driven with minimal stand-in views.
   check('propertyProcess rejects a relationship with no type (DV-017)', () => {
     const modelFile = { getName: () => 'rel.cto' };
@@ -514,6 +764,63 @@ export function runChecks(engine) {
     );
     assert(systemIdentified.idField === '$identifier', `system-identified idField ${systemIdentified.idField}`);
     assert(systemIdentified.addIdentifierField === true, 'addIdentifierField is true for system identification');
+  });
+
+  // P5-01b (accordproject/concerto-rust#233): `throw()`'s `needsModelFile`
+  // flag is the only way a binding with no JS `ModelFile` to attach either
+  // way (`modelFileValidateDetached`) can tell its caller apart these two
+  // cases, which otherwise look identical (no `modelFile` on the payload at
+  // all): an `IllegalModel` error TS itself never attaches a file to (the
+  // duplicate-class-name scan, `check_unique_declaration_names`) versus the
+  // general case, where `attach_model_file`'s backstop has named this file
+  // (even though, at this boundary, there is still no JS object to attach).
+  check('modelFileValidateDetached tags needsModelFile (P5-01b)', () => {
+    const dup = thrown(() => mm.modelFileValidateDetached(JSON.stringify({
+      ...MODEL,
+      namespace: 'org.dup@1.0.0',
+      declarations: [MODEL.declarations[0], MODEL.declarations[0]],
+    }), undefined, 'dup.cto'));
+    assert(dup instanceof EngineError, `duplicate class name threw ${dup}`);
+    assert(dup.payload.kind === 'IllegalModel', `kind ${dup.payload.kind}`);
+    assert(dup.message === 'Duplicate class name org.dup@1.0.0.Person', `message ${dup.message}`);
+    assert(dup.payload.needsModelFile === false, `duplicate class name needsModelFile ${dup.payload.needsModelFile}`);
+    assert(dup.payload.modelFile === undefined, 'never a JS ModelFile to attach at this boundary either way');
+
+    const broken = thrown(() => mm.modelFileValidateDetached(JSON.stringify(BROKEN), undefined, 'broken.cto'));
+    assert(broken instanceof EngineError, `broken super type threw ${broken}`);
+    assert(broken.payload.kind === 'IllegalModel', `kind ${broken.payload.kind}`);
+    assert(broken.payload.needsModelFile === true, `broken super type needsModelFile ${broken.payload.needsModelFile}`);
+    assert(broken.payload.modelFile === undefined, 'still no JS ModelFile to attach at this boundary');
+  });
+
+  check('decoratorProcess rejects a null or undefined node (DV-018)', () => {
+    const modelFile = { getName: () => 'deco.cto' };
+    const view = { getParent: () => ({ getModelFile: () => modelFile }) };
+    for (const ast of [null, undefined]) {
+      const err = thrown(() => engine.decoratorProcess(ast, view));
+      assert(err instanceof EngineError, `${ast} threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `kind ${err.payload.kind}`);
+      assert(err.payload.code === 'decorator-process-notobject', `code ${err.payload.code}`);
+      assert(err.message === `Invalid decorator. Expected object. Found ${ast}`, `message ${err.message}`);
+      assert(err.payload.modelFile === modelFile, 'the parent\'s model file is attached');
+    }
+    // An older caller that passes the AST alone still gets the exception.
+    const bare = thrown(() => engine.decoratorProcess(null));
+    assert(bare instanceof EngineError && bare.payload.code === 'decorator-process-notobject', `bare threw ${bare}`);
+    assert(bare.payload.modelFile === undefined, 'no model file without a view');
+    // Other non-object nodes do not crash TS: a nameless decorator, as
+    // before. TS's own `this.name = ast.name` is a plain assignment, so a
+    // node with no `name` key leaves it genuinely `undefined` — not the
+    // empty string an earlier version of this check wrongly expected
+    // (accordproject/concerto-rust#219 review: fixing the "Duplicate
+    // decorator" cluster's `decoratorProcess` also fixed the value this
+    // returns for every nameless decorator, not only the ones that collide).
+    for (const ast of [5, 'x', {}]) {
+      const out = engine.decoratorProcess(ast, view);
+      assert(out.name === undefined && out.arguments.length === 0, `${JSON.stringify(ast)} gave ${JSON.stringify(out)}`);
+    }
+    const named = engine.decoratorProcess({ $class: `${MM}.Decorator`, name: 'Hide' }, view);
+    assert(named.name === 'Hide', `name ${named.name}`);
   });
 
   mm.free();

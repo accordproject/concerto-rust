@@ -64,11 +64,12 @@ use concerto_core::instance::{
 use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{
-    Decorator, DecoratorArgument, DecoratorValidationOptions,
+    self, Decorator, DecoratorArgument, DecoratorValidationOptions,
 };
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
+use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
@@ -196,6 +197,38 @@ fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
     if let Some(report) = &err.validator {
         set(&payload, "errorType", &JsValue::from_str(report.error_type));
     }
+    // `matches!(err.model_file, Some(Some(_)))` is true exactly when
+    // concerto-core has already decided this `IllegalModel` error carries a
+    // *real* file name — either `attach_model_file`'s generic backstop
+    // (validation.rs), which only ever fills in `contract.model_file` when it
+    // was still bare `None` (its own gate), or a check that names a specific
+    // file itself (`undeclared_type_error`). It is false for the two other
+    // states the field can be in, both of which mean "no file, and none is
+    // coming": bare `None`, left untouched by the one check that deliberately
+    // skips `attach_model_file` (`ModelFile.validate`'s duplicate-class-name
+    // scan, `check_unique_declaration_names` — TS itself never attaches a
+    // file to that one), and `Some(None)`, a placeholder some checks set
+    // themselves precisely to block `attach_model_file`'s backstop from
+    // filling one in later (`validate_map_key`/`validate_map_value`'s own doc
+    // comments). Note this is *not* the same test as `err.model_file.is_some()`,
+    // which this same function's `modelFile`-attachment `if` below still uses
+    // deliberately for its own, WASM-local purpose: a binding like
+    // `property_validate` sets `Some(None)` itself, at this layer, as a signal
+    // to *do* attach the JS `model_file` it always passes to `throw` — the
+    // opposite meaning `Some(None)` carries inside concerto-core.
+    //
+    // A binding that has no JS `ModelFile` object to hand over (`model_file`
+    // is `None` here, e.g. `modelFileValidateDetached`) still can't set
+    // `modelFile` on the payload itself, but it can and must tell its JS
+    // caller which of the two cases above this is, since only the caller
+    // (`ModelFile.validate()`, modelfile.ts) knows which object `this` is to
+    // attach — hence this flag travels regardless of whether `model_file` was
+    // supplied.
+    set(
+        &payload,
+        "needsModelFile",
+        &JsValue::from_bool(matches!(err.model_file, Some(Some(_)))),
+    );
     if err.model_file.is_some()
         && let Some(model_file) = model_file
     {
@@ -902,46 +935,62 @@ fn tag(mut json: Value, class: &str) -> Value {
     json
 }
 
-/// `{pattern, flags}`, or `None` for a nullish value. `flags` defaults to
-/// `""`, matching `IStringRegexValidator.flags?: string` (the TS view's
-/// callers, including the unit tests, often omit it for "no flags").
+/// `{pattern, flags}`, or `None` for a nullish value. Built through
+/// `validators::regex_validator_from_ast`, which reads `pattern`/`flags`
+/// completely untyped — a plain `ToString`-style coercion, matching `new
+/// RegExp(validator.pattern, validator.flags)` — rather than `serde`'s
+/// strict decode this used to run directly: TS's own call site for this
+/// constructor is `Property.process`'s `new StringValidator(this,
+/// this.ast.validator, this.ast.lengthValidator)` (property.ts/field.ts),
+/// reading `this.ast.validator` with no type check at all, so a
+/// fuzz-mutated, wrongly-typed `pattern`/`flags` (a bool, a number, an
+/// array) must coerce here too, not fail the whole property's `process()`
+/// (accordproject/concerto-rust#217: this binding is *TS's* call site for
+/// the same constructor `validators::regex_validator_from_ast`'s own doc
+/// comment already fixed the `Property::try_from` side of, so it needs the
+/// identical fix).
 fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
     if nullish(value) {
         return Ok(None);
     }
-    let mut json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.StringRegexValidator",
-    );
-    if let Value::Object(map) = &mut json {
-        map.entry("flags".to_string()).or_insert_with(|| json!(""));
-    }
-    serde_json::from_value(json)
-        .map(Some)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(validators::regex_validator_from_ast(Some(&json)))
 }
 
-/// `{minLength, maxLength}`, or `None` for a nullish value.
+/// `{minLength, maxLength}`, or `None` for a nullish value. Built through
+/// `validators::length_validator_from_ast`, for the same reason and in the
+/// same way as [`string_regex_ast`] — TS's own call site for
+/// `new StringValidator(..., this.ast.lengthValidator)`
+/// (accordproject/concerto-rust#217).
 fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLengthValidator>> {
     if nullish(value) {
         return Ok(None);
     }
-    let json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.StringLengthValidator",
-    );
-    serde_json::from_value(json)
-        .map(Some)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(validators::length_validator_from_ast(Some(&json)))
 }
 
-/// `{minSize, maxSize}`.
+/// `{minSize, maxSize}`. Built through `validators::size_validator_from_ast`,
+/// for the same reason as [`string_regex_ast`] — TS's own call site for
+/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
+/// (property.ts/field.ts), reading `minSize`/`maxSize` with no type check
+/// (accordproject/concerto-rust#217). A nullish `value` (this binding's own
+/// caller, like TS's constructor call site, only ever passes one when
+/// `this.ast.sizeValidator` is itself present) falls back to the same
+/// "$class only" node `size_validator_from_ast`'s own null-filter maps to
+/// `None` for, so this preserves this function's pre-existing contract of
+/// never itself returning `None`: an absent `minSize`/`maxSize` decodes as
+/// `None` either way, so the unwrap below only ever supplies the
+/// `$class`/bounds-absent shape.
 fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
-    let json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.CollectionSizeValidator",
-    );
-    serde_json::from_value(json).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(
+        validators::size_validator_from_ast(Some(&json)).unwrap_or(mm::CollectionSizeValidator {
+            _class: String::new(),
+            min_size: None,
+            max_size: None,
+        }),
+    )
 }
 
 /// TS: StringValidator constructor, after `super(field, validator)`. `view`
@@ -1124,6 +1173,183 @@ pub fn collection_size_validator_compatible_with(
 // Property (src/introspect/property.ts) — P4-07
 // ---------------------------------------------------------------------------
 
+/// The snapshot [`property_process`] returns for a processed property.
+fn property_snapshot(processed: &property::ProcessedProperty) -> Value {
+    let mut snapshot = serde_json::Map::new();
+    snapshot.insert("name".to_string(), json!(processed.name));
+    if processed.type_set {
+        snapshot.insert("type".to_string(), json!(processed.property_type));
+    }
+    snapshot.insert("array".to_string(), json!(processed.array));
+    snapshot.insert("optional".to_string(), json!(processed.optional));
+    Value::Object(snapshot)
+}
+
+/// The snapshot [`field_process`] returns for a processed field.
+fn field_snapshot(processed: &field::ProcessedField) -> Value {
+    let validator = match &processed.validator {
+        None => Value::Null,
+        Some(ScalarValidator::Number(v)) => {
+            let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
+            if let Value::Object(map) = &mut snapshot {
+                map.insert("kind".to_string(), json!("NumberValidator"));
+            }
+            snapshot
+        }
+        Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
+    };
+    json!({
+        "validator": validator,
+        "defaultValue": processed.default_value,
+    })
+}
+
+/// P5-06: the [`property_process`] and [`field_process`] snapshots of every
+/// property of every declaration of a model file, computed in one call from
+/// the model's JSON AST text (`JSON.stringify(ast)`), so that a `ModelFile`
+/// view built in rust mode crosses the boundary once for all of its
+/// properties instead of twice per property. Returns JSON text: an array
+/// aligned with `ast.declarations`, holding, for a declaration with a
+/// `properties` array, an array aligned with it of `{p, f}` entries (`p`
+/// the `propertyProcess` snapshot, `f` the `fieldProcess` one for a
+/// property whose `type` is what `p` sets) and otherwise `null`.
+///
+/// Never throws: any property whose own binding would throw (or that is not
+/// a JSON object) gets `null` instead of an entry, as does a field whose
+/// `fieldProcess` would, and `undefined` comes back for text that is not a
+/// model AST, so the view falls back to the per-property bindings, which
+/// raise every error exactly as before. A property whose `p` entry leaves
+/// `type` unset (TS never assigns it) gets the `f` its fresh view would:
+/// computed with no type.
+#[wasm_bindgen(js_name = modelFilePropertySnapshots)]
+pub fn model_file_property_snapshots(ast: &str) -> Option<String> {
+    // Only the fields `property::process`/`field::process` read are parsed;
+    // anything this light shape cannot read (a declaration or property that
+    // is not an object, a `properties` that is not an array, a duplicate
+    // key) fails the whole batch, and the view falls back to the
+    // per-property bindings for every property.
+    let model: LightModel = serde_json::from_str(ast).ok()?;
+    let declarations = model.declarations?;
+    // Written out directly rather than built as a `Value` first: the
+    // entries are small and many, and building them was most of the cost.
+    let mut out = String::with_capacity(ast.len() / 4);
+    out.push('[');
+    for (i, declaration) in declarations.into_iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match declaration.properties {
+            None => out.push_str("null"),
+            Some(properties) => {
+                out.push('[');
+                for (j, property) in properties.into_iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    write_property_entry(&mut out, &property.into_value())?;
+                }
+                out.push(']');
+            }
+        }
+    }
+    out.push(']');
+    Some(out)
+}
+
+/// A model AST, as far as [`model_file_property_snapshots`] reads it.
+#[derive(serde::Deserialize)]
+struct LightModel {
+    declarations: Option<Vec<LightDeclaration>>,
+}
+
+/// A declaration, as far as [`model_file_property_snapshots`] reads it.
+#[derive(serde::Deserialize)]
+struct LightDeclaration {
+    properties: Option<Vec<LightProperty>>,
+}
+
+/// A property node, keeping only the keys `property::process` and
+/// `field::process` read. A `null` value reads as absent, which both treat
+/// the same way (`as_str`/`as_bool`/truthiness/`!Util.isNull`).
+#[derive(serde::Deserialize)]
+#[allow(non_snake_case)]
+struct LightProperty {
+    #[serde(rename = "$class")]
+    class: Option<Value>,
+    name: Option<Value>,
+    #[serde(rename = "type")]
+    type_: Option<Value>,
+    isArray: Option<Value>,
+    isOptional: Option<Value>,
+    validator: Option<Value>,
+    lengthValidator: Option<Value>,
+    defaultValue: Option<Value>,
+}
+
+impl LightProperty {
+    /// The property as the JSON object the per-property bindings would
+    /// have read those keys from.
+    fn into_value(self) -> Value {
+        let mut map = serde_json::Map::new();
+        for (key, value) in [
+            ("$class", self.class),
+            ("name", self.name),
+            ("type", self.type_),
+            ("isArray", self.isArray),
+            ("isOptional", self.isOptional),
+            ("validator", self.validator),
+            ("lengthValidator", self.lengthValidator),
+            ("defaultValue", self.defaultValue),
+        ] {
+            if let Some(value) = value {
+                map.insert(key.to_string(), value);
+            }
+        }
+        Value::Object(map)
+    }
+}
+
+/// Appends one `{p, f}` entry of [`model_file_property_snapshots`] (or
+/// `null`) to `out` as JSON text: the same JSON `property_snapshot` and
+/// `field_snapshot` serialise to.
+fn write_property_entry(out: &mut String, ast: &Value) -> Option<()> {
+    let Ok(processed) = property::process::<Error>(ast) else {
+        out.push_str("null");
+        return Some(());
+    };
+    out.push_str("{\"p\":{\"name\":");
+    out.push_str(&serde_json::to_string(&processed.name).ok()?);
+    if processed.type_set {
+        out.push_str(",\"type\":");
+        out.push_str(&serde_json::to_string(&processed.property_type).ok()?);
+    }
+    out.push_str(if processed.array {
+        ",\"array\":true"
+    } else {
+        ",\"array\":false"
+    });
+    out.push_str(if processed.optional {
+        ",\"optional\":true}"
+    } else {
+        ",\"optional\":false}"
+    });
+    let property_type = if processed.type_set {
+        processed.property_type.as_deref()
+    } else {
+        None
+    };
+    // A field error names the view's fully-qualified name, which only the
+    // view knows: never produced here (the entry falls back instead).
+    let no_fqn = || -> Result<String> { Err(Error::Js(JsValue::UNDEFINED)) };
+    out.push_str(",\"f\":");
+    match field::process(property_type, ast, &no_fqn) {
+        Ok(field) => out.push_str(&serde_json::to_string(&field_snapshot(&field)).ok()?),
+        Err(_) => out.push_str("null"),
+    }
+    out.push('}');
+    Some(())
+}
+
 /// TS: Property.process, after `super.process()`. Returns the snapshot
 /// `{name, type, array, optional}`; `type` is omitted (not merely `null`)
 /// when the AST `$class` is `EnumProperty`, since that is the one case where
@@ -1137,14 +1363,7 @@ pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> 
     let body = || -> Result<JsValue> {
         let ast = to_json(&get(&view, "ast")?)?.unwrap_or(Value::Null);
         let processed = property::process::<Error>(&ast)?;
-        let mut snapshot = serde_json::Map::new();
-        snapshot.insert("name".to_string(), json!(processed.name));
-        if processed.type_set {
-            snapshot.insert("type".to_string(), json!(processed.property_type));
-        }
-        snapshot.insert("array".to_string(), json!(processed.array));
-        snapshot.insert("optional".to_string(), json!(processed.optional));
-        Ok(to_js(&Value::Object(snapshot)))
+        Ok(to_js(&property_snapshot(&processed)))
     };
     body().map_err(|e| {
         let model_file =
@@ -1265,21 +1484,7 @@ pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
             )?)
         };
         let processed = field::process(property_type.as_deref(), &ast, &fqn)?;
-        let validator = match &processed.validator {
-            None => Value::Null,
-            Some(ScalarValidator::Number(v)) => {
-                let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
-                if let Value::Object(map) = &mut snapshot {
-                    map.insert("kind".to_string(), json!("NumberValidator"));
-                }
-                snapshot
-            }
-            Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
-        };
-        Ok(to_js(&json!({
-            "validator": validator,
-            "defaultValue": processed.default_value,
-        })))
+        Ok(to_js(&field_snapshot(&processed)))
     };
     body().map_err(|e| {
         let model_file =
@@ -1613,10 +1818,15 @@ fn short_class(ast_class: &str) -> &str {
 /// `process`/`validate` to the `propertyProcess`/`propertyValidate`/
 /// `fieldProcess`/`relationshipDeclarationValidate` bindings). Returns `{superType, idField,
 /// addIdentifierField, addTimestampField}`:
-/// - `superType`: `this.ast.superType.name` when the AST names one;
-///   otherwise `null` only for the system model's own `Concept` declaration,
-///   else the implicit `'Concept'` (TS: the `this.modelFile.isSystemModelFile()
-///   && this.name === 'Concept'` exemption).
+/// - `superType`: `this.ast.superType.name` when the AST names one — including
+///   the literal text `"undefined"` when a `superType` node is present but
+///   carries no `name` at all (`this.ast.superType.name` reads as `undefined`
+///   there, not `null`, and every downstream guard treats those two
+///   differently: only an explicit `name: null` reads as "no super type",
+///   review finding 2 on accordproject/concerto-rust#217); otherwise `null`
+///   only for the system model's own `Concept` declaration, else the implicit
+///   `'Concept'` (TS: the `this.modelFile.isSystemModelFile() && this.name
+///   === 'Concept'` exemption).
 /// - `idField`/`addIdentifierField`: mirrors the `this.ast.identified` match;
 ///   `addIdentifierField` tells the view to still call its own
 ///   `addIdentifierField()` (it pushes a real `Field` view).
@@ -1673,9 +1883,14 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         };
         // TS: `name === 'Concept'` — a strict equality, not a `.toString()`
         // call, so a non-string `this.name` (reachable through a fuzzed
-        // `ast.name`) simply can never equal the literal `'Concept'`; the
-        // empty string can't either, so it stands in without a receiver
-        // check.
+        // `ast.name`, missing, `null`, a bool, an array, ...) simply can
+        // never equal the literal `'Concept'`, and TS accepts every one of
+        // those without throwing (accordproject/concerto-rust#217); the
+        // empty string can't equal `'Concept'` either, so it stands in
+        // without a `receiver`/`js_string` call that could itself throw
+        // (or, for a value like `["Concept"]` whose `toString()` happens to
+        // read `"Concept"`, wrongly coerce a non-match into a match that
+        // real `===` never would).
         let name = get(&declaration, "name")?.as_string().unwrap_or_default();
 
         // TS: `if (this.ast.identified) { ... }` — again plain truthiness of
@@ -2461,17 +2676,37 @@ pub fn class_declaration_get_nested_property(
 pub fn map_declaration_process(view: JsValue) -> std::result::Result<(), JsValue> {
     let body = || -> Result<()> {
         let ast = get(&view, "ast")?;
-        let name = opt_get(&ast, "name")?;
-        let name = if nullish(&name) {
-            String::new()
-        } else {
-            js_string(&name)?
-        };
-        let key = to_json(&get(&ast, "key")?)?;
-        let value = to_json(&get(&ast, "value")?)?;
+        // TS interpolates the raw `this.ast.name` into a template literal
+        // in every one of this function's own messages
+        // (`MapDeclaration must contain Key & Value properties
+        // ${this.ast.name}`, mapdeclaration.ts), which applies JS `ToString`
+        // to whatever value is there — including `undefined` (a missing
+        // `name` key stringifies to the literal text `"undefined"`, not an
+        // empty string) and `null` (`"null"`), not only a real string
+        // (accordproject/concerto-rust#219, P5-05 stage-2 T2c): collapsing
+        // both of those to `String::new()` reported `"MapDeclaration must
+        // contain Key & Value properties  "` (an empty name) where TS
+        // reports `"... properties undefined "`/`"... properties null "`.
+        let name = js_string(&opt_get(&ast, "name")?)?;
+        // TS: `if (!this.ast.key || !this.ast.value)` — plain JS truthiness
+        // of the whole node, not merely "not `undefined`": a fuzz-mutated
+        // `key`/`value` of `false`, `0`, `null` or `""` is exactly as falsy
+        // as a missing one, and must fail this same check, not reach
+        // `is_valid_map_key`/`is_valid_map_value`'s own, differently-worded
+        // rejection instead (accordproject/concerto-rust#219, P5-05
+        // stage-2 T2c: `key: 0` reached `to_json`'s `is_undefined`-only gate
+        // here, which passed it through as `Some(0)`, giving "must contain
+        // valid MapKeyType" instead of TS's "must contain Key & Value
+        // properties" — the same theme `MapDeclaration::from_json`'s native
+        // Rust construction path already fixed, here again for this WASM
+        // binding's own, separate check).
+        let key_raw = get(&ast, "key")?;
+        let value_raw = get(&ast, "value")?;
+        let key = to_json(&key_raw)?;
+        let value = to_json(&value_raw)?;
         let location = to_json(&get(&ast, "location")?)?;
 
-        if key.is_none() || value.is_none() {
+        if !key_raw.is_truthy() || !value_raw.is_truthy() {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,
                 "mapdeclaration-process-missingkeyvalue",
@@ -2676,8 +2911,36 @@ pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue
 /// TS: Decorator.process. Builds `{name, arguments}` from the raw AST node,
 /// through the P2-07 port ([`Decorator::from_ast`]); needs no collaborator
 /// call.
+///
+/// DV-018 (maintainer-accepted, accordproject/concerto-rust#218): a `null`
+/// or `undefined` node, where TS's `this.ast.name` (decorator.ts:139) throws
+/// a `TypeError`, is an `IllegalModelException` instead
+/// ([`decorator::not_an_object`], the error native Rust raises for the same
+/// node). `view` is the `Decorator` being processed, optional so that an
+/// older caller passing the AST alone still works: when given, its
+/// `getParent().getModelFile()` is the model file the exception names, as
+/// TS's `Decorator.handleError` passes it.
 #[wasm_bindgen(js_name = decoratorProcess)]
-pub fn decorator_process(ast: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn decorator_process(ast: JsValue, view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    if ast.is_null() || ast.is_undefined() {
+        let mut err = decorator::not_an_object(if ast.is_null() { "null" } else { "undefined" });
+        err.model_file = Some(None);
+        let model_file = if view.is_undefined() || view.is_null() {
+            None
+        } else {
+            call(&view, "getParent", &[], "this.getParent")
+                .and_then(|parent| {
+                    call(
+                        &parent,
+                        "getModelFile",
+                        &[],
+                        "this.getParent().getModelFile",
+                    )
+                })
+                .ok()
+        };
+        return Err(throw(err.into(), model_file.as_ref()));
+    }
     run(|| {
         let ast_json = to_json(&ast)?.unwrap_or(Value::Null);
         let decorator = Decorator::from_ast(&ast_json);
@@ -2686,7 +2949,22 @@ pub fn decorator_process(ast: JsValue) -> std::result::Result<JsValue, JsValue> 
             arguments.push(&argument_to_js(arg));
         }
         let out = Object::new();
-        set(&out, "name", &JsValue::from_str(decorator.name()));
+        // TS: `this.name = ast.name` (decorator.ts) — a plain, uncoerced
+        // assignment, so a decorator node with no `name` key at all leaves
+        // `this.name` genuinely `undefined`, not the empty string. That
+        // distinction only shows up later, in `Decorated.validate`'s
+        // duplicate-decorator scan (`decoratedFindDuplicateName`, TS:
+        // `this.decorators.map(d => d.getName())`) — `js_name` (not
+        // `name`) is what preserves it here (accordproject/concerto-rust#219,
+        // review: a model-file's own `decorators: "__proto__"` — parsed one
+        // UTF-16 code unit at a time into nameless decorators, DV-018 —
+        // wrongly reported "Duplicate decorator " instead of TS's own
+        // "Duplicate decorator undefined" until this used `name()`'s
+        // always-a-string default instead).
+        let name_js = decorator
+            .js_name()
+            .map_or(JsValue::UNDEFINED, JsValue::from_str);
+        set(&out, "name", &name_js);
         set(&out, "arguments", &arguments);
         Ok(out.into())
     })
@@ -3473,6 +3751,13 @@ impl InstanceEnv for JsInstanceEnv {
 #[wasm_bindgen]
 pub struct ModelManagerHandle {
     manager: ModelManager,
+    /// Bumped by every `&mut self` binding (and by [`Self::model_file_filter`]
+    /// on its `target`), so a view can cache what it read from this handle
+    /// for as long as the epoch is unchanged ([`Self::epoch`], P5-06). Unlike
+    /// [`ModelManager::generation`], it never goes back: `updateModelFile`/
+    /// `deleteModelFile` replace the whole manager, restarting its
+    /// generation count.
+    epoch: u64,
 }
 
 #[wasm_bindgen]
@@ -3483,6 +3768,7 @@ impl ModelManagerHandle {
         run(|| {
             Ok(Self {
                 manager: ModelManager::new()?,
+                epoch: 0,
             })
         })
     }
@@ -3498,6 +3784,7 @@ impl ModelManagerHandle {
     /// caller meant to allow.
     #[wasm_bindgen(js_name = setDangerouslyAllowReservedSystemTypeNamesInUserModels)]
     pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.epoch += 1;
         self.manager
             .set_dangerously_allow_reserved_system_type_names_in_user_models(allow);
     }
@@ -3511,6 +3798,7 @@ impl ModelManagerHandle {
         ast: &str,
         file_name: Option<String>,
     ) -> std::result::Result<u32, JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -3549,6 +3837,7 @@ impl ModelManagerHandle {
     /// Sets the constructor's `options.metamodelValidation` (P4-08b).
     #[wasm_bindgen(js_name = setMetamodelValidation)]
     pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+        self.epoch += 1;
         self.manager.set_metamodel_validation(metamodel_validation);
     }
 
@@ -3570,6 +3859,7 @@ impl ModelManagerHandle {
         &mut self,
         options: &JsValue,
     ) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
         run(|| {
             let missing_decorator = level_option(options, "missingDecorator")?;
             let invalid_decorator = level_option(options, "invalidDecorator")?;
@@ -3594,12 +3884,24 @@ impl ModelManagerHandle {
         ast: &str,
         file_name: Option<String>,
     ) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let model_file = ModelFile::from_json(&value, file_name)?;
+            let model_file = ModelFile::from_owned_json_with_definitions(value, None, file_name)?;
             Ok(self.manager.validate_ast(&model_file)?)
         })
+    }
+
+    /// The handle's own mutation counter (P5-06): bumped by every binding
+    /// that can change this handle, and never reset, so anything a view
+    /// read from the handle is still current while the epoch is unchanged.
+    /// Additive; a JS number (exact up to 2^53).
+    pub fn epoch(&self) -> f64 {
+        // Precision loss only past 2^53 mutations.
+        #[allow(clippy::cast_precision_loss)]
+        let epoch = self.epoch as f64;
+        epoch
     }
 
     /// The mutation counter: a snapshot taken at one generation is current
@@ -3833,6 +4135,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
         validate: bool,
     ) -> std::result::Result<u32, JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -3850,7 +4153,7 @@ impl ModelManagerHandle {
                 self.manager.validate_detached_model_file(&candidate)?;
             }
             self.manager
-                .add_model_with_definitions(&value, definitions, file_name)?;
+                .add_owned_model_with_definitions(value, definitions, file_name)?;
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
@@ -3914,6 +4217,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
         validate: bool,
     ) -> std::result::Result<u32, JsValue> {
+        self.epoch += 1;
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -3939,6 +4243,7 @@ impl ModelManagerHandle {
     /// Mirrors TS `BaseModelManager.deleteModelFile(namespace)` (P4-08).
     #[wasm_bindgen(js_name = deleteModelFile)]
     pub fn delete_model_file(&mut self, namespace: &str) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
         run(|| {
             self.manager = self.manager.delete_model_file(namespace)?;
             Ok(())
@@ -4067,7 +4372,7 @@ impl ModelManagerHandle {
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let file = ModelFile::from_json_with_definitions(&value, definitions, file_name)?;
+            let file = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
             Ok(self.manager.validate_detached_model_file(&file)?)
         })
     }
@@ -4101,6 +4406,7 @@ impl ModelManagerHandle {
         predicate: Function,
         target: &mut ModelManagerHandle,
     ) -> std::result::Result<Option<u32>, JsValue> {
+        target.epoch += 1;
         run(|| {
             let file = self.require_file(model_file)?;
             // `ModelFile::filter`'s predicate carries no namespace of its

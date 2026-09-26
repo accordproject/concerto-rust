@@ -66,7 +66,8 @@
 //! Nor is a maintainer-accepted replacement for a TS crash (PORTING.md 7.3,
 //! category `maintainer-accepted` in `DIVERGENCES.md`): such an entry cites
 //! its DV row in `sources` in place of a TS throw site
-//! (`property-process-relationshipnotype`, DV-017).
+//! (`property-process-relationshipnotype`, DV-017;
+//! `decorator-process-notobject`, DV-018).
 
 use super::{CatalogueEntry, Renderer};
 
@@ -691,6 +692,22 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &[
             "concerto-rust DV-017: replaces the V8 TypeError at src/introspect/property.ts:165 (maintainer-accepted, accordproject/concerto-rust#218)",
+        ],
+    },
+    // ---- #218 addition: not a TS template. DIVERGENCES.md DV-018
+    //      (maintainer-accepted): TS's `Decorator.process` crashes with a V8
+    //      `TypeError` (`Cannot read properties of null (reading 'name')`) on
+    //      a `null` element of a `decorators` array; Rust raises this
+    //      `IllegalModelException` instead, worded like `Decorator.validate`'s
+    //      own `... invalid decorator argument. Expected object. Found ...`
+    //      messages. `{value}` is `null` (or `undefined`, through the WASM
+    //      boundary). ----
+    CatalogueEntry {
+        code: "decorator-process-notobject",
+        template: "Invalid decorator. Expected object. Found {value}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust DV-018: replaces the V8 TypeError at src/introspect/decorator.ts:139 (maintainer-accepted, accordproject/concerto-rust#218)",
         ],
     },
     // ---- P4-07 additions (Property.validate, RelationshipDeclaration.validate
