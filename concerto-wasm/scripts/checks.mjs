@@ -410,6 +410,51 @@ export function runChecks(engine) {
     return { noName, nullName, nullIdField, named };
   });
 
+  // accordproject/concerto-rust#217 (T2a, adversarial review finding 1):
+  // `collectionSizeValidatorNew`/`stringValidatorNew` used to decode
+  // `sizeValidator`/`lengthValidator`/`validator` with `serde`'s strict,
+  // typed `Deserialize` (a JSON number/string required for `minSize`/
+  // `maxSize`/`minLength`/`maxLength`/`pattern`/`flags`), while TS's own
+  // `CollectionSizeValidator`/`StringValidator` constructors
+  // (collectionsizevalidator.ts, stringvalidator.ts) read every one of
+  // these completely untyped: a fuzz-mutated bound that is present but not
+  // a JSON number (or string, for `pattern`/`flags`) must coerce through
+  // ECMAScript semantics, not fail the whole property's `process()`.
+  check('collectionSizeValidatorNew/stringValidatorNew coerce a wrongly-typed bound instead of throwing', () => {
+    const view = {};
+
+    // `minSize: true` -> `Number(true)` is `1`, a valid (if unusual) bound;
+    // TS never rejects it for being the wrong JSON type.
+    const size = engine.collectionSizeValidatorNew(view, { minSize: true });
+    assert(size.minSize === 1 && size.maxSize === null, `sizeValidator minSize:true -> ${JSON.stringify(size)}`);
+
+    // `lengthValidator.minLength: true`, same coercion.
+    const length = engine.stringValidatorNew(view, null, { minLength: true });
+    assert(length.minLength === 1 && length.maxLength === null, `lengthValidator minLength:true -> ${JSON.stringify(length)}`);
+
+    // `lengthValidator.maxLength` deleted (absent), `minLength` a real
+    // number: TS's own `isNull(minLength) && isNull(maxLength)` is false
+    // (minLength isn't null), so the "must be specified" check never
+    // fires — this must not throw just because maxLength is absent.
+    const oneBoundOnly = engine.stringValidatorNew(view, null, { minLength: 5 });
+    assert(oneBoundOnly.minLength === 5, `lengthValidator minLength:5 (maxLength absent) -> ${JSON.stringify(oneBoundOnly)}`);
+
+    // `validator.pattern: true` (a non-string pattern): `RegExp`'s own
+    // `ToString` coercion (`String(true)` -> `"true"`, a valid pattern)
+    // applies, not a decode failure.
+    const regex = engine.stringValidatorNew(view, { pattern: true, flags: '' }, null);
+    assert(regex.minLength === null && regex.maxLength === null, `validator pattern:true -> ${JSON.stringify(regex)}`);
+
+    // A `lengthValidator` that is not even an object (a fuzz-mutated array,
+    // matching a recorded cluster's minimised repro `lengthValidator: [10]`):
+    // every key on it reads as absent, so this behaves as "no length
+    // bounds at all" rather than throwing.
+    const notAnObject = engine.stringValidatorNew(view, null, [10]);
+    assert(notAnObject.minLength === null && notAnObject.maxLength === null, `lengthValidator:[10] -> ${JSON.stringify(notAnObject)}`);
+
+    return { size, length, oneBoundOnly, regex, notAnObject };
+  });
+
   mm.free();
   return rows;
 }

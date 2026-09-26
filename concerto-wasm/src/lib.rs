@@ -69,6 +69,7 @@ use concerto_core::introspect::decorator::{
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
+use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
@@ -902,46 +903,62 @@ fn tag(mut json: Value, class: &str) -> Value {
     json
 }
 
-/// `{pattern, flags}`, or `None` for a nullish value. `flags` defaults to
-/// `""`, matching `IStringRegexValidator.flags?: string` (the TS view's
-/// callers, including the unit tests, often omit it for "no flags").
+/// `{pattern, flags}`, or `None` for a nullish value. Built through
+/// `validators::regex_validator_from_ast`, which reads `pattern`/`flags`
+/// completely untyped — a plain `ToString`-style coercion, matching `new
+/// RegExp(validator.pattern, validator.flags)` — rather than `serde`'s
+/// strict decode this used to run directly: TS's own call site for this
+/// constructor is `Property.process`'s `new StringValidator(this,
+/// this.ast.validator, this.ast.lengthValidator)` (property.ts/field.ts),
+/// reading `this.ast.validator` with no type check at all, so a
+/// fuzz-mutated, wrongly-typed `pattern`/`flags` (a bool, a number, an
+/// array) must coerce here too, not fail the whole property's `process()`
+/// (accordproject/concerto-rust#217: this binding is *TS's* call site for
+/// the same constructor `validators::regex_validator_from_ast`'s own doc
+/// comment already fixed the `Property::try_from` side of, so it needs the
+/// identical fix).
 fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
     if nullish(value) {
         return Ok(None);
     }
-    let mut json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.StringRegexValidator",
-    );
-    if let Value::Object(map) = &mut json {
-        map.entry("flags".to_string()).or_insert_with(|| json!(""));
-    }
-    serde_json::from_value(json)
-        .map(Some)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(validators::regex_validator_from_ast(Some(&json)))
 }
 
-/// `{minLength, maxLength}`, or `None` for a nullish value.
+/// `{minLength, maxLength}`, or `None` for a nullish value. Built through
+/// `validators::length_validator_from_ast`, for the same reason and in the
+/// same way as [`string_regex_ast`] — TS's own call site for
+/// `new StringValidator(..., this.ast.lengthValidator)`
+/// (accordproject/concerto-rust#217).
 fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLengthValidator>> {
     if nullish(value) {
         return Ok(None);
     }
-    let json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.StringLengthValidator",
-    );
-    serde_json::from_value(json)
-        .map(Some)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(validators::length_validator_from_ast(Some(&json)))
 }
 
-/// `{minSize, maxSize}`.
+/// `{minSize, maxSize}`. Built through `validators::size_validator_from_ast`,
+/// for the same reason as [`string_regex_ast`] — TS's own call site for
+/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
+/// (property.ts/field.ts), reading `minSize`/`maxSize` with no type check
+/// (accordproject/concerto-rust#217). A nullish `value` (this binding's own
+/// caller, like TS's constructor call site, only ever passes one when
+/// `this.ast.sizeValidator` is itself present) falls back to the same
+/// "$class only" node `size_validator_from_ast`'s own null-filter maps to
+/// `None` for, so this preserves this function's pre-existing contract of
+/// never itself returning `None`: an absent `minSize`/`maxSize` decodes as
+/// `None` either way, so the unwrap below only ever supplies the
+/// `$class`/bounds-absent shape.
 fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
-    let json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.CollectionSizeValidator",
-    );
-    serde_json::from_value(json).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(
+        validators::size_validator_from_ast(Some(&json)).unwrap_or(mm::CollectionSizeValidator {
+            _class: String::new(),
+            min_size: None,
+            max_size: None,
+        }),
+    )
 }
 
 /// TS: StringValidator constructor, after `super(field, validator)`. `view`
