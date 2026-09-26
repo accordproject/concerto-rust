@@ -14,7 +14,7 @@ use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorators};
+use crate::introspect::decorator::{Decorator, WithDecorators, null_decorator, parse_decorators};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::{
@@ -695,6 +695,19 @@ impl crate::introspect::Decorated for EnumDeclaration {
 
 impl EnumDeclaration {
     fn from_json(value: &serde_json::Value) -> Result<Self> {
+        // DV-018: TS builds each enum value (`Decorated.process` first) in
+        // `ClassDeclaration.process`, so a `null` decorator node on a value is
+        // an `IllegalModelException`, not the serde message the whole-node
+        // deserialization below would give. When one is present, the values
+        // are built first, which reports it, or an earlier value's own error,
+        // in TS's order.
+        if value
+            .get("properties")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| values.iter().any(|v| null_decorator(v).is_some()))
+        {
+            parse_properties(value)?;
+        }
         Ok(Self {
             inner: WithDecorators::new(
                 serde_json::from_value(value.clone()).map_err(|e| ConcertoError::IllegalModel {
@@ -969,7 +982,7 @@ impl MapDeclaration {
         matches!(self.variant, MapVariant::Typed(_))
     }
 
-    fn from_json(value: &serde_json::Value) -> Result<Self> {
+    fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid MapDeclaration: {e}"),
             file_name: None,
@@ -1018,6 +1031,19 @@ impl MapDeclaration {
             return Err(illegal_model(format!(
                 "MapDeclaration must contain valid MapValueType, for MapDeclaration {name}"
             )));
+        }
+
+        // TS then builds `new MapKeyType(this, this.ast.key)` and `new
+        // MapValueType(this, this.ast.value)`, each of whose `process` starts
+        // with `super.process()` (`Decorated.process`): a `null` decorator
+        // node on the key, then on the value (DV-018, `null_decorator`), is
+        // reported ahead of the value type's own checks below, naming the
+        // model file.
+        for node in [key_node.unwrap(), value_node.unwrap()] {
+            if let Some(mut err) = null_decorator(node) {
+                err.model_file = Some(file_name.map(str::to_string));
+                return Err(err.into());
+            }
         }
 
         // TS `MapValueType.processType` (src/introspect/mapvaluetype.ts): an
@@ -1286,6 +1312,13 @@ impl Declaration {
         // declaration kind's own `super.process()` before anything
         // kind-specific — so an invalid name is reported ahead of, say, a
         // system property name among a class's fields (P2-08 review).
+        // `Declaration.process` itself starts with `super.process()`
+        // (`Decorated.process`), so a `null` decorator node (DV-018,
+        // `null_decorator`) is reported ahead of the name.
+        if let Some(mut err) = null_decorator(value) {
+            err.model_file = Some(file_name.map(str::to_string));
+            return Err(err.into());
+        }
         check_declaration_name(value, file_name)?;
 
         if let Some(class_kind) = ClassKind::from_short(kind) {
@@ -1299,7 +1332,7 @@ impl Declaration {
             "EnumDeclaration" => Self::Enum(
                 EnumDeclaration::from_json(value).map_err(|e| with_model_file(e, file_name))?,
             ),
-            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value)?),
+            "MapDeclaration" => Self::Map(MapDeclaration::from_json(value, file_name)?),
             scalar => Self::Scalar(load_scalar(scalar, value, namespace, file_name)?),
         };
         Ok(declaration)

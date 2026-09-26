@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::Named;
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
-use crate::introspect::decorator::{Decorated, Decorator, parse_decorators};
+use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
 use crate::introspect::import::Import;
 use crate::model_util::{
     self, get_fully_qualified_name, get_short_name, is_primitive_type, is_valid_identifier,
@@ -73,6 +73,15 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
+        // TS: the constructor's `this.process()` (`Decorated.process`, the
+        // model file's own decorators) runs before `fromAst`. DV-018: a
+        // `null` decorator node is an `IllegalModelException` naming this
+        // file, where TS crashes (`null_decorator`).
+        if let Some(mut err) = null_decorator(value) {
+            err.model_file = Some(file_name.clone());
+            return Err(err.into());
+        }
+
         let namespace = value
             .get("namespace")
             .and_then(|v| v.as_str())
