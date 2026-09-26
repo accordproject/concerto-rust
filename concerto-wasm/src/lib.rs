@@ -3159,8 +3159,8 @@ fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<Instance> {
 }
 
 /// A wire value (module doc) as the [`CoreValue`] it decodes to: plain JSON
-/// unchanged, and [`WIRE_TAG`]'s `undefined`, `number`, `dayjs`, `map` and
-/// `typed` kinds.
+/// unchanged, and [`WIRE_TAG`]'s `undefined`, `number`, `bigint`, `dayjs`,
+/// `map` and `typed` kinds.
 fn decode_wire(value: &Value) -> Result<CoreValue> {
     match value {
         Value::Null => Ok(CoreValue::Null),
@@ -3187,6 +3187,13 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
                     .and_then(Value::as_str)
                     .ok_or_else(|| wire_error("a wire number without value".to_string()))?;
                 decode_wire_number(text).map(CoreValue::Number)
+            }
+            Some("bigint") => {
+                let text = map
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| wire_error("a wire bigint without value".to_string()))?;
+                Ok(CoreValue::BigInt(text.to_string()))
             }
             Some("map") => {
                 let entries = map
@@ -4621,5 +4628,15 @@ mod tests {
                 477.95269883162916
             )]))
         );
+    }
+
+    /// A wire `bigint` round-trips through `decode_wire`/`encode_wire`
+    /// (task P2-11b-U6): the digit string crosses unchanged in both
+    /// directions.
+    #[test]
+    fn wire_bigint_round_trips() {
+        let value: Value = serde_json::from_str(r#"{"@@oracle":"bigint","value":"10"}"#).unwrap();
+        assert_eq!(decoded(&value), CoreValue::BigInt("10".to_string()));
+        assert_eq!(encode_wire(&CoreValue::BigInt("10".to_string())), value);
     }
 }
