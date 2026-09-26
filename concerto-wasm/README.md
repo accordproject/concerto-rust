@@ -20,8 +20,12 @@ npm run build        # sh build.sh
 ```
 
 `build.sh` runs cargo, then wasm-bindgen for both the `web` and the `nodejs`
-targets, then `wasm-opt -Oz`, then `scripts/inline.mjs`. It fails when the
-optimised module is over the 4 MiB budget. It writes:
+targets, then `wasm-opt -O3`, then `scripts/inline.mjs`. It fails when the
+optimised module is over the 4 MiB budget. The release profile and
+`wasm-opt` both optimise for speed rather than size since task P5-06
+(accordproject/concerto-rust#220): the module grows by about 1 MB (to about
+2.6 MB, still inside the budget) and the P5-04 workloads run 10-35% faster
+through the TS views. It writes:
 
 | File | For | Loads by |
 |---|---|---|
@@ -119,7 +123,8 @@ The spike (P4-01a, #86) is written up in
 browser and boundary measurements on this crate. Conditions: macOS 13 on an
 i7-7820HQ, shared with other jobs, so timings are noisy.
 
-**Size.** 1,789,836 bytes after `wasm-opt -Oz`, against the spike's 1,115,534;
+**Size.** 1,789,836 bytes after `wasm-opt -Oz` (the size-optimised build this
+section measured; the speed-optimised build P5-06 switched to is about 2.6 MB), against the spike's 1,115,534;
 concerto-core has grown since the spike, which bound only `add_model` and
 `validate_models` (the size was not broken down further). That is 43% of the
 4 MiB budget and 21% of Chromium's 8 MiB sync-compile limit.
