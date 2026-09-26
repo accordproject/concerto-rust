@@ -629,7 +629,8 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 | "toString"
                 | "validate"
         ),
-        ("NumberValidator" | "StringValidator", m) => matches!(m, "validate" | "compatibleWith"),
+        ("NumberValidator", m) => matches!(m, "validate" | "compatibleWith" | "toString"),
+        ("StringValidator", m) => matches!(m, "validate" | "compatibleWith" | "matchesRegex"),
         ("CollectionSizeValidator", m) => {
             matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
         }
@@ -1127,12 +1128,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             )),
         },
         "NumberValidator" => {
-            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
                 return Err(Fault::Unsupported(
                     "a NumberValidator op whose receiver is not a validatorref".into(),
                 ));
             };
-            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let (built, elem) = build_validator(&session, mm_idx, owner, &part)?;
             let Validator::Number(nv) = built else {
                 return Err(Fault::Divergence(
                     "state divergence: the validatorref did not build a NumberValidator".into(),
@@ -1150,16 +1151,17 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(nv.compatible_with(other.as_ref()))))
                 }
+                "toString" => ran(Ok(Value::String(nv.to_string()))),
                 _ => unreachable!("`dispatched` lists every member"),
             })
         }
         "StringValidator" => {
-            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
                 return Err(Fault::Unsupported(
                     "a StringValidator op whose receiver is not a validatorref".into(),
                 ));
             };
-            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let (built, elem) = build_validator(&session, mm_idx, owner, &part)?;
             let Validator::String(sv) = built else {
                 return Err(Fault::Divergence(
                     "state divergence: the validatorref did not build a StringValidator".into(),
@@ -1177,16 +1179,20 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(sv.compatible_with(other.as_ref()))))
                 }
+                "matchesRegex" => {
+                    let value = arg_str(&args, 0)?;
+                    ran(Ok(Value::Bool(sv.matches_regex(&value))))
+                }
                 _ => unreachable!("`dispatched` lists every member"),
             })
         }
         "CollectionSizeValidator" => {
-            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
                 return Err(Fault::Unsupported(
                     "a CollectionSizeValidator op whose receiver is not a validatorref".into(),
                 ));
             };
-            let (built, _elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let (built, _elem) = build_validator(&session, mm_idx, owner, &part)?;
             let Validator::CollectionSize(cv) = built else {
                 return Err(Fault::Divergence(
                     "state divergence: the validatorref did not build a CollectionSizeValidator"
@@ -1445,6 +1451,102 @@ fn property_default_value(prop: &concerto_core::introspect::Property) -> Option<
 fn build_validator(
     session: &Session,
     mm_idx: usize,
+    owner: recipe::ValidatorOwner,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    match owner {
+        recipe::ValidatorOwner::Prop(prop_id) => {
+            build_property_validator(session, mm_idx, prop_id, part)
+        }
+        recipe::ValidatorOwner::Decl(decl_id) => {
+            scalar_declaration_validator(session, mm_idx, decl_id, part)
+        }
+    }
+}
+
+/// A scalar declaration's own validator (`validatorref` with a `declref`
+/// owner; TS `ScalarDeclaration.getValidator()`, built by
+/// `ScalarDeclaration.process` as `new NumberValidator(this,
+/// this.ast.validator)` or `new StringValidator(this, this.ast.validator,
+/// this.ast.lengthValidator)`), plus the [`PropertyElement`] standing in for
+/// the declaration as the validator's `field`.
+///
+/// A `NumberValidator` is the one the loaded declaration already holds; a
+/// `StringValidator` is rebuilt from the AST arguments
+/// [`ScalarValidator::String`] records. The declaration loaded successfully,
+/// so a failure here is a [`Fault::Divergence`].
+fn scalar_declaration_validator(
+    session: &Session,
+    mm_idx: usize,
+    decl_id: DeclId,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    use concerto_core::introspect::Named;
+
+    if part != "validator" {
+        return Err(Fault::Unsupported(format!(
+            "a scalar declaration's validatorref part {part:?} with no Rust counterpart"
+        )));
+    }
+    let r = session.pool.get(mm_idx).ok_or_else(|| {
+        Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
+    })?;
+    let Some(Declaration::Scalar(scalar)) = r.mm.declaration(decl_id) else {
+        return Err(Fault::Divergence(
+            "state divergence: the validatorref's owner did not load as a scalar".into(),
+        ));
+    };
+    let fqn =
+        r.mm.get_fully_qualified_name(&Node::Declaration(decl_id))
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "computing the validatorref declaration's fully qualified name: {e}"
+                ))
+            })?;
+    let elem = PropertyElement {
+        fqn,
+        name: scalar.name().to_string(),
+        default_value: scalar.default_value().cloned(),
+    };
+    let validator = match scalar.validator() {
+        Some(ScalarValidator::Number(nv)) => Validator::Number(nv.clone()),
+        Some(ScalarValidator::String {
+            validator,
+            length_validator,
+        }) => {
+            let regex = validator
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| Fault::Divergence(format!("decoding the scalar's regex: {e}")))?;
+            let length = length_validator
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| {
+                    Fault::Divergence(format!("decoding the scalar's length validator: {e}"))
+                })?;
+            let built = concerto_core::introspect::validators::StringValidator::new(
+                &elem,
+                regex.as_ref(),
+                length.as_ref(),
+            )
+            .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
+            Validator::String(built)
+        }
+        None => {
+            return Err(Fault::Divergence(
+                "state divergence: the validatorref's scalar declaration has no validator".into(),
+            ));
+        }
+    };
+    Ok((validator, elem))
+}
+
+/// [`build_validator`] for a property owner.
+fn build_property_validator(
+    session: &Session,
+    mm_idx: usize,
     prop_id: concerto_core::model_manager::PropId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
@@ -1554,6 +1656,14 @@ fn arg_nullable_str(args: &[Arg], index: usize) -> Faulty<Option<String>> {
     }
 }
 
+/// `StringValidator.matchesRegex`'s argument: a required non-null string.
+fn arg_str(args: &[Arg], index: usize) -> Faulty<String> {
+    match args.get(index) {
+        Some(Arg::Plain(Value::String(s))) => Ok(s.clone()),
+        _ => Err(Fault::Unsupported("expected a string argument".into())),
+    }
+}
+
 /// `NumberValidator.validate`'s value argument: a nullable number.
 fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
     match args.get(index) {
@@ -1570,8 +1680,8 @@ fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
 fn arg_other_validator(session: &Session, args: &[Arg], index: usize) -> Faulty<Option<Validator>> {
     match args.get(index) {
         None | Some(Arg::Plain(Value::Null)) => Ok(None),
-        Some(Arg::Validator(mm_idx, prop_id, part)) => {
-            build_validator(session, *mm_idx, *prop_id, part).map(|(v, _)| Some(v))
+        Some(Arg::Validator(mm_idx, owner, part)) => {
+            build_validator(session, *mm_idx, *owner, part).map(|(v, _)| Some(v))
         }
         _ => Err(Fault::Unsupported(
             "expected a validator or null argument".into(),

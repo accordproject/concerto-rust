@@ -329,13 +329,14 @@ pub enum Arg {
         fqn: String,
         processed: ProcessedScalar,
     },
-    /// A validator reached through a property (`validatorref` with a
-    /// `propref` owner): the property's model manager pool index, the
-    /// property itself, and which validator it names (`"validator"`, the
+    /// A validator (`validatorref`): its owner's model manager pool index,
+    /// the owner (a property, from a `propref`, or a scalar declaration,
+    /// from a `declref`), and which validator it names (`"validator"`, the
     /// regex/length or numeric-domain one; `"size"`, the collection-size
-    /// one) — `ops.rs` rebuilds the actual validator from these, since no
-    /// production `Property`/`Field` API returns one yet (P2-04/P2-05).
-    Validator(usize, PropId, String),
+    /// one) — `ops.rs` rebuilds or reads the actual validator from these,
+    /// since no production `Property`/`Field` API returns one yet
+    /// (P2-04/P2-05).
+    Validator(usize, ValidatorOwner, String),
     /// A decorator: the pool index of its model manager, which of its
     /// declaration/property/model-file's decorators it is, and its position
     /// (P2-07).
@@ -364,6 +365,15 @@ pub enum Arg {
         class: String,
         args: Vec<Value>,
     },
+}
+
+/// What owns a `validatorref`'s validator: a property (`propref`) or a
+/// scalar declaration (`declref`, `ScalarDeclaration.getValidator()`'s
+/// receiver in TS).
+#[derive(Debug, Clone, Copy)]
+pub enum ValidatorOwner {
+    Prop(PropId),
+    Decl(DeclId),
 }
 
 /// What a `declref` resolved to: a handle into an already-registered model
@@ -1004,11 +1014,11 @@ impl<'h> Session<'h> {
         }
     }
 
-    /// A `validatorref`: which validator (`part`) of which property
-    /// (`owner`, a `propref`). A `declref`-owned `validatorref` (a scalar
-    /// declaration's own validator) has no fixture in the corpus today and
-    /// is reported the same way any other unhandled `@@oracle` kind is.
-    fn validatorref(&mut self, v: &Value) -> Faulty<(usize, PropId, String)> {
+    /// A `validatorref`: which validator (`part`) of which owner: a
+    /// property (`propref`) or a registered scalar declaration (`declref`,
+    /// whose `ScalarDeclaration.getValidator()` TS returns). A `declref` on
+    /// an unregistered (`mfnew`) model file has no Rust handle yet.
+    fn validatorref(&mut self, v: &Value) -> Faulty<(usize, ValidatorOwner, String)> {
         let part = v
             .get("part")
             .and_then(Value::as_str)
@@ -1020,10 +1030,18 @@ impl<'h> Session<'h> {
         match owner.get(M).and_then(Value::as_str) {
             Some("propref") => {
                 let (mm, id) = self.propref(owner)?;
-                Ok((mm, id, part))
+                Ok((mm, ValidatorOwner::Prop(id), part))
             }
+            Some("declref") => match self.declref(owner)? {
+                DeclTarget::Registered(mm, id) => Ok((mm, ValidatorOwner::Decl(id), part)),
+                DeclTarget::Detached { .. } => Err(blocked(
+                    "a validator of a declaration in a model file that is not \
+                     registered (mfnew) has no Rust handle",
+                    "ModelFile.new",
+                )),
+            },
             _ => Err(blocked(
-                "a validator whose owner is not a property has no Rust handle yet",
+                "a validator whose owner is not a property or declaration has no Rust handle yet",
                 "Validator.new",
             )),
         }
