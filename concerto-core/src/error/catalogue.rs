@@ -62,11 +62,18 @@
 //! One further entry, `"pre-port"`, is not a TS template at all: it is the
 //! escape hatch [`super::ContractError::pre_port`] uses for a call site that
 //! has not yet been faithfully ported (module doc on [`super`]).
+//!
+//! Nor is a maintainer-accepted replacement for a TS crash (PORTING.md 7.3,
+//! category `maintainer-accepted` in `DIVERGENCES.md`): such an entry cites
+//! its DV row in `sources` in place of a TS throw site
+//! (`property-process-relationshipnotype`, DV-017).
 
 use super::{CatalogueEntry, Renderer};
 
-/// The message catalogue. Every entry but `"pre-port"` is a verbatim TS
-/// template, byte for byte, with the throw site(s) it was ported from.
+/// The message catalogue. Every entry but `"pre-port"` and the
+/// maintainer-accepted DIVERGENCES.md replacements (each cites its DV row in
+/// `sources`) is a verbatim TS template, byte for byte, with the throw
+/// site(s) it was ported from.
 pub const CATALOGUE: &[CatalogueEntry] = &[
     // ---- P0-04b trial payload (ModelUtil, NumberValidator, ScalarDeclaration),
     //      absorbed unchanged (PORTING.md, the maintainer's second #42 comment) ----
@@ -669,6 +676,21 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &[
             "src/introspect/property.ts:124",
             "src/introspect/property.ts:137",
+        ],
+    },
+    // ---- #218 addition: not a TS template. DIVERGENCES.md DV-017
+    //      (maintainer-accepted): TS's `Property.process` crashes with a V8
+    //      `TypeError` (`Cannot read properties of undefined|null (reading
+    //      'name')`) on a `RelationshipProperty` whose `type` is missing or
+    //      `null`; Rust raises this `IllegalModelException` instead, worded
+    //      like `RelationshipDeclaration.validate`'s own
+    //      `relationshipdeclaration-validate-*` templates. ----
+    CatalogueEntry {
+        code: "property-process-relationshipnotype",
+        template: "Relationship {name} must have a type",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust DV-017: replaces the V8 TypeError at src/introspect/property.ts:165 (maintainer-accepted, accordproject/concerto-rust#218)",
         ],
     },
     // ---- P4-07 additions (Property.validate, RelationshipDeclaration.validate

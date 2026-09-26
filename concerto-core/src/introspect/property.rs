@@ -85,7 +85,20 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
         "LongProperty" => (Some("Long".to_string()), true),
         "StringProperty" => (Some("String".to_string()), true),
         "ObjectProperty" => (object_or_relationship_type(), true),
-        "RelationshipProperty" => (object_or_relationship_type(), true),
+        "RelationshipProperty" => {
+            // DV-017: TS reads `this.ast.type.name` unguarded here and throws
+            // a `TypeError` for a missing or `null` `type`; Rust rejects it
+            // with an `IllegalModelException` instead (maintainer decision
+            // on accordproject/concerto-rust#218).
+            if let Some(mut err) = relationship_without_type(ast, &name) {
+                // TS passes `this.getModelFile()` to the exception; the WASM
+                // shim (`propertyProcess`) substitutes the real JS model
+                // file when this is `Some`.
+                err.model_file = Some(None);
+                return Err(err.into());
+            }
+            (object_or_relationship_type(), true)
+        }
         // `EnumProperty`, or anything else: the TS switch has no matching
         // `case`, so `this.type` is left unassigned.
         _ => (None, false),
@@ -104,6 +117,41 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
         array,
         optional,
     })
+}
+
+/// DV-017 (maintainer-accepted, accordproject/concerto-rust#218): a
+/// `RelationshipProperty` node whose `type` is missing or `null`.
+///
+/// TS `Property.process`'s `RelationshipProperty` arm (property.ts:165) reads
+/// `this.ast.type.name` with no guard (its `ObjectProperty` arm, two lines
+/// above, has one), so V8 throws `TypeError: Cannot read properties of
+/// undefined (reading 'name')` (or `of null`) from the `ModelFile`
+/// constructor. Rust does not port that crash: it raises
+/// `IllegalModelException: Relationship <name> must have a type`
+/// (`property-process-relationshipnotype`), worded like TS's own
+/// `RelationshipDeclaration.validate` rejections, with this property's AST
+/// `location` and its model file (attached by the caller: the declaration
+/// loader natively, the WASM shim in rust mode). Any other `type`
+/// value (a string, a number, an object with no `name`) does not crash TS,
+/// so it is not this check's.
+///
+/// Returns `None` when the node is not a `RelationshipProperty` or has a
+/// non-null `type`. `name` is the (already validated) property name.
+pub(crate) fn relationship_without_type(ast: &Value, name: &str) -> Option<ContractError> {
+    let class = ast.get("$class").and_then(Value::as_str)?;
+    if get_short_name(class) != "RelationshipProperty" {
+        return None;
+    }
+    if !ast.get("type").is_none_or(Value::is_null) {
+        return None;
+    }
+    let mut err = ContractError::new(
+        ErrorKind::IllegalModel,
+        "property-process-relationshipnotype",
+        vec![("name", name.to_string())],
+    );
+    err.location = ast.get("location").cloned();
+    Some(err)
 }
 
 /// A single property of a concept-like or enum declaration. Each variant also
@@ -275,6 +323,26 @@ impl TryFrom<&serde_json::Value> for Property {
             });
         }
         let kind = get_short_name(class);
+
+        // DV-017: a `RelationshipProperty` with a missing or `null` `type`
+        // (see [`relationship_without_type`]). TS's `Property.process` checks
+        // the name before its `$class` switch, so an invalid name is still
+        // reported first; a non-string name is left to serde below.
+        if kind == "RelationshipProperty"
+            && let Some(name) = value.get("name").and_then(Value::as_str)
+            && let Some(no_type) = relationship_without_type(value, name)
+        {
+            if is_valid_identifier(name) {
+                return Err(no_type.into());
+            }
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "property-process-invalidname",
+                vec![("name", name.to_string())],
+            );
+            err.location = value.get("location").cloned();
+            return Err(err.into());
+        }
 
         // Parse into whatever struct the `$class` says this is. If serde
         // chokes, the JSON is malformed for the kind it claims to be.
@@ -567,6 +635,107 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.to_string().contains("Invalid property name '1bad'"));
+    }
+
+    /// A `RelationshipProperty` node named `name` whose `type` is `ty`
+    /// (`None`: no `type` key at all).
+    fn relationship(name: &str, ty: Option<Value>) -> Value {
+        let mut node = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+            "name": name,
+            "isArray": false,
+            "isOptional": false,
+            "location": {
+                "$class": "concerto.metamodel@1.0.0.Range",
+                "start": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 107, "line": 5, "column": 3 },
+                "end": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 129, "line": 6, "column": 1 }
+            }
+        });
+        if let Some(ty) = ty {
+            node["type"] = ty;
+        }
+        node
+    }
+
+    fn contract(err: ConcertoError) -> ContractError {
+        match err {
+            ConcertoError::Contract(contract) => *contract,
+            other => panic!("expected a contract error, got {other:?}"),
+        }
+    }
+
+    /// DV-017 (#218): TS throws `TypeError: Cannot read properties of
+    /// undefined|null (reading 'name')` from `Property.process` for a
+    /// `RelationshipProperty` with a missing or `null` `type`; Rust raises
+    /// an `IllegalModelException` instead, through `propertyProcess` (the
+    /// rust-mode view), with the node's location and the model file to be
+    /// filled in by the shim.
+    #[test]
+    fn process_rejects_a_relationship_with_a_missing_or_null_type() {
+        for ty in [None, Some(Value::Null)] {
+            let ast = relationship("managerId", ty.clone());
+            let err = contract(process::<ConcertoError>(&ast).unwrap_err());
+            assert_eq!(err.kind, ErrorKind::IllegalModel, "{ty:?}");
+            assert_eq!(err.code, "property-process-relationshipnotype");
+            assert_eq!(err.message(), "Relationship managerId must have a type");
+            assert_eq!(err.location, ast.get("location").cloned());
+            assert_eq!(err.model_file, Some(None));
+            assert_eq!(
+                err.final_message(),
+                "Relationship managerId must have a type Line 5 column 3, to line 6 column 1. "
+            );
+        }
+    }
+
+    /// Only a missing or `null` `type` crashes TS: any other value's `.name`
+    /// is just `undefined`, which `RelationshipDeclaration.validate` rejects
+    /// later ("Relationship must have a type"), so `process` still accepts
+    /// it with no type, as before. `ObjectProperty` has TS's own guard.
+    #[test]
+    fn process_keeps_other_typeless_relationships_and_object_properties() {
+        for ty in [
+            serde_json::json!({}),
+            serde_json::json!("x"),
+            serde_json::json!(0),
+        ] {
+            let processed = process::<ConcertoError>(&relationship("home", Some(ty))).unwrap();
+            assert_eq!(processed.property_type, None);
+            assert!(processed.type_set);
+        }
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+            "name": "address",
+            "type": null
+        }))
+        .unwrap();
+        assert_eq!(processed.property_type, None);
+    }
+
+    /// TS checks the name before its `$class` switch, so an invalid name is
+    /// still what a typeless relationship reports first.
+    #[test]
+    fn process_reports_an_invalid_name_before_a_missing_relationship_type() {
+        let err = contract(process::<ConcertoError>(&relationship("1bad", None)).unwrap_err());
+        assert_eq!(err.code, "property-process-invalidname");
+    }
+
+    /// The native construction path (`Property::try_from`) raises the same
+    /// DV-017 error, ahead of the serde step that used to reject it with
+    /// "invalid RelationshipProperty: missing field `type`".
+    #[test]
+    fn try_from_rejects_a_relationship_with_a_missing_or_null_type() {
+        for ty in [None, Some(Value::Null)] {
+            let ast = relationship("dept", ty);
+            let err = contract(Property::try_from(&ast).unwrap_err());
+            assert_eq!(err.kind, ErrorKind::IllegalModel);
+            assert_eq!(err.code, "property-process-relationshipnotype");
+            assert_eq!(err.message(), "Relationship dept must have a type");
+            assert_eq!(err.location, ast.get("location").cloned());
+            // Left for the declaration loader to attach the file name.
+            assert_eq!(err.model_file, None);
+        }
+        let err = contract(Property::try_from(&relationship("1bad", None)).unwrap_err());
+        assert_eq!(err.code, "property-process-invalidname");
     }
 
     fn prop(json: serde_json::Value) -> Property {

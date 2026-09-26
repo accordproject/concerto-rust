@@ -361,6 +361,41 @@ export function runChecks(engine) {
     return { errorMessage: err.message };
   });
 
+  // #218: two rust-mode view bindings, driven with minimal stand-in views.
+  check('propertyProcess rejects a relationship with no type (DV-017)', () => {
+    const modelFile = { getName: () => 'rel.cto' };
+    for (const type of [undefined, null]) {
+      const ast = { $class: `${MM}.RelationshipProperty`, name: 'dept', isArray: false, isOptional: false };
+      if (type === null) ast.type = null;
+      const err = thrown(() => engine.propertyProcess({ ast, getModelFile: () => modelFile }));
+      assert(err instanceof EngineError, `threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `kind ${err.payload.kind}`);
+      assert(err.payload.code === 'property-process-relationshipnotype', `code ${err.payload.code}`);
+      assert(err.message === 'Relationship dept must have a type', `message ${err.message}`);
+      assert(err.payload.modelFile === modelFile, 'the view\'s model file is attached');
+    }
+    const typed = engine.propertyProcess({
+      ast: { $class: `${MM}.RelationshipProperty`, name: 'dept', type: { $class: `${MM}.TypeIdentifier`, name: 'Dept' } },
+      getModelFile: () => ({}),
+    });
+    assert(typed.type === 'Dept', `type ${typed.type}`);
+  });
+
+  check('classDeclarationGetProperties resolves any non-null super type, as TS does', () => {
+    const own = [{ name: 'own' }];
+    const modelFile = { isImportedType: () => false, getType: () => null };
+    const view = (superType) => ({
+      superType, ast: {}, modelFile, getModelFile: () => modelFile, getOwnProperties: () => own,
+    });
+    const none = [...engine.classDeclarationGetProperties(view(null))];
+    assert(none.length === 1 && none[0] === own[0], `null super type gave ${JSON.stringify(none)}`);
+    for (const superType of ['', undefined]) {
+      const err = thrown(() => engine.classDeclarationGetProperties(view(superType)));
+      assert(err instanceof EngineError && err.payload.kind === 'IllegalModel', `${JSON.stringify(superType)} threw ${err}`);
+      assert(err.message === `Could not find super type ${superType}`, `message ${err.message}`);
+    }
+  });
+
   mm.free();
   return rows;
 }
