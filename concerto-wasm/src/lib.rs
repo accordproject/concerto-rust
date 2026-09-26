@@ -1630,10 +1630,15 @@ fn short_class(ast_class: &str) -> &str {
 /// `process`/`validate` to the `propertyProcess`/`propertyValidate`/
 /// `fieldProcess`/`relationshipDeclarationValidate` bindings). Returns `{superType, idField,
 /// addIdentifierField, addTimestampField}`:
-/// - `superType`: `this.ast.superType.name` when the AST names one;
-///   otherwise `null` only for the system model's own `Concept` declaration,
-///   else the implicit `'Concept'` (TS: the `this.modelFile.isSystemModelFile()
-///   && this.name === 'Concept'` exemption).
+/// - `superType`: `this.ast.superType.name` when the AST names one — including
+///   the literal text `"undefined"` when a `superType` node is present but
+///   carries no `name` at all (`this.ast.superType.name` reads as `undefined`
+///   there, not `null`, and every downstream guard treats those two
+///   differently: only an explicit `name: null` reads as "no super type",
+///   review finding 2 on accordproject/concerto-rust#217); otherwise `null`
+///   only for the system model's own `Concept` declaration, else the implicit
+///   `'Concept'` (TS: the `this.modelFile.isSystemModelFile() && this.name
+///   === 'Concept'` exemption).
 /// - `idField`/`addIdentifierField`: mirrors the `this.ast.identified` match;
 ///   `addIdentifierField` tells the view to still call its own
 ///   `addIdentifierField()` (it pushes a real `Field` view).
@@ -1647,28 +1652,67 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         let has_explicit_super_type = !nullish(&explicit_super_type);
         let explicit_super_type_name = if has_explicit_super_type {
             let name = get(&explicit_super_type, "name")?;
-            if nullish(&name) {
+            if name.is_null() {
                 // TS: `this.superType = this.ast.superType.name;` — a plain
-                // assignment, taken exactly as given. A `superType` node
-                // with no `name` (or an explicit `name: null`) leaves
-                // `this.superType` itself nullish, which TS's own
-                // `_resolveSuperType`/`validate` already treat as "nothing
-                // to resolve" (`!this.superType`/`!== null`); `js_string`
-                // would instead stringify it to the literal text
-                // `"undefined"`/`"null"` — truthy in both engines — and
-                // send it on to resolve a super type that was never named
-                // (accordproject/concerto-rust#217, review finding 2: "Could
-                // not find super type undefined").
+                // assignment, taken exactly as given. An explicit `name:
+                // null` leaves `this.superType` itself `null`, and every
+                // downstream guard (`_resolveSuperType`'s `!this.superType`,
+                // `validate`/`getProperties`'s `!== null`) reads that as
+                // "nothing to resolve" — this is the one shape that really
+                // behaves as "no super type at all" (accordproject/concerto-rust#217,
+                // review finding 1).
+                None
+            } else if name.is_undefined() {
+                // A `superType` node with no `name` key at all is a
+                // different shape from the one above, even though both are
+                // "nullish": `this.ast.superType.name` reads as `undefined`,
+                // not `null`, so `this.superType` becomes `undefined` too —
+                // and `undefined !== null`, so `validate`/`getProperties`
+                // do NOT treat this as "nothing to resolve"; they carry on
+                // to resolve a super type named `undefined` (JS string
+                // concatenation coerces it to the literal text
+                // `"undefined"`), fail to find one, and raise
+                // `IllegalModelException: Could not find super type
+                // undefined`. Passing that same literal string through here
+                // reproduces the failure the same way, rather than
+                // silently discarding the (missing) name as "no super
+                // type" (accordproject/concerto-rust#217, review finding 2).
+                Some("undefined".to_string())
+            } else if !name.is_truthy() {
+                // A falsy, non-nullish `name` (`0`, `false`, or an empty
+                // string — this branch catches all three; the empty string
+                // also happens to be exactly what `receiver` below would
+                // return unchanged, so folding it in here changes nothing
+                // observable) — review finding 2's other half, the "only
+                // half fixed" one: TS keeps `this.superType` exactly as
+                // falsy as the AST gave it, and every downstream reader
+                // that matters —
+                // `_resolveSuperType`'s `!this.superType`, `getSuperType`'s
+                // same check — short-circuits on that falsiness before ever
+                // reaching `!== null`/string-method territory (the one
+                // `!== null` guard that doesn't, `validate`'s self-extending
+                // check, only ever calls back into `_resolveSuperType`,
+                // which short-circuits right back out). `None` reaches the
+                // same "nothing to resolve" outcome as the real `null` case
+                // above (accordproject/concerto-rust#217).
                 None
             } else {
-                // A fuzz-mutated, non-string `name` (a bool, a number, an
-                // array, ...) must not throw here the way `receiver` would
-                // (accordproject/concerto-rust#217). `js_string` gives the
-                // typed Rust representation the same coercion
-                // `ecma::to_js_string` gives non-string AST fields
-                // elsewhere in the crate (DV-002), not a "not a function"
-                // error.
-                Some(js_string(&name)?)
+                // A truthy `name`: a real (possibly empty-looking but
+                // non-empty) string is returned as itself; a truthy
+                // non-string (a bool, a number, an array, ...) is a
+                // different divergence review finding 2 flagged under the
+                // same "stringify-truthy" heading: TS keeps `this.superType`
+                // as that raw, non-string value — never stringifying it —
+                // and it is only ever *used* as a string once resolution
+                // reaches `ModelFile.getLocalType`'s `type.startsWith(...)`,
+                // which throws `TypeError: type.startsWith is not a
+                // function` for anything that isn't really a string.
+                // `js_string` (an earlier version of this fix) coerced it
+                // into a valid-looking name instead — `["Vehicle"]` becomes
+                // the resolvable string `"Vehicle"` — and let Rust load a
+                // model TS rejects. `receiver` reproduces that exact
+                // `TypeError` here instead (accordproject/concerto-rust#217).
+                Some(receiver(&name, "type", "startsWith")?)
             }
         } else {
             None
@@ -1711,12 +1755,19 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
                 // TS: `this.idField = this.ast.identified.name;` — a plain
                 // assignment, taken exactly as given, later read with a
-                // truthy check (`if (this.idField)`). A nullish `name` must
-                // stay nullish here too, not stringify to the truthy
-                // literal text `"undefined"`/`"null"` (review finding 2,
-                // accordproject/concerto-rust#217).
+                // truthy check (`if (this.idField)`) everywhere that
+                // matters (`ClassDeclaration.validate`'s "does not contain
+                // this property" check among them). Any falsy `name` — not
+                // just nullish, but also `0`, `false` and `""` — must stay
+                // out of the returned `idField` here too, not stringify
+                // into a truthy-but-wrong literal text (`"undefined"`/
+                // `"null"`/`"0"`/`"false"`) that Rust would then go on to
+                // look up as a real property name and fail to find (review
+                // finding 2, accordproject/concerto-rust#217 — the "only
+                // half fixed" half: an earlier version of this fix handled
+                // only the nullish shapes).
                 let name = get(&identified, "name")?;
-                if nullish(&name) {
+                if !name.is_truthy() {
                     None
                 } else {
                     Some(js_string(&name)?)

@@ -361,15 +361,19 @@ export function runChecks(engine) {
     return { errorMessage: err.message };
   });
 
-  // accordproject/concerto-rust#217 (T2a review finding 2): `classDeclarationProcess`
-  // must not stringify a nullish `superType.name`/`identified.name` into the
-  // truthy literal text "undefined"/"null" — TS assigns them verbatim
-  // (`this.superType = this.ast.superType.name`, `this.idField =
-  // this.ast.identified.name`) and only ever checks them for truthiness
-  // downstream, so a `superType` node with no `name` (or an explicit `name:
-  // null`) must come back `null` here too, not a super type Rust would then
-  // fail to resolve ("Could not find super type undefined").
-  check('classDeclarationProcess keeps a nullish superType/identified name nullish', () => {
+  // accordproject/concerto-rust#217 (T2a review finding 2, corrected): TS
+  // assigns `this.superType = this.ast.superType.name` verbatim, so a
+  // `superType` node with no `name` key at all ends up `undefined` there,
+  // not `null` — and unlike `identified.name` (checked with a plain
+  // truthiness test downstream), `superType` is checked with `!== null`, so
+  // `undefined` is NOT read as "nothing to resolve": TS goes on to resolve a
+  // super type named `undefined` (string concatenation coerces it to that
+  // literal text) and fails with "Could not find super type undefined".
+  // `classDeclarationProcess` must reproduce that distinction — this is
+  // exactly the divergence the finding flagged: an earlier fix conflated
+  // "no `name` key" with "explicit `name: null`" and silently accepted both
+  // as "no super type", which is only correct for the latter.
+  check('classDeclarationProcess tells a missing superType.name from an explicit null apart', () => {
     const mockDeclaration = (ast) => ({
       ast,
       name: 'Foo',
@@ -379,12 +383,17 @@ export function runChecks(engine) {
 
     // `superType: {}` (present, but no `name` key): TS ends up with
     // `this.superType === undefined`, never the implicit 'Concept' default
-    // (that only applies when `ast.superType` itself is absent) and never a
-    // super type Rust tries to resolve.
+    // (that only applies when `ast.superType` itself is absent) but also
+    // never silently "no super type" — it is a real, unresolvable name,
+    // reproduced here as the literal text "undefined".
     const noName = engine.classDeclarationProcess(mockDeclaration({ superType: {}, properties: [] }));
-    assert(noName.superType === null, `superType:{} -> superType ${JSON.stringify(noName.superType)}`);
+    assert(
+      noName.superType === 'undefined',
+      `superType:{} -> superType ${JSON.stringify(noName.superType)}`,
+    );
 
-    // `superType.name: null` explicitly: same outcome.
+    // `superType.name: null` explicitly: TS's `this.superType` is exactly
+    // `null` here, which really does read as "no super type at all".
     const nullName = engine.classDeclarationProcess(
       mockDeclaration({ superType: { name: null }, properties: [] }),
     );
@@ -392,7 +401,11 @@ export function runChecks(engine) {
 
     // `identified.name: null`, with a real `IdentifiedBy` $class: TS's
     // `this.idField = this.ast.identified.name` stays `null`, not the
-    // literal text "null" a property lookup would then fail to find.
+    // literal text "null" a property lookup would then fail to find. Unlike
+    // `superType`, `idField` is read with a plain truthiness check
+    // downstream, so a missing `name` key would behave the same as an
+    // explicit `null` here (both falsy) — no `undefined`/`null` distinction
+    // to reproduce.
     const nullIdField = engine.classDeclarationProcess(
       mockDeclaration({
         identified: { $class: `${MM}.IdentifiedBy`, name: null },
@@ -408,6 +421,68 @@ export function runChecks(engine) {
     assert(named.superType === 'Base', `superType.name:"Base" -> superType ${JSON.stringify(named.superType)}`);
 
     return { noName, nullName, nullIdField, named };
+  });
+
+  // accordproject/concerto-rust#217 (T2a review finding 2, "only half
+  // fixed"): the fix above only told nullish `superType`/`identified` names
+  // apart; it left every other falsy shape — `0`, `false`, `""` — to fall
+  // through to `js_string`, which stringifies them into truthy-looking text
+  // (`"0"`, `"false"`) a property lookup then fails to find. TS's
+  // `this.idField = this.ast.identified.name` is read everywhere downstream
+  // with a plain truthiness check (`if (this.idField)`), so these three
+  // must come back exactly like a nullish name: no id field at all.
+  check('classDeclarationProcess treats a falsy, non-nullish identified.name as no id field', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Manufactured',
+      fqn: 'org.example@1.0.0.Manufactured',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const results = {};
+    for (const name of [0, false, '']) {
+      const result = engine.classDeclarationProcess(
+        mockDeclaration({
+          identified: { $class: `${MM}.IdentifiedBy`, name },
+          properties: [],
+        }),
+      );
+      assert(
+        result.idField === null,
+        `identified.name:${JSON.stringify(name)} -> idField ${JSON.stringify(result.idField)}`,
+      );
+      results[JSON.stringify(name)] = result;
+    }
+    return results;
+  });
+
+  // accordproject/concerto-rust#217 (T2a review finding 2, the same "only
+  // half fixed" gap, on `superType.name` instead): a *truthy* non-string
+  // name (an array, a non-zero number, `true`, ...) is the other half TS
+  // never stringifies — `this.superType` stays the raw value, and it is
+  // only ever *used* as a string once resolution reaches
+  // `ModelFile.getLocalType`'s `type.startsWith(this.getNamespace())`,
+  // which throws `TypeError: type.startsWith is not a function` for
+  // anything that isn't really a string. `js_string` (an earlier version of
+  // this fix) coerced `["Vehicle"]` into the resolvable string `"Vehicle"`
+  // instead, letting Rust load a model TS rejects.
+  check('classDeclarationProcess reproduces the TypeError for a truthy non-string superType.name', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Car',
+      fqn: 'org.example@1.0.0.Car',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const err = thrown(() =>
+      engine.classDeclarationProcess(
+        mockDeclaration({ superType: { name: ['Vehicle'] }, properties: [] }),
+      ),
+    );
+    assert(err instanceof EngineError, `classDeclarationProcess threw ${err}`);
+    assert(/type\.startsWith is not a function/.test(err.message), `message ${err.message}`);
+
+    return { errorMessage: err.message };
   });
 
   // accordproject/concerto-rust#217 (T2a, adversarial review finding 1):
