@@ -15,7 +15,9 @@ use serde_json::Value;
 
 use crate::derive::Named;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::decorator::{Decorated, Decorator, WithDecorators, parse_decorators};
+use crate::introspect::decorator::{
+    Decorated, Decorator, WithDecorators, null_decorator, parse_decorators,
+};
 use crate::introspect::validators;
 use crate::introspect::{FullyQualified, Named, Typed, declared_class};
 use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
@@ -294,6 +296,14 @@ impl TryFrom<&serde_json::Value> for Property {
                 file_name: None,
                 location: None,
             });
+        }
+        // TS `Property.process` (property.ts) starts with `super.process()`
+        // (`Decorated.process`), so a `null` decorator node (DV-018,
+        // `null_decorator`) is reported ahead of every other property check.
+        // The model file's name is filled in by `Declaration::from_model_json`
+        // (`with_model_file`).
+        if let Some(err) = null_decorator(value) {
+            return Err(err.into());
         }
         // TS `Property.process` (property.ts): `ModelUtil.isValidIdentifier`
         // treats a nullish `ast.name` as valid (DV-002: `String(undefined)`/
