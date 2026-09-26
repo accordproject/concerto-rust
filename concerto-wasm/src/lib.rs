@@ -63,7 +63,9 @@ use concerto_core::instance::{
 };
 use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
-use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
+use concerto_core::introspect::decorator::{
+    Decorator, DecoratorArgument, DecoratorValidationOptions,
+};
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
@@ -277,7 +279,12 @@ fn call(value: &JsValue, name: &str, args: &[JsValue], expression: &str) -> Resu
     Reflect::apply(method, value, &list).map_err(Error::Js)
 }
 
-/// `value.name?.()`: `None` when the method is nullish.
+/// `value.name?.()`: `None` when the method is nullish. `value` itself is
+/// read unguarded, matching every TS call site this backs (including
+/// `MapValueType.validate`'s deliberately-unguarded `decl.isMapDeclaration?.()`,
+/// P4-08e/#189 DV note): a nullish `value` throws the same
+/// "Cannot read properties of null/undefined" `TypeError` TS's property
+/// read would.
 fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValue>> {
     let method = get(value, name)?;
     if method.is_undefined() || method.is_null() {
@@ -1166,7 +1173,13 @@ pub fn property_validate(
         .unwrap_or(JsValue::UNDEFINED);
     let body = || -> Result<()> {
         let property_type = get(&property, "type")?;
-        if !nullish(&property_type) {
+        // TS: `if (this.type)`, JS truthiness — not just nullish, so an
+        // empty-string type name (P4-08e/#189 DV: a `RelationshipProperty`
+        // whose AST `type.name` is `""`) skips `resolveType` here too,
+        // exactly as it does in TS, leaving the "no type" case to the
+        // subclass's own check (`relationshipDeclarationValidate`'s
+        // `!this.getType()`) instead of a generic "Undeclared type" error.
+        if property_type.is_truthy() {
             let fqn = js_string(&call(
                 &property,
                 "getFullyQualifiedName",
@@ -1186,7 +1199,7 @@ pub fn property_validate(
         let array = get(&property, "array")?.is_truthy();
         if !nullish(&size_validator) && !array {
             let mut is_map_type = false;
-            if !nullish(&property_type) {
+            if property_type.is_truthy() {
                 let is_primitive =
                     call(&property, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
                 if !is_primitive
@@ -1376,7 +1389,11 @@ pub fn relationship_declaration_validate(
         // effect here.
         let property_type = call(&view, "getType", &[], "this.getType")?;
 
-        if nullish(&property_type) {
+        // TS: `if (!this.getType())`, JS falsiness — not just nullish, so an
+        // empty-string type name (P4-08e/#189, DV: a `RelationshipProperty`
+        // whose AST `type.name` is `""`) hits this check too, not the
+        // generic "Undeclared type" resolution further down.
+        if !property_type.is_truthy() {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-notype",
@@ -2425,7 +2442,15 @@ pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> 
             &[type_name_ast],
             "modelFile.getType",
         )?;
-        let valid = mu::is_valid_map_key_scalar(&JsContext, Some(&decl))?;
+        // `isValidMapKeyScalar(decl)` reads `decl?.isScalarDeclaration?.()`
+        // (modelutil.ts): null-safe on `decl` itself, unlike
+        // `MapValueType.validate`'s deliberately-unguarded
+        // `decl.isMapDeclaration?.()` (module doc on `call_optional`,
+        // P4-08e/#189). An undeclared key type (`getType` returning nullish)
+        // must read as `None` here, not as a JsValue `null`/`undefined`
+        // `decl` passed on to a `Some`.
+        let decl = (!nullish(&decl)).then_some(decl);
+        let valid = mu::is_valid_map_key_scalar(&JsContext, decl.as_ref())?;
         if valid != Some(true) {
             let parent = get(&view, "parent")?;
             let parent_name = js_string(&get(&parent, "name")?)?;
@@ -3398,6 +3423,36 @@ impl ModelManagerHandle {
     #[wasm_bindgen(js_name = setMetamodelValidation)]
     pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
         self.manager.set_metamodel_validation(metamodel_validation);
+    }
+
+    /// TS `ModelManagerOptions.decoratorValidation`
+    /// (`ModelManager::set_decorator_validation`). Additive, on the same
+    /// pattern as [`Self::set_dangerously_allow_reserved_system_type_names_in_user_models`]:
+    /// [`Self::new`] leaves this at its `Default` (both fields `None`, i.e.
+    /// TS's `DEFAULT_DECORATOR_VALIDATION`, the check disabled), so every
+    /// existing caller is unaffected until it calls this.
+    ///
+    /// `options` is a plain JS object shaped like the TS constructor option,
+    /// `{missingDecorator?, invalidDecorator?}`; either or both keys may be
+    /// omitted. As in TS, only a truthy (non-empty string) value enables the
+    /// check for that field — `level_option` reproduces the same
+    /// `validationOptions.missingDecorator || ...` truthiness TS uses when it
+    /// reads these fields elsewhere.
+    #[wasm_bindgen(js_name = setDecoratorValidation)]
+    pub fn set_decorator_validation(
+        &mut self,
+        options: &JsValue,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let missing_decorator = level_option(options, "missingDecorator")?;
+            let invalid_decorator = level_option(options, "invalidDecorator")?;
+            self.manager
+                .set_decorator_validation(DecoratorValidationOptions {
+                    missing_decorator,
+                    invalid_decorator,
+                });
+            Ok(())
+        })
     }
 
     /// TS `BaseModelManager.validateAst(modelFile)` (P4-08b), for a model
