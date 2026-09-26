@@ -593,6 +593,16 @@ impl ModelManager {
         self.add_loaded_model_file(mf)
     }
 
+    /// Registers a model file that is already loaded
+    /// ([`ModelFile::from_owned_json_with_definitions`]), with the same
+    /// duplicate-namespace check [`ModelManager::add_model_with_definitions`]
+    /// runs. Same result, same errors, as loading its AST again with that
+    /// method (P5-06a: the lazy-views spike loads a file once, then registers
+    /// it without a second parse).
+    pub fn add_model_file(&mut self, mf: ModelFile) -> Result<()> {
+        self.add_loaded_model_file(mf)
+    }
+
     /// The duplicate-namespace check and registration
     /// [`ModelManager::add_model_with_definitions`] runs once the file is
     /// loaded.

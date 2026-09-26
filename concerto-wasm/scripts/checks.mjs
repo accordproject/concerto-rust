@@ -396,6 +396,43 @@ export function runChecks(engine) {
     }
   });
 
+  // P5-06a lazy-views spike: the staging bindings load an AST once, then
+  // validate and register the loaded file without it crossing again.
+  check('a staged model file validates and commits like addModelWithDefinitions', () => {
+    const h = new engine.ModelManagerHandle();
+    const text = JSON.stringify({ ...MODEL, namespace: 'org.staged@1.0.0' });
+    const epoch = h.epoch();
+    const stage = h.stageModelFile(text, undefined, 'staged.cto');
+    assert(typeof stage === 'number', `stage ${stage}`);
+    assert(h.epoch() === epoch, 'staging does not move the epoch');
+    assert(h.modelFileId('org.staged@1.0.0') === undefined, 'a staged file is not registered');
+    assert(h.modelFileValidateStaged(stage) === true, 'the staged file validates');
+    const id = h.commitStagedModelFile(stage);
+    assert(id === h.modelFileId('org.staged@1.0.0'), `commit returned ${id}`);
+    assert(h.epoch() > epoch, 'commit moves the epoch');
+    assert(h.commitStagedModelFile(stage) === undefined, 'a stage commits once');
+    assert(h.modelFileValidateStaged(stage) === false, 'a committed stage is gone');
+    h.dropStagedModelFile(stage);
+    // Registering the same namespace again fails as addModelWithDefinitions does.
+    const again = h.stageModelFile(text, undefined, 'staged.cto');
+    const viaStage = thrown(() => h.commitStagedModelFile(again));
+    const viaText = thrown(() => h.addModelWithDefinitions(text, undefined, 'staged.cto', false));
+    assert(viaStage.message === viaText.message, `${viaStage.message} vs ${viaText.message}`);
+    // A load error is the one the text path raises.
+    const bad = JSON.stringify({ ...MODEL, namespace: 'org.bad@1.0.0', declarations: [{ $class: `${MM}.Nope`, name: 'X' }] });
+    const stageErr = thrown(() => h.stageModelFile(bad, undefined, 'bad.cto'));
+    const textErr = thrown(() => h.addModelWithDefinitions(bad, undefined, 'bad.cto', false));
+    assert(stageErr.message === textErr.message, `${stageErr.message} vs ${textErr.message}`);
+    // Invalid content is reported by validateStaged as by validateDetached.
+    const broken = JSON.stringify(BROKEN);
+    const s2 = h.stageModelFile(broken, undefined, 'broken.cto');
+    const e1 = thrown(() => h.modelFileValidateStaged(s2));
+    const e2 = thrown(() => h.modelFileValidateDetached(broken, undefined, 'broken.cto'));
+    assert(e1.message === e2.message, `${e1.message} vs ${e2.message}`);
+    h.dropStagedModelFile(s2);
+    h.free();
+  });
+
   mm.free();
   return rows;
 }
