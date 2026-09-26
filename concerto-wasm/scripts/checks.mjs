@@ -396,6 +396,98 @@ export function runChecks(engine) {
     }
   });
 
+  // #219 (P5-05 stage-2 T2c): classDeclarationGetProperty (singular) has the
+  // same `this.superType !== null` guard as GetProperties above, not
+  // truthiness — an empty-string or `undefined` super type still goes on to
+  // be resolved, not treated as "no super type".
+  check('classDeclarationGetProperty resolves any non-null super type, as TS does', () => {
+    const superProp = { name: 'inherited' };
+    const superClass = { getProperty: (n) => (n === 'x' ? superProp : null) };
+    const modelFile = { isImportedType: () => false, getType: () => superClass };
+    const view = (superType) => ({
+      superType, ast: {}, modelFile, getModelFile: () => modelFile,
+      getOwnProperty: () => null,
+    });
+    const none = engine.classDeclarationGetProperty(view(null), 'x');
+    assert(none === null, `null super type gave ${JSON.stringify(none)}`);
+    for (const superType of ['', undefined]) {
+      const found = engine.classDeclarationGetProperty(view(superType), 'x');
+      assert(found === superProp, `${JSON.stringify(superType)} super type did not resolve: ${JSON.stringify(found)}`);
+    }
+  });
+
+  // #219 (P5-05 stage-2 T2c): classDeclarationProcess never coerces
+  // `this.ast.superType.name` — the raw AST value (including `undefined`
+  // when the AST names a super type but the AST's own `.name` is absent)
+  // survives unstringified into the `superType` decision, and only a
+  // genuinely falsy *superType node itself* (no `superType` at all, or one
+  // that is itself falsy) falls back to the implicit `'Concept'`.
+  check('classDeclarationProcess keeps this.ast.superType.name raw (#219)', () => {
+    const modelFile = { isSystemModelFile: () => false };
+    const declaration = (superType) => ({
+      ast: superType === undefined ? {} : { superType },
+      name: 'Foo',
+      fqn: 'test@1.0.0.Foo',
+      getModelFile: () => modelFile,
+    });
+    const cases = [
+      // superType node present, but its own `.name` is absent/null/falsy:
+      // kept raw, never coerced or defaulted to 'Concept'.
+      [{ $class: `${MM}.TypeIdentifier` }, undefined],
+      [{ $class: `${MM}.TypeIdentifier`, name: null }, null],
+      [{ $class: `${MM}.TypeIdentifier`, name: false }, false],
+      [{ $class: `${MM}.TypeIdentifier`, name: 'Bar' }, 'Bar'],
+      // superType node itself falsy (or absent): TS's outer truthiness
+      // test fails, so the implicit 'Concept' applies.
+      [false, 'Concept'],
+      [undefined, 'Concept'],
+    ];
+    for (const [superType, expected] of cases) {
+      const decision = engine.classDeclarationProcess(declaration(superType));
+      assert(
+        Object.is(decision.superType, expected),
+        `superType ${JSON.stringify(superType)} gave ${JSON.stringify(decision.superType)}, want ${JSON.stringify(expected)}`,
+      );
+    }
+  });
+
+  // #219 (P5-05 stage-2 T2c review fix): classDeclarationProcess never
+  // coerces `this.ast.identified.name` either — TS's `this.idField =
+  // this.ast.identified.name` is a plain assignment, so a falsy raw value
+  // (absent, `null`, `false`) must stay that raw value, not the *string*
+  // "undefined"/"null"/"false" (which would make `ClassDeclaration.validate`'s
+  // `if (this.idField)` guard wrongly true and reject a model TS accepts).
+  check('classDeclarationProcess keeps a falsy this.ast.identified.name raw, not stringified (#219)', () => {
+    const modelFile = { isSystemModelFile: () => false };
+    const declaration = (identified) => ({
+      ast: { identified },
+      name: 'Foo',
+      fqn: 'test@1.0.0.Foo',
+      getModelFile: () => modelFile,
+    });
+    const cases = [
+      [{ $class: `${MM}.IdentifiedBy` }, undefined],
+      [{ $class: `${MM}.IdentifiedBy`, name: null }, null],
+      [{ $class: `${MM}.IdentifiedBy`, name: false }, false],
+      [{ $class: `${MM}.IdentifiedBy`, name: 'id' }, 'id'],
+    ];
+    for (const [identified, expected] of cases) {
+      const decision = engine.classDeclarationProcess(declaration(identified));
+      assert(
+        Object.is(decision.idField, expected),
+        `identified ${JSON.stringify(identified)} gave idField ${JSON.stringify(decision.idField)}, want ${JSON.stringify(expected)}`,
+      );
+      assert(decision.addIdentifierField === false, 'addIdentifierField is false for an explicit IdentifiedBy');
+    }
+    // The system-identified branch (`identified.$class` is not IdentifiedBy)
+    // is unaffected: idField is always the literal '$identifier'.
+    const systemIdentified = engine.classDeclarationProcess(
+      declaration({ $class: `${MM}.Identified` }),
+    );
+    assert(systemIdentified.idField === '$identifier', `system-identified idField ${systemIdentified.idField}`);
+    assert(systemIdentified.addIdentifierField === true, 'addIdentifierField is true for system identification');
+  });
+
   mm.free();
   return rows;
 }

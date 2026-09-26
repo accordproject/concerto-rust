@@ -1681,7 +1681,7 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         // TS: `if (this.ast.identified) { ... }` — again plain truthiness of
         // the whole node, not merely non-nullish.
         let identified = get(&ast, "identified")?;
-        let (identified_class, identified_name) = if identified.is_truthy() {
+        let (identified_class, identified_name, raw_identified_name) = if identified.is_truthy() {
             // TS: `this.ast.identified.$class === '...IdentifiedBy'` (strict
             // equality) and `this.idField = this.ast.identified.name` (plain
             // assignment) — neither coerces. A non-string `$class` can never
@@ -1689,14 +1689,31 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // real `$class`) stands in for it without a receiver check.
             let class_value = get(&identified, "$class")?;
             let identified_class = class_value.as_string().unwrap_or_default();
-            let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
-                Some(js_string(&get(&identified, "name")?)?)
+            // `raw_identified_name` is `this.ast.identified.name`, UNSTRINGIFIED
+            // and uncoerced, exactly as TS's plain assignment leaves it — a
+            // fuzzed AST can put a number, boolean, `null`, or leave it
+            // absent (`undefined`), and every one of those is falsy in TS,
+            // so `idField`'s later truthiness guard (in
+            // `ClassDeclaration.validate`, still TS) skips its
+            // `getProperty(this.idField)` check entirely rather than
+            // looking up a property literally named `"undefined"`/`"null"`/
+            // `"false"` the way stringifying here would produce
+            // (accordproject/concerto-rust#219 review: "Match TS name
+            // handling: keep undefined, not the string \"undefined\"").
+            // `identified_name` (a `&str`, for `process_decision` below) is
+            // only ever consulted on this same branch, and only to decide
+            // `process_decision`'s own placeholder `id_field` — which
+            // `id_field_js` below always overrides with the raw value once
+            // this branch is taken — so it need not itself be coerced.
+            let raw_identified_name = if short_class(&identified_class) == "IdentifiedBy" {
+                Some(get(&identified, "name")?)
             } else {
                 None
             };
-            (Some(identified_class), identified_name)
+            let identified_name = raw_identified_name.as_ref().map(|_| String::new());
+            (Some(identified_class), identified_name, raw_identified_name)
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
@@ -1721,10 +1738,18 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
                 .as_deref()
                 .map_or(JsValue::NULL, JsValue::from_str),
         };
-        let id_field_js = decision
-            .id_field
-            .as_deref()
-            .map_or(JsValue::NULL, JsValue::from_str);
+        // `raw_identified_name` (the AST's own `.identified.name` value,
+        // untouched) when the AST named an explicit `IdentifiedBy`;
+        // otherwise `process_decision`'s own string decision (`$identifier`
+        // for the system-identified case, or `null` for no identity at
+        // all).
+        let id_field_js = match raw_identified_name {
+            Some(v) => v,
+            None => decision
+                .id_field
+                .as_deref()
+                .map_or(JsValue::NULL, JsValue::from_str),
+        };
 
         let result = Object::new();
         set(&result, "superType", &super_type_js);

@@ -684,6 +684,47 @@ mod tests {
         assert!(err.to_string().contains("Invalid property name '1e+308'"));
     }
 
+    // accordproject/concerto-rust#219 review (P5-05 stage-2 T2c, "the
+    // location-suffix cluster"): the `IllegalModelException` an invalid name
+    // raises carries the AST node's own `location` and a `model_file`
+    // placeholder, so `ModelManager.addModelFile`'s WASM binding
+    // (`propertyProcess`) can attach the real JS model file and reproduce
+    // TS's `File '…': line <n> column <n>, to line <n> column <n>.` suffix —
+    // verified end-to-end (against a real `ModelManager.addModelFile` call,
+    // TS and Rust engines both) in concerto-wasm/scripts/checks.mjs's
+    // coverage of the WASM binding layer; this is the pure-`ContractError`
+    // half of that behaviour, with no WASM boundary to cross.
+    #[test]
+    fn process_carries_the_ast_location_and_a_model_file_placeholder_for_an_invalid_name() {
+        let err = process::<ContractError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": 1e308,
+            "isArray": false,
+            "isOptional": false,
+            "location": {
+                "$class": "concerto.metamodel@1.0.0.Range",
+                "start": {
+                    "$class": "concerto.metamodel@1.0.0.Position",
+                    "line": 3, "column": 5, "offset": 20
+                },
+                "end": {
+                    "$class": "concerto.metamodel@1.0.0.Position",
+                    "line": 3, "column": 30, "offset": 45
+                }
+            }
+        }))
+        .unwrap_err();
+        assert!(
+            err.location.is_some(),
+            "expected the AST's own location on the error"
+        );
+        assert_eq!(
+            err.model_file,
+            Some(None),
+            "expected a model-file placeholder for the WASM binding to fill in"
+        );
+    }
+
     // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): a `name` whose
     // *stringified* form still looks like a valid identifier (`false` ->
     // `"false"`) passes the identifier check, but its own raw JS falsiness
