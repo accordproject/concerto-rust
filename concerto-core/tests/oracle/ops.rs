@@ -1,0 +1,3705 @@
+//! The op registry: replays one fixture's `op` against the Rust engine.
+//!
+//! `accordproject/concerto`'s `migration/oracle/lib/ops.js` is the full op
+//! catalogue the oracle records (README "Ops"). An op gets a dispatch entry
+//! here when the Rust engine has a counterpart for it; each Phase 2/3 task
+//! adds the entries for the members it ports, in the same PR (PORTING.md
+//! 6.2). Every other op is reported `unsupported`, with the task the seam
+//! ledger plans for it, and never counted as a pass or a fail.
+//!
+//! Dispatched today:
+//!
+//! - **`ModelUtil`**, all 18 statics (ported by the P0-04b trial). The five
+//!   that take collaborators (`isAssignableTo`, `isEnum`, `isMap`,
+//!   `isScalar`, `isValidMapKeyScalar`) run over a replayed
+//!   [`ModelManager`](concerto_core::model_manager::ModelManager) through
+//!   its `ResolutionContext`, with the model file, declaration and property
+//!   arguments as `Node` handles (PORTING.md 6.2).
+//! - **`TypeNotFoundException.new`**, which needs no receiver.
+//! - **The model manager's load path** (`recipe.rs` has the mapping):
+//!   `ModelManager.new`, `BaseModelManager.new`, `AstModelManager.new`, and
+//!   the ops `addCTOModel`, `addModel`, `addModelFile`, `addModelFiles`,
+//!   `validateModelFiles`, `clearModelFiles`, `fromAst`, which are also the
+//!   recipe steps every other model-manager fixture is rebuilt with; plus
+//!   the queries with a direct Rust counterpart: `getNamespaces`,
+//!   `getAst` (both `resolve` values, `ModelManager::get_ast`, P2-08b) and
+//!   `getType` (`get_declaration`); `resolveMetaModel`
+//!   (`ModelManager::resolve_meta_model`, P2-08b) has its own fixtures too,
+//!   and `updateExternalModels` (P2-08b) replays the recorded download and
+//!   compares the receiver as `effects.target`.
+//!   The Rust
+//!   `ModelManager` is still pre-port (P2-08 ports it), so these fixtures
+//!   report its differences from TS as per-rule failures, which is the
+//!   point: they are what P2-08 and the introspection tasks have to close.
+//! - **`ScalarDeclaration`** `toString`, `getType`, `getValidator` and
+//!   `getDefaultValue`, over the trial's port of `ScalarDeclaration.process`,
+//!   for a receiver loaded into a registered `ModelManager` (a `declref`
+//!   handle) *and* for one built directly with `new ScalarDeclaration(modelFile,
+//!   ast)` and never added to its model file (a `declnew` recipe, rebuilt by
+//!   `ScalarDeclaration::build_standalone`, `recipe.rs`); and `new` itself,
+//!   over the same `build_standalone` (P2-05), which replays the constructor
+//!   without going through a registered `ModelManager` (the receiver is an
+//!   `mfnew` recipe argument, never a `declref`, so it needs no arena
+//!   handle). Every other declaration kind's `declnew` still needs P4-07,
+//!   which closes this in general.
+//! - **DCS (task P2-12)**: `DecoratorManager.falsyOrEqual` and
+//!   `DcsConverter.jsonToYaml`/`yamlToJson` as plain data (`exec_plain`);
+//!   and, through `decorator_manager_op`, `DecoratorManager.decorateModels`,
+//!   `extractDecorators`, `extractVocabularies`, `extractNonVocabDecorators`,
+//!   `validate`, `jsonToYaml`, `yamlToJson`, `migrateTo` and
+//!   `executePropertyCommand` (`concerto_core::dcs`). An argument these
+//!   mutate in TS (the command sets `migrate` rewrites, the options
+//!   `skipValidationAndResolution` sets, `migrateTo`'s command set,
+//!   `executePropertyCommand`'s property) is compared through
+//!   `outcome.effects.args`, as the recorder records it. `decorateModels` and
+//!   the `extract*` statics read `getAst(true, …)` in TS, which resolves the
+//!   metamodel (`BaseModelManager.resolveMetaModel`); `concerto_core::dcs`
+//!   does the same through `ModelManager::get_ast` (P2-08b). A model manager
+//!   `derived` from one of these ops is rebuilt by replaying it
+//!   (`derive_model_manager`).
+//!   `migrateAndValidate`, `validateCommand`, `canMigrate` and
+//!   `checkForDuplicateDecorators` have no fixtures of their own (the
+//!   recorder only records the outermost call), so they are compared
+//!   through `decorateModels`.
+//! - **`Resource.validate`**, plus the read-only `Typed`/`Identifiable`/
+//!   `Relationship`/`Resource` accessors ([`instance_op`]'s doc has the
+//!   full list), over an oracle `"typed"` receiver decoded into
+//!   [`recipe::DecodedInstance`] (`recipe.rs`'s `Session::typed`, task
+//!   P3-01 review, `accordproject-concerto-rust#56` follow-up).
+//! - **`Serializer`** `new`, `fromJSON` and `toJSON`, **`Factory`**
+//!   `newResource`, `newConcept`, `newRelationship`, `newTransaction` and
+//!   `newEvent`, and the members that change or serialize an instance
+//!   (`Resource.setPropertyValue`, `addArrayValue`, `toJSON`,
+//!   `Identifiable.setIdentifier`): task P3-01b, over
+//!   `concerto_core::instance` (`instances.rs` has the list, the instance
+//!   encoding and the `effects` a mutating op records).
+//! - **`MapDeclaration`** `declarationKind`, `getKey`, `getValue`,
+//!   `isMapDeclaration`, `toString` and `validate`; **`MapKeyType`**/
+//!   **`MapValueType`** `getType`, `getNamespace`, `getParent`, `toString` and
+//!   `validate` (P2-06), over a `recipe::Arg::MapPart` handle (`recipe.rs`)
+//!   since this engine reads a map's key and value as plain accessors on
+//!   `MapDeclaration` rather than as their own registered declarations;
+//!   **`ModelManager.getMapDeclarations`**, a generic query any model
+//!   manager already answers (`ClassDeclaration.isMapDeclaration` is
+//!   dispatched with the rest of the `ClassDeclaration` family, P2-03). A
+//!   map of an unregistered `ModelFile` (`mfnew`, e.g. most of
+//!   `MapDeclaration.validate`) is read from that file directly (P2-06b);
+//!   any other declaration of one is a handle into a copy of its manager
+//!   (P2-08b, `recipe.rs`).
+
+use concerto_core::dcs;
+use concerto_core::error::{ConcertoError, ErrorKind};
+use concerto_core::introspect::declaration::ClassDeclaration;
+use concerto_core::introspect::model_file::ModelFile;
+use concerto_core::introspect::property::Property;
+use concerto_core::introspect::scalar::ScalarValidator;
+use concerto_core::introspect::validators::Validator;
+use concerto_core::introspect::{
+    Declaration, DeclarationKind, MapDeclaration, Named, Typed, Validate,
+};
+use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
+use concerto_core::model_util::{self, ParsedNamespace};
+use concerto_core::validation;
+use serde_json::{Value, json};
+
+use super::Harness;
+use super::decode::{self, Decoded, Unsupported};
+use super::fixture::Inputs;
+use super::recipe::{self, Arg, Fault, Faulty, M, Replayed, Session};
+
+/// An error outcome in the oracle's `outcome.error` shape (README "Fixture
+/// schema"), built from a [`ConcertoError`] the same way the TS reference's
+/// exception constructors would (PORTING.md section 2).
+#[derive(Debug, Clone)]
+pub struct OracleError {
+    pub class: String,
+    pub message: String,
+    pub location: Option<Value>,
+    pub component: Option<String>,
+}
+
+impl OracleError {
+    /// An error recorded in the CTO cache, replayed as the outcome: Rust
+    /// never parses CTO, so never raises a `ParseException` (PORTING.md
+    /// 2.3). The cache keeps `{class, message, location}` for whatever
+    /// `build-cto-cache.js`'s `parseOne` caught; an entry without a string
+    /// `class` or `message` is a harness error.
+    ///
+    /// Two things the cache does not keep are restored, for a
+    /// `ParseException` only: its `component`, which it inherits from
+    /// concerto-util's `BaseException` because concerto-cto passes none
+    /// (`component || packageJson.name`), and its location's
+    /// `source: undefined` ([`restore_location_source`]). Any other class
+    /// keeps the entry's own `component` (JS `null` when absent, as
+    /// `codec.js`'s `encodeError` records an `Error` without one) and its
+    /// location as cached.
+    pub fn from_cached_error(error: &Value) -> Result<Self, String> {
+        let text = |key: &str| {
+            error
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("CTO cache error entry without a string `{key}`: {error}"))
+        };
+        let class = text("class")?;
+        let message = text("message")?;
+        let is_parse_exception = class == "ParseException";
+        let location = error
+            .get("location")
+            .filter(|l| !l.is_null())
+            .cloned()
+            .map(|l| {
+                if is_parse_exception {
+                    restore_location_source(l)
+                } else {
+                    l
+                }
+            });
+        let recorded_component = error
+            .get("component")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let component = if is_parse_exception {
+            recorded_component.or_else(|| Some(PARSE_EXCEPTION_COMPONENT.to_string()))
+        } else {
+            recorded_component
+        };
+        Ok(Self {
+            class,
+            message,
+            location,
+            component,
+        })
+    }
+
+    pub fn to_value(&self) -> Value {
+        json!({
+            "class": self.class,
+            "message": self.message,
+            "location": self.location.clone().unwrap_or(Value::Null),
+            "component": self.component,
+        })
+    }
+}
+
+/// The cache writes a `ParseException`'s location through `JSON.stringify`,
+/// which drops a key whose value is `undefined`. Peggy's `location()` is
+/// always `{source, start, end}`, and concerto-cto passes no grammar source,
+/// so every recorded `ParseException` location has `source: undefined` (all
+/// 225 in the corpus do): put the key back as the oracle encodes it.
+fn restore_location_source(mut location: Value) -> Value {
+    if let Value::Object(map) = &mut location
+        && map.contains_key("start")
+        && !map.contains_key("source")
+    {
+        map.insert("source".into(), recipe::undefined());
+    }
+    location
+}
+
+/// `@accordproject/concerto-util`'s package name, the default `component`
+/// of every `BaseException` (`baseexception.js`: `component ||
+/// packageJson.name`), which `concerto-cto`'s `ParseException` inherits.
+const PARSE_EXCEPTION_COMPONENT: &str = "@accordproject/concerto-util";
+
+/// The result of dispatching one fixture's op.
+pub enum Dispatch {
+    /// The op ran: `{"ok": …}` or `{"error": …}`, in the oracle's outcome
+    /// shape.
+    Ran(Value),
+    /// The op ran and threw from a part of the engine another task owns:
+    /// if TS threw too, from that part ([`Attribution`]), and the two errors
+    /// differ, the failure is that owner's (`compare.rs`). Any other
+    /// difference stays the op's own.
+    RanAttributed(Value, Attribution),
+    Fault(Fault),
+}
+
+/// Who owns a Rust error that came from another task's code, and the TS
+/// exception classes that code raises: a failure is attributed to
+/// `blocker` only when TS threw one of `ts_error_classes` too (both sides
+/// threw from the same place, and only the error differs). When TS
+/// succeeded, or threw something else, Rust's error is the op's own bug
+/// (a wrong decorated AST, a stand-in rejecting valid input).
+#[derive(Debug)]
+pub struct Attribution {
+    pub blocker: recipe::Blocker,
+    pub ts_error_classes: &'static [&'static str],
+}
+
+fn ran(outcome: recipe::Outcome) -> Dispatch {
+    Dispatch::Ran(match outcome {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({ "error": error.to_value() }),
+    })
+}
+
+fn from_engine<T>(result: Result<T, ConcertoError>, encode: impl FnOnce(T) -> Value) -> Dispatch {
+    ran(result.map(encode).map_err(|e| to_oracle_error(&e)))
+}
+
+fn unsupported(reason: impl Into<String>) -> Dispatch {
+    Dispatch::Fault(Fault::Unsupported(reason.into()))
+}
+
+fn option_bool(value: Option<bool>) -> Value {
+    value.map_or_else(recipe::undefined, Value::Bool)
+}
+
+/// Runs `op` against the Rust engine, if it has a dispatch entry.
+pub fn exec(h: &Harness, op: &str, inputs: &Inputs) -> Dispatch {
+    if let Some(dispatch) = exec_plain(op, inputs) {
+        return dispatch;
+    }
+    match exec_handles(h, op, inputs) {
+        Ok(dispatch) => dispatch,
+        Err(fault) => Dispatch::Fault(fault),
+    }
+}
+
+/// The ops whose arguments are plain data only. `None` for any other op.
+fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
+    const PLAIN_OPS: [&str; 18] = [
+        "ModelUtil.getShortName",
+        "ModelUtil.getNamespace",
+        "ModelUtil.parseNamespace",
+        "ModelUtil.importFullyQualifiedNames",
+        "ModelUtil.isPrimitiveType",
+        "ModelUtil.capitalizeFirstLetter",
+        "ModelUtil.isValidIdentifier",
+        "ModelUtil.getFullyQualifiedName",
+        "ModelUtil.removeNamespaceVersionFromFullyQualifiedName",
+        "ModelUtil.isSystemProperty",
+        "ModelUtil.isPrivateSystemProperty",
+        "ModelUtil.isValidMapKey",
+        "ModelUtil.isValidMapValue",
+        "TypeNotFoundException.new",
+        "SecurityException.new",
+        // DCS (task P2-12): the `DecoratorManager`/`DcsConverter` statics
+        // that take and return plain data only and mutate nothing; the other
+        // `DecoratorManager` statics go through `decorator_manager_op`.
+        "DecoratorManager.falsyOrEqual",
+        "DcsConverter.jsonToYaml",
+        "DcsConverter.yamlToJson",
+    ];
+    if !PLAIN_OPS.contains(&op) {
+        return None;
+    }
+    let args = match decode::decode_args(&inputs.args) {
+        Ok(a) => a,
+        Err(Unsupported(reason)) => return Some(unsupported(reason)),
+    };
+
+    macro_rules! bad_args {
+        () => {
+            return Some(unsupported(format!(
+                "{op}: arguments did not decode for this op"
+            )))
+        };
+    }
+
+    let outcome: Result<Value, ConcertoError> = match op {
+        "ModelUtil.getShortName" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(fqn) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            Ok(Value::String(model_util::get_short_name(fqn).to_string()))
+        }
+        "ModelUtil.getNamespace" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(fqn) = decode::as_nullable_str(&arg0) else {
+                bad_args!()
+            };
+            model_util::get_namespace(fqn).map(|s| Value::String(s.to_string()))
+        }
+        "ModelUtil.parseNamespace" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(ns) = decode::as_nullable_str(&arg0) else {
+                bad_args!()
+            };
+            let Ok(disable) = decode::disable_version_parsing(args.get(1)) else {
+                bad_args!()
+            };
+            model_util::parse_namespace(ns, disable).map(encode_parsed_namespace)
+        }
+        "ModelUtil.importFullyQualifiedNames" => {
+            let arg0 = decode::arg(&args, 0);
+            let imp = decode::as_value(&arg0).cloned();
+            model_util::import_fully_qualified_names(imp.as_ref())
+                .map(|names| Value::Array(names.into_iter().map(Value::String).collect()))
+        }
+        "ModelUtil.isPrimitiveType" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(type_name) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            Ok(Value::Bool(model_util::is_primitive_type(type_name)))
+        }
+        "ModelUtil.capitalizeFirstLetter" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(s) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            Ok(Value::String(model_util::capitalize_first_letter(s)))
+        }
+        "ModelUtil.isValidIdentifier" => {
+            let arg0 = decode::arg(&args, 0);
+            // TS: `ID_REGEX.test(name as string)` — `RegExp.prototype.test`
+            // coerces its argument with `String()`, so a missing name
+            // becomes the string `"undefined"` and an explicit `null`
+            // becomes `"null"`; both are valid identifiers (DV-002,
+            // ts-bug). P2-09b: this harness used to require an already
+            // decoded string and reported these two nullish fixtures as
+            // unsupported instead of replaying DV-002.
+            let name = match &arg0 {
+                Decoded::Undefined => "undefined",
+                Decoded::Value(Value::Null) => "null",
+                _ => {
+                    let Ok(name) = decode::as_str(&arg0) else {
+                        bad_args!()
+                    };
+                    name
+                }
+            };
+            Ok(Value::Bool(model_util::is_valid_identifier(name)))
+        }
+        "ModelUtil.getFullyQualifiedName" => {
+            let arg0 = decode::arg(&args, 0);
+            let arg1 = decode::arg(&args, 1);
+            // TS returns `type` unchanged when `namespace` is falsy (so an
+            // absent `type` stays absent rather than becoming the string
+            // `"undefined"`); only the truthy-`namespace` branch builds
+            // `` `${namespace}.${type}` ``, which needs both arguments
+            // decoded as strings. P2-09b: a nullish `namespace` (and so a
+            // nullish `type`, the only case the corpus records) used to
+            // make this op unsupported instead of taking the untouched
+            // branch.
+            let namespace_falsy = match &arg0 {
+                Decoded::Undefined => true,
+                Decoded::Value(Value::Null) => true,
+                Decoded::Value(Value::String(s)) => s.is_empty(),
+                _ => false,
+            };
+            if namespace_falsy {
+                Ok(match &arg1 {
+                    Decoded::Undefined => recipe::undefined(),
+                    Decoded::Value(v) => v.clone(),
+                })
+            } else {
+                let Ok(ns) = decode::as_str(&arg0) else {
+                    bad_args!()
+                };
+                let Ok(type_name) = decode::as_str(&arg1) else {
+                    bad_args!()
+                };
+                Ok(Value::String(model_util::get_fully_qualified_name(
+                    ns, type_name,
+                )))
+            }
+        }
+        "ModelUtil.removeNamespaceVersionFromFullyQualifiedName" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(fqn) = decode::as_nullable_str(&arg0) else {
+                bad_args!()
+            };
+            model_util::remove_namespace_version_from_fully_qualified_name(fqn).map(Value::String)
+        }
+        "ModelUtil.isSystemProperty" => {
+            let arg0 = decode::arg(&args, 0);
+            // TS: `reservedProperties.includes(propertyName)` — `Array.includes`
+            // is a strict-equality (no-coercion) check against an array of
+            // strings, so any non-string argument (a number, `undefined`,
+            // `null`, ...) can never match and is trivially `false`. P2-09b:
+            // this harness used to require an already decoded string and
+            // reported a non-string argument as unsupported instead of
+            // replaying that trivial `false`.
+            let is_system = match &arg0 {
+                Decoded::Value(Value::String(name)) => model_util::is_system_property(name),
+                _ => false,
+            };
+            Ok(Value::Bool(is_system))
+        }
+        "ModelUtil.isPrivateSystemProperty" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(name) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            Ok(Value::Bool(model_util::is_private_system_property(name)))
+        }
+        "ModelUtil.isValidMapKey" => {
+            let arg0 = decode::arg(&args, 0);
+            let key = decode::as_value(&arg0).cloned();
+            model_util::is_valid_map_key(key.as_ref()).map(Value::Bool)
+        }
+        "ModelUtil.isValidMapValue" => {
+            let arg0 = decode::arg(&args, 0);
+            let value = decode::as_value(&arg0).cloned();
+            model_util::is_valid_map_value(value.as_ref()).map(Value::Bool)
+        }
+        // `new TypeNotFoundException(typeName, message?, component?)`
+        // (src/typenotfoundexception.ts): pure string handling over its own
+        // arguments. The TS reference does not throw here: the constructed
+        // exception is itself the `ok` value, which codec.js encodes as
+        // `{"@@oracle": "error", "error": {...}}` (task P1-07 review;
+        // `TypeNotFoundException #constructor`).
+        "TypeNotFoundException.new" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(type_name) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            let arg1 = decode::arg(&args, 1);
+            let Ok(message) = decode::as_nullable_str(&arg1) else {
+                bad_args!()
+            };
+            let arg2 = decode::arg(&args, 2);
+            let Ok(component) = decode::as_nullable_str(&arg2) else {
+                bad_args!()
+            };
+            // TS: `if (!message) { message = <default> }` and
+            // `component || '@accordproject/concerto-core'`, both falsy
+            // checks. The default is the `typenotfounderror-defaultmessage`
+            // catalogue entry, whose one placeholder has no `$`-pattern
+            // hazards, so this literal format matches it byte for byte.
+            let message = message
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Type \"{type_name}\" not found."));
+            let component = component
+                .filter(|c| !c.is_empty())
+                .unwrap_or("@accordproject/concerto-core");
+            Ok(json!({
+                M: "error",
+                "error": {
+                    "class": "TypeNotFoundException",
+                    "message": message,
+                    "location": Value::Null,
+                    "component": component,
+                }
+            }))
+        }
+        // `new SecurityException(message)` (src/securityexception.ts): pure string
+        // handling over its own arguments. The TS reference does not throw here:
+        // the constructed exception is itself the `ok` value, which codec.js
+        // encodes as `{"@@oracle": "error", "error": {...}}`.
+        "SecurityException.new" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(message) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            // TS: SecurityException extends BaseException, which defaults
+            // component to '@accordproject/concerto-util'.
+            Ok(json!({
+                M: "error",
+                "error": {
+                    "class": "SecurityException",
+                    "message": message,
+                    "location": Value::Null,
+                    "component": "@accordproject/concerto-util",
+                }
+            }))
+        }
+        // `DecoratorManager.falsyOrEqual(test, values)` (`src/decoratormanager.ts`):
+        // `test` is `null`/`undefined`/a string/a string array (a command
+        // target field); `values` is always a string array. TS never
+        // throws here, so the outcome is always `ok`.
+        "DecoratorManager.falsyOrEqual" => {
+            let arg0 = decode::arg(&args, 0);
+            let test = decode::as_value(&arg0).cloned();
+            let arg1 = decode::arg(&args, 1);
+            let Some(Value::Array(values)) = decode::as_value(&arg1) else {
+                bad_args!()
+            };
+            let Some(values): Option<Vec<&str>> = values.iter().map(Value::as_str).collect() else {
+                bad_args!()
+            };
+            Ok(Value::Bool(dcs::falsy_or_equal(test.as_ref(), &values)))
+        }
+        // `DcsConverter.jsonToYaml(dcsJson)` (`src/dcsconverter.ts`, called
+        // through `DecoratorManager.jsonToYaml`'s thin wrapper — the recorder
+        // records at `decoratorManagerStatics`' boundary, `DcsConverter` is
+        // `ops.js`'s own name for the module's directly-recorded statics).
+        "DcsConverter.jsonToYaml" => {
+            let arg0 = decode::arg(&args, 0);
+            let Some(dcs_json) = decode::as_value(&arg0) else {
+                bad_args!()
+            };
+            dcs::json_to_yaml(dcs_json).map(Value::String)
+        }
+        "DcsConverter.yamlToJson" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(yaml_string) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            dcs::yaml_to_json(yaml_string)
+        }
+        _ => unreachable!("PLAIN_OPS lists every arm"),
+    };
+    Some(from_engine(outcome, |v| v))
+}
+
+/// Model-manager steps that are also ops (README "Ops").
+const MM_STEP_OPS: [&str; 9] = [
+    "addCTOModel",
+    "addModel",
+    "addModelFile",
+    "addModelFiles",
+    "validateModelFiles",
+    "clearModelFiles",
+    "fromAst",
+    "updateModelFile",
+    "deleteModelFile",
+];
+
+/// `ModelManager` queries [`model_manager_query`] dispatches (P2-08b, plus
+/// the pre-existing `getNamespaces`/`getAst`/`getType`/`getMapDeclarations`
+/// handled inline in `exec_handles`); `filter` and `validateModelFile` are
+/// dispatched separately (they need, respectively, a decoded `Arg::Predicate`
+/// and the `Harness`, for the CTO cache, neither of which
+/// `model_manager_query` has).
+const MM_QUERY_OPS: [&str; 11] = [
+    "getModels",
+    "resolveType",
+    "derivesFrom",
+    "isAssignableTo",
+    "getAssignableConcreteTypes",
+    "getAssetDeclarations",
+    "getTransactionDeclarations",
+    "getEventDeclarations",
+    "getParticipantDeclarations",
+    "getConceptDeclarations",
+    "getEnumDeclarations",
+];
+
+/// The ops whose inputs hold model managers or their handles.
+fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let (class, member) = op.split_once('.').unwrap_or((op, ""));
+
+    // P3-01b: the Serializer, Factory and Resource-mutating ops decode
+    // their own receivers (`serializer` and `factory` nodes) and record
+    // `effects` (`instances.rs`).
+    if super::instances::handles(class, member) {
+        return super::instances::exec(h, class, member, inputs);
+    }
+
+    // `Decorated`'s target may be an `mfref` (P2-07): the generic decode
+    // below turns that into an `Arg::File`, which drops the model manager it
+    // belongs to. Handled separately, ahead of the generic decode.
+    if class == "Decorated" && matches!(member, "getDecorator" | "getDecorators") {
+        return decorated_op(h, member, inputs);
+    }
+
+    if class == "DecoratorManager" && DECORATOR_MANAGER_OPS.contains(&member) {
+        return decorator_manager_op(h, member, inputs);
+    }
+
+    let dispatched = match (class, member) {
+        ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
+        ("ModelManager", m) => {
+            MM_STEP_OPS.contains(&m)
+                || MM_QUERY_OPS.contains(&m)
+                || matches!(
+                    m,
+                    "getNamespaces"
+                        | "getAst"
+                        | "getType"
+                        | "getMapDeclarations"
+                        | "validateModelFile"
+                        | "filter"
+                        | "resolveMetaModel"
+                        | "updateExternalModels"
+                        | "getModelFileByFileName"
+                )
+        }
+        ("ModelUtil", m) => matches!(
+            m,
+            "isAssignableTo" | "isEnum" | "isMap" | "isScalar" | "isValidMapKeyScalar"
+        ),
+        ("ScalarDeclaration", m) => {
+            matches!(
+                m,
+                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue" | "validate"
+            )
+        }
+        ("MapDeclaration", m) => matches!(
+            m,
+            "declarationKind"
+                | "getKey"
+                | "getValue"
+                | "isMapDeclaration"
+                | "toString"
+                | "validate"
+        ),
+        ("NumberValidator", m) => matches!(m, "validate" | "compatibleWith" | "toString"),
+        ("StringValidator", m) => matches!(m, "validate" | "compatibleWith" | "matchesRegex"),
+        ("CollectionSizeValidator", m) => {
+            matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
+        }
+        ("ClassDeclaration", m) => matches!(
+            m,
+            "isAbstract"
+                | "isIdentified"
+                | "isSystemIdentified"
+                | "isExplicitlyIdentified"
+                | "getIdentifierFieldName"
+                | "getOwnProperties"
+                | "getProperties"
+                | "getProperty"
+                | "getSuperType"
+                | "getSuperTypeDeclaration"
+                | "getAllSuperTypeDeclarations"
+                | "getAssignableClassDeclarations"
+                | "getDirectSubclasses"
+                | "getNestedProperty"
+                | "isEnum"
+                | "isEvent"
+                | "isMapDeclaration"
+                | "toString"
+                | "validate"
+        ),
+        ("MapKeyType" | "MapValueType", m) => {
+            matches!(
+                m,
+                "getType" | "getNamespace" | "getParent" | "toString" | "validate"
+            )
+        }
+        ("Declaration", m) => matches!(
+            m,
+            "getFullyQualifiedName" | "getName" | "getNamespace" | "getModelFile"
+        ),
+        ("Decorator", m) => matches!(m, "getArguments" | "validate"),
+        // P2-04: `Property`'s own members (Field, RelationshipDeclaration and
+        // EnumValueDeclaration all inherit these unchanged, module doc on
+        // `property_op`), plus the `Field`-only members (getDefaultValue,
+        // getValidator, isTypeScalar, getScalarField — never reached by a
+        // relationship or an enum value, which are not `Field`s in TS) and
+        // the two `toString` overrides.
+        ("Property", m) => matches!(
+            m,
+            "getName"
+                | "getType"
+                | "isArray"
+                | "isOptional"
+                | "getFullyQualifiedTypeName"
+                | "getFullyQualifiedName"
+                | "getNamespace"
+                | "getParent"
+                | "getSizeValidator"
+                | "isPrimitive"
+                | "isTypeEnum"
+        ),
+        ("Field", m) => matches!(
+            m,
+            "getDefaultValue" | "getValidator" | "isTypeScalar" | "getScalarField" | "toString"
+        ),
+        ("RelationshipDeclaration", "toString") => true,
+        ("EnumDeclaration", "toString") => true,
+        // P2-08: every `ModelFile` member the oracle corpus reaches
+        // (`filter`, `getConceptDeclarations` and `getMapDeclarations` have
+        // no fixtures, module doc on `ops.rs`); P2-11b-U4 adds
+        // `getExternalImports`.
+        ("ModelFile", m) => matches!(
+            m,
+            "new"
+                | "getAllDeclarations"
+                | "getAssetDeclaration"
+                | "getAssetDeclarations"
+                | "getAst"
+                | "getClassDeclarations"
+                | "getConcertoVersion"
+                | "getDefinitions"
+                | "getEnumDeclarations"
+                | "getEventDeclaration"
+                | "getEventDeclarations"
+                | "getExternalImports"
+                | "getFullyQualifiedTypeName"
+                | "getImportURI"
+                | "getImportedType"
+                | "getImports"
+                | "getModelManager"
+                | "getName"
+                | "getNamespace"
+                | "getParticipantDeclaration"
+                | "getScalarDeclarations"
+                | "getTransactionDeclaration"
+                | "getTransactionDeclarations"
+                | "getType"
+                | "isDefined"
+                | "isExternal"
+                | "isImportedType"
+                | "isLocalType"
+                | "isModelFile"
+                | "isSystemModelFile"
+                | "resolveImport"
+                | "validate"
+        ),
+        ("Introspector", m) => {
+            matches!(
+                m,
+                "getClassDeclaration" | "getClassDeclarations" | "getModelManager"
+            )
+        }
+        // P3-01 review (task `accordproject-concerto-rust#56` follow-up):
+        // the instance ops dispatched over a `"typed"` receiver
+        // ([`instance_op`]'s doc has the full list and its TS source).
+        ("Resource", m) => matches!(
+            m,
+            "validate" | "toString" | "isResource" | "isConcept" | "isIdentifiable" | "instanceOf"
+        ),
+        ("Identifiable", m) => matches!(
+            m,
+            "getIdentifier"
+                | "getFullyQualifiedIdentifier"
+                | "getTimestamp"
+                | "toURI"
+                | "isRelationship"
+                | "isResource"
+        ),
+        ("Relationship", m) => matches!(m, "toString" | "isRelationship" | "fromURI"),
+        ("Typed", m) => matches!(
+            m,
+            "getType" | "getNamespace" | "getFullyQualifiedType" | "getClassDeclaration"
+        ),
+        ("TypeNotFoundException", m) => matches!(m, "getTypeName"),
+        _ => false,
+    };
+    if !dispatched {
+        return Ok(unsupported(format!("{op} is not ported yet")));
+    }
+
+    let mut session = Session::new(h);
+    let target = match &inputs.target {
+        Some(t) => Some(session.decode(t, None)?),
+        None => None,
+    };
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+
+    // `getTypeName()` (src/typenotfoundexception.ts) returns the
+    // constructor's `typeName` argument unchanged; the receiver is an
+    // `errnew` node (task P2-11b-U5). Only a string `typeName` is replayed:
+    // TS hands back whatever was passed, `undefined` included.
+    if class == "TypeNotFoundException" && member == "getTypeName" {
+        return Ok(match &target {
+            Some(Arg::Error {
+                class,
+                args: ctor_args,
+            }) if class == "TypeNotFoundException" => match ctor_args.first() {
+                Some(Value::String(type_name)) => ran(Ok(Value::String(type_name.clone()))),
+                _ => unsupported(
+                    "TypeNotFoundException.getTypeName with a typeName that is not a string",
+                ),
+            },
+            _ => unsupported(
+                "TypeNotFoundException.getTypeName on a receiver that is not a TypeNotFoundException",
+            ),
+        });
+    }
+
+    // `new ScalarDeclaration(modelFile, ast)` (PORTING.md 6.2): the receiver
+    // is built directly from a `ModelFile` recipe argument, never registered
+    // with a model manager, so it never reaches `declref` (which has no
+    // handle for an unregistered declaration; `Fault::Blocked` cites
+    // `ScalarDeclaration.new` for exactly that case elsewhere).
+    if class == "ScalarDeclaration" && member == "new" {
+        let Some(Arg::File(file)) = args.first() else {
+            return Ok(unsupported(
+                "ScalarDeclaration.new with a model file argument that is not a model file",
+            ));
+        };
+        let Some(Arg::Plain(ast)) = args.get(1) else {
+            return Ok(unsupported(
+                "ScalarDeclaration.new with a declaration AST that is not plain data",
+            ));
+        };
+        let namespace = file
+            .ast
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return Ok(from_engine(
+            concerto_core::introspect::ScalarDeclaration::validate_new(
+                namespace,
+                file.file_name.as_deref(),
+                ast,
+            ),
+            |fqn| {
+                json!({
+                    M: "Declaration",
+                    "ctor": "ScalarDeclaration",
+                    "fqn": fqn,
+                })
+            },
+        ));
+    }
+
+    // TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08):
+    // args[0] (the model manager) has already been fully replayed by
+    // `session.decode` above, for state-divergence parity, even though the
+    // constructed `ModelFile` does not itself need it for these arguments —
+    // only `getModelManager`/`getType` do, later, through `file.mm_index`.
+    if class == "ModelFile" && member == "new" {
+        return Ok(model_file_new(&args));
+    }
+
+    if member == "new" {
+        let kind = match class {
+            "ModelManager" => recipe::Kind::ModelManager,
+            "BaseModelManager" => recipe::Kind::BaseModelManager,
+            _ => recipe::Kind::AstModelManager,
+        };
+        let options = match args.first() {
+            None => recipe::undefined(),
+            Some(Arg::Plain(v)) => v.clone(),
+            Some(_) => return Ok(unsupported("model manager options that are not plain data")),
+        };
+        if args.len() > 1 {
+            return Ok(unsupported("a custom processFile argument"));
+        }
+        let r = Replayed::new(kind, &options)?;
+        return Ok(ran(Ok(r.summary())));
+    }
+
+    match class {
+        "ModelManager" => {
+            let Some(Arg::Mm(index)) = target else {
+                return Err(Fault::Unsupported(
+                    "a model manager op whose receiver is not a model manager recipe".into(),
+                ));
+            };
+            if member == "validateModelFile" {
+                return Ok(validate_model_file_op(h, &session, index, &args));
+            }
+            if member == "filter" {
+                let r = &session.pool[index];
+                return Ok(model_manager_filter_op(r, &args));
+            }
+            if member == "updateExternalModels" {
+                // The receiver changes (or is restored): TS records it as
+                // `effects.target`.
+                let r = &mut session.pool[index];
+                let outcome = r.update_external_models(h, &args, inputs.net.as_ref())?;
+                let Dispatch::Ran(mut out) = ran(outcome) else {
+                    unreachable!("`ran` always runs")
+                };
+                out["effects"] = json!({ "target": r.summary() });
+                return Ok(Dispatch::Ran(out));
+            }
+            if MM_STEP_OPS.contains(&member) {
+                let r = &mut session.pool[index];
+                return Ok(ran(r.apply(h, member, &args)?));
+            }
+            let r = &session.pool[index];
+            Ok(model_manager_query(r, member, &args))
+        }
+        "ModelUtil" => model_util_with_context(&session, member, &args),
+        "ScalarDeclaration" => match target {
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Scalar(scalar)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a scalar".into(),
+                    ));
+                };
+                Ok(match member {
+                    "toString" => from_engine(
+                        r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                        |fqn| {
+                            Value::String(concerto_core::introspect::ScalarDeclaration::to_string(
+                                &fqn,
+                            ))
+                        },
+                    ),
+                    "getType" => ran(Ok(scalar
+                        .scalar_type()
+                        .map_or(Value::Null, |t| Value::String(t.to_string())))),
+                    "getDefaultValue" => {
+                        ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
+                    }
+                    // TS: `ScalarDeclaration.validate`'s `super.validate()`
+                    // (decorators, then the import-clash check —
+                    // `Declaration::validate`'s Scalar arm, validation.rs)
+                    // followed by its own duplicate-FQN scan over
+                    // `getModelFile().getAllDeclarations()`
+                    // (`ScalarDeclaration::validate`, scalar.rs), which is
+                    // reachable here because this receiver was added without
+                    // going through `ModelFile.validate()`.
+                    "validate" => {
+                        let namespace =
+                            r.mm.model_file_of(id)
+                                .and_then(|file| r.mm.file(file))
+                                .map(ModelFile::namespace)
+                                .expect("a resolved declref's declaration always has a model file");
+                        let declaration =
+                            r.mm.declaration(id)
+                                .expect("the caller already resolved this handle as a scalar");
+                        from_engine(
+                            declaration.validate(&r.mm, namespace).and_then(|()| {
+                                concerto_core::introspect::ScalarDeclaration::validate(
+                                    &r.mm,
+                                    &Node::Declaration(id),
+                                )
+                            }),
+                            |()| recipe::undefined(),
+                        )
+                    }
+                    _ => ran(Ok(scalar_validator_summary(scalar.validator()))),
+                })
+            }
+            // `new ScalarDeclaration(modelFile, ast)`, never added to
+            // `modelFile`: `recipe.rs`'s `declnew` decoding already ran
+            // `ScalarDeclaration::build_standalone` (the receiver's
+            // construction), so the four getters below just read its result.
+            Some(Arg::DeclNew { fqn, processed }) => Ok(match member {
+                "toString" => ran(Ok(Value::String(
+                    concerto_core::introspect::ScalarDeclaration::to_string(&fqn),
+                ))),
+                "getType" => ran(Ok(processed
+                    .scalar_type
+                    .map_or(Value::Null, |t| Value::String(t.to_string())))),
+                "getDefaultValue" => ran(Ok(processed.default_value.unwrap_or(Value::Null))),
+                // No fixture reaches `validate()` on an unregistered
+                // `declnew` receiver (P2-11b-U3, #197); left unsupported
+                // rather than guessed at.
+                "validate" => unsupported(
+                    "ScalarDeclaration.validate on a declnew receiver never added to a model file",
+                ),
+                _ => ran(Ok(scalar_validator_summary(processed.validator.as_ref()))),
+            }),
+            _ => Err(Fault::Unsupported(
+                "a ScalarDeclaration receiver that is not a declref or declnew".into(),
+            )),
+        },
+        "MapDeclaration" => match target {
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                Ok(match member {
+                    "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
+                    "isMapDeclaration" => ran(Ok(Value::Bool(true))),
+                    "toString" => from_engine(
+                        r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+                        |fqn| Value::String(MapDeclaration::to_string(&fqn)),
+                    ),
+                    "getKey" => ran(Ok(r.map_part_summary(id, true).unwrap_or(Value::Null))),
+                    "getValue" => ran(Ok(r.map_part_summary(id, false).unwrap_or(Value::Null))),
+                    _ => {
+                        let Some(namespace) = map_namespace(r, id) else {
+                            return Err(Fault::Divergence(
+                                "state divergence: the map's model file is not registered".into(),
+                            ));
+                        };
+                        let result = validation::validate_map_key(&r.mm, namespace, map)
+                            .and_then(|()| validation::validate_map_value(&r.mm, namespace, map));
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            // P2-06b: a `MapDeclaration` reached from a `ModelFile` built
+            // directly (`mfnew`) and never registered — no arena `DeclId`,
+            // so read straight off the built file (`declarationKind`,
+            // `isMapDeclaration`, `toString`, `getKey`, `getValue`) or, for
+            // `validate`, run against the scratch-registered copy
+            // `ModelManager::validate_detached_declaration` builds.
+            Some(Arg::DeclDetached {
+                mm_index,
+                file,
+                index,
+            }) => {
+                let Some(Declaration::Map(map)) = file.declarations().get(index) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                let fqn = format!("{}.{}", file.namespace(), map.name());
+                Ok(match member {
+                    "declarationKind" => ran(Ok(Value::String(map.declaration_kind().to_string()))),
+                    "isMapDeclaration" => ran(Ok(Value::Bool(true))),
+                    "toString" => ran(Ok(Value::String(MapDeclaration::to_string(&fqn)))),
+                    "getKey" => ran(Ok(detached_map_part_summary(map, true))),
+                    "getValue" => ran(Ok(detached_map_part_summary(map, false))),
+                    _ => {
+                        let Some(mm_index) = mm_index else {
+                            return Err(Fault::Harness(
+                                "a detached MapDeclaration with no owning model manager".into(),
+                            ));
+                        };
+                        let manager = &session.pool[mm_index].mm;
+                        let result = manager.validate_detached_declaration(&file, index);
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            _ => Err(Fault::Unsupported(
+                "a MapDeclaration receiver that is not a declref".into(),
+            )),
+        },
+        "MapKeyType" | "MapValueType" => match target {
+            Some(Arg::MapPart(index, id, is_key)) => {
+                let r = &session.pool[index];
+                let Some(Declaration::Map(map)) = r.mm.declaration(id) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                let type_name = if is_key {
+                    map.key_type_name()
+                } else {
+                    map.value_type_name()
+                };
+                let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
+                Ok(match member {
+                    "getType" => ran(Ok(Value::String(type_name.to_string()))),
+                    "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
+                    "getNamespace" => match map_namespace(r, id) {
+                        Some(ns) => ran(Ok(Value::String(ns.to_string()))),
+                        None => Dispatch::Fault(Fault::Divergence(
+                            "state divergence: the map's model file is not registered".into(),
+                        )),
+                    },
+                    "getParent" => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+                    _ => {
+                        let Some(namespace) = map_namespace(r, id) else {
+                            return Err(Fault::Divergence(
+                                "state divergence: the map's model file is not registered".into(),
+                            ));
+                        };
+                        let result = if is_key {
+                            validation::validate_map_key(&r.mm, namespace, map)
+                        } else {
+                            validation::validate_map_value(&r.mm, namespace, map)
+                        };
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            // P2-06b: the key/value part of a `MapDeclaration` reached from
+            // an unregistered (`mfnew`) `ModelFile` — the same fallback as
+            // `Arg::DeclDetached` above, but for `MapKeyType`/`MapValueType`.
+            Some(Arg::MapPartDetached {
+                mm_index,
+                file,
+                index,
+                is_key,
+            }) => {
+                let Some(Declaration::Map(map)) = file.declarations().get(index) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the declaration did not load as a map".into(),
+                    ));
+                };
+                let type_name = if is_key {
+                    map.key_type_name()
+                } else {
+                    map.value_type_name()
+                };
+                let ctor = if is_key { "MapKeyType" } else { "MapValueType" };
+                Ok(match member {
+                    "getType" => ran(Ok(Value::String(type_name.to_string()))),
+                    "toString" => ran(Ok(Value::String(format!("{ctor} {{id={type_name}}}")))),
+                    "getNamespace" => ran(Ok(Value::String(file.namespace().to_string()))),
+                    "getParent" => ran(Ok(json!({
+                        M: "Declaration",
+                        "ctor": "MapDeclaration",
+                        "fqn": format!("{}.{}", file.namespace(), map.name()),
+                    }))),
+                    _ => {
+                        let Some(mm_index) = mm_index else {
+                            return Err(Fault::Harness(
+                                "a detached MapKeyType/MapValueType with no owning model manager"
+                                    .into(),
+                            ));
+                        };
+                        let manager = &session.pool[mm_index].mm;
+                        let result = if is_key {
+                            manager.validate_detached_map_key(&file, index)
+                        } else {
+                            manager.validate_detached_map_value(&file, index)
+                        };
+                        from_engine(result, |()| recipe::undefined())
+                    }
+                })
+            }
+            _ => Err(Fault::Unsupported(
+                "a MapKeyType/MapValueType receiver that is not a map part".into(),
+            )),
+        },
+        "NumberValidator" => {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a NumberValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, elem) = build_validator(&session, mm_idx, owner, &part)?;
+            let Validator::Number(nv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a NumberValidator".into(),
+                ));
+            };
+            Ok(match member {
+                "validate" => {
+                    let id = arg_nullable_str(&args, 0)?;
+                    let value = arg_nullable_f64(&args, 1)?;
+                    from_engine(nv.validate(&elem, id.as_deref(), value), |()| {
+                        recipe::undefined()
+                    })
+                }
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(nv.compatible_with(other.as_ref()))))
+                }
+                "toString" => ran(Ok(Value::String(nv.to_string()))),
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "StringValidator" => {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a StringValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, elem) = build_validator(&session, mm_idx, owner, &part)?;
+            let Validator::String(sv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a StringValidator".into(),
+                ));
+            };
+            Ok(match member {
+                "validate" => {
+                    let id = arg_nullable_str(&args, 0)?;
+                    let value = arg_nullable_str(&args, 1)?;
+                    from_engine(sv.validate(&elem, id.as_deref(), value.as_deref()), |()| {
+                        recipe::undefined()
+                    })
+                }
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(sv.compatible_with(other.as_ref()))))
+                }
+                "matchesRegex" => {
+                    let value = arg_str(&args, 0)?;
+                    ran(Ok(Value::Bool(sv.matches_regex(&value))))
+                }
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "CollectionSizeValidator" => {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
+                return Err(Fault::Unsupported(
+                    "a CollectionSizeValidator op whose receiver is not a validatorref".into(),
+                ));
+            };
+            let (built, _elem) = build_validator(&session, mm_idx, owner, &part)?;
+            let Validator::CollectionSize(cv) = built else {
+                return Err(Fault::Divergence(
+                    "state divergence: the validatorref did not build a CollectionSizeValidator"
+                        .into(),
+                ));
+            };
+            Ok(match member {
+                "compatibleWith" => {
+                    let other = arg_other_validator(&session, &args, 0)?;
+                    ran(Ok(Value::Bool(cv.compatible_with(other.as_ref()))))
+                }
+                "getMinSize" => ran(Ok(cv
+                    .min_size()
+                    .map_or_else(recipe::undefined, |v| json!(v)))),
+                "getMaxSize" => ran(Ok(cv
+                    .max_size()
+                    .map_or_else(recipe::undefined, |v| json!(v)))),
+                _ => unreachable!("`dispatched` lists every member"),
+            })
+        }
+        "ClassDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ClassDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(declaration) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration handle does not resolve".into(),
+                ));
+            };
+            if !matches!(declaration, Declaration::Class(_) | Declaration::Enum(_)) {
+                // TS: every one of these members is defined on
+                // `ClassDeclaration`, inherited unchanged by `EnumDeclaration`
+                // (module doc); a scalar or map declaration has no such
+                // method at all — not a fixture this op family owns.
+                return Ok(unsupported(
+                    "ClassDeclaration op on a receiver that is neither class-like nor an enum",
+                ));
+            }
+            let fqn =
+                r.mm.get_fully_qualified_name(&Node::Declaration(id))
+                    .expect("a resolved declref always names a loaded declaration");
+            Ok(class_declaration_op(r, id, &fqn, member, &args))
+        }
+        "Declaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Declaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            Ok(declaration_op(r, id, member))
+        }
+        "Decorator" => {
+            let Some(Arg::Deco(index, parent, position)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Decorator receiver that is not a decoref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(decorator) = parent.decorators(r).and_then(|ds| ds.get(position)) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the decorator was not found at its recorded position".into(),
+                ));
+            };
+            Ok(match member {
+                "getArguments" => ran(Ok(Value::Array(
+                    decorator
+                        .arguments()
+                        .iter()
+                        .map(encode_decorator_argument)
+                        .collect(),
+                ))),
+                _ => {
+                    // TS default: `decoratorValidation` unset, so `validate`
+                    // is a no-op (module doc on `Decorator::validate`); this
+                    // harness does not yet replay a `decoratorValidation`
+                    // option (`UNMODELLED_OPTIONS`), so every fixture it
+                    // reaches runs with the manager's default (disabled).
+                    let namespace = decorated_namespace(r, &parent).unwrap_or_default();
+                    ran(match decorator.validate(&r.mm, &namespace, None) {
+                        Ok(()) => Ok(recipe::undefined()),
+                        Err(e) => Err(to_oracle_error(&e)),
+                    })
+                }
+            })
+        }
+        "Property" | "Field" => {
+            let Some(Arg::Prop(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a Property/Field receiver that is not a propref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(property) = r.mm.property(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the property handle does not resolve".into(),
+                ));
+            };
+            if class == "Field" && property_ctor(property) != "Field" {
+                // TS: `getDefaultValue`/`getValidator`/`isTypeScalar`/
+                // `getScalarField` are defined only on `Field`, which
+                // `RelationshipDeclaration` and `EnumValueDeclaration` do not
+                // extend (module doc on `property_op`) — not a fixture this
+                // op family owns.
+                return Ok(unsupported(
+                    "Field op on a receiver that is not a Field (relationship or enum value)",
+                ));
+            }
+            Ok(property_op(r, id, property, member))
+        }
+        "RelationshipDeclaration" => {
+            let Some(Arg::Prop(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "a RelationshipDeclaration receiver that is not a propref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(property) = r.mm.property(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the property handle does not resolve".into(),
+                ));
+            };
+            if !property.is_relationship() {
+                return Ok(unsupported(
+                    "RelationshipDeclaration.toString on a receiver that is not a relationship",
+                ));
+            }
+            Ok(relationship_to_string(r, id, property))
+        }
+        "EnumDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "an EnumDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            let Some(Declaration::Enum(_)) = r.mm.declaration(id) else {
+                return Err(Fault::Divergence(
+                    "state divergence: the declaration did not load as an enum".into(),
+                ));
+            };
+            let fqn =
+                r.mm.get_fully_qualified_name(&Node::Declaration(id))
+                    .expect("a resolved declref always names a loaded declaration");
+            // TS: `EnumDeclaration.toString` (enumdeclaration.ts): `'EnumDeclaration
+            // {id=' + this.getFullyQualifiedName() + '}'`.
+            Ok(ran(Ok(Value::String(format!(
+                "EnumDeclaration {{id={fqn}}}"
+            )))))
+        }
+        "ModelFile" => {
+            let Some(Arg::File(file)) = target else {
+                return Err(Fault::Unsupported(
+                    "a ModelFile op whose receiver is not a model file (mfref/mfnew)".into(),
+                ));
+            };
+            Ok(model_file_op(&session, &file, member, &args))
+        }
+        "Introspector" => {
+            let Some(Arg::Mm(index)) = target else {
+                return Err(Fault::Unsupported(
+                    "an Introspector op whose receiver is not an introspector recipe".into(),
+                ));
+            };
+            let r = &session.pool[index];
+            Ok(introspector_op(r, member, &args))
+        }
+        "Relationship" if member == "fromURI" => Ok(relationship_from_uri(&session, &args)),
+        "Resource" | "Identifiable" | "Relationship" | "Typed" => {
+            let Some(Arg::Typed(index, inst)) = target else {
+                return Err(Fault::Unsupported(format!(
+                    "{class}.{member} with a receiver that is not a typed instance"
+                )));
+            };
+            let r = &session.pool[index];
+            Ok(instance_op(r, &inst, class, member, &args))
+        }
+        _ => unreachable!("`dispatched` lists every class"),
+    }
+}
+
+/// The oracle's summary of `ScalarDeclaration.getValidator`'s result, shared
+/// by a `declref` receiver's loaded [`ScalarValidator`] and a `declnew`
+/// receiver's [`ProcessedScalar`](concerto_core::introspect::scalar::ProcessedScalar) one.
+fn scalar_validator_summary(validator: Option<&ScalarValidator>) -> Value {
+    match validator {
+        None => Value::Null,
+        Some(ScalarValidator::Number(_)) => {
+            json!({ M: "Validator", "ctor": "NumberValidator" })
+        }
+        Some(ScalarValidator::String { .. }) => {
+            json!({ M: "Validator", "ctor": "StringValidator" })
+        }
+    }
+}
+
+/// A property, captured just enough to rebuild one of its validators for
+/// this harness's own replay: only what `FullyQualified`/`ValidatedElement`
+/// need to report a validator error, snapshotted at the point the validator
+/// is rebuilt. No production `Property`/`Field` API returns a built
+/// validator yet — that wiring is P2-04/P2-05 (PORTING.md 6.2) — so the
+/// harness rebuilds one straight from the property's own AST fields, which
+/// are already public, each time a `NumberValidator`/`StringValidator`/
+/// `CollectionSizeValidator` fixture needs one.
+struct PropertyElement {
+    fqn: String,
+    name: String,
+    default_value: Option<Value>,
+}
+
+impl concerto_core::introspect::FullyQualified for PropertyElement {
+    type Error = ConcertoError;
+
+    fn fully_qualified_name(&self) -> Result<String, ConcertoError> {
+        Ok(self.fqn.clone())
+    }
+}
+
+impl concerto_core::model_manager::ValidatedElement for PropertyElement {
+    fn default_value(&self) -> Result<Option<Value>, ConcertoError> {
+        Ok(self.default_value.clone())
+    }
+
+    fn name(&self) -> Result<String, ConcertoError> {
+        Ok(self.name.clone())
+    }
+}
+
+/// `property.ast.defaultValue`: the property kinds that carry one (`String`,
+/// `Integer`, `Long`, `Double`), or `None` (JS `null`/`undefined`) for a kind
+/// that has none.
+fn property_default_value(prop: &concerto_core::introspect::Property) -> Option<Value> {
+    use concerto_core::introspect::Property;
+    match prop {
+        Property::String(p) => p.default_value.clone().map(Value::String),
+        Property::Integer(p) => p.default_value.map(|v| json!(v)),
+        Property::Long(p) => p.default_value.map(|v| json!(v)),
+        Property::Double(p) => p.default_value.map(|v| json!(v)),
+        _ => None,
+    }
+}
+
+/// Rebuilds the validator a `validatorref` names (`part`: `"validator"`, the
+/// regex/length or numeric-domain one; `"size"`, the collection-size one)
+/// from its owning property (`mm_idx`/`prop_id`), plus the [`PropertyElement`]
+/// the property's own AST fields feed it with.
+///
+/// A build failure here is a real [`Fault::Divergence`], not an
+/// [`Fault::Unsupported`]: the property already loaded successfully (its own
+/// ad hoc `check_pattern`/`check_length`/`check_domain`/`check_size` checks
+/// passed when its model manager was rebuilt), so rebuilding the equivalent
+/// `Validator` from the same AST must succeed too, or the two disagree.
+fn build_validator(
+    session: &Session,
+    mm_idx: usize,
+    owner: recipe::ValidatorOwner,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    match owner {
+        recipe::ValidatorOwner::Prop(prop_id) => {
+            build_property_validator(session, mm_idx, prop_id, part)
+        }
+        recipe::ValidatorOwner::Decl(decl_id) => {
+            scalar_declaration_validator(session, mm_idx, decl_id, part)
+        }
+    }
+}
+
+/// A scalar declaration's own validator (`validatorref` with a `declref`
+/// owner; TS `ScalarDeclaration.getValidator()`, built by
+/// `ScalarDeclaration.process` as `new NumberValidator(this,
+/// this.ast.validator)` or `new StringValidator(this, this.ast.validator,
+/// this.ast.lengthValidator)`), plus the [`PropertyElement`] standing in for
+/// the declaration as the validator's `field`.
+///
+/// A `NumberValidator` is the one the loaded declaration already holds; a
+/// `StringValidator` is rebuilt from the AST arguments
+/// [`ScalarValidator::String`] records. The declaration loaded successfully,
+/// so a failure here is a [`Fault::Divergence`].
+fn scalar_declaration_validator(
+    session: &Session,
+    mm_idx: usize,
+    decl_id: DeclId,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    use concerto_core::introspect::Named;
+
+    if part != "validator" {
+        return Err(Fault::Unsupported(format!(
+            "a scalar declaration's validatorref part {part:?} with no Rust counterpart"
+        )));
+    }
+    let r = session.pool.get(mm_idx).ok_or_else(|| {
+        Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
+    })?;
+    let Some(Declaration::Scalar(scalar)) = r.mm.declaration(decl_id) else {
+        return Err(Fault::Divergence(
+            "state divergence: the validatorref's owner did not load as a scalar".into(),
+        ));
+    };
+    let fqn =
+        r.mm.get_fully_qualified_name(&Node::Declaration(decl_id))
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "computing the validatorref declaration's fully qualified name: {e}"
+                ))
+            })?;
+    let elem = PropertyElement {
+        fqn,
+        name: scalar.name().to_string(),
+        default_value: scalar.default_value().cloned(),
+    };
+    let validator = match scalar.validator() {
+        Some(ScalarValidator::Number(nv)) => Validator::Number(nv.clone()),
+        Some(ScalarValidator::String {
+            validator,
+            length_validator,
+        }) => {
+            let regex = validator
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| Fault::Divergence(format!("decoding the scalar's regex: {e}")))?;
+            let length = length_validator
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| {
+                    Fault::Divergence(format!("decoding the scalar's length validator: {e}"))
+                })?;
+            let built = concerto_core::introspect::validators::StringValidator::new(
+                &elem,
+                regex.as_ref(),
+                length.as_ref(),
+            )
+            .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
+            Validator::String(built)
+        }
+        None => {
+            return Err(Fault::Divergence(
+                "state divergence: the validatorref's scalar declaration has no validator".into(),
+            ));
+        }
+    };
+    Ok((validator, elem))
+}
+
+/// [`build_validator`] for a property owner.
+fn build_property_validator(
+    session: &Session,
+    mm_idx: usize,
+    prop_id: concerto_core::model_manager::PropId,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    use concerto_core::introspect::Named;
+    use concerto_core::introspect::Property;
+
+    let r = session.pool.get(mm_idx).ok_or_else(|| {
+        Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
+    })?;
+    let prop = r.mm.property(prop_id).ok_or_else(|| {
+        Fault::Divergence("state divergence: the validatorref's property was not found".into())
+    })?;
+    let fqn =
+        r.mm.get_fully_qualified_name(&Node::Property(prop_id))
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "computing the validatorref property's fully qualified name: {e}"
+                ))
+            })?;
+    let elem = PropertyElement {
+        fqn,
+        name: prop.name().to_string(),
+        default_value: property_default_value(prop),
+    };
+
+    let validator = match part {
+        "size" => {
+            let ast = prop.size_validator().ok_or_else(|| {
+                Fault::Divergence(
+                    "state divergence: the validatorref's property has no size validator".into(),
+                )
+            })?;
+            let built =
+                concerto_core::introspect::validators::CollectionSizeValidator::new(&elem, ast)
+                    .map_err(|e| {
+                        Fault::Divergence(format!("rebuilding CollectionSizeValidator: {e}"))
+                    })?;
+            Validator::CollectionSize(built)
+        }
+        "validator" => match prop {
+            Property::String(p) => {
+                let built = concerto_core::introspect::validators::StringValidator::new(
+                    &elem,
+                    p.validator.as_ref(),
+                    p.length_validator.as_ref(),
+                )
+                .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
+                Validator::String(built)
+            }
+            Property::Integer(p) => {
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
+                Validator::Number(built)
+            }
+            Property::Long(p) => {
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
+                Validator::Number(built)
+            }
+            Property::Double(p) => {
+                let ast = p.validator.as_ref().map_or(Value::Null, |v| {
+                    serde_json::to_value(v).expect("domain validator serializes")
+                });
+                let built =
+                    concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
+                        .map_err(|e| {
+                            Fault::Divergence(format!("rebuilding NumberValidator: {e}"))
+                        })?;
+                Validator::Number(built)
+            }
+            _ => {
+                return Err(Fault::Unsupported(
+                    "a `validator` part on a property kind with no ported validator".into(),
+                ));
+            }
+        },
+        other => {
+            return Err(Fault::Unsupported(format!(
+                "a validatorref part {other:?} with no Rust counterpart"
+            )));
+        }
+    };
+    Ok((validator, elem))
+}
+
+/// `NumberValidator.validate`/`StringValidator.validate`'s first argument
+/// (`identifier`): a nullable string.
+fn arg_nullable_str(args: &[Arg], index: usize) -> Faulty<Option<String>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Plain(Value::String(s))) => Ok(Some(s.clone())),
+        _ => Err(Fault::Unsupported(
+            "expected a nullable string argument".into(),
+        )),
+    }
+}
+
+/// `StringValidator.matchesRegex`'s argument: a required non-null string.
+fn arg_str(args: &[Arg], index: usize) -> Faulty<String> {
+    match args.get(index) {
+        Some(Arg::Plain(Value::String(s))) => Ok(s.clone()),
+        _ => Err(Fault::Unsupported("expected a string argument".into())),
+    }
+}
+
+/// `NumberValidator.validate`'s value argument: a nullable number.
+fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Plain(v)) if v.is_number() => Ok(v.as_f64()),
+        _ => Err(Fault::Unsupported(
+            "expected a nullable number argument".into(),
+        )),
+    }
+}
+
+/// `compatibleWith`'s `other` argument: `null`, or another `validatorref`,
+/// rebuilt the same way the receiver was.
+fn arg_other_validator(session: &Session, args: &[Arg], index: usize) -> Faulty<Option<Validator>> {
+    match args.get(index) {
+        None | Some(Arg::Plain(Value::Null)) => Ok(None),
+        Some(Arg::Validator(mm_idx, owner, part)) => {
+            build_validator(session, *mm_idx, *owner, part).map(|(v, _)| Some(v))
+        }
+        _ => Err(Fault::Unsupported(
+            "expected a validator or null argument".into(),
+        )),
+    }
+}
+
+/// The `ctor` an oracle `Property` summary carries for `p` (README "Value
+/// encoding", `codec.js`'s `encodable.js`): the TS class that would have
+/// constructed it, from its own kind (a property's kind, unlike a
+/// declaration's, never needs a receiver's model file to tell, PORTING.md
+/// 6.2).
+fn property_ctor(p: &Property) -> &'static str {
+    if p.is_enum_value() {
+        "EnumValueDeclaration"
+    } else if p.is_relationship() {
+        "RelationshipDeclaration"
+    } else {
+        "Field"
+    }
+}
+
+/// The outcome-only `Property` summary (`makeOutputEncoder`): `{ctor, fqn}`.
+/// `owner_fqn` is the fully-qualified name of the declaration that actually
+/// declares `p` — its `Property.getParent().getFullyQualifiedName()` — which
+/// for an inherited property is its super type's, not the type the walk
+/// started from ([`ModelManager::get_all_properties`]'s doc comment).
+fn property_summary(owner_fqn: &str, p: &Property) -> Value {
+    json!({
+        M: "Property",
+        "ctor": property_ctor(p),
+        "fqn": format!("{owner_fqn}.{}", p.name()),
+    })
+}
+
+/// Every fully-qualified super type name `get_all_super_type_names` (or
+/// `get_assignable_class_declarations`/`get_direct_subclasses`) gives, each
+/// resolved back to its declaration and encoded the outcome-only way
+/// (`declaration_summary`).
+fn declaration_summaries(r: &Replayed, fqns: &[String]) -> Value {
+    Value::Array(
+        fqns.iter()
+            .map(|fqn| {
+                let id =
+                    r.mm.declaration_id(fqn)
+                        .expect("a name this manager's own walk produced is always loaded");
+                r.declaration_summary(id)
+                    .expect("declaration_id just resolved it")
+            })
+            .collect(),
+    )
+}
+
+/// `ClassDeclaration.*`/`EnumDeclaration`-inherited ops (module doc): every
+/// member TS defines once on `ClassDeclaration`, which `EnumDeclaration`
+/// (src/introspect/enumdeclaration.ts) inherits unchanged except `toString`
+/// and `declarationKind` — so `fqn` here may equally be a concept-like
+/// declaration or an enum (`exec_handles`'s own gate on `declaration`).
+fn class_declaration_op(
+    r: &Replayed,
+    id: DeclId,
+    fqn: &str,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    let declaration =
+        r.mm.declaration(id)
+            .expect("the caller just resolved this handle");
+    let arg_str = |i: usize| match args.get(i) {
+        Some(Arg::Plain(Value::String(s))) => Some(s.as_str()),
+        _ => None,
+    };
+    match member {
+        "isAbstract" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_abstract(),
+                Declaration::Enum(e) => e.is_abstract(),
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "isIdentified" => from_engine(r.mm.is_identified(fqn), Value::Bool),
+        "isSystemIdentified" => from_engine(r.mm.is_system_identified(fqn), Value::Bool),
+        "isExplicitlyIdentified" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_explicitly_identified(),
+                // An enum's AST never carries `identified` (own_identifier_field_name).
+                Declaration::Enum(_) => false,
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "getIdentifierFieldName" => from_engine(r.mm.identifier_field_name(fqn), |name| {
+            name.map_or(Value::Null, Value::String)
+        }),
+        "getOwnProperties" => from_engine(r.mm.get_own_properties(fqn), |props| {
+            Value::Array(props.iter().map(|p| property_summary(fqn, p)).collect())
+        }),
+        "getProperties" => from_engine(r.mm.get_all_properties(fqn), |props| {
+            Value::Array(
+                props
+                    .iter()
+                    .map(|(owner, p)| property_summary(owner, p))
+                    .collect(),
+            )
+        }),
+        "getProperty" => {
+            let Some(name) = arg_str(0) else {
+                return unsupported("getProperty with a name that is not a string");
+            };
+            from_engine(r.mm.get_property(fqn, name), |found| {
+                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, &p))
+            })
+        }
+        "getSuperType" => from_engine(r.mm.get_super_type(fqn), |name| {
+            name.map_or(Value::Null, Value::String)
+        }),
+        "getSuperTypeDeclaration" => from_engine(r.mm.get_super_type_declaration(fqn), |found| {
+            found
+                .and_then(|id| r.declaration_summary(id))
+                .unwrap_or(Value::Null)
+        }),
+        "getAllSuperTypeDeclarations" => from_engine(r.mm.get_all_super_type_names(fqn), |names| {
+            declaration_summaries(r, &names)
+        }),
+        "getAssignableClassDeclarations" => {
+            from_engine(r.mm.get_assignable_class_declarations(fqn), |names| {
+                declaration_summaries(r, &names)
+            })
+        }
+        "getDirectSubclasses" => from_engine(r.mm.get_direct_subclasses(fqn), |names| {
+            declaration_summaries(r, &names)
+        }),
+        "getNestedProperty" => {
+            let Some(path) = arg_str(0) else {
+                return unsupported("getNestedProperty with a path that is not a string");
+            };
+            from_engine(r.mm.get_nested_property(fqn, path), |(owner, p)| {
+                property_summary(&owner, &p)
+            })
+        }
+        "isEnum" => ran(Ok(Value::Bool(declaration.is_enum_declaration()))),
+        "isEvent" => {
+            let value = match declaration {
+                Declaration::Class(c) => c.is_event(),
+                Declaration::Enum(_) => false,
+                _ => unreachable!("the caller already gated to class-like or enum"),
+            };
+            ran(Ok(Value::Bool(value)))
+        }
+        "isMapDeclaration" => ran(Ok(Value::Bool(declaration.is_map_declaration()))),
+        "toString" => {
+            let Declaration::Class(class) = declaration else {
+                // `EnumDeclaration` overrides `toString` (module doc): the
+                // oracle records that override as its own op
+                // (`EnumDeclaration.toString`), never reaching here.
+                return unsupported("ClassDeclaration.toString on an enum receiver");
+            };
+            let super_name = class.super_type().map(|ti| ti.name.as_str());
+            ran(Ok(Value::String(ClassDeclaration::to_string(
+                fqn,
+                super_name,
+                class.is_abstract(),
+            ))))
+        }
+        "validate" => {
+            let namespace =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+                    .expect("a resolved declref's declaration always has a model file");
+            // TS: `validate()` returns nothing (`undefined`), never `null`.
+            from_engine(declaration.validate(&r.mm, namespace), |()| {
+                recipe::undefined()
+            })
+        }
+        _ => unreachable!("`dispatched` lists every ClassDeclaration member"),
+    }
+}
+
+/// `Declaration.*` ops that reach every kind of declaration unchanged
+/// (module doc): none of them is overridden anywhere in the hierarchy.
+fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
+    let Some(declaration) = r.mm.declaration(id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the declaration handle does not resolve".into(),
+        ));
+    };
+    match member {
+        "getFullyQualifiedName" => from_engine(
+            r.mm.get_fully_qualified_name(&Node::Declaration(id)),
+            Value::String,
+        ),
+        "getName" => ran(Ok(Value::String(declaration.name().to_string()))),
+        "getNamespace" => {
+            let Some(namespace) =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the declaration's model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(Value::String(namespace.to_string())))
+        }
+        "getModelFile" => {
+            let Some(namespace) =
+                r.mm.model_file_of(id)
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the declaration's model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(r.model_file_summary(namespace).unwrap_or(Value::Null)))
+        }
+        _ => unreachable!("`dispatched` lists every Declaration member"),
+    }
+}
+
+/// TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08),
+/// for a receiver never added to a manager via `addModelFile` (that is
+/// `ModelManager.addModelFile`, already dispatched).
+fn model_file_new(args: &[Arg]) -> Dispatch {
+    // Each constructor argument as plain data, `None` for JS `undefined`.
+    let mut plain = [None, None, None];
+    for (slot, (index, what)) in
+        plain
+            .iter_mut()
+            .zip([(1, "ast"), (2, "definitions"), (3, "fileName")])
+    {
+        match args.get(index) {
+            None => {}
+            Some(Arg::Plain(v)) if recipe::is_undefined(v) => {}
+            Some(Arg::Plain(v)) => *slot = Some(v),
+            Some(_) => {
+                return unsupported(format!(
+                    "ModelFile.new with a {what} argument that is not plain data"
+                ));
+            }
+        }
+    }
+    let [ast, definitions, file_name_arg] = plain;
+    // TS's own argument checks come first (a plain `Error` each).
+    if let Err(e) = ModelFile::check_constructor_arguments(ast, definitions, file_name_arg) {
+        return ran(Err(to_oracle_error(&e)));
+    }
+    let ast = ast.expect("check_constructor_arguments rejects a missing ast");
+    // A falsy non-string `definitions` passed those checks; TS keeps it as
+    // given, but nothing the oracle compares reads it back (the harness's
+    // `getDefinitions` answers only for a string).
+    let definitions = match definitions {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let file_name_value = file_name_arg.cloned().unwrap_or_else(recipe::undefined);
+    let file_name = match &file_name_value {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    };
+    from_engine(
+        ModelFile::from_json_with_definitions(ast, definitions, file_name),
+        |mf| {
+            json!({
+                M: "ModelFile",
+                "namespace": mf.namespace(),
+                "name": mf
+                    .file_name()
+                    .map_or_else(|| file_name_value.clone(), |n| Value::String(n.to_string())),
+                "ast": mf.ast(),
+            })
+        },
+    )
+}
+
+/// The outcome-only `Declaration` summary `{ctor, fqn}` (the same shape
+/// [`Replayed::declaration_summary`] builds from a [`DeclId`]), for a
+/// declaration read straight off a rebuilt [`ModelFile`] — every `ModelFile`
+/// getter that hands back a declaration (`getAssetDeclaration` and its
+/// siblings, `getAllDeclarations` and the other `get*Declarations` lists)
+/// already has it in hand, with no arena lookup needed.
+fn declaration_value(namespace: &str, declaration: &Declaration) -> Value {
+    let ctor = match declaration {
+        Declaration::Class(class) => class.declaration_kind(),
+        Declaration::Enum(_) => "EnumDeclaration",
+        Declaration::Scalar(_) => "ScalarDeclaration",
+        Declaration::Map(_) => "MapDeclaration",
+    };
+    json!({
+        M: "Declaration",
+        "ctor": ctor,
+        "fqn": format!("{namespace}.{}", declaration.name()),
+    })
+}
+
+/// A [`Node`] `ModelFile.getType` resolved to, in its outcome shape: a
+/// primitive's bare name, a declaration's summary, or `null`.
+fn node_type_value(r: &Replayed, node: Option<Node>) -> Value {
+    match node {
+        None => Value::Null,
+        Some(Node::Primitive(name)) => Value::String(name.to_string()),
+        Some(Node::Declaration(id)) => r.declaration_summary(id).unwrap_or(Value::Null),
+        // `ModelFile.getType` never resolves to a model file or a property.
+        Some(_) => Value::Null,
+    }
+}
+
+/// `ModelFile.*` ops (P2-08), other than `new` (handled directly in
+/// `exec_handles`, since the receiver does not exist yet). `file` is the
+/// `mfref`/`mfnew` receiver.
+///
+/// Every getter below runs against `mf`, rebuilt fresh from
+/// `file.ast`/`file.definitions`/`file.file_name`: a `ModelFile` is a pure
+/// function of what it was built from (module doc on
+/// [`concerto_core::introspect::model_file::ModelFile`]), and
+/// `Session::file` already proved this same construction succeeds once,
+/// while decoding the receiver — so rebuilding it here for a second time
+/// gives back an equivalent object. `getModelManager`, `getType` and
+/// `validate` are the three members that need the owning manager for
+/// something beyond that (`getModelManager`/`getType`'s cross-file lookups,
+/// `validate`'s import checks): `file.mm_index`, via `session`.
+///
+/// Every string argument these members take is required to already be a
+/// plain string; TS itself is not always this strict (`isLocalType`,
+/// `isImportedType` and `getType`/`getFullyQualifiedTypeName` degrade
+/// gracefully on a nullish argument, while the `get*Declaration` getters
+/// throw a `TypeError` calling `.startsWith` on one) — the oracle corpus
+/// exercises every one of these members with a real string name only, so
+/// this port does not need to reproduce either behaviour, and instead
+/// reports a non-string argument `unsupported` uniformly.
+fn model_file_op(
+    session: &Session,
+    file: &recipe::FileArg,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    let mf = match ModelFile::from_json_with_definitions(
+        &file.ast,
+        file.definitions.clone(),
+        file.file_name.clone(),
+    ) {
+        Ok(mf) => mf,
+        Err(e) => {
+            return Dispatch::Fault(Fault::Divergence(format!(
+                "state divergence: a model file that decoded successfully failed to rebuild: {}",
+                to_oracle_error(&e).message
+            )));
+        }
+    };
+    let namespace = mf.namespace().to_string();
+    let decl =
+        |d: Option<&Declaration>| d.map_or(Value::Null, |d| declaration_value(&namespace, d));
+    let decls = |ds: Vec<&Declaration>| {
+        Value::Array(
+            ds.into_iter()
+                .map(|d| declaration_value(&namespace, d))
+                .collect(),
+        )
+    };
+    let arg_str = |i: usize| -> Result<Option<&str>, ()> {
+        match args.get(i) {
+            None => Ok(None),
+            Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => Ok(None),
+            Some(Arg::Plain(Value::String(s))) => Ok(Some(s.as_str())),
+            _ => Err(()),
+        }
+    };
+    macro_rules! str_arg {
+        ($i:expr) => {
+            match arg_str($i) {
+                Ok(Some(s)) => s,
+                Ok(None) | Err(()) => {
+                    return unsupported(format!("ModelFile.{member} with a non-string argument"));
+                }
+            }
+        };
+    }
+
+    match member {
+        "getNamespace" => ran(Ok(Value::String(namespace))),
+        "getName" => ran(Ok(mf.file_name().map_or_else(
+            || file.nullish_name.clone(),
+            |n| Value::String(n.to_string()),
+        ))),
+        "getAst" => ran(Ok(mf.ast().clone())),
+        // TS `this.definitions = definitions` (the constructor parameter),
+        // which defaults to JS `undefined` when omitted — never observed as
+        // an explicit `null` in the oracle corpus (module doc above).
+        "getDefinitions" => ran(Ok(mf
+            .definitions()
+            .map_or_else(recipe::undefined, |d| Value::String(d.to_string())))),
+        "getConcertoVersion" => ran(Ok(mf
+            .concerto_version()
+            .map_or(Value::Null, |v| Value::String(v.to_string())))),
+        "isExternal" => ran(Ok(Value::Bool(mf.is_external()))),
+        "isModelFile" => ran(Ok(Value::Bool(true))),
+        "isSystemModelFile" => ran(Ok(Value::Bool(mf.is_system_namespace()))),
+        "getAllDeclarations" => ran(Ok(decls(mf.declarations().iter().collect()))),
+        "getClassDeclarations" => ran(Ok(decls(mf.get_class_declarations()))),
+        "getEnumDeclarations" => ran(Ok(decls(mf.get_enum_declarations()))),
+        "getScalarDeclarations" => ran(Ok(decls(mf.get_scalar_declarations()))),
+        "getAssetDeclarations" => ran(Ok(decls(mf.get_asset_declarations()))),
+        "getTransactionDeclarations" => ran(Ok(decls(mf.get_transaction_declarations()))),
+        "getEventDeclarations" => ran(Ok(decls(mf.get_event_declarations()))),
+        "getAssetDeclaration" => ran(Ok(decl(mf.get_asset_declaration(str_arg!(0))))),
+        "getTransactionDeclaration" => ran(Ok(decl(mf.get_transaction_declaration(str_arg!(0))))),
+        "getEventDeclaration" => ran(Ok(decl(mf.get_event_declaration(str_arg!(0))))),
+        "getParticipantDeclaration" => ran(Ok(decl(mf.get_participant_declaration(str_arg!(0))))),
+        "getImports" => ran(Ok(Value::Array(
+            mf.get_imports().into_iter().map(Value::String).collect(),
+        ))),
+        // TS `getExternalImports()` returns `this.importUriMap` directly:
+        // an object keyed by each import's fully-qualified name, valued by
+        // its URI (P2-11b-U4).
+        "getExternalImports" => ran(Ok(Value::Object(
+            mf.get_external_imports()
+                .into_iter()
+                .map(|(fqn, uri)| (fqn, Value::String(uri)))
+                .collect(),
+        ))),
+        "getImportURI" => ran(Ok(mf
+            .get_import_uri(str_arg!(0))
+            .map_or(Value::Null, |u| Value::String(u.to_string())))),
+        "isImportedType" => ran(Ok(Value::Bool(mf.is_imported_type(str_arg!(0))))),
+        "isLocalType" => ran(Ok(Value::Bool(mf.is_local_type(str_arg!(0))))),
+        "isDefined" => ran(Ok(Value::Bool(mf.is_defined(str_arg!(0))))),
+        "resolveImport" => from_engine(mf.resolve_import(str_arg!(0)), Value::String),
+        "getImportedType" => from_engine(mf.get_imported_type(str_arg!(0)), Value::String),
+        "getFullyQualifiedTypeName" => ran(Ok(mf
+            .get_fully_qualified_type_name(str_arg!(0))
+            .map_or(Value::Null, Value::String))),
+        "getModelManager" => match registered_file(session, file) {
+            Ok(r) => ran(Ok(r.summary())),
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        "getType" => {
+            let r = match registered_file(session, file) {
+                Ok(r) => r,
+                Err(Fault::Unsupported(reason)) => return unsupported(reason),
+                Err(other) => return Dispatch::Fault(other),
+            };
+            let type_name = match arg_str(0) {
+                Ok(v) => v,
+                Err(()) => {
+                    return unsupported("ModelFile.getType with a type name that is not a string");
+                }
+            };
+            let file_id = r
+                .file_id(&namespace)
+                .expect("registered_file just confirmed this namespace is registered");
+            from_engine(
+                r.mm.get_type(&Node::ModelFile(file_id), type_name),
+                |node| node_type_value(r, node),
+            )
+        }
+        // TS `modelFile.validate()` needs only `this.getModelManager()`, not
+        // that the manager has registered `this`: a file built with `new
+        // ModelFile(mm, ast)` and validated straight away is the common case
+        // (P2-08). `validate_detached_model_file` validates such a file
+        // against its manager without changing it.
+        "validate" => match owning_manager(session, file) {
+            Ok(r) => from_engine(r.mm.validate_detached_model_file(&mf), |()| {
+                recipe::undefined()
+            }),
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        _ => unreachable!("`dispatched` lists every ModelFile member"),
+    }
+}
+
+/// `file`'s owning model manager, only when `file` is genuinely the file
+/// registered there under its namespace — the same check
+/// [`recipe::model_file_node`] makes for a receiver that needs a `Node`
+/// handle. `getModelManager` and `getType` use this: `getType`'s
+/// `ModelManager::resolve_type_name` looks a namespace's file up *through
+/// the manager*, not through `file` directly, so an `mfnew` receiver that
+/// was never added via `addModelFile` would resolve with the wrong verdict
+/// (P2-08 review). `validate` does not need it: it uses
+/// `ModelManager::validate_detached_model_file` through [`owning_manager`].
+fn registered_file<'s>(
+    session: &'s Session,
+    file: &recipe::FileArg,
+) -> Result<&'s Replayed, Fault> {
+    let r = owning_manager(session, file)?;
+    // Discard the `Node`: only its existence (this namespace resolves to
+    // exactly `file`'s own AST) is wanted here.
+    recipe::model_file_node(r, file)?;
+    Ok(r)
+}
+
+/// `file`'s owning model manager (TS `this.getModelManager()`), whether or
+/// not it has registered `file`.
+fn owning_manager<'s>(session: &'s Session, file: &recipe::FileArg) -> Result<&'s Replayed, Fault> {
+    let index = file.mm_index.ok_or_else(|| {
+        Fault::Unsupported(
+            "a ModelFile op needing the owning model manager, decoded without its pool index"
+                .into(),
+        )
+    })?;
+    Ok(&session.pool[index])
+}
+
+/// `Introspector.*` ops (P2-08): a thin wrapper over the receiver's own
+/// `ModelManager` (module doc on `Session::decode`'s `"introspector"` arm) —
+/// `getModelManager` returns it directly, and the other two members
+/// delegate to it exactly as `Introspector`'s TS methods do
+/// (src/introspect/introspector.ts).
+fn introspector_op(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
+    match member {
+        "getModelManager" => ran(Ok(r.summary())),
+        // TS: `getClassDeclarations` concatenates
+        // `modelFile.getAllDeclarations().filter(d => !isMap && !isScalar)`
+        // over `modelManager.getModelFiles()`, i.e. every loaded file but
+        // the system and decorator ones — `ModelManager::class_declarations`
+        // (P2-08 review: fixed to leave those out, matching `EXCLUDE_NS`).
+        "getClassDeclarations" => ran(Ok(Value::Array(
+            r.mm.class_declarations()
+                .filter_map(|id| r.declaration_summary(id))
+                .collect(),
+        ))),
+        // TS: `getClassDeclaration(fqn)` is `this.modelManager.getType(fqn)`
+        // outright — the same lookup `ModelManager.getType`'s own dispatch
+        // (`model_manager_query`) already uses.
+        "getClassDeclaration" => {
+            let Some(Arg::Plain(Value::String(fqn))) = args.first() else {
+                return unsupported(
+                    "Introspector.getClassDeclaration with a type name that is not a string",
+                );
+            };
+            match r.mm.get_declaration(fqn) {
+                Err(e) => ran(Err(to_oracle_error(&e))),
+                Ok(_) => {
+                    let id = r.mm.declaration_id(fqn).expect("get_declaration found it");
+                    ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null)))
+                }
+            }
+        }
+        _ => unreachable!("`dispatched` lists every Introspector member"),
+    }
+}
+
+/// `Property.*` ops (P2-04, issue #48), plus the `Field`-only members
+/// (`getDefaultValue`, `getValidator`, `isTypeScalar`, `getScalarField`):
+/// every member `Field`, `RelationshipDeclaration` and
+/// `EnumValueDeclaration` inherit unchanged from `Property`
+/// (src/introspect/property.ts), so `id`/`property` may be any one of the
+/// three kinds for the base members; the caller (`exec_handles`) already
+/// gates the `Field`-only members to a receiver that is not a relationship
+/// or an enum value.
+fn property_op(r: &Replayed, id: PropId, property: &Property, member: &str) -> Dispatch {
+    let node = Node::Property(id);
+    match member {
+        "getName" => ran(Ok(Value::String(property.name().to_string()))),
+        "getType" => ran(Ok(property
+            .type_name()
+            .map_or(Value::Null, |t| Value::String(t.to_string())))),
+        "isArray" => ran(Ok(Value::Bool(property.is_array()))),
+        "isOptional" => ran(Ok(Value::Bool(property.is_optional()))),
+        "getFullyQualifiedTypeName" => {
+            from_engine(r.mm.get_fully_qualified_type_name(&node), Value::String)
+        }
+        "getFullyQualifiedName" => from_engine(r.mm.get_fully_qualified_name(&node), Value::String),
+        "getNamespace" => {
+            // TS: `getParent().getNamespace()`, `ClassDeclaration`'s own
+            // (inherited from `Declaration`): its model file's namespace.
+            let Some(namespace) =
+                r.mm.parent_of(id)
+                    .and_then(|parent| r.mm.model_file_of(parent))
+                    .and_then(|file| r.mm.file(file))
+                    .map(ModelFile::namespace)
+            else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the property's parent model file does not resolve".into(),
+                ));
+            };
+            ran(Ok(Value::String(namespace.to_string())))
+        }
+        "getParent" => {
+            let Some(parent) = r.mm.parent_of(id) else {
+                return Dispatch::Fault(Fault::Divergence(
+                    "state divergence: the property's parent does not resolve".into(),
+                ));
+            };
+            ran(Ok(r.declaration_summary(parent).unwrap_or(Value::Null)))
+        }
+        "getSizeValidator" => ran(Ok(match property.size_validator() {
+            None => Value::Null,
+            Some(_) => json!({ M: "Validator", "ctor": "CollectionSizeValidator" }),
+        })),
+        "isPrimitive" => ran(Ok(Value::Bool(property.is_primitive()))),
+        "isTypeEnum" => from_engine(is_type_enum(r, id, property), Value::Bool),
+        "getDefaultValue" => ran(Ok(r
+            .mm
+            .property_default_value(id)
+            .cloned()
+            .unwrap_or(Value::Null))),
+        "getValidator" => ran(Ok(field_validator_summary(property))),
+        "isTypeScalar" => from_engine(is_type_scalar(r, id, property), Value::Bool),
+        "getScalarField" => get_scalar_field(r, id, property),
+        "toString" => field_to_string(r, id, property),
+        _ => unreachable!("`dispatched` lists every Property/Field member"),
+    }
+}
+
+/// `Field.toString` (P4-07's issue #195): the one override besides
+/// `getName` et al. that `Field` itself defines (`Property.toString` does
+/// not exist). Delegates to the same [`concerto_core::introspect::field::to_string`]
+/// the `fieldToString` WASM binding calls, so the native and WASM legs share
+/// one implementation.
+///
+/// TS: `Field.toString` (src/introspect/field.ts): `'Field {name=' +
+/// this.name + ', type=' + this.getFullyQualifiedTypeName() + ', array=' +
+/// this.array + ', optional=' + this.optional + '}'`.
+fn field_to_string(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    from_engine(
+        r.mm.get_fully_qualified_type_name(&Node::Property(id)),
+        |fqn| {
+            Value::String(concerto_core::introspect::field::to_string(
+                property.name(),
+                &fqn,
+                property.is_array(),
+                property.is_optional(),
+            ))
+        },
+    )
+}
+
+/// `RelationshipDeclaration.toString` (P2-04): the one override besides
+/// `getName` et al. (`Property.toString` does not exist; TS's own default
+/// `Object.prototype.toString` is never called by any op this harness
+/// dispatches).
+///
+/// TS: `'RelationshipDeclaration {name=' + this.name + ', type=' +
+/// this.getFullyQualifiedTypeName() + ', array=' + this.array + ',
+/// optional=' + this.optional + '}'` (relationshipdeclaration.ts).
+fn relationship_to_string(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    from_engine(
+        r.mm.get_fully_qualified_type_name(&Node::Property(id)),
+        |fqn| {
+            Value::String(format!(
+                "RelationshipDeclaration {{name={}, type={}, array={}, optional={}}}",
+                property.name(),
+                fqn,
+                property.is_array(),
+                property.is_optional(),
+            ))
+        },
+    )
+}
+
+/// Dispatches an op whose receiver is a `"typed"` `Resource`,
+/// `ValidatedResource` or `Relationship` (P3-01 review, task
+/// `accordproject-concerto-rust#56` follow-up), decoded into a
+/// [`recipe::DecodedInstance`] by `recipe.rs`'s `Session::typed`. Covers:
+///
+/// - `Resource.validate` (TS `ValidatedResource.validate`,
+///   `src/model/validatedresource.ts`, over
+///   [`concerto_core::instance::validate::validate_instance`], task P3-01's
+///   own port of `ResourceValidator`), `toString`, `isResource`,
+///   `isConcept`, `isIdentifiable` (`src/model/resource.ts`), and
+///   `instanceOf` (inherited from `Typed`);
+/// - `Identifiable.getIdentifier`, `getFullyQualifiedIdentifier`,
+///   `getTimestamp`, `toURI`, `isRelationship`, `isResource`
+///   (`src/model/identifiable.ts`);
+/// - `Relationship.toString`, `isRelationship` (`src/model/relationship.ts`;
+///   the static `fromURI` is [`relationship_from_uri`]);
+/// - `Typed.getType`, `getNamespace`, `getFullyQualifiedType`,
+///   `getClassDeclaration` (`src/model/typed.ts`).
+///
+/// The members that mutate the receiver or serialize it
+/// (`setPropertyValue`, `addArrayValue`, `setIdentifier`, `toJSON`) are
+/// P3-01b's, dispatched from `instances.rs` over the whole decoded
+/// instance.
+fn instance_op(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+    class: &str,
+    member: &str,
+    args: &[Arg],
+) -> Dispatch {
+    match (class, member) {
+        ("Resource", "validate") => ran(
+            match concerto_core::instance::validate::validate_instance(
+                &r.mm,
+                &inst.wire,
+                &concerto_core::instance::validate::ValidateOptions::default(),
+            ) {
+                Ok(()) => Ok(recipe::undefined()),
+                Err(e) => Err(to_oracle_error(&e)),
+            },
+        ),
+        ("Resource", "toString") => ran(Ok(Value::String(format!(
+            "Resource {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Resource", "isResource") => ran(Ok(Value::Bool(true))),
+        ("Resource", "isConcept") => from_engine(instance_is_concept(r, inst), Value::Bool),
+        ("Resource", "isIdentifiable") => from_engine(r.mm.is_identified(&inst.fqn), Value::Bool),
+        ("Identifiable", "getIdentifier") => ran(Ok(inst
+            .identifier
+            .clone()
+            .map(Value::String)
+            .unwrap_or_else(recipe::undefined))),
+        ("Identifiable", "getFullyQualifiedIdentifier") => {
+            ran(Ok(Value::String(fully_qualified_identifier(inst))))
+        }
+        ("Identifiable", "toURI") => ran(match instance_resource_id(inst) {
+            Ok(id) => Ok(Value::String(id.to_uri())),
+            Err(e) => Err(to_oracle_error(&e)),
+        }),
+        ("Identifiable" | "Relationship", "isRelationship") => {
+            ran(Ok(Value::Bool(inst.ctor == "Relationship")))
+        }
+        ("Identifiable", "isResource") => ran(Ok(Value::Bool(inst.ctor != "Relationship"))),
+        ("Relationship", "toString") => ran(Ok(Value::String(format!(
+            "Relationship {{id={}}}",
+            fully_qualified_identifier(inst)
+        )))),
+        ("Typed", "getType") => ran(Ok(Value::String(inst.type_name.clone()))),
+        ("Typed", "getNamespace") => ran(Ok(Value::String(inst.namespace.clone()))),
+        ("Typed", "getFullyQualifiedType") => ran(Ok(Value::String(inst.fqn.clone()))),
+        // TS `Identifiable.getTimestamp`: `return this.$timestamp`, as
+        // recorded (a `dayjs` node, `null` or `undefined`).
+        ("Identifiable", "getTimestamp") => ran(Ok(inst.timestamp.clone())),
+        // TS `Typed.getClassDeclaration`: `return this.$classDeclaration`.
+        ("Typed", "getClassDeclaration") => match inst.class_declaration {
+            Some(id) => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+            None => unregistered_class_declaration(),
+        },
+        ("Resource", "instanceOf") => {
+            let Some(id) = inst.class_declaration else {
+                return unregistered_class_declaration();
+            };
+            let fqt = match args.first() {
+                Some(Arg::Plain(v)) => v.clone(),
+                None => recipe::undefined(),
+                _ => return unsupported("instanceOf with a type name that is not plain data"),
+            };
+            from_engine(instance_of(r, id, &fqt), Value::Bool)
+        }
+        _ => unreachable!("`dispatched` lists every (class, member) this function handles"),
+    }
+}
+
+/// A receiver whose `$classDeclaration` has no Rust handle
+/// ([`recipe::DecodedInstance::class_declaration`]): a declaration never
+/// registered with its model manager.
+fn unregistered_class_declaration() -> Dispatch {
+    Dispatch::Fault(Fault::Blocked(
+        "the receiver's class declaration is not registered with a model manager".into(),
+        recipe::Blocker::Member("ModelFile.new".into()),
+    ))
+}
+
+/// TS `Typed.instanceOf(fqt)` (src/model/typed.ts): whether the receiver's
+/// own `$classDeclaration`, or any declaration up its
+/// `getSuperTypeDeclaration()` chain, has the fully qualified name `fqt`
+/// (compared with `===`, so only a string can match).
+fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoError> {
+    let fqt = fqt.as_str();
+    let mut current = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
+    if fqt == Some(current.as_str()) {
+        return Ok(true);
+    }
+    while let Some(super_id) = r.mm.get_super_type_declaration(&current)? {
+        current =
+            r.mm.get_fully_qualified_name(&Node::Declaration(super_id))?;
+        if fqt == Some(current.as_str()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
+/// defaultType?)` (src/model/relationship.ts), over
+/// [`concerto_core::instance::factory::relationship_from_uri`] (which looks
+/// the type up with `BaseModelManager.getType`,
+/// [`ModelManager::get_type_declaration`]), written as the oracle encodes a
+/// `Typed` value ([`super::instances::encode_instance`]).
+fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
+    let Some(Arg::Mm(index)) = args.first() else {
+        return unsupported("Relationship.fromURI with a model manager argument that is not one");
+    };
+    let plain = |i: usize| match args.get(i) {
+        None => Some(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => Some(None),
+        Some(Arg::Plain(Value::String(s))) => Some(Some(s.as_str())),
+        _ => None,
+    };
+    let (Some(Some(uri)), Some(default_namespace), Some(default_type)) =
+        (plain(1), plain(2), plain(3))
+    else {
+        return unsupported("Relationship.fromURI with arguments that are not strings");
+    };
+    let r = &session.pool[*index];
+    from_engine(
+        concerto_core::instance::factory::relationship_from_uri(
+            &r.mm,
+            uri,
+            default_namespace,
+            default_type,
+        ),
+        |relationship| super::instances::encode_instance(&relationship),
+    )
+}
+
+/// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
+/// fqn + '#' + id : fqn` — `getIdentifier()`'s truthiness check, so an empty
+/// string identifier (like `undefined`/absent) falls back to the bare fqn.
+fn fully_qualified_identifier(inst: &recipe::DecodedInstance) -> String {
+    match inst.identifier.as_deref() {
+        Some(id) if !id.is_empty() => format!("{}#{id}", inst.fqn),
+        _ => inst.fqn.clone(),
+    }
+}
+
+/// TS `Identifiable.toURI`: `new ResourceId(ns, type,
+/// this.getIdentifier()).toURI()` — the `ResourceId` constructor itself
+/// throws when the identifier is empty or absent, exactly as
+/// [`concerto_core::instance::resource_id::ResourceId::new`] does.
+fn instance_resource_id(
+    inst: &recipe::DecodedInstance,
+) -> Result<concerto_core::instance::resource_id::ResourceId, ConcertoError> {
+    concerto_core::instance::resource_id::ResourceId::new(
+        inst.namespace.clone(),
+        inst.type_name.clone(),
+        inst.identifier.clone().unwrap_or_default(),
+    )
+}
+
+/// TS `Resource.isConcept`: `this.getClassDeclaration().isConcept()`.
+fn instance_is_concept(
+    r: &Replayed,
+    inst: &recipe::DecodedInstance,
+) -> Result<bool, ConcertoError> {
+    let decl = r.mm.get_declaration(&inst.fqn)?;
+    Ok(decl.as_class().is_some_and(ClassDeclaration::is_concept))
+}
+
+/// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
+/// ? false : this.getParent().getModelFile().getType(this.getType()).isEnum()`.
+fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+    if property.is_primitive() {
+        return Ok(false);
+    }
+    let type_node = resolve_property_type(r, id, property)?;
+    r.mm.is_enum(&type_node)
+}
+
+/// TS: `Field.isTypeScalar` (src/introspect/field.ts): `this.isPrimitive() ?
+/// false : (…resolveType…, type.isScalarDeclaration?.())`. The `resolveType`
+/// call only re-checks what `getType` below already needs to resolve to
+/// answer, so it is not replayed separately (PORTING.md 6.2).
+fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+    if property.is_primitive() {
+        return Ok(false);
+    }
+    let type_node = resolve_property_type(r, id, property)?;
+    Ok(r.mm.is_scalar_declaration(&type_node)?.unwrap_or(false))
+}
+
+/// `getParent().getModelFile().getType(getType())`, the resolution both
+/// `isTypeEnum` and `isTypeScalar` (and `getScalarField`) build on: a
+/// non-primitive property's declared type, resolved in its parent
+/// declaration's own model file.
+fn resolve_property_type(
+    r: &Replayed,
+    id: PropId,
+    property: &Property,
+) -> Result<Node, ConcertoError> {
+    let unknown_parent = || ConcertoError::IllegalModel {
+        message: "property has no resolvable parent".into(),
+        file_name: None,
+        location: None,
+    };
+    let parent = r.mm.parent_of(id).ok_or_else(unknown_parent)?;
+    let file = r.mm.model_file_of(parent).ok_or_else(unknown_parent)?;
+    let type_name = property.type_name();
+    r.mm.get_type(&Node::ModelFile(file), type_name)?
+        .ok_or_else(|| ConcertoError::TypeNotFound {
+            type_name: type_name.unwrap_or("null").to_string(),
+        })
+}
+
+/// TS: `Field.getValidator` (src/introspect/field.ts): a `NumberValidator` for
+/// Integer/Long/Double, a `StringValidator` for String (from either its regex
+/// or its length validator, or both), `null` otherwise.
+fn field_validator_summary(property: &Property) -> Value {
+    let has_number_validator = match property {
+        Property::Integer(p) => p.validator.is_some(),
+        Property::Long(p) => p.validator.is_some(),
+        Property::Double(p) => p.validator.is_some(),
+        _ => false,
+    };
+    if has_number_validator {
+        return json!({ M: "Validator", "ctor": "NumberValidator" });
+    }
+    if let Property::String(p) = property
+        && (p.validator.is_some() || p.length_validator.is_some())
+    {
+        return json!({ M: "Validator", "ctor": "StringValidator" });
+    }
+    Value::Null
+}
+
+/// TS: `Field.getScalarField` (src/introspect/field.ts): unboxes a field
+/// whose type is a scalar declaration into a synthetic `Field` built from the
+/// scalar's own AST — `JSON.parse(JSON.stringify(type.ast))` with `$class`
+/// swapped for the matching `*Property` class and `name` set back to this
+/// field's own name — then `array` overwritten from this field's own
+/// `isArray()`. The synthetic field is never registered (it has no `PropId`
+/// of its own, `mm::ScalarDeclaration`'s own doc comment), so its outcome is
+/// its `{ctor, fqn}` summary the same way a `getProperty` result is encoded;
+/// its `fqn` is identical to the original field's own (same parent, same
+/// name), since neither changes.
+///
+/// There is no library counterpart to call for the unboxing itself (P2-09b
+/// gap audit: `Field.getScalarField` "stays in the converted TS view", none
+/// of `introspect/field.rs`/`scalar.rs` builds a synthetic `Field`), so the
+/// AST surgery below is still this harness's own. What *is* engine surface —
+/// [`ScalarDeclaration::scalar_type`] (TS `ScalarDeclaration.getType`,
+/// ledger RUST P2-05) — now supplies the `*Property` class instead of a
+/// second, harness-owned table that duplicated it by pattern-matching the
+/// scalar's `$class` string.
+fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    match is_type_scalar(r, id, property) {
+        Ok(true) => {}
+        Ok(false) => {
+            // TS: `throw new Error(\`Field ${this.name} is not a scalar property.\`)`.
+            return ran(Err(OracleError {
+                class: "Error".into(),
+                message: format!("Field {} is not a scalar property.", property.name()),
+                location: None,
+                component: None,
+            }));
+        }
+        Err(e) => return ran(Err(to_oracle_error(&e))),
+    }
+    let type_node = match resolve_property_type(r, id, property) {
+        Ok(node) => node,
+        Err(e) => return ran(Err(to_oracle_error(&e))),
+    };
+    let Node::Declaration(scalar_id) = type_node else {
+        return unsupported("getScalarField: the resolved type is not a declaration");
+    };
+    let Some(Declaration::Scalar(scalar)) = r.mm.declaration(scalar_id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: getScalarField's resolved type did not load as a scalar".into(),
+        ));
+    };
+    let scalar_ast = match serde_json::to_value(scalar.ast()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Dispatch::Fault(Fault::Harness(format!(
+                "getScalarField: the scalar's own AST did not re-serialise: {e}"
+            )));
+        }
+    };
+    // `ScalarDeclaration::scalar_type` (the engine's own primitive-type
+    // resolution, not a harness re-derivation) names the six primitives
+    // TS's `Field.getScalarField` recognises; each maps to its `*Property`
+    // metamodel class by name, the same correspondence the metamodel itself
+    // draws between e.g. `StringScalar` and `StringProperty`.
+    let property_class = match scalar.scalar_type() {
+        Some(primitive) => format!("concerto.metamodel@1.0.0.{primitive}Property"),
+        None => {
+            return Dispatch::Fault(Fault::Divergence(format!(
+                "state divergence: getScalarField's resolved type has an unrecognized scalar $class {:?}",
+                scalar_ast.get("$class").and_then(Value::as_str)
+            )));
+        }
+    };
+    let mut field_ast = scalar_ast;
+    field_ast["$class"] = Value::String(property_class);
+    field_ast["name"] = Value::String(property.name().to_string());
+    field_ast["isArray"] = Value::Bool(property.is_array());
+    let synthetic = match Property::try_from(&field_ast) {
+        Ok(p) => p,
+        Err(e) => return ran(Err(to_oracle_error(&e))),
+    };
+    let Some(parent) = r.mm.parent_of(id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the property's parent does not resolve".into(),
+        ));
+    };
+    let Ok(owner_fqn) = r.mm.get_fully_qualified_name(&Node::Declaration(parent)) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the property's parent has no fully-qualified name".into(),
+        ));
+    };
+    ran(Ok(property_summary(&owner_fqn, &synthetic)))
+}
+
+/// `Decorated.getDecorator`/`getDecorators` (P2-07): the target is a
+/// `declref`, `propref` or `mfref` directly, decoded through
+/// [`Session::decorated_target`] rather than the generic [`Session::decode`]
+/// (module doc on [`exec_handles`]'s early return), since a plain `Arg::File`
+/// would drop the model manager an `mfref` target belongs to.
+fn decorated_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let mut session = Session::new(h);
+    let Some(target) = &inputs.target else {
+        return Ok(unsupported(format!("Decorated.{member} without a target")));
+    };
+    let (index, parent) = session.decorated_target(target)?;
+    let r = &session.pool[index];
+    let Some(decorators) = parent.decorators(r) else {
+        return Err(Fault::Divergence(
+            "state divergence: the decorated element was not found".into(),
+        ));
+    };
+    if member == "getDecorators" {
+        return Ok(ran(Ok(Value::Array(
+            decorators.iter().map(encode_decorator).collect(),
+        ))));
+    }
+    let args = decode::decode_args(&inputs.args)
+        .map_err(|decode::Unsupported(reason)| Fault::Unsupported(reason))?;
+    let name_arg = decode::arg(&args, 0);
+    let Ok(name) = decode::as_str(&name_arg) else {
+        return Ok(unsupported("Decorated.getDecorator with a non-string name"));
+    };
+    let found = decorators.iter().find(|d| d.name() == name);
+    Ok(ran(Ok(found.map_or(Value::Null, encode_decorator))))
+}
+
+/// The `DecoratorManager` statics (task P2-12) this harness replays beyond
+/// the plain-data `falsyOrEqual` (`exec_plain`).
+const DECORATOR_MANAGER_OPS: [&str; 9] = [
+    "decorateModels",
+    "extractDecorators",
+    "extractVocabularies",
+    "extractNonVocabDecorators",
+    "validate",
+    "jsonToYaml",
+    "yamlToJson",
+    "migrateTo",
+    "executePropertyCommand",
+];
+
+/// An `ok`/`error` outcome plus `effects.args`: the arguments TS mutated,
+/// each recorded with its value after the call (`recorder.js` records an
+/// argument whose plain encoding changed, and only then).
+fn ran_with_effects(
+    outcome: recipe::Outcome,
+    before: &[Option<Value>],
+    after: &[Option<Value>],
+    attributed: Option<Attribution>,
+) -> Dispatch {
+    let mut effects = serde_json::Map::new();
+    for (i, (b, a)) in before.iter().zip(after).enumerate() {
+        if let (Some(b), Some(a)) = (b, a)
+            && b != a
+        {
+            effects.insert(i.to_string(), a.clone());
+        }
+    }
+    let mut out = match outcome {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({ "error": error.to_value() }),
+    };
+    if !effects.is_empty() {
+        out["effects"] = json!({ "args": effects });
+    }
+    attributed_dispatch(out, attributed)
+}
+
+fn attributed_dispatch(outcome: Value, attributed: Option<Attribution>) -> Dispatch {
+    match attributed {
+        Some(attribution) => Dispatch::RanAttributed(outcome, attribution),
+        None => Dispatch::Ran(outcome),
+    }
+}
+
+/// The owner of what `Serializer.fromJSON` does after its `$class` lookup
+/// (populating and validating the instance): P3-01b, which owns the
+/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure`
+/// used to stand in for it (`concerto_core::dcs`'s module doc) with its own
+/// error text and class, not TS's `ValidationException`; `dcs::from_json_against`
+/// now runs the real, ported `Serializer::from_json` instead, so this
+/// attribution is no longer reachable from current production output — it
+/// stays only so a fixture recorded against the pre-P3-01b stand-in still
+/// gets attributed rather than misread as a fresh divergence.
+const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
+
+/// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
+/// when it is exactly the error the structural stand-in raises for one of
+/// the command sets it checked, and TS threw the `ValidationException` that
+/// resource validation raises: TS reaches the same point with the ported
+/// `$class` and `getType` steps, then fails there. [`RESOURCE_VALIDATION_OWNER`]'s
+/// doc comment covers why this rarely matches any more.
+fn attribute_stand_in(outcome: &recipe::Outcome, command_sets: &[Value]) -> Option<Attribution> {
+    let Err(error) = outcome else {
+        return None;
+    };
+    command_sets
+        .iter()
+        .find_map(|set| dcs::validate_dcs_structure(set).err())
+        .filter(|stand_in| {
+            let stand_in = to_oracle_error(stand_in);
+            stand_in.class == error.class && stand_in.message == error.message
+        })
+        .map(|_| Attribution {
+            blocker: recipe::Blocker::Owner(RESOURCE_VALIDATION_OWNER.into()),
+            ts_error_classes: &["ValidationException"],
+        })
+}
+
+/// A plain argument, or `None` for JS `undefined` (absent or the
+/// `undefined` marker).
+fn plain_arg(args: &[Arg], index: usize) -> Faulty<Option<Value>> {
+    match args.get(index) {
+        None => Ok(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => Ok(None),
+        Some(Arg::Plain(v)) => Ok(Some(v.clone())),
+        Some(_) => Err(Fault::Unsupported(format!(
+            "a handle where DecoratorManager takes plain data (argument {index})"
+        ))),
+    }
+}
+
+/// `decorateModels`' `options` object as [`dcs::DecorateOptions`]: every
+/// flag read for its JS truthiness, except the two `disable*` flags, whose
+/// explicit `false` `skipValidationAndResolution` rejects (`=== false`).
+fn decorate_options(options: Option<&Value>) -> dcs::DecorateOptions {
+    let get = |key: &str| {
+        options
+            .and_then(|o| o.get(key))
+            .filter(|v| !recipe::is_undefined(v))
+    };
+    let flag = |key: &str| get(key).is_some_and(recipe::truthy);
+    let tri = |key: &str| match get(key) {
+        Some(Value::Bool(false)) => Some(false),
+        Some(v) if recipe::truthy(v) => Some(true),
+        _ => None,
+    };
+    dcs::DecorateOptions {
+        migrate: flag("migrate"),
+        validate: flag("validate"),
+        validate_commands: flag("validateCommands"),
+        default_namespace: get("defaultNamespace").cloned(),
+        skip_validation_and_resolution: flag("skipValidationAndResolution"),
+        disable_metamodel_resolution: tri("disableMetamodelResolution"),
+        disable_metamodel_validation: tri("disableMetamodelValidation"),
+    }
+}
+
+/// `extractDecorators`' (and its two siblings') `options`, spread over
+/// `{removeDecoratorsFromModel: false, locale: 'en'}`.
+fn extract_options(options: Option<&Value>) -> dcs::ExtractOptions {
+    let mut out = dcs::ExtractOptions::default();
+    if let Some(Value::Object(o)) = options {
+        if let Some(v) = o.get("removeDecoratorsFromModel") {
+            out.remove_decorators_from_model = recipe::truthy(v);
+        }
+        if let Some(v) = o.get("locale") {
+            // `locale: ${this.locale}` in the vocabulary text.
+            out.locale = if recipe::is_undefined(v) {
+                "undefined".to_string()
+            } else {
+                match v {
+                    Value::String(s) => s.clone(),
+                    Value::Null => "null".to_string(),
+                    other => other.to_string(),
+                }
+            };
+        }
+    }
+    out
+}
+
+/// `DecoratorExtractor.filterOutDecorators` returns `undefined` when it
+/// strips every decorator (`removeDecoratorsFromModel` with `EXTRACT_ALL`),
+/// and TS assigns that back: the node keeps a `decorators` key whose value
+/// is `undefined`, which the oracle records as the `undefined` marker. A
+/// Rust AST has no `undefined`, so the extractor removes the key instead
+/// (the same nullish spelling `recipe.rs` restores for file names): put the
+/// marker back wherever the source model had a `decorators` key that the
+/// extracted model no longer has.
+fn restore_undefined_decorators(source: &ModelManager, summary: &mut Value) {
+    fn restore(src: &Value, out: &mut Value) {
+        if src.get("decorators").is_some()
+            && let Some(map) = out.as_object_mut()
+            && !map.contains_key("decorators")
+        {
+            map.insert("decorators".into(), recipe::undefined());
+        }
+    }
+    let Some(models) = summary
+        .pointer_mut("/ast/models")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for model in models {
+        let Some(src) = model
+            .get("namespace")
+            .and_then(Value::as_str)
+            .filter(|ns| !recipe::is_system_namespace(ns))
+            .and_then(|ns| source.model_file(ns))
+            .map(ModelFile::ast)
+        else {
+            continue;
+        };
+        restore(src, model);
+        let (Some(src_decls), Some(out_decls)) = (
+            src.get("declarations").and_then(Value::as_array),
+            model.get_mut("declarations").and_then(Value::as_array_mut),
+        ) else {
+            continue;
+        };
+        for (src_decl, out_decl) in src_decls.iter().zip(out_decls.iter_mut()) {
+            restore(src_decl, out_decl);
+            for key in ["key", "value"] {
+                if let (Some(s), Some(o)) = (src_decl.get(key), out_decl.get_mut(key)) {
+                    restore(s, o);
+                }
+            }
+            if let (Some(sp), Some(op)) = (
+                src_decl.get("properties").and_then(Value::as_array),
+                out_decl.get_mut("properties").and_then(Value::as_array_mut),
+            ) {
+                for (s, o) in sp.iter().zip(op.iter_mut()) {
+                    restore(s, o);
+                }
+            }
+        }
+    }
+}
+
+/// `decorateModels`' `decoratorCommandSet` argument as a list:
+/// `Array.isArray(x) ? x : [x]`, after the `!x || x?.length === 0` early
+/// return (an empty list here). The flag says whether it was a list.
+fn command_sets(arg: Option<&Value>) -> Faulty<(Vec<Value>, bool)> {
+    Ok(match arg {
+        Some(Value::Array(items)) => (items.clone(), true),
+        Some(v) if recipe::truthy(v) => {
+            if !v.is_object() {
+                return Err(Fault::Unsupported(
+                    "decorateModels with a command set that is neither an object nor an array"
+                        .into(),
+                ));
+            }
+            (vec![v.clone()], false)
+        }
+        _ => (Vec::new(), false),
+    })
+}
+
+/// `DecoratorManager.validate`'s optional `modelFiles`: absent, or a list
+/// of model files, each rebuilt as TS's `ModelFile` would be.
+fn model_files_arg(args: &[Arg], index: usize) -> Faulty<Option<Vec<ModelFile>>> {
+    let items = match args.get(index) {
+        None => return Ok(None),
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) || v.is_null() => return Ok(None),
+        Some(Arg::List(items)) => items,
+        Some(_) => {
+            return Err(Fault::Unsupported(
+                "DecoratorManager.validate with modelFiles that are not a list of model files"
+                    .into(),
+            ));
+        }
+    };
+    let file = |item: &Arg| match item {
+        Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone()).map_err(|e| {
+            Fault::Divergence(format!(
+                "input construction failed: new ModelFile: {}",
+                to_oracle_error(&e).message
+            ))
+        }),
+        _ => Err(Fault::Unsupported(
+            "DecoratorManager.validate with a modelFiles entry that is not a model file".into(),
+        )),
+    };
+    items.iter().map(file).collect::<Faulty<Vec<_>>>().map(Some)
+}
+
+/// A model manager a DCS op returned, for a `derived` recipe
+/// (`recipe.rs`). (Merge with P2-08: whether it was validated when built
+/// is no longer tracked; a validating add checks only the new file, as TS
+/// `addModelFile` does, so earlier files' validity does not matter.)
+pub struct DerivedModelManager {
+    pub mm: ModelManager,
+}
+
+/// Replays the op a `derived` model manager recipe was returned by, when
+/// it is a DCS op this harness replays: `decorateModels` (the result
+/// itself) or one of the three `extract*` statics (their `modelManager`).
+/// `None` for any other op. TS only derives a recipe from a call that
+/// succeeded, so a Rust failure here is a state divergence.
+pub fn derive_model_manager(
+    h: &Harness,
+    op: &str,
+    inputs: &Inputs,
+    path: Option<&Value>,
+) -> Faulty<Option<DerivedModelManager>> {
+    let Some(member) = op.strip_prefix("DecoratorManager.").filter(|m| {
+        matches!(
+            *m,
+            "decorateModels"
+                | "validate"
+                | "extractDecorators"
+                | "extractVocabularies"
+                | "extractNonVocabDecorators"
+        )
+    }) else {
+        return Ok(None);
+    };
+    let expected_path =
+        (!matches!(member, "decorateModels" | "validate")).then(|| json!(["modelManager"]));
+    if path.cloned() != expected_path {
+        return Err(Fault::Harness(format!(
+            "a model manager derived from {op} at an unexpected path {path:?}"
+        )));
+    }
+    let failed = |e: ConcertoError| {
+        Fault::Divergence(format!(
+            "state divergence: {op}, which returned this model manager in TS, failed: {}",
+            to_oracle_error(&e).message
+        ))
+    };
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    if member == "validate" {
+        let Some(command_set) = plain_arg(&args, 0)? else {
+            return Err(Fault::Unsupported(
+                "DecoratorManager.validate without a command set".into(),
+            ));
+        };
+        let files = model_files_arg(&args, 1)?;
+        let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
+        let mm = dcs::validate(&command_set, refs.as_deref()).map_err(failed)?;
+        return Ok(Some(DerivedModelManager { mm }));
+    }
+    let Some(Arg::Mm(index)) = args.first() else {
+        return Err(Fault::Unsupported(format!(
+            "{op} with a first argument that is not a model manager recipe"
+        )));
+    };
+    let r = &session.pool[*index];
+    if member == "decorateModels" {
+        let (mut sets, _) = command_sets(plain_arg(&args, 1)?.as_ref())?;
+        let mut options = decorate_options(plain_arg(&args, 2)?.as_ref());
+        let Some(prepared) =
+            dcs::prepare_decoration(&r.mm, &mut sets, &mut options).map_err(failed)?
+        else {
+            return Err(Fault::Harness(format!(
+                "a model manager derived from {op} with no command sets, which returns its input"
+            )));
+        };
+        let mm = dcs::apply_decoration(&r.mm, &prepared, &options).map_err(failed)?;
+        return Ok(Some(DerivedModelManager { mm }));
+    }
+    let options = extract_options(plain_arg(&args, 1)?.as_ref());
+    let result = match member {
+        "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
+        "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
+        _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+    }
+    .map_err(failed)?;
+    Ok(Some(DerivedModelManager {
+        mm: result.model_manager,
+    }))
+}
+
+/// `DecoratorManager` statics (task P2-12) whose inputs include a model
+/// manager or that mutate a plain argument (`effects`).
+fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let op = format!("DecoratorManager.{member}");
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    let err = |e: ConcertoError| to_oracle_error(&e);
+
+    match member {
+        "decorateModels" => {
+            let Some(Arg::Mm(index)) = args.first() else {
+                return Err(Fault::Unsupported(
+                    "decorateModels with a first argument that is not a model manager recipe"
+                        .into(),
+                ));
+            };
+            let r = &session.pool[*index];
+            let sets_arg = plain_arg(&args, 1)?;
+            let options_arg = plain_arg(&args, 2)?;
+            let (mut sets, is_list) = command_sets(sets_arg.as_ref())?;
+            let mut options = decorate_options(options_arg.as_ref());
+            let prepared = dcs::prepare_decoration(&r.mm, &mut sets, &mut options);
+            let sets_after = sets_arg.as_ref().map(|_| {
+                if is_list {
+                    Value::Array(sets.clone())
+                } else {
+                    sets.first().cloned().unwrap_or(Value::Null)
+                }
+            });
+            let options_after = options_arg.clone().map(|mut o| {
+                if options.skip_validation_and_resolution
+                    && options.disable_metamodel_resolution == Some(true)
+                    && options.disable_metamodel_validation == Some(true)
+                    && let Some(map) = o.as_object_mut()
+                {
+                    map.insert("disableMetamodelResolution".into(), Value::Bool(true));
+                    map.insert("disableMetamodelValidation".into(), Value::Bool(true));
+                }
+                o
+            });
+            let before = [None, sets_arg.clone(), options_arg.clone()];
+            let mut model_validation = None;
+            let after = [None, sets_after, options_after];
+            let outcome = match prepared {
+                Err(e) => Err(err(e)),
+                // TS returns the model manager it was given.
+                Ok(None) => Ok(recipe::summary_of(r.kind, &r.mm)),
+                Ok(Some(prepared)) => {
+                    let applied = dcs::apply_decoration(&r.mm, &prepared, &options);
+                    // An error that goes away when `fromAst`'s final
+                    // `validateModelFiles` is skipped came from model
+                    // validation (`ModelFile.validate`): its text is that
+                    // validator's, when TS failed model validation too
+                    // (an `IllegalModelException`).
+                    if applied.is_err() {
+                        let unvalidated = dcs::DecorateOptions {
+                            disable_metamodel_validation: Some(true),
+                            ..options.clone()
+                        };
+                        if dcs::apply_decoration(&r.mm, &prepared, &unvalidated).is_ok() {
+                            model_validation = Some(Attribution {
+                                blocker: recipe::Blocker::Member("ModelFile.validate".into()),
+                                ts_error_classes: &["IllegalModelException"],
+                            });
+                        }
+                    }
+                    applied
+                        .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                        .map_err(err)
+                }
+            };
+            let attributed = model_validation.or_else(|| attribute_stand_in(&outcome, &sets));
+            Ok(ran_with_effects(outcome, &before, &after, attributed))
+        }
+        "extractDecorators" | "extractVocabularies" | "extractNonVocabDecorators" => {
+            let Some(Arg::Mm(index)) = args.first() else {
+                return Err(Fault::Unsupported(format!(
+                    "{op} with a first argument that is not a model manager recipe"
+                )));
+            };
+            let r = &session.pool[*index];
+            let options = extract_options(plain_arg(&args, 1)?.as_ref());
+            let result = match member {
+                "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
+                "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
+                _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+            };
+            Ok(ran(result.map_err(err).map(|res| {
+                let mut summary =
+                    recipe::summary_of(recipe::Kind::ModelManager, &res.model_manager);
+                restore_undefined_decorators(&r.mm, &mut summary);
+                let mut out = serde_json::Map::new();
+                out.insert("modelManager".into(), summary);
+                if member != "extractVocabularies" {
+                    out.insert(
+                        "decoratorCommandSet".into(),
+                        Value::Array(res.decorator_command_set),
+                    );
+                }
+                if member != "extractNonVocabDecorators" {
+                    out.insert(
+                        "vocabularies".into(),
+                        Value::Array(res.vocabularies.into_iter().map(Value::String).collect()),
+                    );
+                }
+                Value::Object(out)
+            })))
+        }
+        "validate" => {
+            let Some(command_set) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.validate without a command set",
+                ));
+            };
+            let files = model_files_arg(&args, 1)?;
+            let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
+            let outcome = dcs::validate(&command_set, refs.as_deref())
+                .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                .map_err(err);
+            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&command_set));
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
+        }
+        "jsonToYaml" => {
+            let Some(json_input) = plain_arg(&args, 0)? else {
+                return Ok(unsupported("DecoratorManager.jsonToYaml without an input"));
+            };
+            let outcome = dcs::validated_json_to_yaml(&json_input)
+                .map(Value::String)
+                .map_err(err);
+            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&json_input));
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
+        }
+        "yamlToJson" => {
+            let Some(Value::String(yaml_input)) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.yamlToJson with a non-string input",
+                ));
+            };
+            let outcome = dcs::validated_yaml_to_json(&yaml_input).map_err(err);
+            // The command set `validate` checked: the converter's output.
+            let converted: Vec<Value> = dcs::yaml_to_json(&yaml_input).into_iter().collect();
+            let attributed = attribute_stand_in(&outcome, &converted);
+            Ok(ran_with_effects(outcome, &[], &[], attributed))
+        }
+        "migrateTo" => {
+            let Some(mut command_set) = plain_arg(&args, 0)? else {
+                return Ok(unsupported(
+                    "DecoratorManager.migrateTo without a command set",
+                ));
+            };
+            let before = [Some(command_set.clone())];
+            let outcome = dcs::migrate_to(&mut command_set)
+                .map(|()| command_set.clone())
+                .map_err(err);
+            Ok(ran_with_effects(
+                outcome,
+                &before,
+                &[Some(command_set)],
+                None,
+            ))
+        }
+        "executePropertyCommand" => {
+            let (Some(mut property), Some(command)) = (plain_arg(&args, 0)?, plain_arg(&args, 1)?)
+            else {
+                return Ok(unsupported(
+                    "DecoratorManager.executePropertyCommand without a property and a command",
+                ));
+            };
+            let before = [Some(property.clone()), Some(command.clone())];
+            let outcome = dcs::execute_property_command(&mut property, &command)
+                .map(|()| recipe::undefined())
+                .map_err(err);
+            Ok(ran_with_effects(
+                outcome,
+                &before,
+                &[Some(property), Some(command)],
+                None,
+            ))
+        }
+        _ => unreachable!("DECORATOR_MANAGER_OPS lists every member"),
+    }
+}
+
+/// The namespace a decorated element's model file was loaded under, needed
+/// only to build [`concerto_core::error::ConcertoError`] messages that name
+/// where a decorator's own name failed to resolve — never exercised by a
+/// fixture in this scope, since every one of them runs with the manager's
+/// default (disabled) `decoratorValidation` (module doc on the `"Decorator"`
+/// arm of [`exec_handles`]'s class match).
+fn decorated_namespace(r: &Replayed, parent: &recipe::DecoParent) -> Option<String> {
+    match parent {
+        recipe::DecoParent::File(ns) => Some(ns.clone()),
+        recipe::DecoParent::Decl(id) => {
+            r.mm.model_file_of(*id)
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+        recipe::DecoParent::Prop(id) => {
+            r.mm.parent_of(*id)
+                .and_then(|d| r.mm.model_file_of(d))
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+        recipe::DecoParent::MapPart(id, _) => {
+            r.mm.model_file_of(*id)
+                .and_then(|f| r.mm.file(f))
+                .map(|f| f.namespace().to_string())
+        }
+    }
+}
+
+/// A [`concerto_core::Decorator`] in the oracle's encoding, matching a
+/// recorded `{"@@oracle":"Decorator","name":…,"arguments":[…]}` value.
+fn encode_decorator(d: &concerto_core::Decorator) -> Value {
+    json!({
+        M: "Decorator",
+        "name": d.name(),
+        "arguments": d.arguments().iter().map(encode_decorator_argument).collect::<Vec<_>>(),
+    })
+}
+
+/// One [`concerto_core::DecoratorArgument`] in the oracle's encoding: a
+/// literal as it is, or a type reference as the plain object TS builds
+/// (`{type, name, array}` in `Decorator.process`).
+fn encode_decorator_argument(arg: &concerto_core::DecoratorArgument) -> Value {
+    use concerto_core::DecoratorArgument;
+    match arg {
+        DecoratorArgument::String(s) => Value::String(s.clone()),
+        DecoratorArgument::Number(n) => json!(n),
+        DecoratorArgument::Boolean(b) => Value::Bool(*b),
+        DecoratorArgument::TypeReference(t) => json!({
+            "type": "Identifier",
+            "name": t.name,
+            // TS: `array: thing.isArray` (`Decorator.process`, decorator.ts)
+            // — a `DecoratorTypeReference` node with no `isArray` at all (as
+            // opposed to one with an explicit `isArray: false`) reads as JS
+            // `undefined`, not `null`; `t.array: Option<bool>` collapses
+            // both into `None` (F7, P2-09c), so this always encodes an
+            // absent bound as the oracle's own `undefined` marker, never
+            // `json!(t.array)`'s `null`, matching TS. No fixture in the
+            // corpus writes an explicit `isArray: false`, so the two absent
+            // cases (never set, set `false`) are not distinguished here.
+            "array": match t.array {
+                Some(array) => Value::Bool(array),
+                None => recipe::undefined(),
+            },
+        }),
+    }
+}
+
+fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
+    let plain = |i: usize| match args.get(i) {
+        None => Some(recipe::undefined()),
+        Some(Arg::Plain(v)) => Some(v.clone()),
+        Some(_) => None,
+    };
+    match member {
+        "getNamespaces" => ran(Ok(json!(r.namespaces()))),
+        // P2-11b-U4: `BaseModelManager.getModelFileByFileName(fileName)` —
+        // `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`,
+        // i.e. the first loaded, non-system file (registration order,
+        // `getModelFiles()`'s default excludes the built-in decorator and
+        // root models) whose `getName()` matches, or JS `undefined` (never
+        // `null`) if none does, including when `fileName` names one of
+        // those system files (`ModelManager::model_file_by_file_name`).
+        "getModelFileByFileName" => match plain(0) {
+            // TS `mf.getName() === fileName`: an omitted or explicitly
+            // `undefined` argument never strictly-equals a registered
+            // file's name (a string, or itself `undefined` only for a
+            // detached `ModelFile` this manager never holds), so the
+            // answer is `undefined` without a lookup.
+            Some(v) if recipe::is_undefined(&v) => ran(Ok(recipe::undefined())),
+            Some(Value::String(file_name)) => ran(Ok(r
+                .mm
+                .model_file_by_file_name(&file_name)
+                .and_then(|mf| r.model_file_summary(mf.namespace()))
+                .unwrap_or_else(recipe::undefined))),
+            _ => unsupported("getModelFileByFileName with a fileName that is not a string"),
+        },
+        "getAst" => {
+            let (Some(resolve), Some(include)) = (plain(0), plain(1)) else {
+                return unsupported("getAst with non-plain arguments");
+            };
+            let resolve = recipe::truthy(&resolve);
+            let include = recipe::truthy(&include);
+            if !resolve {
+                return ran(Ok(r.ast(include)));
+            }
+            from_engine(r.mm.get_ast(true, include), |v| v)
+        }
+        "resolveMetaModel" => {
+            let Some(Arg::Plain(meta_model)) = args.first() else {
+                return unsupported("resolveMetaModel with a metamodel that is not plain data");
+            };
+            from_engine(r.mm.resolve_meta_model(meta_model), |v| v)
+        }
+        "getType" => {
+            let Some(Value::String(fqn)) = plain(0) else {
+                return unsupported("getType with a type name that is not a string");
+            };
+            match r.mm.get_type_declaration(&fqn) {
+                Err(e) => ran(Err(to_oracle_error(&e))),
+                Ok(id) => ran(Ok(r.declaration_summary(id).unwrap_or(Value::Null))),
+            }
+        }
+        "getMapDeclarations" => {
+            // TS `BaseModelManager.getMapDeclarations` (basemodelmanager.js):
+            // every model file's map declarations, concatenated in
+            // registration order.
+            let declarations: Vec<Value> =
+                r.mm.model_files()
+                    .flat_map(|mf| {
+                        let file = r.mm.model_file_id(mf.namespace());
+                        file.into_iter().flat_map(|f| r.mm.declaration_ids(f))
+                    })
+                    .filter(|id| matches!(r.mm.declaration(*id), Some(Declaration::Map(_))))
+                    .filter_map(|id| r.declaration_summary(id))
+                    .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
+        // P2-08b: `BaseModelManager.getModels(options)`.
+        "getModels" => {
+            let Some(options) = plain(0) else {
+                return unsupported("getModels with options that are not plain data");
+            };
+            let include_external = options
+                .get("includeExternalModels")
+                .is_none_or(recipe::truthy);
+            let models: Vec<Value> =
+                r.mm.get_models(include_external)
+                    .into_iter()
+                    .map(|(name, content)| {
+                        json!({
+                            "name": name,
+                            "content": content.map_or(Value::Null, Value::String),
+                        })
+                    })
+                    .collect();
+            ran(Ok(Value::Array(models)))
+        }
+        // P2-08b: `BaseModelManager.resolveType(context, type)`.
+        "resolveType" => {
+            let (Some(Value::String(context)), Some(Value::String(type_name))) =
+                (plain(0), plain(1))
+            else {
+                return unsupported("resolveType with an argument that is not a string");
+            };
+            match r.mm.resolve_type(&context, &type_name) {
+                Ok(resolved) => ran(Ok(Value::String(resolved))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
+        }
+        // P2-08b: `BaseModelManager.derivesFrom(fqt1, fqt2)`.
+        "derivesFrom" => {
+            let (Some(Value::String(fqt1)), Some(Value::String(fqt2))) = (plain(0), plain(1))
+            else {
+                return unsupported("derivesFrom with an argument that is not a string");
+            };
+            match r.mm.derives_from(&fqt1, &fqt2) {
+                Ok(result) => ran(Ok(Value::Bool(result))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
+        }
+        // P2-08b: `BaseModelManager.isAssignableTo(fqn, baseFqn)` — not to be
+        // confused with `ModelUtil.isAssignableTo`, dispatched separately
+        // through `model_util_with_context` (module doc).
+        "isAssignableTo" => {
+            let (Some(Value::String(fqn)), Some(Value::String(base_fqn))) = (plain(0), plain(1))
+            else {
+                return unsupported("isAssignableTo with an argument that is not a string");
+            };
+            ran(Ok(Value::Bool(r.mm.is_type_assignable_to(&fqn, &base_fqn))))
+        }
+        // P2-08b: `BaseModelManager.getAssignableConcreteTypes(baseFqn)`.
+        "getAssignableConcreteTypes" => {
+            let Some(Value::String(base_fqn)) = plain(0) else {
+                return unsupported(
+                    "getAssignableConcreteTypes with a base type that is not a string",
+                );
+            };
+            let declarations: Vec<Value> =
+                r.mm.get_assignable_concrete_types(&base_fqn)
+                    .into_iter()
+                    .filter_map(|id| r.declaration_summary(id))
+                    .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
+        // P2-08b: the `BaseModelManager.get<Kind>Declarations()` family.
+        "getAssetDeclarations"
+        | "getTransactionDeclarations"
+        | "getEventDeclarations"
+        | "getParticipantDeclarations"
+        | "getConceptDeclarations"
+        | "getEnumDeclarations" => {
+            let ids = match member {
+                "getAssetDeclarations" => r.mm.get_asset_declarations(),
+                "getTransactionDeclarations" => r.mm.get_transaction_declarations(),
+                "getEventDeclarations" => r.mm.get_event_declarations(),
+                "getParticipantDeclarations" => r.mm.get_participant_declarations(),
+                "getConceptDeclarations" => r.mm.get_concept_declarations(),
+                _ => r.mm.get_enum_declarations(),
+            };
+            let declarations: Vec<Value> = ids
+                .into_iter()
+                .filter_map(|id| r.declaration_summary(id))
+                .collect();
+            ran(Ok(Value::Array(declarations)))
+        }
+        _ => unreachable!("`dispatched` lists every query"),
+    }
+}
+
+/// `BaseModelManager.validateModelFile(modelFile, fileName)` (P2-08b): `r`
+/// is `index`'s own pool entry, the receiver `this` — used only for the
+/// string overload's `processFile`; the model-file overload validates
+/// against *that file's own* owning manager instead
+/// ([`owning_manager`]'s doc, shared with `ModelFile.validate`), which TS's
+/// `modelFile.validate()` reaches without ever consulting `this`.
+fn validate_model_file_op(h: &Harness, session: &Session, index: usize, args: &[Arg]) -> Dispatch {
+    match args.first() {
+        Some(Arg::File(file)) => match owning_manager(session, file) {
+            Ok(owner) => {
+                let mf = match ModelFile::from_json_with_definitions(
+                    &file.ast,
+                    file.definitions.clone(),
+                    file.file_name.clone(),
+                ) {
+                    Ok(mf) => mf,
+                    Err(e) => {
+                        return Dispatch::Fault(Fault::Divergence(format!(
+                            "state divergence: a model file that decoded successfully failed to rebuild: {}",
+                            to_oracle_error(&e).message
+                        )));
+                    }
+                };
+                from_engine(owner.mm.validate_detached_model_file(&mf), |()| {
+                    recipe::undefined()
+                })
+            }
+            Err(Fault::Unsupported(reason)) => unsupported(reason),
+            Err(other) => Dispatch::Fault(other),
+        },
+        Some(Arg::Plain(Value::String(cto))) => {
+            let file_name_value = match args.get(1) {
+                None => recipe::undefined(),
+                Some(Arg::Plain(v)) => v.clone(),
+                Some(_) => {
+                    return unsupported(
+                        "validateModelFile with a file name that is not plain data",
+                    );
+                }
+            };
+            let r = &session.pool[index];
+            match r.validate_model_file_text(h, cto, &file_name_value) {
+                Ok(outcome) => ran(outcome),
+                Err(fault) => Dispatch::Fault(fault),
+            }
+        }
+        _ => unsupported("validateModelFile with an argument that is not a string or model file"),
+    }
+}
+
+/// `BaseModelManager.filter(predicate, options)` (P2-08b): `predicate` is
+/// the oracle's `"fqn-in"` encoding, already decoded into
+/// [`Arg::Predicate`]; `options.disableValidation` is the only option this
+/// engine reads (`ModelManager::filter`'s doc).
+fn model_manager_filter_op(r: &Replayed, args: &[Arg]) -> Dispatch {
+    let Some(Arg::Predicate(names)) = args.first() else {
+        return unsupported("filter with a predicate this harness does not decode");
+    };
+    let disable_validation = match args.get(1) {
+        None => false,
+        Some(Arg::Plain(v)) if recipe::is_undefined(v) => false,
+        Some(Arg::Plain(v)) => v.get("disableValidation").is_some_and(recipe::truthy),
+        Some(_) => return unsupported("filter with options that are not plain data"),
+    };
+    match r
+        .mm
+        .filter(|fqn| names.iter().any(|n| n == fqn), disable_validation)
+    {
+        Ok(mm) => ran(Ok(recipe::summary_of(recipe::Kind::BaseModelManager, &mm))),
+        Err(e) => ran(Err(to_oracle_error(&e))),
+    }
+}
+
+/// The namespace of the model file a declaration was loaded into, for the
+/// map-part ops (`MapKeyType`/`MapValueType.getNamespace` and the shared
+/// `validate_map_key`/`validate_map_value` calls, which both need it to
+/// resolve a referenced type).
+fn map_namespace(r: &Replayed, id: DeclId) -> Option<&str> {
+    let file_id = r.mm.model_file_of(id)?;
+    Some(r.mm.file(file_id)?.namespace())
+}
+
+/// [`Replayed::map_part_summary`], for a `MapDeclaration` read directly off
+/// an unregistered (`mfnew`) `ModelFile` (P2-06b) rather than a registered
+/// `DeclId` — the same outcome-only `{ctor, type}` shape.
+fn detached_map_part_summary(map: &MapDeclaration, is_key: bool) -> Value {
+    json!({
+        M: "Property",
+        "ctor": if is_key { "MapKeyType" } else { "MapValueType" },
+        "type": if is_key { map.key_type_name() } else { map.value_type_name() },
+    })
+}
+
+/// The `ModelUtil` statics that take model-manager collaborators.
+fn model_util_with_context(session: &Session, member: &str, args: &[Arg]) -> Faulty<Dispatch> {
+    let prop = |arg: Option<&Arg>| -> Faulty<(usize, Node)> {
+        match arg {
+            Some(Arg::Prop(index, id)) => Ok((*index, Node::Property(*id))),
+            _ => Err(Fault::Unsupported(
+                "a field argument that is not a property of a registered declaration".into(),
+            )),
+        }
+    };
+    match member {
+        "isAssignableTo" => {
+            let Some(Arg::File(file)) = args.first() else {
+                return Err(Fault::Unsupported(
+                    "isAssignableTo with a model file argument that is not a model file".into(),
+                ));
+            };
+            let Some(Arg::Plain(Value::String(type_name))) = args.get(1) else {
+                return Err(Fault::Unsupported(
+                    "isAssignableTo with a type name that is not a string".into(),
+                ));
+            };
+            let (index, property) = prop(args.get(2))?;
+            let r = &session.pool[index];
+            let model_file = recipe::model_file_node(r, file)?;
+            Ok(from_engine(
+                model_util::is_assignable_to(&r.mm, &model_file, type_name, &property),
+                Value::Bool,
+            ))
+        }
+        "isEnum" | "isMap" | "isScalar" => {
+            let (index, field) = prop(args.first())?;
+            let r = &session.pool[index];
+            let result = match member {
+                "isEnum" => model_util::is_enum(&r.mm, &field),
+                "isMap" => model_util::is_map(&r.mm, &field),
+                _ => model_util::is_scalar(&r.mm, &field),
+            };
+            Ok(from_engine(result, option_bool))
+        }
+        "isValidMapKeyScalar" => match args.first() {
+            // `decl?.…`: a nullish declaration never reaches the context.
+            None => Ok(from_engine(
+                model_util::is_valid_map_key_scalar(&fresh_context()?, None),
+                option_bool,
+            )),
+            Some(Arg::Plain(v)) if v.is_null() || recipe::is_undefined(v) => Ok(from_engine(
+                model_util::is_valid_map_key_scalar(&fresh_context()?, None),
+                option_bool,
+            )),
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[*index];
+                Ok(from_engine(
+                    model_util::is_valid_map_key_scalar(&r.mm, Some(&Node::Declaration(*id))),
+                    option_bool,
+                ))
+            }
+            Some(_) => Err(Fault::Unsupported(
+                "isValidMapKeyScalar with an argument that is not a declaration".into(),
+            )),
+        },
+        _ => unreachable!("`dispatched` lists every ModelUtil collaborator op"),
+    }
+}
+
+/// A context for a call that is given no handle at all
+/// (`isValidMapKeyScalar(undefined)`), which never consults it.
+fn fresh_context() -> Faulty<ModelManager> {
+    ModelManager::new().map_err(|e| {
+        Fault::Divergence(format!(
+            "ModelManager::new failed: {}",
+            to_oracle_error(&e).message
+        ))
+    })
+}
+
+/// `ModelUtil.parseNamespace`'s return value, in the shape TS returns it
+/// (`{name}`, or `{name, escapedNamespace, version, versionParsed}`).
+fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
+    match parsed {
+        ParsedNamespace::NameOnly { name } => json!({ "name": name }),
+        ParsedNamespace::Full {
+            name,
+            escaped_namespace,
+            version,
+            version_parsed,
+        } => json!({
+            "name": name,
+            "escapedNamespace": escaped_namespace,
+            "version": version,
+            // README "Value encoding": a returned handle codec.js does not
+            // model specially (a node-semver `SemVer`) is recorded as the
+            // generic summary `{"@@oracle":"object","ctor":"<constructor>"}`
+            // (confirmed against a recorded fixture, task P1-07). This
+            // checks that a `SemVer` was returned at all when `version` is
+            // present; node-semver's own fields have no Rust port to check.
+            "versionParsed": version_parsed.as_ref().map(|_| json!({
+                M: "object",
+                "ctor": "SemVer",
+            })),
+        }),
+    }
+}
+
+/// Builds the oracle's `outcome.error` shape from a [`ConcertoError`], the
+/// same fields `ContractError` carries (PORTING.md section 2.1):
+/// `kind.ts_class()` for `class`, [`concerto_core::error::ContractError::final_message`]
+/// for `message` (its doc comment: "Used by the native oracle harness
+/// only"), the AST `location` verbatim, and `component`. The two pre-port
+/// variants (`TypeNotFound`, `IllegalModel`) carry no catalogue key; they
+/// map to their TS class with their own text, so a fixture that reaches one
+/// fails on its message until the owning task ports the throw site.
+pub fn to_oracle_error(err: &ConcertoError) -> OracleError {
+    match err {
+        ConcertoError::Contract(ce) => OracleError {
+            class: ce.kind.ts_class().to_string(),
+            message: ce.final_message(),
+            location: ce.location.clone(),
+            component: ce.component().map(str::to_string),
+        },
+        ConcertoError::TypeNotFound { type_name } => OracleError {
+            class: ErrorKind::TypeNotFound.ts_class().to_string(),
+            message: format!("Type \"{type_name}\" not found."),
+            location: None,
+            component: Some("@accordproject/concerto-core".into()),
+        },
+        ConcertoError::IllegalModel {
+            message, location, ..
+        } => OracleError {
+            class: ErrorKind::IllegalModel.ts_class().to_string(),
+            message: message.clone(),
+            location: location.clone(),
+            component: Some("@accordproject/concerto-core".into()),
+        },
+    }
+}

@@ -1,0 +1,53 @@
+# The WASM binding of concerto-core (PORTING.md section 4), built for the
+# concerto-core TS views behind CONCERTO_ENGINE=rust.
+#
+# It binds the handle API over the ModelManager arena (P4-01) and the P0-04b
+# trial units; pkg/ is the npm package @accordproject/concerto-engine
+# (README.md).
+#
+# Like the spike, it is not a member of the root workspace (the empty
+# [workspace] table below), so the host build of concerto-core never compiles
+# wasm-bindgen. Build it with `sh build.sh`; lint it with
+# `cargo clippy --target wasm32-unknown-unknown -- -D warnings` from here.
+[package]
+name = "concerto-wasm"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+accordproject-concerto-core = { path = "../concerto-core" }
+# P4-04: builds the typed metamodel ASTs (StringRegexValidator,
+# StringLengthValidator, CollectionSizeValidator) the core validators take,
+# from the plain JSON the JS views and their unit tests hand across the
+# boundary (which carry no `$class`).
+accordproject-concerto-metamodel = { path = "../concerto-metamodel" }
+# Pinned: wasm-bindgen-cli must be exactly this version (spike REPORT §5).
+wasm-bindgen = "=0.2.128"
+js-sys = "0.3"
+# `float_roundtrip`: see the root Cargo.toml's `[workspace.dependencies]
+# serde_json` (P4-10): the fast path parses every JS number the view
+# `JSON.stringify`s, and must get back the exact same double.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+
+[lints.clippy]
+# A panic on the boundary path poisons the object it happened in (spike
+# REPORT §4): the binding never unwraps or indexes.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

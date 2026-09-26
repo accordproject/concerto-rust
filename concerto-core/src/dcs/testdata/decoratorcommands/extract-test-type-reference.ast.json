@@ -1,0 +1,70 @@
+{
+  "$class": "concerto.metamodel@1.0.0.Model",
+  "decorators": [],
+  "namespace": "test@1.0.0",
+  "imports": [],
+  "declarations": [
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Address",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "street",
+          "isArray": false,
+          "isOptional": false
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Person",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "firstName",
+          "isArray": false,
+          "isOptional": false,
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Form",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
+                  "type": {
+                    "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                    "name": "Address"
+                  },
+                  "isArray": true
+                },
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "text"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Form",
+          "arguments": [
+            {
+              "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
+              "type": {
+                "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                "name": "Address"
+              },
+              "isArray": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

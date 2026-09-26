@@ -2,9 +2,11 @@ name: Build and Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, claude/tender-pascal-ocwf9q]
   pull_request:
-    branches: [main]
+    # The migration integration branch too: otherwise a merge into it can break
+    # concerto-wasm unnoticed (a new concerto-core JsValue variant, #204/#210).
+    branches: [main, claude/tender-pascal-ocwf9q]
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,8 +29,20 @@ jobs:
         run: rustup component add rustfmt && cargo fmt -p accordproject-concerto-core -- --check
       - name: Clippy (concerto-core)
         run: rustup component add clippy && cargo clippy -p accordproject-concerto-core --no-deps --all-targets -- -D warnings
+      - name: Format check (concerto-wasm)
+        run: cargo fmt --manifest-path concerto-wasm/Cargo.toml -- --check
+      - name: Clippy (concerto-wasm, wasm32)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo clippy --manifest-path concerto-wasm/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
       - name: Build
         run: cargo build --verbose --workspace --all-targets
+      # This job has no oracle fixture corpus (it lives, generated, in an
+      # accordproject/concerto checkout), and the oracle harness fails when it
+      # finds none. Opt out explicitly: `replays_the_oracle_corpus` is then
+      # reported as ignored, never as a pass (concerto-core/tests/oracle/main.rs).
       - name: Test
         run: cargo test --workspace
+        env:
+          CONCERTO_ORACLE_SKIP: "1"
 
