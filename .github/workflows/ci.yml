@@ -2,9 +2,11 @@ name: Build and Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, claude/tender-pascal-ocwf9q]
   pull_request:
-    branches: [main]
+    # The migration integration branch too: otherwise a merge into it can break
+    # concerto-wasm unnoticed (a new concerto-core JsValue variant, #204/#210).
+    branches: [main, claude/tender-pascal-ocwf9q]
 
 env:
   CARGO_TERM_COLOR: always
