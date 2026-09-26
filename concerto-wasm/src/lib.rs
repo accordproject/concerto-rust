@@ -3326,6 +3326,13 @@ fn encode_wire(v: &CoreValue) -> Value {
         }),
         CoreValue::DateTime(d) => encode_wire_dayjs(d),
         CoreValue::Instance(i) => encode_wire_instance(i),
+        // The oracle harness's own `bigint` shape (`migration/oracle/lib/
+        // codec.js`). The view's `decodeValue` has no `bigint` kind, so it
+        // throws `EngineFastPathUnsupported` on this and the caller falls
+        // back to the visitor path, as its `encodeValue` already does for
+        // a `BigInt` it is handed (`unsupported-value:bigint`). No decoded
+        // wire value is a `BigInt`, so this is not reached today.
+        CoreValue::BigInt(s) => json!({ WIRE_TAG: "bigint", "value": s }),
     }
 }
 
