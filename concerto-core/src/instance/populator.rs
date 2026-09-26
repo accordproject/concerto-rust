@@ -551,6 +551,12 @@ impl<'a> Populator<'a> {
             )?;
             return self.accept_declaration(&declaration, value, Some(sub_resource));
         }
+        // TS's `catch` leaves `value` exactly as parsed: an explicit but
+        // unresolvable `$class` never becomes a `Resource` here. See
+        // `visit_class_declaration`'s `is_map_value` parameter
+        // (accordproject/concerto-rust#194) for how the validator turns
+        // this same unresolvable `$class`, reached again later through
+        // `ResourceValidator.checkMapType`, into the TS-faithful verdict.
         Ok(value.clone())
     }
 

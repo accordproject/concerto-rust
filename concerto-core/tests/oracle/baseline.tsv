@@ -10012,7 +10012,7 @@ Serializer.fromJSON	2c47be0c2d5aa9f2f0f34bc5	pass
 Serializer.fromJSON	2c7a8ea4b57a766b434d206d	pass
 Serializer.fromJSON	2cb3c83e83ad3e9eeebf2f3a	pass
 Serializer.fromJSON	2cb98515334ff9d3eca13aca	pass
-Serializer.fromJSON	2cbebbf0437339c532b5d557	fail:class-mismatch
+Serializer.fromJSON	2cbebbf0437339c532b5d557	pass
 Serializer.fromJSON	2cceadadd841023219063a35	pass
 Serializer.fromJSON	2cd17ed1a5d2b9b05a88b6b6	pass
 Serializer.fromJSON	2cd74f922cf4dc43dc834dbd	pass
@@ -10902,7 +10902,7 @@ Serializer.fromJSON	967c39e75ec5c366533686a2	pass
 Serializer.fromJSON	9685ecb1b23d6674996936dd	pass
 Serializer.fromJSON	96bd6b123f9808a14ead7357	pass
 Serializer.fromJSON	96bf4b06b11f0b0ae6ac42b6	pass
-Serializer.fromJSON	96c2b0deacdd10cc1a83ca2d	fail:class-mismatch
+Serializer.fromJSON	96c2b0deacdd10cc1a83ca2d	pass
 Serializer.fromJSON	96da34abd01e57ddf5df2bf5	pass
 Serializer.fromJSON	96e6e02c6c5382b1e276f888	pass
 Serializer.fromJSON	97072bc8a684c6efd56033d0	pass
