@@ -64,7 +64,7 @@ use concerto_core::instance::{
 use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{
-    Decorator, DecoratorArgument, DecoratorValidationOptions,
+    self, Decorator, DecoratorArgument, DecoratorValidationOptions,
 };
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
@@ -2591,8 +2591,36 @@ pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue
 /// TS: Decorator.process. Builds `{name, arguments}` from the raw AST node,
 /// through the P2-07 port ([`Decorator::from_ast`]); needs no collaborator
 /// call.
+///
+/// DV-018 (maintainer-accepted, accordproject/concerto-rust#218): a `null`
+/// or `undefined` node, where TS's `this.ast.name` (decorator.ts:139) throws
+/// a `TypeError`, is an `IllegalModelException` instead
+/// ([`decorator::not_an_object`], the error native Rust raises for the same
+/// node). `view` is the `Decorator` being processed, optional so that an
+/// older caller passing the AST alone still works: when given, its
+/// `getParent().getModelFile()` is the model file the exception names, as
+/// TS's `Decorator.handleError` passes it.
 #[wasm_bindgen(js_name = decoratorProcess)]
-pub fn decorator_process(ast: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn decorator_process(ast: JsValue, view: JsValue) -> std::result::Result<JsValue, JsValue> {
+    if ast.is_null() || ast.is_undefined() {
+        let mut err = decorator::not_an_object(if ast.is_null() { "null" } else { "undefined" });
+        err.model_file = Some(None);
+        let model_file = if view.is_undefined() || view.is_null() {
+            None
+        } else {
+            call(&view, "getParent", &[], "this.getParent")
+                .and_then(|parent| {
+                    call(
+                        &parent,
+                        "getModelFile",
+                        &[],
+                        "this.getParent().getModelFile",
+                    )
+                })
+                .ok()
+        };
+        return Err(throw(err.into(), model_file.as_ref()));
+    }
     run(|| {
         let ast_json = to_json(&ast)?.unwrap_or(Value::Null);
         let decorator = Decorator::from_ast(&ast_json);

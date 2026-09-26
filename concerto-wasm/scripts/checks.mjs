@@ -396,6 +396,30 @@ export function runChecks(engine) {
     }
   });
 
+  check('decoratorProcess rejects a null or undefined node (DV-018)', () => {
+    const modelFile = { getName: () => 'deco.cto' };
+    const view = { getParent: () => ({ getModelFile: () => modelFile }) };
+    for (const ast of [null, undefined]) {
+      const err = thrown(() => engine.decoratorProcess(ast, view));
+      assert(err instanceof EngineError, `${ast} threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `kind ${err.payload.kind}`);
+      assert(err.payload.code === 'decorator-process-notobject', `code ${err.payload.code}`);
+      assert(err.message === `Invalid decorator. Expected object. Found ${ast}`, `message ${err.message}`);
+      assert(err.payload.modelFile === modelFile, 'the parent\'s model file is attached');
+    }
+    // An older caller that passes the AST alone still gets the exception.
+    const bare = thrown(() => engine.decoratorProcess(null));
+    assert(bare instanceof EngineError && bare.payload.code === 'decorator-process-notobject', `bare threw ${bare}`);
+    assert(bare.payload.modelFile === undefined, 'no model file without a view');
+    // Other non-object nodes do not crash TS: a nameless decorator, as before.
+    for (const ast of [5, 'x', {}]) {
+      const out = engine.decoratorProcess(ast, view);
+      assert(out.name === '' && out.arguments.length === 0, `${JSON.stringify(ast)} gave ${JSON.stringify(out)}`);
+    }
+    const named = engine.decoratorProcess({ $class: `${MM}.Decorator`, name: 'Hide' }, view);
+    assert(named.name === 'Hide', `name ${named.name}`);
+  });
+
   mm.free();
   return rows;
 }
