@@ -73,6 +73,32 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
+        let mut model_file = Self::load(value, definitions, file_name)?;
+        model_file.ast = value.clone();
+        Ok(model_file)
+    }
+
+    /// [`ModelFile::from_json_with_definitions`], taking ownership of the
+    /// AST so it is kept without being copied (P5-06: a caller that has just
+    /// parsed the AST from JSON text, such as the WASM binding, has no other
+    /// use for it). Same result, same errors, in the same order.
+    pub fn from_owned_json_with_definitions(
+        value: serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<Self> {
+        let mut model_file = Self::load(&value, definitions, file_name)?;
+        model_file.ast = value;
+        Ok(model_file)
+    }
+
+    /// The body of [`ModelFile::from_json_with_definitions`], leaving
+    /// [`ModelFile::ast`] `Null` for the caller to fill in.
+    fn load(
+        value: &serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<Self> {
         let namespace = value
             .get("namespace")
             .and_then(|v| v.as_str())
@@ -190,7 +216,7 @@ impl ModelFile {
             local_types,
             file_name,
             decorators: parse_decorators(value),
-            ast: value.clone(),
+            ast: serde_json::Value::Null,
             concerto_version,
             definitions,
             external,

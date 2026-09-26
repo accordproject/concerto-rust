@@ -153,10 +153,13 @@ impl<'a> TypeRef<'a> {
 
     /// TS `getProperty(name)`.
     pub fn property(&self, name: &str) -> Result<Option<(String, Property)>> {
-        Ok(self
-            .properties("classDeclaration.getProperty")?
-            .into_iter()
-            .find(|(_, p)| p.name() == name))
+        // `properties(...)` then `find`, without cloning every other
+        // property first (P5-06): `get_property` resolves the same super
+        // chain and returns the same first match.
+        match self.decl {
+            Declaration::Class(_) | Declaration::Enum(_) => self.mm.get_property(&self.fqn(), name),
+            _ => Err(not_a_function("classDeclaration.getProperty")),
+        }
     }
 }
 

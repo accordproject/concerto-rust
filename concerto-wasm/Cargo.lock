@@ -101,6 +101,7 @@ dependencies = [
  "accordproject-concerto-core",
  "accordproject-concerto-metamodel",
  "js-sys",
+ "serde",
  "serde_json",
  "wasm-bindgen",
 ]

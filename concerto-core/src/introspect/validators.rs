@@ -424,7 +424,7 @@ impl CollectionSizeValidator {
 struct CompiledRegex {
     pattern: String,
     flags: String,
-    regex: regress::Regex,
+    regex: std::sync::Arc<regress::Regex>,
 }
 
 impl PartialEq for CompiledRegex {
@@ -438,6 +438,40 @@ impl fmt::Display for CompiledRegex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "/{}/{}", self.pattern, self.flags)
     }
+}
+
+thread_local! {
+    /// Compiled `StringValidator` regexes by `(pattern, flags)` (P5-06): a
+    /// validator is rebuilt for every string field an instance check visits,
+    /// and `regress` compilation dominated that. Only successful
+    /// compilations are kept, so an error is always produced (and worded)
+    /// by a fresh compile, exactly as without the cache.
+    static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<(String, String), std::sync::Arc<regress::Regex>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The cache is cleared when it reaches this many entries, so a process
+/// that sees an unbounded stream of distinct patterns stays bounded.
+const REGEX_CACHE_LIMIT: usize = 1024;
+
+/// `regress::Regex::with_flags(pattern, flags)`, memoised in [`REGEX_CACHE`].
+fn compile_regex(
+    pattern: &str,
+    flags: &str,
+) -> std::result::Result<std::sync::Arc<regress::Regex>, regress::Error> {
+    let key = (pattern.to_string(), flags.to_string());
+    if let Some(regex) = REGEX_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return Ok(regex);
+    }
+    let regex = std::sync::Arc::new(regress::Regex::with_flags(pattern, flags)?);
+    REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= REGEX_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, regex.clone());
+    });
+    Ok(regex)
 }
 
 impl CompiledRegex {
@@ -584,7 +618,7 @@ impl StringValidator {
                         vec![("message", message)],
                     ));
                 }
-                match regress::Regex::with_flags(v.pattern.as_str(), v.flags.as_str()) {
+                match compile_regex(v.pattern.as_str(), v.flags.as_str()) {
                     Ok(regex) => Some(CompiledRegex {
                         pattern: v.pattern.clone(),
                         flags: v.flags.clone(),

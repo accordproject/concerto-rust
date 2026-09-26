@@ -315,39 +315,39 @@ impl TryFrom<&serde_json::Value> for Property {
         let decorators = parse_decorators(value);
         let property = match kind {
             "BooleanProperty" => Self::Boolean(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "StringProperty" => Self::String(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "IntegerProperty" => Self::Integer(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "LongProperty" => Self::Long(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "DoubleProperty" => Self::Double(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "DateTimeProperty" => Self::DateTime(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "ObjectProperty" => Self::Object(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "RelationshipProperty" => Self::Relationship(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             "EnumProperty" => Self::Enum(WithDecorators::new(
-                serde_json::from_value(value.clone()).map_err(bad)?,
+                serde::Deserialize::deserialize(value).map_err(bad)?,
                 decorators,
             )),
             _ => {
