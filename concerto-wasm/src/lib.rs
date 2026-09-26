@@ -1626,16 +1626,36 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
     let body = || -> Result<JsValue> {
         let ast = get(&declaration, "ast")?;
 
-        let explicit_super_type = get(&ast, "superType")?;
-        let explicit_super_type = if !nullish(&explicit_super_type) {
-            Some(receiver(
-                &get(&explicit_super_type, "name")?,
-                "this.ast.superType.name",
-                "toString",
-            )?)
+        // TS: `if (this.ast.superType) { this.superType = this.ast.superType.name; }
+        // else if (!(isSystemModelFile && name === 'Concept')) { this.superType = 'Concept'; }`
+        // Neither branch ever calls `.toString()`: the outer test is plain JS
+        // truthiness of the whole `superType` node (not merely non-nullish —
+        // a fuzzed AST can put `false`/`0`/`""` there too, all falsy), and
+        // once truthy, whatever `.name` holds (string, number, boolean,
+        // `null`, absent, object, array) is stored on `this.superType`
+        // as-is, UNSTRINGIFIED and uncoerced. That raw JS value's own type
+        // and truthiness are themselves observable later: `_resolveSuperType`
+        // (`classDeclarationResolveSuperType` above) keys off its truthiness,
+        // `getProperty`/`getProperties` (below) off strict non-null, and
+        // every "Could not find super type" message off its `ToString` —
+        // three different tests a fuzzer can pull apart (`undefined` is
+        // falsy but not `null`; `ToString(undefined)` is `"undefined"`, not
+        // `""`). A single Rust `String` cannot answer the first two at once
+        // (accordproject/concerto-rust#219, P5-05 stage-2 T2c), so the raw
+        // `JsValue` is threaded straight through to the snapshot below
+        // instead of being coerced or blanked here the way `receiver` would.
+        let super_type_ast = get(&ast, "superType")?;
+        let raw_super_type = if super_type_ast.is_truthy() {
+            Some(get(&super_type_ast, "name")?)
         } else {
             None
         };
+        // `process_decision` only needs to know whether the AST named a
+        // super type at all (`None` applies its own implicit-`Concept`
+        // default, or leaves it unset for the system model's own `Concept`);
+        // once it has named one, the placeholder's content is never read —
+        // `raw_super_type` is what actually reaches the snapshot.
+        let explicit_super_type = raw_super_type.as_ref().map(|_| String::new());
         let is_system_model_file = if explicit_super_type.is_none() {
             let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
             call(
@@ -1651,27 +1671,32 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // call to make.
             false
         };
-        let name = receiver(&get(&declaration, "name")?, "this.name", "toString")?;
+        // TS: `name === 'Concept'` — a strict equality, not a `.toString()`
+        // call, so a non-string `this.name` (reachable through a fuzzed
+        // `ast.name`) simply can never equal the literal `'Concept'`; the
+        // empty string can't either, so it stands in without a receiver
+        // check.
+        let name = get(&declaration, "name")?.as_string().unwrap_or_default();
 
+        // TS: `if (this.ast.identified) { ... }` — again plain truthiness of
+        // the whole node, not merely non-nullish.
         let identified = get(&ast, "identified")?;
-        let (identified_class, identified_name) = if nullish(&identified) {
-            (None, None)
-        } else {
-            let identified_class = receiver(
-                &get(&identified, "$class")?,
-                "this.ast.identified.$class",
-                "toString",
-            )?;
+        let (identified_class, identified_name) = if identified.is_truthy() {
+            // TS: `this.ast.identified.$class === '...IdentifiedBy'` (strict
+            // equality) and `this.idField = this.ast.identified.name` (plain
+            // assignment) — neither coerces. A non-string `$class` can never
+            // match the literal comparison, so the empty string (never a
+            // real `$class`) stands in for it without a receiver check.
+            let class_value = get(&identified, "$class")?;
+            let identified_class = class_value.as_string().unwrap_or_default();
             let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
-                Some(receiver(
-                    &get(&identified, "name")?,
-                    "this.ast.identified.name",
-                    "toString",
-                )?)
+                Some(js_string(&get(&identified, "name")?)?)
             } else {
                 None
             };
             (Some(identified_class), identified_name)
+        } else {
+            (None, None)
         };
 
         let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
@@ -1685,12 +1710,36 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             &fqn,
         );
 
-        Ok(to_js(&json!({
-            "superType": decision.super_type,
-            "idField": decision.id_field,
-            "addIdentifierField": decision.add_identifier_field,
-            "addTimestampField": decision.add_timestamp_field,
-        })))
+        // `raw_super_type` (the AST's own `.name` value, untouched) when the
+        // AST named a super type at all; otherwise `process_decision`'s own
+        // string decision (the implicit `'Concept'`, or `null` for the
+        // system model's own `Concept`).
+        let super_type_js = match raw_super_type {
+            Some(v) => v,
+            None => decision
+                .super_type
+                .as_deref()
+                .map_or(JsValue::NULL, JsValue::from_str),
+        };
+        let id_field_js = decision
+            .id_field
+            .as_deref()
+            .map_or(JsValue::NULL, JsValue::from_str);
+
+        let result = Object::new();
+        set(&result, "superType", &super_type_js);
+        set(&result, "idField", &id_field_js);
+        set(
+            &result,
+            "addIdentifierField",
+            &JsValue::from_bool(decision.add_identifier_field),
+        );
+        set(
+            &result,
+            "addTimestampField",
+            &JsValue::from_bool(decision.add_timestamp_field),
+        );
+        Ok(result.into())
     };
     body().map_err(|e| {
         let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
@@ -2055,6 +2104,14 @@ pub fn class_declaration_get_identifier_field_name(
 /// one, otherwise the super type's answer (through [`resolve_named_type`]).
 /// A `null` super type resolution reaches the same unguarded
 /// `classDecl.getProperty(name)` call TS makes.
+///
+/// The guard is `this.superType !== null` — strict, not TS truthiness — so a
+/// fuzzer-produced `this.superType` that is merely falsy (`undefined`, `0`,
+/// `false`, `""`, from a `superType` AST node whose `name` was itself falsy;
+/// [`class_declaration_process`]'s own module doc) still reaches the same
+/// resolution TS does, rather than being treated as "no super type" the way
+/// `getSuperType`/`_resolveSuperType`'s own, separate, truthiness guard
+/// would (accordproject/concerto-rust#219, P5-05 stage-2 T2c).
 #[wasm_bindgen(js_name = classDeclarationGetProperty)]
 pub fn class_declaration_get_property(
     declaration: JsValue,
@@ -2071,7 +2128,7 @@ pub fn class_declaration_get_property(
             return Ok(own);
         }
         let super_type = get(&declaration, "superType")?;
-        if !super_type.is_truthy() {
+        if super_type.is_null() {
             return Ok(JsValue::NULL);
         }
         let class_decl = resolve_named_type(&declaration, &super_type)?;
@@ -2084,6 +2141,9 @@ pub fn class_declaration_get_property(
 /// [`resolve_named_type`] — unlike `getProperty`, TS itself guards this
 /// resolution with the same "Could not find super type" `IllegalModelException`
 /// `_resolveSuperType` raises.
+///
+/// Same `this.superType !== null` guard as `getProperty` above (not
+/// truthiness): accordproject/concerto-rust#219.
 #[wasm_bindgen(js_name = classDeclarationGetProperties)]
 pub fn class_declaration_get_properties(
     declaration: JsValue,
@@ -2100,7 +2160,7 @@ pub fn class_declaration_get_properties(
             result.push(&property);
         }
         let super_type = get(&declaration, "superType")?;
-        if !super_type.is_truthy() {
+        if super_type.is_null() {
             return Ok(result);
         }
         let class_decl = resolve_named_type(&declaration, &super_type)?;

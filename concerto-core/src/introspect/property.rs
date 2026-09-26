@@ -52,16 +52,47 @@ pub struct ProcessedProperty {
 ///
 /// TS: `Property.process` (src/introspect/property.ts)
 pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
-    let name = ast
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    // TS interpolates the raw `this.ast.name` into a template literal
+    // (`Invalid property name '${this.ast.name}'`) and into `ID_REGEX.test`,
+    // both of which apply JS `ToString` to whatever value the AST carries —
+    // not only a string. A fuzzer-mutated AST can put a number, boolean,
+    // `null`, array or object there, so this must go through the same
+    // `ToString` coercion `ecma::to_js_string` gives every other port of a
+    // template literal, rather than treating a non-string name as absent.
+    let raw_name = ast.get("name");
+    let name = raw_name.map(crate::ecma::to_js_string).unwrap_or_default();
     if !is_valid_identifier(&name) {
-        return Err(ContractError::new(
+        let mut err = ContractError::new(
             ErrorKind::IllegalModel,
             "property-process-invalidname",
             vec![("name", name)],
+        );
+        // TS: `throw new IllegalModelException(..., this.getModelFile(),
+        // this.ast.location)` — the WASM binding (`propertyProcess` in
+        // concerto-wasm/src/lib.rs) supplies the real JS model file once
+        // `model_file` says one belongs on this error; the location comes
+        // from this AST node directly, as every other site on this path
+        // does (e.g. `Property::try_from`'s own `invalidname` throw).
+        err.location = ast.get("location").cloned();
+        err.model_file = Some(None);
+        return Err(err.into());
+    }
+    // TS: `this.name = this.ast.name; if (!this.name) { throw new
+    // Error('No name for type ' + JSON.stringify(this.ast)); }` — a
+    // *second*, separate check, on the *raw* `this.ast.name` value's own JS
+    // truthiness, not on the `ToString`'d `name` the identifier check just
+    // validated above. `ID_REGEX.test` can accept a falsy value whose
+    // stringified form still looks like an identifier (`false` stringifies
+    // to `"false"`, a valid identifier shape) while the value itself is
+    // falsy (`false`, `0`, `""`, `null`, absent), so this must re-test the
+    // untouched AST value, not `name` (accordproject/concerto-rust#219,
+    // P5-05 stage-2 T2c: minimised sample sets a property's `name` to the
+    // JSON boolean `false`).
+    if !raw_name.is_some_and(crate::ecma::is_truthy) {
+        return Err(ContractError::new(
+            ErrorKind::Error,
+            "property-process-noname",
+            vec![("ast", ast.to_string())],
         )
         .into());
     }
@@ -567,6 +598,42 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.to_string().contains("Invalid property name '1bad'"));
+    }
+
+    // accordproject/concerto-rust#219 (P5-05 stage-2 T2c, cluster 1): a
+    // fuzzer-mutated AST can put any JSON type in `name`, and TS's
+    // `${this.ast.name}` reports it through JS `ToString`, not as an
+    // absent/empty name.
+    #[test]
+    fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
+        let err = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": 1e308,
+            "isArray": false,
+            "isOptional": false
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid property name '1e+308'"));
+    }
+
+    // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): a `name` whose
+    // *stringified* form still looks like a valid identifier (`false` ->
+    // `"false"`) passes the identifier check, but its own raw JS falsiness
+    // fails TS's second, separate `if (!this.name)` check, which raises a
+    // plain `Error`, not an `IllegalModelException`.
+    #[test]
+    fn process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier() {
+        let ast = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": false,
+            "isArray": false,
+            "isOptional": false
+        });
+        let err = process::<ConcertoError>(&ast).unwrap_err();
+        assert!(
+            err.to_string().contains("No name for type"),
+            "unexpected error: {err}"
+        );
     }
 
     fn prop(json: serde_json::Value) -> Property {
