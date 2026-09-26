@@ -319,6 +319,12 @@ pub struct ModelManager {
     /// metamodel ([`ModelManager::validate_ast`]) before its semantic
     /// validation. `false` (JS `undefined`) by default. Task P4-08b.
     metamodel_validation: bool,
+    /// [`ModelManager::super_chain`]'s successful answers, by the
+    /// fully-qualified name asked about (P5-06): a chain depends only on the
+    /// registered files, so it is cleared by every change to them
+    /// ([`ModelManager::invalidate_caches`]). A `Mutex` rather than a
+    /// `RefCell` so the manager stays `Sync`.
+    super_chain_cache: std::sync::Mutex<HashMap<String, Vec<(String, DeclId)>>>,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -485,6 +491,34 @@ fn already_exists(
     .into()
 }
 
+thread_local! {
+    /// The decorator and root system model files, loaded from their vendored
+    /// ASTs once per thread and cloned into every new manager (P5-06): a
+    /// model file is a pure function of its AST and file name, so a clone is
+    /// indistinguishable from a fresh load, without re-serialising and
+    /// re-reading both ASTs on every [`ModelManager::new`].
+    static SYSTEM_MODEL_FILES: std::cell::RefCell<Option<(ModelFile, ModelFile)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The decorator and root system model files, as [`ModelManager::new`]
+/// loads them (see [`SYSTEM_MODEL_FILES`]). A load error is returned, and
+/// not cached, exactly as an uncached load would return it.
+fn system_model_files() -> Result<(ModelFile, ModelFile)> {
+    if let Some(files) = SYSTEM_MODEL_FILES.with(|cache| cache.borrow().clone()) {
+        return Ok(files);
+    }
+    let decorator = ModelFile::from_json(
+        &decorator_model_ast(),
+        Some("concerto_decorator_1.0.0.cto".into()),
+    )?;
+    let root = ModelFile::from_json(&root_model_ast(), Some("concerto_1.0.0.cto".into()))?;
+    SYSTEM_MODEL_FILES.with(|cache| {
+        *cache.borrow_mut() = Some((decorator.clone(), root.clone()));
+    });
+    Ok((decorator, root))
+}
+
 impl ModelManager {
     /// A fresh manager with both system models already loaded: the decorator
     /// model, then the root model.
@@ -505,12 +539,8 @@ impl ModelManager {
         // (and the outer `ModelFile.getName()`) then returns verbatim; not
         // the namespace, which happens to differ only for these two files
         // because every other file name in this port comes from the caller.
-        let decorator = ModelFile::from_json(
-            &decorator_model_ast(),
-            Some("concerto_decorator_1.0.0.cto".into()),
-        )?;
+        let (decorator, root) = system_model_files()?;
         mgr.insert(decorator)?;
-        let root = ModelFile::from_json(&root_model_ast(), Some("concerto_1.0.0.cto".into()))?;
         mgr.insert(root)?;
         Ok(mgr)
     }
@@ -546,6 +576,27 @@ impl ModelManager {
         file_name: Option<String>,
     ) -> Result<()> {
         let mf = ModelFile::from_json_with_definitions(value, definitions, file_name)?;
+        self.add_loaded_model_file(mf)
+    }
+
+    /// [`ModelManager::add_model_with_definitions`], taking ownership of the
+    /// AST so it is kept without being copied
+    /// ([`ModelFile::from_owned_json_with_definitions`], P5-06). Same
+    /// result, same errors, in the same order.
+    pub fn add_owned_model_with_definitions(
+        &mut self,
+        value: serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<()> {
+        let mf = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
+        self.add_loaded_model_file(mf)
+    }
+
+    /// The duplicate-namespace check and registration
+    /// [`ModelManager::add_model_with_definitions`] runs once the file is
+    /// loaded.
+    fn add_loaded_model_file(&mut self, mf: ModelFile) -> Result<()> {
         if let Some(existing) = self
             .namespaces
             .get(mf.namespace())
@@ -628,6 +679,7 @@ impl ModelManager {
             self.files.truncate(files_len);
             self.declarations.truncate(declarations_len);
             self.properties.truncate(properties_len);
+            self.invalidate_caches();
             self.namespaces = namespaces_snapshot;
             self.generation = generation;
             return Err(err);
@@ -672,6 +724,7 @@ impl ModelManager {
     /// arena, and counts the mutation. Nothing is changed if a handle cannot
     /// be allocated.
     fn insert(&mut self, model_file: ModelFile) -> Result<ModelFileId> {
+        self.invalidate_caches();
         let file_id = ModelFileId(next_index(self.files.len())?);
         let mut declarations = Vec::new();
         let mut properties = Vec::new();
@@ -810,6 +863,7 @@ impl ModelManager {
             self.files.truncate(files_len);
             self.declarations.truncate(declarations_len);
             self.properties.truncate(properties_len);
+            self.invalidate_caches();
             self.namespaces.remove(METAMODEL_NAMESPACE);
             self.generation += 1;
         }
@@ -1127,10 +1181,15 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getProperty`, inherited unchanged by `EnumDeclaration`.
     pub fn get_property(&self, fqn: &str, name: &str) -> Result<Option<(String, Property)>> {
-        Ok(self
-            .get_all_properties(fqn)?
-            .into_iter()
-            .find(|(_, p)| p.name() == name))
+        // The first match in `get_all_properties`' order, without cloning
+        // every other property along the way (P5-06). The whole super chain
+        // is still resolved first, so its errors are unchanged.
+        for (owner_fqn, class) in self.super_chain(fqn)? {
+            if let Some(property) = class.own_properties().iter().find(|p| p.name() == name) {
+                return Ok(Some((owner_fqn, property.clone())));
+            }
+        }
+        Ok(None)
     }
 
     /// The properties declared directly on `fqn`, not those it inherits.
@@ -1376,6 +1435,10 @@ impl ModelManager {
     /// again, returns the `RangeError` V8 raises (rule 2), after the same
     /// earlier checks: a missing or non-class super type still fails first.
     fn super_chain(&self, fqn: &str) -> Result<Vec<(String, ClassLike<'_>)>> {
+        if let Some(chain) = self.cached_super_chain(fqn) {
+            return Ok(chain);
+        }
+        let mut handles = Vec::new();
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut current = fqn.to_string();
@@ -1407,6 +1470,7 @@ impl ModelManager {
                 .ok_or_else(|| not_a_class_like(&current))?;
 
             let next = self.super_type_fqn(&class, namespace_of(&current))?;
+            handles.push((current.clone(), decl_id));
             chain.push((current, class));
             match next {
                 Some(parent) => current = parent,
@@ -1414,7 +1478,38 @@ impl ModelManager {
             }
         }
 
+        let mut cache = match self.super_chain_cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        cache.insert(fqn.to_string(), handles);
         Ok(chain)
+    }
+
+    /// A [`ModelManager::super_chain`] answer cached since the last change
+    /// to the registered files, rebuilt from its declaration handles.
+    fn cached_super_chain(&self, fqn: &str) -> Option<Vec<(String, ClassLike<'_>)>> {
+        let cache = match self.super_chain_cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let handles = cache.get(fqn)?;
+        handles
+            .iter()
+            .map(|(name, id)| {
+                let class = ClassLike::from_declaration(self.declaration(*id)?)?;
+                Some((name.clone(), class))
+            })
+            .collect()
+    }
+
+    /// Drops every answer cached from the registered files (P5-06); called
+    /// by every change to them.
+    fn invalidate_caches(&mut self) {
+        match self.super_chain_cache.get_mut() {
+            Ok(cache) => cache.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
     }
 
     /// Works out the full name of a class's direct super type, resolved in the
@@ -1959,6 +2054,7 @@ impl ModelManager {
             self.files.truncate(files_len);
             self.declarations.truncate(declarations_len);
             self.properties.truncate(properties_len);
+            self.invalidate_caches();
             self.namespaces = namespaces_snapshot;
             self.generation = generation;
             return Err(err);

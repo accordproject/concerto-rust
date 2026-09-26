@@ -2015,6 +2015,18 @@ mod tests {
                     format!("Invalid decorator. Expected object. Found null{suffix}"),
                     "{pointer}"
                 );
+                // The owned load path (P5-06, used by the WASM binding)
+                // shares `ModelFile::load`, so it rejects the same node with
+                // the same error.
+                let owned = ModelManager::new()
+                    .unwrap()
+                    .add_owned_model_with_definitions(
+                        model.clone(),
+                        None,
+                        file_name.map(String::from),
+                    )
+                    .unwrap_err();
+                assert_eq!(format!("{owned:?}"), format!("{err:?}"), "{pointer}");
             }
             *model.pointer_mut(&pointer).unwrap() = serde_json::json!([]);
         }
