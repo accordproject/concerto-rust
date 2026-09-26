@@ -103,8 +103,8 @@ fn special_number(v: &Value) -> Result<f64, String> {
 }
 
 /// An oracle input value as the [`JsValue`] it decodes to (`codec.js`
-/// `decode`): plain JSON, and the `undefined`, `number`, `dayjs`, `map` and
-/// `typed` kinds. Anything else has no Rust counterpart.
+/// `decode`): plain JSON, and the `undefined`, `number`, `bigint`, `dayjs`,
+/// `map` and `typed` kinds. Anything else has no Rust counterpart.
 pub fn js_value(v: &Value) -> Result<JsValue, String> {
     match v {
         Value::Array(items) => items
@@ -120,6 +120,11 @@ pub fn js_value(v: &Value) -> Result<JsValue, String> {
                 .map(JsValue::Object),
             Some("undefined") => Ok(JsValue::Undefined),
             Some("number") => special_number(v).map(JsValue::Number),
+            Some("bigint") => map
+                .get("value")
+                .and_then(Value::as_str)
+                .map(|s| JsValue::BigInt(s.to_string()))
+                .ok_or_else(|| "a bigint without value".to_string()),
             Some("dayjs") => {
                 let valid = map.get("valid").and_then(Value::as_bool).unwrap_or(false);
                 let iso = map.get("iso").and_then(Value::as_str);
@@ -327,6 +332,7 @@ pub fn encode(v: &JsValue) -> Value {
             })
         }
         JsValue::Instance(i) => encode_instance(i),
+        JsValue::BigInt(s) => json!({ M: "bigint", "value": s }),
     }
 }
 

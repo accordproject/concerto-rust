@@ -762,6 +762,12 @@ pub const UNDEFINED_TAG: &str = "$$undefined";
 /// `reportFieldTypeViolation` prints it with `value.toString()`.
 pub const NUMBER_TAG: &str = "$$number";
 
+/// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
+/// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
+/// `reportFieldTypeViolation` prints it with `value.toString()` because
+/// `JSON.stringify` throws on a `BigInt`.
+pub const BIGINT_TAG: &str = "$$bigint";
+
 /// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
 /// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
 /// its keys keep their JS type (a number key is not a string), and a plain
@@ -780,6 +786,11 @@ pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
     })
 }
 
+/// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
+pub fn js_bigint(text: &str) -> Value {
+    serde_json::json!({ BIGINT_TAG: text })
+}
+
 /// The JS spelling of a [`NUMBER_TAG`] value.
 fn special_number(value: &Value) -> Option<&str> {
     let o = value.as_object()?;
@@ -787,6 +798,15 @@ fn special_number(value: &Value) -> Option<&str> {
         return None;
     }
     o.get(NUMBER_TAG)?.as_str()
+}
+
+/// The decimal digit string of a [`BIGINT_TAG`] value.
+fn bigint_value(value: &Value) -> Option<&str> {
+    let o = value.as_object()?;
+    if o.len() != 1 {
+        return None;
+    }
+    o.get(BIGINT_TAG)?.as_str()
 }
 
 /// The entries of a [`MAP_TAG`] value.
@@ -1457,6 +1477,9 @@ fn js_typeof(value: &Value) -> &'static str {
     if special_number(value).is_some() {
         return "number";
     }
+    if bigint_value(value).is_some() {
+        return "bigint";
+    }
     match value {
         Value::String(_) => "string",
         Value::Number(_) => "number",
@@ -1518,6 +1541,13 @@ fn field_value_param(value: &Value) -> String {
     // `typeof value === 'number' && !isFinite(value)`: `value.toString()`
     // (`NaN` is falsy and left as it is, which prints the same).
     if let Some(n) = special_number(value) {
+        return n.to_string();
+    }
+    // `JSON.stringify` throws a `TypeError` on a `BigInt` ("Do not know how
+    // to serialize a BigInt"); TS's `try { JSON.stringify(value) } catch
+    // (err) { value = value.toString() }` falls back to `toString()`, which
+    // is exactly the decimal digit string already held here.
+    if let Some(n) = bigint_value(value) {
         return n.to_string();
     }
     if ecma::is_truthy(value) {
