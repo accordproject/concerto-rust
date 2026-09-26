@@ -326,6 +326,41 @@ export function runChecks(engine) {
     target.free();
   });
 
+  // P4-08e: `setDecoratorValidation`, the TS `options.decoratorValidation`
+  // setter added on the same pattern as
+  // `setDangerouslyAllowReservedSystemTypeNamesInUserModels` (P4-08a). A
+  // decorator whose name is not a declared type ("Nope") is otherwise
+  // silently allowed; only `missingDecorator: 'error'` turns it into a
+  // validateModels() failure (validation.rs
+  // `undeclared_decorator_is_reported_before_the_duplicate_scan_when_decorator_validation_is_enabled`).
+  check('setDecoratorValidation gates undeclared decorators', () => {
+    const withDecorator = {
+      ...MODEL,
+      namespace: 'org.decorated@1.0.0',
+      declarations: [
+        {
+          $class: `${MM}.ConceptDeclaration`, name: 'Widget', isAbstract: false,
+          decorators: [{ $class: `${MM}.Decorator`, name: 'Nope', arguments: [] }],
+          properties: [],
+        },
+      ],
+    };
+    const off = new engine.ModelManagerHandle();
+    off.addModel(JSON.stringify(withDecorator));
+    off.validateModels();
+    off.free();
+
+    const on = new engine.ModelManagerHandle();
+    on.setDecoratorValidation({ missingDecorator: 'error' });
+    on.addModel(JSON.stringify(withDecorator));
+    const err = thrown(() => on.validateModels());
+    assert(err instanceof EngineError, `validateModels threw ${err}`);
+    assert(/Undeclared type/.test(err.message), `message ${err.message}`);
+    on.free();
+
+    return { errorMessage: err.message };
+  });
+
   mm.free();
   return rows;
 }

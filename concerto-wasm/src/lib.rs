@@ -63,7 +63,9 @@ use concerto_core::instance::{
 };
 use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
-use concerto_core::introspect::decorator::{Decorator, DecoratorArgument};
+use concerto_core::introspect::decorator::{
+    Decorator, DecoratorArgument, DecoratorValidationOptions,
+};
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
@@ -277,7 +279,12 @@ fn call(value: &JsValue, name: &str, args: &[JsValue], expression: &str) -> Resu
     Reflect::apply(method, value, &list).map_err(Error::Js)
 }
 
-/// `value.name?.()`: `None` when the method is nullish.
+/// `value.name?.()`: `None` when the method is nullish. `value` itself is
+/// read unguarded, matching every TS call site this backs (including
+/// `MapValueType.validate`'s deliberately-unguarded `decl.isMapDeclaration?.()`,
+/// P4-08e/#189 DV note): a nullish `value` throws the same
+/// "Cannot read properties of null/undefined" `TypeError` TS's property
+/// read would.
 fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValue>> {
     let method = get(value, name)?;
     if method.is_undefined() || method.is_null() {
@@ -3410,6 +3417,36 @@ impl ModelManagerHandle {
     #[wasm_bindgen(js_name = setMetamodelValidation)]
     pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
         self.manager.set_metamodel_validation(metamodel_validation);
+    }
+
+    /// TS `ModelManagerOptions.decoratorValidation`
+    /// (`ModelManager::set_decorator_validation`). Additive, on the same
+    /// pattern as [`Self::set_dangerously_allow_reserved_system_type_names_in_user_models`]:
+    /// [`Self::new`] leaves this at its `Default` (both fields `None`, i.e.
+    /// TS's `DEFAULT_DECORATOR_VALIDATION`, the check disabled), so every
+    /// existing caller is unaffected until it calls this.
+    ///
+    /// `options` is a plain JS object shaped like the TS constructor option,
+    /// `{missingDecorator?, invalidDecorator?}`; either or both keys may be
+    /// omitted. As in TS, only a truthy (non-empty string) value enables the
+    /// check for that field — `level_option` reproduces the same
+    /// `validationOptions.missingDecorator || ...` truthiness TS uses when it
+    /// reads these fields elsewhere.
+    #[wasm_bindgen(js_name = setDecoratorValidation)]
+    pub fn set_decorator_validation(
+        &mut self,
+        options: &JsValue,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let missing_decorator = level_option(options, "missingDecorator")?;
+            let invalid_decorator = level_option(options, "invalidDecorator")?;
+            self.manager
+                .set_decorator_validation(DecoratorValidationOptions {
+                    missing_decorator,
+                    invalid_decorator,
+                });
+            Ok(())
+        })
     }
 
     /// TS `BaseModelManager.validateAst(modelFile)` (P4-08b), for a model
