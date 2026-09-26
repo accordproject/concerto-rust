@@ -218,6 +218,40 @@ pub fn validate_property_value(
 /// in scope (the field's declared type, or the root's own type), which may
 /// differ from `value`'s own, more specific `$class`.
 fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) -> Result<()> {
+    visit_class_declaration_dispatch(p, declared_fqn, value, false)
+}
+
+/// [`visit_class_declaration`], reached through [`check_map_type`] for a map
+/// key/value's declared class type (accordproject/concerto-rust#194).
+///
+/// TS's `JSONPopulator.processMapType` is the only place that wraps its
+/// `modelManager.getType(...)` lookup in a `try`/`catch`: on failure `decl`
+/// stays `undefined`, and the parsed JSON object is returned exactly as
+/// received, never becoming a `Resource`. Reached again here through
+/// `ResourceValidator.checkMapType`'s `thing.accept(this, parameters)`, that
+/// same object's own `$class` (if it has one at all) is exactly as
+/// unresolvable as it was during populate — the same `modelManager` never
+/// changes in between — so `obj instanceof Resource` is false in TS, not a
+/// `TypeNotFoundException` from re-resolving that `$class`. Every *other*
+/// caller of `visit_class_declaration` validates a value `JSONPopulator`
+/// already turned into a genuine `Resource` (or a harness-constructed
+/// wire-JSON stand-in for one, module doc "Scope"), where an unresolvable
+/// own `$class` is a real `TypeNotFoundException`, so this distinction is
+/// scoped to the map-value call alone.
+fn visit_map_value_class_declaration(
+    p: &mut Params,
+    declared_fqn: &str,
+    value: &Value,
+) -> Result<()> {
+    visit_class_declaration_dispatch(p, declared_fqn, value, true)
+}
+
+fn visit_class_declaration_dispatch(
+    p: &mut Params,
+    declared_fqn: &str,
+    value: &Value,
+    is_map_value: bool,
+) -> Result<()> {
     // `obj instanceof Resource`: a `Relationship` ([`RELATIONSHIP_TAG`]) is
     // `Identifiable` but not a `Resource`.
     let Some(obj) = as_js_object(value).filter(|o| !o.contains_key(RELATIONSHIP_TAG)) else {
@@ -232,9 +266,20 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
     // — bug fix (nested/abstract `$class` unchecked): every object's own
     // `$class`, at any depth, is resolved and checked here, not only the
     // outermost one.
-    let to_be_assigned =
-        p.mm.get_declaration(&own_fqn)
-            .map_err(|e| remap_type_not_found(e, &own_fqn, "modelmanager-gettype-notypeinns"))?;
+    let to_be_assigned = match p.mm.get_declaration(&own_fqn) {
+        Ok(decl) => decl,
+        // See `visit_map_value_class_declaration`'s doc.
+        Err(_) if is_map_value => {
+            return Err(not_resource_violation_with(p, declared_fqn, value, false));
+        }
+        Err(e) => {
+            return Err(remap_type_not_found(
+                e,
+                &own_fqn,
+                "modelmanager-gettype-notypeinns",
+            ));
+        }
+    };
     let to_be_assigned_fqn = own_fqn.clone();
     let Some(class) = to_be_assigned.as_class() else {
         // `obj` resolves to an enum/scalar/map `$class`: not a TS-reachable
@@ -1336,8 +1381,10 @@ fn check_map_type(
             // `thing.accept(this, parameters)` -> `visitClassDeclaration`.
             // Ported faithfully: this is also how TS itself checks a
             // `RelationshipMapValueType` value (as a nested object, not a
-            // relationship URI) — module doc "Scope".
-            return visit_class_declaration(p, &fqn, value);
+            // relationship URI) — module doc "Scope". `value` may be a raw,
+            // never-converted object (accordproject/concerto-rust#194): see
+            // `visit_map_value_class_declaration`'s doc.
+            return visit_map_value_class_declaration(p, &fqn, value);
         } else {
             return Ok(());
         }
@@ -1598,11 +1645,33 @@ fn field_type_violation(
 /// `value.toString()` is a V8 `TypeError` for a `null` or `undefined` value
 /// (DV-008), and `'Relationship {id=...}'` for a `Relationship`.
 fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> ConcertoError {
+    not_resource_violation_with(p, class_fqn, value, true)
+}
+
+/// [`not_resource_violation`], but never through [`identifiable_to_string`]
+/// (`try_identifiable` gates it) — for `value`'s own `toString()` when
+/// `value` is known to never have been a real `Identifiable` in the first
+/// place, not merely a `Resource` in the wrong slot. TS's `identifiable_to_string`
+/// stand-in only holds for a value `JSONPopulator` actually constructed
+/// (module doc "Scope"): a raw, never-converted `$class`-tagged object
+/// (`visit_map_value_class_declaration`'s doc, accordproject/concerto-rust#194)
+/// is a plain JS object, whose real `toString()` is `Object.prototype`'s
+/// (`js_to_string`'s `"[object Object]"`), not `Resource {id=...}`.
+fn not_resource_violation_with(
+    p: &Params,
+    class_fqn: &str,
+    value: &Value,
+    try_identifiable: bool,
+) -> ConcertoError {
     if is_js_null(value) {
         // DV-008
         return js_method_receiver_error(value, "value.toString", "toString");
     }
-    let invalid_value = identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value));
+    let invalid_value = if try_identifiable {
+        identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value))
+    } else {
+        js_to_string(value)
+    };
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-notresourceorconcept",
@@ -2411,6 +2480,10 @@ mod tests {
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
                       "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Color" } } },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ItemMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Item" } } },
                     { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "VehicleMap",
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
                       "value": { "$class": "concerto.metamodel@1.0.0.RelationshipMapValueType",
@@ -2966,6 +3039,32 @@ mod tests {
             json!({ "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1 }),
         )]);
         validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map).unwrap();
+    }
+
+    /// Bug fix, accordproject/concerto-rust#194: a map value whose own
+    /// `$class` does not resolve to a type is a `ValidationException`
+    /// ("not a Resource"), not a `TypeNotFoundException` from re-resolving
+    /// that `$class`. `JSONPopulator.processMapType`'s `try`/`catch` (the
+    /// only place TS swallows a `getType` failure) leaves such a value
+    /// exactly as parsed — never a `Resource` — so `obj instanceof
+    /// Resource` is false in TS before it ever looks at the value's own
+    /// `$class` again.
+    #[test]
+    fn a_map_value_with_an_unresolvable_class_is_rejected_as_not_a_resource() {
+        let mgr = fixture();
+        let map = js_map(vec![(
+            json!("a"),
+            json!({ "$class": "org.acme@1.0.0.Missing", "name": "x" }),
+        )]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ItemMap", &map));
+        assert!(matches!(&err, ConcertoError::Contract(e) if e.kind == ErrorKind::Validation));
+        let message = err.to_string();
+        assert!(
+            message.contains("Expected a \"Resource\" or a \"Concept\""),
+            "{message}"
+        );
+        assert!(message.contains("org.acme@1.0.0.Item"), "{message}");
+        assert!(!message.contains("Missing"), "{message}");
     }
 
     /// [`map_key_is_scalar`] (P5-06: never reached beyond its own early
