@@ -831,6 +831,18 @@ impl ModelManager {
         self.files.iter().map(|slot| &slot.model_file)
     }
 
+    /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
+    /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`:
+    /// the first loaded model file (registration order, as [`model_files`]
+    /// already iterates) whose `getName()` equals `file_name`, or `None`
+    /// (JS `undefined`) if none does.
+    ///
+    /// [`model_files`]: Self::model_files
+    pub fn model_file_by_file_name(&self, file_name: &str) -> Option<&ModelFile> {
+        self.model_files()
+            .find(|mf| mf.file_name() == Some(file_name))
+    }
+
     /// The handle of the loaded model file for a namespace, if there is one.
     pub fn model_file_id(&self, namespace: &str) -> Option<ModelFileId> {
         self.namespaces.get(namespace).copied()
@@ -3996,6 +4008,30 @@ mod tests {
         .unwrap();
         let models = mgr.get_models(true);
         assert_eq!(models, vec![("models".to_string(), None)]);
+    }
+
+    #[test]
+    fn model_file_by_file_name_finds_the_matching_file() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model_with_definitions(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.named@1.0.0", "declarations": []
+            }),
+            None,
+            Some("models/org.named.cto".to_string()),
+        )
+        .unwrap();
+        let found = mgr
+            .model_file_by_file_name("models/org.named.cto")
+            .expect("a file was registered under this name");
+        assert_eq!(found.namespace(), "org.named@1.0.0");
+    }
+
+    #[test]
+    fn model_file_by_file_name_is_none_when_nothing_matches() {
+        let mgr = manager();
+        assert!(mgr.model_file_by_file_name("no-such-file.cto").is_none());
     }
 
     #[test]

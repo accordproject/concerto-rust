@@ -3527,6 +3527,19 @@ impl ModelManagerHandle {
             .map(ModelFileId::index)
     }
 
+    /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
+    /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`.
+    /// The namespace of the first loaded model file (registration order)
+    /// whose `getName()` equals `file_name`; `undefined` if none does
+    /// (P2-11b-U4). The caller looks the namespace up in its own
+    /// `this.modelFiles`, the way `getModelFile(namespace)` already does.
+    #[wasm_bindgen(js_name = modelManagerGetModelFileByFileName)]
+    pub fn model_manager_get_model_file_by_file_name(&self, file_name: &str) -> Option<String> {
+        self.manager
+            .model_file_by_file_name(file_name)
+            .map(|mf| mf.namespace().to_string())
+    }
+
     /// The handles of every loaded model file, the system model included,
     /// in load order.
     #[wasm_bindgen(js_name = modelFileIds)]
@@ -3897,6 +3910,25 @@ impl ModelManagerHandle {
                 .iter()
                 .map(|n| JsValue::from_str(n))
                 .collect())
+        })
+    }
+
+    /// TS: `ModelFile.getExternalImports` — `this.importUriMap` directly:
+    /// a plain object keyed by each import's fully-qualified name, valued
+    /// by its URI (P2-11b-U4).
+    #[wasm_bindgen(js_name = modelFileGetExternalImports)]
+    pub fn model_file_get_external_imports(
+        &self,
+        model_file: u32,
+    ) -> std::result::Result<Object, JsValue> {
+        run(|| {
+            let file = self.require_file(model_file)?;
+            let out = Object::new();
+            for (fqn, uri) in file.get_external_imports() {
+                Reflect::set(&out, &JsValue::from_str(&fqn), &JsValue::from_str(&uri))
+                    .map_err(Error::Js)?;
+            }
+            Ok(out)
         })
     }
 

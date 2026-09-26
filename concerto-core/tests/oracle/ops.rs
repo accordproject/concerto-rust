@@ -608,6 +608,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                         | "filter"
                         | "resolveMetaModel"
                         | "updateExternalModels"
+                        | "getModelFileByFileName"
                 )
         }
         ("ModelUtil", m) => matches!(
@@ -694,8 +695,9 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
         // P2-08: every `ModelFile` member the oracle corpus reaches
-        // (`filter`, `getConceptDeclarations`, `getMapDeclarations` and
-        // `getExternalImports` have no fixtures, module doc on `ops.rs`).
+        // (`filter`, `getConceptDeclarations` and `getMapDeclarations` have
+        // no fixtures, module doc on `ops.rs`); P2-11b-U4 adds
+        // `getExternalImports`.
         ("ModelFile", m) => matches!(
             m,
             "new"
@@ -709,6 +711,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 | "getEnumDeclarations"
                 | "getEventDeclaration"
                 | "getEventDeclarations"
+                | "getExternalImports"
                 | "getFullyQualifiedTypeName"
                 | "getImportURI"
                 | "getImportedType"
@@ -2095,6 +2098,15 @@ fn model_file_op(
         "getImports" => ran(Ok(Value::Array(
             mf.get_imports().into_iter().map(Value::String).collect(),
         ))),
+        // TS `getExternalImports()` returns `this.importUriMap` directly:
+        // an object keyed by each import's fully-qualified name, valued by
+        // its URI (P2-11b-U4).
+        "getExternalImports" => ran(Ok(Value::Object(
+            mf.get_external_imports()
+                .into_iter()
+                .map(|(fqn, uri)| (fqn, Value::String(uri)))
+                .collect(),
+        ))),
         "getImportURI" => ran(Ok(mf
             .get_import_uri(str_arg!(0))
             .map_or(Value::Null, |u| Value::String(u.to_string())))),
@@ -3308,6 +3320,25 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
     };
     match member {
         "getNamespaces" => ran(Ok(json!(r.namespaces()))),
+        // P2-11b-U4: `BaseModelManager.getModelFileByFileName(fileName)` —
+        // `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`,
+        // i.e. the first loaded file (registration order) whose `getName()`
+        // matches, or JS `undefined` (never `null`) if none does
+        // (`ModelManager::model_file_by_file_name`).
+        "getModelFileByFileName" => match plain(0) {
+            // TS `mf.getName() === fileName`: an omitted or explicitly
+            // `undefined` argument never strictly-equals a registered
+            // file's name (a string, or itself `undefined` only for a
+            // detached `ModelFile` this manager never holds), so the
+            // answer is `undefined` without a lookup.
+            Some(v) if recipe::is_undefined(&v) => ran(Ok(recipe::undefined())),
+            Some(Value::String(file_name)) => ran(Ok(r
+                .mm
+                .model_file_by_file_name(&file_name)
+                .and_then(|mf| r.model_file_summary(mf.namespace()))
+                .unwrap_or_else(recipe::undefined))),
+            _ => unsupported("getModelFileByFileName with a fileName that is not a string"),
+        },
         "getAst" => {
             let (Some(resolve), Some(include)) = (plain(0), plain(1)) else {
                 return unsupported("getAst with non-plain arguments");
