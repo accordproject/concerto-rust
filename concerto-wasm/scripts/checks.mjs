@@ -396,6 +396,33 @@ export function runChecks(engine) {
     }
   });
 
+  // P5-01b (accordproject/concerto-rust#233): `throw()`'s `needsModelFile`
+  // flag is the only way a binding with no JS `ModelFile` to attach either
+  // way (`modelFileValidateDetached`) can tell its caller apart these two
+  // cases, which otherwise look identical (no `modelFile` on the payload at
+  // all): an `IllegalModel` error TS itself never attaches a file to (the
+  // duplicate-class-name scan, `check_unique_declaration_names`) versus the
+  // general case, where `attach_model_file`'s backstop has named this file
+  // (even though, at this boundary, there is still no JS object to attach).
+  check('modelFileValidateDetached tags needsModelFile (P5-01b)', () => {
+    const dup = thrown(() => mm.modelFileValidateDetached(JSON.stringify({
+      ...MODEL,
+      namespace: 'org.dup@1.0.0',
+      declarations: [MODEL.declarations[0], MODEL.declarations[0]],
+    }), undefined, 'dup.cto'));
+    assert(dup instanceof EngineError, `duplicate class name threw ${dup}`);
+    assert(dup.payload.kind === 'IllegalModel', `kind ${dup.payload.kind}`);
+    assert(dup.message === 'Duplicate class name org.dup@1.0.0.Person', `message ${dup.message}`);
+    assert(dup.payload.needsModelFile === false, `duplicate class name needsModelFile ${dup.payload.needsModelFile}`);
+    assert(dup.payload.modelFile === undefined, 'never a JS ModelFile to attach at this boundary either way');
+
+    const broken = thrown(() => mm.modelFileValidateDetached(JSON.stringify(BROKEN), undefined, 'broken.cto'));
+    assert(broken instanceof EngineError, `broken super type threw ${broken}`);
+    assert(broken.payload.kind === 'IllegalModel', `kind ${broken.payload.kind}`);
+    assert(broken.payload.needsModelFile === true, `broken super type needsModelFile ${broken.payload.needsModelFile}`);
+    assert(broken.payload.modelFile === undefined, 'still no JS ModelFile to attach at this boundary');
+  });
+
   check('decoratorProcess rejects a null or undefined node (DV-018)', () => {
     const modelFile = { getName: () => 'deco.cto' };
     const view = { getParent: () => ({ getModelFile: () => modelFile }) };
