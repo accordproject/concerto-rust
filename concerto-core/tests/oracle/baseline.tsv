@@ -153,6 +153,7 @@ ClassDeclaration.getProperties	f562f05eb7a3c939cef88361	pass
 ClassDeclaration.getProperties	f5b6902ee357edd6520ed766	pass
 ClassDeclaration.getProperties	f6df21aad977e6d63a00d3eb	pass
 ClassDeclaration.getProperties	fb77baa0041cb574ed912968	pass
+ClassDeclaration.getProperty	00461323ac0bc5af17bc8a6a	pass
 ClassDeclaration.getProperty	00481a99bb9addd58340f85b	pass
 ClassDeclaration.getProperty	00f925151d8a8263db128150	pass
 ClassDeclaration.getProperty	018e144b2f5d80832c9e0f08	pass
@@ -194,6 +195,7 @@ ClassDeclaration.getProperty	2688f77cb99c0c43d25057a8	pass
 ClassDeclaration.getProperty	26aea91806a76ba37dcfb2b5	pass
 ClassDeclaration.getProperty	296390b2b1ed605e8b16c3cd	pass
 ClassDeclaration.getProperty	2c5f003a4f16a22ca697f8fc	pass
+ClassDeclaration.getProperty	2e3dd45c4ce88893143b448b	pass
 ClassDeclaration.getProperty	2f817761cf2a492ec7f5d1f6	pass
 ClassDeclaration.getProperty	2ff53e18fb436483fbf1724b	pass
 ClassDeclaration.getProperty	306e19d536a92dc4ff1b4c5a	pass
@@ -216,12 +218,14 @@ ClassDeclaration.getProperty	47c2cca0fd5dec6abfed949a	pass
 ClassDeclaration.getProperty	48eb50dc1596b7d5b893ebd4	pass
 ClassDeclaration.getProperty	4975f338d4e477e3a157ca90	pass
 ClassDeclaration.getProperty	4b285ec2719584810b836147	pass
+ClassDeclaration.getProperty	4b290cf64a5d205e1b0223fb	pass
 ClassDeclaration.getProperty	4b94a8cfce52467bcd2eb0dc	pass
 ClassDeclaration.getProperty	4b94d1b9357d18f9f98f10e9	pass
 ClassDeclaration.getProperty	4be54563b7b684a2ca8fd0c9	pass
 ClassDeclaration.getProperty	4caad00b8daa70e868b4720a	pass
 ClassDeclaration.getProperty	4ce86ddd043a89f74e3b58ca	pass
 ClassDeclaration.getProperty	4d8566d64fabfa90c35682aa	pass
+ClassDeclaration.getProperty	4f3109042846c0a66ac9c3f6	pass
 ClassDeclaration.getProperty	4fa63d94a6a790a63f20bd70	pass
 ClassDeclaration.getProperty	5306a5ee5410c03ef5f6a997	pass
 ClassDeclaration.getProperty	53889eb7c9e8e21847fa40a7	pass
@@ -254,6 +258,8 @@ ClassDeclaration.getProperty	764ad5688c16f94e9998dbda	pass
 ClassDeclaration.getProperty	766c2a8c1edb39d6c4b2f46c	pass
 ClassDeclaration.getProperty	772996977d67b34fb9933085	pass
 ClassDeclaration.getProperty	7758e2f94eda9bbcdba52322	pass
+ClassDeclaration.getProperty	781354b213451b043460b1a1	pass
+ClassDeclaration.getProperty	7b24e2e14be9adfcaeed0087	pass
 ClassDeclaration.getProperty	7b25344e0c8e60004cfda425	pass
 ClassDeclaration.getProperty	7be4d23c19374e2ab91879f2	pass
 ClassDeclaration.getProperty	7d51fb0fd9c53cfc9dc8823c	pass
@@ -332,6 +338,7 @@ ClassDeclaration.getProperty	d47ee3deed449582c32af818	pass
 ClassDeclaration.getProperty	d66530bc77868a2c9af1bd7a	pass
 ClassDeclaration.getProperty	d80ef86e0b02f15ec97a6451	pass
 ClassDeclaration.getProperty	d937991963dd4dc000431715	pass
+ClassDeclaration.getProperty	dce657b0f64533894224c7db	pass
 ClassDeclaration.getProperty	ded1c2a41ec50bd677fc4442	pass
 ClassDeclaration.getProperty	e12cd03eecd33b31fd3a13fc	pass
 ClassDeclaration.getProperty	e20d68488b4acfd4ebab4fc8	pass
@@ -339,10 +346,12 @@ ClassDeclaration.getProperty	e2a728467acee9745f2a0070	pass
 ClassDeclaration.getProperty	e42a0c912b6440a054ac93d9	pass
 ClassDeclaration.getProperty	e5867d96c827f36d88d67c94	pass
 ClassDeclaration.getProperty	e5f0b5ad3d216aa988f8242a	pass
+ClassDeclaration.getProperty	e6cdf0a226adc94e2f429e45	pass
 ClassDeclaration.getProperty	e71cd6a087246553fe7ae88b	pass
 ClassDeclaration.getProperty	e7f25b630fd26fa2087e0430	pass
 ClassDeclaration.getProperty	e81fff55c87cef718fed2f1f	pass
 ClassDeclaration.getProperty	eaa6b1e323e327113e19fe0c	pass
+ClassDeclaration.getProperty	eae2ffe292de95d6beced803	pass
 ClassDeclaration.getProperty	edc727a6f88c71d0da3920ec	pass
 ClassDeclaration.getProperty	f35512c1688dcb25897f5e0d	pass
 ClassDeclaration.getProperty	f44b4d47aa3bc05c4f25c313	pass
@@ -1338,6 +1347,7 @@ ClassDeclaration.isSystemIdentified	fcb15157ef780e4a2a6836db	pass
 ClassDeclaration.isSystemIdentified	fe0a59d07725cb0e339bc207	pass
 ClassDeclaration.toString	83bb0ac742e089d524721056	pass
 ClassDeclaration.validate	02c6b5ecf5190ad0f0d945c4	pass
+ClassDeclaration.validate	5ffa4018cd6fd52368308285	pass
 ClassDeclaration.validate	73c1ea5f03481f80086a914b	pass
 ClassDeclaration.validate	9b8a7bfe11aadbf3187b4b16	pass
 ClassDeclaration.validate	adf3be3129a91653cfb879e9	pass
@@ -2592,6 +2602,7 @@ Decorated.getDecorator	144f704f8d43edb8451b77fc	pass
 Decorated.getDecorator	14ec4845345b4838d6990d86	pass
 Decorated.getDecorator	1535aae2ba4e3669c7ec31e4	pass
 Decorated.getDecorator	15e6cd97fe04e30e5a489a7f	pass
+Decorated.getDecorator	1711f594c24d0eb18279a8e5	pass
 Decorated.getDecorator	1841629bd56ba4e46387f86c	pass
 Decorated.getDecorator	1a173a27658e9da45c1824c0	pass
 Decorated.getDecorator	1a6e1503a06618160c548d04	pass
@@ -2644,6 +2655,7 @@ Decorated.getDecorator	d913c2afb3b20a75cf0a49a2	pass
 Decorated.getDecorator	da57374a390a97d949b67592	pass
 Decorated.getDecorator	de0f7e99135e01811070ff98	pass
 Decorated.getDecorator	e3203272f426a09ad36d9252	pass
+Decorated.getDecorator	e3396f4691acb1f8d3ac7ff4	pass
 Decorated.getDecorator	e4eb783a09dfa4e2fc25a2f9	pass
 Decorated.getDecorator	e52b1c9c552cf20cd5549579	pass
 Decorated.getDecorator	e5f5953aebcab65b573dc395	pass
@@ -2657,6 +2669,7 @@ Decorated.getDecorator	fb728261f45709a028c25991	pass
 Decorated.getDecorators	0f4549968bb126df28eb55e0	pass
 Decorated.getDecorators	2780a7c2db565f84d0b1ca54	pass
 Decorated.getDecorators	3165204c4125b384cc60e87b	pass
+Decorated.getDecorators	40c6372b087f5b71d896118b	pass
 Decorated.getDecorators	50a51f0b120e5ba9d01f1109	pass
 Decorated.getDecorators	b24e7aceb4deee43339d127c	pass
 Decorator.getArguments	1006090cefb093b553b85fab	pass
@@ -4257,6 +4270,7 @@ Factory.newConcept	2430af959e04d075211a283a	pass
 Factory.newConcept	2658aed4cabbae20d3c02c7a	pass
 Factory.newConcept	30ef74257351433fdea5aa7f	pass
 Factory.newConcept	4f420c0d2b0aa7c152bfc6e3	pass
+Factory.newConcept	5152f35e76cab9a9824836a4	pass
 Factory.newConcept	575ca96e945a7ce053445b91	pass
 Factory.newConcept	584a96b166c0ac069db61eac	pass
 Factory.newConcept	59d57e74310ac3680a751c1d	pass
@@ -4301,6 +4315,7 @@ Factory.newRelationship	95d6870c74cce6b50f168668	pass
 Factory.newRelationship	974215315d5f5dfba02f51e7	pass
 Factory.newRelationship	997fcbde8487fd2efca50f7a	pass
 Factory.newRelationship	9eec30af69b0b0178786fae6	pass
+Factory.newRelationship	a5dda4e048c0101ce01ba758	pass
 Factory.newRelationship	a742ae6214fa4c276e7953b6	pass
 Factory.newRelationship	abc67b08c7fce2420490437a	pass
 Factory.newRelationship	b2990be972412c50874f8542	pass
@@ -4332,6 +4347,7 @@ Factory.newResource	156e5f3ec9ea7a6a9951f2f9	pass
 Factory.newResource	19a7ab07b01836cb256a1232	pass
 Factory.newResource	1a263eb1d362cd83435f1d35	pass
 Factory.newResource	1cf6a6d9ff910fe56e3848a3	pass
+Factory.newResource	2363aa4d78a951b78fa0f811	pass
 Factory.newResource	23c40888bb5cd60f7dd3289c	pass
 Factory.newResource	24a7134e7341e98f712db270	pass
 Factory.newResource	2647af22ffb21bc2907360f7	pass
@@ -4367,6 +4383,7 @@ Factory.newResource	5ffce4cd9af864d02bce19f2	pass
 Factory.newResource	6281c08f18f5ab58c78d6870	pass
 Factory.newResource	62ee991c518af25d4d0a4694	pass
 Factory.newResource	663c7a3adf0e4b90ac4a381b	pass
+Factory.newResource	664fde61e969a1f53d239e8f	pass
 Factory.newResource	6c58a16f48d90db38286d981	pass
 Factory.newResource	6ed1c04e3e9b84852c59d722	pass
 Factory.newResource	70409147000ec8d85c8baeb5	pass
@@ -4417,6 +4434,7 @@ Factory.newResource	be4e69bf6b745e198e53210a	pass
 Factory.newResource	c041516d78818346c4102843	pass
 Factory.newResource	c205be7d8a221940f75c8089	pass
 Factory.newResource	c2babba9ab1f29d02ec8be9a	pass
+Factory.newResource	c327b52f27eefd584be0ac47	pass
 Factory.newResource	c9dbc0ce35836b2b494e7622	pass
 Factory.newResource	cacaf9245cfbef0287ef796b	pass
 Factory.newResource	cc57b60bf78083258ef770de	pass
@@ -4504,6 +4522,7 @@ Field.getScalarField	fe6b143a6e568c79500cce9c	pass
 Field.getValidator	00bbeed1b0551cd6494f1fd4	pass
 Field.getValidator	06b166cfedc5e0e69e99fe2f	pass
 Field.getValidator	08c6c9eb007f6f3643651a4c	pass
+Field.getValidator	0c2ee0587dc447482f764101	pass
 Field.getValidator	0d455310b299c7174469db50	pass
 Field.getValidator	116a332ac5f9ed336ac2cad6	pass
 Field.getValidator	17baa33635cb2b98525792b9	pass
@@ -4532,12 +4551,14 @@ Field.getValidator	4f258e6161c1718e8bfb7130	pass
 Field.getValidator	50afe8b06449e394aff5926b	pass
 Field.getValidator	585cd0efefdd7d55c79021fa	pass
 Field.getValidator	59c7c4d2b215068173a36f22	pass
+Field.getValidator	5a0a4d9866df964caa3365ed	pass
 Field.getValidator	5a757795be80e25b3df11864	pass
 Field.getValidator	5b3dfd34306586ed02c2d3c0	pass
 Field.getValidator	5bdcf5a8c6827f5141ef8d01	pass
 Field.getValidator	5d04ced994d455c490f8bf01	pass
 Field.getValidator	5f228119f5fecbedb0102785	pass
 Field.getValidator	653b54d8317b1f7cbae95b96	pass
+Field.getValidator	677fb449be31de97ed1b7ee5	pass
 Field.getValidator	69daf09d921e65042caf8ddb	pass
 Field.getValidator	6bd10cff5409d83c82b776da	pass
 Field.getValidator	712c0b01ea8eef0925abbfac	pass
@@ -4570,6 +4591,7 @@ Field.getValidator	d9ca8c3a8d5ff903eba9d548	pass
 Field.getValidator	dc952b639a276abd0509eef7	pass
 Field.getValidator	de18eec6a7f76b1fabe97f16	pass
 Field.getValidator	defce880acced0251c65330e	pass
+Field.getValidator	e04edda991af152fdf39ac8b	pass
 Field.getValidator	e07e415e44e49c1026c962ae	pass
 Field.getValidator	e1c414db169da694ea55eae3	pass
 Field.getValidator	e2b22f3d452b9562561d7a51	pass
@@ -4786,6 +4808,8 @@ MapDeclaration.declarationKind	1797f80e39f3b8c3a1d08283	pass
 MapDeclaration.getKey	0795e6c6d2bf3d580153af99	pass
 MapDeclaration.getKey	5243742755233c245237ab5c	pass
 MapDeclaration.getKey	6621dcbc2bbc8e474ba4143c	pass
+MapDeclaration.getKey	6db832e22d18605720581685	pass
+MapDeclaration.getKey	75df8ffc163d4f54412a54b2	pass
 MapDeclaration.getKey	91458877ea1d2b951ea75f47	pass
 MapDeclaration.getKey	a8619da17dfee4eefb9ab2cf	pass
 MapDeclaration.getKey	a9d9d95cceaed8203ab6d647	pass
@@ -4797,6 +4821,8 @@ MapDeclaration.getValue	1290a97ac6d0a1a3ce416a41	pass
 MapDeclaration.getValue	3563dae2a05561c656f213f4	pass
 MapDeclaration.getValue	53814dfb471750a1276e9e0c	pass
 MapDeclaration.getValue	69061851e22db7595d2c942f	pass
+MapDeclaration.getValue	8b521d57a7c15fefec80ee37	pass
+MapDeclaration.getValue	970295ae76a63627a6d2dce7	pass
 MapDeclaration.getValue	b1255f1c6668d6f64024a7be	pass
 MapDeclaration.getValue	b19434df1f832c3395bb47c5	pass
 MapDeclaration.getValue	d7e349c1c8cca3e70b3fe68e	pass
@@ -4986,6 +5012,7 @@ ModelFile.getAllDeclarations	d6fad2809ae7ccb37b0d4e9b	pass
 ModelFile.getAllDeclarations	d7505feab5783126cf0acaa8	pass
 ModelFile.getAllDeclarations	d907032a9a11eb90a1ec4314	pass
 ModelFile.getAllDeclarations	dbb556304f99551e4a50b97f	pass
+ModelFile.getAllDeclarations	df078484e062ae9dcaedc50d	pass
 ModelFile.getAllDeclarations	df3ba880b5a958add8472995	pass
 ModelFile.getAllDeclarations	e0f687fd92b9e5bae68f5ef9	pass
 ModelFile.getAllDeclarations	e313f7ff0a061725d11893c2	pass
@@ -5486,6 +5513,7 @@ ModelManager.addCTOModel	09acc518d3aa2ac1943a246a	pass
 ModelManager.addCTOModel	0a4419acfa677e60db1cac2e	pass
 ModelManager.addCTOModel	0aacdbb008f74418a7550162	pass
 ModelManager.addCTOModel	0ad70514a9ff42dabb0e9267	pass
+ModelManager.addCTOModel	0b720c331acec644bcf7af7f	pass
 ModelManager.addCTOModel	0ba8207e6d0026817a0cbad9	pass
 ModelManager.addCTOModel	0ba87c00a0913ad874624d1a	pass
 ModelManager.addCTOModel	0bab3331d173e7435f682dbd	pass
@@ -5737,6 +5765,7 @@ ModelManager.addCTOModel	3c93e118e60458ba81e2aa3a	pass
 ModelManager.addCTOModel	3c9f9025d7dfd34bb7b7b678	pass
 ModelManager.addCTOModel	3cd7151eb100c6b50ac9564e	pass
 ModelManager.addCTOModel	3cdf16fef3ba1b76a65e2aad	pass
+ModelManager.addCTOModel	3d267ffdf5e8fb7f82e71d18	pass
 ModelManager.addCTOModel	3d28daa06609d36d9aca1812	pass
 ModelManager.addCTOModel	3d2cff11b95a1162a5ea1636	pass
 ModelManager.addCTOModel	3d618d871db2783927d5a957	pass
@@ -5811,6 +5840,7 @@ ModelManager.addCTOModel	4c06e9bf479bbf3f7c899020	pass
 ModelManager.addCTOModel	4c7f48b2a30e98d4f5e04c97	pass
 ModelManager.addCTOModel	4cf5ee12225c281610527ffc	pass
 ModelManager.addCTOModel	4d0930de0f2419394274dc62	pass
+ModelManager.addCTOModel	4d46dce7c335ca163cdc3798	pass
 ModelManager.addCTOModel	4d4768c1d175ae6908dc5040	pass
 ModelManager.addCTOModel	4d93046881839938e480eb50	pass
 ModelManager.addCTOModel	4d98df11000bcc17bf24207e	pass
@@ -6078,6 +6108,7 @@ ModelManager.addCTOModel	83cda9b495b0b9fdf950fb49	pass
 ModelManager.addCTOModel	842eb983df098e356d21f5c8	pass
 ModelManager.addCTOModel	845e96214ec15ebb60e6aaec	pass
 ModelManager.addCTOModel	846bfe2392bdd96e8a1e2710	pass
+ModelManager.addCTOModel	8480efb8cbb3d97eb2d0c868	pass
 ModelManager.addCTOModel	8508d221aaa049a9f1de287a	pass
 ModelManager.addCTOModel	85159b42e04b66c65c656e5a	pass
 ModelManager.addCTOModel	85400d2e6cbe260a680ebe48	pass
@@ -6170,6 +6201,7 @@ ModelManager.addCTOModel	95187d8fc917e51f77c8608c	pass
 ModelManager.addCTOModel	951f2fb4f5b91adcbf2729f3	pass
 ModelManager.addCTOModel	955510e6abac33e09dab98f2	pass
 ModelManager.addCTOModel	95760af3e2d4abd5173a0155	pass
+ModelManager.addCTOModel	95aeead174ee5dfaf363a2d2	pass
 ModelManager.addCTOModel	95b365b0e2743cda40b322b8	pass
 ModelManager.addCTOModel	961bf11fa5462852c86ba07f	pass
 ModelManager.addCTOModel	961cea25ce63319f0bc7370b	pass
@@ -6281,6 +6313,7 @@ ModelManager.addCTOModel	ab84f3b4037251213e558be6	pass
 ModelManager.addCTOModel	abbcbebf8b81638960da3755	pass
 ModelManager.addCTOModel	abf4194f2bcf6a1986955842	pass
 ModelManager.addCTOModel	ac1c2a58754f35a2fa8e32b5	pass
+ModelManager.addCTOModel	ac240d21e742d453ca8f800f	pass
 ModelManager.addCTOModel	ac66c7d170022c1b64268e93	pass
 ModelManager.addCTOModel	ad934ccea706bedc950efac7	pass
 ModelManager.addCTOModel	adc10a82447d58947ac68176	pass
@@ -6374,6 +6407,7 @@ ModelManager.addCTOModel	bfe1684c7c3386ba3a9f7751	pass
 ModelManager.addCTOModel	c0217c884b16e995b5a42d69	pass
 ModelManager.addCTOModel	c031f299eaabdea3d732bfcc	pass
 ModelManager.addCTOModel	c068f27a5cb670a421fdd0d1	pass
+ModelManager.addCTOModel	c06b1259dcc3f2fd3da0e6a4	pass
 ModelManager.addCTOModel	c0ff3883bbdd66e75a4b4eb2	pass
 ModelManager.addCTOModel	c11bcdab67e998c2e30248a6	pass
 ModelManager.addCTOModel	c1b2125619408b3b8b968ce8	pass
@@ -6382,6 +6416,7 @@ ModelManager.addCTOModel	c264cfd1fe5f420d871808e1	pass
 ModelManager.addCTOModel	c27b303eb34a36886ed3b7b0	pass
 ModelManager.addCTOModel	c2b18469e9da2c9ba95c59c7	pass
 ModelManager.addCTOModel	c2cf3c223d87c2e093445ab5	pass
+ModelManager.addCTOModel	c36459f5c0a823623672e216	pass
 ModelManager.addCTOModel	c3d977c4eb869fae47f1759d	pass
 ModelManager.addCTOModel	c3eb2f09b579c4d7c5b3c664	pass
 ModelManager.addCTOModel	c3fbe820b37e958b812195b2	pass
@@ -7100,6 +7135,7 @@ ModelManager.filter	d36d445f5c4d426b9f56e75c	pass
 ModelManager.filter	d59b012669e78e5329032262	pass
 ModelManager.filter	de299e65235a12654150d23b	pass
 ModelManager.filter	e08f5eed1f0a42e27eb95d41	pass
+ModelManager.fromAst	000dab841e9b0cef97e8826f	fail:message-mismatch
 ModelManager.fromAst	07a3c74cf230338389412f0b	pass
 ModelManager.fromAst	09f8ed77efb739ed3faffef1	pass
 ModelManager.fromAst	14d322663ca024d8cf61abb1	pass
@@ -7119,6 +7155,7 @@ ModelManager.fromAst	6226cf4c4132dfadcfcf00c9	pass
 ModelManager.fromAst	6287c8da05a81a766dd6845b	pass
 ModelManager.fromAst	6b2963681152f24e8334562b	pass
 ModelManager.fromAst	6cb7471b74d34ad19e6c5a69	pass
+ModelManager.fromAst	7b02e626a0a226bde3b810e6	fail:missing-error
 ModelManager.fromAst	7b9fc1eca8208827732709eb	pass
 ModelManager.fromAst	7baa7b3dede700df9ff46df3	pass
 ModelManager.fromAst	7c285f5ae956fdd1ec6097cb	pass
@@ -7126,6 +7163,7 @@ ModelManager.fromAst	81611c59a730271c6f367bee	pass
 ModelManager.fromAst	81d7021f96037f3a3f5ffb5c	pass
 ModelManager.fromAst	8335247dee104b114d18afa8	pass
 ModelManager.fromAst	90b04e7b77d4628b8500006e	pass
+ModelManager.fromAst	9224ce1df87976aca5fb67d0	pass
 ModelManager.fromAst	968849bcd5b6b86038d6f832	pass
 ModelManager.fromAst	9f5ad88d748e3c1073c0d6f8	pass
 ModelManager.fromAst	a932ac7be9e572e694f8e909	pass
@@ -7231,6 +7269,7 @@ ModelManager.getAst	9ee57f5d03450a502158eb36	pass
 ModelManager.getAst	9f73c9440c00bf07978009ee	pass
 ModelManager.getAst	9fb23c4bd7f114b18fdcfc1c	pass
 ModelManager.getAst	a11f14333281b98a1dee3a52	pass
+ModelManager.getAst	a1ea0e79b7918db1472fe00e	pass
 ModelManager.getAst	a3d9ca64662d5d780fdc67e3	pass
 ModelManager.getAst	a41118e10491ccf90e00722c	pass
 ModelManager.getAst	a693d78492f7ded7c1fe7fed	pass
@@ -7528,6 +7567,7 @@ ModelManager.getType	35054e6fc8eb080fd9e3ffe6	pass
 ModelManager.getType	350a002adf67df5808897a42	pass
 ModelManager.getType	370bb3e9efe37cc8a79dbd92	pass
 ModelManager.getType	370ef70d760fa617e61f3788	pass
+ModelManager.getType	37c10a1fd64c8a8e282d8261	pass
 ModelManager.getType	3825b5167ea7123f5aa7750e	pass
 ModelManager.getType	383af36a578e56ba7821da64	pass
 ModelManager.getType	38ddfbc7749079062b66603f	pass
@@ -7571,6 +7611,7 @@ ModelManager.getType	4892d64648e6babbace201b6	pass
 ModelManager.getType	48c4470a0e8d2c14c6394c7f	pass
 ModelManager.getType	48f6f2cfa94fd6f2039f21dd	pass
 ModelManager.getType	4926c971e39037345d7cb16a	pass
+ModelManager.getType	496e6b0d5e08dbb9227f26a8	pass
 ModelManager.getType	4a0f835d385d52a580d60d1a	pass
 ModelManager.getType	4abeb5d216b1fc0d0f20bef8	pass
 ModelManager.getType	4c8fb2108f180c8830506991	pass
@@ -7734,6 +7775,7 @@ ModelManager.getType	8d10c3375475d8e2bdf166ed	pass
 ModelManager.getType	8d808d13cc615ea7eab64e50	pass
 ModelManager.getType	8daa76ee457850e8c4f04e91	pass
 ModelManager.getType	8dce07489ddd08f57dd10c3b	pass
+ModelManager.getType	8debb0544c56f59f56641121	pass
 ModelManager.getType	8e759d90b7971ce317133fdf	pass
 ModelManager.getType	8e967d9af28fac29af8c765c	pass
 ModelManager.getType	8ee1a601bd925dbeffc4b3d9	pass
@@ -7770,6 +7812,7 @@ ModelManager.getType	9b08125fb04ad60f93f44aca	pass
 ModelManager.getType	9b5b166c4198f322266f691b	pass
 ModelManager.getType	9b6310806da002a3944293f4	pass
 ModelManager.getType	9c46345a811ab86bfa48dc76	pass
+ModelManager.getType	9d0f0e7f65cd15ce98603bc4	pass
 ModelManager.getType	9d468a6b6d47890086642798	pass
 ModelManager.getType	9d9d1373ade2a4b3af3177b5	pass
 ModelManager.getType	9dbf01d30fa4b502ddcf55a3	pass
@@ -7799,6 +7842,7 @@ ModelManager.getType	a6d35d57c0f1ca30a6603dcc	pass
 ModelManager.getType	a87e77a9bd67c9bb0efef9c7	pass
 ModelManager.getType	a8937b7505077f476b4be885	pass
 ModelManager.getType	a8b5c346d2fc0af56e38c03b	pass
+ModelManager.getType	a8c34d51c644d60548ed02ac	pass
 ModelManager.getType	a943132e6e0fc10caa5ce216	pass
 ModelManager.getType	a9f563a04871aabb496f9038	pass
 ModelManager.getType	a9f6277e06d21da74e6588cd	pass
@@ -7863,6 +7907,7 @@ ModelManager.getType	ba7cac34db5af5b8c8f68647	pass
 ModelManager.getType	ba8024b87a993310011eab76	pass
 ModelManager.getType	ba9c3e672a003f18019561eb	pass
 ModelManager.getType	baaaed2989ec4ebc6ec41aea	pass
+ModelManager.getType	badf2448be5a5dc9828119ab	pass
 ModelManager.getType	bb0b16bdb34862549830ea72	pass
 ModelManager.getType	bb2134d0b698e9217943003e	pass
 ModelManager.getType	bc68b0a85410cfeef5a83195	pass
@@ -9400,18 +9445,23 @@ Relationship.fromURI	008acf088257006f30b3e8f6	pass
 Relationship.fromURI	00dd01578cd3048b7d1c558e	pass
 Relationship.fromURI	1112229647445aadd785ef1b	pass
 Relationship.fromURI	14e0bd80aae9c46cc98b614f	pass
+Relationship.fromURI	29960c3f404a9fb6e5d7dd6a	pass
 Relationship.fromURI	400d7a8fa84f2c4f3a5ff381	pass
 Relationship.fromURI	471ea8b774d9d4f292cd9904	pass
 Relationship.fromURI	55bb72a5fd47169a1d58c8e6	pass
+Relationship.fromURI	5a7ed0be84893fe8b86c237d	pass
 Relationship.fromURI	5b820c8f2e465f18f1d26363	pass
 Relationship.fromURI	5f5421682cd6493cb1f7d839	pass
+Relationship.fromURI	78e31e03be7a28729061d511	pass
 Relationship.fromURI	843db8570640c7c2709bc1f3	pass
 Relationship.fromURI	a1e92f20d3355283adadda5d	pass
 Relationship.fromURI	a5e2d4e6ffaac6d88d83e358	pass
 Relationship.fromURI	b46dc3baf26a2034ffc67a7e	pass
 Relationship.fromURI	b888c5e30c82e25f2b6ee6a6	pass
+Relationship.fromURI	c98583c5c9f22735ea7b7e7b	pass
 Relationship.fromURI	cf62505f64becd948281f9dc	pass
 Relationship.fromURI	ddce2bac559740513d70c6fe	pass
+Relationship.fromURI	e4cdd4cf0307d44a7c88d59e	pass
 Relationship.fromURI	e6955fb264bd1eec02eb4be3	pass
 Relationship.fromURI	f0d1b0027e51891d7c3289e6	pass
 Relationship.isRelationship	07222047a245686702e6aae6	pass
@@ -9461,6 +9511,7 @@ Resource.setPropertyValue	6326ea9675152ce771ff5036	pass
 Resource.setPropertyValue	645974283971ab21a945817c	pass
 Resource.setPropertyValue	6d2563edde33e086c7f384ca	pass
 Resource.setPropertyValue	70694939ad306f309837123d	pass
+Resource.setPropertyValue	7328a3fc7871571c25538ab1	pass
 Resource.setPropertyValue	759a6309390a2510521176ae	pass
 Resource.setPropertyValue	7a4189b5da1b594bec5845ad	pass
 Resource.setPropertyValue	800c591097af8acf250af801	pass
@@ -9475,6 +9526,7 @@ Resource.setPropertyValue	93b46ead6bdd22a06d6ebafb	pass
 Resource.setPropertyValue	9ab00855d96d65a7fc329e0d	pass
 Resource.setPropertyValue	a153ee64d779c524b8200bd7	pass
 Resource.setPropertyValue	a95a954be5c1d742a758e7e6	pass
+Resource.setPropertyValue	aef01c07d9f3a8159256d1ee	pass
 Resource.setPropertyValue	aef69205f48a8cf5e660af62	pass
 Resource.setPropertyValue	b40396a7cd99ddb875e2508a	pass
 Resource.setPropertyValue	bb3b6a91e137e273af1c43dd	pass
@@ -9505,6 +9557,7 @@ Resource.validate	0f7b903a4af2c07a157117fb	pass
 Resource.validate	136cc931ce86d2e8924d9adb	pass
 Resource.validate	149296c20158957a3877589e	pass
 Resource.validate	1547e1724f649cd5c682d2b0	pass
+Resource.validate	1704f2f065f42e186ec9096b	pass
 Resource.validate	1996936c399ff4feaa15230e	pass
 Resource.validate	1c31a2ce24b43de884cd29bb	pass
 Resource.validate	1e808402582b55050e056a82	pass
@@ -9567,6 +9620,7 @@ Resource.validate	d444ebcf0cf5a3c23e5ee6dd	pass
 Resource.validate	e0884b230ad1cda7f998ae8f	pass
 Resource.validate	e112db6f710c1ba9da2175b7	pass
 Resource.validate	e2649af2c774da7d2f7a8484	pass
+Resource.validate	e455cab3b19b2f737d873688	pass
 Resource.validate	e7ccad55a61e5921ad84caff	pass
 Resource.validate	ed9ef9133921c24a7e5c5d6e	pass
 Resource.validate	f29374f35313ddf6b3f7e3af	pass
@@ -9584,6 +9638,7 @@ ScalarDeclaration.getType	b3bdf1483151e54cf51ed495	pass
 ScalarDeclaration.getType	ec1e38b66b315a15da5628d2	pass
 ScalarDeclaration.getType	f50f03c8aa0932ae77c0830f	pass
 ScalarDeclaration.getValidator	420802039dc0a26caff0ae2e	pass
+ScalarDeclaration.getValidator	4d8549c9e298e856bb3fe48c	pass
 ScalarDeclaration.getValidator	77f54a8831e4fd268c4b03d8	pass
 ScalarDeclaration.getValidator	8972ab79e709c91951e8764e	pass
 ScalarDeclaration.getValidator	d50019166843b19ab6508488	pass
@@ -9957,6 +10012,7 @@ Serializer.fromJSON	2c47be0c2d5aa9f2f0f34bc5	pass
 Serializer.fromJSON	2c7a8ea4b57a766b434d206d	pass
 Serializer.fromJSON	2cb3c83e83ad3e9eeebf2f3a	pass
 Serializer.fromJSON	2cb98515334ff9d3eca13aca	pass
+Serializer.fromJSON	2cbebbf0437339c532b5d557	fail:class-mismatch
 Serializer.fromJSON	2cceadadd841023219063a35	pass
 Serializer.fromJSON	2cd17ed1a5d2b9b05a88b6b6	pass
 Serializer.fromJSON	2cd74f922cf4dc43dc834dbd	pass
@@ -10005,6 +10061,7 @@ Serializer.fromJSON	318086ce4a13dce3375f8577	pass
 Serializer.fromJSON	318aeb80e9a74147e1ce908b	pass
 Serializer.fromJSON	31a2f82941ebab9171791970	pass
 Serializer.fromJSON	31ea0597eafe34527373a655	pass
+Serializer.fromJSON	3207b2a10e7355e10b2b2b9e	pass
 Serializer.fromJSON	3207bdf32aeca0255300e9e2	pass
 Serializer.fromJSON	3227629d7457b57751cada7d	pass
 Serializer.fromJSON	3254540734828a84dafbacf1	pass
@@ -10421,6 +10478,7 @@ Serializer.fromJSON	6479d301b86a3f10af837e1b	pass
 Serializer.fromJSON	648a492e4cef700df339b4ee	pass
 Serializer.fromJSON	648afe72e3dab20a1261eb72	pass
 Serializer.fromJSON	64971281cf925925fbb7ff78	pass
+Serializer.fromJSON	64a7fda6f2fd8f2f9d4e0a8e	pass
 Serializer.fromJSON	64b4ff623e7d3f8ddc69e7d7	pass
 Serializer.fromJSON	64ec10bed2dd1829305ca1e7	pass
 Serializer.fromJSON	65335daaf05e8f1799e91ccb	pass
@@ -10823,6 +10881,7 @@ Serializer.fromJSON	92d3bf8ce5edf605d8926ebb	pass
 Serializer.fromJSON	92d40e427a86cdec22f0f175	pass
 Serializer.fromJSON	92fa213ba8433c6b8e3db852	pass
 Serializer.fromJSON	93a67bab79f4a20bcd051db4	pass
+Serializer.fromJSON	93cc979c91cd056d2add5107	pass
 Serializer.fromJSON	940ec857f2be87d192b654f6	pass
 Serializer.fromJSON	94115f129c8b1738060a276f	pass
 Serializer.fromJSON	941ad155b19379a84516c3a8	pass
@@ -10843,6 +10902,7 @@ Serializer.fromJSON	967c39e75ec5c366533686a2	pass
 Serializer.fromJSON	9685ecb1b23d6674996936dd	pass
 Serializer.fromJSON	96bd6b123f9808a14ead7357	pass
 Serializer.fromJSON	96bf4b06b11f0b0ae6ac42b6	pass
+Serializer.fromJSON	96c2b0deacdd10cc1a83ca2d	fail:class-mismatch
 Serializer.fromJSON	96da34abd01e57ddf5df2bf5	pass
 Serializer.fromJSON	96e6e02c6c5382b1e276f888	pass
 Serializer.fromJSON	97072bc8a684c6efd56033d0	pass
@@ -11581,6 +11641,7 @@ Serializer.fromJSON	f333f10d395297623db3c6f9	pass
 Serializer.fromJSON	f339d0f9595daa4b54b464a6	pass
 Serializer.fromJSON	f35c4d003891ed0597c8b273	pass
 Serializer.fromJSON	f3622069dd4166cb4a1a7bf4	pass
+Serializer.fromJSON	f374b43e063fcf7e372727db	pass
 Serializer.fromJSON	f37558c4955b81aa74eca57e	pass
 Serializer.fromJSON	f37e41fabad6e61863814b11	pass
 Serializer.fromJSON	f3cad501c74b61f3526404a6	pass
@@ -11752,6 +11813,7 @@ Serializer.new	61b28363909251e65ce9ee0f	pass
 Serializer.new	62a493ce60b2ddc05837cb2b	pass
 Serializer.new	6330cf47733442e9fa6b1211	pass
 Serializer.new	6528f347ce0e38eb508e7eae	pass
+Serializer.new	6770d063ca9879b8adead52e	pass
 Serializer.new	6943d8d4fb5624533f68f3b4	pass
 Serializer.new	6cfc5622a21b7ed89bf9a874	pass
 Serializer.new	6d0927e1555601397cfb1005	pass
@@ -11799,6 +11861,7 @@ Serializer.new	af0d30d37ba285c08fec2349	pass
 Serializer.new	b362b70902bb6ad51542f65c	pass
 Serializer.new	b58de2de3a1891a5d7509eda	pass
 Serializer.new	b778ecac50a91678e6fa648b	pass
+Serializer.new	b9932f0f9e2c0d2fc0b2da0e	pass
 Serializer.new	ba8337f30a66d8738137401b	pass
 Serializer.new	bc0852f36c34c317d689ced3	pass
 Serializer.new	bdb26d865ee4ab9c292eeb6e	pass
@@ -13461,6 +13524,7 @@ Serializer.toJSON	e9e306896535fcc556f72d01	pass
 Serializer.toJSON	ea52667dfef39fd6f97ebc7f	pass
 Serializer.toJSON	ea8da003db0433bd9217e425	pass
 Serializer.toJSON	ea96274af0b1a5e4826c10d2	pass
+Serializer.toJSON	eac548ead8fcba3e69860691	pass
 Serializer.toJSON	eaff6da319da551d73ca4673	pass
 Serializer.toJSON	eb11aa3257733dccc87da348	pass
 Serializer.toJSON	eb23a818e5341e915c984a0d	pass
@@ -13679,7 +13743,9 @@ StringValidator.validate	fc4acc202ee4e70457b55a13	pass
 TypeNotFoundException.new	01fb341790c626c1ab55127a	pass
 TypeNotFoundException.new	0560994f85e9ded2a0fc590d	pass
 TypeNotFoundException.new	114fcc734bb6e07dda61bd61	pass
+TypeNotFoundException.new	20d8231eeb5259a201306f3d	pass
 TypeNotFoundException.new	7a675da95ac68bb15c38627c	pass
+TypeNotFoundException.new	8c851162ab99a366890b5ee0	pass
 TypeNotFoundException.new	b8d590396da6f39b3e5f3965	pass
 TypeNotFoundException.new	c019dcfbd432de3b67668eb8	pass
 TypeNotFoundException.new	f804048b1a1802508d55a1ca	pass
