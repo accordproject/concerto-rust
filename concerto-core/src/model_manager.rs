@@ -831,6 +831,24 @@ impl ModelManager {
         self.files.iter().map(|slot| &slot.model_file)
     }
 
+    /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
+    /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`.
+    /// `getModelFiles()` called with no argument excludes the built-in
+    /// decorator and root models ([`EXCLUDE_NS`]), so this searches the
+    /// same filtered set, not [`model_files`]: the first loaded,
+    /// non-system model file (registration order) whose `getName()`
+    /// equals `file_name`, or `None` (JS `undefined`) if none does —
+    /// including when `file_name` names one of the system files
+    /// (`concerto_1.0.0.cto`, `concerto_decorator_1.0.0.cto`), which TS
+    /// never returns from this default-argument call.
+    ///
+    /// [`model_files`]: Self::model_files
+    pub fn model_file_by_file_name(&self, file_name: &str) -> Option<&ModelFile> {
+        self.model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .find(|mf| mf.file_name() == Some(file_name))
+    }
+
     /// The handle of the loaded model file for a namespace, if there is one.
     pub fn model_file_id(&self, namespace: &str) -> Option<ModelFileId> {
         self.namespaces.get(namespace).copied()
@@ -3996,6 +4014,46 @@ mod tests {
         .unwrap();
         let models = mgr.get_models(true);
         assert_eq!(models, vec![("models".to_string(), None)]);
+    }
+
+    #[test]
+    fn model_file_by_file_name_finds_the_matching_file() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.add_model_with_definitions(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.named@1.0.0", "declarations": []
+            }),
+            None,
+            Some("models/org.named.cto".to_string()),
+        )
+        .unwrap();
+        let found = mgr
+            .model_file_by_file_name("models/org.named.cto")
+            .expect("a file was registered under this name");
+        assert_eq!(found.namespace(), "org.named@1.0.0");
+    }
+
+    #[test]
+    fn model_file_by_file_name_is_none_when_nothing_matches() {
+        let mgr = manager();
+        assert!(mgr.model_file_by_file_name("no-such-file.cto").is_none());
+    }
+
+    /// TS `getModelFileByFileName` calls `getModelFiles()` with no
+    /// argument, which excludes the built-in decorator and root models
+    /// (`EXCLUDE_NS`). So even though those files are registered under
+    /// exactly these names (`ModelManager::new`), looking either of them
+    /// up by file name must answer `None` (JS `undefined`), the same as
+    /// TS, not the system `ModelFile`.
+    #[test]
+    fn model_file_by_file_name_excludes_the_system_model_files() {
+        let mgr = manager();
+        assert!(mgr.model_file_by_file_name("concerto_1.0.0.cto").is_none());
+        assert!(
+            mgr.model_file_by_file_name("concerto_decorator_1.0.0.cto")
+                .is_none()
+        );
     }
 
     #[test]

@@ -417,7 +417,11 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "classdeclaration-validate-undefined-properties",
         template: "Properties of Class \"{class}\" has to be defined.",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.process (RUST); not yet called.
+        // ClassDeclaration.process (RUST), called from `parse_properties`
+        // (src/introspect/declaration.rs) for a `properties` that is present
+        // but not an array *and* one that is absent — TS's single
+        // `!Array.isArray(this.ast.properties)` guard covers both (P2-11b-F1,
+        // #193).
         sources: &["src/introspect/classdeclaration.ts:102"],
     },
     CatalogueEntry {

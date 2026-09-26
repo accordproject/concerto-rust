@@ -60,3 +60,7 @@ harness = false
 [[bench]]
 name = "validate_metamodel"
 harness = false
+
+[[bench]]
+name = "instance_validate"
+harness = false

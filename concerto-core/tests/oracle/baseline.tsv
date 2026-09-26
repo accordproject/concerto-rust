@@ -5081,6 +5081,9 @@ ModelFile.getEventDeclaration	5d1c583bb3586e0bf66b098d	pass
 ModelFile.getEventDeclaration	944ed7cdc3b7305f75d6b3f9	pass
 ModelFile.getEventDeclarations	178a6d7b1defc3a0d9e33d02	pass
 ModelFile.getEventDeclarations	3188ff60661a8b2337153b3a	pass
+ModelFile.getExternalImports	2a16a704d826fdeb943e9e71	pass
+ModelFile.getExternalImports	7e0d950deeb4fbcafd7ec77c	pass
+ModelFile.getExternalImports	cfba912c9d2655d99233b8b1	pass
 ModelFile.getFullyQualifiedTypeName	0a5b40b705b3a76b234d6fbf	pass
 ModelFile.getFullyQualifiedTypeName	0ea108a67af929d9ffea158a	pass
 ModelFile.getFullyQualifiedTypeName	29c61270b6a5220f6a76c553	pass
@@ -5498,6 +5501,7 @@ ModelManager.addCTOModel	05af169809c90e6d2b4b1a68	pass
 ModelManager.addCTOModel	05db31c9d8f348193b598c85	pass
 ModelManager.addCTOModel	063dee8458392203b4d20a4d	pass
 ModelManager.addCTOModel	0644e38d76f01faa5a4d7cd6	pass
+ModelManager.addCTOModel	067da5aa965e496e6366d351	pass
 ModelManager.addCTOModel	06b54674a42b201471a8cdd2	pass
 ModelManager.addCTOModel	0708cadc678cefd55e7c5e12	pass
 ModelManager.addCTOModel	074a4240df8d81efecc86006	pass
@@ -7141,13 +7145,14 @@ ModelManager.filter	d36d445f5c4d426b9f56e75c	pass
 ModelManager.filter	d59b012669e78e5329032262	pass
 ModelManager.filter	de299e65235a12654150d23b	pass
 ModelManager.filter	e08f5eed1f0a42e27eb95d41	pass
-ModelManager.fromAst	000dab841e9b0cef97e8826f	fail:message-mismatch
+ModelManager.fromAst	000dab841e9b0cef97e8826f	pass
 ModelManager.fromAst	07a3c74cf230338389412f0b	pass
 ModelManager.fromAst	09f8ed77efb739ed3faffef1	pass
 ModelManager.fromAst	14d322663ca024d8cf61abb1	pass
 ModelManager.fromAst	15270a3d46ae76b3adf549eb	pass
 ModelManager.fromAst	15c7357c92f6ae8ae942ab59	pass
 ModelManager.fromAst	19622251d12f84f178484b75	pass
+ModelManager.fromAst	20cab432f80aacba5f4dfebc	pass
 ModelManager.fromAst	274f8cebaf47c4089b212e87	pass
 ModelManager.fromAst	474a585e4c374ad3df5eee85	pass
 ModelManager.fromAst	47fa3fd08df5307b8886d257	pass
@@ -7161,7 +7166,7 @@ ModelManager.fromAst	6226cf4c4132dfadcfcf00c9	pass
 ModelManager.fromAst	6287c8da05a81a766dd6845b	pass
 ModelManager.fromAst	6b2963681152f24e8334562b	pass
 ModelManager.fromAst	6cb7471b74d34ad19e6c5a69	pass
-ModelManager.fromAst	7b02e626a0a226bde3b810e6	fail:missing-error
+ModelManager.fromAst	7b02e626a0a226bde3b810e6	pass
 ModelManager.fromAst	7b9fc1eca8208827732709eb	pass
 ModelManager.fromAst	7baa7b3dede700df9ff46df3	pass
 ModelManager.fromAst	7c285f5ae956fdd1ec6097cb	pass
@@ -7181,6 +7186,7 @@ ModelManager.fromAst	d78164cb4276692047e9bda9	pass
 ModelManager.fromAst	d9cfceba1516ef0eb4ced670	pass
 ModelManager.fromAst	ea37538c5a802230fe787562	pass
 ModelManager.fromAst	eca12687b3986aa53aa9cfa3	pass
+ModelManager.fromAst	f7738249d209270e5ddcfd06	pass
 ModelManager.getAssetDeclarations	f73119c92984c10b7fb8e2e4	pass
 ModelManager.getAssignableConcreteTypes	6961524db059485e741bc6e3	pass
 ModelManager.getAssignableConcreteTypes	7d53da6e7260abee88a3cf2f	pass
@@ -7318,6 +7324,11 @@ ModelManager.getConceptDeclarations	f5a8670d9ad7b201f6ad0a72	pass
 ModelManager.getEnumDeclarations	873abaa7823a7aa00f86d023	pass
 ModelManager.getEventDeclarations	a711b0aca5f29f0f70608514	pass
 ModelManager.getMapDeclarations	c7559961961939ba17fa2e6d	pass
+ModelManager.getModelFileByFileName	78c79cd5b23bdc87870e2a23	pass
+ModelManager.getModelFileByFileName	8ce329e3d2c35b9156dd32dc	pass
+ModelManager.getModelFileByFileName	d90ad0531504fa15483a9ab4	pass
+ModelManager.getModelFileByFileName	ebc2b8f759ee8e591e171f08	pass
+ModelManager.getModelFileByFileName	fa04d2f04f1b80c2338cf677	pass
 ModelManager.getModels	03b8c1dfc12e775e5b3d092e	pass
 ModelManager.getModels	082feec818691013b4ca7b8a	pass
 ModelManager.getModels	084ad38cf927bfa3464ca4d7	pass
@@ -8125,11 +8136,13 @@ ModelManager.new	25eb1d591fd960a3c7c68d36	pass
 ModelManager.new	2674d4ff5e76a68729078424	pass
 ModelManager.new	29105816a5485f6ba32846ff	pass
 ModelManager.new	298c44bbe2c5ac1968cd802c	pass
+ModelManager.new	612c31304f7d4a428810e681	pass
 ModelManager.new	61e3116cc4efadb1f862f247	pass
 ModelManager.new	6fb293e49d8daee1a9c7a357	pass
 ModelManager.new	7d27d1f0637b67cc5bc3348e	pass
 ModelManager.new	d5a4f2e60a51be65b07c4905	pass
 ModelManager.new	d88bbdce64f977eb06983fcc	pass
+ModelManager.new	e0790578cbead7783955e838	pass
 ModelManager.new	f4f57891d4352ec8f8f1a393	pass
 ModelManager.new	fdca0ded63f795c0e72d8e0f	pass
 ModelManager.resolveMetaModel	26a36b86c2030f67e157a55a	pass

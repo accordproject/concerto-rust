@@ -1364,15 +1364,20 @@ const DECORATOR_VALIDATION: &str = "decoratorValidation";
 /// Options concerto-core 5.0.0 never reads on these paths: `strict`,
 /// `enableMapType` and `importAliasing` are v3/v4 flags no 5.0.0 source file
 /// reads, `utcOffset` only reaches the `Serializer` the constructor builds,
-/// which no dispatched op uses, and `offline` is a `ModelLoader` option
-/// (`modelloader.ts`) that the model manager itself never reads. Replaying
-/// without them is exact.
-const INERT_OPTIONS: [&str; 5] = [
+/// which no dispatched op uses, `offline` is a `ModelLoader` option
+/// (`modelloader.ts`) that the model manager itself never reads, and
+/// `enableAliasedType` is stored on `this.options` (`basemodelmanager.ts`
+/// constructor) but never read back: `BaseModelManager.isAliasedTypeEnabled`
+/// is a constant `return true` (ledger `stays-ts`, P2-11b-U7), unconditional
+/// on the option's value or presence, and no other 5.0.0 source file
+/// mentions it. Replaying without them is exact.
+const INERT_OPTIONS: [&str; 6] = [
     "strict",
     "enableMapType",
     "importAliasing",
     "utcOffset",
     "offline",
+    "enableAliasedType",
 ];
 
 /// The TS member that reads an unmodelled option, whose owner ports it.

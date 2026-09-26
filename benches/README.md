@@ -1,9 +1,12 @@
 # benches/
 
-Criterion benchmarks for task **P5-04a** (issue accordproject/concerto-rust#92,
-under the migration plan accordproject/concerto-rust#29): a benchmark
-against the TypeScript runtime on the same models, so every later phase of
-the migration can show its speed-up against a committed baseline.
+Criterion benchmarks against the TypeScript runtime on the same models, so
+every later phase of the migration can show its speed-up against a
+committed baseline. Started under task **P5-04a** (issue
+accordproject/concerto-rust#92); extended under task **P5-04** (issue
+accordproject/concerto-rust#75) with the instance-validation workload,
+now that `concerto_core::instance::validate` (task P3-01) exists - both
+under the migration plan accordproject/concerto-rust#29.
 
 This is the Rust half. The TS half lives in `accordproject/concerto`'s
 `migration/bench/`, which also generates the fixtures both harnesses load
@@ -20,15 +23,22 @@ This is the Rust half. The TS half lives in `accordproject/concerto`'s
   itself; see the `autobenches = false` note in `Cargo.toml`).
 - `benches/load_validate.rs` - workload 1.
 - `benches/validate_metamodel.rs` - workload 2.
+- `benches/instance_validate.rs` - workload 3 (task P5-04).
 - `extract-results.sh` - pulls a small JSON summary out of criterion's
   `target/criterion/**/estimates.json` output (see "Baseline" below).
 - `results/` - the committed output of `extract-results.sh` (one file per
   run, named by timestamp).
 
-Workload 3 (instance validation) is TS-only for now, per the issue -
-`concerto-core` has no instance layer yet (see the migration plan, §1.2:
-"there is... no instance layer"); it is added here once that lands, after
-task P3-01.
+Workload 3 (instance validation) benchmarks `validate_instance`
+(`concerto_core::instance::validate`, task P3-01) directly, over the same
+500-instance synthetic workload the TS harness generates
+(`migration/bench/run-ts.mjs`'s `buildInstanceWorkload`, in the `concerto`
+repo). There is still no `JSONPopulator`/`Resource` port on the Rust side
+(task P3-01b), so only the Rust counterpart to TS's standalone
+`resource.validate()` is benchmarked here, not to `Serializer#fromJSON`'s
+combined populate-and-validate figure - see `instance_validate.rs`'s
+module docs and `RESULTS.md` (in the `concerto` repo) for the full
+comparison, including the WASM-engine-via-TS numbers.
 
 ## Repo layout this assumes
 
@@ -119,6 +129,11 @@ comparison with `critcmp` or criterion's own baseline diffing.
    "Running" and "Repo layout this assumes"),
    `concerto_validator_rs::validate_metamodel` from the separate
    `concerto-validate-rs` crate, over the same fixtures.
+3. **`instance_validate`** (task P5-04) - `validate_instance` over 500
+   generated instances of a small synthetic concept, the same workload
+   the TS harness's `instance_validate` builds. Counterpart to TS's
+   standalone `resource.validate()`, not to `Serializer#fromJSON`'s
+   combined populate-and-validate figure (no Rust `JSONPopulator` yet).
 
 ### On "where Rust has the capability"
 
