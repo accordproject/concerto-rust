@@ -381,6 +381,34 @@ export function runChecks(engine) {
     assert(typed.type === 'Dept', `type ${typed.type}`);
   });
 
+  // #219 (P5-05 stage-2 T2c review fix, "the location-suffix cluster"):
+  // ModelManager.addModelFile's `File '…': line <n> column <n>, to line
+  // <n> column <n>.` suffix comes from the `location`/`modelFile` TS's own
+  // `IllegalModelException` constructor is given, not from any text Rust
+  // appends to the message — so the WASM boundary must actually attach both
+  // onto the thrown error's payload for an invalid property name, not just
+  // the Rust-only `ContractError` fields property.rs's own unit test checks.
+  check('propertyProcess attaches the AST location and model file to an invalid-name error (#219)', () => {
+    const modelFile = { getName: () => 'invalidname.cto' };
+    const location = {
+      $class: `${MM}.Range`,
+      start: { $class: `${MM}.Position`, line: 3, column: 5, offset: 20 },
+      end: { $class: `${MM}.Position`, line: 3, column: 30, offset: 45 },
+    };
+    const ast = {
+      $class: `${MM}.StringProperty`, name: 1e308, isArray: false, isOptional: false, location,
+    };
+    const err = thrown(() => engine.propertyProcess({ ast, getModelFile: () => modelFile }));
+    assert(err instanceof EngineError, `threw ${err}`);
+    assert(err.payload.kind === 'IllegalModel', `kind ${err.payload.kind}`);
+    assert(err.message.includes("Invalid property name '1e+308'"), `message ${err.message}`);
+    assert(err.payload.modelFile === modelFile, 'the view\'s model file is attached');
+    assert(
+      JSON.stringify(err.payload.location) === JSON.stringify(location),
+      `location ${JSON.stringify(err.payload.location)}`,
+    );
+  });
+
   check('classDeclarationGetProperties resolves any non-null super type, as TS does', () => {
     const own = [{ name: 'own' }];
     const modelFile = { isImportedType: () => false, getType: () => null };
