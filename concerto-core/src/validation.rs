@@ -1487,6 +1487,101 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("super type"));
     }
 
+    /// accordproject/concerto-rust#217 review finding 1, on the validating
+    /// `addModelFile` path (`ModelManager::add_model`, not just the pure
+    /// `process_decision`/`classDeclarationProcess` fuzz path in
+    /// `introspect::declaration`'s own tests): an explicit `name: null`
+    /// still loads and validates cleanly, exactly like having no `superType`
+    /// node — TS's `this.superType` ends up `null` here, which every
+    /// `!== null` guard reads as "nothing to resolve".
+    #[test]
+    fn super_type_with_an_explicit_null_name_has_no_super_type_and_validates() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Employee",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": null }
+        }))]));
+        assert!(err.is_ok());
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2, on the same
+    /// validating `addModelFile` path: a `superType` node with no `name` key
+    /// at all must still fail — TS's `this.superType` ends up `undefined`
+    /// here, not `null`, so it is NOT read as "nothing to resolve"; it is a
+    /// real, if unresolvable, super type name, and TS's own string
+    /// concatenation turns it into the literal text `"undefined"` in the
+    /// error it raises. This must load and fail with that same message
+    /// (`Could not find super type undefined`), not a raw decode error like
+    /// `missing field \`name\`` — an earlier version of this fix's `from_json`
+    /// pre-processing produced that generic error instead of a proper
+    /// `IllegalModelException`, and never got as far as `super_type_that_is_missing_fails`'s
+    /// ordinary "unresolvable super type" path above.
+    #[test]
+    fn super_type_with_no_name_key_fails_with_could_not_find_super_type_undefined() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Employee",
+            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" }
+        }))]));
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Could not find super type undefined"
+        );
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2, second half (the
+    /// "only half fixed" half), on the same validating `addModelFile` path:
+    /// a `superType.name` that is falsy but not `null` — `0` or `false` — is
+    /// a different shape from an explicit `null`
+    /// ([`super_type_with_an_explicit_null_name_has_no_super_type_and_validates`]):
+    /// it must still fail to resolve, exactly like the missing-name-key case
+    /// above, with the falsy value's own `ToString` text in the message. An
+    /// earlier version of this fix folded `0`/`false` into "no super type",
+    /// which let a model TS itself rejects (`Could not find super type
+    /// 0`/`Could not find super type false`, raised from
+    /// `ClassDeclaration.getProperties`, which guards only on
+    /// `this.superType !== null`) load and validate with no error at all.
+    #[test]
+    fn super_type_with_a_falsy_non_nullish_name_fails_with_could_not_find_super_type() {
+        for (name, expected) in [
+            (serde_json::json!(0), "Could not find super type 0"),
+            (serde_json::json!(false), "Could not find super type false"),
+        ] {
+            let err = validate(serde_json::json!([concept(serde_json::json!({
+                "name": "Employee",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name }
+            }))]));
+            assert_eq!(
+                err.unwrap_err().to_string(),
+                expected,
+                "superType.name {name:?}"
+            );
+        }
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"),
+    /// on the same validating `addModelFile` path: `identified.name` values
+    /// that are falsy but not nullish — `0`, `false`, `""` — must validate
+    /// cleanly too, exactly like an explicit `null`. TS's `this.idField` is
+    /// read everywhere downstream (including the "does not contain this
+    /// property" check `check_identifier` ports) with a plain truthiness
+    /// test, so none of these three ever becomes a property name to look
+    /// up — before this fix, the class had no field named `"0"`/`"false"`/
+    /// `""` either, but `check_identifier` still ran and failed with exactly
+    /// that message; TS itself never runs the check at all.
+    #[test]
+    fn identified_by_a_falsy_non_nullish_name_has_no_id_field_and_validates() {
+        for name in [
+            serde_json::json!(0),
+            serde_json::json!(false),
+            serde_json::json!(""),
+        ] {
+            let err = validate(serde_json::json!([concept(serde_json::json!({
+                "name": "Manufactured",
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": name }
+            }))]));
+            assert!(err.is_ok(), "identified.name {name:?} -> {err:?}");
+        }
+    }
+
     /// PORTING.md 2.1: `failed`'s `location` is the failing class's own AST
     /// `location`, copied verbatim, not hard-coded to `None` (P1-05 exit
     /// condition).

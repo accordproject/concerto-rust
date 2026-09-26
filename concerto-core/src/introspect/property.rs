@@ -52,13 +52,22 @@ pub struct ProcessedProperty {
 /// view still does directly (its own binding already ports the TS
 /// constructor).
 ///
-/// TS: `Property.process` (src/introspect/property.ts)
+/// TS: `Property.process` (src/introspect/property.ts). TS's check is
+/// `ID_REGEX.test(this.ast.name)`, and `RegExp.prototype.test` runs
+/// `ToString` on a non-string argument rather than rejecting it outright
+/// (`ecma::to_js_string`, matching the `ID_REGEX.test(undefined)` quirk
+/// `model_util::is_valid_identifier`'s own tests document, DV-002): a
+/// fuzz-mutated `name` that is present but not a JSON string (a bool, a
+/// number, an array, `null`, an object) must go through the same coercion,
+/// not be read as an absent name (accordproject/concerto-rust#217): e.g.
+/// `name: true` stringifies to `"true"`, which passes `ID_REGEX` in both
+/// engines, so TS accepts the model and a naive `Value::as_str` default of
+/// `""` made Rust wrongly reject it as `Invalid property name ''`.
 pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
     let name = ast
         .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+        .map(crate::ecma::to_js_string)
+        .unwrap_or_else(|| "undefined".to_string());
     if !is_valid_identifier(&name) {
         return Err(ContractError::new(
             ErrorKind::IllegalModel,
@@ -391,41 +400,78 @@ impl TryFrom<&serde_json::Value> for Property {
         let value = value.as_ref();
 
         let decorators = parse_decorators(value);
+        // Every non-enum kind's own `sizeValidator` (and, for a
+        // `StringProperty`, its `lengthValidator`/`validator`) is set aside
+        // before the strict struct decode below and rebuilt straight from
+        // this untouched `value` with `validators::size_validator_from_ast`/
+        // `length_validator_from_ast`/`regex_validator_from_ast`: `serde`'s
+        // derived `Deserialize` requires an actual JSON number/string for
+        // their nested fields, but TS reads every one of them completely
+        // untyped (those functions' own doc comments), so a fuzz-mutated,
+        // wrongly-typed field there must not fail the whole property's
+        // parse (accordproject/concerto-rust#217).
+        let mut sanitized = value.clone();
+        if let Some(map) = sanitized.as_object_mut() {
+            map.remove("sizeValidator");
+            if kind == "StringProperty" {
+                map.remove("lengthValidator");
+                map.remove("validator");
+            }
+        }
+        let size_validator = validators::size_validator_from_ast(value.get("sizeValidator"));
         let property = match kind {
-            "BooleanProperty" => Self::Boolean(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "StringProperty" => Self::String(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "IntegerProperty" => Self::Integer(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "LongProperty" => Self::Long(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "DoubleProperty" => Self::Double(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "DateTimeProperty" => Self::DateTime(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "ObjectProperty" => Self::Object(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
-            "RelationshipProperty" => Self::Relationship(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
-                decorators,
-            )),
+            "BooleanProperty" => {
+                let mut node: mm::BooleanProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::Boolean(WithDecorators::new(node, decorators))
+            }
+            "StringProperty" => {
+                let mut node: mm::StringProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                node.length_validator =
+                    validators::length_validator_from_ast(value.get("lengthValidator"));
+                node.validator = validators::regex_validator_from_ast(value.get("validator"));
+                Self::String(WithDecorators::new(node, decorators))
+            }
+            "IntegerProperty" => {
+                let mut node: mm::IntegerProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::Integer(WithDecorators::new(node, decorators))
+            }
+            "LongProperty" => {
+                let mut node: mm::LongProperty = serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::Long(WithDecorators::new(node, decorators))
+            }
+            "DoubleProperty" => {
+                let mut node: mm::DoubleProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::Double(WithDecorators::new(node, decorators))
+            }
+            "DateTimeProperty" => {
+                let mut node: mm::DateTimeProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::DateTime(WithDecorators::new(node, decorators))
+            }
+            "ObjectProperty" => {
+                let mut node: mm::ObjectProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::Object(WithDecorators::new(node, decorators))
+            }
+            "RelationshipProperty" => {
+                let mut node: mm::RelationshipProperty =
+                    serde_json::from_value(sanitized).map_err(bad)?;
+                node.size_validator = size_validator;
+                Self::Relationship(WithDecorators::new(node, decorators))
+            }
             "EnumProperty" => Self::Enum(WithDecorators::new(
-                serde::Deserialize::deserialize(value).map_err(bad)?,
+                serde_json::from_value(sanitized).map_err(bad)?,
                 decorators,
             )),
             _ => {
@@ -645,6 +691,52 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.to_string().contains("Invalid property name '1bad'"));
+    }
+
+    // accordproject/concerto-rust#217 (T2a): `ID_REGEX.test(name)` in TS
+    // coerces a non-string `name` with `ToString` rather than rejecting it,
+    // so a fuzz-mutated `name` that isn't a JSON string but stringifies to
+    // a valid identifier is accepted by TS and must be accepted here too.
+    // Minimised repro: `declarations[0].properties[0].name = true`
+    // (conformance/ModelManager.addModelFile/16267c5478a5f2840469e147.json,
+    // stage2/triage-clusters.json).
+    #[test]
+    fn process_accepts_a_boolean_name_like_ts_string_coercion() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": true,
+            "isArray": false,
+            "isOptional": false
+        }))
+        .expect("TS: ID_REGEX.test(true) tests \"true\", which matches");
+        assert_eq!(processed.name, "true");
+    }
+
+    // Same theme, the other value shapes the cluster's fuzz run hit:
+    // an absent `name` coerces like `ID_REGEX.test(undefined)` (DV-002,
+    // model_util::is_valid_identifier's own tests), and `null` stringifies
+    // to `"null"`, both valid identifiers in both engines.
+    #[test]
+    fn process_accepts_a_missing_name_like_ts_undefined_coercion() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "isArray": false,
+            "isOptional": false
+        }))
+        .expect("TS: ID_REGEX.test(undefined) tests \"undefined\", which matches");
+        assert_eq!(processed.name, "undefined");
+    }
+
+    #[test]
+    fn process_accepts_a_null_name_like_ts_null_coercion() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": null,
+            "isArray": false,
+            "isOptional": false
+        }))
+        .expect("TS: ID_REGEX.test(null) tests \"null\", which matches");
+        assert_eq!(processed.name, "null");
     }
 
     /// A `RelationshipProperty` node named `name` whose `type` is `ty`
@@ -1280,5 +1372,111 @@ mod tests {
             "name": "field", "isArray": false, "isOptional": true
         }));
         assert!(optional.is_optional());
+    }
+
+    /// accordproject/concerto-rust#217, cluster 1/3: a fuzz-mutated
+    /// `sizeValidator.minSize`/`maxSize` that is not a JSON number (here, a
+    /// non-numeric string) must not fail the whole property's parse the way
+    /// `serde`'s strict struct decode otherwise would — TS's own
+    /// `CollectionSizeValidator` constructor reads them with no type check
+    /// at all, and coerces through `ToNumber` only when it later compares
+    /// them (`ecma::to_number`'s own doc comment): `"NaN" < 0` is `false`
+    /// (like every other comparison against a non-numeric coercion), so
+    /// this loads with no bound enforced, not an error.
+    #[test]
+    fn size_validator_with_a_non_numeric_bound_loads_instead_of_failing_to_parse() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "items", "isArray": true, "isOptional": false,
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionDomainValidator",
+                "minSize": "NaN", "maxSize": 5
+            }
+        }));
+        assert_eq!(p.size_validator().unwrap().max_size, Some(5.0));
+        assert!(p.size_validator().unwrap().min_size.unwrap().is_nan());
+    }
+
+    /// accordproject/concerto-rust#217: a `sizeValidator`/`lengthValidator`/
+    /// `validator` sub-object's own `$class`, when it is not a JSON string
+    /// (here, an array), must not fail the parse either — nothing in this
+    /// crate ever reads that field back (`validators::size_validator_from_ast`'s
+    /// own doc comment).
+    #[test]
+    fn size_validator_class_that_is_not_a_string_loads_instead_of_failing_to_parse() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "items", "isArray": true, "isOptional": false,
+            "sizeValidator": {
+                "$class": ["concerto.metamodel@1.0.0.CollectionDomainValidator"],
+                "minSize": 1, "maxSize": 5
+            }
+        }));
+        assert_eq!(p.size_validator().unwrap().min_size, Some(1.0));
+    }
+
+    /// accordproject/concerto-rust#217, cluster 4/44: a `lengthValidator`
+    /// AST replaced wholesale by a wrongly-shaped, but still truthy, JSON
+    /// value (here, an array) must load with no bound enforced, matching
+    /// TS's own outcome: `this.ast.lengthValidator` is truthy, so
+    /// `StringValidator`'s constructor runs, but `lengthValidator.minLength`/
+    /// `.maxLength` on a non-object are both `undefined`, which never trips
+    /// the "must be specified" check (that check is a strict `=== null`
+    /// identity, not a truthiness test — `validators::length_bound_field`'s
+    /// own doc comment).
+    #[test]
+    fn string_property_with_a_non_object_length_validator_loads() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "s", "isArray": false, "isOptional": false,
+            "lengthValidator": [{
+                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+                "minLength": null, "maxLength": 10
+            }]
+        }));
+        match &p {
+            Property::String(s) => assert!(s.length_validator.is_some()),
+            _ => panic!("expected String"),
+        }
+    }
+
+    /// The corner `string_property_with_a_non_object_length_validator_loads`
+    /// must still catch: a *well-formed* `lengthValidator` whose bounds are
+    /// both explicitly `null` is the one shape that does still trip the
+    /// "must be specified" check, in both engines.
+    #[test]
+    fn string_property_with_both_length_bounds_explicitly_null_is_rejected() {
+        let err = Property::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "s", "isArray": false, "isOptional": false,
+            "lengthValidator": {
+                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+                "minLength": null, "maxLength": null
+            }
+        }))
+        .expect("try_from itself does not build the validator")
+        .check_bound_validators("ns.C")
+        .unwrap_err();
+        assert!(err.to_string().contains("must be specified"));
+    }
+
+    /// accordproject/concerto-rust#217, cluster 6: a `validator.pattern`
+    /// that is not a JSON string (here, a number) must coerce through
+    /// `ToString`, matching `new RegExp(validator.pattern, ...)`, not fail
+    /// the parse.
+    #[test]
+    fn regex_validator_with_a_non_string_pattern_loads_instead_of_failing_to_parse() {
+        let p = prop(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "s", "isArray": false, "isOptional": false,
+            "validator": {
+                "$class": "concerto.metamodel@1.0.0.StringRegexValidator",
+                "pattern": 5, "flags": ""
+            }
+        }));
+        match &p {
+            Property::String(s) => assert_eq!(s.validator.as_ref().unwrap().pattern, "5"),
+            _ => panic!("expected String"),
+        }
     }
 }

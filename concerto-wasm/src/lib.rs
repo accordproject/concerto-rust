@@ -69,6 +69,7 @@ use concerto_core::introspect::decorator::{
 use concerto_core::introspect::field;
 use concerto_core::introspect::property;
 use concerto_core::introspect::scalar::{ScalarDeclaration, ScalarValidator};
+use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
@@ -934,46 +935,62 @@ fn tag(mut json: Value, class: &str) -> Value {
     json
 }
 
-/// `{pattern, flags}`, or `None` for a nullish value. `flags` defaults to
-/// `""`, matching `IStringRegexValidator.flags?: string` (the TS view's
-/// callers, including the unit tests, often omit it for "no flags").
+/// `{pattern, flags}`, or `None` for a nullish value. Built through
+/// `validators::regex_validator_from_ast`, which reads `pattern`/`flags`
+/// completely untyped — a plain `ToString`-style coercion, matching `new
+/// RegExp(validator.pattern, validator.flags)` — rather than `serde`'s
+/// strict decode this used to run directly: TS's own call site for this
+/// constructor is `Property.process`'s `new StringValidator(this,
+/// this.ast.validator, this.ast.lengthValidator)` (property.ts/field.ts),
+/// reading `this.ast.validator` with no type check at all, so a
+/// fuzz-mutated, wrongly-typed `pattern`/`flags` (a bool, a number, an
+/// array) must coerce here too, not fail the whole property's `process()`
+/// (accordproject/concerto-rust#217: this binding is *TS's* call site for
+/// the same constructor `validators::regex_validator_from_ast`'s own doc
+/// comment already fixed the `Property::try_from` side of, so it needs the
+/// identical fix).
 fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
     if nullish(value) {
         return Ok(None);
     }
-    let mut json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.StringRegexValidator",
-    );
-    if let Value::Object(map) = &mut json {
-        map.entry("flags".to_string()).or_insert_with(|| json!(""));
-    }
-    serde_json::from_value(json)
-        .map(Some)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(validators::regex_validator_from_ast(Some(&json)))
 }
 
-/// `{minLength, maxLength}`, or `None` for a nullish value.
+/// `{minLength, maxLength}`, or `None` for a nullish value. Built through
+/// `validators::length_validator_from_ast`, for the same reason and in the
+/// same way as [`string_regex_ast`] — TS's own call site for
+/// `new StringValidator(..., this.ast.lengthValidator)`
+/// (accordproject/concerto-rust#217).
 fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLengthValidator>> {
     if nullish(value) {
         return Ok(None);
     }
-    let json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.StringLengthValidator",
-    );
-    serde_json::from_value(json)
-        .map(Some)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(validators::length_validator_from_ast(Some(&json)))
 }
 
-/// `{minSize, maxSize}`.
+/// `{minSize, maxSize}`. Built through `validators::size_validator_from_ast`,
+/// for the same reason as [`string_regex_ast`] — TS's own call site for
+/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
+/// (property.ts/field.ts), reading `minSize`/`maxSize` with no type check
+/// (accordproject/concerto-rust#217). A nullish `value` (this binding's own
+/// caller, like TS's constructor call site, only ever passes one when
+/// `this.ast.sizeValidator` is itself present) falls back to the same
+/// "$class only" node `size_validator_from_ast`'s own null-filter maps to
+/// `None` for, so this preserves this function's pre-existing contract of
+/// never itself returning `None`: an absent `minSize`/`maxSize` decodes as
+/// `None` either way, so the unwrap below only ever supplies the
+/// `$class`/bounds-absent shape.
 fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
-    let json = tag(
-        to_json(value)?.unwrap_or(Value::Null),
-        "concerto.metamodel@1.0.0.CollectionSizeValidator",
-    );
-    serde_json::from_value(json).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    let json = to_json(value)?.unwrap_or(Value::Null);
+    Ok(
+        validators::size_validator_from_ast(Some(&json)).unwrap_or(mm::CollectionSizeValidator {
+            _class: String::new(),
+            min_size: None,
+            max_size: None,
+        }),
+    )
 }
 
 /// TS: StringValidator constructor, after `super(field, validator)`. `view`
@@ -1801,10 +1818,15 @@ fn short_class(ast_class: &str) -> &str {
 /// `process`/`validate` to the `propertyProcess`/`propertyValidate`/
 /// `fieldProcess`/`relationshipDeclarationValidate` bindings). Returns `{superType, idField,
 /// addIdentifierField, addTimestampField}`:
-/// - `superType`: `this.ast.superType.name` when the AST names one;
-///   otherwise `null` only for the system model's own `Concept` declaration,
-///   else the implicit `'Concept'` (TS: the `this.modelFile.isSystemModelFile()
-///   && this.name === 'Concept'` exemption).
+/// - `superType`: `this.ast.superType.name` when the AST names one — including
+///   the literal text `"undefined"` when a `superType` node is present but
+///   carries no `name` at all (`this.ast.superType.name` reads as `undefined`
+///   there, not `null`, and every downstream guard treats those two
+///   differently: only an explicit `name: null` reads as "no super type",
+///   review finding 2 on accordproject/concerto-rust#217); otherwise `null`
+///   only for the system model's own `Concept` declaration, else the implicit
+///   `'Concept'` (TS: the `this.modelFile.isSystemModelFile() && this.name
+///   === 'Concept'` exemption).
 /// - `idField`/`addIdentifierField`: mirrors the `this.ast.identified` match;
 ///   `addIdentifierField` tells the view to still call its own
 ///   `addIdentifierField()` (it pushes a real `Field` view).
@@ -1815,16 +1837,79 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         let ast = get(&declaration, "ast")?;
 
         let explicit_super_type = get(&ast, "superType")?;
-        let explicit_super_type = if !nullish(&explicit_super_type) {
-            Some(receiver(
-                &get(&explicit_super_type, "name")?,
-                "this.ast.superType.name",
-                "toString",
-            )?)
+        let has_explicit_super_type = !nullish(&explicit_super_type);
+        let explicit_super_type_name = if has_explicit_super_type {
+            let name = get(&explicit_super_type, "name")?;
+            if name.is_null() {
+                // TS: `this.superType = this.ast.superType.name;` — a plain
+                // assignment, taken exactly as given. An explicit `name:
+                // null` leaves `this.superType` itself `null`, and every
+                // downstream guard (`_resolveSuperType`'s `!this.superType`,
+                // `validate`/`getProperties`'s `!== null`) reads that as
+                // "nothing to resolve" — this is the one shape that really
+                // behaves as "no super type at all" (accordproject/concerto-rust#217,
+                // review finding 1).
+                None
+            } else if name.is_undefined() {
+                // A `superType` node with no `name` key at all is a
+                // different shape from the one above, even though both are
+                // "nullish": `this.ast.superType.name` reads as `undefined`,
+                // not `null`, so `this.superType` becomes `undefined` too —
+                // and `undefined !== null`, so `validate`/`getProperties`
+                // do NOT treat this as "nothing to resolve"; they carry on
+                // to resolve a super type named `undefined` (JS string
+                // concatenation coerces it to the literal text
+                // `"undefined"`), fail to find one, and raise
+                // `IllegalModelException: Could not find super type
+                // undefined`. Passing that same literal string through here
+                // reproduces the failure the same way, rather than
+                // silently discarding the (missing) name as "no super
+                // type" (accordproject/concerto-rust#217, review finding 2).
+                Some("undefined".to_string())
+            } else if !name.is_truthy() {
+                // A falsy, non-nullish `name` (`0`, `false`, or an empty
+                // string): still a **different** shape from a real `null`
+                // above. TS keeps `this.superType` exactly as falsy as the
+                // AST gave it, and `_resolveSuperType`'s own `!this.superType`
+                // check does short-circuit on that falsiness without
+                // throwing — but `validate`'s field-collecting call,
+                // `this.getProperties()`, does **not** go through
+                // `_resolveSuperType` at all: `ClassDeclaration.getProperties`
+                // guards only on `this.superType !== null` (`0 !== null` and
+                // `false !== null` are both true), then resolves it directly
+                // with `getModelFile().getType(this.superType)`, finds
+                // nothing, and throws `IllegalModelException: Could not
+                // find super type ` + `this.superType` — JS `+` coerces the
+                // falsy value with the same `ToString` `js_string` performs
+                // (`0` -> `"0"`, `false` -> `"false"`, `""` -> `""`).
+                // Mapping this to `None` (review's first attempt) skipped
+                // that throw entirely, turning a TS rejection into a Rust
+                // acceptance — the reverse of this issue's own shape
+                // (accordproject/concerto-rust#217, review finding 2, second
+                // half).
+                Some(js_string(&name)?)
+            } else {
+                // A truthy `name`: a real (possibly empty-looking but
+                // non-empty) string is returned as itself; a truthy
+                // non-string (a bool, a number, an array, ...) is a
+                // different divergence review finding 2 flagged under the
+                // same "stringify-truthy" heading: TS keeps `this.superType`
+                // as that raw, non-string value — never stringifying it —
+                // and it is only ever *used* as a string once resolution
+                // reaches `ModelFile.getLocalType`'s `type.startsWith(...)`,
+                // which throws `TypeError: type.startsWith is not a
+                // function` for anything that isn't really a string.
+                // `js_string` (an earlier version of this fix) coerced it
+                // into a valid-looking name instead — `["Vehicle"]` becomes
+                // the resolvable string `"Vehicle"` — and let Rust load a
+                // model TS rejects. `receiver` reproduces that exact
+                // `TypeError` here instead (accordproject/concerto-rust#217).
+                Some(receiver(&name, "type", "startsWith")?)
+            }
         } else {
             None
         };
-        let is_system_model_file = if explicit_super_type.is_none() {
+        let is_system_model_file = if !has_explicit_super_type {
             let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
             call(
                 &model_file,
@@ -1839,23 +1924,46 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // call to make.
             false
         };
-        let name = receiver(&get(&declaration, "name")?, "this.name", "toString")?;
+        // TS: `this.name` is `this.ast.name` verbatim (`Declaration.process`,
+        // src/introspect/declaration.ts), read here only for an `=== 'Concept'`
+        // comparison — never stringified with `.toString()`. `receiver` threw
+        // "Cannot read properties of undefined/null" or "not a function" for
+        // any fuzz-mutated, non-string `name` (missing, `null`, a bool, an
+        // array, ...) even though TS accepts all of those (accordproject/concerto-rust#217);
+        // `js_string` gives the coerced string without throwing.
+        let name = js_string(&get(&declaration, "name")?)?;
 
         let identified = get(&ast, "identified")?;
         let (identified_class, identified_name) = if nullish(&identified) {
             (None, None)
         } else {
-            let identified_class = receiver(
-                &get(&identified, "$class")?,
-                "this.ast.identified.$class",
-                "toString",
-            )?;
+            // TS: `this.ast.identified.$class === \`${MetaModelNamespace}.IdentifiedBy\``
+            // is a strict comparison, and `this.idField = this.ast.identified.name`
+            // a plain assignment — neither calls `.toString()`, so a
+            // non-string `$class`/`name` (accordproject/concerto-rust#217,
+            // e.g. `identified: true` or `identified.name: ["id"]`) must not
+            // throw here either.
+            let identified_class = js_string(&get(&identified, "$class")?)?;
             let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
-                Some(receiver(
-                    &get(&identified, "name")?,
-                    "this.ast.identified.name",
-                    "toString",
-                )?)
+                // TS: `this.idField = this.ast.identified.name;` — a plain
+                // assignment, taken exactly as given, later read with a
+                // truthy check (`if (this.idField)`) everywhere that
+                // matters (`ClassDeclaration.validate`'s "does not contain
+                // this property" check among them). Any falsy `name` — not
+                // just nullish, but also `0`, `false` and `""` — must stay
+                // out of the returned `idField` here too, not stringify
+                // into a truthy-but-wrong literal text (`"undefined"`/
+                // `"null"`/`"0"`/`"false"`) that Rust would then go on to
+                // look up as a real property name and fail to find (review
+                // finding 2, accordproject/concerto-rust#217 — the "only
+                // half fixed" half: an earlier version of this fix handled
+                // only the nullish shapes).
+                let name = get(&identified, "name")?;
+                if !name.is_truthy() {
+                    None
+                } else {
+                    Some(js_string(&name)?)
+                }
             } else {
                 None
             };
@@ -1865,7 +1973,8 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
 
         let decision = concerto_core::ClassDeclaration::process_decision(
-            explicit_super_type.as_deref(),
+            has_explicit_super_type,
+            explicit_super_type_name.as_deref(),
             is_system_model_file,
             &name,
             identified_class.as_deref(),

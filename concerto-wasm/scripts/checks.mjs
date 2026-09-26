@@ -361,6 +361,216 @@ export function runChecks(engine) {
     return { errorMessage: err.message };
   });
 
+  // accordproject/concerto-rust#217 (T2a review finding 2, corrected): TS
+  // assigns `this.superType = this.ast.superType.name` verbatim, so a
+  // `superType` node with no `name` key at all ends up `undefined` there,
+  // not `null` — and unlike `identified.name` (checked with a plain
+  // truthiness test downstream), `superType` is checked with `!== null`, so
+  // `undefined` is NOT read as "nothing to resolve": TS goes on to resolve a
+  // super type named `undefined` (string concatenation coerces it to that
+  // literal text) and fails with "Could not find super type undefined".
+  // `classDeclarationProcess` must reproduce that distinction — this is
+  // exactly the divergence the finding flagged: an earlier fix conflated
+  // "no `name` key" with "explicit `name: null`" and silently accepted both
+  // as "no super type", which is only correct for the latter.
+  check('classDeclarationProcess tells a missing superType.name from an explicit null apart', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Foo',
+      fqn: 'org.example@1.0.0.Foo',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    // `superType: {}` (present, but no `name` key): TS ends up with
+    // `this.superType === undefined`, never the implicit 'Concept' default
+    // (that only applies when `ast.superType` itself is absent) but also
+    // never silently "no super type" — it is a real, unresolvable name,
+    // reproduced here as the literal text "undefined".
+    const noName = engine.classDeclarationProcess(mockDeclaration({ superType: {}, properties: [] }));
+    assert(
+      noName.superType === 'undefined',
+      `superType:{} -> superType ${JSON.stringify(noName.superType)}`,
+    );
+
+    // `superType.name: null` explicitly: TS's `this.superType` is exactly
+    // `null` here, which really does read as "no super type at all".
+    const nullName = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: null }, properties: [] }),
+    );
+    assert(nullName.superType === null, `superType.name:null -> superType ${JSON.stringify(nullName.superType)}`);
+
+    // `identified.name: null`, with a real `IdentifiedBy` $class: TS's
+    // `this.idField = this.ast.identified.name` stays `null`, not the
+    // literal text "null" a property lookup would then fail to find. Unlike
+    // `superType`, `idField` is read with a plain truthiness check
+    // downstream, so a missing `name` key would behave the same as an
+    // explicit `null` here (both falsy) — no `undefined`/`null` distinction
+    // to reproduce.
+    const nullIdField = engine.classDeclarationProcess(
+      mockDeclaration({
+        identified: { $class: `${MM}.IdentifiedBy`, name: null },
+        properties: [],
+      }),
+    );
+    assert(nullIdField.idField === null, `identified.name:null -> idField ${JSON.stringify(nullIdField.idField)}`);
+
+    // Sanity: an ordinary, present superType name still resolves normally.
+    const named = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: 'Base' }, properties: [] }),
+    );
+    assert(named.superType === 'Base', `superType.name:"Base" -> superType ${JSON.stringify(named.superType)}`);
+
+    return { noName, nullName, nullIdField, named };
+  });
+
+  // accordproject/concerto-rust#217 (T2a review finding 2, "only half
+  // fixed"): the fix above only told nullish `superType`/`identified` names
+  // apart; it left every other falsy shape — `0`, `false`, `""` — to fall
+  // through to `js_string`, which stringifies them into truthy-looking text
+  // (`"0"`, `"false"`) a property lookup then fails to find. TS's
+  // `this.idField = this.ast.identified.name` is read everywhere downstream
+  // with a plain truthiness check (`if (this.idField)`), so these three
+  // must come back exactly like a nullish name: no id field at all.
+  check('classDeclarationProcess treats a falsy, non-nullish identified.name as no id field', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Manufactured',
+      fqn: 'org.example@1.0.0.Manufactured',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const results = {};
+    for (const name of [0, false, '']) {
+      const result = engine.classDeclarationProcess(
+        mockDeclaration({
+          identified: { $class: `${MM}.IdentifiedBy`, name },
+          properties: [],
+        }),
+      );
+      assert(
+        result.idField === null,
+        `identified.name:${JSON.stringify(name)} -> idField ${JSON.stringify(result.idField)}`,
+      );
+      results[JSON.stringify(name)] = result;
+    }
+    return results;
+  });
+
+  // accordproject/concerto-rust#217 (T2a review finding 2, the "only half
+  // fixed" half, this time on `superType.name` — a re-review of the fix
+  // above found it had wrongly folded this shape into "no super type"):
+  // a falsy but non-nullish `superType.name` (`0`, `false`) is a
+  // *different* shape from an explicit `null`
+  // (`classDeclarationProcess tells a missing superType.name from an
+  // explicit null apart`, above) — it must still come back as an explicit,
+  // unresolvable super type, not `null`. TS's `this.superType =
+  // this.ast.superType.name` is a plain assignment; `_resolveSuperType`'s
+  // own `!this.superType` check does short-circuit on the falsiness without
+  // throwing, but `validate`'s `this.getProperties()` does not go through
+  // `_resolveSuperType` at all — it guards only on `this.superType !==
+  // null` (true for both `0` and `false`), resolves directly, and throws
+  // `Could not find super type 0`/`Could not find super type false`. Folding
+  // these into `null` here would make Rust accept a model TS itself
+  // rejects — the reverse of this issue's own ts=ok/rust=error shape.
+  check('classDeclarationProcess treats a falsy, non-nullish superType.name as an unresolvable super type', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Employee',
+      fqn: 'org.example@1.0.0.Employee',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const results = {};
+    for (const [name, expected] of [[0, '0'], [false, 'false']]) {
+      const result = engine.classDeclarationProcess(
+        mockDeclaration({
+          superType: { $class: `${MM}.TypeIdentifier`, name },
+          properties: [],
+        }),
+      );
+      assert(
+        result.superType === expected,
+        `superType.name:${JSON.stringify(name)} -> superType ${JSON.stringify(result.superType)}`,
+      );
+      results[JSON.stringify(name)] = result;
+    }
+    return results;
+  });
+
+  // accordproject/concerto-rust#217 (T2a review finding 2, the same "only
+  // half fixed" gap, on `superType.name` instead): a *truthy* non-string
+  // name (an array, a non-zero number, `true`, ...) is the other half TS
+  // never stringifies — `this.superType` stays the raw value, and it is
+  // only ever *used* as a string once resolution reaches
+  // `ModelFile.getLocalType`'s `type.startsWith(this.getNamespace())`,
+  // which throws `TypeError: type.startsWith is not a function` for
+  // anything that isn't really a string. `js_string` (an earlier version of
+  // this fix) coerced `["Vehicle"]` into the resolvable string `"Vehicle"`
+  // instead, letting Rust load a model TS rejects.
+  check('classDeclarationProcess reproduces the TypeError for a truthy non-string superType.name', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Car',
+      fqn: 'org.example@1.0.0.Car',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const err = thrown(() =>
+      engine.classDeclarationProcess(
+        mockDeclaration({ superType: { name: ['Vehicle'] }, properties: [] }),
+      ),
+    );
+    assert(err instanceof EngineError, `classDeclarationProcess threw ${err}`);
+    assert(/type\.startsWith is not a function/.test(err.message), `message ${err.message}`);
+
+    return { errorMessage: err.message };
+  });
+
+  // accordproject/concerto-rust#217 (T2a, adversarial review finding 1):
+  // `collectionSizeValidatorNew`/`stringValidatorNew` used to decode
+  // `sizeValidator`/`lengthValidator`/`validator` with `serde`'s strict,
+  // typed `Deserialize` (a JSON number/string required for `minSize`/
+  // `maxSize`/`minLength`/`maxLength`/`pattern`/`flags`), while TS's own
+  // `CollectionSizeValidator`/`StringValidator` constructors
+  // (collectionsizevalidator.ts, stringvalidator.ts) read every one of
+  // these completely untyped: a fuzz-mutated bound that is present but not
+  // a JSON number (or string, for `pattern`/`flags`) must coerce through
+  // ECMAScript semantics, not fail the whole property's `process()`.
+  check('collectionSizeValidatorNew/stringValidatorNew coerce a wrongly-typed bound instead of throwing', () => {
+    const view = {};
+
+    // `minSize: true` -> `Number(true)` is `1`, a valid (if unusual) bound;
+    // TS never rejects it for being the wrong JSON type.
+    const size = engine.collectionSizeValidatorNew(view, { minSize: true });
+    assert(size.minSize === 1 && size.maxSize === null, `sizeValidator minSize:true -> ${JSON.stringify(size)}`);
+
+    // `lengthValidator.minLength: true`, same coercion.
+    const length = engine.stringValidatorNew(view, null, { minLength: true });
+    assert(length.minLength === 1 && length.maxLength === null, `lengthValidator minLength:true -> ${JSON.stringify(length)}`);
+
+    // `lengthValidator.maxLength` deleted (absent), `minLength` a real
+    // number: TS's own `isNull(minLength) && isNull(maxLength)` is false
+    // (minLength isn't null), so the "must be specified" check never
+    // fires — this must not throw just because maxLength is absent.
+    const oneBoundOnly = engine.stringValidatorNew(view, null, { minLength: 5 });
+    assert(oneBoundOnly.minLength === 5, `lengthValidator minLength:5 (maxLength absent) -> ${JSON.stringify(oneBoundOnly)}`);
+
+    // `validator.pattern: true` (a non-string pattern): `RegExp`'s own
+    // `ToString` coercion (`String(true)` -> `"true"`, a valid pattern)
+    // applies, not a decode failure.
+    const regex = engine.stringValidatorNew(view, { pattern: true, flags: '' }, null);
+    assert(regex.minLength === null && regex.maxLength === null, `validator pattern:true -> ${JSON.stringify(regex)}`);
+
+    // A `lengthValidator` that is not even an object (a fuzz-mutated array,
+    // matching a recorded cluster's minimised repro `lengthValidator: [10]`):
+    // every key on it reads as absent, so this behaves as "no length
+    // bounds at all" rather than throwing.
+    const notAnObject = engine.stringValidatorNew(view, null, [10]);
+    assert(notAnObject.minLength === null && notAnObject.maxLength === null, `lengthValidator:[10] -> ${JSON.stringify(notAnObject)}`);
+
+    return { size, length, oneBoundOnly, regex, notAnObject };
+  });
+
   // #218: two rust-mode view bindings, driven with minimal stand-in views.
   check('propertyProcess rejects a relationship with no type (DV-017)', () => {
     const modelFile = { getName: () => 'rel.cto' };
