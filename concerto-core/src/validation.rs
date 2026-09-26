@@ -3280,6 +3280,85 @@ mod tests {
         assert!(!message.contains("Duplicate class name"), "{message}");
     }
 
+    /// [`ModelManager::validate_detached_model_file`]'s fast-path guard
+    /// (P5-06: cargo-mutants found `registered.ast() == model_file.ast()`
+    /// surviving as `!=`), the ast half. When `self` already holds a file
+    /// under `model_file`'s namespace whose AST *differs* — here, a fresh
+    /// invalid variant of an already-registered valid file — the guard must
+    /// stay false and take the scratch path, which validates the new
+    /// content and reports its own error. A `!=`-mutated guard would instead
+    /// see the (genuinely different) ASTs as "equal" and take the fast
+    /// path, wrongly re-validating the old, valid `registered` file and
+    /// reporting success.
+    #[test]
+    fn validate_detached_model_file_rejects_a_namesake_with_different_content() {
+        use crate::introspect::model_file::ModelFile;
+        let mut manager = ModelManager::new().unwrap();
+        let valid = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.namesake@1.0.0",
+            "declarations": [concept(serde_json::json!({ "name": "Widget" }))]
+        });
+        manager
+            .add_model(&valid, Some("namesake.cto".into()))
+            .unwrap();
+
+        let mut invalid = valid;
+        invalid["declarations"][0]["decorators"] = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+        ]);
+        let changed = ModelFile::from_json(&invalid, Some("namesake.cto".into())).unwrap();
+        assert!(
+            manager
+                .validate_detached_model_file(&changed)
+                .unwrap_err()
+                .to_string()
+                .contains("Duplicate decorator")
+        );
+    }
+
+    /// [`ModelManager::validate_detached_model_file`]'s fast-path guard, the
+    /// file-name half (P5-06: `registered.file_name() == model_file.file_name()`
+    /// surviving as `!=`). `self` already holds an *invalid* file — built
+    /// with [`ModelManager::with_model_file_registered`] directly, bypassing
+    /// `add_model`'s own pre-registration validation, the only way to get an
+    /// invalid file registered at all — named `orig.cto`; `renamed`, an
+    /// identical AST under a different file name, must still take the
+    /// scratch path (ast equal, file name not), and so must report the
+    /// error against `renamed.cto`. A `!=`-mutated guard would instead see
+    /// the (genuinely different) file names as "equal" and take the fast
+    /// path, reporting `registered`'s own name, `orig.cto`.
+    #[test]
+    fn validate_detached_model_file_names_the_file_it_was_actually_asked_to_validate() {
+        use crate::introspect::model_file::ModelFile;
+        let ast = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.renamed@1.0.0",
+            "declarations": [concept(serde_json::json!({
+                "name": "Widget",
+                "decorators": [
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
+                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
+                ]
+            }))]
+        });
+        let orig = ModelFile::from_json(&ast, Some("orig.cto".into())).unwrap();
+        let manager = ModelManager::new()
+            .unwrap()
+            .with_model_file_registered(&orig)
+            .unwrap();
+
+        let renamed = ModelFile::from_json(&ast, Some("renamed.cto".into())).unwrap();
+        match manager.validate_detached_model_file(&renamed).unwrap_err() {
+            ConcertoError::Contract(c) => {
+                assert!(c.final_message().contains("Duplicate decorator"));
+                assert_eq!(c.model_file, Some(Some("renamed.cto".to_string())));
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
     /// TS `new ModelFile(mm, ast).validate()`: a file its manager never
     /// registered validates against that manager (imports resolve through
     /// it, local types through the file itself), and the manager is left
@@ -4181,6 +4260,49 @@ mod tests {
         }
     }
 
+    /// `validate_property`'s `in_owner_file` guard, the other side (P5-06
+    /// review follow-up): `owner_ns != namespace` forced to a constant
+    /// `true` survived the above test uncaught, because that test only ever
+    /// puts the guard's *true* branch (an inherited, other-namespace
+    /// property) under test. Here `p` is `X`'s own property — `owner_ns ==
+    /// namespace`, the guard's *false* branch — reached through
+    /// [`ModelManager::validate_detached_declaration`], which (module doc
+    /// on that function) never runs `validate_model_file_with_import_scope`'s
+    /// outer `attach` closure. A correct guard therefore leaves the error's
+    /// `model_file` untouched (`None`) all the way out; the `true`-forced
+    /// mutant stamps `owned.cto` on it regardless.
+    #[test]
+    fn a_duplicate_decorator_on_an_own_property_is_not_misattached_via_detached_declaration() {
+        use crate::introspect::model_file::ModelFile;
+        let manager = ModelManager::new().unwrap();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.owned@1.0.0",
+                "declarations": [concept(serde_json::json!({
+                    "name": "X",
+                    "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "p",
+                          "isArray": false, "isOptional": false,
+                          "decorators": [
+                            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] },
+                            { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] }
+                          ] }
+                    ]
+                }))]
+            }),
+            Some("owned.cto".into()),
+        )
+        .unwrap();
+        match manager.validate_detached_declaration(&mf, 0).unwrap_err() {
+            ConcertoError::Contract(c) => {
+                assert!(c.final_message().contains("Duplicate decorator"));
+                assert_eq!(c.model_file, None);
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
     /// A valid inherited property passes in the subclass's pass too, and an
     /// inherited property whose type is declared in the super type's
     /// namespace (not imported by the subclass's file) is resolved there —
@@ -4341,6 +4463,75 @@ mod tests {
                         .contains("must be to a class that has an identifier")
                 );
                 assert_eq!(c.model_file, Some(Some("c.cto".to_string())));
+            }
+            other => panic!("expected a Contract error, got {other:?}"),
+        }
+    }
+
+    /// `validate_property`'s `context_ns != namespace` guard, the other side
+    /// (P5-06 review follow-up, same shape as
+    /// [`a_duplicate_decorator_on_an_own_property_is_not_misattached_via_detached_declaration`]
+    /// above): the guard is only ever reached when `owner_ns != namespace`
+    /// (the early return above it covers every `owner_ns == namespace`
+    /// case), so getting `context_ns == namespace` too needs the inherited
+    /// property's type to resolve, from its *owner's* file, back into the
+    /// namespace currently being validated. `X` (`org.a`) has a relationship
+    /// property typed `NoId`, imported from `org.b`; `Y` (`org.b`) extends
+    /// `X` and locally declares `NoId` (no identifier) itself — so
+    /// `context_ns` (`NoId`'s namespace, resolved via `org.a`'s import) is
+    /// `org.b`, the same namespace `Y` is validated in. Reached through
+    /// [`ModelManager::validate_detached_declaration`] (no outer `attach`,
+    /// as above), a correct guard leaves `model_file` unset; the
+    /// `true`-forced mutant stamps `b.cto` on it.
+    #[test]
+    fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misattached_via_detached_declaration()
+     {
+        use crate::introspect::model_file::ModelFile;
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.a@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.b@1.0.0", "name": "NoId" }
+                    ],
+                    "declarations": [concept(serde_json::json!({
+                        "name": "X", "isAbstract": true, "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "r",
+                              "isArray": false, "isOptional": false,
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "NoId" } }
+                        ]
+                    }))]
+                }),
+                Some("a.cto".into()),
+            )
+            .unwrap();
+        let b = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.b@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "org.a@1.0.0", "name": "X" }
+            ],
+            "declarations": [
+                concept(serde_json::json!({ "name": "NoId" })),
+                concept(serde_json::json!({
+                    "name": "Y",
+                    "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
+                }))
+            ]
+        });
+        let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
+        // `Y` is declaration index 1 (`NoId` is index 0).
+        match manager.validate_detached_declaration(&detached, 1).unwrap_err() {
+            ConcertoError::Contract(c) => {
+                assert!(
+                    c.final_message()
+                        .contains("must be to a class that has an identifier")
+                );
+                assert_eq!(c.model_file, None);
             }
             other => panic!("expected a Contract error, got {other:?}"),
         }
