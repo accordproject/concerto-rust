@@ -598,9 +598,13 @@ fn check_unique_decorators(
 ) -> Result<()> {
     let mut seen = HashSet::new();
     for decorator in element.get_decorators() {
-        if !seen.insert(decorator.name()) {
+        // TS keys its `Set` on `getName()` and interpolates it into the
+        // message as is, so a decorator with no `name` at all is its own
+        // entry and reads `undefined` (accordproject/concerto-rust#218).
+        let name = decorator.js_name();
+        if !seen.insert(name) {
             return Err(failed(
-                format!("Duplicate decorator {}", decorator.name()),
+                format!("Duplicate decorator {}", name.unwrap_or("undefined")),
                 location,
             ));
         }
@@ -1791,6 +1795,154 @@ mod tests {
             }))
         ]));
         assert!(err.is_ok());
+    }
+
+    /// accordproject/concerto-rust#218 cluster #1, minimised: the P5-05 fuzz
+    /// seed `data/ModelManager.fromAst/6287c8da05a81a766dd6845b.json`
+    /// (the `carResolved` pair of models) with `models[1].decorators` set to
+    /// the string `"💥emoji"`. TS's `Decorated.process` iterates that string
+    /// by UTF-16 code unit, each unit becoming a decorator whose name is
+    /// `undefined`, so `Decorated.validate` rejects it as a duplicate. The
+    /// repro goes through the same steps as the oracle's native
+    /// `ModelManager.fromAst` (`add_model` per model, then
+    /// `validate_models`).
+    #[test]
+    fn string_decorators_on_a_model_are_duplicate_undefined_decorators() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": [],
+                    "namespace": "org.vehicle@1.0.0",
+                    "imports": [],
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Manufactured", "isAbstract": true, "properties": [] },
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Vehicle", "isAbstract": true,
+                          "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                              "name": "name", "isArray": false, "isOptional": false },
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+                              "name": "range", "isArray": false, "isOptional": false }
+                          ],
+                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                                         "name": "Manufactured", "namespace": "org.vehicle@1.0.0" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "decorators": "\u{1F4A5}emoji",
+                    "namespace": "org.car@1.0.0",
+                    "imports": [
+                        { "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.vehicle@1.0.0", "name": "Vehicle" }
+                    ],
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Car", "isAbstract": false,
+                          "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+                              "name": "mileage", "isArray": false, "isOptional": false }
+                          ],
+                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                                         "name": "Vehicle", "namespace": "org.vehicle@1.0.0" } }
+                    ]
+                }),
+                None,
+            )
+            .unwrap();
+        let err = manager.validate_models().unwrap_err();
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.kind, ErrorKind::IllegalModel);
+        assert_eq!(contract.message(), "Duplicate decorator undefined");
+    }
+
+    /// A one-character string is a single `undefined`-named decorator in TS:
+    /// no duplicate, so the model is accepted (#218).
+    #[test]
+    fn single_code_unit_string_decorators_are_accepted() {
+        let mut manager = ModelManager::new().unwrap();
+        manager
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "decorators": "x",
+                    "declarations": []
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(manager.validate_models().is_ok());
+    }
+
+    /// Loads a model with no declarations whose own `decorators` value is
+    /// `decorators`, and validates it.
+    fn validate_model_decorators(decorators: serde_json::Value) -> crate::error::Result<()> {
+        let mut manager = ModelManager::new().unwrap();
+        manager.add_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "decorators": decorators,
+                "declarations": []
+            }),
+            None,
+        )?;
+        manager.validate_models()
+    }
+
+    /// A one-character string is a single `undefined`-named decorator in TS:
+    /// no duplicate, so the model is accepted; an empty string is falsy and
+    /// yields none (#218).
+    #[test]
+    fn single_code_unit_or_empty_string_decorators_are_accepted() {
+        assert!(validate_model_decorators(serde_json::json!("x")).is_ok());
+        assert!(validate_model_decorators(serde_json::json!("")).is_ok());
+    }
+
+    /// A decorator node with no `name` reads `undefined` in the message, as
+    /// TS's does, whether it came from a string's code unit or from a
+    /// nameless node in a real array (#218).
+    #[test]
+    fn nameless_model_decorators_are_duplicate_undefined_decorators() {
+        for decorators in [
+            serde_json::json!("ab"),
+            serde_json::json!([
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] },
+                { "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] }
+            ]),
+        ] {
+            let err = validate_model_decorators(decorators).unwrap_err();
+            let ConcertoError::Contract(contract) = &err else {
+                panic!("expected an IllegalModelException, got {err:?}");
+            };
+            assert_eq!(contract.message(), "Duplicate decorator undefined");
+        }
+    }
+
+    /// TS's `Set` tells a missing name (`undefined`) apart from `""`, so one
+    /// of each is not a duplicate; two empty names still are (#218).
+    #[test]
+    fn a_missing_and_an_empty_decorator_name_are_distinct() {
+        let nameless =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] });
+        let empty = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "", "arguments": [] });
+        assert!(validate_model_decorators(serde_json::json!([nameless, empty])).is_ok());
+        let err = validate_model_decorators(serde_json::json!([empty, empty])).unwrap_err();
+        let ConcertoError::Contract(contract) = &err else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.message(), "Duplicate decorator ");
     }
 
     #[test]
