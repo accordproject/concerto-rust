@@ -1173,12 +1173,8 @@ pub fn property_validate(
         .unwrap_or(JsValue::UNDEFINED);
     let body = || -> Result<()> {
         let property_type = get(&property, "type")?;
-        // TS: `if (this.type)`, JS truthiness — not just nullish, so an
-        // empty-string type name (P4-08e/#189 DV: a `RelationshipProperty`
-        // whose AST `type.name` is `""`) skips `resolveType` here too,
-        // exactly as it does in TS, leaving the "no type" case to the
-        // subclass's own check (`relationshipDeclarationValidate`'s
-        // `!this.getType()`) instead of a generic "Undeclared type" error.
+        // TS: `if(this.type)` — a JS truthiness check (an empty-string type
+        // is falsy and skips resolution), not a nullish check.
         if property_type.is_truthy() {
             let fqn = js_string(&call(
                 &property,
@@ -1199,6 +1195,8 @@ pub fn property_validate(
         let array = get(&property, "array")?.is_truthy();
         if !nullish(&size_validator) && !array {
             let mut is_map_type = false;
+            // TS: `if(this.type && !this.isPrimitive())` — same truthiness
+            // check as above.
             if property_type.is_truthy() {
                 let is_primitive =
                     call(&property, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
@@ -1389,10 +1387,9 @@ pub fn relationship_declaration_validate(
         // effect here.
         let property_type = call(&view, "getType", &[], "this.getType")?;
 
-        // TS: `if (!this.getType())`, JS falsiness — not just nullish, so an
-        // empty-string type name (P4-08e/#189, DV: a `RelationshipProperty`
-        // whose AST `type.name` is `""`) hits this check too, not the
-        // generic "Undeclared type" resolution further down.
+        // TS: `if(!this.getType())` — a JS truthiness check, so an
+        // empty-string type (falsy) must hit this branch too, not just
+        // null/undefined.
         if !property_type.is_truthy() {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,
@@ -2442,15 +2439,12 @@ pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> 
             &[type_name_ast],
             "modelFile.getType",
         )?;
-        // `isValidMapKeyScalar(decl)` reads `decl?.isScalarDeclaration?.()`
-        // (modelutil.ts): null-safe on `decl` itself, unlike
-        // `MapValueType.validate`'s deliberately-unguarded
-        // `decl.isMapDeclaration?.()` (module doc on `call_optional`,
-        // P4-08e/#189). An undeclared key type (`getType` returning nullish)
-        // must read as `None` here, not as a JsValue `null`/`undefined`
-        // `decl` passed on to a `Some`.
-        let decl = (!nullish(&decl)).then_some(decl);
-        let valid = mu::is_valid_map_key_scalar(&JsContext, decl.as_ref())?;
+        // `modelFile.getType` returns `null` when the type is not found (not
+        // a thrown error), and TS's `isValidMapKeyScalar(decl)` optional-
+        // chains off that (`decl?.isScalarDeclaration?.()`), so a nullish
+        // `decl` here must become `None`, not `Some` of a JS null.
+        let decl_opt = if nullish(&decl) { None } else { Some(&decl) };
+        let valid = mu::is_valid_map_key_scalar(&JsContext, decl_opt)?;
         if valid != Some(true) {
             let parent = get(&view, "parent")?;
             let parent_name = js_string(&get(&parent, "name")?)?;
