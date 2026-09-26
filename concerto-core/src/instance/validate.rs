@@ -2384,7 +2384,36 @@ mod tests {
                     { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "VehicleMap",
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
                       "value": { "$class": "concerto.metamodel@1.0.0.RelationshipMapValueType",
-                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Vehicle" } } }
+                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Vehicle" } } },
+                    // A scalar-typed map KEY (P5-06: `map_key_is_scalar` had
+                    // no fixture where the map key itself is an
+                    // `ObjectMapKeyType` referencing a scalar — every other
+                    // map here keys on a plain `StringMapKeyType`, so
+                    // `map_key_is_scalar` always took its early `key_kind()
+                    // != "ObjectMapKeyType"` return and its real
+                    // scalar-resolution logic was never reached).
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ScalarKeyMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.ObjectMapKeyType",
+                               "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "VIN" } },
+                      "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "VIN" } } },
+                    // A scalar-typed map VALUE whose KEY is *not* scalar
+                    // (paired with `ScalarKeyMap` above): `checkMapType`
+                    // reads `ModelUtil.isScalar(mapDeclaration.getKey())`
+                    // unconditionally, even while validating the value slot
+                    // (module doc, `map_key_is_scalar`'s own doc) — so this
+                    // map's value type is never type-checked at all, by
+                    // design (a faithful port of that quirk, not a bug).
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "PlainKeyScalarValueMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "VIN" } } },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "DateTimeMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.DateTimeMapValueType" } },
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "BooleanMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.BooleanMapValueType" } }
                 ]
             }),
             None,
@@ -2488,7 +2517,11 @@ mod tests {
     fn an_undeclared_field_on_an_identified_resource_with_no_identifier_value_reports_undefined() {
         let mgr = fixture();
         let vehicle = json!({ "$class": "org.acme@1.0.0.Vehicle", "mileage": 5, "extra": "nope" });
-        let err = err_of(validate_instance(&mgr, &vehicle, &ValidateOptions::default()));
+        let err = err_of(validate_instance(
+            &mgr,
+            &vehicle,
+            &ValidateOptions::default(),
+        ));
         assert!(
             err.to_string().contains("\"undefined\""),
             "expected the undefined-identifier placeholder, got: {err}"
@@ -2584,8 +2617,7 @@ mod tests {
             &ValidateOptions::default(),
         ));
         assert!(
-            err.to_string()
-                .contains("\"org.nest@1.0.0.Inner#I1\""),
+            err.to_string().contains("\"org.nest@1.0.0.Inner#I1\""),
             "{err}"
         );
     }
@@ -2906,6 +2938,86 @@ mod tests {
         validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map).unwrap();
     }
 
+    /// [`map_key_is_scalar`] (P5-06: never reached beyond its own early
+    /// `key_kind() != "ObjectMapKeyType"` return — every other map fixture
+    /// keys on a plain `StringMapKeyType`). `ScalarKeyMap` keys *and*
+    /// values on `VIN` (a `StringScalar`): a real scalar key makes
+    /// `checkMapType` substitute the scalar's own underlying type
+    /// (`String`) for the value check.
+    #[test]
+    fn a_scalar_keyed_map_with_a_string_value_passes() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!("ABC12"))]);
+        validate_map(&mgr, "org.acme@1.0.0.ScalarKeyMap", &map).unwrap();
+    }
+
+    #[test]
+    fn a_scalar_keyed_map_with_a_non_string_value_is_rejected() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!(12345))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ScalarKeyMap", &map));
+        assert!(err.to_string().contains("Expected Type of String"), "{err}");
+    }
+
+    /// The other half of `map_key_is_scalar`'s pairing: `checkMapType`
+    /// reads the *key*'s scalar-ness even while checking the *value* slot
+    /// (module doc "Scope", `map_key_is_scalar`'s own doc) — a faithfully
+    /// ported quirk, not a bug. `PlainKeyScalarValueMap` has a scalar
+    /// (`VIN`) value type but a plain `StringMapKeyType` key, so the value
+    /// is never type-checked at all: even a value of the wrong JS type
+    /// passes.
+    #[test]
+    fn a_scalar_valued_map_with_a_non_scalar_key_skips_value_type_checking() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!(12345))]);
+        validate_map(&mgr, "org.acme@1.0.0.PlainKeyScalarValueMap", &map)
+            .expect("checkMapType only consults the key's scalar-ness, so an untyped value passes");
+    }
+
+    /// `checkMapType`'s `DateTime` primitive-kind arm (P5-06: cargo-mutants
+    /// found its `!parses_as_dayjs(value)` guard survived every mutation —
+    /// `parses_as_dayjs` itself was unit-tested directly, but no fixture
+    /// had a `DateTimeMapValueType` map to reach this guard through
+    /// `check_map_type` itself).
+    #[test]
+    fn a_datetime_map_with_a_parseable_value_passes() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!("2024-05-01"))]);
+        validate_map(&mgr, "org.acme@1.0.0.DateTimeMap", &map).unwrap();
+    }
+
+    #[test]
+    fn a_datetime_map_with_an_unparseable_value_is_rejected() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!(true))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.DateTimeMap", &map));
+        assert!(
+            err.to_string().contains("Expected Type of DateTime"),
+            "{err}"
+        );
+    }
+
+    /// `checkMapType`'s `Boolean` primitive-kind arm (P5-06: same gap as
+    /// the `DateTime` arm above — no `BooleanMapValueType` map fixture
+    /// existed to reach it).
+    #[test]
+    fn a_boolean_map_with_a_boolean_value_passes() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!(true))]);
+        validate_map(&mgr, "org.acme@1.0.0.BooleanMap", &map).unwrap();
+    }
+
+    #[test]
+    fn a_boolean_map_with_a_non_boolean_value_is_rejected() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!("nope"))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.BooleanMap", &map));
+        assert!(
+            err.to_string().contains("Expected Type of Boolean"),
+            "{err}"
+        );
+    }
+
     // ---- Scalars ----
 
     #[test]
@@ -3062,7 +3174,10 @@ mod tests {
     fn fully_qualified_identifier_falls_back_to_the_bare_fqn_only_for_an_absent_or_empty_id() {
         assert_eq!(fully_qualified_identifier("ns.Foo", None), "ns.Foo");
         assert_eq!(fully_qualified_identifier("ns.Foo", Some("")), "ns.Foo");
-        assert_eq!(fully_qualified_identifier("ns.Foo", Some("42")), "ns.Foo#42");
+        assert_eq!(
+            fully_qualified_identifier("ns.Foo", Some("42")),
+            "ns.Foo#42"
+        );
     }
 
     /// [`identifiable_to_string`] (P5-06: cargo-mutants found all three
@@ -3080,7 +3195,7 @@ mod tests {
     /// `identifiable_to_string`'s `"Relationship {id=...}"` form.
     #[test]
     fn a_relationship_tagged_value_on_a_plain_object_property_reports_its_relationship_string_form()
-     {
+    {
         let mgr = fixture();
         let vehicle = json!({
             "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,

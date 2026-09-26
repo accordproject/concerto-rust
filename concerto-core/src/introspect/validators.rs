@@ -876,6 +876,31 @@ mod tests {
         assert!(err.to_string().contains("Validator error for field"));
     }
 
+    /// `v8_regex_reason`'s specific mapping: `regress`'s "Unbalanced
+    /// parenthesis" is translated to V8's own wording, "Unterminated
+    /// group" (OD-4).
+    #[test]
+    fn string_validator_maps_unbalanced_parenthesis_to_v8_wording() {
+        let err = string_validator(Some(("(", "")), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Invalid regular expression: /(/: Unterminated group"),
+            "{err}"
+        );
+    }
+
+    /// `v8_regex_reason`'s fallback arm: a reason not in the table is
+    /// `regress`'s own text, unchanged.
+    #[test]
+    fn string_validator_passes_through_an_unmapped_regex_error_reason() {
+        let err = string_validator(Some(("a{2,1}", "")), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Invalid regular expression: /a{2,1}/: Invalid quantifier"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn string_validator_rejects_invalid_regex_flags() {
         for flags in ["x", "gg", "uv", "vu", "iI"] {
@@ -1135,6 +1160,48 @@ mod tests {
         let this_no_max = string_validator(None, Some((Some(1.0), None))).unwrap();
         let other_has_max = string_validator(None, Some((Some(1.0), Some(10.0)))).unwrap();
         assert!(!this_no_max.compatible_with(Some(&Validator::String(other_has_max))));
+
+        // The symmetric case for min_length: this has no lower bound (so
+        // accepts shorter strings than `other` allows), so it is not
+        // compatible with an `other` that does have one.
+        let this_no_min = string_validator(None, Some((None, Some(100.0)))).unwrap();
+        let other_has_min = string_validator(None, Some((Some(1.0), Some(100.0)))).unwrap();
+        assert!(!this_no_min.compatible_with(Some(&Validator::String(other_has_min))));
+    }
+
+    // ---- StringValidator: accessors ----
+
+    #[test]
+    fn string_validator_min_length_and_max_length_accessors() {
+        let both = string_validator(None, Some((Some(2.0), Some(8.0)))).unwrap();
+        assert_eq!(both.min_length(), Some(2.0));
+        assert_eq!(both.max_length(), Some(8.0));
+
+        let min_only = string_validator(None, Some((Some(3.0), None))).unwrap();
+        assert_eq!(min_only.min_length(), Some(3.0));
+        assert_eq!(min_only.max_length(), None);
+
+        let max_only = string_validator(None, Some((None, Some(9.0)))).unwrap();
+        assert_eq!(max_only.min_length(), None);
+        assert_eq!(max_only.max_length(), Some(9.0));
+    }
+
+    // ---- CompiledRegex: #eq ----
+
+    /// `StringValidator` derives `PartialEq`, which for its `regex` field
+    /// goes through `CompiledRegex`'s own manual `PartialEq` (pattern and
+    /// flags only — `regress::Regex` itself has none).
+    #[test]
+    fn string_validator_equality_compares_pattern_and_flags() {
+        let a = string_validator(Some(("foo", "i")), None).unwrap();
+        let b = string_validator(Some(("foo", "i")), None).unwrap();
+        assert_eq!(a, b);
+
+        let different_pattern = string_validator(Some(("bar", "i")), None).unwrap();
+        assert_ne!(a, different_pattern);
+
+        let different_flags = string_validator(Some(("foo", "g")), None).unwrap();
+        assert_ne!(a, different_flags);
     }
 
     // ---- CollectionSizeValidator: #constructor ----
@@ -1200,6 +1267,15 @@ mod tests {
         assert!(err.to_string().contains("no more than 5 elements"));
     }
 
+    /// Both bounds are inclusive: a value exactly at `minSize` or `maxSize`
+    /// is accepted, not rejected.
+    #[test]
+    fn collection_size_validator_validate_is_inclusive_at_both_bounds() {
+        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(2.0), Some(5.0))).unwrap();
+        assert!(v.validate(&field(), Some("id"), 2.0).is_ok());
+        assert!(v.validate(&field(), Some("id"), 5.0).is_ok());
+    }
+
     // ---- CollectionSizeValidator: #compatibleWith ----
 
     #[test]
@@ -1240,6 +1316,130 @@ mod tests {
         assert!(
             v(Some(2.0), Some(8.0))
                 .compatible_with(Some(&Validator::CollectionSize(v(Some(2.0), Some(8.0)))))
+        );
+    }
+
+    // ---- NumberValidator: #constructor / accessors ----
+
+    #[test]
+    fn number_validator_reads_both_bounds() {
+        let v = NumberValidator::new(&field(), &number_ast(Some(1.0), Some(10.0))).unwrap();
+        assert_eq!(v.lower_bound(), Some(&Value::from(1.0)));
+        assert_eq!(v.upper_bound(), Some(&Value::from(10.0)));
+    }
+
+    #[test]
+    fn number_validator_lower_only() {
+        let v = NumberValidator::new(&field(), &number_ast(Some(3.0), None)).unwrap();
+        assert_eq!(v.lower_bound(), Some(&Value::from(3.0)));
+        assert_eq!(v.upper_bound(), None);
+    }
+
+    // ---- NumberValidator: #toString ----
+
+    #[test]
+    fn number_validator_to_string() {
+        let v = NumberValidator::new(&field(), &number_ast(Some(1.0), Some(10.0))).unwrap();
+        assert_eq!(v.to_string(), "NumberValidator lower: 1 upper: 10");
+
+        let lower_only = NumberValidator::new(&field(), &number_ast(Some(2.0), None)).unwrap();
+        assert_eq!(
+            lower_only.to_string(),
+            "NumberValidator lower: 2 upper: null"
+        );
+    }
+
+    // ---- NumberValidator: #compatibleWith ----
+
+    fn number_ast(lower: Option<f64>, upper: Option<f64>) -> Value {
+        let mut ast = serde_json::json!({});
+        if let Some(lower) = lower {
+            ast["lower"] = lower.into();
+        }
+        if let Some(upper) = upper {
+            ast["upper"] = upper.into();
+        }
+        ast
+    }
+
+    #[test]
+    fn number_validator_incompatible_with_no_other_or_a_non_number_validator() {
+        let v = NumberValidator::new(&field(), &number_ast(Some(1.0), Some(5.0))).unwrap();
+        assert!(!v.compatible_with(None));
+        let other = string_validator(Some(("foo", "")), None).unwrap();
+        assert!(!v.compatible_with(Some(&Validator::String(other))));
+    }
+
+    #[test]
+    fn number_validator_compatible_with() {
+        let v = |lower: Option<f64>, upper: Option<f64>| {
+            NumberValidator::new(&field(), &number_ast(lower, upper)).unwrap()
+        };
+
+        assert!(
+            v(Some(2.0), Some(5.0))
+                .compatible_with(Some(&Validator::Number(v(Some(1.0), Some(6.0)))))
+        );
+        assert!(
+            !v(Some(1.0), Some(5.0))
+                .compatible_with(Some(&Validator::Number(v(Some(3.0), Some(5.0)))))
+        );
+        assert!(
+            !v(Some(1.0), Some(5.0))
+                .compatible_with(Some(&Validator::Number(v(Some(1.0), Some(3.0)))))
+        );
+        assert!(
+            !v(None, Some(10.0))
+                .compatible_with(Some(&Validator::Number(v(Some(1.0), Some(10.0)))))
+        );
+        assert!(
+            !v(Some(1.0), None).compatible_with(Some(&Validator::Number(v(Some(1.0), Some(10.0)))))
+        );
+        assert!(
+            v(Some(1.0), Some(5.0)).compatible_with(Some(&Validator::Number(v(Some(1.0), None))))
+        );
+        assert!(
+            v(Some(1.0), Some(5.0)).compatible_with(Some(&Validator::Number(v(None, Some(5.0)))))
+        );
+        assert!(
+            v(Some(2.0), Some(8.0))
+                .compatible_with(Some(&Validator::Number(v(Some(2.0), Some(8.0)))))
+        );
+    }
+
+    // ---- Validator: enum-level #compatibleWith dispatch ----
+
+    /// `Validator::compatible_with` (the enum wrapper, not each variant's own
+    /// method) just dispatches to the variant's `compatible_with` — every
+    /// test above calls the variant's method directly, so it never actually
+    /// goes through this dispatcher. Confirm each arm forwards both a
+    /// compatible and an incompatible answer through the wrapper.
+    #[test]
+    fn validator_compatible_with_dispatches_to_each_variant() {
+        let number = |lower: Option<f64>, upper: Option<f64>| {
+            Validator::Number(NumberValidator::new(&field(), &number_ast(lower, upper)).unwrap())
+        };
+        let string =
+            |pattern: &str| Validator::String(string_validator(Some((pattern, "")), None).unwrap());
+        let collection = |min: Option<f64>, max: Option<f64>| {
+            Validator::CollectionSize(
+                CollectionSizeValidator::new(&field(), &size_ast(min, max)).unwrap(),
+            )
+        };
+
+        assert!(number(Some(1.0), Some(5.0)).compatible_with(Some(&number(Some(1.0), Some(5.0)))));
+        assert!(!number(Some(1.0), Some(5.0)).compatible_with(Some(&number(Some(2.0), Some(5.0)))));
+
+        assert!(string("foo").compatible_with(Some(&string("foo"))));
+        assert!(!string("foo").compatible_with(Some(&string("bar"))));
+
+        assert!(
+            collection(Some(1.0), Some(5.0))
+                .compatible_with(Some(&collection(Some(1.0), Some(5.0))))
+        );
+        assert!(
+            !collection(Some(1.0), Some(5.0))
+                .compatible_with(Some(&collection(Some(2.0), Some(5.0))))
         );
     }
 }
