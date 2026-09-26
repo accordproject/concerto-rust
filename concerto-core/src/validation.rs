@@ -1587,7 +1587,11 @@ mod tests {
         .unwrap();
 
         // A file-less IllegalModel error is stamped.
-        let illegal = ConcertoError::from(ContractError::new(ErrorKind::IllegalModel, "pre-port", vec![]));
+        let illegal = ConcertoError::from(ContractError::new(
+            ErrorKind::IllegalModel,
+            "pre-port",
+            vec![],
+        ));
         match attach_model_file(illegal, &mf) {
             ConcertoError::Contract(c) => {
                 assert_eq!(c.model_file, Some(Some("attach.cto".to_string())))
@@ -1608,7 +1612,8 @@ mod tests {
 
         // A non-IllegalModel error is left alone (would be stamped by an
         // `&&` → `||` swap, since it has no file yet).
-        let validator = ConcertoError::from(ContractError::new(ErrorKind::Validator, "pre-port", vec![]));
+        let validator =
+            ConcertoError::from(ContractError::new(ErrorKind::Validator, "pre-port", vec![]));
         match attach_model_file(validator, &mf) {
             ConcertoError::Contract(c) => assert_eq!(c.model_file, None),
             other => panic!("expected a Contract error, got {other:?}"),
@@ -4525,7 +4530,10 @@ mod tests {
         });
         let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
         // `Y` is declaration index 1 (`NoId` is index 0).
-        match manager.validate_detached_declaration(&detached, 1).unwrap_err() {
+        match manager
+            .validate_detached_declaration(&detached, 1)
+            .unwrap_err()
+        {
             ConcertoError::Contract(c) => {
                 assert!(
                     c.final_message()
