@@ -607,7 +607,8 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 | "toString"
                 | "validate"
         ),
-        ("NumberValidator" | "StringValidator", m) => matches!(m, "validate" | "compatibleWith"),
+        ("NumberValidator", m) => matches!(m, "validate" | "compatibleWith" | "toString"),
+        ("StringValidator", m) => matches!(m, "validate" | "compatibleWith" | "matchesRegex"),
         ("CollectionSizeValidator", m) => {
             matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
         }
@@ -1073,6 +1074,9 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(nv.compatible_with(other.as_ref()))))
                 }
+                "toString" => {
+                    ran(Ok(Value::String(nv.to_string())))
+                }
                 _ => unreachable!("`dispatched` lists every member"),
             })
         }
@@ -1099,6 +1103,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 "compatibleWith" => {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(sv.compatible_with(other.as_ref()))))
+                }
+                "matchesRegex" => {
+                    let value = arg_str(&args, 0)?;
+                    ran(Ok(Value::Bool(sv.matches_regex(&value))))
                 }
                 _ => unreachable!("`dispatched` lists every member"),
             })
@@ -1473,6 +1481,16 @@ fn arg_nullable_str(args: &[Arg], index: usize) -> Faulty<Option<String>> {
         Some(Arg::Plain(Value::String(s))) => Ok(Some(s.clone())),
         _ => Err(Fault::Unsupported(
             "expected a nullable string argument".into(),
+        )),
+    }
+}
+
+/// `StringValidator.matchesRegex`'s argument: a required non-null string.
+fn arg_str(args: &[Arg], index: usize) -> Faulty<String> {
+    match args.get(index) {
+        Some(Arg::Plain(Value::String(s))) => Ok(s.clone()),
+        _ => Err(Fault::Unsupported(
+            "expected a string argument".into(),
         )),
     }
 }
