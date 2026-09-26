@@ -5498,6 +5498,7 @@ ModelManager.addCTOModel	05af169809c90e6d2b4b1a68	pass
 ModelManager.addCTOModel	05db31c9d8f348193b598c85	pass
 ModelManager.addCTOModel	063dee8458392203b4d20a4d	pass
 ModelManager.addCTOModel	0644e38d76f01faa5a4d7cd6	pass
+ModelManager.addCTOModel	067da5aa965e496e6366d351	pass
 ModelManager.addCTOModel	06b54674a42b201471a8cdd2	pass
 ModelManager.addCTOModel	0708cadc678cefd55e7c5e12	pass
 ModelManager.addCTOModel	074a4240df8d81efecc86006	pass
@@ -7148,6 +7149,7 @@ ModelManager.fromAst	14d322663ca024d8cf61abb1	pass
 ModelManager.fromAst	15270a3d46ae76b3adf549eb	pass
 ModelManager.fromAst	15c7357c92f6ae8ae942ab59	pass
 ModelManager.fromAst	19622251d12f84f178484b75	pass
+ModelManager.fromAst	20cab432f80aacba5f4dfebc	pass
 ModelManager.fromAst	274f8cebaf47c4089b212e87	pass
 ModelManager.fromAst	474a585e4c374ad3df5eee85	pass
 ModelManager.fromAst	47fa3fd08df5307b8886d257	pass
@@ -7181,6 +7183,7 @@ ModelManager.fromAst	d78164cb4276692047e9bda9	pass
 ModelManager.fromAst	d9cfceba1516ef0eb4ced670	pass
 ModelManager.fromAst	ea37538c5a802230fe787562	pass
 ModelManager.fromAst	eca12687b3986aa53aa9cfa3	pass
+ModelManager.fromAst	f7738249d209270e5ddcfd06	pass
 ModelManager.getAssetDeclarations	f73119c92984c10b7fb8e2e4	pass
 ModelManager.getAssignableConcreteTypes	6961524db059485e741bc6e3	pass
 ModelManager.getAssignableConcreteTypes	7d53da6e7260abee88a3cf2f	pass
@@ -8125,11 +8128,13 @@ ModelManager.new	25eb1d591fd960a3c7c68d36	pass
 ModelManager.new	2674d4ff5e76a68729078424	pass
 ModelManager.new	29105816a5485f6ba32846ff	pass
 ModelManager.new	298c44bbe2c5ac1968cd802c	pass
+ModelManager.new	612c31304f7d4a428810e681	pass
 ModelManager.new	61e3116cc4efadb1f862f247	pass
 ModelManager.new	6fb293e49d8daee1a9c7a357	pass
 ModelManager.new	7d27d1f0637b67cc5bc3348e	pass
 ModelManager.new	d5a4f2e60a51be65b07c4905	pass
 ModelManager.new	d88bbdce64f977eb06983fcc	pass
+ModelManager.new	e0790578cbead7783955e838	pass
 ModelManager.new	f4f57891d4352ec8f8f1a393	pass
 ModelManager.new	fdca0ded63f795c0e72d8e0f	pass
 ModelManager.resolveMetaModel	26a36b86c2030f67e157a55a	pass
