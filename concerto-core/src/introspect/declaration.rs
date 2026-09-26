@@ -362,24 +362,39 @@ impl ClassDeclaration {
     /// The `superType`/`idField` decision `ClassDeclaration.process` makes
     /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
     /// the loop itself builds `Field`/`RelationshipDeclaration`/
-    /// `EnumValueDeclaration` views, kept in TS). `explicit_super_type` is
-    /// `this.ast.superType.name`, when the AST names one. `identified_class`
-    /// is `this.ast.identified.$class`; `identified_name` is
-    /// `this.ast.identified.name` (only meaningful for an explicit
-    /// `IdentifiedBy`). `fqn` is `this.fqn`, read once `this.name` and
-    /// `this.modelFile` are set (`Declaration.process` runs first).
+    /// `EnumValueDeclaration` views, kept in TS). `has_explicit_super_type`
+    /// is whether `this.ast.superType` itself is non-nullish (TS:
+    /// `if (this.ast.superType) {...} else if (...) {...}` — a truthiness
+    /// test on the AST *node*, not on its `name`); when it is,
+    /// `explicit_super_type_name` is `this.ast.superType.name` **as given**,
+    /// including `None` for a nullish `name` (accordproject/concerto-rust#217:
+    /// TS's own assignment, `this.superType = this.ast.superType.name`, is
+    /// unconditional and untyped — a `superType: {}` node with no `name` key
+    /// leaves `this.superType` as `undefined`, and a `name: null` leaves it
+    /// `null`; either way TS's own `_resolveSuperType`/`validate` treat that
+    /// as "no super type to resolve" — `!this.superType`/`!== null` — the
+    /// same outcome `None` gives here; neither takes the implicit `'Concept'`
+    /// default, which only applies when the AST names no `superType` node at
+    /// all). `identified_class` is `this.ast.identified.$class`;
+    /// `identified_name` is `this.ast.identified.name`, again exactly as
+    /// given (only meaningful for an explicit `IdentifiedBy`). `fqn` is
+    /// `this.fqn`, read once `this.name` and `this.modelFile` are set
+    /// (`Declaration.process` runs first).
     pub fn process_decision(
-        explicit_super_type: Option<&str>,
+        has_explicit_super_type: bool,
+        explicit_super_type_name: Option<&str>,
         is_system_model_file: bool,
         name: &str,
         identified_class: Option<&str>,
         identified_name: Option<&str>,
         fqn: &str,
     ) -> ProcessDecision {
-        let super_type = match explicit_super_type {
-            Some(t) => Some(t.to_string()),
-            None if Self::is_system_concept_file(is_system_model_file, name) => None,
-            None => Some("Concept".to_string()),
+        let super_type = if has_explicit_super_type {
+            explicit_super_type_name.map(str::to_string)
+        } else if Self::is_system_concept_file(is_system_model_file, name) {
+            None
+        } else {
+            Some("Concept".to_string())
         };
 
         let (id_field, add_identifier_field) = match identified_class {
@@ -2003,5 +2018,53 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["onMap"]
         );
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2: `superType: {}` (an
+    /// AST node with no `name` key at all) must resolve to no super type,
+    /// not the implicit `'Concept'` default — TS's own `if (this.ast.superType)`
+    /// takes the explicit branch whenever the node itself is truthy
+    /// (an empty object is), and a `this.superType` left `undefined` by that
+    /// branch is never `'Concept'`.
+    #[test]
+    fn an_explicit_super_type_node_with_no_name_has_no_super_type_not_the_implicit_default() {
+        let decision =
+            ClassDeclaration::process_decision(true, None, false, "C", None, None, "ns.C");
+        assert_eq!(decision.super_type, None);
+    }
+
+    /// [`an_explicit_super_type_node_with_no_name_has_no_super_type_not_the_implicit_default`],
+    /// for an explicit `name: null`.
+    #[test]
+    fn an_explicit_super_type_node_with_a_null_name_has_no_super_type() {
+        let decision =
+            ClassDeclaration::process_decision(true, None, false, "C", None, None, "ns.C");
+        assert_eq!(decision.super_type, None);
+    }
+
+    /// The AST naming no `superType` node at all still takes the implicit
+    /// `'Concept'` default (unlike the two cases above, where the node
+    /// itself is present but names nothing).
+    #[test]
+    fn an_absent_super_type_node_takes_the_implicit_default() {
+        let decision =
+            ClassDeclaration::process_decision(false, None, false, "C", None, None, "ns.C");
+        assert_eq!(decision.super_type.as_deref(), Some("Concept"));
+    }
+
+    /// The system model's own `Concept` declaration is still the one
+    /// exemption from the implicit default.
+    #[test]
+    fn the_system_concept_declaration_has_no_implicit_super_type() {
+        let decision = ClassDeclaration::process_decision(
+            false,
+            None,
+            true,
+            "Concept",
+            None,
+            None,
+            "concerto@1.0.0.Concept",
+        );
+        assert_eq!(decision.super_type, None);
     }
 }

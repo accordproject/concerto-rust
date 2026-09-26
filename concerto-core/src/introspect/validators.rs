@@ -83,6 +83,115 @@ fn report_error<F: ValidatedElement>(
     err.into()
 }
 
+/// A validator sub-object's `key`, read the way TS's own `CollectionSizeValidator`/
+/// `StringValidator` constructors read `minSize`/`maxSize`/`minLength`/
+/// `maxLength` — a plain, untyped property read, never a parse — coerced
+/// through ECMAScript `ToNumber` ([`ecma::to_number`]) exactly as every use
+/// of the bound (a `< 0`/`>` comparison, `??`/`===null` checks) already
+/// coerces it. `None` for a missing key or an explicit JSON `null` alike
+/// (OD-3, the same collapse [`CollectionSizeValidator::new`]/[`StringValidator::new`]'s
+/// own doc comments already accept for this pair of fields), `Some` for
+/// anything else — including a fuzz-mutated non-number (a string, a bool, an
+/// array, an object), which `to_number` turns into a real `f64` (`NaN` when
+/// there is no sensible numeric reading), never a decode failure
+/// (accordproject/concerto-rust#217): every comparison downstream already
+/// treats `NaN` as "never crossed", the same outcome TS's own comparison
+/// against the untouched mutated value gives.
+fn validator_number_field(ast: &Value, key: &str) -> Option<f64> {
+    match ast.get(key) {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(ecma::to_number(value)),
+    }
+}
+
+/// A validator sub-object's string field (`StringRegexValidator`'s `pattern`/
+/// `flags`), read the way `new RegExp(validator.pattern, validator.flags)`
+/// reads them: a missing key is `undefined`, which the `RegExp` constructor
+/// special-cases to the empty string (never the literal text `"undefined"`
+/// `ToString` would give); anything else — a present `null`, a number, an
+/// array, an object, or a fuzz-mutated non-string of any kind
+/// (accordproject/concerto-rust#217) — goes through the same
+/// [`ecma::to_js_string`] coercion `ToString` gives it.
+fn validator_string_field(ast: &Value, key: &str) -> String {
+    match ast.get(key) {
+        None => String::new(),
+        Some(value) => ecma::to_js_string(value),
+    }
+}
+
+/// Builds a [`mm::CollectionSizeValidator`] straight from the raw
+/// `sizeValidator` AST node, bypassing `serde`'s strict decode of its
+/// `minSize`/`maxSize` fields (which requires an actual JSON number) the way
+/// [`validator_number_field`]'s doc comment describes. `$class` is never read
+/// by any behaviour this crate ports (only kept for a faithful struct), so a
+/// non-string or absent one is coerced/defaulted the same permissive way.
+/// `raw` is `ast.get("sizeValidator")`; `None` (the key absent) and an
+/// explicit JSON `null` both give `None`, matching `serde`'s own
+/// `Option<T>` field semantics for the well-formed AST this replaces.
+///
+/// TS: this is `ClassDeclaration.process`'s properties loop constructing a
+/// `Field`/`Property`, whose own `sizeValidator` is a
+/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
+/// (property.ts/field.ts) — the AST node itself, read with no type check.
+pub(crate) fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::CollectionSizeValidator {
+        _class: validator_string_field(raw, "$class"),
+        min_size: validator_number_field(raw, "minSize"),
+        max_size: validator_number_field(raw, "maxSize"),
+    })
+}
+
+/// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
+/// `lengthValidator` (`mm::StringLengthValidator`, `{minLength, maxLength}`).
+pub(crate) fn length_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringLengthValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::StringLengthValidator {
+        _class: validator_string_field(raw, "$class"),
+        min_length: length_bound_field(raw, "minLength"),
+        max_length: length_bound_field(raw, "maxLength"),
+    })
+}
+
+/// [`validator_number_field`], but for `StringLengthValidator`'s own
+/// `minLength`/`maxLength` specifically, which — unlike `CollectionSizeValidator`'s
+/// `minSize`/`maxSize` (that function's own doc comment) — TS reads with a
+/// plain optional chain (`lengthValidator?.minLength`), never `??`
+/// (`StringValidator`'s doc comment on its own fields): an explicit JSON
+/// `null` and an absent key are *not* the same value there. Only an explicit
+/// `null` on *both* bounds trips `StringValidator::new`'s "must be
+/// specified" check (a strict `this.minLength === null` identity, not a
+/// truthiness test), so this keeps that state as `None`; an absent key (or,
+/// accordproject/concerto-rust#217, a `lengthValidator` that is not even an
+/// object — a fuzz-mutated bool/array/number/string — so *every* key reads
+/// as absent) leaves TS's own `this.minLength` as `undefined`, never
+/// `null`, so this gives `Some(f64::NAN)` rather than `None`: not `None`, so
+/// it never wrongly joins the both-`null` check, and `NaN` makes every
+/// later magnitude comparison false, the same outcome `undefined` gives
+/// each of them (TS guards every one with `?? 0` or `!== undefined`; IEEE754
+/// `NaN` comparisons are always false, matching both).
+fn length_bound_field(ast: &Value, key: &str) -> Option<f64> {
+    match ast.get(key) {
+        Some(Value::Null) => None,
+        None => Some(f64::NAN),
+        Some(value) => Some(ecma::to_number(value)),
+    }
+}
+
+/// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
+/// `validator` (`mm::StringRegexValidator`, `{pattern, flags}`) —
+/// [`validator_string_field`]'s doc comment covers the `pattern`/`flags`
+/// coercion, which mirrors `new RegExp(validator.pattern, validator.flags)`
+/// rather than a plain `ToString`.
+pub(crate) fn regex_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringRegexValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::StringRegexValidator {
+        _class: validator_string_field(raw, "$class"),
+        pattern: validator_string_field(raw, "pattern"),
+        flags: validator_string_field(raw, "flags"),
+    })
+}
+
 /// A validator that keeps non-null numbers between two bounds, inclusive.
 ///
 /// A bound is the AST value as given (`None` is JS `null`). The metamodel

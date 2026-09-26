@@ -1627,19 +1627,36 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         let ast = get(&declaration, "ast")?;
 
         let explicit_super_type = get(&ast, "superType")?;
-        let explicit_super_type = if !nullish(&explicit_super_type) {
-            // TS: `this.superType = this.ast.superType.name;` — a plain
-            // assignment, never a `.toString()` call, so a fuzz-mutated,
-            // non-string `name` (a bool, a number, an array, ...) must not
-            // throw here the way `receiver` would (accordproject/concerto-rust#217).
-            // `js_string` gives the typed Rust representation the same
-            // coercion `ecma::to_js_string` gives non-string AST fields
-            // elsewhere in the crate (DV-002), not a "not a function" error.
-            Some(js_string(&get(&explicit_super_type, "name")?)?)
+        let has_explicit_super_type = !nullish(&explicit_super_type);
+        let explicit_super_type_name = if has_explicit_super_type {
+            let name = get(&explicit_super_type, "name")?;
+            if nullish(&name) {
+                // TS: `this.superType = this.ast.superType.name;` — a plain
+                // assignment, taken exactly as given. A `superType` node
+                // with no `name` (or an explicit `name: null`) leaves
+                // `this.superType` itself nullish, which TS's own
+                // `_resolveSuperType`/`validate` already treat as "nothing
+                // to resolve" (`!this.superType`/`!== null`); `js_string`
+                // would instead stringify it to the literal text
+                // `"undefined"`/`"null"` — truthy in both engines — and
+                // send it on to resolve a super type that was never named
+                // (accordproject/concerto-rust#217, review finding 2: "Could
+                // not find super type undefined").
+                None
+            } else {
+                // A fuzz-mutated, non-string `name` (a bool, a number, an
+                // array, ...) must not throw here the way `receiver` would
+                // (accordproject/concerto-rust#217). `js_string` gives the
+                // typed Rust representation the same coercion
+                // `ecma::to_js_string` gives non-string AST fields
+                // elsewhere in the crate (DV-002), not a "not a function"
+                // error.
+                Some(js_string(&name)?)
+            }
         } else {
             None
         };
-        let is_system_model_file = if explicit_super_type.is_none() {
+        let is_system_model_file = if !has_explicit_super_type {
             let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
             call(
                 &model_file,
@@ -1675,7 +1692,18 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // throw here either.
             let identified_class = js_string(&get(&identified, "$class")?)?;
             let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
-                Some(js_string(&get(&identified, "name")?)?)
+                // TS: `this.idField = this.ast.identified.name;` — a plain
+                // assignment, taken exactly as given, later read with a
+                // truthy check (`if (this.idField)`). A nullish `name` must
+                // stay nullish here too, not stringify to the truthy
+                // literal text `"undefined"`/`"null"` (review finding 2,
+                // accordproject/concerto-rust#217).
+                let name = get(&identified, "name")?;
+                if nullish(&name) {
+                    None
+                } else {
+                    Some(js_string(&name)?)
+                }
             } else {
                 None
             };
@@ -1685,7 +1713,8 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
 
         let decision = concerto_core::ClassDeclaration::process_decision(
-            explicit_super_type.as_deref(),
+            has_explicit_super_type,
+            explicit_super_type_name.as_deref(),
             is_system_model_file,
             &name,
             identified_class.as_deref(),

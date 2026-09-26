@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::decorator::{Decorated, Decorator};
+use crate::introspect::validators;
 use crate::introspect::validators::{NumberValidator, StringValidator};
 use crate::introspect::{DeclarationKind, FullyQualified, HasValidators, Named, Typed};
 use crate::model_manager::{ResolutionContext, ValidatedElement};
@@ -159,24 +160,16 @@ impl ScalarDeclaration {
                     ast,
                     fully_qualified_name,
                 };
-                let bad = |e: serde_json::Error| -> E {
-                    ContractError::new(
-                        ErrorKind::IllegalModel,
-                        "scalardeclaration-process-invalidvalidator",
-                        vec![("message", e.to_string())],
-                    )
-                    .into()
-                };
-                let validator = ast
-                    .get("validator")
-                    .map(|v| serde_json::from_value::<mm::StringRegexValidator>(v.clone()))
-                    .transpose()
-                    .map_err(bad)?;
-                let length_validator = ast
-                    .get("lengthValidator")
-                    .map(|v| serde_json::from_value::<mm::StringLengthValidator>(v.clone()))
-                    .transpose()
-                    .map_err(bad)?;
+                // `validators::regex_validator_from_ast`/`length_validator_from_ast`
+                // read `ast.validator`/`ast.lengthValidator` the same
+                // untyped way TS's `StringValidator` constructor does,
+                // rather than `serde`'s strict struct decode, so a
+                // fuzz-mutated, wrongly-typed field there (a bool, an
+                // array, an object) coerces instead of failing the whole
+                // scalar's parse (accordproject/concerto-rust#217).
+                let validator = validators::regex_validator_from_ast(ast.get("validator"));
+                let length_validator =
+                    validators::length_validator_from_ast(ast.get("lengthValidator"));
                 StringValidator::new(&element, validator.as_ref(), length_validator.as_ref())?;
                 Some(ScalarValidator::String {
                     validator: ast.get("validator").cloned(),

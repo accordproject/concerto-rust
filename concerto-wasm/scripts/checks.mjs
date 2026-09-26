@@ -361,6 +361,55 @@ export function runChecks(engine) {
     return { errorMessage: err.message };
   });
 
+  // accordproject/concerto-rust#217 (T2a review finding 2): `classDeclarationProcess`
+  // must not stringify a nullish `superType.name`/`identified.name` into the
+  // truthy literal text "undefined"/"null" — TS assigns them verbatim
+  // (`this.superType = this.ast.superType.name`, `this.idField =
+  // this.ast.identified.name`) and only ever checks them for truthiness
+  // downstream, so a `superType` node with no `name` (or an explicit `name:
+  // null`) must come back `null` here too, not a super type Rust would then
+  // fail to resolve ("Could not find super type undefined").
+  check('classDeclarationProcess keeps a nullish superType/identified name nullish', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Foo',
+      fqn: 'org.example@1.0.0.Foo',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    // `superType: {}` (present, but no `name` key): TS ends up with
+    // `this.superType === undefined`, never the implicit 'Concept' default
+    // (that only applies when `ast.superType` itself is absent) and never a
+    // super type Rust tries to resolve.
+    const noName = engine.classDeclarationProcess(mockDeclaration({ superType: {}, properties: [] }));
+    assert(noName.superType === null, `superType:{} -> superType ${JSON.stringify(noName.superType)}`);
+
+    // `superType.name: null` explicitly: same outcome.
+    const nullName = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: null }, properties: [] }),
+    );
+    assert(nullName.superType === null, `superType.name:null -> superType ${JSON.stringify(nullName.superType)}`);
+
+    // `identified.name: null`, with a real `IdentifiedBy` $class: TS's
+    // `this.idField = this.ast.identified.name` stays `null`, not the
+    // literal text "null" a property lookup would then fail to find.
+    const nullIdField = engine.classDeclarationProcess(
+      mockDeclaration({
+        identified: { $class: `${MM}.IdentifiedBy`, name: null },
+        properties: [],
+      }),
+    );
+    assert(nullIdField.idField === null, `identified.name:null -> idField ${JSON.stringify(nullIdField.idField)}`);
+
+    // Sanity: an ordinary, present superType name still resolves normally.
+    const named = engine.classDeclarationProcess(
+      mockDeclaration({ superType: { name: 'Base' }, properties: [] }),
+    );
+    assert(named.superType === 'Base', `superType.name:"Base" -> superType ${JSON.stringify(named.superType)}`);
+
+    return { noName, nullName, nullIdField, named };
+  });
+
   mm.free();
   return rows;
 }
