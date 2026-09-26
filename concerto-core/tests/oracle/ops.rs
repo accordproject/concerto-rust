@@ -259,7 +259,7 @@ pub fn exec(h: &Harness, op: &str, inputs: &Inputs) -> Dispatch {
 
 /// The ops whose arguments are plain data only. `None` for any other op.
 fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
-    const PLAIN_OPS: [&str; 17] = [
+    const PLAIN_OPS: [&str; 18] = [
         "ModelUtil.getShortName",
         "ModelUtil.getNamespace",
         "ModelUtil.parseNamespace",
@@ -274,6 +274,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         "ModelUtil.isValidMapKey",
         "ModelUtil.isValidMapValue",
         "TypeNotFoundException.new",
+        "SecurityException.new",
         // DCS (task P2-12): the `DecoratorManager`/`DcsConverter` statics
         // that take and return plain data only and mutate nothing; the other
         // `DecoratorManager` statics go through `decorator_manager_op`.
@@ -477,6 +478,27 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
                 }
             }))
         }
+        // `new SecurityException(message)` (src/securityexception.ts): pure string
+        // handling over its own arguments. The TS reference does not throw here:
+        // the constructed exception is itself the `ok` value, which codec.js
+        // encodes as `{"@@oracle": "error", "error": {...}}`.
+        "SecurityException.new" => {
+            let arg0 = decode::arg(&args, 0);
+            let Ok(message) = decode::as_str(&arg0) else {
+                bad_args!()
+            };
+            // TS: SecurityException extends BaseException, which defaults
+            // component to '@accordproject/concerto-util'.
+            Ok(json!({
+                M: "error",
+                "error": {
+                    "class": "SecurityException",
+                    "message": message,
+                    "location": Value::Null,
+                    "component": "@accordproject/concerto-util",
+                }
+            }))
+        }
         // `DecoratorManager.falsyOrEqual(test, values)` (`src/decoratormanager.ts`):
         // `test` is `null`/`undefined`/a string/a string array (a command
         // target field); `values` is always a string array. TS never
@@ -595,7 +617,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("ScalarDeclaration", m) => {
             matches!(
                 m,
-                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue"
+                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue" | "validate"
             )
         }
         ("MapDeclaration", m) => matches!(
@@ -607,7 +629,8 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 | "toString"
                 | "validate"
         ),
-        ("NumberValidator" | "StringValidator", m) => matches!(m, "validate" | "compatibleWith"),
+        ("NumberValidator", m) => matches!(m, "validate" | "compatibleWith" | "toString"),
+        ("StringValidator", m) => matches!(m, "validate" | "compatibleWith" | "matchesRegex"),
         ("CollectionSizeValidator", m) => {
             matches!(m, "compatibleWith" | "getMinSize" | "getMaxSize")
         }
@@ -666,7 +689,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ),
         ("Field", m) => matches!(
             m,
-            "getDefaultValue" | "getValidator" | "isTypeScalar" | "getScalarField"
+            "getDefaultValue" | "getValidator" | "isTypeScalar" | "getScalarField" | "toString"
         ),
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
@@ -734,6 +757,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             m,
             "getType" | "getNamespace" | "getFullyQualifiedType" | "getClassDeclaration"
         ),
+        ("TypeNotFoundException", m) => matches!(m, "getTypeName"),
         _ => false,
     };
     if !dispatched {
@@ -750,6 +774,27 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         .iter()
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
+
+    // `getTypeName()` (src/typenotfoundexception.ts) returns the
+    // constructor's `typeName` argument unchanged; the receiver is an
+    // `errnew` node (task P2-11b-U5). Only a string `typeName` is replayed:
+    // TS hands back whatever was passed, `undefined` included.
+    if class == "TypeNotFoundException" && member == "getTypeName" {
+        return Ok(match &target {
+            Some(Arg::Error {
+                class,
+                args: ctor_args,
+            }) if class == "TypeNotFoundException" => match ctor_args.first() {
+                Some(Value::String(type_name)) => ran(Ok(Value::String(type_name.clone()))),
+                _ => unsupported(
+                    "TypeNotFoundException.getTypeName with a typeName that is not a string",
+                ),
+            },
+            _ => unsupported(
+                "TypeNotFoundException.getTypeName on a receiver that is not a TypeNotFoundException",
+            ),
+        });
+    }
 
     // `new ScalarDeclaration(modelFile, ast)` (PORTING.md 6.2): the receiver
     // is built directly from a `ModelFile` recipe argument, never registered
@@ -871,6 +916,33 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     "getDefaultValue" => {
                         ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
                     }
+                    // TS: `ScalarDeclaration.validate`'s `super.validate()`
+                    // (decorators, then the import-clash check —
+                    // `Declaration::validate`'s Scalar arm, validation.rs)
+                    // followed by its own duplicate-FQN scan over
+                    // `getModelFile().getAllDeclarations()`
+                    // (`ScalarDeclaration::validate`, scalar.rs), which is
+                    // reachable here because this receiver was added without
+                    // going through `ModelFile.validate()`.
+                    "validate" => {
+                        let namespace =
+                            r.mm.model_file_of(id)
+                                .and_then(|file| r.mm.file(file))
+                                .map(ModelFile::namespace)
+                                .expect("a resolved declref's declaration always has a model file");
+                        let declaration =
+                            r.mm.declaration(id)
+                                .expect("the caller already resolved this handle as a scalar");
+                        from_engine(
+                            declaration.validate(&r.mm, namespace).and_then(|()| {
+                                concerto_core::introspect::ScalarDeclaration::validate(
+                                    &r.mm,
+                                    &Node::Declaration(id),
+                                )
+                            }),
+                            |()| recipe::undefined(),
+                        )
+                    }
                     _ => ran(Ok(scalar_validator_summary(scalar.validator()))),
                 })
             }
@@ -886,6 +958,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     .scalar_type
                     .map_or(Value::Null, |t| Value::String(t.to_string())))),
                 "getDefaultValue" => ran(Ok(processed.default_value.unwrap_or(Value::Null))),
+                // No fixture reaches `validate()` on an unregistered
+                // `declnew` receiver (P2-11b-U3, #197); left unsupported
+                // rather than guessed at.
+                "validate" => unsupported(
+                    "ScalarDeclaration.validate on a declnew receiver never added to a model file",
+                ),
                 _ => ran(Ok(scalar_validator_summary(processed.validator.as_ref()))),
             }),
             _ => Err(Fault::Unsupported(
@@ -1050,12 +1128,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             )),
         },
         "NumberValidator" => {
-            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
                 return Err(Fault::Unsupported(
                     "a NumberValidator op whose receiver is not a validatorref".into(),
                 ));
             };
-            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let (built, elem) = build_validator(&session, mm_idx, owner, &part)?;
             let Validator::Number(nv) = built else {
                 return Err(Fault::Divergence(
                     "state divergence: the validatorref did not build a NumberValidator".into(),
@@ -1073,16 +1151,17 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(nv.compatible_with(other.as_ref()))))
                 }
+                "toString" => ran(Ok(Value::String(nv.to_string()))),
                 _ => unreachable!("`dispatched` lists every member"),
             })
         }
         "StringValidator" => {
-            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
                 return Err(Fault::Unsupported(
                     "a StringValidator op whose receiver is not a validatorref".into(),
                 ));
             };
-            let (built, elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let (built, elem) = build_validator(&session, mm_idx, owner, &part)?;
             let Validator::String(sv) = built else {
                 return Err(Fault::Divergence(
                     "state divergence: the validatorref did not build a StringValidator".into(),
@@ -1100,16 +1179,20 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     let other = arg_other_validator(&session, &args, 0)?;
                     ran(Ok(Value::Bool(sv.compatible_with(other.as_ref()))))
                 }
+                "matchesRegex" => {
+                    let value = arg_str(&args, 0)?;
+                    ran(Ok(Value::Bool(sv.matches_regex(&value))))
+                }
                 _ => unreachable!("`dispatched` lists every member"),
             })
         }
         "CollectionSizeValidator" => {
-            let Some(Arg::Validator(mm_idx, prop_id, part)) = target else {
+            let Some(Arg::Validator(mm_idx, owner, part)) = target else {
                 return Err(Fault::Unsupported(
                     "a CollectionSizeValidator op whose receiver is not a validatorref".into(),
                 ));
             };
-            let (built, _elem) = build_validator(&session, mm_idx, prop_id, &part)?;
+            let (built, _elem) = build_validator(&session, mm_idx, owner, &part)?;
             let Validator::CollectionSize(cv) = built else {
                 return Err(Fault::Divergence(
                     "state divergence: the validatorref did not build a CollectionSizeValidator"
@@ -1368,6 +1451,102 @@ fn property_default_value(prop: &concerto_core::introspect::Property) -> Option<
 fn build_validator(
     session: &Session,
     mm_idx: usize,
+    owner: recipe::ValidatorOwner,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    match owner {
+        recipe::ValidatorOwner::Prop(prop_id) => {
+            build_property_validator(session, mm_idx, prop_id, part)
+        }
+        recipe::ValidatorOwner::Decl(decl_id) => {
+            scalar_declaration_validator(session, mm_idx, decl_id, part)
+        }
+    }
+}
+
+/// A scalar declaration's own validator (`validatorref` with a `declref`
+/// owner; TS `ScalarDeclaration.getValidator()`, built by
+/// `ScalarDeclaration.process` as `new NumberValidator(this,
+/// this.ast.validator)` or `new StringValidator(this, this.ast.validator,
+/// this.ast.lengthValidator)`), plus the [`PropertyElement`] standing in for
+/// the declaration as the validator's `field`.
+///
+/// A `NumberValidator` is the one the loaded declaration already holds; a
+/// `StringValidator` is rebuilt from the AST arguments
+/// [`ScalarValidator::String`] records. The declaration loaded successfully,
+/// so a failure here is a [`Fault::Divergence`].
+fn scalar_declaration_validator(
+    session: &Session,
+    mm_idx: usize,
+    decl_id: DeclId,
+    part: &str,
+) -> Faulty<(Validator, PropertyElement)> {
+    use concerto_core::introspect::Named;
+
+    if part != "validator" {
+        return Err(Fault::Unsupported(format!(
+            "a scalar declaration's validatorref part {part:?} with no Rust counterpart"
+        )));
+    }
+    let r = session.pool.get(mm_idx).ok_or_else(|| {
+        Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
+    })?;
+    let Some(Declaration::Scalar(scalar)) = r.mm.declaration(decl_id) else {
+        return Err(Fault::Divergence(
+            "state divergence: the validatorref's owner did not load as a scalar".into(),
+        ));
+    };
+    let fqn =
+        r.mm.get_fully_qualified_name(&Node::Declaration(decl_id))
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "computing the validatorref declaration's fully qualified name: {e}"
+                ))
+            })?;
+    let elem = PropertyElement {
+        fqn,
+        name: scalar.name().to_string(),
+        default_value: scalar.default_value().cloned(),
+    };
+    let validator = match scalar.validator() {
+        Some(ScalarValidator::Number(nv)) => Validator::Number(nv.clone()),
+        Some(ScalarValidator::String {
+            validator,
+            length_validator,
+        }) => {
+            let regex = validator
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| Fault::Divergence(format!("decoding the scalar's regex: {e}")))?;
+            let length = length_validator
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| {
+                    Fault::Divergence(format!("decoding the scalar's length validator: {e}"))
+                })?;
+            let built = concerto_core::introspect::validators::StringValidator::new(
+                &elem,
+                regex.as_ref(),
+                length.as_ref(),
+            )
+            .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
+            Validator::String(built)
+        }
+        None => {
+            return Err(Fault::Divergence(
+                "state divergence: the validatorref's scalar declaration has no validator".into(),
+            ));
+        }
+    };
+    Ok((validator, elem))
+}
+
+/// [`build_validator`] for a property owner.
+fn build_property_validator(
+    session: &Session,
+    mm_idx: usize,
     prop_id: concerto_core::model_manager::PropId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
@@ -1477,6 +1656,14 @@ fn arg_nullable_str(args: &[Arg], index: usize) -> Faulty<Option<String>> {
     }
 }
 
+/// `StringValidator.matchesRegex`'s argument: a required non-null string.
+fn arg_str(args: &[Arg], index: usize) -> Faulty<String> {
+    match args.get(index) {
+        Some(Arg::Plain(Value::String(s))) => Ok(s.clone()),
+        _ => Err(Fault::Unsupported("expected a string argument".into())),
+    }
+}
+
 /// `NumberValidator.validate`'s value argument: a nullable number.
 fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
     match args.get(index) {
@@ -1493,8 +1680,8 @@ fn arg_nullable_f64(args: &[Arg], index: usize) -> Faulty<Option<f64>> {
 fn arg_other_validator(session: &Session, args: &[Arg], index: usize) -> Faulty<Option<Validator>> {
     match args.get(index) {
         None | Some(Arg::Plain(Value::Null)) => Ok(None),
-        Some(Arg::Validator(mm_idx, prop_id, part)) => {
-            build_validator(session, *mm_idx, *prop_id, part).map(|(v, _)| Some(v))
+        Some(Arg::Validator(mm_idx, owner, part)) => {
+            build_validator(session, *mm_idx, *owner, part).map(|(v, _)| Some(v))
         }
         _ => Err(Fault::Unsupported(
             "expected a validator or null argument".into(),
@@ -2089,8 +2276,32 @@ fn property_op(r: &Replayed, id: PropId, property: &Property, member: &str) -> D
         "getValidator" => ran(Ok(field_validator_summary(property))),
         "isTypeScalar" => from_engine(is_type_scalar(r, id, property), Value::Bool),
         "getScalarField" => get_scalar_field(r, id, property),
+        "toString" => field_to_string(r, id, property),
         _ => unreachable!("`dispatched` lists every Property/Field member"),
     }
+}
+
+/// `Field.toString` (P4-07's issue #195): the one override besides
+/// `getName` et al. that `Field` itself defines (`Property.toString` does
+/// not exist). Delegates to the same [`concerto_core::introspect::field::to_string`]
+/// the `fieldToString` WASM binding calls, so the native and WASM legs share
+/// one implementation.
+///
+/// TS: `Field.toString` (src/introspect/field.ts): `'Field {name=' +
+/// this.name + ', type=' + this.getFullyQualifiedTypeName() + ', array=' +
+/// this.array + ', optional=' + this.optional + '}'`.
+fn field_to_string(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    from_engine(
+        r.mm.get_fully_qualified_type_name(&Node::Property(id)),
+        |fqn| {
+            Value::String(concerto_core::introspect::field::to_string(
+                property.name(),
+                &fqn,
+                property.is_array(),
+                property.is_optional(),
+            ))
+        },
+    )
 }
 
 /// `RelationshipDeclaration.toString` (P2-04): the one override besides

@@ -1358,6 +1358,33 @@ pub fn field_get_scalar_field(view: JsValue) -> std::result::Result<JsValue, JsV
     })
 }
 
+/// TS: `Field.toString`. `name` and `array`/`optional` are read straight off
+/// `this` (plain properties, as `propertyProcess`'s own snapshot sets them);
+/// `getFullyQualifiedTypeName()` is called through the view since it is a
+/// method, and, for a scalar field, already resolves to the scalar's own FQN
+/// (P4-07's issue #195 supplement fixtures cover this — the type name is
+/// never the underlying primitive).
+#[wasm_bindgen(js_name = fieldToString)]
+pub fn field_to_string(view: JsValue) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let name = js_string(&get(&view, "name")?)?;
+        let fully_qualified_type_name = js_string(&call(
+            &view,
+            "getFullyQualifiedTypeName",
+            &[],
+            "this.getFullyQualifiedTypeName",
+        )?)?;
+        let array = get(&view, "array")?.is_truthy();
+        let optional = get(&view, "optional")?.is_truthy();
+        Ok(field::to_string(
+            &name,
+            &fully_qualified_type_name,
+            array,
+            optional,
+        ))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // RelationshipDeclaration (src/introspect/relationshipdeclaration.ts) — P4-07
 // ---------------------------------------------------------------------------
@@ -3132,8 +3159,8 @@ fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<Instance> {
 }
 
 /// A wire value (module doc) as the [`CoreValue`] it decodes to: plain JSON
-/// unchanged, and [`WIRE_TAG`]'s `undefined`, `number`, `dayjs`, `map` and
-/// `typed` kinds.
+/// unchanged, and [`WIRE_TAG`]'s `undefined`, `number`, `bigint`, `dayjs`,
+/// `map` and `typed` kinds.
 fn decode_wire(value: &Value) -> Result<CoreValue> {
     match value {
         Value::Null => Ok(CoreValue::Null),
@@ -3160,6 +3187,13 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
                     .and_then(Value::as_str)
                     .ok_or_else(|| wire_error("a wire number without value".to_string()))?;
                 decode_wire_number(text).map(CoreValue::Number)
+            }
+            Some("bigint") => {
+                let text = map
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| wire_error("a wire bigint without value".to_string()))?;
+                Ok(CoreValue::BigInt(text.to_string()))
             }
             Some("map") => {
                 let entries = map
@@ -3299,6 +3333,13 @@ fn encode_wire(v: &CoreValue) -> Value {
         }),
         CoreValue::DateTime(d) => encode_wire_dayjs(d),
         CoreValue::Instance(i) => encode_wire_instance(i),
+        // The oracle harness's own `bigint` shape (`migration/oracle/lib/
+        // codec.js`). The view's `decodeValue` has no `bigint` kind, so it
+        // throws `EngineFastPathUnsupported` on this and the caller falls
+        // back to the visitor path, as its `encodeValue` already does for
+        // a `BigInt` it is handed (`unsupported-value:bigint`). No decoded
+        // wire value is a `BigInt`, so this is not reached today.
+        CoreValue::BigInt(s) => json!({ WIRE_TAG: "bigint", "value": s }),
     }
 }
 
@@ -4587,5 +4628,15 @@ mod tests {
                 477.95269883162916
             )]))
         );
+    }
+
+    /// A wire `bigint` round-trips through `decode_wire`/`encode_wire`
+    /// (task P2-11b-U6): the digit string crosses unchanged in both
+    /// directions.
+    #[test]
+    fn wire_bigint_round_trips() {
+        let value: Value = serde_json::from_str(r#"{"@@oracle":"bigint","value":"10"}"#).unwrap();
+        assert_eq!(decoded(&value), CoreValue::BigInt("10".to_string()));
+        assert_eq!(encode_wire(&CoreValue::BigInt("10".to_string())), value);
     }
 }

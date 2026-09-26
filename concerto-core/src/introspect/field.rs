@@ -112,6 +112,44 @@ pub fn process<E: From<ContractError>>(
     })
 }
 
+/// TS: `Field.toString` (src/introspect/field.ts). `name` is `this.name`,
+/// `fully_qualified_type_name` is `this.getFullyQualifiedTypeName()`
+/// (already resolved by the view — a scalar field's type name is its
+/// scalar's own FQN, not the underlying primitive), and `array`/`optional`
+/// are `this.array`/`this.optional`, read straight as booleans exactly as
+/// TS's string concatenation coerces them.
+pub fn to_string(
+    name: &str,
+    fully_qualified_type_name: &str,
+    array: bool,
+    optional: bool,
+) -> String {
+    format!(
+        "Field {{name={name}, type={fully_qualified_type_name}, array={array}, optional={optional}}}"
+    )
+}
+
+#[cfg(test)]
+mod to_string_tests {
+    use super::*;
+
+    #[test]
+    fn matches_ts_format() {
+        assert_eq!(
+            to_string("name", "String", false, false),
+            "Field {name=name, type=String, array=false, optional=false}"
+        );
+        assert_eq!(
+            to_string("tags", "String", true, true),
+            "Field {name=tags, type=String, array=true, optional=true}"
+        );
+        assert_eq!(
+            to_string("code", "supp.core@1.0.0.Code", false, true),
+            "Field {name=code, type=supp.core@1.0.0.Code, array=false, optional=true}"
+        );
+    }
+}
+
 /// TS: the `switch (type.ast.$class)` inside `Field.getScalarField`
 /// (src/introspect/field.ts), after `isTypeScalar()` has already confirmed
 /// `type` is a scalar declaration. Builds the synthetic field's AST from the

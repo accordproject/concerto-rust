@@ -26,7 +26,8 @@ use serde_json::{Value, json};
 use super::dayjs::Dayjs;
 use super::resource_id::ResourceId;
 use super::validate::{
-    DAYJS_TAG, RELATIONSHIP_TAG, ValidateOptions, js_map, js_special_number, js_undefined,
+    DAYJS_TAG, RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_special_number,
+    js_undefined,
 };
 use crate::ecma;
 use crate::error::Result;
@@ -50,6 +51,11 @@ pub enum JsValue {
     DateTime(Dayjs),
     /// A `Resource`, `ValidatedResource` or `Relationship`.
     Instance(Box<Instance>),
+    /// A JS `BigInt`, as its decimal digit string (`toString()`'s
+    /// spelling). Not produced by `JSONPopulator` (JSON has no bigint
+    /// literal); it reaches an instance only by direct field assignment,
+    /// as `Resource.setPropertyValue` allows (task P2-11b-U6).
+    BigInt(String),
 }
 
 /// Which TS class an [`Instance`] is.
@@ -244,6 +250,9 @@ impl JsValue {
             Self::Bool(b) => *b,
             Self::Number(n) => *n != 0.0 && !n.is_nan(),
             Self::String(s) => !s.is_empty(),
+            // `!!0n === false`; `BigInt.prototype.toString()` never spells
+            // zero any other way (no `-0n`).
+            Self::BigInt(s) => s != "0",
             _ => true,
         }
     }
@@ -260,6 +269,7 @@ impl JsValue {
             Self::Bool(_) => "boolean",
             Self::Number(_) => "number",
             Self::String(_) => "string",
+            Self::BigInt(_) => "bigint",
             _ => "object",
         }
     }
@@ -297,6 +307,7 @@ impl JsValue {
             Self::Map(_) => "[object Map]".to_string(),
             Self::DateTime(d) => d.to_js_string(),
             Self::Instance(i) => i.to_js_string(),
+            Self::BigInt(s) => s.clone(),
         }
     }
 
@@ -345,6 +356,7 @@ impl JsValue {
             ),
             Self::DateTime(d) => json!({ DAYJS_TAG: d.to_iso_string() }),
             Self::Instance(i) => i.to_validator_value(),
+            Self::BigInt(s) => js_bigint(s),
         }
     }
 }

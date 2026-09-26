@@ -94,6 +94,7 @@ fn for_in_values(obj: &JsValue) -> Result<Vec<JsValue>> {
         | JsValue::Null
         | JsValue::Bool(_)
         | JsValue::Number(_)
+        | JsValue::BigInt(_)
         | JsValue::Map(_) => Vec::new(),
         JsValue::DateTime(_) | JsValue::Instance(_) => {
             return Err(ContractError::pre_port(
