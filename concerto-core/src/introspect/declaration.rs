@@ -1189,7 +1189,6 @@ impl Declaration {
 
 fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
     match value.get("properties") {
-        None => Ok(Vec::new()),
         Some(serde_json::Value::Array(arr)) => arr
             .iter()
             .map(|property| {
@@ -1214,11 +1213,27 @@ fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
                 Property::try_from(property)
             })
             .collect(),
-        Some(_) => Err(ConcertoError::IllegalModel {
-            message: "'properties' must be an array".into(),
-            file_name: None,
-            location: None,
-        }),
+        // TS: `ClassDeclaration.process`'s `!Array.isArray(this.ast.properties)`
+        // guard (classdeclaration.ts:83, inherited by `EnumDeclaration`), which
+        // covers both a `properties` that is present but not an array *and* a
+        // `properties` that is absent (`undefined` is not an array either) —
+        // one guard, one message, catalogued as
+        // `classdeclaration-validate-undefined-properties`. The model file's
+        // name is filled in by `Declaration::from_model_json`
+        // (`with_model_file`), same as the system-property-name case above.
+        None | Some(_) => {
+            let name = value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "classdeclaration-validate-undefined-properties",
+                vec![("class", name.to_string())],
+            );
+            err.location = value.get("location").cloned();
+            Err(err.into())
+        }
     }
 }
 
@@ -1596,6 +1611,9 @@ mod tests {
 
     #[test]
     fn non_array_properties_is_reported_verbatim() {
+        // TS: `ClassDeclaration.process`'s `!Array.isArray(this.ast.properties)`
+        // guard (classdeclaration.ts:83), `classdeclaration-validate-undefined-
+        // properties`: "Properties of Class \"{class}\" has to be defined."
         let err = Declaration::try_from(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "Bad",
@@ -1603,17 +1621,23 @@ mod tests {
         }));
         assert_eq!(
             err.unwrap_err().to_string(),
-            "illegal model: 'properties' must be an array"
+            "Properties of Class \"Bad\" has to be defined."
         );
     }
 
     #[test]
-    fn a_class_declaration_with_no_properties_field_loads_with_none() {
-        let d = decl(serde_json::json!({
+    fn a_class_declaration_with_no_properties_field_is_rejected() {
+        // TS: `!Array.isArray(this.ast.properties)` is also true when
+        // `properties` is absent (`undefined`), so a missing field throws the
+        // same message as a non-array one, not a silent empty list.
+        let err = Declaration::try_from(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "Empty"
         }));
-        assert!(d.as_class().unwrap().own_properties().is_empty());
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Properties of Class \"Empty\" has to be defined."
+        );
     }
 
     #[test]
