@@ -196,38 +196,6 @@ fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
     if let Some(report) = &err.validator {
         set(&payload, "errorType", &JsValue::from_str(report.error_type));
     }
-    // `matches!(err.model_file, Some(Some(_)))` is true exactly when
-    // concerto-core has already decided this `IllegalModel` error carries a
-    // *real* file name — either `attach_model_file`'s generic backstop
-    // (validation.rs), which only ever fills in `contract.model_file` when it
-    // was still bare `None` (its own gate), or a check that names a specific
-    // file itself (`undeclared_type_error`). It is false for the two other
-    // states the field can be in, both of which mean "no file, and none is
-    // coming": bare `None`, left untouched by the one check that deliberately
-    // skips `attach_model_file` (`ModelFile.validate`'s duplicate-class-name
-    // scan, `check_unique_declaration_names` — TS itself never attaches a
-    // file to that one), and `Some(None)`, a placeholder some checks set
-    // themselves precisely to block `attach_model_file`'s backstop from
-    // filling one in later (`validate_map_key`/`validate_map_value`'s own doc
-    // comments). Note this is *not* the same test as `err.model_file.is_some()`,
-    // which this same function's `modelFile`-attachment `if` below still uses
-    // deliberately for its own, WASM-local purpose: a binding like
-    // `property_validate` sets `Some(None)` itself, at this layer, as a signal
-    // to *do* attach the JS `model_file` it always passes to `throw` — the
-    // opposite meaning `Some(None)` carries inside concerto-core.
-    //
-    // A binding that has no JS `ModelFile` object to hand over (`model_file`
-    // is `None` here, e.g. `modelFileValidateDetached`) still can't set
-    // `modelFile` on the payload itself, but it can and must tell its JS
-    // caller which of the two cases above this is, since only the caller
-    // (`ModelFile.validate()`, modelfile.ts) knows which object `this` is to
-    // attach — hence this flag travels regardless of whether `model_file` was
-    // supplied.
-    set(
-        &payload,
-        "needsModelFile",
-        &JsValue::from_bool(matches!(err.model_file, Some(Some(_)))),
-    );
     if err.model_file.is_some()
         && let Some(model_file) = model_file
     {
