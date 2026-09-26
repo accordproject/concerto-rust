@@ -2840,6 +2840,31 @@ mod tests {
         assert!(parses_as_dayjs(&js_undefined()));
     }
 
+    /// [`parses_as_dayjs`]'s `Value::Number` arm (P5-06: cargo-mutants found
+    /// that arm's deletion survived): a finite number is a valid `DateTime`
+    /// map value. Deleting the arm falls through to the wildcard `false`.
+    #[test]
+    fn a_finite_number_is_a_valid_datetime_map_value() {
+        assert!(parses_as_dayjs(&json!(1_700_000_000_000.0)));
+    }
+
+    /// [`parses_as_dayjs`]'s `Value::String` arm (P5-06: cargo-mutants found
+    /// that arm's deletion survived, the same way as the `Number` arm
+    /// above): a four-digit-year string is a valid `DateTime` map value.
+    #[test]
+    fn a_four_digit_year_string_is_a_valid_datetime_map_value() {
+        assert!(parses_as_dayjs(&json!("2024-05-01")));
+    }
+
+    /// [`parses_as_dayjs`]'s wildcard arm (P5-06: cargo-mutants found the
+    /// whole function's body replaced with a constant `true` surviving): a
+    /// value that is none of undefined, a number or a string is never a
+    /// valid `DateTime` map value.
+    #[test]
+    fn a_boolean_is_not_a_valid_datetime_map_value() {
+        assert!(!parses_as_dayjs(&json!(true)));
+    }
+
     /// Task P3-01b: a non-finite number is printed with `toString()`.
     #[test]
     fn a_non_finite_number_is_printed_with_to_string() {
@@ -3411,6 +3436,31 @@ mod tests {
         ));
         assert_eq!(diag.code, DiagnosticCode::NotRelationship);
         assert_eq!(diag.pointer, "/vehicle");
+    }
+
+    /// [`number_validator_ast`] (P5-06: cargo-mutants found its body
+    /// replaced with `Default::default()`, i.e. JSON `null`, surviving):
+    /// [`validator_failure_is_diagnosed`] below only ever gives `rating` an
+    /// out-of-range value, so a construction error from a bounds-less ast
+    /// (`NumberValidator::new`'s own "no bounds" rejection) reports the same
+    /// `ValidatorFailure` diagnostic the real out-of-range check does — the
+    /// mutant is invisible there. An in-bounds value tells them apart: the
+    /// real ast lets `NumberValidator::validate` accept it; the mutant's
+    /// bounds-less ast never gets that far, rejecting it at construction.
+    #[test]
+    fn an_in_bounds_rating_collects_no_diagnostics() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1, "rating": 3
+        });
+        let result = collect_diagnostics(
+            &mgr,
+            "org.acme@1.0.0.Vehicle",
+            &vehicle,
+            &ValidateOptions::default(),
+        );
+        assert!(result.is_valid());
+        assert!(result.diagnostics().is_empty());
     }
 
     #[test]
