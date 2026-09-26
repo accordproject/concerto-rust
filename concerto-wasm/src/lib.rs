@@ -1628,11 +1628,14 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
 
         let explicit_super_type = get(&ast, "superType")?;
         let explicit_super_type = if !nullish(&explicit_super_type) {
-            Some(receiver(
-                &get(&explicit_super_type, "name")?,
-                "this.ast.superType.name",
-                "toString",
-            )?)
+            // TS: `this.superType = this.ast.superType.name;` — a plain
+            // assignment, never a `.toString()` call, so a fuzz-mutated,
+            // non-string `name` (a bool, a number, an array, ...) must not
+            // throw here the way `receiver` would (accordproject/concerto-rust#217).
+            // `js_string` gives the typed Rust representation the same
+            // coercion `ecma::to_js_string` gives non-string AST fields
+            // elsewhere in the crate (DV-002), not a "not a function" error.
+            Some(js_string(&get(&explicit_super_type, "name")?)?)
         } else {
             None
         };
@@ -1651,23 +1654,28 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // call to make.
             false
         };
-        let name = receiver(&get(&declaration, "name")?, "this.name", "toString")?;
+        // TS: `this.name` is `this.ast.name` verbatim (`Declaration.process`,
+        // src/introspect/declaration.ts), read here only for an `=== 'Concept'`
+        // comparison — never stringified with `.toString()`. `receiver` threw
+        // "Cannot read properties of undefined/null" or "not a function" for
+        // any fuzz-mutated, non-string `name` (missing, `null`, a bool, an
+        // array, ...) even though TS accepts all of those (accordproject/concerto-rust#217);
+        // `js_string` gives the coerced string without throwing.
+        let name = js_string(&get(&declaration, "name")?)?;
 
         let identified = get(&ast, "identified")?;
         let (identified_class, identified_name) = if nullish(&identified) {
             (None, None)
         } else {
-            let identified_class = receiver(
-                &get(&identified, "$class")?,
-                "this.ast.identified.$class",
-                "toString",
-            )?;
+            // TS: `this.ast.identified.$class === \`${MetaModelNamespace}.IdentifiedBy\``
+            // is a strict comparison, and `this.idField = this.ast.identified.name`
+            // a plain assignment — neither calls `.toString()`, so a
+            // non-string `$class`/`name` (accordproject/concerto-rust#217,
+            // e.g. `identified: true` or `identified.name: ["id"]`) must not
+            // throw here either.
+            let identified_class = js_string(&get(&identified, "$class")?)?;
             let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
-                Some(receiver(
-                    &get(&identified, "name")?,
-                    "this.ast.identified.name",
-                    "toString",
-                )?)
+                Some(js_string(&get(&identified, "name")?)?)
             } else {
                 None
             };

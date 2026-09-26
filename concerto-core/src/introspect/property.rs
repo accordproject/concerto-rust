@@ -50,13 +50,22 @@ pub struct ProcessedProperty {
 /// view still does directly (its own binding already ports the TS
 /// constructor).
 ///
-/// TS: `Property.process` (src/introspect/property.ts)
+/// TS: `Property.process` (src/introspect/property.ts). TS's check is
+/// `ID_REGEX.test(this.ast.name)`, and `RegExp.prototype.test` runs
+/// `ToString` on a non-string argument rather than rejecting it outright
+/// (`ecma::to_js_string`, matching the `ID_REGEX.test(undefined)` quirk
+/// `model_util::is_valid_identifier`'s own tests document, DV-002): a
+/// fuzz-mutated `name` that is present but not a JSON string (a bool, a
+/// number, an array, `null`, an object) must go through the same coercion,
+/// not be read as an absent name (accordproject/concerto-rust#217): e.g.
+/// `name: true` stringifies to `"true"`, which passes `ID_REGEX` in both
+/// engines, so TS accepts the model and a naive `Value::as_str` default of
+/// `""` made Rust wrongly reject it as `Invalid property name ''`.
 pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
     let name = ast
         .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+        .map(crate::ecma::to_js_string)
+        .unwrap_or_else(|| "undefined".to_string());
     if !is_valid_identifier(&name) {
         return Err(ContractError::new(
             ErrorKind::IllegalModel,
@@ -567,6 +576,52 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.to_string().contains("Invalid property name '1bad'"));
+    }
+
+    // accordproject/concerto-rust#217 (T2a): `ID_REGEX.test(name)` in TS
+    // coerces a non-string `name` with `ToString` rather than rejecting it,
+    // so a fuzz-mutated `name` that isn't a JSON string but stringifies to
+    // a valid identifier is accepted by TS and must be accepted here too.
+    // Minimised repro: `declarations[0].properties[0].name = true`
+    // (conformance/ModelManager.addModelFile/16267c5478a5f2840469e147.json,
+    // stage2/triage-clusters.json).
+    #[test]
+    fn process_accepts_a_boolean_name_like_ts_string_coercion() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": true,
+            "isArray": false,
+            "isOptional": false
+        }))
+        .expect("TS: ID_REGEX.test(true) tests \"true\", which matches");
+        assert_eq!(processed.name, "true");
+    }
+
+    // Same theme, the other value shapes the cluster's fuzz run hit:
+    // an absent `name` coerces like `ID_REGEX.test(undefined)` (DV-002,
+    // model_util::is_valid_identifier's own tests), and `null` stringifies
+    // to `"null"`, both valid identifiers in both engines.
+    #[test]
+    fn process_accepts_a_missing_name_like_ts_undefined_coercion() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "isArray": false,
+            "isOptional": false
+        }))
+        .expect("TS: ID_REGEX.test(undefined) tests \"undefined\", which matches");
+        assert_eq!(processed.name, "undefined");
+    }
+
+    #[test]
+    fn process_accepts_a_null_name_like_ts_null_coercion() {
+        let processed = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": null,
+            "isArray": false,
+            "isOptional": false
+        }))
+        .expect("TS: ID_REGEX.test(null) tests \"null\", which matches");
+        assert_eq!(processed.name, "null");
     }
 
     fn prop(json: serde_json::Value) -> Property {
