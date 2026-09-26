@@ -666,7 +666,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ),
         ("Field", m) => matches!(
             m,
-            "getDefaultValue" | "getValidator" | "isTypeScalar" | "getScalarField"
+            "getDefaultValue" | "getValidator" | "isTypeScalar" | "getScalarField" | "toString"
         ),
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
@@ -2122,8 +2122,32 @@ fn property_op(r: &Replayed, id: PropId, property: &Property, member: &str) -> D
         "getValidator" => ran(Ok(field_validator_summary(property))),
         "isTypeScalar" => from_engine(is_type_scalar(r, id, property), Value::Bool),
         "getScalarField" => get_scalar_field(r, id, property),
+        "toString" => field_to_string(r, id, property),
         _ => unreachable!("`dispatched` lists every Property/Field member"),
     }
+}
+
+/// `Field.toString` (P4-07's issue #195): the one override besides
+/// `getName` et al. that `Field` itself defines (`Property.toString` does
+/// not exist). Delegates to the same [`concerto_core::introspect::field::to_string`]
+/// the `fieldToString` WASM binding calls, so the native and WASM legs share
+/// one implementation.
+///
+/// TS: `Field.toString` (src/introspect/field.ts): `'Field {name=' +
+/// this.name + ', type=' + this.getFullyQualifiedTypeName() + ', array=' +
+/// this.array + ', optional=' + this.optional + '}'`.
+fn field_to_string(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
+    from_engine(
+        r.mm.get_fully_qualified_type_name(&Node::Property(id)),
+        |fqn| {
+            Value::String(concerto_core::introspect::field::to_string(
+                property.name(),
+                &fqn,
+                property.is_array(),
+                property.is_optional(),
+            ))
+        },
+    )
 }
 
 /// `RelationshipDeclaration.toString` (P2-04): the one override besides

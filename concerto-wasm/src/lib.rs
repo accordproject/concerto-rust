@@ -1358,6 +1358,33 @@ pub fn field_get_scalar_field(view: JsValue) -> std::result::Result<JsValue, JsV
     })
 }
 
+/// TS: `Field.toString`. `name` and `array`/`optional` are read straight off
+/// `this` (plain properties, as `propertyProcess`'s own snapshot sets them);
+/// `getFullyQualifiedTypeName()` is called through the view since it is a
+/// method, and, for a scalar field, already resolves to the scalar's own FQN
+/// (P4-07's issue #195 supplement fixtures cover this — the type name is
+/// never the underlying primitive).
+#[wasm_bindgen(js_name = fieldToString)]
+pub fn field_to_string(view: JsValue) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let name = js_string(&get(&view, "name")?)?;
+        let fully_qualified_type_name = js_string(&call(
+            &view,
+            "getFullyQualifiedTypeName",
+            &[],
+            "this.getFullyQualifiedTypeName",
+        )?)?;
+        let array = get(&view, "array")?.is_truthy();
+        let optional = get(&view, "optional")?.is_truthy();
+        Ok(field::to_string(
+            &name,
+            &fully_qualified_type_name,
+            array,
+            optional,
+        ))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // RelationshipDeclaration (src/introspect/relationshipdeclaration.ts) — P4-07
 // ---------------------------------------------------------------------------
