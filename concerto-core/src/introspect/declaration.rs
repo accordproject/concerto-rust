@@ -494,7 +494,52 @@ impl ClassDeclaration {
                             .insert("name".into(), serde_json::Value::String("undefined".into()));
                         object.insert("superType".into(), serde_json::Value::Object(patched));
                     }
-                    Some(_) => {}
+                    Some(serde_json::Value::String(_)) => {}
+                    Some(name) if !crate::ecma::is_truthy(name) => {
+                        // A falsy, non-nullish `name` (`0`, `false` — `""` is
+                        // already a `String` and takes the branch above,
+                        // unchanged): TS's `this.superType =
+                        // this.ast.superType.name` is a plain assignment,
+                        // taken exactly as given, and this specific shape is
+                        // NOT "no super type at all" the way an explicit
+                        // `null` is. `_resolveSuperType`'s own `!this.superType`
+                        // check does short-circuit on the falsiness without
+                        // throwing, but `validate`'s `this.getProperties()`
+                        // does not go through `_resolveSuperType`: it guards
+                        // only on `this.superType !== null` (`0`/`false` are
+                        // both `!== null`), resolves it directly, finds
+                        // nothing, and throws `Could not find super type ` +
+                        // `this.superType` — JS `+` coercing the falsy value
+                        // with the same `ToString` `to_js_string` performs
+                        // (accordproject/concerto-rust#217, review finding 2,
+                        // second half; the JS-binding twin of this fix is
+                        // `concerto-wasm`'s `classDeclarationProcess`).
+                        // Patching the AST to the coerced string before the
+                        // strict decode below lets the ordinary
+                        // "could not find super type" resolution
+                        // ([`crate::validation::check_super_type`]) raise
+                        // that exact message, instead of this function
+                        // failing to decode `false`/`0` as the `String` the
+                        // generated `TypeIdentifier` requires.
+                        let coerced = crate::ecma::to_js_string(name);
+                        let mut patched = super_type_object;
+                        patched.insert("name".into(), serde_json::Value::String(coerced));
+                        object.insert("superType".into(), serde_json::Value::Object(patched));
+                    }
+                    Some(_) => {
+                        // A truthy non-string `name` (an array, a non-zero
+                        // number, `true`, ...): TS never stringifies
+                        // `this.superType`, and only reaches a `TypeError`
+                        // once resolution calls a string method on it
+                        // (`ModelFile.getLocalType`'s `type.startsWith`).
+                        // Reproducing that exact `TypeError` from a plain
+                        // AST decode error isn't attempted here; the
+                        // implementer/reviewer of accordproject/concerto-rust#217
+                        // scoped this shape's native-decode divergence out
+                        // (it is covered on the JS-binding side, the fuzzer's
+                        // actual path, by `classDeclarationProcess`'s
+                        // `receiver` call).
+                    }
                 }
             }
 
@@ -1586,6 +1631,40 @@ mod tests {
 
         let c = d.as_class().expect("class");
         assert_eq!(c.super_type().map(|t| t.name.as_str()), Some("undefined"));
+    }
+
+    /// accordproject/concerto-rust#217 review finding 2, second half (the
+    /// "only half fixed" half): a `superType.name` that is falsy but not
+    /// `null` — `0` or `false` — is a **different** shape from an explicit
+    /// `null` ([`an_explicit_null_super_type_name_loads_with_no_super_type`]):
+    /// it must still load as an explicit, unresolvable super type (not "no
+    /// super type at all"), the same way the missing-name-key case above
+    /// does. An earlier version of this fix folded these into "no super
+    /// type", which let Rust accept a model TS itself rejects with
+    /// `Could not find super type 0`/`Could not find super type false`
+    /// (`ClassDeclaration.getProperties`, called from `validate`, guards
+    /// only on `this.superType !== null` — true for both `0` and `false` —
+    /// not on truthiness).
+    #[test]
+    fn a_falsy_non_nullish_super_type_name_loads_as_an_unresolvable_super_type() {
+        for (name, expected) in [
+            (serde_json::json!(0), "0"),
+            (serde_json::json!(false), "false"),
+        ] {
+            let d = decl(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Person",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name },
+                "properties": []
+            }));
+
+            let c = d.as_class().expect("class");
+            assert_eq!(
+                c.super_type().map(|t| t.name.as_str()),
+                Some(expected),
+                "superType.name {name:?}"
+            );
+        }
     }
 
     #[test]

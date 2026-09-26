@@ -1680,22 +1680,26 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
                 Some("undefined".to_string())
             } else if !name.is_truthy() {
                 // A falsy, non-nullish `name` (`0`, `false`, or an empty
-                // string — this branch catches all three; the empty string
-                // also happens to be exactly what `receiver` below would
-                // return unchanged, so folding it in here changes nothing
-                // observable) — review finding 2's other half, the "only
-                // half fixed" one: TS keeps `this.superType` exactly as
-                // falsy as the AST gave it, and every downstream reader
-                // that matters —
-                // `_resolveSuperType`'s `!this.superType`, `getSuperType`'s
-                // same check — short-circuits on that falsiness before ever
-                // reaching `!== null`/string-method territory (the one
-                // `!== null` guard that doesn't, `validate`'s self-extending
-                // check, only ever calls back into `_resolveSuperType`,
-                // which short-circuits right back out). `None` reaches the
-                // same "nothing to resolve" outcome as the real `null` case
-                // above (accordproject/concerto-rust#217).
-                None
+                // string): still a **different** shape from a real `null`
+                // above. TS keeps `this.superType` exactly as falsy as the
+                // AST gave it, and `_resolveSuperType`'s own `!this.superType`
+                // check does short-circuit on that falsiness without
+                // throwing — but `validate`'s field-collecting call,
+                // `this.getProperties()`, does **not** go through
+                // `_resolveSuperType` at all: `ClassDeclaration.getProperties`
+                // guards only on `this.superType !== null` (`0 !== null` and
+                // `false !== null` are both true), then resolves it directly
+                // with `getModelFile().getType(this.superType)`, finds
+                // nothing, and throws `IllegalModelException: Could not
+                // find super type ` + `this.superType` — JS `+` coerces the
+                // falsy value with the same `ToString` `js_string` performs
+                // (`0` -> `"0"`, `false` -> `"false"`, `""` -> `""`).
+                // Mapping this to `None` (review's first attempt) skipped
+                // that throw entirely, turning a TS rejection into a Rust
+                // acceptance — the reverse of this issue's own shape
+                // (accordproject/concerto-rust#217, review finding 2, second
+                // half).
+                Some(js_string(&name)?)
             } else {
                 // A truthy `name`: a real (possibly empty-looking but
                 // non-empty) string is returned as itself; a truthy

@@ -456,6 +456,47 @@ export function runChecks(engine) {
     return results;
   });
 
+  // accordproject/concerto-rust#217 (T2a review finding 2, the "only half
+  // fixed" half, this time on `superType.name` — a re-review of the fix
+  // above found it had wrongly folded this shape into "no super type"):
+  // a falsy but non-nullish `superType.name` (`0`, `false`) is a
+  // *different* shape from an explicit `null`
+  // (`classDeclarationProcess tells a missing superType.name from an
+  // explicit null apart`, above) — it must still come back as an explicit,
+  // unresolvable super type, not `null`. TS's `this.superType =
+  // this.ast.superType.name` is a plain assignment; `_resolveSuperType`'s
+  // own `!this.superType` check does short-circuit on the falsiness without
+  // throwing, but `validate`'s `this.getProperties()` does not go through
+  // `_resolveSuperType` at all — it guards only on `this.superType !==
+  // null` (true for both `0` and `false`), resolves directly, and throws
+  // `Could not find super type 0`/`Could not find super type false`. Folding
+  // these into `null` here would make Rust accept a model TS itself
+  // rejects — the reverse of this issue's own ts=ok/rust=error shape.
+  check('classDeclarationProcess treats a falsy, non-nullish superType.name as an unresolvable super type', () => {
+    const mockDeclaration = (ast) => ({
+      ast,
+      name: 'Employee',
+      fqn: 'org.example@1.0.0.Employee',
+      getModelFile: () => ({ isSystemModelFile: () => false }),
+    });
+
+    const results = {};
+    for (const [name, expected] of [[0, '0'], [false, 'false']]) {
+      const result = engine.classDeclarationProcess(
+        mockDeclaration({
+          superType: { $class: `${MM}.TypeIdentifier`, name },
+          properties: [],
+        }),
+      );
+      assert(
+        result.superType === expected,
+        `superType.name:${JSON.stringify(name)} -> superType ${JSON.stringify(result.superType)}`,
+      );
+      results[JSON.stringify(name)] = result;
+    }
+    return results;
+  });
+
   // accordproject/concerto-rust#217 (T2a review finding 2, the same "only
   // half fixed" gap, on `superType.name` instead): a *truthy* non-string
   // name (an array, a non-zero number, `true`, ...) is the other half TS

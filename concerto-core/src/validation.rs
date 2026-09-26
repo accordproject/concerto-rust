@@ -1523,6 +1523,36 @@ mod tests {
         );
     }
 
+    /// accordproject/concerto-rust#217 review finding 2, second half (the
+    /// "only half fixed" half), on the same validating `addModelFile` path:
+    /// a `superType.name` that is falsy but not `null` — `0` or `false` — is
+    /// a different shape from an explicit `null`
+    /// ([`super_type_with_an_explicit_null_name_has_no_super_type_and_validates`]):
+    /// it must still fail to resolve, exactly like the missing-name-key case
+    /// above, with the falsy value's own `ToString` text in the message. An
+    /// earlier version of this fix folded `0`/`false` into "no super type",
+    /// which let a model TS itself rejects (`Could not find super type
+    /// 0`/`Could not find super type false`, raised from
+    /// `ClassDeclaration.getProperties`, which guards only on
+    /// `this.superType !== null`) load and validate with no error at all.
+    #[test]
+    fn super_type_with_a_falsy_non_nullish_name_fails_with_could_not_find_super_type() {
+        for (name, expected) in [
+            (serde_json::json!(0), "Could not find super type 0"),
+            (serde_json::json!(false), "Could not find super type false"),
+        ] {
+            let err = validate(serde_json::json!([concept(serde_json::json!({
+                "name": "Employee",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name }
+            }))]));
+            assert_eq!(
+                err.unwrap_err().to_string(),
+                expected,
+                "superType.name {name:?}"
+            );
+        }
+    }
+
     /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"),
     /// on the same validating `addModelFile` path: `identified.name` values
     /// that are falsy but not nullish — `0`, `false`, `""` — must validate
