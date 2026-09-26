@@ -8648,6 +8648,8 @@ NumberValidator.compatibleWith	7c45fb4183572d8fecf02306	pass
 NumberValidator.compatibleWith	cd4641532b9012f80607b8bb	pass
 NumberValidator.compatibleWith	f3de4ea619eef7e61088104e	pass
 NumberValidator.compatibleWith	fda8ee2041382f33645bbfec	pass
+NumberValidator.toString	11da0a7a74864da13c325f9e	pass
+NumberValidator.toString	4905f8f82329045d8d6889d9	pass
 NumberValidator.validate	85ae91733214c4c0e6e2d03f	pass
 NumberValidator.validate	d53d0800f7cc33d437a69826	pass
 NumberValidator.validate	e2b902739597d1fbfc49cf6e	pass
@@ -13711,6 +13713,9 @@ StringValidator.compatibleWith	e40ad699593581f0285ce0c2	pass
 StringValidator.compatibleWith	e948e6992402448a0225df6d	pass
 StringValidator.compatibleWith	f0c9875164f2e54c18514476	pass
 StringValidator.compatibleWith	f387482e61624c748ef3f767	pass
+StringValidator.matchesRegex	603b969ddb00b1a86fc14ba1	pass
+StringValidator.matchesRegex	9833d1c8b150f5a3be0d92e4	pass
+StringValidator.matchesRegex	c8a6dacfb55c13c95d0e7c15	pass
 StringValidator.validate	03c45594da16f01a9b330658	pass
 StringValidator.validate	0b342c7c7be08e043cafe617	pass
 StringValidator.validate	212af0a7e03338e645d4bdaf	pass
