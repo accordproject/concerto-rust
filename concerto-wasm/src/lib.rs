@@ -2070,8 +2070,11 @@ pub fn class_declaration_get_property(
         if !nullish(&own) {
             return Ok(own);
         }
+        // TS tests `this.superType !== null` (classdeclaration.ts), not
+        // truthiness: an empty-string or `undefined` super type still goes
+        // on to be resolved (#218).
         let super_type = get(&declaration, "superType")?;
-        if !super_type.is_truthy() {
+        if super_type.is_null() {
             return Ok(JsValue::NULL);
         }
         let class_decl = resolve_named_type(&declaration, &super_type)?;
@@ -2099,8 +2102,12 @@ pub fn class_declaration_get_properties(
         for property in Array::from(&own).iter() {
             result.push(&property);
         }
+        // TS tests `this.superType !== null` (classdeclaration.ts), not
+        // truthiness: an empty-string or `undefined` super type still goes
+        // on to be resolved, fails to, and throws "Could not find super
+        // type" (#218).
         let super_type = get(&declaration, "superType")?;
-        if !super_type.is_truthy() {
+        if super_type.is_null() {
             return Ok(result);
         }
         let class_decl = resolve_named_type(&declaration, &super_type)?;
