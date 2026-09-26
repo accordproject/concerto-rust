@@ -31,8 +31,9 @@ wasm-bindgen --target web    --out-dir pkg/web  "$RAW"
 wasm-bindgen --target nodejs --out-dir pkg/node "$RAW"
 
 if command -v wasm-opt >/dev/null 2>&1; then
-  # Rust's wasm32 target enables these proposals by default.
-  wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
+  # Rust's wasm32 target enables these proposals by default. -O3, not -Oz:
+  # optimised for speed (P5-06), like the release profile.
+  wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
     --enable-reference-types --enable-multivalue --enable-mutable-globals \
     "pkg/web/${NAME}_bg.wasm" -o "pkg/${NAME}.wasm"
 else
