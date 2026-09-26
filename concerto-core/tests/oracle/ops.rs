@@ -595,7 +595,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ("ScalarDeclaration", m) => {
             matches!(
                 m,
-                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue"
+                "new" | "toString" | "getType" | "getValidator" | "getDefaultValue" | "validate"
             )
         }
         ("MapDeclaration", m) => matches!(
@@ -871,6 +871,33 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     "getDefaultValue" => {
                         ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
                     }
+                    // TS: `ScalarDeclaration.validate`'s `super.validate()`
+                    // (decorators, then the import-clash check —
+                    // `Declaration::validate`'s Scalar arm, validation.rs)
+                    // followed by its own duplicate-FQN scan over
+                    // `getModelFile().getAllDeclarations()`
+                    // (`ScalarDeclaration::validate`, scalar.rs), which is
+                    // reachable here because this receiver was added without
+                    // going through `ModelFile.validate()`.
+                    "validate" => {
+                        let namespace =
+                            r.mm.model_file_of(id)
+                                .and_then(|file| r.mm.file(file))
+                                .map(ModelFile::namespace)
+                                .expect("a resolved declref's declaration always has a model file");
+                        let declaration =
+                            r.mm.declaration(id)
+                                .expect("the caller already resolved this handle as a scalar");
+                        from_engine(
+                            declaration.validate(&r.mm, namespace).and_then(|()| {
+                                concerto_core::introspect::ScalarDeclaration::validate(
+                                    &r.mm,
+                                    &Node::Declaration(id),
+                                )
+                            }),
+                            |()| recipe::undefined(),
+                        )
+                    }
                     _ => ran(Ok(scalar_validator_summary(scalar.validator()))),
                 })
             }
@@ -886,6 +913,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     .scalar_type
                     .map_or(Value::Null, |t| Value::String(t.to_string())))),
                 "getDefaultValue" => ran(Ok(processed.default_value.unwrap_or(Value::Null))),
+                // No fixture reaches `validate()` on an unregistered
+                // `declnew` receiver (P2-11b-U3, #197); left unsupported
+                // rather than guessed at.
+                "validate" => unsupported(
+                    "ScalarDeclaration.validate on a declnew receiver never added to a model file",
+                ),
                 _ => ran(Ok(scalar_validator_summary(processed.validator.as_ref()))),
             }),
             _ => Err(Fault::Unsupported(

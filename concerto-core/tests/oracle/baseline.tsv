@@ -9662,6 +9662,8 @@ ScalarDeclaration.toString	56f51586b5662a7ad50f6475	pass
 ScalarDeclaration.toString	5d152ddeafe0cdd3f505cea7	pass
 ScalarDeclaration.toString	cec30d648d244ba6b395a3da	pass
 ScalarDeclaration.toString	fae654f7b4ea26c19d5c9d08	pass
+ScalarDeclaration.validate	91f0bfe1c8da7d4a86575afe	pass
+ScalarDeclaration.validate	a9b6f55e1a4ba52fdbd332c8	pass
 Serializer.fromJSON	0006215a0b2130f79bf5758f	pass
 Serializer.fromJSON	0007942979ec36496f7a8718	pass
 Serializer.fromJSON	0057430c2ae133e0d3a1d6bb	pass
