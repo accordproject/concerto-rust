@@ -140,7 +140,12 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if instance.kind == InstanceKind::Relationship {
         return Ok(());
     }
-    if let Some(field) = mm.identifier_field_name(&instance.class_fqn)?
+    // P5-06b: the class's cached table, when there is one.
+    let field = match model::class_info(mm, &instance.class_fqn) {
+        Some(info) => info.identifier_field_name.clone(),
+        None => mm.identifier_field_name(&instance.class_fqn)?,
+    };
+    if let Some(field) = field
         && field != "$identifier"
     {
         let id = instance.get_identifier().clone();

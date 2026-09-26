@@ -82,9 +82,21 @@ pub fn check_new_resource(
         ));
     }
 
-    let id_field = class_decl.identifier_field_name()?;
+    let info = model::class_info_of(mm, class_decl.id);
+    let class_fqn = match &info {
+        Some(info) => info.fqn.clone(),
+        None => class_decl.fqn(),
+    };
+    let id_field = match &info {
+        Some(info) => info.identifier_field_name.clone(),
+        None => class_decl.identifier_field_name()?,
+    };
     let mut id = id;
-    if class_decl.is_system_identified()? && id.is_nullish() {
+    let system_identified = match &info {
+        Some(_) => id_field.as_deref() == Some("$identifier"),
+        None => class_decl.is_system_identified()?,
+    };
+    if system_identified && id.is_nullish() {
         id = JsValue::String(new_id());
     }
     if let Some(id_field) = &id_field {
@@ -107,7 +119,16 @@ pub fn check_new_resource(
             ));
         }
         // `if (id)`: a non-empty string here.
-        if let Some(regex) = identifier_regex(&class_decl, id_field)?
+        let cached_regex = info.as_ref().and_then(|info| info.id_regex.as_ref());
+        let computed_regex;
+        let regex = match cached_regex {
+            Some(regex) => regex.as_ref(),
+            None => {
+                computed_regex = identifier_regex(&class_decl, id_field)?;
+                computed_regex.as_ref()
+            }
+        };
+        if let Some(regex) = regex
             && !regex.matches_regex(id_text)
         {
             return Err(error(
@@ -123,7 +144,7 @@ pub fn check_new_resource(
     }
 
     Ok(NewResourceCheck {
-        class_fqn: class_decl.fqn(),
+        class_fqn,
         identifier_field_name: id_field,
         id,
         timestamped: class_decl.is_transaction() || class_decl.is_event(),
@@ -159,7 +180,10 @@ impl ValidatedElement for IdElement {
 /// `idFullField?.validator` when it has a `regex`: the identifying
 /// property (unboxed with `getScalarField()` when its type is a scalar) and
 /// its string validator.
-fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<StringValidator>> {
+pub(crate) fn identifier_regex(
+    class_decl: &TypeRef,
+    id_field: &str,
+) -> Result<Option<StringValidator>> {
     let Some((owner_fqn, property)) = class_decl.property(id_field)? else {
         return Ok(None);
     };
@@ -214,6 +238,14 @@ fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<Strin
 /// `modelManager.getModelFile(ns)?.getType(fqt)?.getIdentifierFieldName()
 /// || '$identifier'`, with `fqt` the class declaration's name.
 fn identifiable_field_name(mm: &ModelManager, ns: &str, class_fqn: &str) -> Result<Option<String>> {
+    // P5-06b: when `ns` is the class's own namespace, `getModelFile(ns)
+    // .getType(fqt)` is `modelManager.getType(fqt)`, whose identifying
+    // field the class's cached table already holds.
+    if model_util::get_namespace(Some(class_fqn)).ok() == Some(ns)
+        && let Some(info) = model::class_info(mm, class_fqn)
+    {
+        return Ok(info.identifier_field_name.clone().filter(|f| !f.is_empty()));
+    }
     let Some(file) = mm.model_file_id(ns) else {
         return Ok(None);
     };
@@ -419,6 +451,17 @@ fn raw_default_value(mm: &ModelManager, owner_fqn: &str, name: &str) -> Option<V
 /// non-null default gets it, converted by the field's type, through
 /// `this.setPropertyValue` (which validates it on a `ValidatedResource`).
 pub fn assign_field_defaults(mm: &ModelManager, instance: &mut Instance) -> Result<()> {
+    // P5-06b: the defaults are a function of the model alone, so they are
+    // worked out once per class ([`model::ClassInfo`]) and only assigned
+    // here, in the same order and through the same `setPropertyValue`.
+    if let Some(info) = model::class_info(mm, &instance.class_fqn)
+        && let Some(defaults) = &info.defaults
+    {
+        for (name, value) in defaults {
+            super::resource::set_property_value(mm, instance, name, value.clone())?;
+        }
+        return Ok(());
+    }
     let class_decl = model::get_type(mm, &instance.class_fqn)?;
     for (owner_fqn, property) in class_decl.properties("classDeclaration.getProperties")? {
         // `isField?.()`: relationships are not `Field`s.
@@ -427,36 +470,48 @@ pub fn assign_field_defaults(mm: &ModelManager, instance: &mut Instance) -> Resu
         }
         let name = crate::Named::name(&property).to_string();
         let field = model::field(mm, &owner_fqn, property)?;
-        let (default_value, type_name) = match &field.field_type {
-            FieldType::Scalar {
-                default_value,
-                primitive,
-                ..
-            } => (
-                default_value.clone(),
-                primitive.map(str::to_string).unwrap_or_default(),
-            ),
-            _ => (raw_default_value(mm, &owner_fqn, &name), field.type_name()),
-        };
-        let Some(default_value) = default_value.filter(|v| !v.is_null()) else {
+        let Some(value) = field_default(mm, &owner_fqn, &name, &field) else {
             continue;
-        };
-        let js = JsValue::from_json(&default_value);
-        let value = match type_name.as_str() {
-            "Integer" | "Long" => JsValue::Number(ecma::parse_int(&js.to_js_string())),
-            "Double" => JsValue::Number(ecma::parse_float(&js.to_js_string())),
-            "Boolean" => JsValue::Bool(js == JsValue::Bool(true)),
-            "DateTime" => JsValue::DateTime(match &js {
-                JsValue::String(s) => Dayjs::utc_parse(s),
-                JsValue::Number(n) => Dayjs::utc_from_number(*n),
-                _ => Dayjs::utc_invalid(),
-            }),
-            // String, and "if we get this far the field should be an enum".
-            _ => js,
         };
         super::resource::set_property_value(mm, instance, &name, value)?;
     }
     Ok(())
+}
+
+/// The value `assignFieldDefaults` gives the field `name` of `owner_fqn`
+/// (already resolved as `field`): its non-null default, converted by the
+/// field's type; `None` when it has no default.
+pub(crate) fn field_default(
+    mm: &ModelManager,
+    owner_fqn: &str,
+    name: &str,
+    field: &model::Field,
+) -> Option<JsValue> {
+    let (default_value, type_name) = match &field.field_type {
+        FieldType::Scalar {
+            default_value,
+            primitive,
+            ..
+        } => (
+            default_value.clone(),
+            primitive.map(str::to_string).unwrap_or_default(),
+        ),
+        _ => (raw_default_value(mm, owner_fqn, name), field.type_name()),
+    };
+    let default_value = default_value.filter(|v| !v.is_null())?;
+    let js = JsValue::from_json(&default_value);
+    Some(match type_name.as_str() {
+        "Integer" | "Long" => JsValue::Number(ecma::parse_int(&js.to_js_string())),
+        "Double" => JsValue::Number(ecma::parse_float(&js.to_js_string())),
+        "Boolean" => JsValue::Bool(js == JsValue::Bool(true)),
+        "DateTime" => JsValue::DateTime(match &js {
+            JsValue::String(s) => Dayjs::utc_parse(s),
+            JsValue::Number(n) => Dayjs::utc_from_number(*n),
+            _ => Dayjs::utc_invalid(),
+        }),
+        // String, and "if we get this far the field should be an enum".
+        _ => js,
+    })
 }
 
 /// Keys of `props`, for tests.

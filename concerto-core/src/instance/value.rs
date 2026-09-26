@@ -112,7 +112,9 @@ impl Instance {
         let mut instance = Self {
             kind,
             class_fqn: class_fqn.into(),
-            props: IndexMap::new(),
+            // The constructor's six own properties, and room for a few
+            // fields (P5-06b: fewer regrowths).
+            props: IndexMap::with_capacity(12),
             validator_options: ValidateOptions::default(),
         };
         instance.set("$namespace", JsValue::String(namespace.to_string()));
@@ -138,7 +140,14 @@ impl Instance {
     /// `this[key] = value`: a new key goes last, an existing one keeps its
     /// place.
     pub fn set(&mut self, key: &str, value: JsValue) {
-        self.props.insert(key.to_string(), value);
+        // An existing key is overwritten in place without allocating a new
+        // key string (P5-06b); `insert` would keep its place too.
+        match self.props.get_mut(key) {
+            Some(slot) => *slot = value,
+            None => {
+                self.props.insert(key.to_string(), value);
+            }
+        }
     }
 
     /// `this.$namespace` (TS `getNamespace()`), as JS `ToString`.
@@ -158,8 +167,12 @@ impl Instance {
 
     /// TS `Identifiable.getIdentifier`: `this[this.$identifierFieldName]`.
     pub fn get_identifier(&self) -> &JsValue {
-        let field = self.identifier_field_name();
-        self.get(&field)
+        // `this[this.$identifierFieldName]`, without copying the name when
+        // it is already a string (P5-06b).
+        match self.get("$identifierFieldName") {
+            JsValue::String(field) => self.get(field),
+            other => self.get(&other.to_js_string()),
+        }
     }
 
     /// TS `Identifiable.setIdentifier`: `this.$identifier = id;
@@ -230,7 +243,7 @@ impl Instance {
             "$superTypes",
             "$id",
         ];
-        let mut wire = serde_json::Map::new();
+        let mut wire = serde_json::Map::with_capacity(self.props.len() + 1);
         wire.insert("$class".to_string(), Value::String(self.class_fqn.clone()));
         for (key, value) in &self.props {
             if PRIVATE_ONLY_KEYS.contains(&key.as_str()) {
@@ -363,8 +376,9 @@ impl JsValue {
 
 /// A JS number as a JSON number: an integral one as an integer, so that the
 /// messages that print it (`JSON.stringify`, `String`) read `1`, not `1.0`;
-/// a non-finite one as [`js_special_number`].
-fn validator_number(n: f64) -> Value {
+/// a non-finite one as [`js_special_number`]. This is how
+/// [`JsValue::to_validator_value`] writes every number.
+pub fn validator_number(n: f64) -> Value {
     if !n.is_finite() {
         return js_special_number(&ecma::number_to_string(n));
     }

@@ -325,6 +325,12 @@ pub struct ModelManager {
     /// ([`ModelManager::invalidate_caches`]). A `Mutex` rather than a
     /// `RefCell` so the manager stays `Sync`.
     super_chain_cache: std::sync::Mutex<HashMap<String, Vec<(String, DeclId)>>>,
+    /// The instance layer's per-class tables
+    /// ([`crate::instance::model::ClassInfo`]), by declaration handle
+    /// (P5-06b): like [`Self::super_chain_cache`], they depend only on the
+    /// registered files and are cleared by every change to them.
+    class_info_cache:
+        std::sync::Mutex<Vec<Option<std::sync::Arc<crate::instance::model::ClassInfo>>>>,
 }
 
 /// The next handle of an arena table holding `len` entries.
@@ -1510,6 +1516,43 @@ impl ModelManager {
             Ok(cache) => cache.clear(),
             Err(poisoned) => poisoned.into_inner().clear(),
         }
+        match self.class_info_cache.get_mut() {
+            Ok(cache) => cache.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+
+    /// The instance layer's cached table for `fqn` (P5-06b), built with
+    /// `build` on a miss. `build` answers `None` when the table cannot be
+    /// built (any lookup it makes fails); nothing is cached then, and the
+    /// caller takes its uncached path, which raises the same error it always
+    /// did. The lock is not held while `build` runs.
+    pub(crate) fn cached_class_info(
+        &self,
+        id: DeclId,
+        build: impl FnOnce() -> Option<crate::instance::model::ClassInfo>,
+    ) -> Option<std::sync::Arc<crate::instance::model::ClassInfo>> {
+        {
+            let cache = match self.class_info_cache.lock() {
+                Ok(cache) => cache,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(Some(info)) = cache.get(id.slot()) {
+                return Some(info.clone());
+            }
+        }
+        let info = std::sync::Arc::new(build()?);
+        let mut cache = match self.class_info_cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if cache.len() <= id.slot() {
+            cache.resize(id.slot() + 1, None);
+        }
+        if let Some(slot) = cache.get_mut(id.slot()) {
+            *slot = Some(info.clone());
+        }
+        Some(info)
     }
 
     /// Works out the full name of a class's direct super type, resolved in the

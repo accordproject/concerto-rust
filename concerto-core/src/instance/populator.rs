@@ -39,8 +39,20 @@ pub(crate) struct Populator<'a> {
     pub mm: &'a ModelManager,
     pub env: &'a mut dyn InstanceEnv,
     pub options: &'a PopulatorOptions,
-    /// `parameters.path`, a `TypedStack` that starts as `['$']`.
-    pub path: Vec<String>,
+    /// `parameters.path`, a `TypedStack` that starts as `['$']`. Each
+    /// segment is kept unformatted (P5-06b): the text is only built when a
+    /// message needs it ([`Populator::path_text`]).
+    pub path: Vec<PathSegment>,
+}
+
+/// One entry of `parameters.path`.
+pub(crate) enum PathSegment {
+    /// `'$'`.
+    Root,
+    /// `'.' + property`.
+    Property(String),
+    /// `'[' + index + ']'`.
+    Index(usize),
 }
 
 fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
@@ -64,10 +76,20 @@ pub fn convert_primitive(
     options: &PopulatorOptions,
     path: &str,
 ) -> Result<JsValue> {
+    convert_primitive_with(type_name, json, options, &|| path.to_string())
+}
+
+/// [`convert_primitive`], with the path built only for a message (P5-06b).
+fn convert_primitive_with(
+    type_name: &str,
+    json: &JsValue,
+    options: &PopulatorOptions,
+    path: &dyn Fn() -> String,
+) -> Result<JsValue> {
     let wrong_type = || {
         validation(
             "jsonpopulator-converttoobject-wrongtype",
-            vec![("path", path.to_string()), ("type", type_name.to_string())],
+            vec![("path", path()), ("type", type_name.to_string())],
         )
     };
     Ok(match type_name {
@@ -82,7 +104,7 @@ pub fn convert_primitive(
                     } else {
                         return Err(validation(
                             "jsonpopulator-converttoobject-datetimeformat",
-                            vec![("path", path.to_string()), ("type", type_name.to_string())],
+                            vec![("path", path()), ("type", type_name.to_string())],
                         ));
                     }
                 }
@@ -179,6 +201,22 @@ pub(crate) fn get_property(value: &JsValue, key: &str) -> Result<JsValue> {
     })
 }
 
+/// [`get_property`], borrowing the value where it is already held (a plain
+/// object's or an instance's own property) rather than cloning it (P5-06b).
+pub(crate) fn get_property_ref<'v>(
+    value: &'v JsValue,
+    key: &str,
+) -> Result<std::borrow::Cow<'v, JsValue>> {
+    use std::borrow::Cow;
+    Ok(match value {
+        JsValue::Object(map) => map
+            .get(key)
+            .map_or(Cow::Owned(JsValue::Undefined), Cow::Borrowed),
+        JsValue::Instance(instance) => Cow::Borrowed(instance.get(key)),
+        _ => Cow::Owned(get_property(value, key)?),
+    })
+}
+
 /// `Object.keys(value)`: V8's `TypeError` for `undefined` and `null`.
 pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
     Ok(match value {
@@ -266,7 +304,7 @@ fn get_assignable_properties(
         if model_util::is_system_property(&property) {
             continue;
         }
-        if get_property(resource_data, &property)?.is_nullish() {
+        if get_property_ref(resource_data, &property)?.is_nullish() {
             continue;
         }
         assignable.push(property);
@@ -275,17 +313,30 @@ fn get_assignable_properties(
 }
 
 /// TS `validateProperties(properties, classDeclaration)`.
-fn validate_properties(properties: &[String], class_declaration: &TypeRef) -> Result<()> {
-    let expected: Vec<String> = class_declaration
-        .properties("classDeclaration.getProperties")?
-        .iter()
-        .map(|(_, p)| crate::Named::name(p).to_string())
-        .collect();
-    let invalid: Vec<&str> = properties
-        .iter()
-        .filter(|p| !expected.contains(p))
-        .map(String::as_str)
-        .collect();
+fn validate_properties(
+    properties: &[String],
+    class_declaration: &TypeRef,
+    info: Option<&model::ClassInfo>,
+) -> Result<()> {
+    let invalid: Vec<&str> = if let Some(info) = info {
+        // P5-06b: the class's cached table (the same `getProperties()`).
+        properties
+            .iter()
+            .filter(|p| info.property_index(p).is_none())
+            .map(String::as_str)
+            .collect()
+    } else {
+        let expected: Vec<String> = class_declaration
+            .properties("classDeclaration.getProperties")?
+            .iter()
+            .map(|(_, p)| crate::Named::name(p).to_string())
+            .collect();
+        properties
+            .iter()
+            .filter(|p| !expected.contains(p))
+            .map(String::as_str)
+            .collect()
+    };
     if !invalid.is_empty() {
         return Err(validation(
             "jsonpopulator-validateproperties-unexpectedproperties",
@@ -308,12 +359,26 @@ impl<'a> Populator<'a> {
             mm,
             env,
             options,
-            path: vec!["$".to_string()],
+            path: vec![PathSegment::Root],
         }
     }
 
     fn path_text(&self) -> String {
-        self.path.concat()
+        use std::fmt::Write;
+        let mut text = String::new();
+        for segment in &self.path {
+            match segment {
+                PathSegment::Root => text.push('$'),
+                PathSegment::Property(property) => {
+                    text.push('.');
+                    text.push_str(property);
+                }
+                PathSegment::Index(n) => {
+                    let _ = write!(text, "[{n}]");
+                }
+            }
+        }
+        text
     }
 
     /// TS `declaration.accept(this, parameters)` for a declaration: `visit`
@@ -362,21 +427,39 @@ impl<'a> Populator<'a> {
         if options.reject_unknown_keys {
             self.reject_unknown_keys(json, class_declaration)?;
         }
-        validate_properties(&properties, class_declaration)?;
+        // P5-06b: the class's properties and their resolved types come from
+        // its cached table when there is one, else from the same lookups
+        // as before.
+        let info = if class_declaration.is_class_declaration() {
+            model::class_info_of(self.mm, class_declaration.id)
+        } else {
+            None
+        };
+        validate_properties(&properties, class_declaration, info.as_deref())?;
         if options.reject_required_null {
             self.reject_required_null(json, class_declaration)?;
         }
         for property in properties {
-            let value = get_property(json, &property)?;
-            if value != JsValue::Null {
-                self.path.push(format!(".{property}"));
-                let (owner_fqn, class_property) = class_declaration
-                    .property(&property)?
-                    .expect("validateProperties found every property");
-                let field = model::field(self.mm, &owner_fqn, class_property)?;
-                let populated = self.visit_property(&field, &value)?;
+            let value = get_property_ref(json, &property)?;
+            if *value != JsValue::Null {
+                let cached = info.as_deref().and_then(|info| info.field(&property));
+                let field_storage;
+                let field = match cached {
+                    Some(field) => field,
+                    None => {
+                        let (owner_fqn, class_property) = class_declaration
+                            .property(&property)?
+                            .expect("validateProperties found every property");
+                        field_storage = model::field(self.mm, &owner_fqn, class_property)?;
+                        &field_storage
+                    }
+                };
+                self.path.push(PathSegment::Property(property));
+                let populated = self.visit_property(field, &value)?;
+                let Some(PathSegment::Property(property)) = self.path.pop() else {
+                    unreachable!("the segment pushed above");
+                };
                 resource.set(&property, populated);
-                self.path.pop();
             }
         }
         Ok(resource)
@@ -572,7 +655,7 @@ impl<'a> Populator<'a> {
             };
             let mut result = Vec::with_capacity(items.len());
             for (n, item) in items.iter().enumerate() {
-                self.path.push(format!("[{n}]"));
+                self.path.push(PathSegment::Index(n));
                 result.push(self.convert_item(field, item)?);
                 self.path.pop();
             }
@@ -637,7 +720,9 @@ impl<'a> Populator<'a> {
     /// a free function the concerto-wasm binding (P4-10, jsonpopulator.ts)
     /// calls directly per field, without needing a live `Populator`.
     fn convert_to_object(&mut self, field: &Field, json: &JsValue) -> Result<JsValue> {
-        convert_primitive(&field.type_name(), json, self.options, &self.path_text())
+        convert_primitive_with(field.type_name_str(), json, self.options, &|| {
+            self.path_text()
+        })
     }
 
     /// TS: JSONPopulator.visitRelationshipDeclaration.

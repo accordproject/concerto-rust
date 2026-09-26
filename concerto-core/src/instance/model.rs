@@ -7,8 +7,12 @@
 //! `JSONGenerator` (`modelManager.getType(...)`, then `classDecl.isX()`),
 //! kept in one place so that each port reads the same way as its TS.
 
+use std::sync::Arc;
+
+use super::value::JsValue;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::introspect::scalar::ScalarValidator;
+use crate::introspect::validators::StringValidator;
 use crate::introspect::{ClassKind, Declaration, Named, Property, Typed};
 use crate::model_manager::{DeclId, ModelManager};
 use crate::model_util;
@@ -125,7 +129,11 @@ impl<'a> TypeRef<'a> {
     pub fn identifier_field_name(&self) -> Result<Option<String>> {
         match self.decl {
             Declaration::Class(_) | Declaration::Enum(_) => {
-                self.mm.identifier_field_name(&self.fqn())
+                // P5-06b: the cached table's answer, when there is one.
+                match class_info_of(self.mm, self.id) {
+                    Some(info) => Ok(info.identifier_field_name.clone()),
+                    None => self.mm.identifier_field_name(&self.fqn()),
+                }
             }
             Declaration::Scalar(_) | Declaration::Map(_) => Ok(None),
         }
@@ -224,6 +232,14 @@ impl Field {
         }
     }
 
+    /// [`Self::type_name`], borrowed.
+    pub fn type_name_str(&self) -> &str {
+        match &self.field_type {
+            FieldType::Scalar { primitive, .. } => primitive.unwrap_or_default(),
+            _ => self.property.type_name().unwrap_or_default(),
+        }
+    }
+
     /// TS `getFullyQualifiedTypeName()`.
     pub fn fully_qualified_type_name(&self) -> String {
         match &self.field_type {
@@ -294,4 +310,200 @@ pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> R
         property,
         field_type,
     })
+}
+
+/// What the instance layer asks of a class-like declaration on every
+/// instance, worked out once per model state (P5-06b): its inherited
+/// identifying field, its properties (own and inherited, as
+/// `getProperties()` lists them), each one's resolved type, the defaults
+/// `assignFieldDefaults` assigns, and the identifier's `regex` validator.
+/// [`ModelManager`] caches it by name and drops it on every change to the
+/// registered files, as it does its super-type chains.
+///
+/// Only answers that succeed are kept: a table is built only when the
+/// declaration's chain resolves, and a property whose type does not resolve
+/// (or an identifier validator that fails to build) is left out, so that
+/// its caller takes the uncached path and raises the same error, at the
+/// same point, as before.
+#[derive(Debug)]
+pub(crate) struct ClassInfo {
+    /// TS `getFullyQualifiedName()`.
+    pub fqn: String,
+    /// TS `getIdentifierFieldName()`.
+    pub identifier_field_name: Option<String>,
+    /// TS `getProperties()`: each with its declaring type's name.
+    pub properties: Vec<(String, Property)>,
+    /// [`field`] of each of [`Self::properties`], index for index, where it
+    /// resolves.
+    pub fields: Vec<Option<Field>>,
+    /// `assignFieldDefaults`' `(name, value)` pairs, in order; `None` when a
+    /// field it reaches does not resolve.
+    pub defaults: Option<Vec<(String, JsValue)>>,
+    /// `Factory.newResource`'s identifier `regex` validator: `Some(None)`
+    /// when there is none, `None` when it could not be worked out here.
+    pub id_regex: Option<Option<StringValidator>>,
+}
+
+impl ClassInfo {
+    /// TS `getProperty(name)`'s index into [`Self::properties`].
+    pub fn property_index(&self, name: &str) -> Option<usize> {
+        self.properties.iter().position(|(_, p)| p.name() == name)
+    }
+
+    /// The resolved [`Field`] of the property `name`, when it is declared
+    /// and resolves.
+    pub fn field(&self, name: &str) -> Option<&Field> {
+        self.fields[self.property_index(name)?].as_ref()
+    }
+}
+
+/// The [`ClassInfo`] of the class-like declaration named `fqn` exactly
+/// (`<namespace>.<name>`), or `None` when any of it cannot be worked out
+/// (the caller then takes its own uncached path).
+pub(crate) fn class_info(mm: &ModelManager, fqn: &str) -> Option<Arc<ClassInfo>> {
+    class_info_of(mm, mm.declaration_id(fqn)?)
+}
+
+/// [`class_info`], for the declaration `id`.
+pub(crate) fn class_info_of(mm: &ModelManager, id: DeclId) -> Option<Arc<ClassInfo>> {
+    mm.cached_class_info(id, || {
+        let decl = mm.declaration(id)?;
+        if !matches!(decl, Declaration::Class(_) | Declaration::Enum(_)) {
+            return None;
+        }
+        let fqn = TypeRef { mm, id, decl }.fqn();
+        let class_decl = get_type(mm, &fqn).ok()?;
+        if class_decl.id != id {
+            return None;
+        }
+        let fqn = fqn.as_str();
+        let identifier_field_name = mm.identifier_field_name(fqn).ok()?;
+        let properties = mm.get_all_properties(fqn).ok()?;
+        let fields: Vec<Option<Field>> = properties
+            .iter()
+            .map(|(owner_fqn, property)| field(mm, owner_fqn, property.clone()).ok())
+            .collect();
+        let mut defaults = Some(Vec::new());
+        for ((owner_fqn, property), resolved) in properties.iter().zip(&fields) {
+            if property.is_relationship() || property.is_enum_value() {
+                continue;
+            }
+            let Some(resolved) = resolved else {
+                defaults = None;
+                break;
+            };
+            if let (Some(defaults), Some(value)) = (
+                defaults.as_mut(),
+                super::factory::field_default(mm, owner_fqn, property.name(), resolved),
+            ) {
+                defaults.push((property.name().to_string(), value));
+            }
+        }
+        let id_regex = match &identifier_field_name {
+            Some(id_field) => super::factory::identifier_regex(&class_decl, id_field).ok(),
+            None => Some(None),
+        };
+        Some(ClassInfo {
+            fqn: fqn.to_string(),
+            identifier_field_name,
+            properties,
+            fields,
+            defaults,
+            id_regex,
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn model(namespace: &str, declarations: serde_json::Value) -> serde_json::Value {
+        json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": namespace,
+            "imports": [],
+            "declarations": declarations,
+        })
+    }
+
+    /// P5-06b: a table is built only once the whole super chain resolves,
+    /// is dropped when the registered files change, and agrees with the
+    /// uncached lookups it stands for.
+    #[test]
+    fn class_info_follows_the_registered_files() {
+        let mut mm = ModelManager::new().expect("a model manager");
+        let base = model(
+            "org.base@1.0.0",
+            json!([{
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Base",
+                "isAbstract": false,
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "key" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "key",
+                      "isArray": false, "isOptional": false }
+                ]
+            }]),
+        );
+        let mut child = model(
+            "org.child@1.0.0",
+            json!([{
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Child",
+                "isAbstract": false,
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" },
+                "properties": [
+                    { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "size",
+                      "isArray": false, "isOptional": false, "defaultValue": 3 }
+                ]
+            }]),
+        );
+        child["imports"] = json!([{
+            "$class": "concerto.metamodel@1.0.0.ImportType",
+            "namespace": "org.base@1.0.0",
+            "name": "Base"
+        }]);
+        mm.add_model(&base, Some("base.cto".into()))
+            .expect("base loads");
+        mm.add_model(&child, Some("child.cto".into()))
+            .expect("child loads");
+
+        let info = class_info(&mm, "org.child@1.0.0.Child").expect("a table");
+        assert_eq!(info.fqn, "org.child@1.0.0.Child");
+        assert_eq!(
+            info.identifier_field_name,
+            mm.identifier_field_name("org.child@1.0.0.Child").unwrap()
+        );
+        let uncached = mm.get_all_properties("org.child@1.0.0.Child").unwrap();
+        assert_eq!(
+            info.properties
+                .iter()
+                .map(|(o, p)| (o.clone(), p.name().to_string()))
+                .collect::<Vec<_>>(),
+            uncached
+                .iter()
+                .map(|(o, p)| (o.clone(), p.name().to_string()))
+                .collect::<Vec<_>>(),
+        );
+        assert!(info.fields.iter().all(Option::is_some));
+        assert_eq!(
+            info.defaults,
+            Some(vec![("size".to_string(), JsValue::Number(3.0))])
+        );
+        assert_eq!(info.id_regex.as_ref().map(Option::is_some), Some(false));
+        // The same table while nothing changes.
+        let again = class_info(&mm, "org.child@1.0.0.Child").expect("a table");
+        assert!(Arc::ptr_eq(&info, &again));
+        // A change to the registered files drops it.
+        let other = model("org.other@1.0.0", json!([]));
+        mm.add_model(&other, Some("other.cto".into()))
+            .expect("other loads");
+        let rebuilt = class_info(&mm, "org.child@1.0.0.Child").expect("a table");
+        assert!(!Arc::ptr_eq(&info, &rebuilt));
+        // Not a class-like declaration, or not a name at all: no table.
+        assert!(class_info(&mm, "org.child@1.0.0.Missing").is_none());
+        assert!(class_info(&mm, "String").is_none());
+    }
 }

@@ -3404,6 +3404,213 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
     }
 }
 
+/// A wire value's JSON text (module doc) as the [`CoreValue`] it decodes
+/// to, as `decode_wire(&serde_json::from_str(text)?)` does, but read
+/// straight into [`CoreValue`] rather than through a `serde_json::Value`
+/// first (P5-06b): the text is parsed by the same `serde_json` reader
+/// (same syntax errors), into [`RawWire`], and the tagged objects are then
+/// resolved in place by [`resolve_wire`], with `decode_wire`'s rules and
+/// errors.
+fn parse_wire(text: &str) -> Result<CoreValue> {
+    let RawWire(raw) = serde_json::from_str(text)
+        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+    resolve_wire(raw)
+}
+
+/// Plain JSON read into [`CoreValue`] as [`CoreValue::from_json`] reads a
+/// `serde_json::Value`, tagged objects included, as plain objects.
+struct RawWire(CoreValue);
+
+impl<'de> serde::Deserialize<'de> for RawWire {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(RawWireVisitor).map(RawWire)
+    }
+}
+
+struct RawWireVisitor;
+
+impl<'de> serde::de::Visitor<'de> for RawWireVisitor {
+    type Value = CoreValue;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Number(v as f64))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Number(v as f64))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Number(v))
+    }
+
+    fn visit_str<E>(self, v: &str) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::String(v))
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Null)
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Null)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<CoreValue, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(RawWire(item)) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(CoreValue::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<CoreValue, A::Error> {
+        let mut out = SerializerOptions::with_capacity(map.size_hint().unwrap_or(0));
+        while let Some((key, RawWire(value))) = map.next_entry::<String, RawWire>()? {
+            // `serde_json::Map::insert`: a repeated key keeps its first
+            // position and takes the last value.
+            out.insert(key, value);
+        }
+        Ok(CoreValue::Object(out))
+    }
+}
+
+/// A field of a tagged wire object, as `decode_wire` reads it off the
+/// `serde_json::Value`.
+fn wire_str(map: &SerializerOptions, key: &str) -> Option<String> {
+    map.get(key).and_then(CoreValue::as_str).map(str::to_string)
+}
+
+fn wire_f64(map: &SerializerOptions, key: &str) -> Option<f64> {
+    match map.get(key) {
+        Some(CoreValue::Number(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// [`parse_wire`]'s second step: `decode_wire`'s reading of the tagged
+/// objects in `value` (read as plain objects by [`RawWire`]), with the same
+/// rules and errors.
+fn resolve_wire(value: CoreValue) -> Result<CoreValue> {
+    match value {
+        CoreValue::Array(items) => items
+            .into_iter()
+            .map(resolve_wire)
+            .collect::<Result<Vec<_>>>()
+            .map(CoreValue::Array),
+        CoreValue::Object(mut map) => {
+            let Some(kind) = wire_str(&map, WIRE_TAG) else {
+                for item in map.values_mut() {
+                    *item = resolve_wire(std::mem::replace(item, CoreValue::Null))?;
+                }
+                return Ok(CoreValue::Object(map));
+            };
+            match kind.as_str() {
+                "undefined" => Ok(CoreValue::Undefined),
+                "number" => {
+                    let text = wire_str(&map, "value")
+                        .ok_or_else(|| wire_error("a wire number without value".to_string()))?;
+                    decode_wire_number(&text).map(CoreValue::Number)
+                }
+                "bigint" => {
+                    let text = wire_str(&map, "value")
+                        .ok_or_else(|| wire_error("a wire bigint without value".to_string()))?;
+                    Ok(CoreValue::BigInt(text))
+                }
+                "map" => {
+                    let Some(CoreValue::Array(entries)) = map.swap_remove("entries") else {
+                        return Err(wire_error("a wire map without entries".to_string()));
+                    };
+                    let mut decoded = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        let CoreValue::Array(pair) = entry else {
+                            return Err(wire_error(
+                                "a wire map entry that is not a pair".to_string(),
+                            ));
+                        };
+                        let mut pair = pair.into_iter();
+                        let key = pair.next().ok_or_else(|| {
+                            wire_error("a wire map entry without a key".to_string())
+                        })?;
+                        let value = pair.next().ok_or_else(|| {
+                            wire_error("a wire map entry without a value".to_string())
+                        })?;
+                        decoded.push((resolve_wire(key)?, resolve_wire(value)?));
+                    }
+                    Ok(CoreValue::Map(decoded))
+                }
+                "dayjs" => {
+                    let valid = matches!(map.get("valid"), Some(CoreValue::Bool(true)));
+                    if !valid {
+                        return Ok(CoreValue::DateTime(Dayjs::utc_invalid()));
+                    }
+                    let ms = wire_f64(&map, "ms")
+                        .ok_or_else(|| wire_error("a valid wire dayjs without ms".to_string()))?;
+                    let offset = wire_f64(&map, "utcOffset").unwrap_or(0.0);
+                    let built = Dayjs::utc_from_number(ms);
+                    let built = if offset == 0.0 {
+                        built
+                    } else {
+                        built.utc_offset_set(&UtcOffset::Number(offset))
+                    };
+                    Ok(CoreValue::DateTime(built))
+                }
+                "typed" => {
+                    let kind = match map.get("ctor").and_then(CoreValue::as_str) {
+                        Some("Resource") => InstanceKind::Resource,
+                        Some("ValidatedResource") => InstanceKind::ValidatedResource,
+                        Some("Relationship") => InstanceKind::Relationship,
+                        other => {
+                            return Err(wire_error(format!(
+                                "a typed wire value of class {other:?}"
+                            )));
+                        }
+                    };
+                    let fqn = wire_str(&map, "fqn")
+                        .ok_or_else(|| wire_error("a typed wire value without fqn".to_string()))?;
+                    let Some(CoreValue::Object(fields)) = map.swap_remove("fields") else {
+                        return Err(wire_error("a typed wire value without fields".to_string()));
+                    };
+                    let mut props = SerializerOptions::with_capacity(fields.len());
+                    for (key, value) in fields {
+                        props.insert(key, resolve_wire(value)?);
+                    }
+                    Ok(CoreValue::Instance(Box::new(Instance {
+                        kind,
+                        class_fqn: fqn,
+                        props,
+                        validator_options: concerto_core::instance::ValidateOptions::default(),
+                    })))
+                }
+                other => Err(wire_error(format!(
+                    "a wire value of kind {other} has no engine counterpart"
+                ))),
+            }
+        }
+        other => Ok(other),
+    }
+}
+
 /// The options object a serializer call's `optionsText` decodes to
 /// (`JSON.stringify`d by the view, `"null"` for no options).
 fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
@@ -3506,6 +3713,171 @@ fn encode_wire(v: &CoreValue) -> Value {
     }
 }
 
+/// Whether two values are the same JS value, for [`lean_recipe`]: a
+/// string, boolean, `null` or number (compared bit for bit, so `-0` and
+/// `NaN` are only ever themselves).
+fn same_primitive(a: &CoreValue, b: &CoreValue) -> bool {
+    match (a, b) {
+        (CoreValue::Null, CoreValue::Null) => true,
+        (CoreValue::Bool(a), CoreValue::Bool(b)) => a == b,
+        (CoreValue::Number(a), CoreValue::Number(b)) => a.to_bits() == b.to_bits(),
+        (CoreValue::String(a), CoreValue::String(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Whether the populated `value` is the input `input` as the view holds it
+/// (a primitive), or an array of exactly its items (which the view copies).
+fn same_as_input(value: &CoreValue, input: &CoreValue) -> bool {
+    match (value, input) {
+        (CoreValue::Array(items), CoreValue::Array(inputs)) => {
+            items.len() == inputs.len()
+                && items
+                    .iter()
+                    .zip(inputs)
+                    .all(|(item, input)| same_primitive(item, input))
+        }
+        _ => same_primitive(value, input),
+    }
+}
+
+/// Appends the JSON text of `value`'s wire encoding (`encode_wire`) to
+/// `out`, writing a string, a boolean, `null` or a number that JSON holds
+/// directly, without building the `serde_json::Value` first.
+fn write_wire(out: &mut Vec<u8>, value: &CoreValue) -> Result<()> {
+    let written = match value {
+        CoreValue::Null => {
+            out.extend_from_slice(b"null");
+            Ok(())
+        }
+        CoreValue::Bool(b) => serde_json::to_writer(&mut *out, b),
+        CoreValue::String(s) => serde_json::to_writer(&mut *out, s),
+        CoreValue::Number(n) if n.is_finite() && !(*n == 0.0 && n.is_sign_negative()) => {
+            serde_json::to_writer(&mut *out, &encode_wire_number(*n))
+        }
+        other => serde_json::to_writer(&mut *out, &encode_wire(other)),
+    };
+    written.map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// [`ModelManagerHandle::serializer_from_json_lean`]'s reply for the
+/// populated `resource`, given the object it was populated from, as JSON
+/// text.
+fn lean_recipe(resource: &Instance, input: &CoreValue) -> Result<String> {
+    let mut out = Vec::with_capacity(256);
+    let push = |out: &mut Vec<u8>, bytes: &[u8]| out.extend_from_slice(bytes);
+    push(&mut out, b"[");
+    write_wire_str(&mut out, resource.kind.ctor())?;
+    push(&mut out, b",");
+    write_wire_str(&mut out, &resource.class_fqn)?;
+    for key in ["$namespace", "$type", "$identifier", "$timestamp"] {
+        push(&mut out, b",");
+        write_wire(
+            &mut out,
+            resource.props.get(key).unwrap_or(&CoreValue::Undefined),
+        )?;
+    }
+    let identifier_field_name = resource.props.get("$identifierFieldName");
+    let inputs = match input {
+        CoreValue::Object(map) => Some(map),
+        _ => None,
+    };
+    for (key, value) in &resource.props {
+        // `materializeTyped`'s `skip`.
+        if matches!(
+            key.as_str(),
+            "$namespace"
+                | "$type"
+                | "$identifierFieldName"
+                | "$identifier"
+                | "$timestamp"
+                | "$class"
+        ) || identifier_field_name.and_then(CoreValue::as_str) == Some(key.as_str())
+        {
+            continue;
+        }
+        push(&mut out, b",");
+        write_wire_str(&mut out, key)?;
+        push(&mut out, b",");
+        let copied = inputs.and_then(|map| {
+            let (index, _, input) = map.get_full(key)?;
+            same_as_input(value, input).then_some(index)
+        });
+        match copied {
+            Some(index) => push(&mut out, index.to_string().as_bytes()),
+            None => {
+                push(&mut out, b"[");
+                write_wire(&mut out, value)?;
+                push(&mut out, b"]");
+            }
+        }
+    }
+    push(&mut out, b"]");
+    String::from_utf8(out).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// Appends `s` as a JSON string.
+fn write_wire_str(out: &mut Vec<u8>, s: &str) -> Result<()> {
+    serde_json::to_writer(&mut *out, s)
+        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+}
+
+/// Rewrites every number in `value` the way `Instance::to_validator_value`
+/// writes it (`validator_number`): `JSON.stringify` writes a large integral
+/// double in full, which `serde_json` reads back as an integer, where the
+/// validator's own shape holds it as a float.
+fn normalize_validator_numbers(value: &mut Value) {
+    match value {
+        Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                *value = concerto_core::instance::value::validator_number(f);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(normalize_validator_numbers),
+        Value::Object(map) => map.values_mut().for_each(normalize_validator_numbers),
+        _ => {}
+    }
+}
+
+/// Whether `ResourceValidator.visitClassDeclaration`'s write,
+/// `obj.$identifier = obj.getIdentifier()` (`this[this.$identifierFieldName]`),
+/// would leave every resource in `instance` (itself, and any held at any
+/// depth) exactly as it is: each already has an own `$identifier` holding
+/// that same value. A conservative check for
+/// [`ModelManagerHandle::resource_validate_fast`]: it looks at more
+/// resources than the walk visits, never fewer.
+fn identifier_sync_is_noop(instance: &Instance) -> bool {
+    if instance.kind != InstanceKind::Relationship {
+        let Some(CoreValue::String(field)) = instance.props.get("$identifierFieldName") else {
+            return false;
+        };
+        let Some(current) = instance.props.get("$identifier") else {
+            return false;
+        };
+        let id = instance.props.get(field).unwrap_or(&CoreValue::Undefined);
+        let same = match (current, id) {
+            (CoreValue::Undefined, CoreValue::Undefined) => true,
+            (a, b) => same_primitive(a, b) && !matches!(a, CoreValue::Number(n) if n.is_nan()),
+        };
+        if !same {
+            return false;
+        }
+    }
+    instance.props.values().all(values_sync_is_noop)
+}
+
+fn values_sync_is_noop(value: &CoreValue) -> bool {
+    match value {
+        CoreValue::Instance(instance) => identifier_sync_is_noop(instance),
+        CoreValue::Array(items) => items.iter().all(values_sync_is_noop),
+        CoreValue::Object(map) => map.values().all(values_sync_is_noop),
+        CoreValue::Map(entries) => entries
+            .iter()
+            .all(|(k, v)| values_sync_is_noop(k) && values_sync_is_noop(v)),
+        _ => true,
+    }
+}
+
 /// Calls back the view's `env.newId()`/`env.nowMs()` (D7: the identifier
 /// and the clock stay with the caller, `InstanceEnv`'s doc). Both trait
 /// methods are infallible, so a callback that throws or returns the wrong
@@ -3551,6 +3923,48 @@ pub struct ModelManagerHandle {
     /// `deleteModelFile` replace the whole manager, restarting its
     /// generation count.
     epoch: u64,
+    /// The last serializer options text a Serializer fast-path call
+    /// decoded, with what it decoded to (P5-06b): a view passes the same
+    /// options on every call (`Serializer.defaultOptions`, most often), and
+    /// the same text always decodes to the same options.
+    serializer_cache: RefCell<Option<CachedSerializer>>,
+}
+
+/// [`ModelManagerHandle`]'s `serializer_cache` entry.
+struct CachedSerializer {
+    options_text: String,
+    options: Option<SerializerOptions>,
+    serializer: Serializer,
+}
+
+impl ModelManagerHandle {
+    /// Runs `body` with the options `options_text` decodes to and the
+    /// `Serializer` built from them, as `decode_wire_options(options_text)`
+    /// then `Serializer::new(true, true, options)` would give them (same
+    /// errors), reusing the last call's when its text was the same.
+    fn with_serializer<T>(
+        &self,
+        options_text: &str,
+        body: impl FnOnce(Option<&SerializerOptions>, &Serializer) -> Result<T>,
+    ) -> Result<T> {
+        // Taken out rather than borrowed, so a call made from inside `body`
+        // (a JS callback) finds no entry instead of a borrowed cell.
+        let entry = match self.serializer_cache.take() {
+            Some(entry) if entry.options_text == options_text => entry,
+            _ => {
+                let options = decode_wire_options(options_text)?;
+                let serializer = Serializer::new(true, true, options.as_ref())?;
+                CachedSerializer {
+                    options_text: options_text.to_string(),
+                    options,
+                    serializer,
+                }
+            }
+        };
+        let result = body(entry.options.as_ref(), &entry.serializer);
+        self.serializer_cache.replace(Some(entry));
+        result
+    }
 }
 
 #[wasm_bindgen]
@@ -3562,6 +3976,7 @@ impl ModelManagerHandle {
             Ok(Self {
                 manager: ModelManager::new()?,
                 epoch: 0,
+                serializer_cache: RefCell::new(None),
             })
         })
     }
@@ -3867,9 +4282,7 @@ impl ModelManagerHandle {
         env: JsValue,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let json_value: Value = serde_json::from_str(json_text)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let object = decode_wire(&json_value)?;
+            let object = parse_wire(json_text)?;
             let options = decode_wire_options(options_text)?;
             let serializer = Serializer::new(true, true, options.as_ref())?;
             let mut js_env = JsInstanceEnv { env };
@@ -3890,14 +4303,123 @@ impl ModelManagerHandle {
         options_text: &str,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let wire_value: Value = serde_json::from_str(wire_text)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let resource = decode_wire(&wire_value)?;
+            let resource = parse_wire(wire_text)?;
             let options = decode_wire_options(options_text)?;
             let serializer = Serializer::new(true, true, options.as_ref())?;
             let result = serializer.to_json(&self.manager, &resource, options.as_ref())?;
             snapshot(&encode_wire(&result))
         })
+    }
+
+    /// `Serializer.fromJSON`'s fast path in a leaner reply (P5-06b): the
+    /// same call as [`Self::serializer_from_json`] (same arguments, same
+    /// errors), but the resource comes back as a recipe the view builds it
+    /// from, rather than as its whole `"typed"` wire encoding. The reply is
+    /// the JSON array
+    ///
+    /// ```text
+    /// [ctor, fqn, $namespace, $type, $identifier, $timestamp, key, value, key, value, ...]
+    /// ```
+    ///
+    /// where the four `$` fields are wire values (the constructor's
+    /// arguments, as `materializeTyped` reads them) and each `key, value`
+    /// pair is one of the resource's other own properties, in order, less
+    /// those the constructor sets itself (`materializeTyped`'s `skip`). A
+    /// `value` is either a number `i`, meaning "the `i`th own property of the
+    /// object passed in, in `Object.keys` order", given only when the
+    /// populated value is exactly that input value (a string, number,
+    /// boolean or `null`, bit for bit) or an array holding exactly those
+    /// input items (the view copies the array), or else the one-element
+    /// array `[wire value]`.
+    #[wasm_bindgen(js_name = serializerFromJsonLean)]
+    pub fn serializer_from_json_lean(
+        &self,
+        json_text: &str,
+        options_text: &str,
+        env: JsValue,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let object = parse_wire(json_text)?;
+            let mut js_env = JsInstanceEnv { env };
+            // `serializer` was built from these same `options`, so its
+            // default options already are `Object.assign({},
+            // this.defaultOptions, options)`: passing no options reads
+            // them in place instead of merging the same keys again.
+            let resource = self.with_serializer(options_text, |_options, serializer| {
+                Ok(serializer.from_json(&self.manager, &object, None, &mut js_env)?)
+            })?;
+            lean_recipe(&resource, &object)
+        })
+    }
+
+    /// `ValidatedResource.validate()`'s fast path (P5-06b): validates the
+    /// resource `wire_text` (its `"typed"` wire encoding) against this
+    /// manager, with its `$validator`'s two options, the way
+    /// `ResourceValidator` does from `ValidatedResource.validate`. Answers
+    /// `true` only when the resource is valid and the walk's one write
+    /// (`obj.$identifier = obj.getIdentifier()`, on every resource it
+    /// visits) would change nothing, so the view has nothing left to do.
+    /// Answers `false` for anything else, an invalid resource included,
+    /// and never throws: the view then runs its own visitor path, which
+    /// raises the error and makes the writes exactly as before.
+    #[wasm_bindgen(js_name = resourceValidateFast)]
+    pub fn resource_validate_fast(
+        &self,
+        wire_text: &str,
+        convert_resources_to_relationships: bool,
+        permit_resources_for_relationships: bool,
+    ) -> bool {
+        let Ok(CoreValue::Instance(instance)) = parse_wire(wire_text) else {
+            return false;
+        };
+        if instance.kind == InstanceKind::Relationship || !identifier_sync_is_noop(&instance) {
+            return false;
+        }
+        let options = concerto_core::instance::ValidateOptions {
+            convert_resources_to_relationships,
+            permit_resources_for_relationships,
+        };
+        concerto_core::instance::validate::validate_instance_from(
+            &self.manager,
+            &instance.to_validator_value(),
+            &options,
+            instance.fully_qualified_identifier(),
+        )
+        .is_ok()
+    }
+
+    /// [`Self::resource_validate_fast`] for a resource whose fields are all
+    /// plain JSON (P5-06b): `validator_text` is the resource already in the
+    /// shape the validator reads (`Instance::to_validator_value`: `$class`
+    /// first, then every own property but the handles and the private
+    /// ones), which for plain JSON is its `JSON.stringify` text with no wire
+    /// tags, and `root_resource_identifier` its
+    /// `getFullyQualifiedIdentifier()`. The view checks for itself that the
+    /// identifier write would change nothing. Answers whether the resource
+    /// is valid; never throws.
+    #[wasm_bindgen(js_name = resourceValidateSimple)]
+    pub fn resource_validate_simple(
+        &self,
+        validator_text: &str,
+        root_resource_identifier: String,
+        convert_resources_to_relationships: bool,
+        permit_resources_for_relationships: bool,
+    ) -> bool {
+        let Ok(mut value) = serde_json::from_str::<Value>(validator_text) else {
+            return false;
+        };
+        normalize_validator_numbers(&mut value);
+        let options = concerto_core::instance::ValidateOptions {
+            convert_resources_to_relationships,
+            permit_resources_for_relationships,
+        };
+        concerto_core::instance::validate::validate_instance_from(
+            &self.manager,
+            &value,
+            &options,
+            root_resource_identifier,
+        )
+        .is_ok()
     }
 
     /// Loads a model from its JSON AST, as [`Self::add_model`] does, but
@@ -4864,5 +5386,172 @@ mod tests {
         let value: Value = serde_json::from_str(r#"{"@@oracle":"bigint","value":"10"}"#).unwrap();
         assert_eq!(decoded(&value), CoreValue::BigInt("10".to_string()));
         assert_eq!(encode_wire(&CoreValue::BigInt("10".to_string())), value);
+    }
+
+    /// What a decode answered: the value, or the message of the error.
+    fn outcome(result: Result<CoreValue>) -> std::result::Result<CoreValue, String> {
+        result.map_err(|e| match e {
+            Error::Contract(e) => e.message(),
+            Error::Js(_) => "a JS error".to_string(),
+        })
+    }
+
+    /// P5-06b: `parse_wire`'s two steps read every wire text the way
+    /// `decode_wire` reads it once parsed, errors included.
+    #[test]
+    fn raw_wire_then_resolve_matches_decode_wire() {
+        let texts = [
+            r#"null"#,
+            r#"[1,2.5,-3,1e21,18446744073709551615,"a",true,null,{}]"#,
+            r#"{"$class":"a.b@1.0.0.C","id":"x","n":1.0,"xs":["a","b"],"o":{"k":[{"j":1}]}}"#,
+            r#"{"b":1,"a":2,"b":3}"#,
+            r#"{"@@oracle":"undefined"}"#,
+            r#"{"@@oracle":"number","value":"-0"}"#,
+            r#"{"@@oracle":"number","value":"NaN"}"#,
+            r#"{"@@oracle":"number","value":"1"}"#,
+            r#"{"@@oracle":"number"}"#,
+            r#"{"@@oracle":"bigint","value":"12"}"#,
+            r#"{"@@oracle":7,"x":{"@@oracle":"undefined"}}"#,
+            r#"{"@@oracle":"map","entries":[["k",{"@@oracle":"undefined"}],[1,2]]}"#,
+            r#"{"@@oracle":"map","entries":[["k"]]}"#,
+            r#"{"@@oracle":"map","entries":[1]}"#,
+            r#"{"@@oracle":"map"}"#,
+            r#"{"@@oracle":"dayjs","valid":true,"ms":1000,"utcOffset":60}"#,
+            r#"{"@@oracle":"dayjs","valid":true,"ms":1000}"#,
+            r#"{"@@oracle":"dayjs","valid":false}"#,
+            r#"{"@@oracle":"dayjs","valid":true}"#,
+            r#"{"@@oracle":"typed","ctor":"ValidatedResource","fqn":"a.b@1.0.0.C","fields":{"$namespace":"a.b@1.0.0","$identifier":"x","x":{"@@oracle":"typed","ctor":"Relationship","fqn":"a.b@1.0.0.D","fields":{"$class":"Relationship"}}}}"#,
+            r#"{"@@oracle":"typed","ctor":"Other","fqn":"a","fields":{}}"#,
+            r#"{"@@oracle":"typed","ctor":"Resource","fields":{}}"#,
+            r#"{"@@oracle":"typed","ctor":"Resource","fqn":"a"}"#,
+            r#"{"@@oracle":"elsewhere"}"#,
+            r#"[{"@@oracle":"undefined"},{"@@oracle":"number","value":"Infinity"}]"#,
+        ];
+        for text in texts {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let expected = outcome(decode_wire(&value));
+            let RawWire(raw) = serde_json::from_str(text).unwrap();
+            let actual = outcome(resolve_wire(raw));
+            match (&expected, &actual) {
+                // `NaN != NaN`: compare the debug spelling instead.
+                (Ok(e), Ok(a)) => assert_eq!(format!("{e:?}"), format!("{a:?}"), "{text}"),
+                _ => assert_eq!(expected, actual, "{text}"),
+            }
+        }
+    }
+
+    /// P5-06b: the lean reply names an input value by index only when the
+    /// populated value is that very value (or an array of those items).
+    #[test]
+    fn lean_recipe_copies_only_identical_values() {
+        let input = RawWire::from_text(
+            r#"{"$class":"a.b@1.0.0.C","id":"x","n":1,"z":-0.0,"xs":["a",1],"d":"2020-01-01T00:00:00Z"}"#,
+        );
+        let mut resource = Instance::new(
+            InstanceKind::ValidatedResource,
+            "a.b@1.0.0.C",
+            "a.b@1.0.0",
+            "C",
+            Some("id".to_string()),
+            CoreValue::String("x".to_string()),
+            CoreValue::Null,
+        );
+        resource.set("n", CoreValue::Number(1.0));
+        resource.set("z", CoreValue::Number(0.0));
+        resource.set(
+            "xs",
+            CoreValue::Array(vec![
+                CoreValue::String("a".to_string()),
+                CoreValue::Number(1.0),
+            ]),
+        );
+        resource.set("d", CoreValue::DateTime(Dayjs::utc_from_number(0.0)));
+        resource.set("w", CoreValue::Undefined);
+        let text = match lean_recipe(&resource, &input) {
+            Ok(text) => text,
+            Err(_) => panic!("lean_recipe failed"),
+        };
+        let reply: Value = serde_json::from_str(&text).unwrap();
+        let expected = serde_json::json!([
+            "ValidatedResource",
+            "a.b@1.0.0.C",
+            "a.b@1.0.0",
+            "C",
+            "x",
+            null,
+            "n",
+            2,
+            // `-0` in, `0` out: not the same value, so it is sent.
+            "z",
+            [0.0],
+            "xs",
+            4,
+            "d",
+            [{ "@@oracle": "dayjs", "valid": true, "ms": 0.0, "utcOffset": 0.0 }],
+            "w",
+            [{ "@@oracle": "undefined" }],
+        ]);
+        assert_eq!(reply, expected);
+    }
+
+    impl RawWire {
+        fn from_text(text: &str) -> CoreValue {
+            let RawWire(raw) = serde_json::from_str(text).unwrap();
+            outcome(resolve_wire(raw)).unwrap()
+        }
+    }
+
+    /// P5-06b: the validator write is a no-op only when every resource
+    /// already holds its identifier in `$identifier`.
+    #[test]
+    fn identifier_sync_noop_looks_at_every_resource() {
+        let make = |id: &str, shadow: CoreValue| {
+            let mut instance = Instance::new(
+                InstanceKind::ValidatedResource,
+                "a.b@1.0.0.C",
+                "a.b@1.0.0",
+                "C",
+                Some("id".to_string()),
+                CoreValue::String(id.to_string()),
+                CoreValue::Null,
+            );
+            instance.set("$identifier", shadow);
+            instance
+        };
+        let same = make("x", CoreValue::String("x".to_string()));
+        assert!(identifier_sync_is_noop(&same));
+        let stale = make("x", CoreValue::String("y".to_string()));
+        assert!(!identifier_sync_is_noop(&stale));
+        let mut outer = same.clone();
+        outer.set(
+            "inner",
+            CoreValue::Array(vec![CoreValue::Instance(Box::new(stale))]),
+        );
+        assert!(!identifier_sync_is_noop(&outer));
+        let mut missing = same.clone();
+        missing.props.shift_remove("$identifier");
+        assert!(!identifier_sync_is_noop(&missing));
+    }
+
+    /// P5-06b: numbers read back from `JSON.stringify` text take the shape
+    /// `Instance::to_validator_value` gives them.
+    #[test]
+    fn validator_numbers_match_to_validator_value() {
+        for n in [
+            0.0,
+            1.0,
+            -7.0,
+            1.5,
+            9007199254740992.0,
+            1152921504606846976.0,
+            1e21,
+            -1e300,
+        ] {
+            let text = serde_json::to_string(&serde_json::json!({ "n": n })).unwrap();
+            let mut parsed: Value = serde_json::from_str(&text).unwrap();
+            normalize_validator_numbers(&mut parsed);
+            let expected = serde_json::json!({ "n": CoreValue::Number(n).to_validator_value() });
+            assert_eq!(parsed, expected, "{n}");
+        }
     }
 }

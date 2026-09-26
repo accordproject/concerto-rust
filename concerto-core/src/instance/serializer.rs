@@ -75,10 +75,14 @@ impl Serializer {
 
     /// `options ? Object.assign({}, this.defaultOptions, options) :
     /// this.defaultOptions`.
-    fn options(&self, options: Option<&SerializerOptions>) -> SerializerOptions {
+    fn options(
+        &self,
+        options: Option<&SerializerOptions>,
+    ) -> std::borrow::Cow<'_, SerializerOptions> {
         match options {
-            Some(options) => assign(&self.default_options, options),
-            None => self.default_options.clone(),
+            Some(options) => std::borrow::Cow::Owned(assign(&self.default_options, options)),
+            // P5-06b: read in place rather than copied.
+            None => std::borrow::Cow::Borrowed(&self.default_options),
         }
     }
 
@@ -92,7 +96,7 @@ impl Serializer {
     ) -> Result<Instance> {
         let options = self.options(options);
 
-        let class_name = get_property(json_object, "$class")?;
+        let class_name = super::populator::get_property_ref(json_object, "$class")?;
         if !class_name.is_truthy() {
             return Err(plain_error("serializer-fromjson-noclass"));
         }
@@ -118,12 +122,12 @@ impl Serializer {
             Some(field) => get_property(json_object, &field)?,
             None => get_property(json_object, "null")?,
         };
-        let ns_value = JsValue::String(ns.clone());
-        let name_value = JsValue::String(name.clone());
+        let ns_value = || JsValue::String(ns.clone());
+        let name_value = || JsValue::String(name.clone());
         let resource = if class_declaration.is_transaction() {
-            factory::new_transaction(mm, &ns_value, &name_value, id, false, env)?
+            factory::new_transaction(mm, &ns_value(), &name_value(), id, false, env)?
         } else if class_declaration.is_event() {
-            factory::new_event(mm, &ns_value, &name_value, id, false, env)?
+            factory::new_event(mm, &ns_value(), &name_value(), id, false, env)?
         } else if class_declaration.is_concept() {
             factory::new_resource(mm, &ns, &name, id, false, env)?
         } else if class_declaration.is_map_declaration() {

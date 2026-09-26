@@ -222,6 +222,32 @@ export function runChecks(engine) {
     return { samples: samples.length };
   });
 
+  // P5-06b (accordproject/concerto-rust#227): the lean fromJSON reply names
+  // unchanged input values by index, and the two validate fast paths answer
+  // a boolean (never throw) for a valid and an invalid resource.
+  check('lean serializer and validate fast paths', () => {
+    const mml = new engine.ModelManagerHandle();
+    mml.addModel(JSON.stringify(MODEL));
+    const env = { newId: () => 'id', nowMs: () => 0 };
+    const doc = { $class: 'org.example@1.0.0.Employee', name: 'n', salary: 989.9951327998887 };
+    const reply = JSON.parse(mml.serializerFromJsonLean(JSON.stringify(doc), 'null', env));
+    assert(reply[0] === 'ValidatedResource' && reply[1] === 'org.example@1.0.0.Employee', `lean head ${reply.slice(0, 2)}`);
+    const pairs = Object.fromEntries(reply.slice(6).reduce((acc, x, i) => (i % 2 ? acc[acc.length - 1].push(x) : acc.push([x]), acc), []));
+    assert(pairs.name === 1 && pairs.salary === 2, `lean pairs ${JSON.stringify(pairs)}`);
+    thrown(() => mml.serializerFromJsonLean(JSON.stringify({ ...doc, salary: 'x' }), 'null', env));
+    const shape = (salary) => JSON.stringify({ $class: 'org.example@1.0.0.Employee', $identifier: undefined, name: 'n', $timestamp: null, salary });
+    assert(mml.resourceValidateSimple(shape(1.5), 'org.example@1.0.0.Employee', false, false) === true, 'simple: valid');
+    assert(mml.resourceValidateSimple(shape('x'), 'org.example@1.0.0.Employee', false, false) === false, 'simple: invalid');
+    const typed = (salary) => JSON.stringify({
+      '@@oracle': 'typed', ctor: 'ValidatedResource', fqn: 'org.example@1.0.0.Employee',
+      fields: { $namespace: 'org.example@1.0.0', $type: 'Employee', $identifierFieldName: '$identifier', $identifier: { '@@oracle': 'undefined' }, $timestamp: null, name: 'n', salary },
+    });
+    assert(mml.resourceValidateFast(typed(1.5), false, false) === true, 'typed: valid');
+    assert(mml.resourceValidateFast(typed('x'), false, false) === false, 'typed: invalid');
+    assert(mml.resourceValidateFast('not json', false, false) === false, 'typed: unreadable');
+    mml.free();
+  });
+
   check('init() resolves on a loaded module', () => {
     assert(typeof engine.init === 'function', 'init is exported');
   });

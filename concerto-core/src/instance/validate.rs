@@ -154,29 +154,25 @@ pub fn validate_instance_from(
     options: &ValidateOptions,
     root_resource_identifier: String,
 ) -> Result<()> {
-    let declared_fqn = value
-        .get("$class")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            // Not a TS-reachable path: a real `Resource` always has a
-            // `$class` (it is how `getFullyQualifiedType()` answers at
-            // all). A JSON document with none has no declared type to
-            // report a violation against, so this is a harness-level
-            // error, not a ported TS message.
-            ContractError::pre_port(
-                ErrorKind::Error,
-                "cannot validate an instance with no $class".to_string(),
-                None,
-            )
-        })?
-        .to_string();
+    let declared_fqn = value.get("$class").and_then(Value::as_str).ok_or_else(|| {
+        // Not a TS-reachable path: a real `Resource` always has a
+        // `$class` (it is how `getFullyQualifiedType()` answers at
+        // all). A JSON document with none has no declared type to
+        // report a violation against, so this is a harness-level
+        // error, not a ported TS message.
+        ContractError::pre_port(
+            ErrorKind::Error,
+            "cannot validate an instance with no $class".to_string(),
+            None,
+        )
+    })?;
     let mut params = Params {
         mm,
         options,
         root_resource_identifier,
         current_identifier: None,
     };
-    visit_class_declaration(&mut params, &declared_fqn, value)
+    visit_class_declaration(&mut params, declared_fqn, value)
 }
 
 /// Validates one property value, as `ValidatedResource.setPropertyValue`
@@ -260,13 +256,12 @@ fn visit_class_declaration_dispatch(
     let Some(own_fqn) = obj.get("$class").and_then(Value::as_str) else {
         return Err(not_resource_violation(p, declared_fqn, value));
     };
-    let own_fqn = own_fqn.to_string();
 
     // `toBeAssignedClassDeclaration = modelManager.getType(obj.getFullyQualifiedType())`
     // — bug fix (nested/abstract `$class` unchecked): every object's own
     // `$class`, at any depth, is resolved and checked here, not only the
     // outermost one.
-    let to_be_assigned = match p.mm.get_declaration(&own_fqn) {
+    let to_be_assigned = match p.mm.get_declaration(own_fqn) {
         Ok(decl) => decl,
         // See `visit_map_value_class_declaration`'s doc.
         Err(_) if is_map_value => {
@@ -275,12 +270,12 @@ fn visit_class_declaration_dispatch(
         Err(e) => {
             return Err(remap_type_not_found(
                 e,
-                &own_fqn,
+                own_fqn,
                 "modelmanager-gettype-notypeinns",
             ));
         }
     };
-    let to_be_assigned_fqn = own_fqn.clone();
+    let to_be_assigned_fqn = own_fqn;
     let Some(class) = to_be_assigned.as_class() else {
         // `obj` resolves to an enum/scalar/map `$class`: not a TS-reachable
         // path (a Resource is never constructed with one of those types),
@@ -292,7 +287,18 @@ fn visit_class_declaration_dispatch(
         )
         .into());
     };
-    let identifier_field_name = p.mm.identifier_field_name(&to_be_assigned_fqn)?;
+    // P5-06b: the class's identifying field and properties come from its
+    // cached table when there is one; otherwise from the same lookups as
+    // before, which raise the same errors in the same order.
+    let info = super::model::class_info(p.mm, to_be_assigned_fqn);
+    let owned_identifier_field_name;
+    let identifier_field_name: Option<&str> = match &info {
+        Some(info) => info.identifier_field_name.as_deref(),
+        None => {
+            owned_identifier_field_name = p.mm.identifier_field_name(to_be_assigned_fqn)?;
+            owned_identifier_field_name.as_deref()
+        }
+    };
 
     // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
     // obj.getFullyQualifiedIdentifier(); }`. Every `obj` reaching this point
@@ -307,24 +313,37 @@ fn visit_class_declaration_dispatch(
     // `#id` suffix appears — [`fully_qualified_identifier`] carries that
     // part faithfully (an absent or empty identifier both fall back to the
     // bare fqn, exactly as a falsy `""`/`undefined` would in TS).
-    let own_id_field = identifier_field_name
-        .clone()
-        .unwrap_or_else(|| "$identifier".to_string());
-    let own_id = obj.get(&own_id_field).and_then(Value::as_str);
-    p.root_resource_identifier = fully_qualified_identifier(&own_fqn, own_id);
+    let own_id_field = identifier_field_name.unwrap_or("$identifier");
+    let own_id = obj.get(own_id_field).and_then(Value::as_str);
+    p.root_resource_identifier = fully_qualified_identifier(own_fqn, own_id);
 
     // `if(toBeAssignedClassDeclaration.isAbstract())` — bug fix (abstract
     // `$class` unchecked): this now runs for every nested object, not only
     // the root.
     if class.is_abstract() {
-        return Err(abstract_class(&to_be_assigned_fqn));
+        return Err(abstract_class(to_be_assigned_fqn));
     }
 
     // `let props = Object.getOwnPropertyNames(obj)` — bug fix (only the
     // direct super type was merged): `get_all_properties` walks the whole
     // chain, so a property declared two or more levels up is found.
-    let all_properties = p.mm.get_all_properties(&to_be_assigned_fqn)?;
-    let declared_is_identified = p.mm.is_identified(declared_fqn)?;
+    let owned_properties;
+    let all_properties: &[(String, Property)] = match &info {
+        Some(info) => &info.properties,
+        None => {
+            owned_properties = p.mm.get_all_properties(to_be_assigned_fqn)?;
+            &owned_properties
+        }
+    };
+    let declared_info = if declared_fqn == to_be_assigned_fqn {
+        info.clone()
+    } else {
+        super::model::class_info(p.mm, declared_fqn)
+    };
+    let declared_is_identified = match declared_info {
+        Some(declared_info) => declared_info.identifier_field_name.is_some(),
+        None => p.mm.is_identified(declared_fqn)?,
+    };
     for key in obj.keys() {
         if model_util::is_system_property(key) {
             continue;
@@ -341,7 +360,6 @@ fn visit_class_declaration_dispatch(
         // not an empty string.
         let resource_id = if declared_is_identified && key != "$identifier" {
             let id = identifier_field_name
-                .as_deref()
                 .and_then(|f| obj.get(f))
                 .and_then(Value::as_str);
             js_id_display(id)
@@ -350,15 +368,14 @@ fn visit_class_declaration_dispatch(
                 .clone()
                 .unwrap_or_else(|| "undefined".to_string())
         };
-        return Err(undeclared_field(&resource_id, key, &to_be_assigned_fqn));
+        return Err(undeclared_field(&resource_id, key, to_be_assigned_fqn));
     }
 
-    // `if(classDeclaration.isIdentified())`.
-    if p.mm.is_identified(declared_fqn)? {
-        let id_field = identifier_field_name
-            .clone()
-            .unwrap_or_else(|| "$identifier".to_string());
-        let id = obj.get(&id_field).and_then(Value::as_str).unwrap_or("");
+    // `if(classDeclaration.isIdentified())`: the same answer as
+    // `declared_is_identified` above (the model does not change mid-walk).
+    if declared_is_identified {
+        let id_field = identifier_field_name.unwrap_or("$identifier");
+        let id = obj.get(id_field).and_then(Value::as_str).unwrap_or("");
         if id.trim().is_empty() {
             return Err(empty_identifier(&p.root_resource_identifier));
         }
@@ -366,7 +383,7 @@ fn visit_class_declaration_dispatch(
     }
 
     // `const properties = toBeAssignedClassDeclaration.getProperties();`
-    for (owner_fqn, property) in &all_properties {
+    for (owner_fqn, property) in all_properties {
         let value = obj.get(property.name());
         match value {
             Some(v) if !is_js_null(v) => {
@@ -375,7 +392,7 @@ fn visit_class_declaration_dispatch(
             _ => {
                 if !property.is_optional() {
                     if property.name() == "$identifier"
-                        && identifier_field_name.as_deref() != Some("$identifier")
+                        && identifier_field_name != Some("$identifier")
                     {
                         continue;
                     }
@@ -714,42 +731,30 @@ fn check_primitive_item(
     }
     // `if(field.getValidator() !== null) { field.getValidator().validate(...) }`.
     let elem = FieldElement::new(p.mm, owner_fqn, property);
-    let identifier = p.current_identifier.clone();
+    let identifier = p.current_identifier.as_deref();
     match property {
         Property::String(sp) => {
             if sp.validator.is_some() || sp.length_validator.is_some() {
                 StringValidator::new(&elem, sp.validator.as_ref(), sp.length_validator.as_ref())?
-                    .validate(&elem, identifier.as_deref(), value.as_str())?;
+                    .validate(&elem, identifier, value.as_str())?;
             }
         }
         Property::Integer(ip) => {
             if let Some(v) = &ip.validator {
                 let ast = number_validator_ast(v.lower, v.upper);
-                NumberValidator::new(&elem, &ast)?.validate(
-                    &elem,
-                    identifier.as_deref(),
-                    value.as_f64(),
-                )?;
+                NumberValidator::new(&elem, &ast)?.validate(&elem, identifier, value.as_f64())?;
             }
         }
         Property::Long(lp) => {
             if let Some(v) = &lp.validator {
                 let ast = number_validator_ast(v.lower, v.upper);
-                NumberValidator::new(&elem, &ast)?.validate(
-                    &elem,
-                    identifier.as_deref(),
-                    value.as_f64(),
-                )?;
+                NumberValidator::new(&elem, &ast)?.validate(&elem, identifier, value.as_f64())?;
             }
         }
         Property::Double(dp) => {
             if let Some(v) = &dp.validator {
                 let ast = number_validator_ast(v.lower, v.upper);
-                NumberValidator::new(&elem, &ast)?.validate(
-                    &elem,
-                    identifier.as_deref(),
-                    value.as_f64(),
-                )?;
+                NumberValidator::new(&elem, &ast)?.validate(&elem, identifier, value.as_f64())?;
             }
         }
         Property::Boolean(_) | Property::DateTime(_) => {}
