@@ -1950,7 +1950,8 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // `process_decision`'s own placeholder `id_field` — which
             // `id_field_js` below always overrides with the raw value once
             // this branch is taken — so it need not itself be coerced.
-            let raw_identified_name = if short_class(&identified_class) == "IdentifiedBy" {
+            let raw_identified_name = if identified_class == "concerto.metamodel@1.0.0.IdentifiedBy"
+            {
                 Some(get(&identified, "name")?)
             } else {
                 None
