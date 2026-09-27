@@ -799,6 +799,24 @@ export function runChecks(engine) {
     );
   });
 
+  // P5-02 review (accordproject/concerto-rust#73): a property name holding
+  // a lone (unpaired) UTF-16 surrogate used to make `to_json` silently
+  // discard the whole AST (`JSON.stringify` emits the surrogate as a
+  // `\uD800`-range escape `serde_json` rejects, and the failure was
+  // swallowed with `.ok()`), so `propertyProcess` saw a `null` ast and threw
+  // a plain, unclassed error instead of `IllegalModelException`. It must now
+  // throw the same class TS does for any other invalid name.
+  check('propertyProcess raises IllegalModelException for a lone-surrogate property name', () => {
+    const modelFile = { getName: () => 'lonesurrogate.cto' };
+    const ast = {
+      $class: `${MM}.StringProperty`, name: '\uD800', isArray: false, isOptional: false,
+    };
+    const err = thrown(() => engine.propertyProcess({ ast, getModelFile: () => modelFile }));
+    assert(err instanceof EngineError, `threw ${err}`);
+    assert(err.payload.kind === 'IllegalModel', `kind ${err.payload.kind}`);
+    assert(err.payload.modelFile === modelFile, 'the view\'s model file is attached');
+  });
+
   check('classDeclarationGetProperties resolves any non-null super type, as TS does', () => {
     const own = [{ name: 'own' }];
     const modelFile = { isImportedType: () => false, getType: () => null };
