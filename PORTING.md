@@ -480,9 +480,30 @@ static getShortName(fqn) {
 
 Rust returns `{kind, code, params, location}` for every error (plan §3). Rust
 owns the message templates. The shim maps `kind` to the TS exception class
-(P4-02). About 320 TS assertions check exact message text and about 81 check
-the class, so a port must match **the same verdict, message, class and
-location**.
+(P4-02).
+
+**Error parity: class, not message** (maintainer decision 2026-09-27, task
+P5-09, accordproject/concerto-rust#253). A port must throw in **the same
+scenarios** as TS, with **the same exception class** (`IllegalModelException`,
+`ValidationException`, `TypeNotFoundException`, ...), and with the same
+component and location where the oracle records them. The **message text may
+differ**, and no effort goes into matching its wording. This replaces the
+earlier "same verdict, message, class and location" rule:
+
+- The oracle (the native harness and `replay.js`) compares throw/no-throw
+  and class, not message. A fixture that differs only in message text
+  passes; the report lists it under `message_diffs` for information.
+- The fuzz matcher (`migration/fuzz`) counts a message-only difference as
+  an agreement (`messageOnlyAgree`), not a divergence.
+- The TS unit tests stay frozen, except that an assertion on exact message
+  text may be relaxed to a class (or "it throws") check. Each such edit is
+  listed in `migration/guardrails/test-message-relaxations.tsv` in the
+  concerto checkout (file, test, old and new assertion, reason), listed in
+  its PR and signed off in review; `check-guardrails.mjs` rule 1 rejects any
+  other test change. No test is skipped or deleted.
+- The catalogue below is still where messages come from (ported from the TS
+  templates), but a message-only difference is never a failure and never
+  needs a `DIVERGENCES.md` row.
 
 ### 2.1 Shape
 
@@ -589,7 +610,8 @@ with its first character upper-cased, and the text is present even when it is
 empty: the fixtures show a trailing space. The shim passes the *raw* rendered
 message to the real TS constructor, which decorates it. For the native oracle
 harness, Rust also provides a port of each constructor's decoration, so that
-`cargo test` can compare the final message (OD-2).
+`cargo test` can report the final message (OD-2); since P5-09 a message
+difference is reported for information, not judged (section 2).
 
 ### 2.3 `kind` → TS exception class
 
@@ -1296,8 +1318,10 @@ appears), `npx tsc -p tsconfig.build.json --noEmit`, and
 
 ### 7.1 A faithful port
 
-- Port **behaviour exactly, including its warts**: message wording, check
-  order, which phase throws, `undefined` versus `null`, number formatting.
+- Port **behaviour exactly, including its warts**: check order, which phase
+  throws and with which exception class, `undefined` versus `null`, number
+  formatting. Message wording comes from the catalogue, but a difference in
+  message text alone is not a parity failure (section 2, P5-09).
   Make no "improvements": no stricter checks, no nicer messages, no extra
   validation, no reordered checks.
 - The Rust may be *structured* idiomatically (sum types, `?`, iterators). The
@@ -1347,8 +1371,9 @@ Categories:
 - `ts-bug`: TS behaviour that looks unintended and is ported faithfully.
 - `d6`: TS differs from Concerto v4 and TS is matched (3.6).
 - `engine`: a JS-engine difference that cannot be avoided, such as regex
-  Unicode tables or V8 message text. An `engine` row must not change any
-  oracle outcome. If it does, it is a failure, not a divergence. The reviewer
+  Unicode tables. An `engine` row must not change any oracle outcome. A
+  difference in exception message text alone needs no row at all
+  (section 2, P5-09). If it does, it is a failure, not a divergence. The reviewer
   signs off every `engine` row.
 - `maintainer-accepted`: a `ts-bug` case (TS crashes or misbehaves from a
   missing check) that the plan owner has explicitly approved keeping *un*-
@@ -1538,9 +1563,10 @@ any item fails, and cite the item number.
 **Faithfulness** (read the TS member beside the Rust)
 3. Every branch of the TS member has a Rust counterpart, and no check was
    added, dropped or reordered. Constructor-time errors stay load-time errors.
-4. Every error has the TS message byte for byte, through the catalogue with
-   its golden test. The `kind` maps to the class TS throws (2.3), and the
-   location is the verbatim AST `location` that TS passes, or `None`.
+4. Every error is thrown in the same scenario as TS, and its `kind` maps to
+   the class TS throws (2.3); the location is the verbatim AST `location`
+   that TS passes, or `None`. Messages come from the catalogue with their
+   golden tests, but the message text may differ from TS (section 2, P5-09).
 5. The semantics rules hold wherever they apply:
    - numbers are `f64`, and text uses JS formatting (3.1);
    - string lengths are UTF-16 (3.1);

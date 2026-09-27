@@ -4,7 +4,8 @@
 //! (task P0-05's behavioural oracle) and replays each `{op, inputs,
 //! outcome}` fixture directly against this crate, using the error contract
 //! and message catalogue from task P1-05 (`concerto_core::error`) to
-//! compare verdicts, messages, exception class and location.
+//! compare verdicts, exception class and location (not message text, since
+//! task P5-09: `compare.rs` "Error parity").
 //!
 //! This is the first of the three places the oracle runs (plan §2.5): a
 //! native harness, as opposed to the WASM adapter
