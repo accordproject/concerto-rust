@@ -878,6 +878,32 @@ impl ModelManager {
         Ok(())
     }
 
+    /// TS `new ModelManager({ addMetamodel: true })` (`src/basemodelmanager.ts`
+    /// constructor; accordproject/concerto-rust#265): registers the cached
+    /// metamodel file, `concerto.metamodel@1.0.0` under its own namespace as
+    /// file name (`this.addModelFile(this.metamodelModelFile)`), through
+    /// `addModelFile`'s validating path. There is no TS option on this
+    /// port's [`ModelManager::new`]; a caller replaying the option calls this
+    /// right after construction and after setting the other options, as the
+    /// TS constructor adds the file last.
+    ///
+    /// `addModelFile` order: a namespace already registered is the
+    /// already-exists error (TS `_throwAlreadyExists`) without any
+    /// validation; otherwise, when [`Self::metamodel_validation`] is set, the
+    /// metamodel file itself is checked with [`Self::validate_ast`], then its
+    /// semantic validation runs ([`Self::validate_detached_model_file`]), and
+    /// only then is it registered.
+    pub fn add_metamodel(&mut self) -> Result<()> {
+        let model_file = crate::instance::metamodel::metamodel_model_file()?;
+        if self.model_file(model_file.namespace()).is_none() {
+            if self.metamodel_validation {
+                self.validate_ast(&model_file)?;
+            }
+            self.validate_detached_model_file(&model_file)?;
+        }
+        self.add_model_file(model_file)
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
