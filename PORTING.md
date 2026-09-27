@@ -1382,12 +1382,25 @@ Categories:
   difference in exception message text alone needs no row at all
   (section 2, P5-09). If it does, it is a failure, not a divergence. The reviewer
   signs off every `engine` row.
-- `maintainer-accepted`: a `ts-bug` case (TS crashes or misbehaves from a
-  missing check) that the plan owner has explicitly approved keeping *un*-
-  ported — Rust's behaviour is kept even though it differs from TS, as a
-  named exception to "no improvements". This is not a default: it needs a
-  specific maintainer sign-off recorded in the row (the issue where it was
-  decided), not just an agent's judgement that TS looks wrong. See DV-015.
+- `maintainer-accepted`: a divergence the plan owner has explicitly approved
+  keeping *un*-ported — Rust's behaviour (or its narrower coverage of TS's)
+  is kept even though it differs from TS. Two shapes:
+  - a `ts-bug` case (TS crashes or misbehaves from a missing check), kept as
+    a named exception to "no improvements"; or
+  - an accepted engine or behaviour difference that a row first recorded as
+    `engine` but that turns out not to fit `engine`'s own "cannot be
+    avoided" test (the difference could be ported, or removed, at a cost),
+    where the plan owner has separately decided not to pay that cost — for
+    example approving a behaviour removal instead of a port (BC-07), or
+    accepting a documented, low-impact engine boundary difference rather
+    than porting it (BC-03). Here the row is not claiming "no improvements
+    were possible"; it is recording a scope decision the maintainer made
+    knowingly, citing the plan document or issue where they made it.
+  Either shape is not a default: it needs a specific maintainer sign-off
+  recorded in the row (the issue, or the plan document row, where it was
+  decided), not just an agent's judgement that TS looks wrong or that a
+  divergence is convenient to keep. See DV-015 (`ts-bug` shape) and DV-009
+  (behaviour-removal shape).
 
 Fixing a TS bug is out of scope for the migration. Open a follow-up issue and
 link it from the row, unless the maintainer has already made a
