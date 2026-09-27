@@ -11,8 +11,11 @@
 //! records the verdict of every fixture that was compared on the last full
 //! run, one `<op> TAB <fixture id> TAB <status>` line per fixture, sorted by
 //! op and id, where `<status>` is `pass` or `fail:<kind>` (the
-//! [`FailKind`] of its first difference: `message-mismatch`,
-//! `class-mismatch`, `state-divergence`, ...). The test fails on a
+//! [`FailKind`] of its first difference: `class-mismatch`,
+//! `missing-error`, `state-divergence`, ...). A fixture whose exception
+//! message alone differs is `pass` (task P5-09, `compare.rs` "Error
+//! parity"); the report counts it as `message_only` and lists it under
+//! `message_diffs`, for information. The test fails on a
 //! **regression** (PORTING.md 6.2, "No regressions ... against the P1-07
 //! baseline"):
 //!
@@ -54,6 +57,8 @@ use super::recipe::Blocker;
 #[derive(Default)]
 struct RuleCounts {
     pass: u64,
+    /// Passes whose exception message differs (P5-09), included in `pass`.
+    message_only: u64,
     fail: u64,
     unsupported: u64,
     harness_error: u64,
@@ -90,6 +95,8 @@ struct RuleReport {
     /// and of its unsupported fixtures unless a reason names another.
     owner: String,
     pass: u64,
+    /// Passes whose exception message differs (P5-09), included in `pass`.
+    message_only: u64,
     fail: u64,
     unsupported: u64,
     harness_error: u64,
@@ -109,6 +116,8 @@ pub struct Report {
     total_fixtures: u64,
     load_errors: u64,
     pass: u64,
+    /// Passes whose exception message differs (P5-09), included in `pass`.
+    message_only: u64,
     fail: u64,
     unsupported: u64,
     harness_error: u64,
@@ -126,6 +135,9 @@ pub struct Report {
     missing: Vec<String>,
     rules: Vec<RuleReport>,
     failures: Vec<FixtureProblem>,
+    /// The first message difference of each `message_only` pass
+    /// (information only, P5-09).
+    message_diffs: Vec<FixtureProblem>,
     harness_errors: Vec<FixtureProblem>,
     load_error_detail: Vec<String>,
     #[serde(skip)]
@@ -175,6 +187,7 @@ pub struct Recorder {
     rule_owner: BTreeMap<String, String>,
     owners: BTreeMap<String, u64>,
     failures: Vec<FixtureProblem>,
+    message_diffs: Vec<FixtureProblem>,
     harness_errors: Vec<FixtureProblem>,
     statuses: BTreeMap<(String, String), Status>,
     load_errors: Vec<LoadError>,
@@ -238,6 +251,7 @@ impl Recorder {
             rule_owner: BTreeMap::new(),
             owners: BTreeMap::new(),
             failures: Vec::new(),
+            message_diffs: Vec::new(),
             harness_errors: Vec::new(),
             statuses: BTreeMap::new(),
             load_errors,
@@ -253,7 +267,9 @@ impl Recorder {
             .or_insert_with(|| owners.owner(&fixture.op))
             .clone();
         let owner = match &verdict {
-            Verdict::Pass | Verdict::HarnessError { .. } => None,
+            Verdict::Pass | Verdict::PassMessageDiffers { .. } | Verdict::HarnessError { .. } => {
+                None
+            }
             Verdict::Fail { blocker: None, .. } | Verdict::Unsupported { blocker: None, .. } => {
                 Some(op_owner)
             }
@@ -281,6 +297,12 @@ impl Recorder {
         let status = match verdict {
             Verdict::Pass => {
                 counts.pass += 1;
+                Status::Pass
+            }
+            Verdict::PassMessageDiffers { detail } => {
+                counts.pass += 1;
+                counts.message_only += 1;
+                self.message_diffs.push(problem(fixture, detail));
                 Status::Pass
             }
             Verdict::Unsupported { reason, .. } => {
@@ -330,6 +352,7 @@ impl Recorder {
                 owner: self.rule_owner.get(&op).cloned().unwrap_or_default(),
                 op,
                 pass: counts.pass,
+                message_only: counts.message_only,
                 fail: counts.fail,
                 unsupported: counts.unsupported,
                 harness_error: counts.harness_error,
@@ -339,6 +362,7 @@ impl Recorder {
             .collect();
 
         let pass = rules.iter().map(|r| r.pass).sum();
+        let message_only = rules.iter().map(|r| r.message_only).sum();
         let fail = rules.iter().map(|r| r.fail).sum();
         let unsupported = rules.iter().map(|r| r.unsupported).sum();
         let harness_error = rules.iter().map(|r| r.harness_error).sum();
@@ -398,6 +422,7 @@ impl Recorder {
             total_fixtures: pass + fail + unsupported + harness_error,
             load_errors: self.load_errors.len() as u64,
             pass,
+            message_only,
             fail,
             unsupported,
             harness_error,
@@ -409,6 +434,7 @@ impl Recorder {
             missing,
             rules,
             failures: self.failures,
+            message_diffs: self.message_diffs,
             harness_errors: self.harness_errors,
             load_error_detail: self
                 .load_errors
@@ -485,6 +511,17 @@ impl Report {
             self.harness_error,
             self.regressions
         );
+        println!(
+            "oracle harness: {} of the passes differ only in exception message text (P5-09: \
+             compared on throw/no-throw and class, not message; listed under message_diffs)",
+            self.message_only
+        );
+        for problem in self.message_diffs.iter().take(5) {
+            println!(
+                "  info message differs (pass) {} {}: {}",
+                problem.op, problem.id, problem.detail
+            );
+        }
         println!(
             "oracle harness: owners of the unsupported and failing fixtures ({} unowned): {}",
             self.unowned,

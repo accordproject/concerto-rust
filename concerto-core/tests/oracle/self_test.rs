@@ -340,6 +340,70 @@ fn reports_a_wrong_error_class_as_fail_not_pass() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Task P5-09 (accordproject/concerto-rust#253): the verdict compares
+/// throw/no-throw and exception class, not message text. A message-only
+/// difference passes and keeps the difference for the report; a wrong class
+/// (above) or a throw where TS returned still fails.
+#[test]
+fn a_message_only_difference_passes_and_is_reported() {
+    let dir = scratch_dir("message-only");
+    write_fixture(
+        &dir,
+        "ModelUtil.getNamespace",
+        "other-message",
+        json!({
+            "inputs": { "args": [{ "@@oracle": "undefined" }] },
+            "outcome": { "error": {
+                "class": "Error", "message": "some other wording",
+                "location": null, "component": null
+            } }
+        }),
+    );
+    let verdict = judge_one(&bare(), &dir);
+    match &verdict {
+        Verdict::PassMessageDiffers { detail } => {
+            assert!(detail.starts_with("$.error.message"), "{detail}");
+        }
+        other => panic!("expected PassMessageDiffers, got {other:?}"),
+    }
+    let mut recorder = report::Recorder::new(dir.clone(), None, Vec::new());
+    let (fixtures, _) = fixture::load_all(&dir);
+    recorder.record(&fixtures[0], verdict, &Ledger::default());
+    let report = recorder.finish(&[].into());
+    let json = serde_json::to_value(&report).expect("report serialises");
+    assert_eq!(json["pass"], 1);
+    assert_eq!(json["fail"], 0);
+    assert_eq!(json["message_only"], 1);
+    assert_eq!(json["message_diffs"].as_array().map(Vec::len), Some(1));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_throw_where_ts_returned_still_fails_whatever_the_message() {
+    let dir = scratch_dir("throw-vs-ok");
+    write_fixture(
+        &dir,
+        "ModelUtil.getNamespace",
+        "unexpected-error",
+        json!({
+            "inputs": { "args": [{ "@@oracle": "undefined" }] },
+            "outcome": { "ok": "org.acme" }
+        }),
+    );
+    let verdict = judge_one(&bare(), &dir);
+    assert!(
+        matches!(
+            verdict,
+            Verdict::Fail {
+                kind: compare::FailKind::UnexpectedError,
+                ..
+            }
+        ),
+        "expected an unexpected-error Fail, got {verdict:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn reports_an_unimplemented_op_as_unsupported_not_fail() {
     let dir = scratch_dir("unsupported");
@@ -1286,21 +1350,24 @@ fn a_model_validation_error_where_ts_succeeded_stays_the_ops_own() {
 #[test]
 fn a_model_validation_error_where_ts_failed_model_validation_is_attributed() {
     // Merge with P2-08: the Rust model validation now gives TS's exact text
-    // for this model (the fixture passes as recorded), so the recorded TS
-    // message here is made to differ — as if TS had named a file — to keep
-    // exercising the attribution of a real mismatch.
+    // for this model (the fixture passes as recorded). Since P5-09 a
+    // message-only difference is a pass, so the recorded TS error here gets
+    // a location Rust does not report — as if TS had named a file — to keep
+    // exercising the attribution of a real mismatch between two throws.
+    let mut recorded = ts_error(
+        "IllegalModelException",
+        "Namespace is not defined for type \"org.missing@1.0.0.HR\".",
+    );
+    recorded["error"]["location"] = json!({ "start": { "line": 1, "column": 1, "offset": 0 } });
     let verdict = judge_dcs(
         "attr-mv-both",
         "DecoratorManager.decorateModels",
         json!([dcs_model_manager_recipe(), dcs_unknown_type_reference()]),
-        ts_error(
-            "IllegalModelException",
-            "Namespace is not defined for type \"org.missing@1.0.0.HR\". File 'x.cto': ",
-        ),
+        recorded,
     );
     match verdict {
         Verdict::Fail { kind, blocker, .. } => {
-            assert_eq!(kind, compare::FailKind::MessageMismatch);
+            assert_eq!(kind, compare::FailKind::LocationMismatch);
             assert_eq!(
                 blocker,
                 Some(super::recipe::Blocker::Member("ModelFile.validate".into()))
@@ -1338,7 +1405,9 @@ fn a_dcs_resource_validation_error_is_no_longer_attributed_to_the_stand_in() {
     // real, ported `Serializer::from_json` (src/instance/serializer.rs)
     // instead, so the class and component already match TS; only the exact
     // wording of a hand-crafted fixture message can still differ, which is
-    // not itself a P3-01b gap, so nothing is attributed any more.
+    // not itself a P3-01b gap, so nothing is attributed any more. Since
+    // P5-09 that message-only difference is not a failure at all: it passes,
+    // with the message difference kept for the report.
     let verdict = judge_dcs(
         "attr-si-both",
         "DecoratorManager.validate",
@@ -1349,11 +1418,10 @@ fn a_dcs_resource_validation_error_is_no_longer_attributed_to_the_stand_in() {
         ),
     );
     match verdict {
-        Verdict::Fail { kind, blocker, .. } => {
-            assert_eq!(kind, compare::FailKind::MessageMismatch);
-            assert_eq!(blocker, None, "attributed to {blocker:?}");
+        Verdict::PassMessageDiffers { detail } => {
+            assert!(detail.starts_with("$.error.message"), "{detail}");
         }
-        other => panic!("expected Fail, got {other:?}"),
+        other => panic!("expected PassMessageDiffers, got {other:?}"),
     }
 }
 

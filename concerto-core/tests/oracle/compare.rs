@@ -3,6 +3,17 @@
 //! (README "Verdicts": `pass`, `fail`, `harness-error`). This harness adds
 //! `unsupported` as its own bucket, distinct from `fail`, so "not ported
 //! yet" is never counted as a Rust behavioural divergence, nor as a pass.
+//!
+//! # Error parity: class, not message (task P5-09)
+//!
+//! Maintainer decision 2026-09-27 (accordproject/concerto-rust#253): Rust
+//! must throw in the same scenarios as TS with the same exception class; the
+//! message text may differ. The verdict therefore ignores `error.message`
+//! (and the `message` of any `{"@@oracle":"throws"}` marker inside a value,
+//! `codec.js` `safe`), exactly as `judge.js` does. A fixture that differs
+//! only in message is [`Verdict::PassMessageDiffers`]: a pass, with the
+//! message difference kept for the report. Throw/no-throw, class,
+//! component, location, values and effects are still compared exactly.
 
 use serde_json::Value;
 
@@ -14,9 +25,12 @@ use super::recipe::{Blocker, Fault};
 #[derive(Debug)]
 pub enum Verdict {
     /// The outcomes are identical: `ok` value and `effects`, or the error's
-    /// class, message, location and component (PORTING.md section 2: "the
-    /// same verdict, message, class and location").
+    /// class, message, location and component.
     Pass,
+    /// Identical apart from exception message text: a pass (module doc,
+    /// "Error parity"). `detail` is the first message difference, reported
+    /// for information only.
+    PassMessageDiffers { detail: String },
     /// A real behavioural mismatch, or a state divergence while the inputs
     /// were rebuilt on the Rust engine. `kind` is what differs, the part the
     /// baseline records (`report.rs`); `detail` is the full first difference.
@@ -116,8 +130,18 @@ pub fn judge_at(fixture: &Fixture, dispatch: Dispatch, window: Option<(f64, f64)
     let (actual, attribution) = actual;
 
     let actual = canonicalise(&actual, &fixture.inputs, window);
-    match first_diff(&fixture.outcome.0, &actual, "$") {
-        None => Verdict::Pass,
+    let Some(full_detail) = first_diff(&fixture.outcome.0, &actual, "$") else {
+        return Verdict::Pass;
+    };
+    // P5-09: message text is not part of the verdict (module doc).
+    match first_diff(
+        &without_messages(&fixture.outcome.0, true),
+        &without_messages(&actual, true),
+        "$",
+    ) {
+        None => Verdict::PassMessageDiffers {
+            detail: full_detail,
+        },
         Some(detail) => {
             let kind = FailKind::of_diff(&detail);
             let blocker = attribution
@@ -137,6 +161,31 @@ pub fn judge_at(fixture: &Fixture, dispatch: Dispatch, window: Option<(f64, f64)
                 detail,
             }
         }
+    }
+}
+
+/// A copy of a canonical outcome without exception messages: the top-level
+/// `error.message`, and the `message` of every `{"@@oracle":"throws"}`
+/// marker in it (`judge.js` `withoutMessages`).
+fn without_messages(value: &Value, top: bool) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|x| without_messages(x, false)).collect())
+        }
+        Value::Object(map) => {
+            let mut out: serde_json::Map<String, Value> = map
+                .iter()
+                .map(|(k, x)| (k.clone(), without_messages(x, false)))
+                .collect();
+            if top && let Some(Value::Object(error)) = out.get_mut("error") {
+                error.remove("message");
+            }
+            if out.get("@@oracle").and_then(Value::as_str) == Some("throws") {
+                out.remove("message");
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
     }
 }
 
@@ -161,7 +210,9 @@ pub enum FailKind {
     ComponentMismatch,
     /// Both threw, at different locations.
     LocationMismatch,
-    /// Both threw, with different messages.
+    /// Both threw, with different messages. No longer produced since task
+    /// P5-09 (a message-only difference is a pass); still parsed, so an
+    /// older baseline reads.
     MessageMismatch,
     /// Both returned, with different values.
     ValueMismatch,
