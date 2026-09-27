@@ -64,15 +64,51 @@ pub struct ProcessedProperty {
 /// engines, so TS accepts the model and a naive `Value::as_str` default of
 /// `""` made Rust wrongly reject it as `Invalid property name ''`.
 pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
-    let name = ast
-        .get("name")
+    // TS interpolates the raw `this.ast.name` into a template literal
+    // (`Invalid property name '${this.ast.name}'`) and into `ID_REGEX.test`,
+    // both of which apply JS `ToString` to whatever value the AST carries —
+    // not only a string. A fuzzer-mutated AST can put a number, boolean,
+    // `null`, array or object there (or omit the key, `ToString`d as
+    // `"undefined"`), so this must go through the same `ToString` coercion
+    // `ecma::to_js_string` gives every other port of a template literal,
+    // rather than treating a non-string name as absent
+    // (accordproject/concerto-rust#217, #219).
+    let raw_name = ast.get("name");
+    let name = raw_name
         .map(crate::ecma::to_js_string)
         .unwrap_or_else(|| "undefined".to_string());
     if !is_valid_identifier(&name) {
-        return Err(ContractError::new(
+        let mut err = ContractError::new(
             ErrorKind::IllegalModel,
             "property-process-invalidname",
             vec![("name", name)],
+        );
+        // TS: `throw new IllegalModelException(..., this.getModelFile(),
+        // this.ast.location)` — the WASM binding (`propertyProcess` in
+        // concerto-wasm/src/lib.rs) supplies the real JS model file once
+        // `model_file` says one belongs on this error; the location comes
+        // from this AST node directly, as every other site on this path
+        // does (e.g. `Property::try_from`'s own `invalidname` throw).
+        err.location = ast.get("location").cloned();
+        err.model_file = Some(None);
+        return Err(err.into());
+    }
+    // TS: `this.name = this.ast.name; if (!this.name) { throw new
+    // Error('No name for type ' + JSON.stringify(this.ast)); }` — a
+    // *second*, separate check, on the *raw* `this.ast.name` value's own JS
+    // truthiness, not on the `ToString`'d `name` the identifier check just
+    // validated above. `ID_REGEX.test` can accept a falsy value whose
+    // stringified form still looks like an identifier (`false` stringifies
+    // to `"false"`, a valid identifier shape) while the value itself is
+    // falsy (`false`, `0`, `""`, `null`, absent), so this must re-test the
+    // untouched AST value, not `name` (accordproject/concerto-rust#219,
+    // P5-05 stage-2 T2c: minimised sample sets a property's `name` to the
+    // JSON boolean `false`).
+    if !raw_name.is_some_and(crate::ecma::is_truthy) {
+        return Err(ContractError::new(
+            ErrorKind::Error,
+            "property-process-noname",
+            vec![("ast", ast.to_string())],
         )
         .into());
     }
@@ -559,6 +595,7 @@ impl Property {
         fqn: &str,
         name: &str,
         validator: Option<&mm::CollectionSizeValidator>,
+        raw: Option<&Value>,
     ) -> Result<()> {
         let Some(v) = validator else { return Ok(()) };
         let element = BoundElement {
@@ -566,7 +603,7 @@ impl Property {
             name,
             default_value: None,
         };
-        validators::CollectionSizeValidator::new(&element, v)?;
+        validators::CollectionSizeValidator::new(&element, v, raw)?;
         Ok(())
     }
 
@@ -589,14 +626,29 @@ impl Property {
     /// non-array Integer/Long/Double/String, its own domain or
     /// length-and-regex validator — the same order as this method's own
     /// `match`.
-    pub fn check_bound_validators(&self, class_fqn: &str) -> Result<()> {
+    ///
+    /// `raw` is this property's own AST node, when the caller has it (only
+    /// [`super::declaration::ClassDeclaration::from_json`] does — it is what
+    /// lets [`validators::CollectionSizeValidator::new`]/
+    /// [`validators::StringValidator::new`] compare a fuzzed `sizeValidator`/
+    /// `lengthValidator`'s `minSize`/`maxSize`/`minLength`/`maxLength` with
+    /// JS's own untyped `>` instead of a value already coerced to `f64`
+    /// (accordproject/concerto-rust#219): `None` falls back to the `f64`
+    /// comparison, the same question for already-validated data.
+    pub fn check_bound_validators(&self, class_fqn: &str, raw: Option<&Value>) -> Result<()> {
         let name = self.name().to_string();
         // TS: `Validator.getFieldOrScalarDeclaration().getFullyQualifiedName()`
         // — a property's own, `<namespace>.<Class>.<property>` (property.ts
         // `getFullyQualifiedName`), not its owning class's.
         let fqn = format!("{class_fqn}.{name}");
         let fqn = fqn.as_str();
-        Self::check_size_validator(fqn, &name, self.size_validator())?;
+        let raw_field = |key: &str| raw.and_then(|r| r.get(key));
+        Self::check_size_validator(
+            fqn,
+            &name,
+            self.size_validator(),
+            raw_field("sizeValidator"),
+        )?;
         let element = |default_value: Option<Value>| BoundElement {
             fqn,
             name: &name,
@@ -609,6 +661,7 @@ impl Property {
                     &element(default_value),
                     p.validator.as_ref(),
                     p.length_validator.as_ref(),
+                    raw_field("lengthValidator"),
                 )?;
                 Ok(())
             }
@@ -693,11 +746,103 @@ mod tests {
         assert!(err.to_string().contains("Invalid property name '1bad'"));
     }
 
+    // accordproject/concerto-rust#219 (P5-05 stage-2 T2c, cluster 1): a
+    // fuzzer-mutated AST can put any JSON type in `name`, and TS's
+    // `${this.ast.name}` reports it through JS `ToString`, not as an
+    // absent/empty name.
+    #[test]
+    fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
+        let err = process::<ConcertoError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": 1e308,
+            "isArray": false,
+            "isOptional": false
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid property name '1e+308'"));
+    }
+
+    // accordproject/concerto-rust#219 review (P5-05 stage-2 T2c, "the
+    // location-suffix cluster"): the `IllegalModelException` an invalid name
+    // raises carries the AST node's own `location` and a `model_file`
+    // placeholder, so `ModelManager.addModelFile`'s WASM binding
+    // (`propertyProcess`) can attach the real JS model file and reproduce
+    // TS's `File '…': line <n> column <n>, to line <n> column <n>.` suffix.
+    // This test reproduces that suffix text directly, with no WASM boundary
+    // to cross: `ContractError::final_message` is the same pure-Rust
+    // function the native oracle harness itself uses to decorate a message
+    // exactly as TS's `IllegalModelException` constructor does (OD-2) — once
+    // a real (not placeholder) file name is filled in, in place of the WASM
+    // binding, it renders the identical suffix. A prior version of this test
+    // only asserted `err.location.is_some()`/`err.model_file == Some(None)`
+    // (the placeholder itself), which checks that a location and a
+    // model-file slot exist but not that the slot, once filled, actually
+    // renders TS's suffix text — that is what this asserts.
+    #[test]
+    fn process_carries_the_ast_location_and_a_model_file_placeholder_for_an_invalid_name() {
+        let mut err = process::<ContractError>(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": 1e308,
+            "isArray": false,
+            "isOptional": false,
+            "location": {
+                "$class": "concerto.metamodel@1.0.0.Range",
+                "start": {
+                    "$class": "concerto.metamodel@1.0.0.Position",
+                    "line": 3, "column": 5, "offset": 20
+                },
+                "end": {
+                    "$class": "concerto.metamodel@1.0.0.Position",
+                    "line": 3, "column": 30, "offset": 45
+                }
+            }
+        }))
+        .unwrap_err();
+        assert!(
+            err.location.is_some(),
+            "expected the AST's own location on the error"
+        );
+        assert_eq!(
+            err.model_file,
+            Some(None),
+            "expected a model-file placeholder for the WASM binding to fill in"
+        );
+        // Fill in the placeholder the way `propertyProcess` fills it from
+        // the real JS `ModelFile`, and check the fully decorated message —
+        // TS's own `ModelManager.addModelFile` suffix — matches verbatim.
+        err.model_file = Some(Some("test.cto".to_string()));
+        assert_eq!(
+            err.final_message(),
+            "Invalid property name '1e+308' File 'test.cto': line 3 column 5, to line 3 column 30. "
+        );
+    }
+
+    // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): a `name` whose
+    // *stringified* form still looks like a valid identifier (`false` ->
+    // `"false"`) passes the identifier check, but its own raw JS falsiness
+    // fails TS's second, separate `if (!this.name)` check, which raises a
+    // plain `Error`, not an `IllegalModelException`.
+    #[test]
+    fn process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier() {
+        let ast = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": false,
+            "isArray": false,
+            "isOptional": false
+        });
+        let err = process::<ConcertoError>(&ast).unwrap_err();
+        assert!(
+            err.to_string().contains("No name for type"),
+            "unexpected error: {err}"
+        );
+    }
+
     // accordproject/concerto-rust#217 (T2a): `ID_REGEX.test(name)` in TS
     // coerces a non-string `name` with `ToString` rather than rejecting it,
     // so a fuzz-mutated `name` that isn't a JSON string but stringifies to
-    // a valid identifier is accepted by TS and must be accepted here too.
-    // Minimised repro: `declarations[0].properties[0].name = true`
+    // a valid identifier, and is itself JS-truthy, is accepted by TS and
+    // must be accepted here too. Minimised repro:
+    // `declarations[0].properties[0].name = true`
     // (conformance/ModelManager.addModelFile/16267c5478a5f2840469e147.json,
     // stage2/triage-clusters.json).
     #[test]
@@ -708,35 +853,49 @@ mod tests {
             "isArray": false,
             "isOptional": false
         }))
-        .expect("TS: ID_REGEX.test(true) tests \"true\", which matches");
+        .expect("TS: ID_REGEX.test(true) tests \"true\", which matches, and true is truthy");
         assert_eq!(processed.name, "true");
     }
 
-    // Same theme, the other value shapes the cluster's fuzz run hit:
-    // an absent `name` coerces like `ID_REGEX.test(undefined)` (DV-002,
-    // model_util::is_valid_identifier's own tests), and `null` stringifies
-    // to `"null"`, both valid identifiers in both engines.
+    // Same `ID_REGEX.test` coercion theme, but an absent or `null` `name`
+    // stringifies to an identifier-shaped string ("undefined"/"null") that
+    // passes the *first* check, then fails TS's second, separate
+    // `if (!this.name)` raw-truthiness check (property.ts:
+    // `this.name = this.ast.name` is a plain, uncoerced assignment) —
+    // `undefined` and `null` are both JS-falsy, so TS throws `Error('No name
+    // for type ...')` for both, same as an explicit `false` (the
+    // `process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier`
+    // test above). A prior version of this test wrongly asserted these two
+    // shapes were *accepted*, conflating "passes the identifier regex" with
+    // "has a name" (accordproject/concerto-rust#219 review, merge of #217
+    // and #219's overlapping work on this function).
     #[test]
-    fn process_accepts_a_missing_name_like_ts_undefined_coercion() {
-        let processed = process::<ConcertoError>(&serde_json::json!({
+    fn process_rejects_a_missing_name_that_stringifies_to_a_valid_identifier() {
+        let err = process::<ConcertoError>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "isArray": false,
             "isOptional": false
         }))
-        .expect("TS: ID_REGEX.test(undefined) tests \"undefined\", which matches");
-        assert_eq!(processed.name, "undefined");
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("No name for type"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
-    fn process_accepts_a_null_name_like_ts_null_coercion() {
-        let processed = process::<ConcertoError>(&serde_json::json!({
+    fn process_rejects_a_null_name_that_stringifies_to_a_valid_identifier() {
+        let err = process::<ConcertoError>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": null,
             "isArray": false,
             "isOptional": false
         }))
-        .expect("TS: ID_REGEX.test(null) tests \"null\", which matches");
-        assert_eq!(processed.name, "null");
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("No name for type"),
+            "unexpected error: {err}"
+        );
     }
 
     /// A `RelationshipProperty` node named `name` whose `type` is `ty`
@@ -989,7 +1148,7 @@ mod tests {
         assert!(Property::try_from(&matching(r"^.+@.+\..+$")).is_ok());
         for pattern in ["*invalid", "[unclosed", "(unclosed"] {
             let p = Property::try_from(&matching(pattern)).expect("construction accepts it");
-            let err = p.check_bound_validators("test@1.0.0.Box");
+            let err = p.check_bound_validators("test@1.0.0.Box", None);
             assert!(
                 err.unwrap_err().to_string().contains("regular expression"),
                 "{pattern} should be rejected"
@@ -1001,7 +1160,7 @@ mod tests {
     fn range_lower_above_upper_is_rejected() {
         let p =
             Property::try_from(&ranged(Some(10.0), Some(5.0))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("Lower bound"));
     }
 
@@ -1015,7 +1174,7 @@ mod tests {
     #[test]
     fn range_without_either_bound_is_rejected() {
         let p = Property::try_from(&ranged(None, None)).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("lower and-or upper"));
     }
 
@@ -1077,15 +1236,66 @@ mod tests {
     #[test]
     fn negative_string_length_is_rejected() {
         let p = Property::try_from(&sized(Some(-1), Some(5))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
     #[test]
     fn string_length_min_above_max_is_rejected() {
         let p = Property::try_from(&sized(Some(10), Some(5))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("minLength"));
+    }
+
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): the fuzz-triage
+    /// minimised repro `15270a3d46ae76b3adf549eb` — a `lengthValidator` with
+    /// `minLength: "__proto__"` and `maxLength: [10]`. TS's own
+    /// `this.minLength > this.maxLength` compares these two *raw* AST values
+    /// with JS's untyped `>`: `ToPrimitive([10])` is the string `"10"`, and
+    /// since both sides are then strings, JS compares them lexicographically
+    /// (`"__proto__" > "10"` is `true`, `'_'`'s code point exceeding
+    /// `'1'`'s), so TS rejects the model. Coercing each bound to a number
+    /// first (`ToNumber("__proto__")` is `NaN`) makes the comparison always
+    /// false, so Rust used to wrongly accept this model — the raw AST
+    /// comparison this test pins fixes that.
+    #[test]
+    fn string_length_min_above_max_by_raw_string_comparison_is_rejected() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "text", "isArray": false, "isOptional": false,
+            "lengthValidator": {
+                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+                "minLength": "__proto__",
+                "maxLength": [10]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        let err = p
+            .check_bound_validators("test@1.0.0.Box", Some(&raw))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("minLength must be less than or equal to maxLength")
+        );
+    }
+
+    /// The same fixture, but checked with no raw AST (as every call site but
+    /// `ClassDeclaration::from_json` passes): without the raw comparison,
+    /// each bound coerces to `NaN` and the order check never fires — the
+    /// pre-existing, still-correct behaviour for already-validated data.
+    #[test]
+    fn string_length_min_above_max_by_raw_string_comparison_is_accepted_without_raw_ast() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "text", "isArray": false, "isOptional": false,
+            "lengthValidator": {
+                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+                "minLength": "__proto__",
+                "maxLength": [10]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        assert!(p.check_bound_validators("test@1.0.0.Box", None).is_ok());
     }
 
     #[test]
@@ -1134,7 +1344,7 @@ mod tests {
     fn size_validator_min_above_max_is_rejected() {
         let p = Property::try_from(&collection_sized(true, Some(10), Some(2)))
             .expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(
             err.unwrap_err()
                 .to_string()
@@ -1142,11 +1352,59 @@ mod tests {
         );
     }
 
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): the fuzz-triage
+    /// minimised repro `7b9fc1eca8208827732709eb` — a `sizeValidator` with
+    /// `minSize: "aaaa…"` and `maxSize: [1]`. As
+    /// [`string_length_min_above_max_by_raw_string_comparison_is_rejected`]'s
+    /// doc comment explains for `lengthValidator`: `ToPrimitive([1])` is the
+    /// string `"1"`, so TS's raw `this.minSize > this.maxSize` becomes a
+    /// string comparison (`"aaaa…" > "1"` is `true`), not the always-false
+    /// `NaN` comparison converting each side to a number first would give.
+    #[test]
+    fn size_validator_min_above_max_by_raw_string_comparison_is_rejected() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "tags", "isArray": true, "isOptional": false,
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": "aaaaaaaaaaaaaaaaaaaaa",
+                "maxSize": [1]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        let err = p
+            .check_bound_validators("test@1.0.0.Box", Some(&raw))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("minSize must be less than or equal to maxSize")
+        );
+    }
+
+    /// The same fixture, but checked with no raw AST (as every call site but
+    /// `ClassDeclaration::from_json` passes): without the raw comparison,
+    /// each bound coerces to `NaN` and the order check never fires — the
+    /// pre-existing, still-correct behaviour for already-validated data.
+    #[test]
+    fn size_validator_min_above_max_by_raw_string_comparison_is_accepted_without_raw_ast() {
+        let raw = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "tags", "isArray": true, "isOptional": false,
+            "sizeValidator": {
+                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                "minSize": "aaaaaaaaaaaaaaaaaaaaa",
+                "maxSize": [1]
+            }
+        });
+        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
+        assert!(p.check_bound_validators("test@1.0.0.Box", None).is_ok());
+    }
+
     #[test]
     fn size_validator_negative_bounds_rejected() {
         let p = Property::try_from(&collection_sized(true, Some(-1), Some(5)))
             .expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box");
+        let err = p.check_bound_validators("test@1.0.0.Box", None);
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
@@ -1455,7 +1713,7 @@ mod tests {
             }
         }))
         .expect("try_from itself does not build the validator")
-        .check_bound_validators("ns.C")
+        .check_bound_validators("ns.C", None)
         .unwrap_err();
         assert!(err.to_string().contains("must be specified"));
     }

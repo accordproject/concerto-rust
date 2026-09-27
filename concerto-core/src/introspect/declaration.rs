@@ -10,7 +10,6 @@
 //! matching on the node's `$class`.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-use serde::de::Error as _;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
@@ -362,39 +361,44 @@ impl ClassDeclaration {
     /// The `superType`/`idField` decision `ClassDeclaration.process` makes
     /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
     /// the loop itself builds `Field`/`RelationshipDeclaration`/
-    /// `EnumValueDeclaration` views, kept in TS). `has_explicit_super_type`
-    /// is whether `this.ast.superType` itself is non-nullish (TS:
-    /// `if (this.ast.superType) {...} else if (...) {...}` — a truthiness
-    /// test on the AST *node*, not on its `name`); when it is,
-    /// `explicit_super_type_name` is `this.ast.superType.name` **as given**,
-    /// including `None` for a nullish `name` (accordproject/concerto-rust#217:
-    /// TS's own assignment, `this.superType = this.ast.superType.name`, is
-    /// unconditional and untyped — a `superType: {}` node with no `name` key
-    /// leaves `this.superType` as `undefined`, and a `name: null` leaves it
-    /// `null`; either way TS's own `_resolveSuperType`/`validate` treat that
-    /// as "no super type to resolve" — `!this.superType`/`!== null` — the
-    /// same outcome `None` gives here; neither takes the implicit `'Concept'`
-    /// default, which only applies when the AST names no `superType` node at
-    /// all). `identified_class` is `this.ast.identified.$class`;
-    /// `identified_name` is `this.ast.identified.name`, again exactly as
-    /// given (only meaningful for an explicit `IdentifiedBy`). `fqn` is
-    /// `this.fqn`, read once `this.name` and `this.modelFile` are set
-    /// (`Declaration.process` runs first).
+    /// `EnumValueDeclaration` views, kept in TS). TS: `if (this.ast.superType)
+    /// { this.superType = this.ast.superType.name; } else if (!(isSystemModelFile
+    /// && name === 'Concept')) { this.superType = 'Concept'; }` — a truthiness
+    /// test on the AST *node*, not on its `name`.
+    ///
+    /// `explicit_super_type` tells this function only whether that outer
+    /// truthiness test took the first branch at all (`Some`) or fell through
+    /// to the implicit-default branch (`None`) — **not** what
+    /// `this.ast.superType.name` itself was. When the outer node is truthy,
+    /// TS's own plain, unconditional assignment (`this.superType =
+    /// this.ast.superType.name`) can leave `this.superType` as a string, but
+    /// also as `undefined`, `null`, a number, a boolean, or any other JSON
+    /// value the AST carries; a bare `Option<&str>` cannot represent all of
+    /// those (accordproject/concerto-rust#217, #219), so a caller that needs
+    /// that raw value on its own snapshot (the WASM binding does) threads it
+    /// through separately and never reads `ProcessDecision::super_type` on
+    /// this branch at all — this function's own `Some(t) => Some(t.to_string())`
+    /// exists only to keep the type honest for direct unit testing and any
+    /// caller that genuinely has nothing more specific than a string; the
+    /// binding passes a placeholder here and ignores what comes back.
+    /// `identified_class` is `this.ast.identified.$class`; `identified_name`
+    /// is `this.ast.identified.name`, again exactly as given (only
+    /// meaningful for an explicit `IdentifiedBy`, and subject to the same
+    /// raw-value caveat as `explicit_super_type`). `fqn` is `this.fqn`, read
+    /// once `this.name` and `this.modelFile` are set (`Declaration.process`
+    /// runs first).
     pub fn process_decision(
-        has_explicit_super_type: bool,
-        explicit_super_type_name: Option<&str>,
+        explicit_super_type: Option<&str>,
         is_system_model_file: bool,
         name: &str,
         identified_class: Option<&str>,
         identified_name: Option<&str>,
         fqn: &str,
     ) -> ProcessDecision {
-        let super_type = if has_explicit_super_type {
-            explicit_super_type_name.map(str::to_string)
-        } else if Self::is_system_concept_file(is_system_model_file, name) {
-            None
-        } else {
-            Some("Concept".to_string())
+        let super_type = match explicit_super_type {
+            Some(t) => Some(t.to_string()),
+            None if Self::is_system_concept_file(is_system_model_file, name) => None,
+            None => Some("Concept".to_string()),
         };
 
         let (id_field, add_identifier_field) = match identified_class {
@@ -500,6 +504,20 @@ impl ClassDeclaration {
         let mut explicit_null_super_type = false;
         if let Some(object) = fields.as_object_mut() {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
+
+            // TS reads `this.ast.name` as a plain field access, coerced only
+            // by `ID_REGEX.test`'s `ToString` (`check_declaration_name`,
+            // this declaration's own caller, already accepts exactly that
+            // coercion — accordproject/concerto-rust#219 stage-2 T2c). The
+            // generated struct's `name: String` would otherwise reject
+            // anything but a literal JSON string outright here, before ever
+            // reaching a property of this class — the same shape of bug
+            // `superType.name`/`identified.name` needed normalizing for,
+            // just above this same object.
+            let coerced_name = object
+                .get("name")
+                .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+            object.insert("name".into(), serde_json::Value::String(coerced_name));
 
             if let Some(serde_json::Value::Object(super_type_object)) =
                 object.get("superType").cloned()
@@ -703,8 +721,21 @@ impl ClassDeclaration {
         // validator, so checking every property here (not just the AST's
         // own) is a no-op for them.
         let fqn = get_fully_qualified_name(namespace, &name);
-        for property in &properties {
-            property.check_bound_validators(&fqn)?;
+        // `raw_properties`, indexed the same way `parse_properties` walked
+        // `value.get("properties")` to build `properties`, is each
+        // property's own AST node — needed so a fuzzed `sizeValidator`/
+        // `lengthValidator` bound compares with JS's untyped `>`, not a
+        // value already coerced to `f64` (accordproject/concerto-rust#219,
+        // [`Property::check_bound_validators`]'s own doc comment). The two
+        // synthesized system fields pushed above sit past the end of this
+        // array, so they correctly get `None` (they never carry a
+        // validator, this comment's own paragraph above).
+        let raw_properties = value
+            .get("properties")
+            .and_then(serde_json::Value::as_array);
+        for (index, property) in properties.iter().enumerate() {
+            let raw = raw_properties.and_then(|properties| properties.get(index));
+            property.check_bound_validators(&fqn, raw)?;
         }
 
         Ok(Self {
@@ -1149,15 +1180,18 @@ impl MapDeclaration {
     }
 
     fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
-        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-            message: format!("invalid MapDeclaration: {e}"),
-            file_name: None,
-            location: None,
-        };
-        let name: String = match value.get("name") {
-            Some(name) => serde::Deserialize::deserialize(name).map_err(bad)?,
-            None => return Err(bad(serde_json::Error::missing_field("name"))),
-        };
+        // TS reads `this.ast.name` as a plain field access — never required
+        // to already be a string — and only ever consumes it through
+        // template-literal `ToString` interpolation (every message below).
+        // `check_declaration_name` (the caller, `Declaration::from_json`)
+        // already accepts exactly the same coercions
+        // (accordproject/concerto-rust#219 stage-2 T2c), so requiring a
+        // literal JSON string here (or a present key at all) would reject a
+        // name `check_declaration_name` just let through — a missing key is
+        // JS `undefined`, whose `ToString` is the literal text `"undefined"`.
+        let name = value
+            .get("name")
+            .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
 
         // TS `MapDeclaration.process` (src/introspect/mapdeclaration.ts): a
         // missing key or value node, an invalid `MapKeyType`, or an invalid
@@ -1172,8 +1206,17 @@ impl MapDeclaration {
         let illegal_model = |message: String| -> ConcertoError {
             ContractError::pre_port(ErrorKind::IllegalModel, message, None).into()
         };
-        let key_node = value.get("key").filter(|v| !v.is_null());
-        let value_node = value.get("value").filter(|v| !v.is_null());
+        // TS: `if (!this.ast.key || !this.ast.value)` — plain JS truthiness
+        // of the whole node, not merely "present and not JSON `null`": a
+        // fuzz-mutated `key`/`value` of `false`, `0`, or `""` is exactly as
+        // falsy as a missing or `null` one, and must fail this same check,
+        // not fall through to `node_kind`/`isValidMapKey`'s own rejection
+        // instead (`MapDeclaration must contain valid MapKeyType`) —
+        // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): a `key: 0` or
+        // `key: false`, previously kept by an `is_null`-only filter,
+        // reported the wrong one of the two messages.
+        let key_node = value.get("key").filter(|v| crate::ecma::is_truthy(v));
+        let value_node = value.get("value").filter(|v| crate::ecma::is_truthy(v));
         if key_node.is_none() || value_node.is_none() {
             return Err(illegal_model(format!(
                 "MapDeclaration must contain Key & Value properties {name}"
@@ -1217,12 +1260,44 @@ impl MapDeclaration {
         // well-formed `type` (a `TypeIdentifier` with `$class` and `name`).
         if value_kind == "ObjectMapValueType" || value_kind == "RelationshipMapValueType" {
             let value_node = value_node.unwrap();
-            let type_node = value_node.get("type").filter(|v| !v.is_null());
-            let Some(type_node) = type_node else {
+            // TS: `!('type' in ast)`. `ast` (this `MapValueType`'s own node,
+            // i.e. `value_node`) is always a genuine JS object by the time
+            // we're inside this branch — `value_kind` was itself read from
+            // its `$class`, which only a real object can carry — so the `in`
+            // operator here cannot itself throw; it is exactly "does the key
+            // exist", true whenever the `type` key is present at all,
+            // regardless of its value. An explicit `type: null` is present,
+            // not missing, and must NOT take this branch
+            // (accordproject/concerto-rust#219 stage-2 T2c remaining scope:
+            // the previous `.filter(|v| !v.is_null())` wrongly treated a
+            // present `null` the same as an absent key).
+            let Some(type_node) = value_node.get("type") else {
                 return Err(illegal_model(format!(
                     "ObjectMapValueType must contain property 'type', for MapDeclaration named {name}"
                 )));
             };
+            // TS: `!('$class' in ast.type) || !('name' in ast.type)`. Unlike
+            // the check above, `ast.type` here is NOT guaranteed to be an
+            // object — a fuzzed AST can set it to a JSON `null`, boolean,
+            // number or string — and the ECMAScript `in` operator throws a
+            // `TypeError` when its right-hand side is not an object (a JSON
+            // array IS a JS object for `in`'s purposes, so it falls through
+            // to the ordinary "must contain property" rejection below like
+            // any other object missing both keys).
+            if !matches!(
+                type_node,
+                serde_json::Value::Object(_) | serde_json::Value::Array(_)
+            ) {
+                return Err(ContractError::new(
+                    ErrorKind::JsTypeError,
+                    "engine-typeerror-inoperator",
+                    vec![
+                        ("key", "$class".to_string()),
+                        ("value", crate::ecma::to_js_string(type_node)),
+                    ],
+                )
+                .into());
+            }
             let class_field = type_node.get("$class");
             let name_field = type_node.get("name");
             if class_field.is_none() || name_field.is_none() {
@@ -1543,15 +1618,28 @@ fn is_recognised_kind(kind: &str) -> bool {
 /// fails (an absent name interpolates as `undefined`).
 fn check_declaration_name(value: &serde_json::Value, file_name: Option<&str>) -> Result<()> {
     let name = value.get("name");
-    if let Some(serde_json::Value::String(name)) = name
-        && is_valid_identifier(name)
-    {
+    // TS: `ModelUtil.isValidIdentifier(this.ast.name)` runs `ID_REGEX.test`,
+    // and `RegExp.prototype.test` coerces its argument with `ToString`
+    // (DV-002) before matching — the same coercion `crate::ecma::to_js_string`
+    // performs, not "must already be a JS string". A fuzzed, non-string
+    // `name` that still stringifies to a valid identifier (for example a
+    // single-element array `["C"]`, whose `ToString` is `"C"`) is accepted
+    // exactly as TS accepts it, not rejected outright the way requiring
+    // `serde_json::Value::String` up front used to
+    // (accordproject/concerto-rust#219 stage-2 T2c: this was masking a
+    // fuzzed model's real divergence downstream — an unrecognised property
+    // `$class` — behind a spurious, TS never raises, "Invalid class name"
+    // rejection here instead). A missing key is JS `undefined`, whose
+    // `ToString` is the literal text `"undefined"` (itself a valid
+    // identifier, so accepted, as `check_declaration_name`'s callers already
+    // relied on for the "Unrecognised model element" ordering).
+    let coerced = name.map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+    if is_valid_identifier(&coerced) {
         return Ok(());
     }
-    let shown = name.map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
     let mut err = ContractError::pre_port(
         ErrorKind::IllegalModel,
-        format!("Invalid class name '{shown}'"),
+        format!("Invalid class name '{coerced}'"),
         value.get("location").cloned(),
     );
     err.model_file = Some(file_name.map(str::to_string));
@@ -1630,6 +1718,41 @@ mod tests {
 
         let c = d.as_class().expect("class");
         assert!(c.own_properties().is_empty());
+    }
+
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): end to end
+    /// through the real `ClassDeclaration::from_json` parse path (not just
+    /// [`super::super::property::tests`]'s direct
+    /// `Property::check_bound_validators` unit tests), proving the raw
+    /// per-property AST this module now threads through
+    /// (`raw_properties`/`check_bound_validators`'s own `raw` parameter)
+    /// actually reaches the property that owns it. `sizeValidator.minSize:
+    /// "aaaa…"` and `maxSize: [1]` (the fuzz-triage minimised repro
+    /// `7b9fc1eca8208827732709eb`) both stringify under JS `ToPrimitive`
+    /// (`[1]` to `"1"`), so TS's raw `>` compares them as strings
+    /// (`"aaaa…" > "1"` is `true`) and rejects the model — a comparison
+    /// after coercing each bound to a number first (`NaN` for the
+    /// non-numeric string) would wrongly accept it instead.
+    #[test]
+    fn a_class_with_a_raw_string_compared_size_validator_mismatch_is_rejected() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "properties": [{
+                "$class": "concerto.metamodel@1.0.0.StringProperty",
+                "name": "tags", "isArray": true, "isOptional": false,
+                "sizeValidator": {
+                    "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
+                    "minSize": "aaaaaaaaaaaaaaaaaaaaa",
+                    "maxSize": [1]
+                }
+            }]
+        }))
+        .expect_err("TS rejects this model; the raw string comparison must too");
+        assert!(
+            err.to_string()
+                .contains("minSize must be less than or equal to maxSize")
+        );
     }
 
     /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"):
@@ -1903,6 +2026,35 @@ mod tests {
         );
     }
 
+    /// The minimised repro for accordproject/concerto-rust#219's
+    /// 871-case `ModelManager.fromAst` cluster (stage-2 T2c triage): a
+    /// declaration `name` of `["C"]` (a single-element array — TS's
+    /// `ID_REGEX.test` coerces it with `ToString` to the valid identifier
+    /// `"C"`, so TS never rejects the name) together with a property whose
+    /// `$class` is not a recognised property kind. Before the fix, Rust's
+    /// `check_declaration_name` required the AST's `name` to already be a
+    /// JS string and rejected anything else outright, so it never reached
+    /// the property check at all; verified live against the TS reference
+    /// (`ts-node` vs. the built `concerto-wasm` package, `CONCERTO_ENGINE=
+    /// rust`) that both now raise the identical `IllegalModelException`
+    /// naming the unrecognised property `$class`, not a `TypeError`.
+    #[test]
+    fn a_non_string_but_identifier_shaped_name_does_not_mask_an_unrecognised_property() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": ["C"],
+            "isAbstract": false,
+            "properties": [
+                { "$class": "concerto.metamodel@1", "name": "foo", "isArray": false, "isOptional": false }
+            ]
+        }))
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Unrecognised model element \"concerto.metamodel@1\"."
+        );
+    }
+
     #[test]
     fn scalar_reports_its_concrete_kind() {
         let s = decl(serde_json::json!({
@@ -2143,6 +2295,126 @@ mod tests {
         ));
     }
 
+    /// TS `'type' in ast` is true whenever the key is merely PRESENT, even
+    /// set to `null` — this must NOT take the "must contain property
+    /// 'type'" branch above (accordproject/concerto-rust#219 stage-2 T2c: a
+    /// previous `.filter(|v| !v.is_null())` wrongly treated a present
+    /// `null` the same as an absent key). `'$class' in ast.type` then
+    /// throws, since `null` is not a JS object.
+    #[test]
+    fn an_object_map_value_with_a_null_type_is_an_in_operator_type_error() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "M",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": {
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": null
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            &err,
+            ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+        ));
+        assert_eq!(
+            err.to_string(),
+            "Cannot use 'in' operator to search for '$class' in null"
+        );
+    }
+
+    /// Same shape, for every other JSON primitive the ECMAScript `in`
+    /// operator rejects as a non-object right-hand side: a `TypeError`
+    /// whose message renders the primitive with the same `ToString` any
+    /// other engine-raised message uses (accordproject/concerto-rust#219).
+    #[test]
+    fn an_object_map_value_with_a_primitive_type_is_an_in_operator_type_error() {
+        for (type_value, rendered) in [
+            (serde_json::json!(true), "true"),
+            (serde_json::json!(false), "false"),
+            (serde_json::json!(0), "0"),
+            (serde_json::json!(1e21), "1e+21"),
+            (serde_json::json!("__proto__"), "__proto__"),
+            (serde_json::json!(""), ""),
+        ] {
+            let err = Declaration::try_from(&serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                "name": "M",
+                "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                "value": {
+                    "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                    "type": type_value
+                }
+            }))
+            .unwrap_err();
+            assert!(matches!(
+                &err,
+                ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+            ));
+            assert_eq!(
+                err.to_string(),
+                format!("Cannot use 'in' operator to search for '$class' in {rendered}")
+            );
+        }
+    }
+
+    /// A JSON array IS a JS object for `in`'s purposes (unlike `null` or a
+    /// primitive), so it does not throw: it just has neither `$class` nor
+    /// `name`, so the ordinary "must contain property" `IllegalModelException`
+    /// applies, exactly as for any other object missing both keys.
+    #[test]
+    fn an_object_map_value_type_that_is_an_array_does_not_throw_a_type_error() {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "M",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": {
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": []
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            &err,
+            ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+        ));
+        assert!(err.to_string().contains(
+            "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named M"
+        ));
+    }
+
+    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c, 103-case residual
+    /// gap on the WASM-hybrid production path — this native engine's own
+    /// `type_node.get(key)` already gets the "present, even if null" rule
+    /// right, so this pins that it stays right): a *present*
+    /// `type.$class: null` is not a missing key (TS's `'$class' in
+    /// ast.type` is true), so it must fall through past the "must contain
+    /// property" check to the `$class !== 'TypeIdentifier'` one and raise
+    /// "type $class must be of TypeIdentifier" — not the wrong,
+    /// too-early "must contain property" message a `nullish`-style presence
+    /// check would give (the bug this issue's WASM binding had).
+    #[test]
+    fn an_object_map_value_type_with_a_present_null_class_reports_the_wrong_class_not_a_missing_property()
+     {
+        let err = Declaration::try_from(&serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+            "name": "M",
+            "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+            "value": {
+                "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+                "type": { "$class": null, "name": "Foo" }
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            &err,
+            ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+        ));
+        assert!(err.to_string().contains(
+            "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named M"
+        ));
+    }
+
     #[test]
     fn a_type_on_a_primitive_map_key_is_still_kept() {
         let d = decl(map_to_nope(
@@ -2162,14 +2434,24 @@ mod tests {
     /// (P2-08 review: this used to pin the serde decoding message instead).
     #[test]
     fn a_map_with_no_name_is_rejected_as_an_invalid_class_name() {
+        // TS: `ModelUtil.isValidIdentifier(this.ast.name)` runs
+        // `ID_REGEX.test`, which coerces its argument with `ToString`
+        // (DV-002) before matching. A missing `name` key is JS `undefined`,
+        // whose `ToString` is the literal text `"undefined"` — itself a
+        // valid identifier — so TS does NOT reject this at construction
+        // (verified live against the TS reference: `ModelManager.fromAst`
+        // succeeds for a `MapDeclaration` with no `name` key at all).
+        // accordproject/concerto-rust#219 stage-2 T2c: this test used to
+        // pin the earlier, incorrect behaviour (requiring a literal JSON
+        // string up front, unconditionally rejecting anything else).
         let mut node = map_to_nope(string_key(), serde_json::json!({}));
         node.as_object_mut().unwrap().remove("name");
-        let err = Declaration::try_from(&node);
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "Invalid class name 'undefined'"
-        );
+        let d = Declaration::try_from(&node).expect("a missing name is a valid identifier in TS");
+        assert_eq!(d.name(), "undefined");
 
+        // `5`'s `ToString` is `"5"`, not a valid identifier (an identifier
+        // cannot start with a digit), so this is still rejected exactly as
+        // before.
         let err =
             Declaration::try_from(&map_to_nope(string_key(), serde_json::json!({ "name": 5 })));
         assert_eq!(err.unwrap_err().to_string(), "Invalid class name '5'");
@@ -2335,62 +2617,34 @@ mod tests {
         );
     }
 
-    /// accordproject/concerto-rust#217 review finding 2: `superType: {}` (an
-    /// AST node with no `name` key at all) must resolve to no super type,
-    /// not the implicit `'Concept'` default — TS's own `if (this.ast.superType)`
-    /// takes the explicit branch whenever the node itself is truthy (an empty
-    /// object is), so `this.superType` never falls back to `'Concept'`. But
-    /// TS's branch leaves `this.superType` as the literal `undefined`, not
-    /// `null` — a distinction `process_decision` itself can't make from a
-    /// bare `Option<&str>` (that's why this and the null-name test below
-    /// both pass `explicit_super_type_name: None` yet must not assert the
-    /// same outcome): every caller that reaches `this.ast.superType.name` as
-    /// a plain, unguarded field read (the fuzz harness's `classDeclarationProcess`
-    /// binding, `ClassDeclaration::from_json`'s pre-decode JSON normalizing)
-    /// is the one responsible for telling `undefined` and `null` apart and
-    /// passing this function `Some("undefined")` — the same literal text TS
-    /// string-concatenates `this.superType` into wherever it later fails to
-    /// resolve it (`IllegalModelException: Could not find super type
-    /// undefined`) — rather than `None`, which is reserved for an *explicit*
-    /// `name: null` (the test below). Getting these two swapped was exactly
-    /// the silent-accept regression the finding flagged: a `None` here
-    /// wrongly reads as "no super type at all", not as "a super type that
-    /// will fail to resolve".
+    /// When a caller has an explicit super type value on hand (even a
+    /// placeholder), `process_decision` returns it verbatim and never
+    /// substitutes the implicit `'Concept'` default — the "has a `superType`
+    /// node at all" signal is `Some(_)` itself, not this string's content.
+    /// The real WASM binding (`classDeclarationProcess`) never reads this
+    /// value for that branch: it threads the AST's own raw
+    /// `superType.name` (which might be `undefined`, `null`, a number, …)
+    /// straight through to its snapshot instead, exactly because a bare
+    /// `Option<&str>` cannot represent every JSON shape a fuzzed AST can put
+    /// there (accordproject/concerto-rust#217, #219) — telling `undefined`
+    /// apart from an explicit `null` (both "no super type to resolve" in
+    /// different ways: TS's `_resolveSuperType`/`getProperties` treat a
+    /// `null` `this.superType` as nothing to resolve, but leave `undefined`
+    /// to fail resolution and raise "Could not find super type undefined")
+    /// is that caller's job, verified at the binding/smoke-check level, not
+    /// this pure decision function's.
     #[test]
-    fn an_explicit_super_type_node_with_no_name_key_is_the_literal_text_undefined_not_no_super_type()
-     {
-        let decision = ClassDeclaration::process_decision(
-            true,
-            Some("undefined"),
-            false,
-            "C",
-            None,
-            None,
-            "ns.C",
-        );
-        assert_eq!(decision.super_type.as_deref(), Some("undefined"));
-    }
-
-    /// [`an_explicit_super_type_node_with_no_name_key_is_the_literal_text_undefined_not_no_super_type`],
-    /// for an explicit `name: null`: unlike a missing `name` key, TS leaves
-    /// `this.superType` exactly `null` here, which every downstream `!== null`
-    /// guard reads as "nothing to resolve" — this is the one shape that
-    /// really is "no super type at all", and the only one a caller should
-    /// map to `explicit_super_type_name: None`.
-    #[test]
-    fn an_explicit_super_type_node_with_a_null_name_has_no_super_type() {
+    fn an_explicit_super_type_is_returned_verbatim_not_defaulted() {
         let decision =
-            ClassDeclaration::process_decision(true, None, false, "C", None, None, "ns.C");
-        assert_eq!(decision.super_type, None);
+            ClassDeclaration::process_decision(Some("placeholder"), false, "C", None, None, "ns.C");
+        assert_eq!(decision.super_type.as_deref(), Some("placeholder"));
     }
 
-    /// The AST naming no `superType` node at all still takes the implicit
-    /// `'Concept'` default (unlike the two cases above, where the node
-    /// itself is present but names nothing).
+    /// The AST naming no `superType` node at all takes the implicit
+    /// `'Concept'` default.
     #[test]
     fn an_absent_super_type_node_takes_the_implicit_default() {
-        let decision =
-            ClassDeclaration::process_decision(false, None, false, "C", None, None, "ns.C");
+        let decision = ClassDeclaration::process_decision(None, false, "C", None, None, "ns.C");
         assert_eq!(decision.super_type.as_deref(), Some("Concept"));
     }
 
@@ -2399,7 +2653,6 @@ mod tests {
     #[test]
     fn the_system_concept_declaration_has_no_implicit_super_type() {
         let decision = ClassDeclaration::process_decision(
-            false,
             None,
             true,
             "Concept",

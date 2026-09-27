@@ -104,6 +104,52 @@ fn validator_number_field(ast: &Value, key: &str) -> Option<f64> {
     }
 }
 
+/// Whether `min > max` by JS's abstract relational comparison applied to the
+/// *raw* AST values (`ecma::greater_than`), not to values already coerced to
+/// `f64` (accordproject/concerto-rust#219): TS's own `this.minSize >
+/// this.maxSize` (and `this.minLength > this.maxLength`) compares whatever
+/// `minSize`/`maxSize` are on the AST completely untouched, so a
+/// fuzz-mutated bound that is itself a non-numeric string can make this a
+/// *string* comparison (lexicographic, e.g. `'aaaa' > '1'` is `true`, char
+/// code `'a'` > `'1'`), not the `NaN`-producing numeric one converting each
+/// side to a number first would give. `min`/`max` are the already-coerced
+/// `f64` readings ([`validator_number_field`]/[`length_bound_field`]); `raw`
+/// is the validator's own AST sub-node (`sizeValidator`/`lengthValidator`),
+/// when the caller has it: `None` — every call site but the two that build a
+/// validator straight from a fuzzed `ModelManager.fromAst`/`addModelFile`
+/// AST — falls back to the plain `f64` comparison, exactly the question this
+/// asks for data a prior, successful model construction already normalised.
+fn bounds_out_of_order(
+    raw: Option<&Value>,
+    min_key: &str,
+    max_key: &str,
+    min: f64,
+    max: f64,
+) -> bool {
+    match raw.and_then(|raw| raw.get(min_key).zip(raw.get(max_key))) {
+        // A present, non-null pair on the raw AST: TS's own untouched
+        // comparison, which this mirrors exactly. `min`/`max` being `f64`
+        // here already means neither raw side was an absent key or an
+        // explicit `null` ([`validator_number_field`] returns `None` for
+        // either, never reaching this branch's `Some`/`Some` zip's only
+        // caller, [`CollectionSizeValidator::new`]'s `min_size.zip(max_size)`;
+        // [`length_bound_field`]'s own absent-key `NaN` sentinel is not
+        // `null`, so it *can* reach here for `StringValidator`, but then
+        // `min_raw`/`max_raw` themselves are still each present — an absent
+        // *length* key never has a raw AST entry to find here at all, so it
+        // falls through to the `_` arm below instead).
+        Some((min_raw, max_raw)) if !min_raw.is_null() && !max_raw.is_null() => {
+            ecma::greater_than(min_raw, max_raw)
+        }
+        // No raw AST, or the raw key itself is absent/null (only reachable
+        // for `StringValidator`'s `length_bound_field` `NaN` sentinel, whose
+        // `NaN > x`/`x > NaN` was already always `false`, TS's own
+        // `undefined`/`null` skip of this check): the pre-existing `f64`
+        // comparison, unchanged.
+        _ => min > max,
+    }
+}
+
 /// A validator sub-object's string field (`StringRegexValidator`'s `pattern`/
 /// `flags`), read the way `new RegExp(validator.pattern, validator.flags)`
 /// reads them: a missing key is `undefined`, which the `RegExp` constructor
@@ -423,6 +469,7 @@ impl CollectionSizeValidator {
     pub fn new<F: ValidatedElement>(
         field: &F,
         validator: &mm::CollectionSizeValidator,
+        raw: Option<&Value>,
     ) -> Result<Self, F::Error> {
         let min_size = validator.min_size;
         let max_size = validator.max_size;
@@ -444,7 +491,7 @@ impl CollectionSizeValidator {
                 Vec::new(),
             ));
         } else if let Some((min, max)) = min_size.zip(max_size)
-            && min > max
+            && bounds_out_of_order(raw, "minSize", "maxSize", min, max)
         {
             // When either bound is absent, this is fine: no need to check
             // whether minSize > maxSize.
@@ -678,6 +725,7 @@ impl StringValidator {
         field: &F,
         validator: Option<&mm::StringRegexValidator>,
         length_validator: Option<&mm::StringLengthValidator>,
+        raw_length_validator: Option<&Value>,
     ) -> Result<Self, F::Error> {
         let mut min_length = None;
         let mut max_length = None;
@@ -703,7 +751,7 @@ impl StringValidator {
                     Vec::new(),
                 ));
             } else if let Some((min, max)) = min_length.zip(max_length)
-                && min > max
+                && bounds_out_of_order(raw_length_validator, "minLength", "maxLength", min, max)
             {
                 // When either bound is absent, this is fine: no need to
                 // check minLength > maxLength.
@@ -1047,7 +1095,7 @@ mod tests {
     ) -> Result<StringValidator> {
         let regex = pattern.map(|(p, f)| regex_ast(p, f));
         let length = length.map(|(min, max)| length_ast(min, max));
-        StringValidator::new(&field(), regex.as_ref(), length.as_ref())
+        StringValidator::new(&field(), regex.as_ref(), length.as_ref(), None)
     }
 
     // ---- StringValidator: #constructor ----
@@ -1141,8 +1189,8 @@ mod tests {
     #[test]
     fn string_validator_rejects_a_default_value_shorter_than_min_length() {
         let f = field().with_default(serde_json::json!("abc"));
-        let err =
-            StringValidator::new(&f, None, Some(&length_ast(Some(5.0), Some(10.0)))).unwrap_err();
+        let err = StringValidator::new(&f, None, Some(&length_ast(Some(5.0), Some(10.0))), None)
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("The string length of 'abc' should be at least 5 characters.")
@@ -1152,8 +1200,8 @@ mod tests {
     #[test]
     fn string_validator_rejects_a_default_value_longer_than_max_length() {
         let f = field().with_default(serde_json::json!("abcdefgh"));
-        let err =
-            StringValidator::new(&f, None, Some(&length_ast(Some(2.0), Some(5.0)))).unwrap_err();
+        let err = StringValidator::new(&f, None, Some(&length_ast(Some(2.0), Some(5.0))), None)
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("The string length of 'abcdefgh' should not exceed 5 characters.")
@@ -1167,7 +1215,8 @@ mod tests {
             StringValidator::new(
                 &f,
                 Some(&regex_ast("^[A-Z]{3,5}$", "")),
-                Some(&length_ast(Some(3.0), Some(5.0)))
+                Some(&length_ast(Some(3.0), Some(5.0))),
+                None
             )
             .is_ok()
         );
@@ -1376,7 +1425,7 @@ mod tests {
                 ast["maxLength"] = max.into();
             }
             let length = length_validator_from_ast(Some(&ast));
-            StringValidator::new(&field(), None, length.as_ref()).unwrap()
+            StringValidator::new(&field(), None, length.as_ref(), None).unwrap()
         }
 
         // `this` has no lower bound at all (the `minLength` key is simply
@@ -1445,21 +1494,22 @@ mod tests {
 
     #[test]
     fn collection_size_validator_reads_both_bounds() {
-        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(1.0), Some(10.0))).unwrap();
+        let v =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(1.0), Some(10.0)), None).unwrap();
         assert_eq!(v.min_size(), Some(1.0));
         assert_eq!(v.max_size(), Some(10.0));
     }
 
     #[test]
     fn collection_size_validator_min_only() {
-        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(3.0), None)).unwrap();
+        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(3.0), None), None).unwrap();
         assert_eq!(v.min_size(), Some(3.0));
         assert_eq!(v.max_size(), None);
     }
 
     #[test]
     fn collection_size_validator_rejects_no_bounds() {
-        let err = CollectionSizeValidator::new(&field(), &size_ast(None, None)).unwrap_err();
+        let err = CollectionSizeValidator::new(&field(), &size_ast(None, None), None).unwrap_err();
         assert!(
             err.to_string()
                 .contains("minSize and/or maxSize must be specified")
@@ -1468,16 +1518,18 @@ mod tests {
 
     #[test]
     fn collection_size_validator_rejects_negative_bounds() {
-        let err = CollectionSizeValidator::new(&field(), &size_ast(Some(-1.0), None)).unwrap_err();
+        let err =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(-1.0), None), None).unwrap_err();
         assert!(err.to_string().contains("positive integers"));
-        let err = CollectionSizeValidator::new(&field(), &size_ast(None, Some(-2.0))).unwrap_err();
+        let err =
+            CollectionSizeValidator::new(&field(), &size_ast(None, Some(-2.0)), None).unwrap_err();
         assert!(err.to_string().contains("positive integers"));
     }
 
     #[test]
     fn collection_size_validator_rejects_min_above_max() {
-        let err =
-            CollectionSizeValidator::new(&field(), &size_ast(Some(5.0), Some(2.0))).unwrap_err();
+        let err = CollectionSizeValidator::new(&field(), &size_ast(Some(5.0), Some(2.0)), None)
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("minSize must be less than or equal to maxSize")
@@ -1486,9 +1538,11 @@ mod tests {
 
     #[test]
     fn collection_size_validator_allows_min_equal_max_and_zero() {
-        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(3.0), Some(3.0))).unwrap();
+        let v =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(3.0), Some(3.0)), None).unwrap();
         assert_eq!(v.min_size(), Some(3.0));
-        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(0.0), Some(5.0))).unwrap();
+        let v =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(0.0), Some(5.0)), None).unwrap();
         assert_eq!(v.min_size(), Some(0.0));
     }
 
@@ -1496,7 +1550,8 @@ mod tests {
 
     #[test]
     fn collection_size_validator_validate() {
-        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(2.0), Some(5.0))).unwrap();
+        let v =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(2.0), Some(5.0)), None).unwrap();
         assert!(v.validate(&field(), Some("id"), 3.0).is_ok());
         let err = v.validate(&field(), Some("id"), 1.0).unwrap_err();
         assert!(err.to_string().contains("at least 2 elements"));
@@ -1508,7 +1563,8 @@ mod tests {
     /// is accepted, not rejected.
     #[test]
     fn collection_size_validator_validate_is_inclusive_at_both_bounds() {
-        let v = CollectionSizeValidator::new(&field(), &size_ast(Some(2.0), Some(5.0))).unwrap();
+        let v =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(2.0), Some(5.0)), None).unwrap();
         assert!(v.validate(&field(), Some("id"), 2.0).is_ok());
         assert!(v.validate(&field(), Some("id"), 5.0).is_ok());
     }
@@ -1518,7 +1574,7 @@ mod tests {
     #[test]
     fn collection_size_validator_compatible_with() {
         let v = |min: Option<f64>, max: Option<f64>| {
-            CollectionSizeValidator::new(&field(), &size_ast(min, max)).unwrap()
+            CollectionSizeValidator::new(&field(), &size_ast(min, max), None).unwrap()
         };
 
         assert!(!v(Some(1.0), None).compatible_with(None));
@@ -1660,7 +1716,7 @@ mod tests {
             |pattern: &str| Validator::String(string_validator(Some((pattern, "")), None).unwrap());
         let collection = |min: Option<f64>, max: Option<f64>| {
             Validator::CollectionSize(
-                CollectionSizeValidator::new(&field(), &size_ast(min, max)).unwrap(),
+                CollectionSizeValidator::new(&field(), &size_ast(min, max), None).unwrap(),
             )
         };
 

@@ -1009,10 +1009,22 @@ pub fn string_validator_new(
     run(|| {
         let regex_ast = string_regex_ast(&validator)?;
         let length_ast = string_length_ast(&length_validator)?;
+        // The raw `lengthValidator` AST itself, not just its typed
+        // `{minLength, maxLength}` snapshot (`length_ast` above): a
+        // fuzz-mutated `minLength`/`maxLength` needs JS's own untyped `>`
+        // comparison, not one against a value already coerced to `f64`
+        // (accordproject/concerto-rust#219). `nullish` mirrors
+        // `string_length_ast`'s own guard: no AST, no raw value to compare.
+        let raw_length_ast = if nullish(&length_validator) {
+            None
+        } else {
+            to_json(&length_validator)?
+        };
         let built = StringValidator::new(
             &JsElement { validator: &view },
             regex_ast.as_ref(),
             length_ast.as_ref(),
+            raw_length_ast.as_ref(),
         )?;
         Ok(to_js(&json!({
             "minLength": built.min_length(),
@@ -1049,6 +1061,11 @@ fn string_validator(view: &JsValue) -> Result<StringValidator> {
         &JsElement { validator: view },
         regex_ast.as_ref(),
         length_ast.as_ref(),
+        // No raw AST to re-compare here: this rebuilds the validator from a
+        // view whose construction already succeeded, so `minLength`/
+        // `maxLength` are already the real, in-order numbers a prior,
+        // successful `stringValidatorNew` call normalised.
+        None,
     )
 }
 
@@ -1109,7 +1126,16 @@ pub fn collection_size_validator_new(
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
         let typed = collection_size_ast(&ast)?;
-        let built = CollectionSizeValidator::new(&JsElement { validator: &view }, &typed)?;
+        // The raw `sizeValidator` AST itself, not just its typed `{minSize,
+        // maxSize}` snapshot (`typed` above): a fuzz-mutated `minSize`/
+        // `maxSize` needs JS's own untyped `>` comparison, not one against a
+        // value already coerced to `f64` (accordproject/concerto-rust#219).
+        let raw_ast = to_json(&ast)?;
+        let built = CollectionSizeValidator::new(
+            &JsElement { validator: &view },
+            &typed,
+            raw_ast.as_ref(),
+        )?;
         Ok(to_js(&json!({
             "minSize": built.min_size(),
             "maxSize": built.max_size(),
@@ -1120,7 +1146,11 @@ pub fn collection_size_validator_new(
 /// Rebuilds the validator from `view.validator`, the AST `super()` cached.
 fn collection_size_validator(view: &JsValue) -> Result<CollectionSizeValidator> {
     let ast = collection_size_ast(&get(view, "validator")?)?;
-    CollectionSizeValidator::new(&JsElement { validator: view }, &ast)
+    // No raw AST to re-compare here: this rebuilds the validator from a view
+    // whose construction already succeeded, so `minSize`/`maxSize` are
+    // already the real, in-order numbers a prior, successful
+    // `collectionSizeValidatorNew` call normalised.
+    CollectionSizeValidator::new(&JsElement { validator: view }, &ast, None)
 }
 
 /// TS: CollectionSizeValidator.validate. `value` is compared as JS `<`/`>`
@@ -1836,80 +1866,37 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
     let body = || -> Result<JsValue> {
         let ast = get(&declaration, "ast")?;
 
-        let explicit_super_type = get(&ast, "superType")?;
-        let has_explicit_super_type = !nullish(&explicit_super_type);
-        let explicit_super_type_name = if has_explicit_super_type {
-            let name = get(&explicit_super_type, "name")?;
-            if name.is_null() {
-                // TS: `this.superType = this.ast.superType.name;` — a plain
-                // assignment, taken exactly as given. An explicit `name:
-                // null` leaves `this.superType` itself `null`, and every
-                // downstream guard (`_resolveSuperType`'s `!this.superType`,
-                // `validate`/`getProperties`'s `!== null`) reads that as
-                // "nothing to resolve" — this is the one shape that really
-                // behaves as "no super type at all" (accordproject/concerto-rust#217,
-                // review finding 1).
-                None
-            } else if name.is_undefined() {
-                // A `superType` node with no `name` key at all is a
-                // different shape from the one above, even though both are
-                // "nullish": `this.ast.superType.name` reads as `undefined`,
-                // not `null`, so `this.superType` becomes `undefined` too —
-                // and `undefined !== null`, so `validate`/`getProperties`
-                // do NOT treat this as "nothing to resolve"; they carry on
-                // to resolve a super type named `undefined` (JS string
-                // concatenation coerces it to the literal text
-                // `"undefined"`), fail to find one, and raise
-                // `IllegalModelException: Could not find super type
-                // undefined`. Passing that same literal string through here
-                // reproduces the failure the same way, rather than
-                // silently discarding the (missing) name as "no super
-                // type" (accordproject/concerto-rust#217, review finding 2).
-                Some("undefined".to_string())
-            } else if !name.is_truthy() {
-                // A falsy, non-nullish `name` (`0`, `false`, or an empty
-                // string): still a **different** shape from a real `null`
-                // above. TS keeps `this.superType` exactly as falsy as the
-                // AST gave it, and `_resolveSuperType`'s own `!this.superType`
-                // check does short-circuit on that falsiness without
-                // throwing — but `validate`'s field-collecting call,
-                // `this.getProperties()`, does **not** go through
-                // `_resolveSuperType` at all: `ClassDeclaration.getProperties`
-                // guards only on `this.superType !== null` (`0 !== null` and
-                // `false !== null` are both true), then resolves it directly
-                // with `getModelFile().getType(this.superType)`, finds
-                // nothing, and throws `IllegalModelException: Could not
-                // find super type ` + `this.superType` — JS `+` coerces the
-                // falsy value with the same `ToString` `js_string` performs
-                // (`0` -> `"0"`, `false` -> `"false"`, `""` -> `""`).
-                // Mapping this to `None` (review's first attempt) skipped
-                // that throw entirely, turning a TS rejection into a Rust
-                // acceptance — the reverse of this issue's own shape
-                // (accordproject/concerto-rust#217, review finding 2, second
-                // half).
-                Some(js_string(&name)?)
-            } else {
-                // A truthy `name`: a real (possibly empty-looking but
-                // non-empty) string is returned as itself; a truthy
-                // non-string (a bool, a number, an array, ...) is a
-                // different divergence review finding 2 flagged under the
-                // same "stringify-truthy" heading: TS keeps `this.superType`
-                // as that raw, non-string value — never stringifying it —
-                // and it is only ever *used* as a string once resolution
-                // reaches `ModelFile.getLocalType`'s `type.startsWith(...)`,
-                // which throws `TypeError: type.startsWith is not a
-                // function` for anything that isn't really a string.
-                // `js_string` (an earlier version of this fix) coerced it
-                // into a valid-looking name instead — `["Vehicle"]` becomes
-                // the resolvable string `"Vehicle"` — and let Rust load a
-                // model TS rejects. `receiver` reproduces that exact
-                // `TypeError` here instead (accordproject/concerto-rust#217).
-                Some(receiver(&name, "type", "startsWith")?)
-            }
+        // TS: `if (this.ast.superType) { this.superType = this.ast.superType.name; }
+        // else if (!(isSystemModelFile && name === 'Concept')) { this.superType = 'Concept'; }`
+        // Neither branch ever calls `.toString()`: the outer test is plain JS
+        // truthiness of the whole `superType` node (not merely non-nullish —
+        // a fuzzed AST can put `false`/`0`/`""` there too, all falsy), and
+        // once truthy, whatever `.name` holds (string, number, boolean,
+        // `null`, absent, object, array) is stored on `this.superType`
+        // as-is, UNSTRINGIFIED and uncoerced. That raw JS value's own type
+        // and truthiness are themselves observable later: `_resolveSuperType`
+        // (`classDeclarationResolveSuperType` above) keys off its truthiness,
+        // `getProperty`/`getProperties` (below) off strict non-null, and
+        // every "Could not find super type" message off its `ToString` —
+        // three different tests a fuzzer can pull apart (`undefined` is
+        // falsy but not `null`; `ToString(undefined)` is `"undefined"`, not
+        // `""`). A single Rust `String` cannot answer the first two at once
+        // (accordproject/concerto-rust#219, P5-05 stage-2 T2c), so the raw
+        // `JsValue` is threaded straight through to the snapshot below
+        // instead of being coerced or blanked here the way `receiver` would.
+        let super_type_ast = get(&ast, "superType")?;
+        let raw_super_type = if super_type_ast.is_truthy() {
+            Some(get(&super_type_ast, "name")?)
         } else {
             None
         };
-        let is_system_model_file = if !has_explicit_super_type {
+        // `process_decision` only needs to know whether the AST named a
+        // super type at all (`None` applies its own implicit-`Concept`
+        // default, or leaves it unset for the system model's own `Concept`);
+        // once it has named one, the placeholder's content is never read —
+        // `raw_super_type` is what actually reaches the snapshot.
+        let explicit_super_type = raw_super_type.as_ref().map(|_| String::new());
+        let is_system_model_file = if explicit_super_type.is_none() {
             let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
             call(
                 &model_file,
@@ -1924,57 +1911,60 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             // call to make.
             false
         };
-        // TS: `this.name` is `this.ast.name` verbatim (`Declaration.process`,
-        // src/introspect/declaration.ts), read here only for an `=== 'Concept'`
-        // comparison — never stringified with `.toString()`. `receiver` threw
-        // "Cannot read properties of undefined/null" or "not a function" for
-        // any fuzz-mutated, non-string `name` (missing, `null`, a bool, an
-        // array, ...) even though TS accepts all of those (accordproject/concerto-rust#217);
-        // `js_string` gives the coerced string without throwing.
-        let name = js_string(&get(&declaration, "name")?)?;
+        // TS: `name === 'Concept'` — a strict equality, not a `.toString()`
+        // call, so a non-string `this.name` (reachable through a fuzzed
+        // `ast.name`, missing, `null`, a bool, an array, ...) simply can
+        // never equal the literal `'Concept'`, and TS accepts every one of
+        // those without throwing (accordproject/concerto-rust#217); the
+        // empty string can't equal `'Concept'` either, so it stands in
+        // without a `receiver`/`js_string` call that could itself throw
+        // (or, for a value like `["Concept"]` whose `toString()` happens to
+        // read `"Concept"`, wrongly coerce a non-match into a match that
+        // real `===` never would).
+        let name = get(&declaration, "name")?.as_string().unwrap_or_default();
 
+        // TS: `if (this.ast.identified) { ... }` — again plain truthiness of
+        // the whole node, not merely non-nullish.
         let identified = get(&ast, "identified")?;
-        let (identified_class, identified_name) = if nullish(&identified) {
-            (None, None)
-        } else {
-            // TS: `this.ast.identified.$class === \`${MetaModelNamespace}.IdentifiedBy\``
-            // is a strict comparison, and `this.idField = this.ast.identified.name`
-            // a plain assignment — neither calls `.toString()`, so a
-            // non-string `$class`/`name` (accordproject/concerto-rust#217,
-            // e.g. `identified: true` or `identified.name: ["id"]`) must not
-            // throw here either.
-            let identified_class = js_string(&get(&identified, "$class")?)?;
-            let identified_name = if short_class(&identified_class) == "IdentifiedBy" {
-                // TS: `this.idField = this.ast.identified.name;` — a plain
-                // assignment, taken exactly as given, later read with a
-                // truthy check (`if (this.idField)`) everywhere that
-                // matters (`ClassDeclaration.validate`'s "does not contain
-                // this property" check among them). Any falsy `name` — not
-                // just nullish, but also `0`, `false` and `""` — must stay
-                // out of the returned `idField` here too, not stringify
-                // into a truthy-but-wrong literal text (`"undefined"`/
-                // `"null"`/`"0"`/`"false"`) that Rust would then go on to
-                // look up as a real property name and fail to find (review
-                // finding 2, accordproject/concerto-rust#217 — the "only
-                // half fixed" half: an earlier version of this fix handled
-                // only the nullish shapes).
-                let name = get(&identified, "name")?;
-                if !name.is_truthy() {
-                    None
-                } else {
-                    Some(js_string(&name)?)
-                }
+        let (identified_class, identified_name, raw_identified_name) = if identified.is_truthy() {
+            // TS: `this.ast.identified.$class === '...IdentifiedBy'` (strict
+            // equality) and `this.idField = this.ast.identified.name` (plain
+            // assignment) — neither coerces. A non-string `$class` can never
+            // match the literal comparison, so the empty string (never a
+            // real `$class`) stands in for it without a receiver check.
+            let class_value = get(&identified, "$class")?;
+            let identified_class = class_value.as_string().unwrap_or_default();
+            // `raw_identified_name` is `this.ast.identified.name`, UNSTRINGIFIED
+            // and uncoerced, exactly as TS's plain assignment leaves it — a
+            // fuzzed AST can put a number, boolean, `null`, or leave it
+            // absent (`undefined`), and every one of those is falsy in TS,
+            // so `idField`'s later truthiness guard (in
+            // `ClassDeclaration.validate`, still TS) skips its
+            // `getProperty(this.idField)` check entirely rather than
+            // looking up a property literally named `"undefined"`/`"null"`/
+            // `"false"` the way stringifying here would produce
+            // (accordproject/concerto-rust#219 review: "Match TS name
+            // handling: keep undefined, not the string \"undefined\"").
+            // `identified_name` (a `&str`, for `process_decision` below) is
+            // only ever consulted on this same branch, and only to decide
+            // `process_decision`'s own placeholder `id_field` — which
+            // `id_field_js` below always overrides with the raw value once
+            // this branch is taken — so it need not itself be coerced.
+            let raw_identified_name = if short_class(&identified_class) == "IdentifiedBy" {
+                Some(get(&identified, "name")?)
             } else {
                 None
             };
-            (Some(identified_class), identified_name)
+            let identified_name = raw_identified_name.as_ref().map(|_| String::new());
+            (Some(identified_class), identified_name, raw_identified_name)
+        } else {
+            (None, None, None)
         };
 
         let fqn = receiver(&get(&declaration, "fqn")?, "this.fqn", "toString")?;
 
         let decision = concerto_core::ClassDeclaration::process_decision(
-            has_explicit_super_type,
-            explicit_super_type_name.as_deref(),
+            explicit_super_type.as_deref(),
             is_system_model_file,
             &name,
             identified_class.as_deref(),
@@ -1982,12 +1972,44 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
             &fqn,
         );
 
-        Ok(to_js(&json!({
-            "superType": decision.super_type,
-            "idField": decision.id_field,
-            "addIdentifierField": decision.add_identifier_field,
-            "addTimestampField": decision.add_timestamp_field,
-        })))
+        // `raw_super_type` (the AST's own `.name` value, untouched) when the
+        // AST named a super type at all; otherwise `process_decision`'s own
+        // string decision (the implicit `'Concept'`, or `null` for the
+        // system model's own `Concept`).
+        let super_type_js = match raw_super_type {
+            Some(v) => v,
+            None => decision
+                .super_type
+                .as_deref()
+                .map_or(JsValue::NULL, JsValue::from_str),
+        };
+        // `raw_identified_name` (the AST's own `.identified.name` value,
+        // untouched) when the AST named an explicit `IdentifiedBy`;
+        // otherwise `process_decision`'s own string decision (`$identifier`
+        // for the system-identified case, or `null` for no identity at
+        // all).
+        let id_field_js = match raw_identified_name {
+            Some(v) => v,
+            None => decision
+                .id_field
+                .as_deref()
+                .map_or(JsValue::NULL, JsValue::from_str),
+        };
+
+        let result = Object::new();
+        set(&result, "superType", &super_type_js);
+        set(&result, "idField", &id_field_js);
+        set(
+            &result,
+            "addIdentifierField",
+            &JsValue::from_bool(decision.add_identifier_field),
+        );
+        set(
+            &result,
+            "addTimestampField",
+            &JsValue::from_bool(decision.add_timestamp_field),
+        );
+        Ok(result.into())
     };
     body().map_err(|e| {
         let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
@@ -2352,6 +2374,14 @@ pub fn class_declaration_get_identifier_field_name(
 /// one, otherwise the super type's answer (through [`resolve_named_type`]).
 /// A `null` super type resolution reaches the same unguarded
 /// `classDecl.getProperty(name)` call TS makes.
+///
+/// The guard is `this.superType !== null` — strict, not TS truthiness — so a
+/// fuzzer-produced `this.superType` that is merely falsy (`undefined`, `0`,
+/// `false`, `""`, from a `superType` AST node whose `name` was itself falsy;
+/// [`class_declaration_process`]'s own module doc) still reaches the same
+/// resolution TS does, rather than being treated as "no super type" the way
+/// `getSuperType`/`_resolveSuperType`'s own, separate, truthiness guard
+/// would (accordproject/concerto-rust#219, P5-05 stage-2 T2c).
 #[wasm_bindgen(js_name = classDeclarationGetProperty)]
 pub fn class_declaration_get_property(
     declaration: JsValue,
@@ -2384,6 +2414,9 @@ pub fn class_declaration_get_property(
 /// [`resolve_named_type`] — unlike `getProperty`, TS itself guards this
 /// resolution with the same "Could not find super type" `IllegalModelException`
 /// `_resolveSuperType` raises.
+///
+/// Same `this.superType !== null` guard as `getProperty` above (not
+/// truthiness): accordproject/concerto-rust#219.
 #[wasm_bindgen(js_name = classDeclarationGetProperties)]
 pub fn class_declaration_get_properties(
     declaration: JsValue,
@@ -2673,17 +2706,37 @@ pub fn class_declaration_get_nested_property(
 pub fn map_declaration_process(view: JsValue) -> std::result::Result<(), JsValue> {
     let body = || -> Result<()> {
         let ast = get(&view, "ast")?;
-        let name = opt_get(&ast, "name")?;
-        let name = if nullish(&name) {
-            String::new()
-        } else {
-            js_string(&name)?
-        };
-        let key = to_json(&get(&ast, "key")?)?;
-        let value = to_json(&get(&ast, "value")?)?;
+        // TS interpolates the raw `this.ast.name` into a template literal
+        // in every one of this function's own messages
+        // (`MapDeclaration must contain Key & Value properties
+        // ${this.ast.name}`, mapdeclaration.ts), which applies JS `ToString`
+        // to whatever value is there — including `undefined` (a missing
+        // `name` key stringifies to the literal text `"undefined"`, not an
+        // empty string) and `null` (`"null"`), not only a real string
+        // (accordproject/concerto-rust#219, P5-05 stage-2 T2c): collapsing
+        // both of those to `String::new()` reported `"MapDeclaration must
+        // contain Key & Value properties  "` (an empty name) where TS
+        // reports `"... properties undefined "`/`"... properties null "`.
+        let name = js_string(&opt_get(&ast, "name")?)?;
+        // TS: `if (!this.ast.key || !this.ast.value)` — plain JS truthiness
+        // of the whole node, not merely "not `undefined`": a fuzz-mutated
+        // `key`/`value` of `false`, `0`, `null` or `""` is exactly as falsy
+        // as a missing one, and must fail this same check, not reach
+        // `is_valid_map_key`/`is_valid_map_value`'s own, differently-worded
+        // rejection instead (accordproject/concerto-rust#219, P5-05
+        // stage-2 T2c: `key: 0` reached `to_json`'s `is_undefined`-only gate
+        // here, which passed it through as `Some(0)`, giving "must contain
+        // valid MapKeyType" instead of TS's "must contain Key & Value
+        // properties" — the same theme `MapDeclaration::from_json`'s native
+        // Rust construction path already fixed, here again for this WASM
+        // binding's own, separate check).
+        let key_raw = get(&ast, "key")?;
+        let value_raw = get(&ast, "value")?;
+        let key = to_json(&key_raw)?;
+        let value = to_json(&value_raw)?;
         let location = to_json(&get(&ast, "location")?)?;
 
-        if key.is_none() || value.is_none() {
+        if !key_raw.is_truthy() || !value_raw.is_truthy() {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,
                 "mapdeclaration-process-missingkeyvalue",
@@ -2807,8 +2860,20 @@ pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsV
         };
         let type_name = match short_class(&class) {
             "ObjectMapValueType" | "RelationshipMapValueType" => {
+                // TS: `!('type' in ast)`. `ast` is a genuine JS object here
+                // (its own `$class` was just read as a real string above),
+                // so the `in` operator itself cannot throw on this check; it
+                // is exactly "does the key exist", true whenever `type` is
+                // present at all — including an explicit `type: null`, which
+                // is present, not missing. `get` returns real `undefined`
+                // only for a key that is not there at all, so testing that
+                // directly (not `nullish`, which also matches a present
+                // `null`) is what keeps the two apart
+                // (accordproject/concerto-rust#219 stage-2 T2c: `nullish`
+                // here wrongly took the "missing type" branch for a present
+                // `type: null`, which TS does not).
                 let ast_type = get(&ast, "type")?;
-                if nullish(&ast_type) {
+                if ast_type.is_undefined() {
                     return Err(ContractError::new(
                         ErrorKind::IllegalModel,
                         "mapvaluetype-process-missingtype",
@@ -2816,9 +2881,38 @@ pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsV
                     )
                     .into());
                 }
+                // TS: `!('$class' in ast.type) || !('name' in ast.type)`.
+                // Unlike the check above, `ast.type` is NOT guaranteed to be
+                // an object here — a fuzzed AST can set it to `null`, a
+                // boolean, a number or a string — and the ECMAScript `in`
+                // operator throws a `TypeError` when its right-hand side is
+                // not an object (an array or a plain object does not throw;
+                // it just falls through to the "malformed type" rejection
+                // below like any other object missing both keys).
+                if !ast_type.is_object() && !ast_type.is_function() {
+                    return Err(type_error(
+                        "engine-typeerror-inoperator",
+                        vec![
+                            ("key", "$class".to_string()),
+                            ("value", js_string(&ast_type)?),
+                        ],
+                    ));
+                }
                 let type_class = get(&ast_type, "$class")?;
                 let type_name_field = get(&ast_type, "name")?;
-                if nullish(&type_class) || nullish(&type_name_field) {
+                // TS: `!('$class' in ast.type) || !('name' in ast.type)` —
+                // a key-presence check, not a nullish one
+                // (accordproject/concerto-rust#219 stage-2 T2c: this used
+                // `nullish`, which wrongly took the "malformed type" branch
+                // below for a present `type.$class: null`/`type.name: null`,
+                // when TS's `in` sees the key, skips this branch, and goes
+                // on to the `$class !== 'TypeIdentifier'` check instead —
+                // the same "missing key" vs "present but null" distinction
+                // this function's own `ast_type.is_undefined()` check above
+                // already gets right for the outer `type` key). `get`
+                // returns real `undefined` only for a key that is not there
+                // at all, exactly like the outer check.
+                if type_class.is_undefined() || type_name_field.is_undefined() {
                     return Err(ContractError::new(
                         ErrorKind::IllegalModel,
                         "mapvaluetype-process-malformedtype",
@@ -2926,7 +3020,22 @@ pub fn decorator_process(ast: JsValue, view: JsValue) -> std::result::Result<JsV
             arguments.push(&argument_to_js(arg));
         }
         let out = Object::new();
-        set(&out, "name", &JsValue::from_str(decorator.name()));
+        // TS: `this.name = ast.name` (decorator.ts) — a plain, uncoerced
+        // assignment, so a decorator node with no `name` key at all leaves
+        // `this.name` genuinely `undefined`, not the empty string. That
+        // distinction only shows up later, in `Decorated.validate`'s
+        // duplicate-decorator scan (`decoratedFindDuplicateName`, TS:
+        // `this.decorators.map(d => d.getName())`) — `js_name` (not
+        // `name`) is what preserves it here (accordproject/concerto-rust#219,
+        // review: a model-file's own `decorators: "__proto__"` — parsed one
+        // UTF-16 code unit at a time into nameless decorators, DV-018 —
+        // wrongly reported "Duplicate decorator " instead of TS's own
+        // "Duplicate decorator undefined" until this used `name()`'s
+        // always-a-string default instead).
+        let name_js = decorator
+            .js_name()
+            .map_or(JsValue::UNDEFINED, JsValue::from_str);
+        set(&out, "name", &name_js);
         set(&out, "arguments", &arguments);
         Ok(out.into())
     })

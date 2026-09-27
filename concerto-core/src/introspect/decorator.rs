@@ -126,8 +126,16 @@ impl Decorator {
     /// The name as TS's `Decorator.getName()` holds it for
     /// `Decorated.validate`'s duplicate check: `None` for a node with no
     /// `name` at all (JS `undefined`), which is a different `Set` entry from
-    /// every string name, `""` included.
-    pub(crate) fn js_name(&self) -> Option<&str> {
+    /// every string name, `""` included. `pub`, not `pub(crate)`: the WASM
+    /// binding's own `decoratorProcess` (`concerto-wasm/src/lib.rs`) needs
+    /// this to give the JS-side `Decorator.name` field the same `undefined`
+    /// TS's own unconditional `this.name = ast.name` leaves it with,
+    /// rather than the empty-string default [`Decorator::name`] gives every
+    /// other reader (accordproject/concerto-rust#219: a model-file-level
+    /// `Decorator` built this way, with no name, previously surfaced as
+    /// `this.name === ""`, so two of them collided as "Duplicate decorator "
+    /// instead of TS's own "Duplicate decorator undefined").
+    pub fn js_name(&self) -> Option<&str> {
         self.name_present.then_some(self.name.as_str())
     }
 

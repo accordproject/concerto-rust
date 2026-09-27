@@ -4111,6 +4111,39 @@ mod tests {
         );
     }
 
+    // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's own check is
+    // `if (!this.ast.key || !this.ast.value)` — plain JS truthiness of the
+    // whole node — so a fuzz-mutated `key`/`value` of `false`, `0` or `""`
+    // is exactly as "missing" as an absent or `null` one, and must fail
+    // with the same "Key & Value properties" message, not fall through to
+    // `isValidMapKey`'s own, differently-worded rejection ("must contain
+    // valid MapKeyType") the way a filter that only excluded JSON `null`
+    // (not every JS-falsy value) wrongly did.
+    #[test]
+    fn map_with_a_falsy_non_null_key_is_rejected_with_the_missing_properties_message() {
+        for falsy_key in [
+            serde_json::json!(false),
+            serde_json::json!(0),
+            serde_json::json!(""),
+        ] {
+            let value =
+                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+            let node = serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                "name": "MapPermutation1",
+                "key": falsy_key,
+                "value": value
+            });
+            let err = validate(serde_json::json!([node]));
+            assert!(
+                err.unwrap_err()
+                    .to_string()
+                    .contains("MapDeclaration must contain Key & Value properties"),
+                "falsy key should report the missing-properties message, not the MapKeyType one"
+            );
+        }
+    }
+
     // TS: `#constructor` "should throw if invalid $class provided for Map
     // Key" / "... for Map Value": a `$class` the metamodel does not declare
     // at all falls back to [`MapVariant::Untyped`] and is rejected by the
