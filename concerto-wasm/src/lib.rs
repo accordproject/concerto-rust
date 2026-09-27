@@ -328,14 +328,125 @@ fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValue>> {
 
 /// A JS value as JSON, `None` for `undefined`. Values JSON cannot hold
 /// (`NaN`, `Infinity`, functions) are not modelled: no model AST holds one.
+///
+/// A JS string may hold an unpaired UTF-16 surrogate (no valid Unicode
+/// scalar exists for one alone); `JSON.stringify` still emits it as a
+/// `\uD800`-range escape, which `serde_json` — building a real (UTF-8) Rust
+/// `String` — rejects. This used to be swallowed by `.ok()`, turning the
+/// *entire* value into `None` and silently discarding every other field
+/// alongside it (accordproject/concerto-rust#73, P5-02 review: a property
+/// AST's `name` field disappearing this way surfaced as a generic
+/// `Error('No name for type null')` instead of `property::process`'s own,
+/// correctly-classed `IllegalModelException` for an invalid name). Each
+/// unpaired escape is replaced with U+FFFD instead, so parsing still
+/// succeeds and every other field survives; the sanitized string content
+/// then fails whatever check reads it on its own, correctly-classed terms
+/// (e.g. `is_valid_identifier`), same as any other invalid string would.
 fn to_json(value: &JsValue) -> Result<Option<Value>> {
     if value.is_undefined() {
         return Ok(None);
     }
     let text = JSON::stringify(value).map_err(Error::Js)?;
-    Ok(text
-        .as_string()
-        .and_then(|text| serde_json::from_str(&text).ok()))
+    let Some(text) = text.as_string() else {
+        return Ok(None);
+    };
+    match serde_json::from_str(&text) {
+        Ok(v) => Ok(Some(v)),
+        Err(_) => {
+            let sanitized = sanitize_lone_surrogate_escapes(&text);
+            serde_json::from_str(&sanitized)
+                .map(Some)
+                .map_err(|e| Error::Js(js_sys::Error::new(&format!("to_json: {e}")).into()))
+        }
+    }
+}
+
+/// Replaces every `\uXXXX` escape inside a JSON string literal that is an
+/// unpaired UTF-16 surrogate (high without an immediately following low, or
+/// low without an immediately preceding high) with the `�` escape,
+/// leaving every other character — including valid surrogate pairs and
+/// every other escape — untouched. Only escapes inside string literals are
+/// considered; the surrounding JSON structure (keys, punctuation) never
+/// contains a `\u` sequence of its own in text `JSON.stringify` produces.
+fn sanitize_lone_surrogate_escapes(text: &str) -> String {
+    /// Reads a `\uXXXX` escape's 4 hex digits starting at `chars[at]`,
+    /// returning the unit and its source characters, or `None` if `at` is
+    /// out of range or the 4 characters there are not all hex digits.
+    fn hex_unit(chars: &[char], at: usize) -> Option<(u32, &[char])> {
+        let digits = chars.get(at..at + 4)?;
+        let s: String = digits.iter().collect();
+        Some((u32::from_str_radix(&s, 16).ok()?, digits))
+    }
+
+    /// Whether `chars[at..at + 2]` is a `\u` escape opener.
+    fn is_u_escape(chars: &[char], at: usize) -> bool {
+        chars.get(at..at + 2) == Some(['\\', 'u'].as_slice())
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        if !in_string {
+            out.push(c);
+            if c == '"' {
+                in_string = true;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = false;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '\\'
+            && is_u_escape(&chars, i)
+            && let Some((unit, digits)) = hex_unit(&chars, i + 2)
+        {
+            if (0xD800..=0xDBFF).contains(&unit) {
+                // High surrogate: valid only if immediately followed by a
+                // low-surrogate escape.
+                let low = is_u_escape(&chars, i + 6)
+                    .then(|| hex_unit(&chars, i + 8))
+                    .flatten();
+                if let Some((l, _)) = low
+                    && (0xDC00..=0xDFFF).contains(&l)
+                {
+                    out.push_str("\\u");
+                    out.extend(digits);
+                    i += 6;
+                    continue;
+                }
+                out.push_str("\\uFFFD");
+                i += 6;
+                continue;
+            }
+            if (0xDC00..=0xDFFF).contains(&unit) {
+                // A low surrogate reaching here was not just consumed as
+                // the second half of a pair above, so it is unpaired on
+                // its own.
+                out.push_str("\\uFFFD");
+                i += 6;
+                continue;
+            }
+        }
+        if let Some(&next) = (c == '\\').then(|| chars.get(i + 1)).flatten() {
+            // Any other escape (`\\`, `\"`, `\n`, a non-surrogate `\uXXXX`,
+            // …): copy the backslash and its one following character
+            // through unchanged; the loop picks back up correctly whether
+            // that was a simple escape or the first half of `\uXXXX`.
+            out.push(c);
+            out.push(next);
+            i += 2;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 fn nullish(value: &JsValue) -> bool {
@@ -5143,5 +5254,54 @@ mod tests {
         let value: Value = serde_json::from_str(r#"{"@@oracle":"bigint","value":"10"}"#).unwrap();
         assert_eq!(decoded(&value), CoreValue::BigInt("10".to_string()));
         assert_eq!(encode_wire(&CoreValue::BigInt("10".to_string())), value);
+    }
+
+    /// P5-02 review (accordproject/concerto-rust#73): a lone (unpaired)
+    /// UTF-16 surrogate escape is replaced with the `�` escape, which
+    /// `serde_json` accepts, while every other field and a genuine
+    /// surrogate *pair* survive untouched.
+    #[test]
+    fn sanitize_lone_surrogate_escapes_replaces_only_unpaired_ones() {
+        let fffd_escape = "\\uFFFD"; // literal 6-char JSON escape, not U+FFFD itself
+        // Lone high surrogate: replaced.
+        assert_eq!(
+            sanitize_lone_surrogate_escapes(r#"{"name":"\ud800"}"#),
+            format!(r#"{{"name":"{fffd_escape}"}}"#)
+        );
+        // Lone low surrogate: replaced.
+        assert_eq!(
+            sanitize_lone_surrogate_escapes(r#"{"name":"\udc00"}"#),
+            format!(r#"{{"name":"{fffd_escape}"}}"#)
+        );
+        // A valid surrogate pair (U+1F389, a real astral character): left
+        // exactly as-is.
+        assert_eq!(
+            sanitize_lone_surrogate_escapes(r#"{"name":"🎉"}"#),
+            r#"{"name":"🎉"}"#
+        );
+        // High surrogate followed by a non-surrogate escape: replaced, and
+        // the following escape is unaffected.
+        assert_eq!(
+            sanitize_lone_surrogate_escapes(r#"{"name":"\ud800\n"}"#),
+            format!(r#"{{"name":"{fffd_escape}\n"}}"#)
+        );
+        // No escapes at all: unchanged.
+        assert_eq!(
+            sanitize_lone_surrogate_escapes(r#"{"a":"b","n":1}"#),
+            r#"{"a":"b","n":1}"#
+        );
+    }
+
+    /// The sanitized text always reparses, and a lone surrogate's field
+    /// becomes the literal U+FFFD character rather than vanishing.
+    #[test]
+    fn sanitize_lone_surrogate_escapes_output_is_valid_json() {
+        let sanitized = sanitize_lone_surrogate_escapes(r#"{"name":"\ud800","ok":true}"#);
+        let value: Value = serde_json::from_str(&sanitized).expect("sanitized text must parse");
+        assert_eq!(
+            value["name"],
+            json!(char::from_u32(0xFFFD).unwrap().to_string())
+        );
+        assert_eq!(value["ok"], json!(true));
     }
 }
