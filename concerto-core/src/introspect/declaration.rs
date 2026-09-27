@@ -507,150 +507,7 @@ impl ClassDeclaration {
         let mut explicit_null_super_type = false;
         if let Some(object) = fields.as_object_mut() {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
-
-            // TS reads `this.ast.name` as a plain field access, coerced only
-            // by `ID_REGEX.test`'s `ToString` (`check_declaration_name`,
-            // this declaration's own caller, already accepts exactly that
-            // coercion — accordproject/concerto-rust#219 stage-2 T2c). The
-            // generated struct's `name: String` would otherwise reject
-            // anything but a literal JSON string outright here, before ever
-            // reaching a property of this class — the same shape of bug
-            // `superType.name`/`identified.name` needed normalizing for,
-            // just above this same object.
-            let coerced_name = object
-                .get("name")
-                .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
-            object.insert("name".into(), serde_json::Value::String(coerced_name));
-
-            if let Some(serde_json::Value::Object(super_type_object)) =
-                object.get("superType").cloned()
-            {
-                match super_type_object.get("name") {
-                    Some(serde_json::Value::Null) => {
-                        object.remove("superType");
-                        explicit_null_super_type = true;
-                    }
-                    None => {
-                        let mut patched = super_type_object;
-                        patched
-                            .insert("name".into(), serde_json::Value::String("undefined".into()));
-                        object.insert("superType".into(), serde_json::Value::Object(patched));
-                    }
-                    Some(serde_json::Value::String(_)) => {}
-                    Some(name) if !crate::ecma::is_truthy(name) => {
-                        // A falsy, non-nullish `name` (`0`, `false` — `""` is
-                        // already a `String` and takes the branch above,
-                        // unchanged): TS's `this.superType =
-                        // this.ast.superType.name` is a plain assignment,
-                        // taken exactly as given, and this specific shape is
-                        // NOT "no super type at all" the way an explicit
-                        // `null` is. `_resolveSuperType`'s own `!this.superType`
-                        // check does short-circuit on the falsiness without
-                        // throwing, but `validate`'s `this.getProperties()`
-                        // does not go through `_resolveSuperType`: it guards
-                        // only on `this.superType !== null` (`0`/`false` are
-                        // both `!== null`), resolves it directly, finds
-                        // nothing, and throws `Could not find super type ` +
-                        // `this.superType` — JS `+` coercing the falsy value
-                        // with the same `ToString` `to_js_string` performs
-                        // (accordproject/concerto-rust#217, review finding 2,
-                        // second half; the JS-binding twin of this fix is
-                        // `concerto-wasm`'s `classDeclarationProcess`).
-                        // Patching the AST to the coerced string before the
-                        // strict decode below lets the ordinary
-                        // "could not find super type" resolution
-                        // ([`crate::validation::check_super_type`]) raise
-                        // that exact message, instead of this function
-                        // failing to decode `false`/`0` as the `String` the
-                        // generated `TypeIdentifier` requires.
-                        let coerced = crate::ecma::to_js_string(name);
-                        let mut patched = super_type_object;
-                        patched.insert("name".into(), serde_json::Value::String(coerced));
-                        object.insert("superType".into(), serde_json::Value::Object(patched));
-                    }
-                    Some(_) => {
-                        // A truthy non-string `name` (an array, a non-zero
-                        // number, `true`, ...): TS never stringifies
-                        // `this.superType`, and only reaches a `TypeError`
-                        // once resolution calls a string method on it
-                        // (`ModelFile.getLocalType`'s `type.startsWith`).
-                        // Reproducing that exact `TypeError` from a plain
-                        // AST decode error isn't attempted here; the
-                        // implementer/reviewer of accordproject/concerto-rust#217
-                        // scoped this shape's native-decode divergence out
-                        // (it is covered on the JS-binding side, the fuzzer's
-                        // actual path, by `classDeclarationProcess`'s
-                        // `receiver` call).
-                    }
-                }
-            }
-
-            // TS: `ClassDeclaration.process` reads `this.ast.identified`
-            // with a plain truthiness check, then compares
-            // `this.ast.identified.$class` to the `IdentifiedBy` FQN with
-            // strict `===` — never a type check, and never a crash on a
-            // non-string or non-object `$class` the way a `.toString()` call
-            // would. Normalizing here, before the strict decode, reproduces
-            // that in full:
-            if let Some(identified_value) = object.get("identified").cloned() {
-                let is_identified_by = matches!(
-                    &identified_value,
-                    serde_json::Value::Object(identified_object)
-                        if identified_object
-                            .get("$class")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(qualified_class("IdentifiedBy").as_str())
-                );
-                if !crate::ecma::is_truthy(&identified_value) {
-                    // `if (this.ast.identified)` is false for any falsy
-                    // value (`false`, `0`, `""`, `null`, or the key
-                    // altogether missing) — no `idField`, no
-                    // `addIdentifierField()` call, exactly as if there were
-                    // no `identified` node at all.
-                    object.remove("identified");
-                } else if is_identified_by {
-                    // TS: `this.idField = this.ast.identified.name` — read
-                    // with no type check at all, then only ever tested for
-                    // truthiness (`if (this.idField)`) — a missing key reads
-                    // as `undefined`, exactly as falsy as an explicit
-                    // `null`/`0`/`false`/`""` there. A truthy `name` that is
-                    // a JSON string decodes as `IdentifiedBy` unchanged, so
-                    // only the falsy case needs normalizing away here (a
-                    // truthy non-string `name` is the same class of
-                    // out-of-scope divergence as `superType`'s, above).
-                    let falsy_name = !identified_value
-                        .get("name")
-                        .is_some_and(crate::ecma::is_truthy);
-                    if falsy_name {
-                        object.remove("identified");
-                    }
-                } else {
-                    // TS's `else` branch: anything truthy whose `$class`
-                    // does not strictly equal the `IdentifiedBy` FQN — a
-                    // boolean, a wrong string, an object with an unrelated
-                    // or missing `$class`, an array, a truthy number, ... —
-                    // is read as system-identified (`idField =
-                    // '$identifier'`, `addIdentifierField()` runs), never a
-                    // decode error. Canonicalizing to the well-formed
-                    // `Identified` shape here lets the strict decode below
-                    // succeed and reach the same `Some(mm::Identified::
-                    // Identified)` outcome regardless of what the AST's own
-                    // `identified` node actually held.
-                    //
-                    // Before this normalization, a non-object-shaped
-                    // `identified.$class` (accordproject/concerto-rust#241,
-                    // the native strict-decode divergence off #219) failed
-                    // the whole-node decode outright — before this class's
-                    // own properties, and their decorators, were ever
-                    // examined, so a null decorator among them (DV-018)
-                    // never got the chance TS's and the WASM binding's own
-                    // processing order give it.
-                    object.insert(
-                        "identified".into(),
-                        serde_json::json!({ "$class": qualified_class("Identified") }),
-                    );
-                }
-            }
+            explicit_null_super_type = normalize_class_fields(object);
         }
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
             message: format!("invalid {}: {e}", kind.declaration_kind()),
@@ -669,18 +526,35 @@ impl ClassDeclaration {
             ClassKind::Event => ClassNode::Event(serde_json::from_value(fields).map_err(bad)?),
         };
         let properties = parse_properties(value)?;
-        Self::finish(kind, node, properties, parse_decorators(value), namespace)
+        let raw_properties = value
+            .get("properties")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice);
+        Self::finish(
+            kind,
+            node,
+            explicit_null_super_type,
+            properties,
+            raw_properties,
+            parse_decorators(value),
+            namespace,
+        )
     }
 
     /// The part of [`ClassDeclaration::from_json`] after the AST has been
     /// read: the implicit super type, the system fields and the validator
     /// checks. Shared with the typed AST path
-    /// ([`Declaration::from_typed`], P5-06c), which reads `node`,
+    /// ([`Declaration::from_typed`], P5-06c/P5-06d), which reads `node`,
     /// `properties` and `decorators` straight from the JSON text instead.
+    /// `raw_properties` holds each property's AST node, in `properties`'
+    /// order, or at least the keys of it that
+    /// [`Property::check_bound_validators`] reads.
     fn finish(
         kind: ClassKind,
         node: ClassNode,
+        explicit_null_super_type: bool,
         mut properties: Vec<Property>,
+        raw_properties: Option<&[serde_json::Value]>,
         decorators: Vec<Decorator>,
         namespace: &str,
     ) -> Result<Self> {
@@ -792,9 +666,6 @@ impl ClassDeclaration {
         // synthesized system fields pushed above sit past the end of this
         // array, so they correctly get `None` (they never carry a
         // validator, this comment's own paragraph above).
-        let raw_properties = value
-            .get("properties")
-            .and_then(serde_json::Value::as_array);
         for (index, property) in properties.iter().enumerate() {
             let raw = raw_properties.and_then(|properties| properties.get(index));
             property.check_bound_validators(&fqn, raw)?;
@@ -814,6 +685,159 @@ impl ClassDeclaration {
     pub fn decorators(&self) -> &[Decorator] {
         &self.decorators
     }
+}
+
+/// The normalization [`ClassDeclaration::from_json`] applies to a class-like
+/// declaration's `name`, `superType` and `identified` fields before the
+/// strict decode into the generated struct (the comment there says why).
+/// It reads and writes only those three keys, so the typed AST path
+/// (P5-06d, [`crate::introspect::typed_ast`]) runs it on just those three
+/// fields. Returns whether the AST gave an explicit `superType.name: null`.
+pub(crate) fn normalize_class_fields(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let mut explicit_null_super_type = false;
+    // TS reads `this.ast.name` as a plain field access, coerced only
+    // by `ID_REGEX.test`'s `ToString` (`check_declaration_name`,
+    // this declaration's own caller, already accepts exactly that
+    // coercion — accordproject/concerto-rust#219 stage-2 T2c). The
+    // generated struct's `name: String` would otherwise reject
+    // anything but a literal JSON string outright here, before ever
+    // reaching a property of this class — the same shape of bug
+    // `superType.name`/`identified.name` needed normalizing for,
+    // just above this same object.
+    let coerced_name = object
+        .get("name")
+        .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+    object.insert("name".into(), serde_json::Value::String(coerced_name));
+
+    if let Some(serde_json::Value::Object(super_type_object)) = object.get("superType").cloned() {
+        match super_type_object.get("name") {
+            Some(serde_json::Value::Null) => {
+                object.remove("superType");
+                explicit_null_super_type = true;
+            }
+            None => {
+                let mut patched = super_type_object;
+                patched.insert("name".into(), serde_json::Value::String("undefined".into()));
+                object.insert("superType".into(), serde_json::Value::Object(patched));
+            }
+            Some(serde_json::Value::String(_)) => {}
+            Some(name) if !crate::ecma::is_truthy(name) => {
+                // A falsy, non-nullish `name` (`0`, `false` — `""` is
+                // already a `String` and takes the branch above,
+                // unchanged): TS's `this.superType =
+                // this.ast.superType.name` is a plain assignment,
+                // taken exactly as given, and this specific shape is
+                // NOT "no super type at all" the way an explicit
+                // `null` is. `_resolveSuperType`'s own `!this.superType`
+                // check does short-circuit on the falsiness without
+                // throwing, but `validate`'s `this.getProperties()`
+                // does not go through `_resolveSuperType`: it guards
+                // only on `this.superType !== null` (`0`/`false` are
+                // both `!== null`), resolves it directly, finds
+                // nothing, and throws `Could not find super type ` +
+                // `this.superType` — JS `+` coercing the falsy value
+                // with the same `ToString` `to_js_string` performs
+                // (accordproject/concerto-rust#217, review finding 2,
+                // second half; the JS-binding twin of this fix is
+                // `concerto-wasm`'s `classDeclarationProcess`).
+                // Patching the AST to the coerced string before the
+                // strict decode below lets the ordinary
+                // "could not find super type" resolution
+                // ([`crate::validation::check_super_type`]) raise
+                // that exact message, instead of this function
+                // failing to decode `false`/`0` as the `String` the
+                // generated `TypeIdentifier` requires.
+                let coerced = crate::ecma::to_js_string(name);
+                let mut patched = super_type_object;
+                patched.insert("name".into(), serde_json::Value::String(coerced));
+                object.insert("superType".into(), serde_json::Value::Object(patched));
+            }
+            Some(_) => {
+                // A truthy non-string `name` (an array, a non-zero
+                // number, `true`, ...): TS never stringifies
+                // `this.superType`, and only reaches a `TypeError`
+                // once resolution calls a string method on it
+                // (`ModelFile.getLocalType`'s `type.startsWith`).
+                // Reproducing that exact `TypeError` from a plain
+                // AST decode error isn't attempted here; the
+                // implementer/reviewer of accordproject/concerto-rust#217
+                // scoped this shape's native-decode divergence out
+                // (it is covered on the JS-binding side, the fuzzer's
+                // actual path, by `classDeclarationProcess`'s
+                // `receiver` call).
+            }
+        }
+    }
+
+    // TS: `ClassDeclaration.process` reads `this.ast.identified`
+    // with a plain truthiness check, then compares
+    // `this.ast.identified.$class` to the `IdentifiedBy` FQN with
+    // strict `===` — never a type check, and never a crash on a
+    // non-string or non-object `$class` the way a `.toString()` call
+    // would. Normalizing here, before the strict decode, reproduces
+    // that in full:
+    if let Some(identified_value) = object.get("identified").cloned() {
+        let is_identified_by = matches!(
+            &identified_value,
+            serde_json::Value::Object(identified_object)
+                if identified_object
+                    .get("$class")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(qualified_class("IdentifiedBy").as_str())
+        );
+        if !crate::ecma::is_truthy(&identified_value) {
+            // `if (this.ast.identified)` is false for any falsy
+            // value (`false`, `0`, `""`, `null`, or the key
+            // altogether missing) — no `idField`, no
+            // `addIdentifierField()` call, exactly as if there were
+            // no `identified` node at all.
+            object.remove("identified");
+        } else if is_identified_by {
+            // TS: `this.idField = this.ast.identified.name` — read
+            // with no type check at all, then only ever tested for
+            // truthiness (`if (this.idField)`) — a missing key reads
+            // as `undefined`, exactly as falsy as an explicit
+            // `null`/`0`/`false`/`""` there. A truthy `name` that is
+            // a JSON string decodes as `IdentifiedBy` unchanged, so
+            // only the falsy case needs normalizing away here (a
+            // truthy non-string `name` is the same class of
+            // out-of-scope divergence as `superType`'s, above).
+            let falsy_name = !identified_value
+                .get("name")
+                .is_some_and(crate::ecma::is_truthy);
+            if falsy_name {
+                object.remove("identified");
+            }
+        } else {
+            // TS's `else` branch: anything truthy whose `$class`
+            // does not strictly equal the `IdentifiedBy` FQN — a
+            // boolean, a wrong string, an object with an unrelated
+            // or missing `$class`, an array, a truthy number, ... —
+            // is read as system-identified (`idField =
+            // '$identifier'`, `addIdentifierField()` runs), never a
+            // decode error. Canonicalizing to the well-formed
+            // `Identified` shape here lets the strict decode below
+            // succeed and reach the same `Some(mm::Identified::
+            // Identified)` outcome regardless of what the AST's own
+            // `identified` node actually held.
+            //
+            // Before this normalization, a non-object-shaped
+            // `identified.$class` (accordproject/concerto-rust#241,
+            // the native strict-decode divergence off #219) failed
+            // the whole-node decode outright — before this class's
+            // own properties, and their decorators, were ever
+            // examined, so a null decorator among them (DV-018)
+            // never got the chance TS's and the WASM binding's own
+            // processing order give it.
+            object.insert(
+                "identified".into(),
+                serde_json::json!({ "$class": qualified_class("Identified") }),
+            );
+        }
+    }
+    explicit_null_super_type
 }
 
 /// TS: `ModelFile.isSystemModelFile` (src/introspect/modelfile.ts).
@@ -1642,10 +1666,10 @@ impl Declaration {
 }
 
 impl Declaration {
-    /// A declaration read by the typed AST path (P5-06c,
-    /// [`crate::introspect::typed_ast`]): a class-like declaration read
-    /// straight from the JSON text, or any other kind read as its own JSON
-    /// subtree and loaded by [`Declaration::from_model_json`].
+    /// A declaration read by the typed AST path (P5-06c/P5-06d,
+    /// [`crate::introspect::typed_ast`]): a class-like or enum declaration
+    /// read straight from the JSON text, or any other kind read as its own
+    /// JSON subtree and loaded by [`Declaration::from_model_json`].
     ///
     /// On success the result is exactly what [`Declaration::from_model_json`]
     /// gives for the same node. An error here is never reported to a
@@ -1659,37 +1683,59 @@ impl Declaration {
         namespace: &str,
         file_name: Option<&str>,
     ) -> Result<Self> {
+        // `from_model_json`'s `null_decorator` and `check_declaration_name`:
+        // the typed read has already required a string `name` (a class's
+        // coerced as `normalize_class_fields` does), and checked the
+        // `$class`.
+        let rejected = |decorators: &Option<serde_json::Value>, name: &str| {
+            decorators
+                .as_ref()
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|items| items.iter().any(serde_json::Value::is_null))
+                || !is_valid_identifier(name)
+        };
+        let rejection = || ConcertoError::IllegalModel {
+            message: "typed AST path: rejected declaration".into(),
+            file_name: None,
+            location: None,
+        };
         match declaration {
             TypedDeclaration::Ast(value) => Self::from_model_json(&value, namespace, file_name),
             TypedDeclaration::Class {
                 kind,
                 node,
+                explicit_null_super_type,
                 properties,
+                raw_properties,
                 decorators,
             } => {
-                // `from_model_json`'s `null_decorator` and
-                // `check_declaration_name`: the typed read has already
-                // required a string `name`, and checked the `$class`.
-                if decorators
-                    .as_ref()
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|items| items.iter().any(serde_json::Value::is_null))
-                    || !is_valid_identifier(class_field!(&node, d => &d.name))
-                {
-                    return Err(ConcertoError::IllegalModel {
-                        message: "typed AST path: rejected declaration".into(),
-                        file_name: None,
-                        location: None,
-                    });
+                if rejected(&decorators, class_field!(&node, d => &d.name)) {
+                    return Err(rejection());
                 }
                 ClassDeclaration::finish(
                     kind,
                     node,
+                    explicit_null_super_type,
                     properties,
+                    Some(&raw_properties),
                     parse_decorator_list(decorators.as_ref()),
                     namespace,
                 )
                 .map(Self::Class)
+            }
+            // `EnumDeclaration::from_json`.
+            TypedDeclaration::Enum {
+                node,
+                values,
+                decorators,
+            } => {
+                if rejected(&decorators, &node.name) {
+                    return Err(rejection());
+                }
+                Ok(Self::Enum(EnumDeclaration {
+                    inner: WithDecorators::new(node, parse_decorator_list(decorators.as_ref())),
+                    values,
+                }))
             }
         }
     }

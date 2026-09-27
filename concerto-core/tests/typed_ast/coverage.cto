@@ -1,0 +1,134 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Every metamodel node kind a model load reads, for the typed AST path's
+// differential and drift test (concerto-core/src/introspect/typed_ast.rs,
+// P5-06d). coverage.json and coverage-locations.json are this file's AST as
+// @accordproject/concerto-cto 5.0.0's `Parser.parse` prints it, without and
+// with location nodes (`skipLocationNodes: false`).
+
+concerto version "^3.0.0"
+
+@Model("coverage", 1, true)
+namespace org.acme.coverage@1.0.0
+
+import org.acme.other@1.0.0.Party
+import org.acme.other@1.0.0.{Thing, Other}
+
+@Doc("a string scalar")
+scalar Email extends String default="a@b.c" regex=/^[^@]+@[^@]+$/ length=[3, 100]
+scalar Count extends Integer default=0 range=[0, 1000]
+scalar Big extends Long range=[-5000000000,]
+scalar Ratio extends Double default=0.5 range=[0.0, 1.0]
+scalar Flag extends Boolean default=true
+scalar When extends DateTime default="2020-01-01T00:00:00Z"
+
+enum Colour {
+  @Doc("red")
+  o RED
+  o GREEN
+  o BLUE
+}
+
+@Doc("a concept")
+@Tagged
+@Ref(Colour)
+abstract concept Base identified {
+  @Doc("name")
+  o String name default="x" regex=/^[a-z]+$/i length=[1, 20]
+  o String[] tags optional
+  o Integer count default=1 range=[0, 10]
+  o Long total range=[,100]
+  o Double score default=1.5 range=[0.0,]
+  o Boolean active default=false
+  o DateTime at optional
+  o Colour colour default="RED"
+  o Email email optional
+  o Party party optional
+  --> Party owner optional
+  --> Thing[] things optional
+}
+
+concept Derived extends Base {
+  o Base[] children optional
+}
+
+concept Keyed identified by key {
+  o String key
+}
+
+asset Car identified by vin {
+  o String vin
+  o Double[] readings optional
+}
+
+asset Plain {
+  o String label
+}
+
+participant Person identified by email {
+  o String email
+}
+
+participant Anyone {
+}
+
+transaction Pay {
+  o Double amount
+}
+
+event Happened {
+  o String what
+}
+
+map Scores {
+  o String
+  o Integer
+}
+
+map ByTime {
+  o DateTime
+  o Car
+}
+
+map Refs {
+  @Doc("key")
+  o Email
+  --> Person
+}
+
+map Flags {
+  o String
+  o Boolean
+}
+
+map Notes {
+  o String
+  o String
+}
+
+map Longs {
+  o String
+  o Long
+}
+
+map Doubles {
+  o String
+  o Double
+}
+
+map Times {
+  o String
+  o DateTime
+}

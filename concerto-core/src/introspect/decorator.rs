@@ -685,6 +685,12 @@ impl<T> WithDecorators<T> {
     pub fn decorators(&self) -> &[Decorator] {
         &self.decorators
     }
+
+    /// The wrapped node, for a loader that fills in fields it reads apart
+    /// from the node's own decode ([`crate::introspect::Property::set_ast_validators`]).
+    pub(crate) fn node_mut(&mut self) -> &mut T {
+        &mut self.node
+    }
 }
 
 impl<T> std::ops::Deref for WithDecorators<T> {

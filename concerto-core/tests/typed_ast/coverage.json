@@ -1,0 +1,536 @@
+{
+  "$class": "concerto.metamodel@1.0.0.Model",
+  "decorators": [
+    {
+      "$class": "concerto.metamodel@1.0.0.Decorator",
+      "name": "Model",
+      "arguments": [
+        {
+          "$class": "concerto.metamodel@1.0.0.DecoratorString",
+          "value": "coverage"
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.DecoratorNumber",
+          "value": 1
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.DecoratorBoolean",
+          "value": true
+        }
+      ]
+    }
+  ],
+  "namespace": "org.acme.coverage@1.0.0",
+  "imports": [
+    {
+      "$class": "concerto.metamodel@1.0.0.ImportType",
+      "name": "Party",
+      "namespace": "org.acme.other@1.0.0"
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ImportTypes",
+      "namespace": "org.acme.other@1.0.0",
+      "types": [
+        "Thing",
+        "Other"
+      ]
+    }
+  ],
+  "declarations": [
+    {
+      "$class": "concerto.metamodel@1.0.0.StringScalar",
+      "defaultValue": "a@b.c",
+      "validator": {
+        "$class": "concerto.metamodel@1.0.0.StringRegexValidator",
+        "pattern": "^[^@]+@[^@]+$",
+        "flags": ""
+      },
+      "lengthValidator": {
+        "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+        "minLength": 3,
+        "maxLength": 100
+      },
+      "name": "Email",
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Doc",
+          "arguments": [
+            {
+              "$class": "concerto.metamodel@1.0.0.DecoratorString",
+              "value": "a string scalar"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.IntegerScalar",
+      "defaultValue": 0,
+      "validator": {
+        "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator",
+        "lower": 0,
+        "upper": 1000
+      },
+      "name": "Count"
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.LongScalar",
+      "validator": {
+        "$class": "concerto.metamodel@1.0.0.LongDomainValidator",
+        "lower": -5000000000
+      },
+      "name": "Big"
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.DoubleScalar",
+      "defaultValue": 0.5,
+      "validator": {
+        "$class": "concerto.metamodel@1.0.0.DoubleDomainValidator",
+        "lower": 0,
+        "upper": 1
+      },
+      "name": "Ratio"
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.BooleanScalar",
+      "defaultValue": true,
+      "name": "Flag"
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.DateTimeScalar",
+      "defaultValue": "2020-01-01T00:00:00Z",
+      "name": "When"
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
+      "name": "Colour",
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.EnumProperty",
+          "name": "RED",
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Doc",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "red"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.EnumProperty",
+          "name": "GREEN"
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.EnumProperty",
+          "name": "BLUE"
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Base",
+      "isAbstract": true,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "name",
+          "isArray": false,
+          "isOptional": false,
+          "defaultValue": "x",
+          "decorators": [
+            {
+              "$class": "concerto.metamodel@1.0.0.Decorator",
+              "name": "Doc",
+              "arguments": [
+                {
+                  "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                  "value": "name"
+                }
+              ]
+            }
+          ],
+          "validator": {
+            "$class": "concerto.metamodel@1.0.0.StringRegexValidator",
+            "pattern": "^[a-z]+$",
+            "flags": "i"
+          },
+          "lengthValidator": {
+            "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
+            "minLength": 1,
+            "maxLength": 20
+          }
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "tags",
+          "isArray": true,
+          "isOptional": true
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.IntegerProperty",
+          "name": "count",
+          "isArray": false,
+          "isOptional": false,
+          "defaultValue": 1,
+          "validator": {
+            "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator",
+            "lower": 0,
+            "upper": 10
+          }
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.LongProperty",
+          "name": "total",
+          "isArray": false,
+          "isOptional": false,
+          "validator": {
+            "$class": "concerto.metamodel@1.0.0.LongDomainValidator",
+            "upper": 100
+          }
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+          "name": "score",
+          "isArray": false,
+          "isOptional": false,
+          "defaultValue": 1.5,
+          "validator": {
+            "$class": "concerto.metamodel@1.0.0.DoubleDomainValidator",
+            "lower": 0
+          }
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.BooleanProperty",
+          "name": "active",
+          "isArray": false,
+          "isOptional": false,
+          "defaultValue": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.DateTimeProperty",
+          "name": "at",
+          "isArray": false,
+          "isOptional": true
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+          "name": "colour",
+          "type": {
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+            "name": "Colour"
+          },
+          "isArray": false,
+          "isOptional": false,
+          "defaultValue": "RED"
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+          "name": "email",
+          "type": {
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+            "name": "Email"
+          },
+          "isArray": false,
+          "isOptional": true
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+          "name": "party",
+          "type": {
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+            "name": "Party"
+          },
+          "isArray": false,
+          "isOptional": true
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+          "name": "owner",
+          "type": {
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+            "name": "Party"
+          },
+          "isArray": false,
+          "isOptional": true
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+          "name": "things",
+          "type": {
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+            "name": "Thing"
+          },
+          "isArray": true,
+          "isOptional": true
+        }
+      ],
+      "identified": {
+        "$class": "concerto.metamodel@1.0.0.Identified"
+      },
+      "decorators": [
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Doc",
+          "arguments": [
+            {
+              "$class": "concerto.metamodel@1.0.0.DecoratorString",
+              "value": "a concept"
+            }
+          ]
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Tagged"
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.Decorator",
+          "name": "Ref",
+          "arguments": [
+            {
+              "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
+              "type": {
+                "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+                "name": "Colour"
+              },
+              "isArray": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Derived",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+          "name": "children",
+          "type": {
+            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+            "name": "Base"
+          },
+          "isArray": true,
+          "isOptional": true
+        }
+      ],
+      "superType": {
+        "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+        "name": "Base"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+      "name": "Keyed",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "key",
+          "isArray": false,
+          "isOptional": false
+        }
+      ],
+      "identified": {
+        "$class": "concerto.metamodel@1.0.0.IdentifiedBy",
+        "name": "key"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
+      "name": "Car",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "vin",
+          "isArray": false,
+          "isOptional": false
+        },
+        {
+          "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+          "name": "readings",
+          "isArray": true,
+          "isOptional": true
+        }
+      ],
+      "identified": {
+        "$class": "concerto.metamodel@1.0.0.IdentifiedBy",
+        "name": "vin"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
+      "name": "Plain",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "label",
+          "isArray": false,
+          "isOptional": false
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration",
+      "name": "Person",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "email",
+          "isArray": false,
+          "isOptional": false
+        }
+      ],
+      "identified": {
+        "$class": "concerto.metamodel@1.0.0.IdentifiedBy",
+        "name": "email"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration",
+      "name": "Anyone",
+      "isAbstract": false,
+      "properties": []
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.TransactionDeclaration",
+      "name": "Pay",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.DoubleProperty",
+          "name": "amount",
+          "isArray": false,
+          "isOptional": false
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.EventDeclaration",
+      "name": "Happened",
+      "isAbstract": false,
+      "properties": [
+        {
+          "$class": "concerto.metamodel@1.0.0.StringProperty",
+          "name": "what",
+          "isArray": false,
+          "isOptional": false
+        }
+      ]
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Scores",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.IntegerMapValueType"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "ByTime",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.DateTimeMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
+        "type": {
+          "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+          "name": "Car"
+        }
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Refs",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.ObjectMapKeyType",
+        "type": {
+          "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+          "name": "Email"
+        },
+        "decorators": [
+          {
+            "$class": "concerto.metamodel@1.0.0.Decorator",
+            "name": "Doc",
+            "arguments": [
+              {
+                "$class": "concerto.metamodel@1.0.0.DecoratorString",
+                "value": "key"
+              }
+            ]
+          }
+        ]
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.RelationshipMapValueType",
+        "type": {
+          "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+          "name": "Person"
+        }
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Flags",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.BooleanMapValueType"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Notes",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.StringMapValueType"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Longs",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.LongMapValueType"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Doubles",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.DoubleMapValueType"
+      }
+    },
+    {
+      "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+      "name": "Times",
+      "key": {
+        "$class": "concerto.metamodel@1.0.0.StringMapKeyType"
+      },
+      "value": {
+        "$class": "concerto.metamodel@1.0.0.DateTimeMapValueType"
+      }
+    }
+  ],
+  "concertoVersion": "^3.0.0"
+}
