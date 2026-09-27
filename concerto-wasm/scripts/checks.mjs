@@ -906,6 +906,36 @@ export function runChecks(engine) {
     assert(systemIdentified.addIdentifierField === true, 'addIdentifierField is true for system identification');
   });
 
+  // #244: TS compares `this.ast.identified.$class` to the metamodel's own
+  // full FQN (`${MM}.IdentifiedBy`) with strict `===`, never merely the text
+  // after the last `.`. A foreign-namespace `$class` that merely ENDS in
+  // `.IdentifiedBy` (e.g. `foo.IdentifiedBy`) must NOT take the explicit
+  // branch: TS's strict comparison fails, so it falls to the system-identified
+  // `else` branch instead, exactly as if `$class` held any other unrelated
+  // string. Before this fix, both `short_class` (native) and this binding's
+  // own `short_class` helper matched by short name alone, wrongly reading
+  // `identified.name` off the AST and reporting it as an explicit idField.
+  check('classDeclarationProcess matches IdentifiedBy by full FQN, not short name (#244)', () => {
+    const modelFile = { isSystemModelFile: () => false };
+    const declaration = (identified) => ({
+      ast: { identified },
+      name: 'Foo',
+      fqn: 'test@1.0.0.Foo',
+      getModelFile: () => modelFile,
+    });
+    const decision = engine.classDeclarationProcess(
+      declaration({ $class: 'foo.IdentifiedBy', name: 'email' }),
+    );
+    assert(
+      decision.idField === '$identifier',
+      `foreign-namespace IdentifiedBy gave idField ${JSON.stringify(decision.idField)}, want '$identifier'`,
+    );
+    assert(
+      decision.addIdentifierField === true,
+      'a foreign-namespace $class ending in IdentifiedBy must be system-identified, not explicit',
+    );
+  });
+
   // P5-01b (accordproject/concerto-rust#233): `throw()`'s `needsModelFile`
   // flag is the only way a binding with no JS `ModelFile` to attach either
   // way (`modelFileValidateDetached`) can tell its caller apart these two

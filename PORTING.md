@@ -1325,7 +1325,7 @@ appears), `npx tsc -p tsconfig.build.json --noEmit`, and
   that the TS member does not have (the loader's versioned-namespace check
   used the old `parse_namespace`), move that behaviour next to the caller,
   as a crate-private function documented as the pre-port check it is, until
-  the caller's own unit is ported (`split_versioned_namespace`, P2-08).
+  the caller's own unit is ported (`parse_namespace_version`, P2-08).
 
 ### 7.3 TS bugs and divergences: port them and record them, never fix them silently
 

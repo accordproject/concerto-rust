@@ -403,7 +403,7 @@ impl ClassDeclaration {
 
         let (id_field, add_identifier_field) = match identified_class {
             None => (None, false),
-            Some(class) if get_short_name(class) == "IdentifiedBy" => {
+            Some(class) if class == qualified_class("IdentifiedBy") => {
                 (identified_name.map(str::to_string), false)
             }
             Some(_) => (Some("$identifier".to_string()), true),
@@ -593,12 +593,10 @@ impl ClassDeclaration {
                 let is_identified_by = matches!(
                     &identified_value,
                     serde_json::Value::Object(identified_object)
-                        if get_short_name(
-                            identified_object
-                                .get("$class")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                        ) == "IdentifiedBy"
+                        if identified_object
+                            .get("$class")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(qualified_class("IdentifiedBy").as_str())
                 );
                 if !crate::ecma::is_truthy(&identified_value) {
                     // `if (this.ast.identified)` is false for any falsy
@@ -1765,6 +1763,40 @@ mod tests {
 
         let c = d.as_class().expect("class");
         assert!(c.own_properties().is_empty());
+    }
+
+    /// accordproject/concerto-rust#244: TS compares `this.ast.identified.$class`
+    /// to the metamodel's own full FQN (`concerto.metamodel@1.0.0.IdentifiedBy`)
+    /// with strict `===` (`classdeclaration.ts`), never merely the short name
+    /// after the last `.`. A class whose `identified.$class` is some other
+    /// namespace's `IdentifiedBy` — for example `foo.IdentifiedBy` — must NOT
+    /// take the explicit-identifier branch: TS's strict comparison fails, so
+    /// it falls to the `else` branch instead, exactly as if `$class` held any
+    /// other unrelated string (system-identified, `idField = '$identifier'`,
+    /// `addIdentifierField()` runs). Before this fix, matching by short name
+    /// alone (`get_short_name(class) == "IdentifiedBy"`) wrongly took the
+    /// explicit branch here, using the field named `email` as the identifier
+    /// instead of adding the system `$identifier` field.
+    #[test]
+    fn an_identified_class_field_from_a_foreign_namespace_is_not_matched_as_identified_by() {
+        let d = decl(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": "Person",
+            "identified": { "$class": "foo.IdentifiedBy", "name": "email" },
+            "properties": []
+        }));
+
+        let c = d.as_class().expect("class");
+        assert!(c.is_identified());
+        assert!(
+            !c.is_explicitly_identified(),
+            "a foreign-namespace $class ending in IdentifiedBy must be system-identified, not explicit"
+        );
+        assert_eq!(c.own_identifier_field_name(), Some("$identifier"));
+        assert!(
+            c.own_properties().iter().any(|p| p.name() == "$identifier"),
+            "the system $identifier field must be added"
+        );
     }
 
     /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): end to end
