@@ -24,6 +24,11 @@ jobs:
         uses: actions/checkout@v3
         with:
           repository: accordproject/concerto-conformance
+          # Pinned to a fixed suite commit so new scenarios landing upstream
+          # cannot turn this job red on their own. Bumped to conformance main
+          # 57d3c23 after P5-08a/b (#39, #40) landed (P5-08c,
+          # accordproject/concerto-rust#257). main pins 9339642 until it catches up.
+          ref: 57d3c2397acf333985f761684ad2cbef55ba7ead
           path: concerto-conformance
       
       - name: Install Conformance Suite Dependencies
