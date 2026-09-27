@@ -13,9 +13,12 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::decorator::{Decorator, WithDecorators, null_decorator, parse_decorators};
+use crate::introspect::decorator::{
+    Decorator, WithDecorators, null_decorator, parse_decorator_list, parse_decorators,
+};
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
+use crate::introspect::typed_ast::TypedDeclaration;
 use crate::introspect::{
     DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
 };
@@ -45,7 +48,7 @@ pub enum ClassKind {
 }
 
 impl ClassKind {
-    fn from_short(short: &str) -> Option<Self> {
+    pub(crate) fn from_short(short: &str) -> Option<Self> {
         Some(match short {
             "ConceptDeclaration" => Self::Concept,
             "AssetDeclaration" => Self::Asset,
@@ -59,7 +62,7 @@ impl ClassKind {
 
 /// The generated struct behind a [`ClassDeclaration`], one variant per kind.
 #[derive(Debug, Clone)]
-enum ClassNode {
+pub(crate) enum ClassNode {
     Concept(mm::ConceptDeclaration),
     Asset(mm::AssetDeclaration),
     Participant(mm::ParticipantDeclaration),
@@ -665,6 +668,22 @@ impl ClassDeclaration {
             }
             ClassKind::Event => ClassNode::Event(serde_json::from_value(fields).map_err(bad)?),
         };
+        let properties = parse_properties(value)?;
+        Self::finish(kind, node, properties, parse_decorators(value), namespace)
+    }
+
+    /// The part of [`ClassDeclaration::from_json`] after the AST has been
+    /// read: the implicit super type, the system fields and the validator
+    /// checks. Shared with the typed AST path
+    /// ([`Declaration::from_typed`], P5-06c), which reads `node`,
+    /// `properties` and `decorators` straight from the JSON text instead.
+    fn finish(
+        kind: ClassKind,
+        node: ClassNode,
+        mut properties: Vec<Property>,
+        decorators: Vec<Decorator>,
+        namespace: &str,
+    ) -> Result<Self> {
         let name = class_field!(&node, d => d.name.clone());
 
         let implicit_super_type = if explicit_null_super_type
@@ -703,8 +722,6 @@ impl ClassDeclaration {
                 resolved_name: None,
             })
         };
-
-        let mut properties = parse_properties(value)?;
 
         // TS: ClassDeclaration.addIdentifierField, called from `process`
         // whenever the AST carries an `identified` node (system or
@@ -787,7 +804,7 @@ impl ClassDeclaration {
             node,
             properties,
             implicit_super_type,
-            decorators: parse_decorators(value),
+            decorators,
         })
     }
 
@@ -1621,6 +1638,60 @@ impl Declaration {
             scalar => Self::Scalar(load_scalar(scalar, value, namespace, file_name)?),
         };
         Ok(declaration)
+    }
+}
+
+impl Declaration {
+    /// A declaration read by the typed AST path (P5-06c,
+    /// [`crate::introspect::typed_ast`]): a class-like declaration read
+    /// straight from the JSON text, or any other kind read as its own JSON
+    /// subtree and loaded by [`Declaration::from_model_json`].
+    ///
+    /// On success the result is exactly what [`Declaration::from_model_json`]
+    /// gives for the same node. An error here is never reported to a
+    /// caller: [`crate::ModelFile::from_json_text`] discards it and loads the
+    /// whole model again through the `serde_json::Value` path, which raises
+    /// the error TS does, in TS's order. So each check below only has to
+    /// reject everything [`Declaration::from_model_json`] rejects that the
+    /// typed read has not already refused; its message does not matter.
+    pub(crate) fn from_typed(
+        declaration: TypedDeclaration,
+        namespace: &str,
+        file_name: Option<&str>,
+    ) -> Result<Self> {
+        match declaration {
+            TypedDeclaration::Ast(value) => Self::from_model_json(&value, namespace, file_name),
+            TypedDeclaration::Class {
+                kind,
+                node,
+                properties,
+                decorators,
+            } => {
+                // `from_model_json`'s `null_decorator` and
+                // `check_declaration_name`: the typed read has already
+                // required a string `name`, and checked the `$class`.
+                if decorators
+                    .as_ref()
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|items| items.iter().any(serde_json::Value::is_null))
+                    || !is_valid_identifier(class_field!(&node, d => &d.name))
+                {
+                    return Err(ConcertoError::IllegalModel {
+                        message: "typed AST path: rejected declaration".into(),
+                        file_name: None,
+                        location: None,
+                    });
+                }
+                ClassDeclaration::finish(
+                    kind,
+                    node,
+                    properties,
+                    parse_decorator_list(decorators.as_ref()),
+                    namespace,
+                )
+                .map(Self::Class)
+            }
+        }
     }
 }
 

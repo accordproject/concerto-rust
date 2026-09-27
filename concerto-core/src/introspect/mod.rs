@@ -36,6 +36,7 @@ pub mod model_file;
 pub mod property;
 pub mod scalar;
 mod traits;
+mod typed_ast;
 pub mod validators;
 
 pub use declaration::{ClassDeclaration, ClassKind, Declaration, MapDeclaration};

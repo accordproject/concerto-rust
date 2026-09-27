@@ -182,7 +182,7 @@ impl ModelManager {
     pub fn validate_detached_model_file(&self, model_file: &ModelFile) -> Result<()> {
         let registered = self.model_file(model_file.namespace());
         if let Some(registered) = registered
-            && registered.ast() == model_file.ast()
+            && registered.same_ast(model_file)
             && registered.file_name() == model_file.file_name()
         {
             return self.validate_model_file(registered);

@@ -12,8 +12,17 @@
 //!   - `load`: `ModelManager::add_model` for every model in the set, into a
 //!     fresh manager.
 //!   - `validate`: `ModelManager::validate_models` once, over the whole set.
+//!
+//! Two more ids time the load from JSON text, as the WASM bindings receive
+//! it (`JSON.stringify(ast)`), for the typed AST spike (P5-06c,
+//! accordproject/concerto-rust#234):
+//!   - `load_text_value`: `serde_json::from_str` into a `Value`, then
+//!     `ModelManager::add_owned_model_with_definitions` (the bindings'
+//!     path before P5-06c);
+//!   - `load_text_typed`: `ModelFile::from_json_text`, then
+//!     `ModelManager::add_model_file` (the typed AST path).
 
-use concerto_core::ModelManager;
+use concerto_core::{ModelFile, ModelManager};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 #[path = "common/mod.rs"]
@@ -28,9 +37,35 @@ fn load_only(set: &[(String, serde_json::Value)]) -> ModelManager {
     mgr
 }
 
+fn load_text_value(texts: &[(String, String)]) -> ModelManager {
+    let mut mgr = ModelManager::new().expect("system model loads");
+    for (name, text) in texts {
+        let value: serde_json::Value = serde_json::from_str(text).expect("fixture is JSON");
+        mgr.add_owned_model_with_definitions(value, None, Some(name.clone()))
+            .unwrap_or_else(|e| panic!("loading {name}: {e}"));
+    }
+    mgr
+}
+
+fn load_text_typed(texts: &[(String, String)]) -> ModelManager {
+    let mut mgr = ModelManager::new().expect("system model loads");
+    for (name, text) in texts {
+        let file = ModelFile::from_json_text(text, None, Some(name.clone()))
+            .expect("fixture is JSON")
+            .unwrap_or_else(|e| panic!("loading {name}: {e}"));
+        mgr.add_model_file(file)
+            .unwrap_or_else(|e| panic!("loading {name}: {e}"));
+    }
+    mgr
+}
+
 fn bench_model_set(c: &mut Criterion, set_name: &str) {
     let set = common::load_model_set(set_name);
     assert!(!set.is_empty(), "fixture set '{set_name}' is empty - run generate-fixtures.mjs in the concerto repo first");
+    let texts: Vec<(String, String)> = set
+        .iter()
+        .map(|(name, ast)| (name.clone(), ast.to_string()))
+        .collect();
 
     let mut group = c.benchmark_group(format!("load_validate/{set_name}"));
     group.bench_with_input(
@@ -38,6 +73,20 @@ fn bench_model_set(c: &mut Criterion, set_name: &str) {
         &set,
         |b, set| {
             b.iter(|| load_only(set));
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::new("load_text_value", texts.len()),
+        &texts,
+        |b, texts| {
+            b.iter(|| load_text_value(texts));
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::new("load_text_typed", texts.len()),
+        &texts,
+        |b, texts| {
+            b.iter(|| load_text_typed(texts));
         },
     );
 
