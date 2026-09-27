@@ -1129,7 +1129,9 @@ export function runChecks(engine) {
     const modelFile = { isSystemModelFile: () => false };
     ast.declarations.forEach((declaration, i) => {
       const { d, p } = snapshot[i];
-      assert(JSON.stringify(p) === JSON.stringify(properties[i]), `${declaration.name}: properties differ`);
+      // P5-10b's extra keys (checked below) aside.
+      const base = p && p.map((entry) => entry && { p: entry.p, f: entry.f });
+      assert(JSON.stringify(base) === JSON.stringify(properties[i]), `${declaration.name}: properties differ`);
       if (!engine.modelUtilIsValidIdentifier(declaration.name)) {
         assert(d === null, `${declaration.name}: an invalid name has an entry`);
         return;
@@ -1158,6 +1160,115 @@ export function runChecks(engine) {
       assert(JSON.stringify(d.cd) === want, `${declaration.name}: ${JSON.stringify(d.cd)} vs ${want}`);
     });
     assert(engine.modelFileViewSnapshot('not json', ns) === undefined, 'unreadable text gives undefined');
+  });
+
+  // P5-10b lazy views, part 2: the snapshot's decorators, scalar, map and
+  // validator entries are what the per-element bindings return for the same
+  // nodes, and an element whose binding would throw has none.
+  check('modelFileViewSnapshot parts match the per-element bindings', () => {
+    const ns = 'org.snap.parts@1.0.0';
+    const dec = (name, args) => ({ $class: `${MM}.Decorator`, name, arguments: args });
+    const decorators = [
+      dec('plain', undefined),
+      dec('args', [
+        { $class: `${MM}.DecoratorString`, value: 's' },
+        { $class: `${MM}.DecoratorNumber`, value: 1.5 },
+        { $class: `${MM}.DecoratorBoolean`, value: true },
+        { $class: `${MM}.DecoratorTypeReference`, type: { $class: `${MM}.TypeIdentifier`, name: 'T' }, isArray: true },
+        { $class: `${MM}.DecoratorTypeReference`, type: { $class: `${MM}.TypeIdentifier`, name: 'U' } },
+      ]),
+    ];
+    const ast = {
+      $class: `${MM}.Model`,
+      namespace: ns,
+      imports: [],
+      declarations: [
+        {
+          $class: `${MM}.ConceptDeclaration`, name: 'Box', isAbstract: false, decorators,
+          properties: [
+            {
+              $class: `${MM}.StringProperty`, name: 's', isArray: false, isOptional: false, decorators,
+              validator: { $class: `${MM}.StringRegexValidator`, pattern: '^a+$', flags: '' },
+              lengthValidator: { $class: `${MM}.StringLengthValidator`, minLength: 1, maxLength: 3 },
+              defaultValue: 'aa',
+            },
+            {
+              $class: `${MM}.StringProperty`, name: 'bad', isArray: false, isOptional: false,
+              lengthValidator: { $class: `${MM}.StringLengthValidator`, minLength: 5, maxLength: 3 },
+            },
+            {
+              $class: `${MM}.IntegerProperty`, name: 'xs', isArray: true, isOptional: false,
+              sizeValidator: { $class: `${MM}.CollectionSizeValidator`, minSize: 1, maxSize: 4 },
+            },
+            {
+              $class: `${MM}.IntegerProperty`, name: 'ys', isArray: true, isOptional: false,
+              sizeValidator: { $class: `${MM}.CollectionSizeValidator`, minSize: 4, maxSize: 1 },
+            },
+          ],
+        },
+        {
+          $class: `${MM}.StringScalar`, name: 'Code', decorators,
+          validator: { $class: `${MM}.StringRegexValidator`, pattern: '^[A-Z]+$', flags: 'i' },
+          lengthValidator: { $class: `${MM}.StringLengthValidator`, minLength: 2 },
+        },
+        {
+          $class: `${MM}.IntegerScalar`, name: 'Small', defaultValue: 3,
+          validator: { $class: `${MM}.IntegerDomainValidator`, lower: 0, upper: 10 },
+        },
+        { $class: `${MM}.StringScalar`, name: 'String' },
+        {
+          $class: `${MM}.MapDeclaration`, name: 'Dict',
+          key: { $class: `${MM}.StringMapKeyType`, decorators },
+          value: { $class: `${MM}.ObjectMapValueType`, type: { $class: `${MM}.TypeIdentifier`, name: 'Box' } },
+        },
+        {
+          $class: `${MM}.MapDeclaration`, name: 'BadDict',
+          key: { $class: `${MM}.StringMapKeyType` },
+          value: { $class: `${MM}.ObjectMapValueType` },
+        },
+      ],
+    };
+    const snapshot = JSON.parse(engine.modelFileViewSnapshot(JSON.stringify(ast), ns));
+    const same = (a, b, what) => assert(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+    // A decorators snapshot, as the view rebuilds it.
+    const rebuild = (entries) => entries.map((e) => ({
+      name: e.n,
+      arguments: e.a.map((a) => (a !== null && typeof a === 'object' ? { type: a.type, name: a.name, array: a.array } : a)),
+    }));
+    const expectedDecorators = decorators.map((node) => {
+      const out = engine.decoratorProcess(node);
+      return { name: out.name, arguments: out.arguments };
+    });
+    const stringify = (value) => JSON.stringify(value, (k, v) => (v === undefined ? '<undefined>' : v));
+    const [box, code, small, primitive, dict, badDict] = snapshot;
+    assert(stringify(rebuild(box.dec)) === stringify(expectedDecorators), `declaration decorators: ${stringify(rebuild(box.dec))}`);
+    assert(stringify(rebuild(box.p[0].dec)) === stringify(expectedDecorators), 'property decorators');
+    const field = (node) => ({ field: { ast: node, getName: () => node.name }, getFieldOrScalarDeclaration() { return { getFullyQualifiedName: () => `${ns}.Box.${node.name}` }; } });
+    const s = ast.declarations[0].properties[0];
+    same(box.p[0].sv, engine.stringValidatorNew(field(s), s.validator, s.lengthValidator), 'sv');
+    assert(box.p[1].sv === undefined, 'a StringValidator whose constructor throws has no sv');
+    assert(thrown(() => engine.stringValidatorNew(field(ast.declarations[0].properties[1]), undefined, ast.declarations[0].properties[1].lengthValidator)), 'bad sv throws');
+    const xs = ast.declarations[0].properties[2];
+    same(box.p[2].sz, engine.collectionSizeValidatorNew(field(xs), xs.sizeValidator), 'sz');
+    assert(box.p[3].sz === undefined, 'a CollectionSizeValidator whose constructor throws has no sz');
+    const scalarView = (node) => ({ ast: node, modelFile: undefined, getFullyQualifiedName: () => `${ns}.${node.name}`, getName: () => node.name });
+    const codeNode = ast.declarations[1];
+    const codeExpected = engine.scalarDeclarationProcess(scalarView(codeNode));
+    same({ type: code.s.type, kind: code.s.validator.kind, defaultValue: code.s.defaultValue },
+      { type: codeExpected.type, kind: codeExpected.validator.kind, defaultValue: codeExpected.defaultValue }, 'string scalar');
+    const codeSv = engine.stringValidatorNew({ field: { ast: codeNode, getName: () => codeNode.name } }, codeNode.validator, codeNode.lengthValidator);
+    same({ minLength: code.s.validator.minLength, maxLength: code.s.validator.maxLength }, codeSv, 'string scalar sv');
+    assert(stringify(rebuild(code.dec)) === stringify(expectedDecorators), 'scalar decorators');
+    same(small.s, engine.scalarDeclarationProcess(scalarView(ast.declarations[2])), 'number scalar');
+    assert(primitive.s === undefined, 'a scalar named after a primitive has no entry');
+    const dictNode = ast.declarations[4];
+    const mapView = { ast: dictNode, name: 'Dict', modelFile: undefined };
+    engine.mapDeclarationProcess(mapView);
+    same(dict.m.k.t, engine.mapKeyTypeProcess({ ast: dictNode.key, parent: mapView }), 'map key type');
+    same(dict.m.v.t, engine.mapValueTypeProcess({ ast: dictNode.value, parent: mapView }), 'map value type');
+    assert(stringify(rebuild(dict.m.k.dec)) === stringify(expectedDecorators), 'map key decorators');
+    assert(dict.m.v.dec === undefined, 'no value decorators');
+    assert(badDict.m === undefined, 'a map whose value type processing throws has no entry');
   });
 
   mm.free();

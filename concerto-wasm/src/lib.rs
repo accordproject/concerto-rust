@@ -1425,6 +1425,10 @@ struct LightProperty {
     validator: Option<Value>,
     lengthValidator: Option<Value>,
     defaultValue: Option<Value>,
+    // P5-10b: read by `model_file_view_snapshot` only, never part of
+    // `into_value`.
+    decorators: Option<Value>,
+    sizeValidator: Option<Value>,
 }
 
 impl LightProperty {
@@ -1539,6 +1543,15 @@ pub fn model_file_view_snapshot(ast: &str, namespace: Option<String>) -> Option<
             Some(entry) => out.push_str(&entry.to_string()),
             None => out.push_str("null"),
         }
+        // P5-10b: the declaration's own decorators, and its scalar or map
+        // decisions, each only when it has one.
+        write_optional(
+            &mut out,
+            "dec",
+            decorators_view_snapshot(declaration.decorators.as_ref()),
+        );
+        write_optional(&mut out, "s", scalar_view_snapshot(&declaration));
+        write_optional(&mut out, "m", map_view_snapshot(&declaration));
         out.push_str(",\"p\":");
         match declaration.properties {
             None => out.push_str("null"),
@@ -1548,7 +1561,7 @@ pub fn model_file_view_snapshot(ast: &str, namespace: Option<String>) -> Option<
                     if j > 0 {
                         out.push(',');
                     }
-                    write_property_entry(&mut out, &property.into_value())?;
+                    write_view_property_entry(&mut out, property)?;
                 }
                 out.push(']');
             }
@@ -1557,6 +1570,309 @@ pub fn model_file_view_snapshot(ast: &str, namespace: Option<String>) -> Option<
     }
     out.push(']');
     Some(out)
+}
+
+/// Appends `,"key":value` to `out` when `value` is `Some`.
+fn write_optional(out: &mut String, key: &str, value: Option<Value>) {
+    if let Some(value) = value {
+        out.push_str(",\"");
+        out.push_str(key);
+        out.push_str("\":");
+        out.push_str(&value.to_string());
+    }
+}
+
+/// P5-10b: one property's entry of [`model_file_view_snapshot`]: the
+/// [`write_property_entry`] `{p, f}` entry (or `null`), extended with the
+/// property's lazily built parts, each only when it can be decided here
+/// exactly as its per-element binding decides it:
+/// - `dec`: its decorators ([`decorators_view_snapshot`]);
+/// - `sz`: its `collectionSizeValidatorNew` snapshot `{minSize, maxSize}`,
+///   for a truthy `sizeValidator` whose constructor succeeds;
+/// - `sv`: its `stringValidatorNew` snapshot `{minLength, maxLength}`, for a
+///   field whose `f` entry has a `StringValidator` whose constructor
+///   succeeds (the view only uses it when no custom `options.regExp` is
+///   configured, as the binding is only called then).
+fn write_view_property_entry(out: &mut String, mut property: LightProperty) -> Option<()> {
+    let decorators = property.decorators.take();
+    let size_validator = property.sizeValidator.take();
+    let ast = property.into_value();
+    let start = out.len();
+    write_property_entry(out, &ast)?;
+    if !out[start..].starts_with('{') {
+        return Some(());
+    }
+    // The entry's closing brace, reopened for the extra keys.
+    out.pop();
+    write_optional(out, "dec", decorators_view_snapshot(decorators.as_ref()));
+    let name = ast.get("name").and_then(Value::as_str);
+    if let Some(name) = name {
+        write_optional(
+            out,
+            "sz",
+            size_validator_view_snapshot(name, size_validator.as_ref()),
+        );
+        // `Field.process`'s `StringValidator` arm (field::process): a
+        // `String` property with a truthy `validator` or `lengthValidator`.
+        let string_typed = property::process::<Error>(&ast)
+            .is_ok_and(|p| p.type_set && p.property_type.as_deref() == Some("String"));
+        if string_typed
+            && (json_truthy(ast.get("validator")) || json_truthy(ast.get("lengthValidator")))
+        {
+            write_optional(out, "sv", string_validator_view_snapshot(name, &ast));
+        }
+    }
+    out.push('}');
+    Some(())
+}
+
+/// The element a validator built from JSON is attached to, for
+/// [`model_file_view_snapshot`]: its `getName()` and `ast.defaultValue`. It
+/// has no fully qualified name, so any error a constructor would report
+/// fails, and the entry is left out (the view then calls the binding,
+/// which raises it).
+struct JsonElement<'a> {
+    name: &'a str,
+    default_value: Option<&'a Value>,
+}
+
+impl FullyQualified for JsonElement<'_> {
+    type Error = Error;
+
+    fn fully_qualified_name(&self) -> Result<String> {
+        Err(Error::Js(JsValue::UNDEFINED))
+    }
+}
+
+impl ValidatedElement for JsonElement<'_> {
+    fn default_value(&self) -> Result<Option<Value>> {
+        Ok(self.default_value.cloned())
+    }
+
+    fn name(&self) -> Result<String> {
+        Ok(self.name.to_string())
+    }
+}
+
+/// `collectionSizeValidatorNew`'s snapshot for a property's truthy
+/// `sizeValidator` (TS: `this.ast.sizeValidator ? new
+/// CollectionSizeValidator(this, this.ast.sizeValidator) : null`), or `None`
+/// when there is none or its constructor would throw.
+fn size_validator_view_snapshot(name: &str, ast: Option<&Value>) -> Option<Value> {
+    let ast = ast.filter(|v| json_truthy(Some(v)))?;
+    let typed =
+        validators::size_validator_from_ast(Some(ast)).unwrap_or(mm::CollectionSizeValidator {
+            _class: String::new(),
+            min_size: None,
+            max_size: None,
+        });
+    let element = JsonElement {
+        name,
+        default_value: None,
+    };
+    let built = CollectionSizeValidator::new(&element, &typed, Some(ast)).ok()?;
+    Some(json!({ "minSize": built.min_size(), "maxSize": built.max_size() }))
+}
+
+/// `stringValidatorNew`'s snapshot for an element's `validator` and
+/// `lengthValidator` (a field, or a String scalar), or `None` when its
+/// constructor would throw.
+fn string_validator_view_snapshot(name: &str, ast: &Value) -> Option<Value> {
+    let validator = ast.get("validator").filter(|v| !v.is_null());
+    let length_validator = ast.get("lengthValidator").filter(|v| !v.is_null());
+    let regex_ast = validators::regex_validator_from_ast(validator);
+    let length_ast = validators::length_validator_from_ast(length_validator);
+    let element = JsonElement {
+        name,
+        default_value: ast.get("defaultValue"),
+    };
+    let built = StringValidator::new(
+        &element,
+        regex_ast.as_ref(),
+        length_ast.as_ref(),
+        length_validator,
+    )
+    .ok()?;
+    Some(json!({ "minLength": built.min_length(), "maxLength": built.max_length() }))
+}
+
+/// P5-10b: the `decoratorProcess` results for an AST `decorators` value, as
+/// `[{"n": name, "a": arguments}]` (`n` left out for a node with no `name`,
+/// a type reference argument's `array` left out when its `isArray` is), or
+/// `None` when there is nothing to build (no decorators) or it cannot be
+/// decided here exactly as the binding decides it: a `decorators` that is
+/// not an array, a node that is not an object or whose `name` is present
+/// but not a string, or a number argument JSON cannot carry.
+fn decorators_view_snapshot(decorators: Option<&Value>) -> Option<Value> {
+    let Some(Value::Array(nodes)) = decorators else {
+        return None;
+    };
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let Value::Object(map) = node else {
+            return None;
+        };
+        if map.get("name").is_some_and(|n| !n.is_string()) {
+            return None;
+        }
+        let decorator = Decorator::from_ast(node);
+        let mut arguments = Vec::with_capacity(decorator.arguments().len());
+        for argument in decorator.arguments() {
+            arguments.push(match argument {
+                DecoratorArgument::String(s) => json!(s),
+                DecoratorArgument::Number(n) => {
+                    Value::Number(serde_json::Number::from_f64(*n).filter(|_| n.is_finite())?)
+                }
+                DecoratorArgument::Boolean(b) => json!(b),
+                DecoratorArgument::TypeReference(t) => match t.array {
+                    Some(array) => json!({ "type": "Identifier", "name": t.name, "array": array }),
+                    None => json!({ "type": "Identifier", "name": t.name }),
+                },
+            });
+        }
+        let mut entry = serde_json::Map::new();
+        if let Some(name) = decorator.js_name() {
+            entry.insert("n".to_string(), json!(name));
+        }
+        entry.insert("a".to_string(), Value::Array(arguments));
+        out.push(Value::Object(entry));
+    }
+    Some(Value::Array(out))
+}
+
+/// The metamodel classes `ModelFile.fromAst` builds a `ScalarDeclaration`
+/// from.
+const SCALAR_CLASSES: [&str; 6] = [
+    "concerto.metamodel@1.0.0.BooleanScalar",
+    "concerto.metamodel@1.0.0.IntegerScalar",
+    "concerto.metamodel@1.0.0.LongScalar",
+    "concerto.metamodel@1.0.0.DoubleScalar",
+    "concerto.metamodel@1.0.0.StringScalar",
+    "concerto.metamodel@1.0.0.DateTimeScalar",
+];
+
+/// P5-10b: a scalar declaration's `scalarDeclarationProcess` snapshot
+/// `{type, validator, defaultValue}`, where a `StringValidator` also carries
+/// its `stringValidatorNew` snapshot (`minLength`, `maxLength`), or `None`
+/// when the declaration is not a scalar or processing it would throw.
+fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Value> {
+    let class = declaration.class.as_ref().and_then(Value::as_str)?;
+    if !SCALAR_CLASSES.contains(&class) {
+        return None;
+    }
+    let Some(Value::String(name)) = &declaration.name else {
+        return None;
+    };
+    let mut ast = serde_json::Map::new();
+    ast.insert("$class".to_string(), json!(class));
+    ast.insert("name".to_string(), json!(name));
+    for (key, value) in [
+        ("validator", &declaration.validator),
+        ("lengthValidator", &declaration.lengthValidator),
+        ("defaultValue", &declaration.defaultValue),
+    ] {
+        if let Some(value) = value {
+            ast.insert(key.to_string(), value.clone());
+        }
+    }
+    let ast = Value::Object(ast);
+    let no_fqn = || -> Result<String> { Err(Error::Js(JsValue::UNDEFINED)) };
+    let processed = ScalarDeclaration::process(&ast, None, &no_fqn).ok()?;
+    let validator = match &processed.validator {
+        None => Value::Null,
+        Some(ScalarValidator::Number(v)) => {
+            let mut snapshot = serde_json::to_value(v).ok()?;
+            let Value::Object(map) = &mut snapshot else {
+                return None;
+            };
+            map.insert("kind".to_string(), json!("NumberValidator"));
+            snapshot
+        }
+        Some(ScalarValidator::String { .. }) => {
+            let mut snapshot = string_validator_view_snapshot(name, &ast)?;
+            let Value::Object(map) = &mut snapshot else {
+                return None;
+            };
+            map.insert("kind".to_string(), json!("StringValidator"));
+            snapshot
+        }
+    };
+    Some(json!({
+        "type": processed.scalar_type,
+        "validator": validator,
+        "defaultValue": processed.default_value,
+    }))
+}
+
+/// P5-10b: a map declaration's `mapDeclarationProcess` decision, with its
+/// key and value types' `mapKeyTypeProcess`/`mapValueTypeProcess` types and
+/// decorators, as `{"k": {"t", "dec"?}, "v": {"t", "dec"?}}`, or `None` when
+/// the declaration is not a map or any of those would throw (or cannot be
+/// decided here exactly as the bindings decide it).
+fn map_view_snapshot(declaration: &ViewDeclaration) -> Option<Value> {
+    if declaration.class.as_ref().and_then(Value::as_str)
+        != Some("concerto.metamodel@1.0.0.MapDeclaration")
+    {
+        return None;
+    }
+    // `mapDeclarationProcess`: `this.ast.name` is interpolated into its
+    // errors; a map with a string name only.
+    if !matches!(declaration.name, Some(Value::String(_))) {
+        return None;
+    }
+    let key = declaration.key.as_ref().filter(|v| json_truthy(Some(v)))?;
+    let value = declaration
+        .value
+        .as_ref()
+        .filter(|v| json_truthy(Some(v)))?;
+    if !matches!(key, Value::Object(_)) || !matches!(value, Value::Object(_)) {
+        return None;
+    }
+    if !mu::is_valid_map_key(Some(key)).ok()? || !mu::is_valid_map_value(Some(value)).ok()? {
+        return None;
+    }
+    fn class(node: &Value) -> Option<&str> {
+        node.get("$class").and_then(Value::as_str).map(short_class)
+    }
+    let key_type = match class(key)? {
+        "DateTimeMapKeyType" => "DateTime".to_string(),
+        "StringMapKeyType" => "String".to_string(),
+        "ObjectMapKeyType" => key.get("type")?.get("name")?.as_str()?.to_string(),
+        _ => return None,
+    };
+    let value_type = match class(value)? {
+        "ObjectMapValueType" | "RelationshipMapValueType" => {
+            let Some(Value::Object(ty)) = value.get("type") else {
+                return None;
+            };
+            if ty.get("$class").and_then(Value::as_str)
+                != Some("concerto.metamodel@1.0.0.TypeIdentifier")
+            {
+                return None;
+            }
+            ty.get("name")?.as_str()?.to_string()
+        }
+        "BooleanMapValueType" => "Boolean".to_string(),
+        "DateTimeMapValueType" => "DateTime".to_string(),
+        "StringMapValueType" => "String".to_string(),
+        "IntegerMapValueType" => "Integer".to_string(),
+        "LongMapValueType" => "Long".to_string(),
+        "DoubleMapValueType" => "Double".to_string(),
+        _ => return None,
+    };
+    let side = |node: &Value, type_name: String| -> Option<Value> {
+        let mut entry = serde_json::Map::new();
+        entry.insert("t".to_string(), json!(type_name));
+        // A present `decorators` must be one the snapshot can decide.
+        match node.get("decorators") {
+            None | Some(Value::Null) => {}
+            decorators => {
+                entry.insert("dec".to_string(), decorators_view_snapshot(decorators)?);
+            }
+        }
+        Some(Value::Object(entry))
+    };
+    Some(json!({ "k": side(key, key_type)?, "v": side(value, value_type)? }))
 }
 
 /// A model AST, as far as [`model_file_view_snapshot`] reads it.
@@ -1576,6 +1892,14 @@ struct ViewDeclaration {
     superType: Option<Value>,
     identified: Option<Value>,
     properties: Option<Vec<LightProperty>>,
+    // P5-10b: the declaration's decorators, a scalar's validators and
+    // default value, and a map's key and value types.
+    decorators: Option<Value>,
+    validator: Option<Value>,
+    lengthValidator: Option<Value>,
+    defaultValue: Option<Value>,
+    key: Option<Value>,
+    value: Option<Value>,
 }
 
 /// JavaScript truthiness of a JSON value (`None` is `undefined`).
