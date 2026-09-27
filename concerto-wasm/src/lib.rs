@@ -3955,6 +3955,40 @@ pub struct ModelManagerHandle {
     /// `deleteModelFile` replace the whole manager, restarting its
     /// generation count.
     epoch: u64,
+    /// Model files loaded by [`Self::stage_model_file`] and not yet
+    /// committed or dropped (P5-06a lazy-views spike).
+    staged: StagedModelFiles,
+}
+
+/// The staging slot of a [`ModelManagerHandle`] (P5-06a lazy-views spike):
+/// model files loaded from their AST once, by
+/// [`ModelManagerHandle::stage_model_file`], kept until the view registers
+/// ([`ModelManagerHandle::commit_staged_model_file`]), validates
+/// ([`ModelManagerHandle::model_file_validate_staged`]) or drops them.
+/// Staging never changes the manager, so it never moves the epoch.
+///
+/// Bounded: past [`StagedModelFiles::CAPACITY`] entries the oldest one is
+/// evicted. A view whose stage id was evicted gets `undefined` back and
+/// falls back to sending the AST again, so eviction only costs time.
+#[derive(Default)]
+struct StagedModelFiles {
+    files: std::collections::BTreeMap<u32, ModelFile>,
+    next: u32,
+}
+
+impl StagedModelFiles {
+    /// The most staged files kept at once.
+    const CAPACITY: usize = 256;
+
+    fn insert(&mut self, file: ModelFile) -> u32 {
+        while self.files.len() >= Self::CAPACITY {
+            self.files.pop_first();
+        }
+        let id = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.files.insert(id, file);
+        id
+    }
 }
 
 #[wasm_bindgen]
@@ -3966,6 +4000,7 @@ impl ModelManagerHandle {
             Ok(Self {
                 manager: ModelManager::new()?,
                 epoch: 0,
+                staged: StagedModelFiles::default(),
             })
         })
     }
@@ -4348,6 +4383,84 @@ impl ModelManagerHandle {
                     .into()
                 })
         })
+    }
+
+    /// P5-06a lazy-views spike: loads a model file from its JSON AST, passed
+    /// as JSON text, **without registering it**, and keeps it in this
+    /// handle's staging slot. Returns its stage id. This is the one time a
+    /// lazily viewed `ModelFile`'s AST crosses into Rust: the same
+    /// [`ModelFile::from_owned_json_with_definitions`] load
+    /// [`Self::add_model_with_definitions`] and
+    /// [`Self::model_file_validate_detached`] run, so it throws exactly
+    /// what they would throw for this AST. Malformed JSON throws a JS
+    /// `SyntaxError`. Does not change the manager or its epoch. Additive.
+    #[wasm_bindgen(js_name = stageModelFile)]
+    pub fn stage_model_file(
+        &mut self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<u32, JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let file = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
+            Ok(self.staged.insert(file))
+        })
+    }
+
+    /// P5-06a: registers a staged model file, as
+    /// [`Self::add_model_with_definitions`] with `validate: false` would
+    /// register the AST it was staged from (the same duplicate-namespace
+    /// check, the same errors), without sending or parsing the AST again.
+    /// The stage id is consumed. Returns the file's handle, or `undefined`
+    /// if the stage id is unknown (evicted, or already consumed); the caller
+    /// then falls back to [`Self::add_model_with_definitions`].
+    #[wasm_bindgen(js_name = commitStagedModelFile)]
+    pub fn commit_staged_model_file(
+        &mut self,
+        stage: u32,
+    ) -> std::result::Result<Option<u32>, JsValue> {
+        let Some(file) = self.staged.files.remove(&stage) else {
+            return Ok(None);
+        };
+        self.epoch += 1;
+        run(|| {
+            let namespace = file.namespace().to_string();
+            self.manager.add_model_file(file)?;
+            self.manager
+                .model_file_id(&namespace)
+                .map(|id| Some(ModelFileId::index(id)))
+                .ok_or_else(|| {
+                    ConcertoError::TypeNotFound {
+                        type_name: namespace,
+                    }
+                    .into()
+                })
+        })
+    }
+
+    /// P5-06a: [`Self::model_file_validate_detached`] for a staged model
+    /// file, without sending the AST again. Returns `true` once validated;
+    /// `false` if the stage id is unknown, and the caller then falls back to
+    /// [`Self::model_file_validate_detached`]. Throws the first problem
+    /// found, as that binding does. The staged file stays staged.
+    #[wasm_bindgen(js_name = modelFileValidateStaged)]
+    pub fn model_file_validate_staged(&self, stage: u32) -> std::result::Result<bool, JsValue> {
+        let Some(file) = self.staged.files.get(&stage) else {
+            return Ok(false);
+        };
+        run(|| {
+            self.manager.validate_detached_model_file(file)?;
+            Ok(true)
+        })
+    }
+
+    /// P5-06a: drops a staged model file that will never be registered
+    /// here. An unknown stage id is ignored.
+    #[wasm_bindgen(js_name = dropStagedModelFile)]
+    pub fn drop_staged_model_file(&mut self, stage: u32) {
+        self.staged.files.remove(&stage);
     }
 
     /// TS `BaseModelManager.resolveType(context, type)` (P4-08): delegates
