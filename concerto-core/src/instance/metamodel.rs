@@ -25,6 +25,13 @@
 //! added it as [`ModelManager::validate_ast`] (with
 //! [`ModelManager::set_metamodel_validation`]), built on this module's
 //! [`check_version`], [`metamodel_model_file`] and [`deserialize_ast`].
+//!
+//! accordproject/concerto-rust#265 adds the two `src/introspect/metamodel.ts`
+//! functions the ledger also places here, [`validate_meta_model_instance`]
+//! (`validateMetaModel`) and [`model_manager_from_meta_model`]
+//! (`modelManagerFromMetaModel`), and [`ModelManager::add_metamodel`] for the
+//! constructor's `addMetamodel` option, so the native oracle harness can
+//! replay their fixtures.
 
 use serde_json::Value;
 
@@ -188,6 +195,86 @@ pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
 pub fn validate_ast(ast: &Value) -> Result<()> {
     check_version(ast)?;
     validate_metamodel(ast)
+}
+
+/// TS `validateMetaModel(input)` (`src/introspect/metamodel.ts`;
+/// `SEAM_LEDGER.tsv` row `validateMetaModel`, planned task `P3-04+P4-08`;
+/// accordproject/concerto-rust#265): `serializer.fromJSON(input)` over a
+/// fresh metamodel manager (`newMetaModelManager()`), with a `Serializer`
+/// built with no options, so the default `{validate: true}`. TS returns
+/// `input` itself unchanged, so a caller that needs the return value keeps
+/// its own `input`.
+///
+/// Not [`validate_metamodel`]: that is `validateAst`'s check, which runs the
+/// strict preset and re-throws every failure as a `MetamodelException`.
+/// This one runs the default options, and a failure is the serializer's own
+/// error, unwrapped, as TS throws it.
+///
+/// The metamodel manager is `metamodel_model_manager`'s. TS's
+/// `newMetaModelManager` names the file `concerto.metamodel` and keeps the
+/// metamodel's CTO text as its definitions; neither is observable here
+/// beyond an error message's wording (error parity compares the class).
+pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
+    let mm = metamodel_model_manager()?;
+    let serializer = Serializer::new(true, true, None)?;
+    let mut env = FixedEnv;
+    serializer
+        .from_json(&mm, &JsValue::from_json(input), None, &mut env)
+        .map(|_resource| ())
+}
+
+/// TS `modelManagerFromMetaModel(metaModel, validate = true)`
+/// (`src/introspect/metamodel.ts`; `SEAM_LEDGER.tsv` row
+/// `modelManagerFromMetaModel`, planned task `P3-04+P4-08`;
+/// accordproject/concerto-rust#265):
+///
+/// 1. when `validate` is set, [`validate_meta_model_instance`] first;
+/// 2. a fresh [`ModelManager`] (`new ModelManager()`, no options);
+/// 3. for each entry of `metaModel.models`, in order, `new ModelFile(mm,
+///    model, null, null)` and a validating `addModelFile(mf, null, null)`:
+///    a namespace already registered is the already-exists error, otherwise
+///    the new file alone is validated against the manager as it stands
+///    ([`ModelManager::validate_detached_model_file`]) before it is
+///    registered;
+/// 4. `validateModelFiles()` over the whole manager.
+///
+/// `metaModel.models.forEach` on something that is not an array is V8's
+/// `TypeError`, as in TS: reading `models` of `null`, `forEach` of a
+/// missing or `null` `models`, or `forEach` not being a function.
+pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Result<ModelManager> {
+    if validate {
+        validate_meta_model_instance(meta_model)?;
+    }
+    let mut mm = ModelManager::new()?;
+    let read_properties = |value: &str, property: &str| -> ConcertoError {
+        ContractError::new(
+            ErrorKind::JsTypeError,
+            "engine-typeerror-readproperties",
+            vec![
+                ("value", value.to_string()),
+                ("property", property.to_string()),
+            ],
+        )
+        .into()
+    };
+    if meta_model.is_null() {
+        return Err(read_properties("null", "models"));
+    }
+    let models = match meta_model.get("models") {
+        None => return Err(read_properties("undefined", "forEach")),
+        Some(Value::Null) => return Err(read_properties("null", "forEach")),
+        Some(Value::Array(models)) => models,
+        Some(_) => return Err(not_a_function("mm.models.forEach")),
+    };
+    for model in models {
+        let model_file = ModelFile::from_json_with_definitions(model, None, None)?;
+        if mm.model_file(model_file.namespace()).is_none() {
+            mm.validate_detached_model_file(&model_file)?;
+        }
+        mm.add_model_file(model_file)?;
+    }
+    mm.validate_models()?;
+    Ok(mm)
 }
 
 /// `validateAst`'s version check:
@@ -695,5 +782,140 @@ mod tests {
             ErrorKind::Metamodel,
             "Model file version null does not match metamodel version 1.0.0",
         );
+    }
+
+    // ---- accordproject/concerto-rust#265: `addMetamodel`,
+    //      `validateMetaModel` and `modelManagerFromMetaModel` ----
+
+    fn kind_of(err: &ConcertoError) -> Option<ErrorKind> {
+        match err {
+            ConcertoError::Contract(contract) => Some(contract.kind),
+            _ => None,
+        }
+    }
+
+    fn person_models() -> Value {
+        json!({
+            "$class": "concerto.metamodel@1.0.0.Models",
+            "models": [{
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "decorators": [],
+                "namespace": "test.person@1.0.0",
+                "imports": [],
+                "declarations": [{
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "Person",
+                    "isAbstract": false,
+                    "properties": [{
+                        "$class": "concerto.metamodel@1.0.0.StringProperty",
+                        "name": "name",
+                        "isArray": false,
+                        "isOptional": false
+                    }]
+                }]
+            }]
+        })
+    }
+
+    #[test]
+    fn add_metamodel_registers_the_metamodel_under_its_namespace() {
+        // TS: `new ModelManager({ addMetamodel: true })` adds
+        // `this.metamodelModelFile` last, named after its namespace.
+        for metamodel_validation in [false, true] {
+            let mut mm = ModelManager::new().unwrap();
+            mm.set_metamodel_validation(metamodel_validation);
+            mm.add_metamodel().expect("the metamodel loads");
+            assert_eq!(
+                namespaces(&mm).last().map(String::as_str),
+                Some(METAMODEL_NAMESPACE)
+            );
+            let file = mm.model_file(METAMODEL_NAMESPACE).unwrap();
+            assert_eq!(file.file_name(), Some(METAMODEL_NAMESPACE));
+            assert!(mm.get_declaration("concerto.metamodel@1.0.0.Model").is_ok());
+        }
+    }
+
+    #[test]
+    fn add_metamodel_twice_is_the_already_exists_error() {
+        let mut mm = ModelManager::new().unwrap();
+        mm.add_metamodel().unwrap();
+        let before = namespaces(&mm);
+        assert!(mm.add_metamodel().is_err());
+        assert_eq!(namespaces(&mm), before, "nothing is added");
+    }
+
+    #[test]
+    fn validate_meta_model_instance_accepts_a_metamodel_document() {
+        validate_meta_model_instance(&person_models()).expect("a valid Models document");
+        let model = person_models()["models"][0].clone();
+        validate_meta_model_instance(&model).expect("a valid Model document");
+    }
+
+    #[test]
+    fn validate_meta_model_instance_does_not_wrap_the_serializer_error() {
+        // TS `validateMetaModel` throws `serializer.fromJSON`'s own error;
+        // only `validateAst` re-throws it as a `MetamodelException`.
+        let mut bad = person_models();
+        bad["models"][0]["namespace"] = json!(42);
+        let err = validate_meta_model_instance(&bad).expect_err("a bad namespace fails");
+        assert_ne!(kind_of(&err), Some(ErrorKind::Metamodel));
+        assert!(validate_metamodel(&bad).is_err());
+    }
+
+    #[test]
+    fn model_manager_from_meta_model_loads_every_model() {
+        for validate in [true, false] {
+            let mm = model_manager_from_meta_model(&person_models(), validate).unwrap();
+            assert_eq!(
+                namespaces(&mm).last().map(String::as_str),
+                Some("test.person@1.0.0")
+            );
+            let file = mm.model_file("test.person@1.0.0").unwrap();
+            assert_eq!(file.file_name(), None);
+            assert!(mm.get_declaration("test.person@1.0.0.Person").is_ok());
+        }
+    }
+
+    #[test]
+    fn model_manager_from_meta_model_validates_only_when_asked() {
+        // Structurally invalid (an undeclared property), semantically fine:
+        // only the metamodel check rejects it.
+        let mut doc = person_models();
+        doc["models"][0]["undeclared"] = json!(true);
+        assert!(model_manager_from_meta_model(&doc, true).is_err());
+        assert!(model_manager_from_meta_model(&doc, false).is_ok());
+    }
+
+    #[test]
+    fn model_manager_from_meta_model_rejects_a_semantically_invalid_model() {
+        // The type `Missing` is never declared: `addModelFile` validates.
+        let mut doc = person_models();
+        doc["models"][0]["declarations"][0]["properties"] = json!([{
+            "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+            "name": "other",
+            "type": {"$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing"},
+            "isArray": false,
+            "isOptional": false
+        }]);
+        assert!(model_manager_from_meta_model(&doc, false).is_err());
+    }
+
+    #[test]
+    fn model_manager_from_meta_model_without_models_is_a_type_error() {
+        for doc in [json!({}), json!({"models": null}), json!(null)] {
+            let err = model_manager_from_meta_model(&doc, false).expect_err("no models array");
+            assert_eq!(kind_of(&err), Some(ErrorKind::JsTypeError), "{doc}");
+        }
+        let err = model_manager_from_meta_model(&json!({"models": "x"}), false)
+            .expect_err("models is not an array");
+        assert_eq!(kind_of(&err), Some(ErrorKind::JsTypeError));
+    }
+
+    #[test]
+    fn model_manager_from_meta_model_rejects_a_duplicate_namespace() {
+        let mut doc = person_models();
+        let model = doc["models"][0].clone();
+        doc["models"].as_array_mut().unwrap().push(model);
+        assert!(model_manager_from_meta_model(&doc, false).is_err());
     }
 }

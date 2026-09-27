@@ -12,7 +12,10 @@
 //! class differs from the recorded one is a **state divergence**, a failure
 //! (README; PORTING.md 6.2). A `derived` recipe (a model manager returned by
 //! another op, such as `MetaModel.modelManagerFromMetaModel`) is replayed
-//! only when that op is; none is yet, so it is `unsupported`.
+//! only when that op is (`ops.rs` `derive_model_manager`: the
+//! `DecoratorManager` ops that return one, and, since
+//! accordproject/concerto-rust#265, `MetaModel.modelManagerFromMetaModel`);
+//! any other is `unsupported`.
 //!
 //! The steps map onto the Rust `ModelManager` as follows. `add_model` is
 //! the Rust counterpart of TS `new ModelFile(...)` plus `addModelFile`'s
@@ -56,9 +59,12 @@
 //! rejected it outright) and `metamodelValidation` (P4-08b:
 //! `ModelManager::set_metamodel_validation`; a validating add runs
 //! `ModelManager::validate_ast` on the new file first, as TS's
-//! `addModelFile` does) are replayed. Any other option with a truthy value
-//! changes TS behaviour the Rust engine does not model yet (`addMetamodel`,
-//! `regExp`), so such a recipe is `unsupported`.
+//! `addModelFile` does) and `addMetamodel` (accordproject/concerto-rust#265:
+//! `ModelManager::add_metamodel` right after construction, the TS
+//! constructor's validating `addModelFile(this.metamodelModelFile)`, tracked
+//! as one of the recipe's files so a rebuild keeps it) are replayed. Any
+//! other option with a truthy value changes TS behaviour the Rust engine
+//! does not model yet (`regExp`), so such a recipe is `unsupported`.
 //!
 //! # Model files, declarations, properties
 //!
@@ -326,6 +332,9 @@ pub enum Arg {
     /// model file: `ScalarDeclaration::build_standalone`'s result, computed
     /// eagerly here as TS runs the constructor while decoding the receiver.
     DeclNew {
+        /// The AST's own `name` (TS `Declaration.getName`), when it is a
+        /// string (accordproject/concerto-rust#265).
+        name: Option<String>,
         fqn: String,
         processed: ProcessedScalar,
     },
@@ -781,7 +790,12 @@ impl<'h> Session<'h> {
         let (fqn, processed) =
             ScalarDeclaration::build_standalone(namespace, file.file_name.as_deref(), &ast)
                 .map_err(|e| divergence_from(&to_oracle_error(&e), "new ScalarDeclaration"))?;
-        Ok(Arg::DeclNew { fqn, processed })
+        let name = ast.get("name").and_then(Value::as_str).map(str::to_string);
+        Ok(Arg::DeclNew {
+            name,
+            fqn,
+            processed,
+        })
     }
 
     /// Decodes an oracle `"typed"` value (README "Value encoding": "a
@@ -1329,8 +1343,10 @@ fn typed_field_value(v: &Value) -> Faulty<Value> {
 }
 
 /// Model manager options that concerto-core 5.0.0 reads on the paths this
-/// harness replays and the Rust engine does not model yet: adding the
-/// metamodel (constructor) and a custom `RegExp` (`stringvalidator.ts`).
+/// harness replays and the Rust engine does not model yet: a custom `RegExp`
+/// (`stringvalidator.ts`). `addMetamodel` (constructor) used to be here too;
+/// accordproject/concerto-rust#265 modelled it (`ModelManager::add_metamodel`)
+/// and gave it its own recognised key, `ADD_METAMODEL`.
 /// `metamodelValidation` (`basemodelmanager.ts` `addModelFile`) used to be
 /// here too; P4-08b modelled it (`ModelManager::set_metamodel_validation`)
 /// and gave it its own recognised key, `METAMODEL_VALIDATION`.
@@ -1338,7 +1354,13 @@ fn typed_field_value(v: &Value) -> Faulty<Value> {
 /// engine has modelled it since P2-08b (`ModelManager::set_decorator_validation`),
 /// so P2-09b moved it to its own recognised key below, alongside
 /// `ALLOW_RESERVED_SYSTEM_TYPE_NAMES`.
-const UNMODELLED_OPTIONS: [&str; 2] = ["addMetamodel", "regExp"];
+const UNMODELLED_OPTIONS: [&str; 1] = ["regExp"];
+
+/// TS `ModelManagerOptions.addMetamodel`, read by the `BaseModelManager`
+/// constructor as `if (options?.addMetamodel)` (JS truthiness) and modelled
+/// by the Rust engine since accordproject/concerto-rust#265
+/// (`ModelManager::add_metamodel`).
+const ADD_METAMODEL: &str = "addMetamodel";
 
 /// TS `ModelManagerOptions.metamodelValidation`, read by `addModelFile` as
 /// `this.options?.metamodelValidation` (JS truthiness) and modelled by the
@@ -1383,8 +1405,6 @@ const INERT_OPTIONS: [&str; 6] = [
 /// The TS member that reads an unmodelled option, whose owner ports it.
 fn option_reader(key: &str) -> Option<&'static str> {
     Some(match key {
-        // The constructor adds the metamodel file.
-        "addMetamodel" => "BaseModelManager.new",
         // `StringValidator`'s constructor builds the custom RegExp.
         "regExp" => "StringValidator.new",
         _ => return None,
@@ -1419,12 +1439,13 @@ fn decode_decorator_validation(value: &Value) -> Faulty<DecoratorValidationOptio
 /// A recipe's options as the harness replays them: `skipLocationNodes`
 /// (which only selects the cache entry, i.e. the AST's shape),
 /// `dangerouslyAllowReservedSystemTypeNamesInUserModels`,
-/// `decoratorValidation` and `metamodelValidation`.
+/// `decoratorValidation`, `metamodelValidation` and `addMetamodel`.
 struct Options {
     skip_location_nodes: Value,
     allow_reserved_system_type_names: bool,
     decorator_validation: DecoratorValidationOptions,
     metamodel_validation: bool,
+    add_metamodel: bool,
 }
 
 /// Checks a recipe's options. An unmodelled option with a truthy value, or
@@ -1436,6 +1457,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
             allow_reserved_system_type_names: false,
             decorator_validation: DecoratorValidationOptions::default(),
             metamodel_validation: false,
+            add_metamodel: false,
         });
     }
     let Some(map) = options.as_object() else {
@@ -1448,6 +1470,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
             || key == ALLOW_RESERVED_SYSTEM_TYPE_NAMES
             || key == DECORATOR_VALIDATION
             || key == METAMODEL_VALIDATION
+            || key == ADD_METAMODEL
             || INERT_OPTIONS.contains(&key.as_str());
         if !inert && (truthy(value) || !UNMODELLED_OPTIONS.contains(&key.as_str())) {
             let reason =
@@ -1473,6 +1496,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
             Some(v) => decode_decorator_validation(v)?,
         },
         metamodel_validation: map.get(METAMODEL_VALIDATION).is_some_and(truthy),
+        add_metamodel: map.get(ADD_METAMODEL).is_some_and(truthy),
     })
 }
 
@@ -1484,13 +1508,14 @@ impl Replayed {
             allow_reserved_system_type_names,
             decorator_validation,
             metamodel_validation,
+            add_metamodel,
         } = check_options(options)?;
         let mm = Self::fresh_manager(
             allow_reserved_system_type_names,
             decorator_validation.clone(),
             metamodel_validation,
         )?;
-        Ok(Self {
+        let mut replayed = Self {
             kind,
             options: options.clone(),
             skip_location_nodes,
@@ -1499,7 +1524,36 @@ impl Replayed {
             metamodel_validation,
             files: Vec::new(),
             mm,
-        })
+        };
+        if add_metamodel {
+            replayed.add_metamodel()?;
+        }
+        Ok(replayed)
+    }
+
+    /// The constructor's `if (options?.addMetamodel) {
+    /// this.addModelFile(this.metamodelModelFile); }`
+    /// (accordproject/concerto-rust#265), last, after the system models:
+    /// [`ModelManager::add_metamodel`]. The file is then tracked like any
+    /// other so that a rebuild keeps it, and `clearModelFiles` drops it, as
+    /// TS's `this.modelFiles = {}` does. TS's constructor throwing is never
+    /// recorded as a fixture's outcome, so a failure here is a state
+    /// divergence.
+    fn add_metamodel(&mut self) -> Faulty<()> {
+        self.mm
+            .add_metamodel()
+            .map_err(|e| divergence_from(&to_oracle_error(&e), "ModelManager::add_metamodel"))?;
+        let metamodel = self
+            .mm
+            .model_file(METAMODEL_NAMESPACE)
+            .ok_or_else(|| Fault::Harness("add_metamodel registered no metamodel".into()))?;
+        self.files.push(Entry {
+            ast: metamodel.ast().clone(),
+            file_name: metamodel.file_name().map(str::to_string),
+            nullish_name: undefined(),
+            definitions: metamodel.definitions().map(str::to_string),
+        });
+        Ok(())
     }
 
     /// A model manager another op returned (a `derived` recipe), with its
@@ -2398,7 +2452,12 @@ impl Clone for Arg {
                 index: *index,
                 is_key: *is_key,
             },
-            Self::DeclNew { fqn, processed } => Self::DeclNew {
+            Self::DeclNew {
+                name,
+                fqn,
+                processed,
+            } => Self::DeclNew {
+                name: name.clone(),
                 fqn: fqn.clone(),
                 processed: processed.clone(),
             },
