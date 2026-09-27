@@ -1,0 +1,9 @@
+node      loader  load ms  decode  compile  instantiate  first Engine  decoder
+v18.20.8  ESM       223.6    41.4     32.4          2.4           0.3  Buffer
+v18.20.8  CJS       187.9       -        -            -           0.4  Buffer
+v20.20.2  ESM        57.0     1.1      7.9          2.7           8.5  Buffer
+v20.20.2  CJS        36.2       -        -            -           8.9  Buffer
+v22.23.2  ESM        57.2     0.8      5.2          1.8           8.3  Buffer
+v22.23.2  CJS        99.7       -        -            -           9.1  Buffer
+v24.21.0  ESM        60.7     0.7      4.2          2.0          74.7  Buffer
+v24.21.0  CJS        89.2       -        -            -          10.0  Buffer

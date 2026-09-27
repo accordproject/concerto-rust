@@ -1,0 +1,41 @@
+{
+  "runtime": "node v18.20.8 (ESM)",
+  "importMs": 338.1,
+  "loadTimings": {
+    "decoder": "Buffer",
+    "wasmBytes": 1115702,
+    "decodeMs": 10.0743950009346,
+    "compileMs": 81.74987000226974,
+    "instantiateMs": 14.56863197684288
+  },
+  "results": {
+    "syncConstructAndValidate": "ok",
+    "snapshotsAgree": "ok",
+    "errorStrategyA": {
+      "name": "IllegalModel",
+      "message": "illegal model: bad model",
+      "fileName": "model.cto",
+      "location": "line 3 column 5"
+    },
+    "errorStrategyB": {
+      "class": "IllegalModelException",
+      "message": "illegal model: bad model",
+      "modelFile": "model.cto",
+      "fileLocation": "line 3 column 5",
+      "stackMentionsWasm": true
+    },
+    "realErrors": {
+      "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+      "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+      "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+    },
+    "panic": {
+      "thrown": "RuntimeError: unreachable",
+      "isWebAssemblyRuntimeError": true,
+      "freshObjectAfterPanic": "usable: 1 namespace(s) loaded",
+      "objectThatPanickedInAMethod": "broken: Error: recursive use of an object detected which would lead to unsafe aliasing in rust"
+    },
+    "useAfterFree": "Error: null pointer passed to rust",
+    "finalizationRegistry": true
+  }
+}

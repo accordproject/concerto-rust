@@ -1,0 +1,41 @@
+# Throwaway feasibility spike for the WASM binding (concerto-rust#86).
+# Not a workspace member: the empty [workspace] table below keeps it out of the
+# repository workspace so it cannot clash with work on concerto-core.
+[package]
+name = "concerto-wasm-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+accordproject-concerto-core = { path = "../../concerto-core" }
+wasm-bindgen = "=0.2.128"
+js-sys = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6.5"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Same as release, but optimised for speed rather than size; used to compare
+# the size / speed trade-off in REPORT.md.
+[profile.release-speed]
+inherits = "release"
+opt-level = 3
+
+# Only used when building with wasm-pack. wasm-pack 0.15 downloads binaryen 117
+# and calls it without feature flags, which rejects the bulk-memory (and other)
+# instructions Rust's wasm32 target now emits by default.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-reference-types", "--enable-multivalue", "--enable-mutable-globals"]

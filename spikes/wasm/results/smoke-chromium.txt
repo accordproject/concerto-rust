@@ -1,0 +1,248 @@
+{
+  "browser": "headless shell (default)",
+  "version": "147.0.7727.15",
+  "syncLimit": [
+    {
+      "size": 4096,
+      "ok": true
+    },
+    {
+      "size": 4097,
+      "ok": true
+    },
+    {
+      "size": 1048576,
+      "ok": true
+    },
+    {
+      "size": 4194304,
+      "ok": true
+    },
+    {
+      "size": 8388608,
+      "ok": true
+    },
+    {
+      "size": 8388609,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    },
+    {
+      "size": 16777216,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    }
+  ],
+  "mainThread": {
+    "ok": true,
+    "importMs": 84,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115702,
+      "decodeMs": 11.900000005960464,
+      "compileMs": 6.0999999940395355,
+      "instantiateMs": 2.7000000029802322
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "panic": {
+        "thrown": "RuntimeError: unreachable",
+        "isWebAssemblyRuntimeError": true,
+        "freshObjectAfterPanic": "usable: 1 namespace(s) loaded",
+        "objectThatPanickedInAMethod": "broken: Error: recursive use of an object detected which would lead to unsafe aliasing in rust"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "worker": {
+    "ok": true,
+    "importMs": 115,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115702,
+      "decodeMs": 2.5,
+      "compileMs": 68.29999999701977,
+      "instantiateMs": 3.1000000089406967
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "panic": {
+        "thrown": "RuntimeError: unreachable",
+        "isWebAssemblyRuntimeError": true,
+        "freshObjectAfterPanic": "usable: 1 namespace(s) loaded",
+        "objectThatPanickedInAMethod": "broken: Error: recursive use of an object detected which would lead to unsafe aliasing in rust"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "asyncCompile": {
+    "ok": true,
+    "asyncCompileMs": 7.4000000059604645,
+    "syncInstantiateMs": 6.299999997019768
+  },
+  "pageErrors": []
+}
+{
+  "browser": "chromium, new headless",
+  "version": "147.0.7727.15",
+  "syncLimit": [
+    {
+      "size": 4096,
+      "ok": true
+    },
+    {
+      "size": 4097,
+      "ok": true
+    },
+    {
+      "size": 1048576,
+      "ok": true
+    },
+    {
+      "size": 4194304,
+      "ok": true
+    },
+    {
+      "size": 8388608,
+      "ok": true
+    },
+    {
+      "size": 8388609,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    },
+    {
+      "size": 16777216,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    }
+  ],
+  "mainThread": {
+    "ok": true,
+    "importMs": 48.599999994039536,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115702,
+      "decodeMs": 3.5999999940395355,
+      "compileMs": 5.5,
+      "instantiateMs": 1.5
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "panic": {
+        "thrown": "RuntimeError: unreachable",
+        "isWebAssemblyRuntimeError": true,
+        "freshObjectAfterPanic": "usable: 1 namespace(s) loaded",
+        "objectThatPanickedInAMethod": "broken: Error: recursive use of an object detected which would lead to unsafe aliasing in rust"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "worker": {
+    "ok": true,
+    "importMs": 36.099999994039536,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115702,
+      "decodeMs": 2.3999999910593033,
+      "compileMs": 1.6000000089406967,
+      "instantiateMs": 0.7999999970197678
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "panic": {
+        "thrown": "RuntimeError: unreachable",
+        "isWebAssemblyRuntimeError": true,
+        "freshObjectAfterPanic": "usable: 1 namespace(s) loaded",
+        "objectThatPanickedInAMethod": "broken: Error: recursive use of an object detected which would lead to unsafe aliasing in rust"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "asyncCompile": {
+    "ok": true,
+    "asyncCompileMs": 5.799999997019768,
+    "syncInstantiateMs": 6.0999999940395355
+  },
+  "pageErrors": []
+}

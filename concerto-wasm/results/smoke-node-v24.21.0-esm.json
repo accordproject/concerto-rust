@@ -1,0 +1,62 @@
+{
+  "runtime": "node v24.21.0 (ESM)",
+  "importMs": 27.6,
+  "rows": [
+    {
+      "name": "a new manager holds the system model",
+      "ok": true,
+      "detail": {
+        "generation": 1
+      }
+    },
+    {
+      "name": "addModel returns the model file handle and bumps the generation",
+      "ok": true,
+      "detail": {
+        "file": 1,
+        "generation": 2
+      }
+    },
+    {
+      "name": "declaration handles and snapshots",
+      "ok": true
+    },
+    {
+      "name": "property handles and snapshots",
+      "ok": true
+    },
+    {
+      "name": "model file snapshot",
+      "ok": true
+    },
+    {
+      "name": "handles stay valid across a later load",
+      "ok": true
+    },
+    {
+      "name": "validateModels accepts a valid model set",
+      "ok": true
+    },
+    {
+      "name": "errors leave through the registered factory",
+      "ok": true,
+      "detail": {
+        "duplicate": "IllegalModel/pre-port: duplicate namespace: org.example@1.0.0",
+        "validate": "IllegalModel/pre-port: Could not find super type Ghost for Orphan",
+        "handle": "TypeNotFound: type not found: Declaration(DeclId(1000000))"
+      }
+    },
+    {
+      "name": "a freed manager throws",
+      "ok": true
+    },
+    {
+      "name": "the trial bindings are still exported",
+      "ok": true
+    },
+    {
+      "name": "init() resolves on a loaded module",
+      "ok": true
+    }
+  ]
+}

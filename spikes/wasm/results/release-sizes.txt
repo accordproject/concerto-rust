@@ -1,0 +1,4 @@
+cargo (before wasm-bindgen)      1566674 B  gzip   505814  brotli   349434
+wasm-bindgen output              1167023 B  gzip   419194  brotli   296773
+after wasm-opt -Oz               1115534 B  gzip   423919  brotli   298463
+ESM loader + inlined base64      1487399 B  gzip   595593  brotli   415482

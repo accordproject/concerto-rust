@@ -1,0 +1,124 @@
+{
+  "harness": "cargo bench --manifest-path benches/Cargo.toml",
+  "recorded_at": "2026-09-27T16:02:46Z",
+  "concerto_rust_commit": "a2bb5b4b21550221877a54a0bbe92802577fab9d",
+  "entries": [
+    {
+      "id": "instance_validate/validate_only",
+      "n": 500,
+      "median_ns_per_batch": 954839.9736842106,
+      "median_ns_per_op": 1909.6799473684212,
+      "mean_ns_per_batch": 974001.8125327425,
+      "stddev_ns_per_batch": 165981.61644716733,
+      "cv": 0.17041202009219836
+    },
+    {
+      "id": "load_validate_concerto-core-test-data/load",
+      "n": 35,
+      "median_ns_per_batch": 1934858.25,
+      "median_ns_per_op": 55281.66428571429,
+      "mean_ns_per_batch": 2017717.9723076918,
+      "stddev_ns_per_batch": 255869.11874656257,
+      "cv": 0.12681114122898035
+    },
+    {
+      "id": "load_validate_concerto-core-test-data/load_text_value",
+      "n": 35,
+      "median_ns_per_batch": 2272151.0476190476,
+      "median_ns_per_op": 64918.60136054421,
+      "mean_ns_per_batch": 2220900.931428572,
+      "stddev_ns_per_batch": 258111.20240308248,
+      "cv": 0.11621914275890508
+    },
+    {
+      "id": "load_validate_concerto-core-test-data/validate",
+      "n": 35,
+      "median_ns_per_batch": 1844771.6071428573,
+      "median_ns_per_op": 52707.760204081635,
+      "mean_ns_per_batch": 1855603.2128571435,
+      "stddev_ns_per_batch": 212721.93175621564,
+      "cv": 0.11463761772037434
+    },
+    {
+      "id": "load_validate_conformance/load",
+      "n": 41,
+      "median_ns_per_batch": 869551.3551270686,
+      "median_ns_per_op": 21208.569637245575,
+      "mean_ns_per_batch": 849218.5427347784,
+      "stddev_ns_per_batch": 117686.10170616745,
+      "cv": 0.13858164392781316
+    },
+    {
+      "id": "load_validate_conformance/load_text_value",
+      "n": 41,
+      "median_ns_per_batch": 1025149.8887844612,
+      "median_ns_per_op": 25003.65582401125,
+      "mean_ns_per_batch": 1053420.1829765202,
+      "stddev_ns_per_batch": 84994.66283887085,
+      "cv": 0.08068448299396719
+    },
+    {
+      "id": "load_validate_conformance/validate",
+      "n": 41,
+      "median_ns_per_batch": 1025443.3977272727,
+      "median_ns_per_op": 25010.81457871397,
+      "mean_ns_per_batch": 1010067.7214444114,
+      "stddev_ns_per_batch": 117598.38566620328,
+      "cv": 0.11642623872589046
+    },
+    {
+      "id": "load_validate_synthetic-large/load",
+      "n": 1,
+      "median_ns_per_batch": 3358593.033333333,
+      "median_ns_per_op": 3358593.033333333,
+      "mean_ns_per_batch": 3532570.481333334,
+      "stddev_ns_per_batch": 609975.1742744072,
+      "cv": 0.17267176337955983
+    },
+    {
+      "id": "load_validate_synthetic-large/load_text_value",
+      "n": 1,
+      "median_ns_per_batch": 3792858.3571428573,
+      "median_ns_per_op": 3792858.3571428573,
+      "mean_ns_per_batch": 3893695.0364285703,
+      "stddev_ns_per_batch": 493255.2434091355,
+      "cv": 0.126680502400508
+    },
+    {
+      "id": "load_validate_synthetic-large/validate",
+      "n": 1,
+      "median_ns_per_batch": 3009406.125,
+      "median_ns_per_op": 3009406.125,
+      "mean_ns_per_batch": 3066890.1325,
+      "stddev_ns_per_batch": 413472.5930027193,
+      "cv": 0.13481819535076525
+    },
+    {
+      "id": "validate_metamodel_concerto-core-test-data/concerto-core_from_json",
+      "n": 35,
+      "median_ns_per_batch": 1844176.0013495279,
+      "median_ns_per_op": 52690.742895700794,
+      "mean_ns_per_batch": 1907858.7532902858,
+      "stddev_ns_per_batch": 200523.7904200824,
+      "cv": 0.10510410693362905
+    },
+    {
+      "id": "validate_metamodel_conformance/concerto-core_from_json",
+      "n": 41,
+      "median_ns_per_batch": 777149.1236343367,
+      "median_ns_per_op": 18954.856674008213,
+      "mean_ns_per_batch": 817339.2319812981,
+      "stddev_ns_per_batch": 133936.9057829119,
+      "cv": 0.16386941987140116
+    },
+    {
+      "id": "validate_metamodel_synthetic-large/concerto-core_from_json",
+      "n": 1,
+      "median_ns_per_batch": 3074473.294117647,
+      "median_ns_per_op": 3074473.294117647,
+      "mean_ns_per_batch": 3352244.35764706,
+      "stddev_ns_per_batch": 579131.0799070462,
+      "cv": 0.1727592078978211
+    }
+  ]
+}

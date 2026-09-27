@@ -1,8 +1,6 @@
 name: Concerto Conformance Tests
 
 # The suite runs against the semantic validation the runtime now implements.
-# The Rust harness in the upstream suite still expects an earlier shape of our
-# API, so the job does not pass yet and is reported rather than hidden.
 on:
   push:
     branches: [main]
@@ -38,5 +36,10 @@ jobs:
           toolchain: stable
           override: true
 
+      # Patch the harness's git dependency to this checkout, so the job tests the
+      # commit under test rather than the revision pinned in the suite's Cargo.lock.
       - name: Run Rust-based Conformance Tests
-        run: cargo run --manifest-path concerto-conformance/semantic/features/support/rust/cucumber_tests/Cargo.toml
+        run: >-
+          cargo run
+          --config 'patch."https://github.com/accordproject/concerto-rust".accordproject-concerto-core.path="concerto-core"'
+          --manifest-path concerto-conformance/semantic/features/support/rust/cucumber_tests/Cargo.toml

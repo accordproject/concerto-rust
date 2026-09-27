@@ -1,0 +1,66 @@
+[package]
+name = "concerto-benches"
+description = "Criterion benchmarks of concerto-core (and concerto-validate-rs) against the same workloads as the TS harness in migration/bench/ of the concerto repo."
+version = "0.1.0"
+# Not a member of the root workspace (see the `exclude` note in the root
+# Cargo.toml), so `foo.workspace = true` inheritance isn't available here -
+# these are literal copies of the root [workspace.package] values instead.
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Accord Project <accordproject.org>"]
+publish = false
+# We declare bench targets explicitly below; `benches/common/` holds shared
+# fixture-loading code, not a bench target, and would otherwise be picked up
+# by Cargo's directory-based autodiscovery too.
+autobenches = false
+
+[dependencies]
+accordproject-concerto-core = { path = "../concerto-core" }
+# Not `{ workspace = true }`: this crate is intentionally not a workspace
+# member (see the root Cargo.toml), so workspace dependency inheritance
+# isn't available; this is a literal copy of the root's
+# `[workspace.dependencies] serde_json` version instead.
+serde_json = "1.0"
+
+# concerto-validate-rs is a separate repository, checked out as a sibling of
+# this repo (see the top-level migration plan's repo layout:
+# `accordproject/concerto`, `accordproject/concerto-rust` and
+# `accordproject/concerto-validate-rs` all under the same parent directory,
+# e.g. `/home/user/<repo>`). It is not part of this workspace and is not
+# itself changed by this crate; we only call its public
+# `validate_metamodel` function for workload 2 (see benches/README.md).
+#
+# NOTE: this manifest must be able to *read* that path's Cargo.toml even
+# when the `validate-rs` feature below is off - Cargo resolves every
+# path dependency's manifest, optional or not, before applying features,
+# so the sibling checkout has to exist on disk for any `cargo` command
+# that touches this crate at all (`--no-default-features` does not avoid
+# this - see benches/README.md). What the feature controls is whether
+# concerto-validator-rs is actually *built*: it is off by default so a
+# plain `cargo bench --manifest-path benches/Cargo.toml` never compiles
+# it, and so never runs its build script, which fetches metamodel.json
+# over the network and overwrites the copy in the shared sibling
+# checkout (see benches/README.md's "Repo layout this assumes"). Opt in
+# explicitly with `--features validate-rs` when you want that half of
+# workload 2, knowing it will touch that shared checkout.
+concerto-validator-rs = { path = "../../concerto-validate-rs", optional = true }
+
+[features]
+default = []
+validate-rs = ["concerto-validator-rs"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "load_validate"
+harness = false
+
+[[bench]]
+name = "validate_metamodel"
+harness = false
+
+[[bench]]
+name = "instance_validate"
+harness = false

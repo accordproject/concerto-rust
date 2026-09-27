@@ -1,0 +1,252 @@
+{
+  "browser": "headless shell (default)",
+  "version": "147.0.7727.15",
+  "syncLimit": [
+    {
+      "size": 4096,
+      "ok": true
+    },
+    {
+      "size": 4097,
+      "ok": true
+    },
+    {
+      "size": 1048576,
+      "ok": true
+    },
+    {
+      "size": 4194304,
+      "ok": true
+    },
+    {
+      "size": 8388608,
+      "ok": true
+    },
+    {
+      "size": 8388609,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    },
+    {
+      "size": 16777216,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    }
+  ],
+  "mainThread": {
+    "ok": true,
+    "importMs": 45.900000005960464,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115534,
+      "decodeMs": 2.8999999910593033,
+      "compileMs": 4.799999997019768,
+      "instantiateMs": 2
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "worker": {
+    "ok": true,
+    "importMs": 40.20000000298023,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115534,
+      "decodeMs": 3.4000000059604645,
+      "compileMs": 1.8999999910593033,
+      "instantiateMs": 0.9000000059604645
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "asyncCompile": {
+    "ok": true,
+    "asyncCompileMs": 6.199999988079071,
+    "syncInstantiateMs": 7.300000011920929
+  },
+  "pageErrors": []
+}
+
+benchmark in headless shell (default) 147.0.7727.15, main thread, best of 3
+noop()                                                   157,915,457 calls/s        6 ns
+add(u32, u32) -> u32                                      39,492,175 calls/s       25 ns
+strLen(32-char string)                                     4,783,478 calls/s      209 ns
+strLen(1 KiB string)                                         200,501 calls/s     4987 ns
+makeStr(32) -> string                                      1,094,842 calls/s      913 ns
+makeStr(1024) -> string                                      629,556 calls/s     1588 ns
+JS baseline: read s.length                               107,866,667 calls/s        9 ns   for scale
+load set: JSON.stringify + addModel(string)                   56.356 ms   11 files, 562 decls, 5006 props, 720 KiB JSON
+load set: addModel(pre-stringified)                           58.929 ms   string marshalling + serde_json parse in WASM
+load set: addModelObject(object) [serde-wasm-bindgen]         86.492 ms
+JS baseline: JSON.stringify(set)                               1.946 ms
+new Engine() + free()                                          0.041 ms   parses the system model
+validateModels() on the set                                    7.085 ms
+snapshotJson() -> string                                       5.851 ms   514 KiB
+snapshotJson() + JSON.parse                                    7.942 ms
+snapshotObject() [serde-wasm-bindgen]                         19.348 ms
+fine walk, namespace-string keys                              27.173 ms   16715 calls, 1626 ns/call
+fine walk, integer handles                                    29.240 ms   16715 calls, 1749 ns/call
+coarse: snapshotObject() then the same walk in JS             20.655 ms
+JS baseline: same walk over a cached snapshot                  0.075 ms
+declName(nsString, i) -> string                              328,179 calls/s     3047 ns
+hDeclName(handle, i) -> string                               643,119 calls/s     1555 ns
+hPropIsOptional(handle, i, j) -> bool                      3,673,333 calls/s      272 ns
+throw mapped error, strategy A (plain Error)                  22,591 calls/s    44265 ns
+throw mapped error, strategy B (JS factory)                   19,244 calls/s    51966 ns
+JS baseline: throw/catch new Error                            60,324 calls/s    16577 ns
+{
+  "browser": "chromium, new headless",
+  "version": "147.0.7727.15",
+  "syncLimit": [
+    {
+      "size": 4096,
+      "ok": true
+    },
+    {
+      "size": 4097,
+      "ok": true
+    },
+    {
+      "size": 1048576,
+      "ok": true
+    },
+    {
+      "size": 4194304,
+      "ok": true
+    },
+    {
+      "size": 8388608,
+      "ok": true
+    },
+    {
+      "size": 8388609,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    },
+    {
+      "size": 16777216,
+      "ok": false,
+      "error": "RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`."
+    }
+  ],
+  "mainThread": {
+    "ok": true,
+    "importMs": 52.30000001192093,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115534,
+      "decodeMs": 3.7999999970197678,
+      "compileMs": 5.700000002980232,
+      "instantiateMs": 2.0999999940395355
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "worker": {
+    "ok": true,
+    "importMs": 36.70000000298023,
+    "loadTimings": {
+      "decoder": "fromBase64",
+      "wasmBytes": 1115534,
+      "decodeMs": 3.2999999970197678,
+      "compileMs": 2.9000000059604645,
+      "instantiateMs": 1.5
+    },
+    "results": {
+      "syncConstructAndValidate": "ok",
+      "snapshotsAgree": "ok",
+      "errorStrategyA": {
+        "name": "IllegalModel",
+        "message": "illegal model: bad model",
+        "fileName": "model.cto",
+        "location": "line 3 column 5"
+      },
+      "errorStrategyB": {
+        "class": "IllegalModelException",
+        "message": "illegal model: bad model",
+        "modelFile": "model.cto",
+        "fileLocation": "line 3 column 5",
+        "stackMentionsWasm": true
+      },
+      "realErrors": {
+        "duplicate": "IllegalModelException: illegal model: duplicate namespace: org.spike.n0@1.0.0",
+        "malformed": "IllegalModelException: illegal model: key must be a string at line 1 column 2",
+        "validate": "ValidationException: validation failed: Could not find super type Missing for Orphan"
+      },
+      "useAfterFree": "Error: null pointer passed to rust",
+      "finalizationRegistry": true
+    }
+  },
+  "asyncCompile": {
+    "ok": true,
+    "asyncCompileMs": 4.700000002980232,
+    "syncInstantiateMs": 6
+  },
+  "pageErrors": []
+}

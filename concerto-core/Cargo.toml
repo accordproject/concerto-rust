@@ -15,8 +15,24 @@ homepage.workspace = true
 name = "concerto_core"
 
 [dependencies]
-accordproject-concerto-metamodel = { path = "../concerto-metamodel", version = "3.13.1"}
-fancy-regex = { workspace = true }
+accordproject-concerto-macros = { path = "../concerto-macros", version = "0.1.0" }
+accordproject-concerto-metamodel = { path = "../concerto-metamodel", version = "3.17.0"}
 serde = { workspace = true }
-serde_json = { workspace = true }
+# OD-3: keep the given AST in its original key order. DV-001
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
+# PORTING.md OD-8: ECMAScript regular expressions (ID_REGEX, node-semver's FULL
+# pattern) and ECMAScript Number::toString.
+# PORTING.md OD-8: insertion-ordered maps (3.7), for instance fields.
+indexmap = "2"
+regress = "0.12"
+ryu-js = "1.0"
+
+[dev-dependencies]
+# The native oracle harness (tests/oracle) keys the P1-07a CTO -> AST cache
+# by SHA-256, as migration/oracle/bin/build-cto-cache.js does.
+sha2 = "0.10"
+# `test/decoratormanager.js`'s vocabulary tests parse the extracted
+# vocabulary YAML (the `yaml` npm package, YAML 1.2) to check its values;
+# src/dcs/decoratormanager_tests.rs does the same.
+yaml-rust2 = "0.10"

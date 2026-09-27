@@ -1,0 +1,16 @@
+{
+  "name": "concerto-wasm-build",
+  "private": true,
+  "description": "Build and smoke tests for concerto-wasm. The package it builds, pkg/, is @accordproject/concerto-engine.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "sh build.sh",
+    "smoke:node": "node scripts/node-smoke.cjs && node scripts/node-smoke.mjs",
+    "smoke:chromium": "node scripts/chromium-smoke.mjs",
+    "smoke": "npm run smoke:node && npm run smoke:chromium"
+  },
+  "devDependencies": {
+    "binaryen": "132.0.0",
+    "playwright": "1.59.1"
+  }
+}

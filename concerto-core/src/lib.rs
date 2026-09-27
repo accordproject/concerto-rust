@@ -7,15 +7,29 @@
 //! Everything sits on top of the generated [`concerto_metamodel`] types. We
 //! wrap those in our own enums rather than redefining the schema by hand.
 
+// The derives name the traits by their `::concerto_core` paths, which also
+// have to resolve inside this crate.
+extern crate self as concerto_core;
+
+/// The derive macros for this crate's traits (plan decision D5), from the
+/// `concerto-macros` crate.
+pub use concerto_macros as derive;
+
+pub mod dcs;
+mod ecma;
 pub mod error;
+pub mod instance;
 pub mod introspect;
 pub mod model_manager;
 pub mod model_util;
 pub mod rootmodel;
-mod validation;
+mod semver_range;
+pub mod validation;
 
 pub use error::{ConcertoError, Result};
 pub use introspect::{
-    ClassDeclaration, ClassKind, Declaration, Import, ModelFile, Property, ScalarDeclaration,
+    ClassDeclaration, ClassKind, Declaration, DeclarationKind, Decorated, Decorator,
+    DecoratorArgument, DecoratorValidationOptions, FullyQualified, HasValidators, Import,
+    ModelFile, Named, Property, ScalarDeclaration, TypeReferenceArgument, Typed, Validate,
 };
 pub use model_manager::ModelManager;
