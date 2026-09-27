@@ -3464,6 +3464,57 @@ mod tests {
         );
     }
 
+    /// accordproject/concerto-rust#241 (the native strict-decode divergence
+    /// off #219, T2d's second loose end): the fuzz-triage seed minimised in
+    /// #219's `checks.mjs` ("identified.$class=true beside a null decorator
+    /// resolves via DV-018, not a toString crash") — `identified.$class` set
+    /// to the boolean `true`, and the class's own property carrying a `null`
+    /// second decorator — driven through the actual `ModelManager::add_model`
+    /// entry point (this port's `fromAst`), not just `Declaration::try_from`.
+    /// Before this fix, the whole-node strict serde decode of `identified`
+    /// (a `bool`, where the generated `Identified` enum's internally-tagged
+    /// `$class` needs a string) failed outright, so this class's own
+    /// property — and the `null` decorator on it — was never reached at all.
+    /// TS's `ClassDeclaration.process` never type-checks `$class`, only
+    /// strictly compares it to the `IdentifiedBy` FQN, so a boolean simply
+    /// takes the system-identified `else` branch, same as `#219 T2c`'s
+    /// `concerto-wasm` fix (`classDeclarationProcess`) resolved on the JS
+    /// binding side; TS itself then reaches its own `Decorated.process` for
+    /// the property, raising DV-018's `IllegalModelException` for the `null`
+    /// decorator (maintainer-accepted, #218) — the same outcome this asserts
+    /// natively.
+    #[test]
+    fn model_manager_add_model_treats_a_non_string_identified_class_as_system_identified_and_reaches_its_propertys_null_decorator()
+     {
+        let mut mgr = ModelManager::new().unwrap();
+        let err = mgr
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.example@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": "Product", "isAbstract": false,
+                          "identified": { "$class": true, "name": "productId" },
+                          "properties": [
+                              { "$class": "concerto.metamodel@1.0.0.StringProperty",
+                                "name": "sku", "isArray": false, "isOptional": false,
+                                "decorators": [
+                                    { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom" },
+                                    null
+                                ] }
+                          ] }
+                    ]
+                }),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid decorator. Expected object. Found null"
+        );
+    }
+
     #[test]
     fn walks_the_graph_by_handle() {
         let mgr = manager();

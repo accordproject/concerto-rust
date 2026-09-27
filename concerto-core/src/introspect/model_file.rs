@@ -816,32 +816,6 @@ fn parse_namespace_version(
     Ok(version.unwrap_or_default())
 }
 
-/// Splits a namespace like `org.example@1.0.0` into its name and version,
-/// rejecting a namespace without a `@version`, with a second `@`, with an empty
-/// name or version, or with a name segment that is not an identifier.
-///
-/// This is the pre-port loader's own check, not a port of
-/// `ModelUtil.parseNamespace` (which accepts unversioned namespaces, DV-003).
-/// It goes when `ModelFile` is ported (P2-08).
-pub(crate) fn split_versioned_namespace(namespace: &str) -> Result<(String, String)> {
-    let illegal = || ConcertoError::IllegalModel {
-        message: format!("invalid namespace: {namespace}"),
-        file_name: None,
-        location: None,
-    };
-    let mut parts = namespace.splitn(3, '@');
-    let name = parts.next().unwrap_or("").to_string();
-    match (parts.next(), parts.next()) {
-        (Some(version), None) => {
-            if name.is_empty() || version.is_empty() || !name.split('.').all(is_valid_identifier) {
-                return Err(illegal());
-            }
-            Ok((name, version.to_string()))
-        }
-        _ => Err(illegal()),
-    }
-}
-
 /// Stamps this file's name onto an `IllegalModel` error that came up while
 /// parsing one of its declarations, so the message points somewhere useful.
 fn annotate(err: ConcertoError, file_name: &Option<String>) -> ConcertoError {
