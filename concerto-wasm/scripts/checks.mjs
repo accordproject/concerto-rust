@@ -963,6 +963,56 @@ export function runChecks(engine) {
     assert(named.name === 'Hide', `name ${named.name}`);
   });
 
+  // #219 T2c continuation brief (2026-09-26 23:20): the fuzz-triage 5-case
+  // regression on seed conformance/ModelManager.addModelFile/
+  // 0c7acbac5ee755a471e0801f.json, minimised (stage2/triage-clusters.json)
+  // to two edits on that seed's AST — a `null` second entry in
+  // `declarations[0].properties[0].decorators` (alongside one well-formed
+  // `custom` decorator) and `declarations[0].identified.$class` set to
+  // `true` — reproduced here through the two bindings TS's own
+  // `ClassDeclaration.process`/`Decorated.process` actually call, in TS's
+  // own order: the class's own superType/identified decision
+  // (`classDeclarationProcess`) runs first — `this.ast.identified.$class
+  // === '...IdentifiedBy'` is a strict-equality check, never a `.toString()`
+  // call, so a boolean `$class` simply fails to match, same as any other
+  // non-matching value, and must not crash the way the pre-#217/#218
+  // rust-mode bug did (`this.ast.identified.$class.toString is not a
+  // function`) — then TS iterates `ast.properties`, building each
+  // property's own view, whose `Decorated.process` calls `decoratorProcess`
+  // once per decorator: the first (well-formed) decorator processes
+  // normally, and the second, `null`, throws DV-018's
+  // `IllegalModelException` (`decorator-process-notobject`) — never TS's
+  // own crash, which is the divergence DV-018 accepts. Before the #217/#218
+  // merge (4d7be66) rust mode instead threw its own bogus
+  // `this.ast.identified.$class.toString is not a function` TypeError for
+  // this exact combination; this pins that the regression is resolved, not
+  // "unaddressed" (a prior turn's handoff comment wrongly reported no repro
+  // or fix for this case).
+  check('identified.$class=true beside a null decorator resolves via DV-018, not a toString crash (#219 5-case regression)', () => {
+    const modelFile = { isSystemModelFile: () => false, getName: () => 'decorated_001_duplicate_decorator.json' };
+    const declaration = {
+      ast: { identified: { $class: true, name: 'productId' } },
+      name: 'Product',
+      fqn: 'org.example.decorated001.invalid@1.0.0.Product',
+      getModelFile: () => modelFile,
+    };
+    // classDeclarationProcess must not crash reading a non-string
+    // `identified.$class` — the old bug's own site.
+    const decision = engine.classDeclarationProcess(declaration);
+    assert(typeof decision === 'object' && decision !== null, `decision ${JSON.stringify(decision)}`);
+
+    // The property's own decorators, processed in TS's order: the first is
+    // well-formed, the second (mirroring the fixture) is `null`.
+    const view = { getParent: () => ({ getModelFile: () => modelFile }) };
+    const first = engine.decoratorProcess({ $class: `${MM}.Decorator`, name: 'custom' }, view);
+    assert(first.name === 'custom', `first decorator name ${first.name}`);
+    const err = thrown(() => engine.decoratorProcess(null, view));
+    assert(err instanceof EngineError, `null decorator threw ${err}`);
+    assert(err.payload.kind === 'IllegalModel', `kind ${err.payload.kind}`);
+    assert(err.payload.code === 'decorator-process-notobject', `code ${err.payload.code}`);
+    assert(err.message === 'Invalid decorator. Expected object. Found null', `message ${err.message}`);
+  });
+
   mm.free();
   return rows;
 }

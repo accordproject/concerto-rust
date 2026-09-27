@@ -3423,6 +3423,47 @@ mod tests {
         assert_eq!(mgr.model_files().count(), 3);
     }
 
+    /// #219 T2c continuation brief (2026-09-26 23:20): the
+    /// "`this.name.toString` is not a function" cluster's minimised repro
+    /// (`introspect::declaration::tests::
+    /// a_non_string_but_identifier_shaped_name_does_not_mask_an_unrecognised_
+    /// property`) only exercised `Declaration::try_from` directly. This pins
+    /// the same repro — a declaration `name` of `["C"]` (a single-element
+    /// array; TS's `ID_REGEX.test` coerces it with `ToString` to the valid
+    /// identifier `"C"`, so the name check itself never rejects it) together
+    /// with a property whose `$class` is not a recognised property kind —
+    /// through the actual `ModelManager::add_model` entry point that
+    /// TS's `ModelManager.fromAst` corresponds to (this port's `fromAst` is
+    /// `add_model`/`add_model_with_definitions` with no `definitions`, per
+    /// `ModelManager::add_model_with_definitions`'s own doc comment above),
+    /// confirming the fix holds end to end and not only at the
+    /// `Declaration` unit-test boundary.
+    #[test]
+    fn model_manager_add_model_does_not_crash_on_a_non_string_identifier_shaped_name() {
+        let mut mgr = ModelManager::new().unwrap();
+        let err = mgr
+            .add_model(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.acme@1.0.0",
+                    "declarations": [
+                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                          "name": ["C"], "isAbstract": false,
+                          "properties": [
+                              { "$class": "concerto.metamodel@1", "name": "foo",
+                                "isArray": false, "isOptional": false }
+                          ] }
+                    ]
+                }),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Unrecognised model element \"concerto.metamodel@1\"."
+        );
+    }
+
     #[test]
     fn walks_the_graph_by_handle() {
         let mgr = manager();
