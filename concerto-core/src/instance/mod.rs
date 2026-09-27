@@ -43,7 +43,10 @@ pub mod value;
 pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, ValidationResult};
 pub use factory::InstanceEnv;
-pub use metamodel::{METAMODEL_NAMESPACE, validate_ast, validate_metamodel};
+pub use metamodel::{
+    METAMODEL_NAMESPACE, model_manager_from_meta_model, validate_ast, validate_meta_model_instance,
+    validate_metamodel,
+};
 pub use serializer::{Serializer, SerializerOptions};
 pub use validate::{ValidateOptions, validate_instance};
 pub use value::{Instance, InstanceKind, JsValue};

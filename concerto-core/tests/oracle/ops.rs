@@ -86,6 +86,13 @@
 //!   `MapDeclaration.validate`) is read from that file directly (P2-06b);
 //!   any other declaration of one is a handle into a copy of its manager
 //!   (P2-08b, `recipe.rs`).
+//! - **`MetaModel`** `validateMetaModel` and `modelManagerFromMetaModel`
+//!   ([`meta_model_op`], over `concerto_core::instance::metamodel`), plus a
+//!   model manager `derived` from `modelManagerFromMetaModel`; the
+//!   `declarationKind` override of every concrete declaration class; and
+//!   `Declaration.getName`/`getFullyQualifiedName` on a receiver with no
+//!   arena handle (a `declnew`, or a map of an `mfnew`)
+//!   (accordproject/concerto-rust#265).
 
 use concerto_core::dcs;
 use concerto_core::error::{ConcertoError, ErrorKind};
@@ -593,6 +600,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         return decorator_manager_op(h, member, inputs);
     }
 
+    if class == "MetaModel" && matches!(member, "validateMetaModel" | "modelManagerFromMetaModel") {
+        return meta_model_op(h, member, inputs);
+    }
+
     let dispatched = match (class, member) {
         ("ModelManager" | "BaseModelManager" | "AstModelManager", "new") => true,
         ("ModelManager", m) => {
@@ -694,6 +705,17 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
         ),
         ("RelationshipDeclaration", "toString") => true,
         ("EnumDeclaration", "toString") => true,
+        // accordproject/concerto-rust#265: each concrete declaration class's
+        // own `declarationKind` override (`MapDeclaration`'s is above).
+        (
+            "AssetDeclaration"
+            | "ConceptDeclaration"
+            | "EnumDeclaration"
+            | "EventDeclaration"
+            | "ParticipantDeclaration"
+            | "TransactionDeclaration",
+            "declarationKind",
+        ) => true,
         // P2-08: every `ModelFile` member the oracle corpus reaches
         // (`filter`, `getConceptDeclarations` and `getMapDeclarations` have
         // no fixtures, module doc on `ops.rs`); P2-11b-U4 adds
@@ -953,7 +975,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
             // `modelFile`: `recipe.rs`'s `declnew` decoding already ran
             // `ScalarDeclaration::build_standalone` (the receiver's
             // construction), so the four getters below just read its result.
-            Some(Arg::DeclNew { fqn, processed }) => Ok(match member {
+            Some(Arg::DeclNew { fqn, processed, .. }) => Ok(match member {
                 "toString" => ran(Ok(Value::String(
                     concerto_core::introspect::ScalarDeclaration::to_string(&fqn),
                 ))),
@@ -1242,15 +1264,45 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                     .expect("a resolved declref always names a loaded declaration");
             Ok(class_declaration_op(r, id, &fqn, member, &args))
         }
-        "Declaration" => {
-            let Some(Arg::Decl(index, id)) = target else {
-                return Err(Fault::Unsupported(
-                    "a Declaration receiver that is not a declref".into(),
-                ));
-            };
-            let r = &session.pool[index];
-            Ok(declaration_op(r, id, member))
-        }
+        "Declaration" => match target {
+            Some(Arg::Decl(index, id)) => {
+                let r = &session.pool[index];
+                Ok(declaration_op(r, id, member))
+            }
+            // accordproject/concerto-rust#265: a receiver with no arena
+            // handle — a `declnew` (`new ScalarDeclaration(modelFile, ast)`,
+            // never added to `modelFile`) or a map `declref` into an `mfnew`
+            // (`Arg::DeclDetached`) — for the two members that read only the
+            // declaration's own name and its model file's namespace.
+            Some(Arg::DeclNew { name, fqn, .. }) => Ok(match member {
+                "getName" => ran(Ok(name.map_or_else(recipe::undefined, Value::String))),
+                "getFullyQualifiedName" => ran(Ok(Value::String(fqn))),
+                _ => unsupported(format!(
+                    "Declaration.{member} on a declnew receiver never added to a model file"
+                )),
+            }),
+            Some(Arg::DeclDetached { file, index, .. }) => {
+                let Some(declaration) = file.declarations().get(index) else {
+                    return Err(Fault::Divergence(
+                        "state divergence: the detached declaration is not at its recorded index"
+                            .into(),
+                    ));
+                };
+                let name = declaration.name();
+                Ok(match member {
+                    "getName" => ran(Ok(Value::String(name.to_string()))),
+                    "getFullyQualifiedName" => ran(Ok(Value::String(
+                        model_util::get_fully_qualified_name(file.namespace(), name),
+                    ))),
+                    _ => unsupported(format!(
+                        "Declaration.{member} on a declaration of a model file never registered"
+                    )),
+                })
+            }
+            _ => Err(Fault::Unsupported(
+                "a Declaration receiver that is not a declref or declnew".into(),
+            )),
+        },
         "Decorator" => {
             let Some(Arg::Deco(index, parent, position)) = target else {
                 return Err(Fault::Unsupported(
@@ -1327,6 +1379,26 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 ));
             }
             Ok(relationship_to_string(r, id, property))
+        }
+        "AssetDeclaration"
+        | "ConceptDeclaration"
+        | "EventDeclaration"
+        | "ParticipantDeclaration"
+        | "TransactionDeclaration" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(format!(
+                    "a {class} receiver that is not a declref"
+                )));
+            };
+            Ok(declaration_kind_op(&session.pool[index], id))
+        }
+        "EnumDeclaration" if member == "declarationKind" => {
+            let Some(Arg::Decl(index, id)) = target else {
+                return Err(Fault::Unsupported(
+                    "an EnumDeclaration receiver that is not a declref".into(),
+                ));
+            };
+            Ok(declaration_kind_op(&session.pool[index], id))
         }
         "EnumDeclaration" => {
             let Some(Arg::Decl(index, id)) = target else {
@@ -1864,6 +1936,31 @@ fn class_declaration_op(
         }
         _ => unreachable!("`dispatched` lists every ClassDeclaration member"),
     }
+}
+
+/// `declarationKind()` (accordproject/concerto-rust#265): each concrete
+/// class's override returns its own kind (`AssetDeclaration`,
+/// `ConceptDeclaration`, ...; the TS body is `getShortName(this.type)`, the
+/// short name of the AST's `$class`), read here from the receiver as loaded
+/// ([`DeclarationKind::declaration_kind`]). A receiver whose own kind is not
+/// the op's class comes back as that other kind, which the judge then
+/// reports as a failure.
+fn declaration_kind_op(r: &Replayed, id: DeclId) -> Dispatch {
+    let Some(declaration) = r.mm.declaration(id) else {
+        return Dispatch::Fault(Fault::Divergence(
+            "state divergence: the declaration handle does not resolve".into(),
+        ));
+    };
+    let kind = match declaration {
+        Declaration::Class(class) => class.declaration_kind(),
+        Declaration::Enum(enumeration) => enumeration.declaration_kind(),
+        Declaration::Map(map) => map.declaration_kind(),
+        Declaration::Scalar(_) => {
+            // TS `ScalarDeclaration` has no `declarationKind` at all.
+            return unsupported("declarationKind on a ScalarDeclaration receiver");
+        }
+    };
+    ran(Ok(Value::String(kind.to_string())))
 }
 
 /// `Declaration.*` ops that reach every kind of declaration unchanged
@@ -2986,6 +3083,29 @@ pub fn derive_model_manager(
     inputs: &Inputs,
     path: Option<&Value>,
 ) -> Faulty<Option<DerivedModelManager>> {
+    // accordproject/concerto-rust#265: the manager
+    // `MetaModel.modelManagerFromMetaModel` returns (`meta_model_op`).
+    if op == "MetaModel.modelManagerFromMetaModel" {
+        if path.is_some() {
+            return Err(Fault::Harness(format!(
+                "a model manager derived from {op} at an unexpected path {path:?}"
+            )));
+        }
+        let Some((meta_model, validate)) = meta_model_args(h, op, inputs)? else {
+            return Err(Fault::Unsupported(format!(
+                "{op} without a metamodel argument"
+            )));
+        };
+        let validate = validate.is_none_or(|v| recipe::truthy(&v));
+        let mm = concerto_core::instance::model_manager_from_meta_model(&meta_model, validate)
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "state divergence: {op}, which returned this model manager in TS, failed: {}",
+                    to_oracle_error(&e).message
+                ))
+            })?;
+        return Ok(Some(DerivedModelManager { mm }));
+    }
     let Some(member) = op.strip_prefix("DecoratorManager.").filter(|m| {
         matches!(
             *m,
@@ -3061,6 +3181,69 @@ pub fn derive_model_manager(
 
 /// `DecoratorManager` statics (task P2-12) whose inputs include a model
 /// manager or that mutate a plain argument (`effects`).
+/// `MetaModel.validateMetaModel(input)` and
+/// `MetaModel.modelManagerFromMetaModel(metaModel, validate = true)`
+/// (`src/introspect/metamodel.ts`; accordproject/concerto-rust#265), over
+/// `concerto_core::instance::metamodel`'s
+/// [`validate_meta_model_instance`](concerto_core::instance::validate_meta_model_instance)
+/// and [`model_manager_from_meta_model`](concerto_core::instance::model_manager_from_meta_model).
+/// `validateMetaModel` returns its `input` unchanged; `modelManagerFromMetaModel`
+/// returns a new `ModelManager` (`new ModelManager()`, no options), encoded as
+/// the outcome-only summary. Only plain-data arguments are replayed.
+fn meta_model_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
+    let op = format!("MetaModel.{member}");
+    let Some((input, validate)) = meta_model_args(h, &op, inputs)? else {
+        return Ok(unsupported(format!("{op} without a metamodel argument")));
+    };
+    Ok(match member {
+        "validateMetaModel" => ran(
+            concerto_core::instance::validate_meta_model_instance(&input)
+                .map(|()| input)
+                .map_err(|e| to_oracle_error(&e)),
+        ),
+        _ => {
+            // `validate = true`: only an absent (`undefined`) argument takes
+            // the default; any other value is read for its JS truthiness.
+            let validate = validate.is_none_or(|v| recipe::truthy(&v));
+            ran(
+                concerto_core::instance::model_manager_from_meta_model(&input, validate)
+                    .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
+                    .map_err(|e| to_oracle_error(&e)),
+            )
+        }
+    })
+}
+
+/// The `MetaModel` ops' two plain-data arguments: the metamodel document
+/// (`None` when absent or `undefined`) and the optional second one
+/// (`modelManagerFromMetaModel`'s `validate`), as recorded.
+fn meta_model_args(
+    h: &Harness,
+    op: &str,
+    inputs: &Inputs,
+) -> Faulty<Option<(Value, Option<Value>)>> {
+    let mut session = Session::new(h);
+    let args = inputs
+        .args
+        .iter()
+        .map(|a| session.decode(a, None))
+        .collect::<Faulty<Vec<_>>>()?;
+    let plain = |index: usize| -> Faulty<Option<Value>> {
+        match args.get(index) {
+            None => Ok(None),
+            Some(Arg::Plain(v)) if recipe::is_undefined(v) => Ok(None),
+            Some(Arg::Plain(v)) => Ok(Some(v.clone())),
+            Some(_) => Err(Fault::Unsupported(format!(
+                "{op} with a handle where TS takes plain data (argument {index})"
+            ))),
+        }
+    };
+    let Some(input) = plain(0)? else {
+        return Ok(None);
+    };
+    Ok(Some((input, plain(1)?)))
+}
+
 fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     let op = format!("DecoratorManager.{member}");
     let mut session = Session::new(h);
