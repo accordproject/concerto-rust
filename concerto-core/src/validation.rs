@@ -24,12 +24,12 @@ use std::collections::{HashMap, HashSet};
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::model_file::ModelFile;
-use crate::introspect::model_file::split_versioned_namespace;
 use crate::introspect::property::Property;
 use crate::introspect::{DeclarationKind, Decorated, Named, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{
-    self, get_fully_qualified_name, get_namespace, get_short_name, is_primitive_type,
+    self, ParsedNamespace, get_fully_qualified_name, get_namespace, get_short_name,
+    is_primitive_type, parse_namespace,
 };
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
@@ -1041,13 +1041,32 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
 /// must actually be declared there. `None` for every error's `location`:
 /// `ModelFile` carries no `location` field in this port (7.2), and TS itself
 /// passes none on this path (`this` alone, no `fileLocation` argument).
+///
+/// TS computes `modelFile` (the lookup below) and then *unconditionally*
+/// destructures `ModelUtil.parseNamespace(importNamespace)` — before it ever
+/// checks `!modelFile` and throws `modelmanager-gettype-noregisteredns`. So a
+/// import namespace that is both unregistered and fails `parseNamespace`
+/// (for example a mutated import `name` that makes the synthesised
+/// `importNamespace` carry a second, semver-invalid `@version` segment)
+/// surfaces `parseNamespace`'s own plain `Error`, never the "no registered
+/// ns" `IllegalModelException` — reproduced here by calling
+/// [`parse_namespace`] first and propagating its error with `?`, faithfully
+/// including that ordering (accordproject/concerto-rust#241, the `../`
+/// namespace-import mismatch off #219).
 fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
     let mut seen_versions: HashMap<String, Option<String>> = HashMap::new();
     for import_fqn in model_file.get_imports() {
         let import_namespace = get_namespace(Some(&import_fqn))?;
         let import_short_name = get_short_name(&import_fqn);
 
-        if manager.model_file(import_namespace).is_none() {
+        let found = manager.model_file(import_namespace);
+        let ParsedNamespace::Full { name, version, .. } =
+            parse_namespace(Some(import_namespace), false)?
+        else {
+            unreachable!("disable_version_parsing is false")
+        };
+
+        if found.is_none() {
             return Err(catalogue_error(
                 "modelmanager-gettype-noregisteredns",
                 vec![("type", import_fqn.clone())],
@@ -1055,10 +1074,9 @@ fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
             ));
         }
 
-        let (name, import_version) = split_versioned_namespace(import_namespace)?;
         let is_global_model = name == "concerto";
         if let Some(existing) = seen_versions.get(&name)
-            && *existing != Some(import_version.clone())
+            && *existing != version
             && !is_global_model
         {
             return Err(catalogue_error(
@@ -1066,16 +1084,14 @@ fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
                 vec![
                     ("namespace", import_namespace.to_string()),
                     ("version1", existing.clone().unwrap_or_default()),
-                    ("version2", import_version.clone()),
+                    ("version2", version.clone().unwrap_or_default()),
                 ],
                 None,
             ));
         }
-        seen_versions.insert(name, Some(import_version));
+        seen_versions.insert(name, version);
 
-        let source_file = manager
-            .model_file(import_namespace)
-            .expect("checked registered above");
+        let source_file = found.expect("checked registered above");
         if !source_file.is_local_type(import_short_name) {
             return Err(catalogue_error(
                 "modelmanager-gettype-notypeinns",
@@ -2897,6 +2913,34 @@ mod tests {
             import_of("org.a@2.0.0", "Y")
         ]));
         assert!(err.unwrap_err().to_string().contains("different versions"));
+    }
+
+    /// accordproject/concerto-rust#241 (the `../` loose end off #219): a
+    /// fuzz-mutated import `name` makes `ModelUtil.importFullyQualifiedNames`'s
+    /// synthesised `namespace + '.' + name` FQN carry an extra `.` segment
+    /// after the `@`, so the `importNamespace` `check_imports` derives from it
+    /// (`getNamespace`, up to the *last* dot) is `"org.a@1.0.0.X../."` — a
+    /// namespace that is both unregistered and, split on `@`, has a second
+    /// segment (`"1.0.0.X../."`) that fails `semver.valid`. TS's
+    /// `ModelFile.validate` calls `ModelUtil.parseNamespace(importNamespace)`
+    /// *unconditionally*, before it ever checks whether that namespace is
+    /// registered, so this raises `parseNamespace`'s own plain
+    /// `Error("Invalid namespace ...")` — never
+    /// `modelmanager-gettype-noregisteredns`'s `IllegalModelException`, even
+    /// though the namespace is also unregistered. Coordinator decision
+    /// 2026-09-27 on #241: Rust matches TS's ordering and message exactly,
+    /// even though a plain `Error` escaping past `IllegalModelException` here
+    /// is itself arguably a TS bug (recorded as a `ts-bug` DIVERGENCES.md row,
+    /// not fixed).
+    #[test]
+    fn an_import_name_that_makes_the_synthesised_namespace_fail_parse_first() {
+        let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X../../etc")]))
+            .unwrap_err();
+        let ConcertoError::Contract(c) = err else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        assert_eq!(c.kind, ErrorKind::Error);
+        assert_eq!(c.message(), "Invalid namespace org.a@1.0.0.X../.");
     }
 
     #[test]

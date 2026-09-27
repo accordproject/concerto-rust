@@ -582,26 +582,73 @@ impl ClassDeclaration {
                 }
             }
 
-            let identified_is_falsy_named_identified_by = matches!(
-                object.get("identified"),
-                Some(serde_json::Value::Object(identified_object))
-                    if get_short_name(
-                        identified_object
-                            .get("$class")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                    ) == "IdentifiedBy"
-                        // TS: `this.ast.identified.name` read with no type
-                        // check at all, then only ever tested for
-                        // truthiness (`if (this.idField)`) — a missing key
-                        // reads as `undefined`, exactly as falsy as an
-                        // explicit `null`/`0`/`false`/`""` there.
-                        && !identified_object
-                            .get("name")
-                            .is_some_and(crate::ecma::is_truthy)
-            );
-            if identified_is_falsy_named_identified_by {
-                object.remove("identified");
+            // TS: `ClassDeclaration.process` reads `this.ast.identified`
+            // with a plain truthiness check, then compares
+            // `this.ast.identified.$class` to the `IdentifiedBy` FQN with
+            // strict `===` — never a type check, and never a crash on a
+            // non-string or non-object `$class` the way a `.toString()` call
+            // would. Normalizing here, before the strict decode, reproduces
+            // that in full:
+            if let Some(identified_value) = object.get("identified").cloned() {
+                let is_identified_by = matches!(
+                    &identified_value,
+                    serde_json::Value::Object(identified_object)
+                        if get_short_name(
+                            identified_object
+                                .get("$class")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                        ) == "IdentifiedBy"
+                );
+                if !crate::ecma::is_truthy(&identified_value) {
+                    // `if (this.ast.identified)` is false for any falsy
+                    // value (`false`, `0`, `""`, `null`, or the key
+                    // altogether missing) — no `idField`, no
+                    // `addIdentifierField()` call, exactly as if there were
+                    // no `identified` node at all.
+                    object.remove("identified");
+                } else if is_identified_by {
+                    // TS: `this.idField = this.ast.identified.name` — read
+                    // with no type check at all, then only ever tested for
+                    // truthiness (`if (this.idField)`) — a missing key reads
+                    // as `undefined`, exactly as falsy as an explicit
+                    // `null`/`0`/`false`/`""` there. A truthy `name` that is
+                    // a JSON string decodes as `IdentifiedBy` unchanged, so
+                    // only the falsy case needs normalizing away here (a
+                    // truthy non-string `name` is the same class of
+                    // out-of-scope divergence as `superType`'s, above).
+                    let falsy_name = !identified_value
+                        .get("name")
+                        .is_some_and(crate::ecma::is_truthy);
+                    if falsy_name {
+                        object.remove("identified");
+                    }
+                } else {
+                    // TS's `else` branch: anything truthy whose `$class`
+                    // does not strictly equal the `IdentifiedBy` FQN — a
+                    // boolean, a wrong string, an object with an unrelated
+                    // or missing `$class`, an array, a truthy number, ... —
+                    // is read as system-identified (`idField =
+                    // '$identifier'`, `addIdentifierField()` runs), never a
+                    // decode error. Canonicalizing to the well-formed
+                    // `Identified` shape here lets the strict decode below
+                    // succeed and reach the same `Some(mm::Identified::
+                    // Identified)` outcome regardless of what the AST's own
+                    // `identified` node actually held.
+                    //
+                    // Before this normalization, a non-object-shaped
+                    // `identified.$class` (accordproject/concerto-rust#241,
+                    // the native strict-decode divergence off #219) failed
+                    // the whole-node decode outright — before this class's
+                    // own properties, and their decorators, were ever
+                    // examined, so a null decorator among them (DV-018)
+                    // never got the chance TS's and the WASM binding's own
+                    // processing order give it.
+                    object.insert(
+                        "identified".into(),
+                        serde_json::json!({ "$class": qualified_class("Identified") }),
+                    );
+                }
             }
         }
         let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
