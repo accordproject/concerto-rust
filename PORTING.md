@@ -1326,6 +1326,13 @@ appears), `npx tsc -p tsconfig.build.json --noEmit`, and
   validation, no reordered checks.
 - The Rust may be *structured* idiomatically (sum types, `?`, iterators). The
   *observable behaviour* is the TS behaviour.
+- A view never wraps its engine call in a catch-all that falls back to the
+  TS body (`try { return rust.x(...) } catch { /* run the TS body */ }`).
+  A catch-all discards Rust's own domain errors: the caller gets the
+  exception the TS body throws, and a Rust regression goes unseen. If a
+  stub or stale-handle case needs a TS path, test for that case explicitly
+  first (for example `_rustHandleMatchesModelFiles()`), and let every
+  engine error propagate (P5-03, #262).
 - Remove dead code, and add nothing speculative (AGENTS.md).
 - New dependencies are limited to the ones listed in OD-8, unless the
   architect approves another on the task issue.
