@@ -1098,6 +1098,68 @@ export function runChecks(engine) {
     h.free();
   });
 
+  // P5-10a lazy views: the per-file view snapshot gives each declaration
+  // the decisions the per-element bindings give its view, and each property
+  // the modelFilePropertySnapshots entry.
+  check('modelFileViewSnapshot matches the per-element bindings', () => {
+    const ns = 'org.snap@1.0.0';
+    const ast = {
+      ...MODEL,
+      namespace: ns,
+      declarations: [
+        ...MODEL.declarations,
+        {
+          $class: `${MM}.AssetDeclaration`, name: 'Car', isAbstract: false,
+          identified: { $class: `${MM}.IdentifiedBy`, name: 'vin' },
+          properties: [{ $class: `${MM}.StringProperty`, name: 'vin', isArray: false, isOptional: false }],
+        },
+        {
+          $class: `${MM}.ParticipantDeclaration`, name: 'Driver', isAbstract: false,
+          identified: { $class: `${MM}.Identified` },
+          properties: [],
+        },
+        { $class: `${MM}.ConceptDeclaration`, name: 'Concept', isAbstract: false, properties: [] },
+        { $class: `${MM}.ConceptDeclaration`, name: 'not valid', isAbstract: false, properties: [] },
+      ],
+    };
+    const text = JSON.stringify(ast);
+    const snapshot = JSON.parse(engine.modelFileViewSnapshot(text, ns));
+    const properties = JSON.parse(engine.modelFilePropertySnapshots(text));
+    assert(snapshot.length === ast.declarations.length, `length ${snapshot.length}`);
+    const modelFile = { isSystemModelFile: () => false };
+    ast.declarations.forEach((declaration, i) => {
+      const { d, p } = snapshot[i];
+      assert(JSON.stringify(p) === JSON.stringify(properties[i]), `${declaration.name}: properties differ`);
+      if (!engine.modelUtilIsValidIdentifier(declaration.name)) {
+        assert(d === null, `${declaration.name}: an invalid name has an entry`);
+        return;
+      }
+      assert(d.name === declaration.name, `${declaration.name}: name ${d.name}`);
+      const fqn = engine.modelUtilGetFullyQualifiedName(ns, declaration.name);
+      assert(d.fqn === fqn, `${declaration.name}: fqn ${d.fqn}`);
+      if (declaration.name === 'Concept') {
+        assert(d.cd === null, 'a super-type-less Concept is left to the binding');
+        return;
+      }
+      // ModelFile.fromAst's default super type, on a copy of the node.
+      const defaults = { AssetDeclaration: 'Asset', ParticipantDeclaration: 'Participant' };
+      const kind = declaration.$class.slice(MM.length + 1);
+      const node = !declaration.superType && defaults[kind]
+        ? { ...declaration, superType: { $class: `${MM}.TypeIdentified`, name: defaults[kind] } }
+        : declaration;
+      assert(d.defaulted === (node !== declaration), `${declaration.name}: defaulted ${d.defaulted}`);
+      const expected = engine.classDeclarationProcess({
+        ast: node, name: declaration.name, fqn, modelFile, getModelFile: () => modelFile,
+      });
+      const want = JSON.stringify({
+        superType: expected.superType, idField: expected.idField,
+        addIdentifierField: expected.addIdentifierField, addTimestampField: expected.addTimestampField,
+      });
+      assert(JSON.stringify(d.cd) === want, `${declaration.name}: ${JSON.stringify(d.cd)} vs ${want}`);
+    });
+    assert(engine.modelFileViewSnapshot('not json', ns) === undefined, 'unreadable text gives undefined');
+  });
+
   mm.free();
   return rows;
 }
