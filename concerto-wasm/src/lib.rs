@@ -1491,6 +1491,220 @@ fn write_property_entry(out: &mut String, ast: &Value) -> Option<()> {
     Some(())
 }
 
+/// P5-10a: the view snapshot of a whole model file, computed in one call
+/// from its JSON AST text (`JSON.stringify(ast)`), so that building a
+/// `ModelFile`'s declaration and property views crosses the boundary once
+/// for the file. It extends [`model_file_property_snapshots`] with each
+/// declaration's own construction-time decisions: `Declaration.process`'s
+/// `isValidIdentifier`/`getFullyQualifiedName` calls and
+/// `ClassDeclaration.process`'s [`class_declaration_process`] decision.
+/// `namespace` is the file's `ModelFile.getNamespace()` (the AST's own
+/// `namespace`).
+///
+/// Returns JSON text: an array aligned with `ast.declarations`, holding for
+/// each declaration `{"d": d, "p": p}`:
+/// - `d` is `{"name", "fqn", "cd", "defaulted"}` for a declaration whose
+///   `name` is a string and a valid identifier, when `namespace` is
+///   non-empty; otherwise `null`. `fqn` is what
+///   `modelUtilGetFullyQualifiedName(namespace, name)` returns. `cd` is the
+///   `classDeclarationProcess` snapshot, or `null` where this light reading
+///   cannot decide it exactly as the binding would (a `superType` or
+///   `identified` node that is not a plain object with a string `name`, or
+///   a super-type-less `Concept`, whose decision depends on
+///   `ModelFile.isSystemModelFile()`). `defaulted` is true when `cd` was
+///   computed with the default super type `ModelFile.fromAst` gives an
+///   asset, participant, transaction or event declaration that names none
+///   (the view is then built from a copy of the declaration's AST node).
+/// - `p` is the declaration's [`model_file_property_snapshots`] entry array,
+///   or `null`.
+///
+/// Never throws: whatever the view would raise an error for gets `null`
+/// here, and the view then calls the per-element binding exactly as before,
+/// so every error comes from the same call as without the snapshot.
+/// `undefined` comes back for text this light reading cannot read at all.
+/// Additive.
+#[wasm_bindgen(js_name = modelFileViewSnapshot)]
+pub fn model_file_view_snapshot(ast: &str, namespace: Option<String>) -> Option<String> {
+    let model: ViewModel = serde_json::from_str(ast).ok()?;
+    let declarations = model.declarations?;
+    let namespace = namespace.unwrap_or_default();
+    let mut out = String::with_capacity(ast.len() / 3);
+    out.push('[');
+    for (i, declaration) in declarations.into_iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"d\":");
+        match declaration_view_entry(&declaration, &namespace) {
+            Some(entry) => out.push_str(&entry.to_string()),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"p\":");
+        match declaration.properties {
+            None => out.push_str("null"),
+            Some(properties) => {
+                out.push('[');
+                for (j, property) in properties.into_iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    write_property_entry(&mut out, &property.into_value())?;
+                }
+                out.push(']');
+            }
+        }
+        out.push('}');
+    }
+    out.push(']');
+    Some(out)
+}
+
+/// A model AST, as far as [`model_file_view_snapshot`] reads it.
+#[derive(serde::Deserialize)]
+struct ViewModel {
+    declarations: Option<Vec<ViewDeclaration>>,
+}
+
+/// A declaration, as far as [`model_file_view_snapshot`] reads it. A `null`
+/// value reads as absent; both are falsy to the TS tests this mirrors.
+#[derive(serde::Deserialize)]
+#[allow(non_snake_case)]
+struct ViewDeclaration {
+    #[serde(rename = "$class")]
+    class: Option<Value>,
+    name: Option<Value>,
+    superType: Option<Value>,
+    identified: Option<Value>,
+    properties: Option<Vec<LightProperty>>,
+}
+
+/// JavaScript truthiness of a JSON value (`None` is `undefined`).
+fn json_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(_)) | Some(Value::Object(_)) => true,
+    }
+}
+
+/// The metamodel declaration classes `ModelFile.fromAst` gives a default
+/// super type when their AST names none, with that super type's name.
+const DEFAULT_SUPER_TYPES: [(&str, &str); 4] = [
+    ("concerto.metamodel@1.0.0.AssetDeclaration", "Asset"),
+    (
+        "concerto.metamodel@1.0.0.TransactionDeclaration",
+        "Transaction",
+    ),
+    ("concerto.metamodel@1.0.0.EventDeclaration", "Event"),
+    (
+        "concerto.metamodel@1.0.0.ParticipantDeclaration",
+        "Participant",
+    ),
+];
+
+/// One declaration's `d` entry of [`model_file_view_snapshot`], or `None`.
+fn declaration_view_entry(declaration: &ViewDeclaration, namespace: &str) -> Option<Value> {
+    // `Declaration.process`: `isValidIdentifier(this.ast.name)` (an invalid
+    // name throws there, so it gets no entry), then `this.fqn`, from a
+    // truthy namespace (a falsy one returns the name itself: left to the
+    // binding).
+    let Some(Value::String(name)) = &declaration.name else {
+        return None;
+    };
+    if namespace.is_empty() || !mu::is_valid_identifier(name) {
+        return None;
+    }
+    let fqn = mu::get_fully_qualified_name(namespace, name);
+
+    // `ModelFile.fromAst`'s default super type for four declaration kinds.
+    let class = declaration.class.as_ref().and_then(Value::as_str);
+    let defaulted_to = if json_truthy(declaration.superType.as_ref()) {
+        None
+    } else {
+        DEFAULT_SUPER_TYPES
+            .iter()
+            .find(|(c, _)| Some(*c) == class)
+            .map(|(_, t)| *t)
+    };
+    let cd = class_declaration_view_decision(declaration, name, &fqn, defaulted_to);
+    Some(json!({
+        "name": name,
+        "fqn": fqn,
+        "cd": cd,
+        "defaulted": defaulted_to.is_some(),
+    }))
+}
+
+/// The [`class_declaration_process`] snapshot for a declaration read from
+/// JSON, or `Value::Null` when it cannot be decided here exactly as the
+/// binding decides it from the view.
+fn class_declaration_view_decision(
+    declaration: &ViewDeclaration,
+    name: &str,
+    fqn: &str,
+    defaulted_to: Option<&str>,
+) -> Value {
+    // `this.ast.superType`: truthy, then its raw `.name`.
+    let super_type: Option<String> = if let Some(t) = defaulted_to {
+        Some(t.to_string())
+    } else if json_truthy(declaration.superType.as_ref()) {
+        match declaration.superType.as_ref() {
+            Some(Value::Object(node)) => match node.get("name") {
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => return Value::Null,
+            },
+            _ => return Value::Null,
+        }
+    } else {
+        None
+    };
+    // A super-type-less `Concept`: the decision reads
+    // `this.modelFile.isSystemModelFile()`, which only the view knows.
+    if super_type.is_none() && name == "Concept" {
+        return Value::Null;
+    }
+    // `this.ast.identified`: truthy, then its `$class` (strict equality) and,
+    // for `IdentifiedBy`, its raw `.name`.
+    let (identified_class, identified_name) = if json_truthy(declaration.identified.as_ref()) {
+        match declaration.identified.as_ref() {
+            Some(Value::Object(node)) => {
+                let class = node
+                    .get("$class")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if class == "concerto.metamodel@1.0.0.IdentifiedBy" {
+                    match node.get("name") {
+                        Some(Value::String(s)) => (Some(class), Some(s.clone())),
+                        _ => return Value::Null,
+                    }
+                } else {
+                    (Some(class), None)
+                }
+            }
+            _ => return Value::Null,
+        }
+    } else {
+        (None, None)
+    };
+    let decision = concerto_core::ClassDeclaration::process_decision(
+        super_type.as_deref(),
+        false,
+        name,
+        identified_class.as_deref(),
+        identified_name.as_deref(),
+        fqn,
+    );
+    json!({
+        "superType": decision.super_type,
+        "idField": decision.id_field,
+        "addIdentifierField": decision.add_identifier_field,
+        "addTimestampField": decision.add_timestamp_field,
+    })
+}
+
 /// TS: Property.process, after `super.process()`. Returns the snapshot
 /// `{name, type, array, optional}`; `type` is omitted (not merely `null`)
 /// when the AST `$class` is `EnumProperty`, since that is the one case where
@@ -3955,6 +4169,40 @@ pub struct ModelManagerHandle {
     /// `deleteModelFile` replace the whole manager, restarting its
     /// generation count.
     epoch: u64,
+    /// Model files loaded by [`Self::stage_model_file`] and not yet
+    /// committed or dropped (lazy views: P5-06a, P5-10a).
+    staged: StagedModelFiles,
+}
+
+/// The staging slot of a [`ModelManagerHandle`] (lazy views: P5-06a, P5-10a):
+/// model files loaded from their AST once, by
+/// [`ModelManagerHandle::stage_model_file`], kept until the view registers
+/// ([`ModelManagerHandle::commit_staged_model_file`]), validates
+/// ([`ModelManagerHandle::model_file_validate_staged`]) or drops them.
+/// Staging never changes the manager, so it never moves the epoch.
+///
+/// Bounded: past [`StagedModelFiles::CAPACITY`] entries the oldest one is
+/// evicted. A view whose stage id was evicted gets `undefined` back and
+/// falls back to sending the AST again, so eviction only costs time.
+#[derive(Default)]
+struct StagedModelFiles {
+    files: std::collections::BTreeMap<u32, ModelFile>,
+    next: u32,
+}
+
+impl StagedModelFiles {
+    /// The most staged files kept at once.
+    const CAPACITY: usize = 256;
+
+    fn insert(&mut self, file: ModelFile) -> u32 {
+        while self.files.len() >= Self::CAPACITY {
+            self.files.pop_first();
+        }
+        let id = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.files.insert(id, file);
+        id
+    }
 }
 
 #[wasm_bindgen]
@@ -3966,6 +4214,7 @@ impl ModelManagerHandle {
             Ok(Self {
                 manager: ModelManager::new()?,
                 epoch: 0,
+                staged: StagedModelFiles::default(),
             })
         })
     }
@@ -4348,6 +4597,82 @@ impl ModelManagerHandle {
                     .into()
                 })
         })
+    }
+
+    /// Lazy views (P5-06a spike, productionised in P5-10a): loads a model
+    /// file from its JSON AST, passed as JSON text, **without registering
+    /// it**, and keeps it in this handle's staging slot. Returns its stage
+    /// id. This is the one time a lazily viewed `ModelFile`'s AST crosses
+    /// into Rust: the same typed-path load ([`model_file_from_text`], P5-06c)
+    /// [`Self::add_model_with_definitions`] and
+    /// [`Self::model_file_validate_detached`] run, so it throws exactly
+    /// what they would throw for this AST. Malformed JSON throws a JS
+    /// `SyntaxError`. Does not change the manager or its epoch. Additive.
+    #[wasm_bindgen(js_name = stageModelFile)]
+    pub fn stage_model_file(
+        &mut self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<u32, JsValue> {
+        run(|| {
+            let file = model_file_from_text(ast, definitions, file_name)?;
+            Ok(self.staged.insert(file))
+        })
+    }
+
+    /// P5-06a: registers a staged model file, as
+    /// [`Self::add_model_with_definitions`] with `validate: false` would
+    /// register the AST it was staged from (the same duplicate-namespace
+    /// check, the same errors), without sending or parsing the AST again.
+    /// The stage id is consumed. Returns the file's handle, or `undefined`
+    /// if the stage id is unknown (evicted, or already consumed); the caller
+    /// then falls back to [`Self::add_model_with_definitions`].
+    #[wasm_bindgen(js_name = commitStagedModelFile)]
+    pub fn commit_staged_model_file(
+        &mut self,
+        stage: u32,
+    ) -> std::result::Result<Option<u32>, JsValue> {
+        let Some(file) = self.staged.files.remove(&stage) else {
+            return Ok(None);
+        };
+        self.epoch += 1;
+        run(|| {
+            let namespace = file.namespace().to_string();
+            self.manager.add_model_file(file)?;
+            self.manager
+                .model_file_id(&namespace)
+                .map(|id| Some(ModelFileId::index(id)))
+                .ok_or_else(|| {
+                    ConcertoError::TypeNotFound {
+                        type_name: namespace,
+                    }
+                    .into()
+                })
+        })
+    }
+
+    /// P5-06a: [`Self::model_file_validate_detached`] for a staged model
+    /// file, without sending the AST again. Returns `true` once validated;
+    /// `false` if the stage id is unknown, and the caller then falls back to
+    /// [`Self::model_file_validate_detached`]. Throws the first problem
+    /// found, as that binding does. The staged file stays staged.
+    #[wasm_bindgen(js_name = modelFileValidateStaged)]
+    pub fn model_file_validate_staged(&self, stage: u32) -> std::result::Result<bool, JsValue> {
+        let Some(file) = self.staged.files.get(&stage) else {
+            return Ok(false);
+        };
+        run(|| {
+            self.manager.validate_detached_model_file(file)?;
+            Ok(true)
+        })
+    }
+
+    /// P5-06a: drops a staged model file that will never be registered
+    /// here. An unknown stage id is ignored.
+    #[wasm_bindgen(js_name = dropStagedModelFile)]
+    pub fn drop_staged_model_file(&mut self, stage: u32) {
+        self.staged.files.remove(&stage);
     }
 
     /// TS `BaseModelManager.resolveType(context, type)` (P4-08): delegates
