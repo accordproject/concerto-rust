@@ -330,6 +330,53 @@ impl Decorated for Property {
     }
 }
 
+/// The keys of a property node of kind `kind` (its `$class` short name)
+/// that [`Property::try_from`] keeps out of the strict decode into the
+/// generated struct, and rebuilds from the raw AST instead
+/// ([`Property::set_ast_validators`]).
+pub(crate) fn ast_validator_keys(kind: &str) -> &'static [&'static str] {
+    if kind == "StringProperty" {
+        &["sizeValidator", "lengthValidator", "validator"]
+    } else {
+        &["sizeValidator"]
+    }
+}
+
+/// The `type` [`Property::try_from`] gives an `ObjectProperty` whose AST has
+/// none (or `null`): an empty `TypeIdentifier`, standing in for TS's `null`.
+pub(crate) fn object_type_placeholder() -> Value {
+    serde_json::json!({
+        "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
+        "name": ""
+    })
+}
+
+impl Property {
+    /// Sets the validators [`Property::try_from`] rebuilds from the raw AST
+    /// ([`ast_validator_keys`]), `raw` giving the property node's value for
+    /// a key. An enum value has none.
+    pub(crate) fn set_ast_validators<'v>(&mut self, raw: impl Fn(&str) -> Option<&'v Value>) {
+        let size_validator = || validators::size_validator_from_ast(raw("sizeValidator"));
+        match self {
+            Self::Boolean(p) => p.node_mut().size_validator = size_validator(),
+            Self::String(p) => {
+                let node = p.node_mut();
+                node.size_validator = size_validator();
+                node.length_validator =
+                    validators::length_validator_from_ast(raw("lengthValidator"));
+                node.validator = validators::regex_validator_from_ast(raw("validator"));
+            }
+            Self::Integer(p) => p.node_mut().size_validator = size_validator(),
+            Self::Long(p) => p.node_mut().size_validator = size_validator(),
+            Self::Double(p) => p.node_mut().size_validator = size_validator(),
+            Self::DateTime(p) => p.node_mut().size_validator = size_validator(),
+            Self::Object(p) => p.node_mut().size_validator = size_validator(),
+            Self::Relationship(p) => p.node_mut().size_validator = size_validator(),
+            Self::Enum(_) => {}
+        }
+    }
+}
+
 impl TryFrom<&serde_json::Value> for Property {
     type Error = ConcertoError;
 
@@ -421,13 +468,7 @@ impl TryFrom<&serde_json::Value> for Property {
         let value = if kind == "ObjectProperty" && value.get("type").is_none_or(|t| t.is_null()) {
             let mut patched = value.clone();
             if let Some(map) = patched.as_object_mut() {
-                map.insert(
-                    "type".into(),
-                    serde_json::json!({
-                        "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
-                        "name": ""
-                    }),
-                );
+                map.insert("type".into(), object_type_placeholder());
             }
             std::borrow::Cow::Owned(patched)
         } else {
@@ -440,7 +481,8 @@ impl TryFrom<&serde_json::Value> for Property {
         // `StringProperty`, its `lengthValidator`/`validator`) is set aside
         // before the strict struct decode below and rebuilt straight from
         // this untouched `value` with `validators::size_validator_from_ast`/
-        // `length_validator_from_ast`/`regex_validator_from_ast`: `serde`'s
+        // `length_validator_from_ast`/`regex_validator_from_ast`
+        // ([`Property::set_ast_validators`]): `serde`'s
         // derived `Deserialize` requires an actual JSON number/string for
         // their nested fields, but TS reads every one of them completely
         // untyped (those functions' own doc comments), so a fuzz-mutated,
@@ -448,64 +490,43 @@ impl TryFrom<&serde_json::Value> for Property {
         // parse (accordproject/concerto-rust#217).
         let mut sanitized = value.clone();
         if let Some(map) = sanitized.as_object_mut() {
-            map.remove("sizeValidator");
-            if kind == "StringProperty" {
-                map.remove("lengthValidator");
-                map.remove("validator");
+            for key in ast_validator_keys(kind) {
+                map.remove(*key);
             }
         }
-        let size_validator = validators::size_validator_from_ast(value.get("sizeValidator"));
-        let property = match kind {
-            "BooleanProperty" => {
-                let mut node: mm::BooleanProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::Boolean(WithDecorators::new(node, decorators))
-            }
-            "StringProperty" => {
-                let mut node: mm::StringProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                node.length_validator =
-                    validators::length_validator_from_ast(value.get("lengthValidator"));
-                node.validator = validators::regex_validator_from_ast(value.get("validator"));
-                Self::String(WithDecorators::new(node, decorators))
-            }
-            "IntegerProperty" => {
-                let mut node: mm::IntegerProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::Integer(WithDecorators::new(node, decorators))
-            }
-            "LongProperty" => {
-                let mut node: mm::LongProperty = serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::Long(WithDecorators::new(node, decorators))
-            }
-            "DoubleProperty" => {
-                let mut node: mm::DoubleProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::Double(WithDecorators::new(node, decorators))
-            }
-            "DateTimeProperty" => {
-                let mut node: mm::DateTimeProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::DateTime(WithDecorators::new(node, decorators))
-            }
-            "ObjectProperty" => {
-                let mut node: mm::ObjectProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::Object(WithDecorators::new(node, decorators))
-            }
-            "RelationshipProperty" => {
-                let mut node: mm::RelationshipProperty =
-                    serde_json::from_value(sanitized).map_err(bad)?;
-                node.size_validator = size_validator;
-                Self::Relationship(WithDecorators::new(node, decorators))
-            }
+        let mut property = match kind {
+            "BooleanProperty" => Self::Boolean(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "StringProperty" => Self::String(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "IntegerProperty" => Self::Integer(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "LongProperty" => Self::Long(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "DoubleProperty" => Self::Double(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "DateTimeProperty" => Self::DateTime(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "ObjectProperty" => Self::Object(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
+            "RelationshipProperty" => Self::Relationship(WithDecorators::new(
+                serde_json::from_value(sanitized).map_err(bad)?,
+                decorators,
+            )),
             "EnumProperty" => Self::Enum(WithDecorators::new(
                 serde_json::from_value(sanitized).map_err(bad)?,
                 decorators,
@@ -524,6 +545,7 @@ impl TryFrom<&serde_json::Value> for Property {
                 .into());
             }
         };
+        property.set_ast_validators(|key| value.get(key));
         if !is_valid_identifier(property.name()) {
             // TS: `Property.process` (property.ts) — `this.getModelFile()`
             // and `this.ast.location`; `try_from` has no model file in

@@ -593,6 +593,14 @@ impl ModelManager {
         self.add_loaded_model_file(mf)
     }
 
+    /// Adds an already-built model file, such as one
+    /// [`ModelFile::from_json_text`] read (P5-06c): the duplicate-namespace
+    /// check and registration [`ModelManager::add_model_with_definitions`]
+    /// runs once it has built the file itself.
+    pub fn add_model_file(&mut self, mf: ModelFile) -> Result<()> {
+        self.add_loaded_model_file(mf)
+    }
+
     /// The duplicate-namespace check and registration
     /// [`ModelManager::add_model_with_definitions`] runs once the file is
     /// loaded.

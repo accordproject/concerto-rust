@@ -3794,6 +3794,20 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
     }
 }
 
+/// P5-06c: a model file from its JSON AST text, through the typed AST path
+/// ([`ModelFile::from_json_text`]): the same file, and the same errors in
+/// the same order, as parsing the text into a `Value` and loading that.
+/// Malformed JSON throws a JS `SyntaxError`, as it always has. (`validateAst`
+/// keeps the `Value` path: it reads the whole AST as a `Value` anyway.)
+fn model_file_from_text(
+    ast: &str,
+    definitions: Option<String>,
+    file_name: Option<String>,
+) -> Result<ModelFile> {
+    Ok(ModelFile::from_json_text(ast, definitions, file_name)
+        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??)
+}
+
 /// The options object a serializer call's `optionsText` decodes to
 /// (`JSON.stringify`d by the view, `"null"` for no options).
 fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
@@ -3983,16 +3997,11 @@ impl ModelManagerHandle {
     ) -> std::result::Result<u32, JsValue> {
         self.epoch += 1;
         run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            self.manager.add_model(&value, file_name)?;
-            // `add_model` read the namespace from this AST, so it is there.
-            let namespace = value
-                .get("namespace")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let model_file = model_file_from_text(ast, None, file_name)?;
+            let namespace = model_file.namespace().to_string();
+            self.manager.add_model_file(model_file)?;
             self.manager
-                .model_file_id(namespace)
+                .model_file_id(&namespace)
                 .map(ModelFileId::index)
                 .ok_or_else(|| {
                     ConcertoError::TypeNotFound {
@@ -4320,23 +4329,15 @@ impl ModelManagerHandle {
     ) -> std::result::Result<u32, JsValue> {
         self.epoch += 1;
         run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let namespace = value
-                .get("namespace")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            // P5-06c: the file is built once, through the typed AST path,
+            // for both the check and the add; building it is the first
+            // thing that can fail either way, so the errors are unchanged.
+            let model_file = model_file_from_text(ast, definitions, file_name)?;
+            let namespace = model_file.namespace().to_string();
             if validate && self.manager.model_file(&namespace).is_none() {
-                let candidate = ModelFile::from_json_with_definitions(
-                    &value,
-                    definitions.clone(),
-                    file_name.clone(),
-                )?;
-                self.manager.validate_detached_model_file(&candidate)?;
+                self.manager.validate_detached_model_file(&model_file)?;
             }
-            self.manager
-                .add_owned_model_with_definitions(value, definitions, file_name)?;
+            self.manager.add_model_file(model_file)?;
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
@@ -4402,13 +4403,7 @@ impl ModelManagerHandle {
     ) -> std::result::Result<u32, JsValue> {
         self.epoch += 1;
         run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let model_file = concerto_core::ModelFile::from_json_with_definitions(
-                &value,
-                definitions,
-                file_name,
-            )?;
+            let model_file = model_file_from_text(ast, definitions, file_name)?;
             let namespace = model_file.namespace().to_string();
             self.manager = self.manager.update_model_file(model_file, validate)?;
             self.manager
@@ -4553,9 +4548,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
     ) -> std::result::Result<(), JsValue> {
         run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let file = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
+            let file = model_file_from_text(ast, definitions, file_name)?;
             Ok(self.manager.validate_detached_model_file(&file)?)
         })
     }

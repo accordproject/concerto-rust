@@ -609,7 +609,14 @@ fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
 /// `"0"`, `"1"`, ... and crash with a `TypeError` on a missing element,
 /// which is outside this port's scope.
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
-    match ast.get("decorators") {
+    parse_decorator_list(ast.get("decorators"))
+}
+
+/// [`parse_decorators`] given the node's `decorators` value itself (`None`
+/// when the node has no such key), for a loader that has read that value
+/// on its own (the typed AST path, P5-06c).
+pub(crate) fn parse_decorator_list(decorators: Option<&Value>) -> Vec<Decorator> {
+    match decorators {
         Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
         Some(Value::String(s)) => s
             .encode_utf16()
@@ -677,6 +684,12 @@ impl<T> WithDecorators<T> {
     /// The decorators processed for this node.
     pub fn decorators(&self) -> &[Decorator] {
         &self.decorators
+    }
+
+    /// The wrapped node, for a loader that fills in fields it reads apart
+    /// from the node's own decode ([`crate::introspect::Property::set_ast_validators`]).
+    pub(crate) fn node_mut(&mut self) -> &mut T {
+        &mut self.node
     }
 }
 
