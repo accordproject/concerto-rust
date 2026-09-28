@@ -12,18 +12,14 @@
 //! | Optional field = `null` | skipped | skipped | skipped |
 //!
 //! A rejection is a `ValidationException` whose
-//! [`details`](crate::Error::details) lists each violation.
+//! [`details`](concerto_core::Error::details) lists each violation.
 //! On the serializer's option bag the flags are the keys
 //! `rejectUnknownKeys` and `rejectRequiredNull`; they apply while the
 //! document is populated, so they hold with `validate: false` too.
 
-use indexmap::IndexMap;
+use concerto_core::instance::value::JsValue;
 
-use super::value::JsValue;
-
-/// A serializer options object (the JS layer's `SerializerOptions`), its
-/// keys in insertion order.
-pub type SerializerOptions = IndexMap<String, JsValue>;
+use crate::serializer::SerializerOptions;
 
 /// The serializer option key for [`DeserializeOptions::reject_unknown_keys`].
 const REJECT_UNKNOWN_KEYS: &str = "rejectUnknownKeys";
@@ -49,24 +45,21 @@ pub const STRICT_VALIDATE_OPTIONS: DeserializeOptions = DeserializeOptions {
 };
 
 impl DeserializeOptions {
-    js_compat_pub! {
-        /// The flags as serializer options, to pass to `Serializer::from_json`
-        /// (or merge into a larger option bag). Only with the `js-compat`
-        /// feature.
-        pub fn serializer_options(self) -> SerializerOptions {
-            [
-                (
-                    REJECT_UNKNOWN_KEYS.to_string(),
-                    JsValue::Bool(self.reject_unknown_keys),
-                ),
-                (
-                    REJECT_REQUIRED_NULL.to_string(),
-                    JsValue::Bool(self.reject_required_null),
-                ),
-            ]
-            .into_iter()
-            .collect()
-        }
+    /// The flags as serializer options, to pass to `Serializer::from_json`
+    /// (or merge into a larger option bag).
+    pub fn serializer_options(self) -> SerializerOptions {
+        [
+            (
+                REJECT_UNKNOWN_KEYS.to_string(),
+                JsValue::Bool(self.reject_unknown_keys),
+            ),
+            (
+                REJECT_REQUIRED_NULL.to_string(),
+                JsValue::Bool(self.reject_required_null),
+            ),
+        ]
+        .into_iter()
+        .collect()
     }
 
     /// The flags a serializer option bag sets (each one truthy).

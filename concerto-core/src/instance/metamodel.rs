@@ -5,8 +5,9 @@
 //! itself, rebuilt on [`super::validate`] (P3-01, the instance validator
 //! that folded in `concerto-validate-rs`'s structural check, plan decision
 //! D3) and accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS` (P3-02,
-//! accordproject/concerto#1273's strictness preset — the doc comment on
-//! [`super::deserialize`] names this module as its intended P3-04 caller).
+//! the strictness preset). P6-01 (step 5) runs it on [`super::from_json`],
+//! `Serializer.fromJSON` over plain JSON, so that it does not depend on the
+//! JS object model (docs/public-api.md F8).
 //!
 //! **Scope (this task only).** The issue's plan gave `concerto-validate-rs`
 //! (D3) as the exit condition — "validate-rs tests pass on the new core" —

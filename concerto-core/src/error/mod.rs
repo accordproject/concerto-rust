@@ -582,7 +582,7 @@ js_compat_pub! {
         /// `ValidationException.details` (accordproject/concerto#1273): one
         /// entry per violation the error reports, for callers that enumerate
         /// them instead of parsing the message. Empty for every error that is
-        /// not a [`DeserializeOptions`](crate::instance::DeserializeOptions)
+        /// not a [`ValidationOptions`](crate::instance::ValidationOptions)
         /// rejection.
         pub details: Vec<Detail>,
     }

@@ -208,9 +208,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
     use concerto_core::error::{Detail, DetailCode};
     use concerto_core::instance::dayjs::Dayjs;
-    use concerto_core::instance::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
     use concerto_core::instance::value::InstanceKind;
 
     struct Env;

@@ -12,9 +12,9 @@
 use indexmap::IndexMap;
 
 use super::factory::{self, InstanceEnv};
+use crate::deserialize::DeserializeOptions;
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
-use concerto_core::instance::deserialize::DeserializeOptions;
 use concerto_core::instance::from_json::{
     required_null_error, strict_qualified_date_time, unknown_keys_error,
 };

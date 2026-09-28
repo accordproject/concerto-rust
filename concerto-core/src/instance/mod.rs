@@ -51,7 +51,6 @@ macro_rules! js_compat_mod {
 }
 
 js_compat_mod!(dayjs);
-js_compat_mod!(deserialize);
 mod diagnostic;
 js_compat_mod!(from_json);
 js_compat_mod!(metamodel);
@@ -66,8 +65,6 @@ pub use diagnostic::ValidationResult;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, ValidationReport};
 pub use options::ValidationOptions;
 
-#[cfg(feature = "js-compat")]
-pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
 #[cfg(feature = "js-compat")]
 pub use from_json::InstanceEnv;
 #[cfg(feature = "js-compat")]
