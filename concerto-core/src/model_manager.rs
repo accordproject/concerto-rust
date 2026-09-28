@@ -2629,15 +2629,23 @@ impl ModelManager {
         resolve: bool,
         include_concerto_namespaces: bool,
     ) -> Result<Value> {
+        // TS re-reads `getAst(false, true)` inside every `resolveMetaModel`
+        // call, but nothing registers or removes a model file in between, so
+        // one borrowed snapshot of the registered models serves every file
+        // (P5-17 F1: the per-file snapshot was an O(N^2) deep clone).
+        let prior_models = if resolve {
+            Some(self.prior_models())
+        } else {
+            None
+        };
         let mut models = Vec::new();
         for mf in self.model_files() {
             if !include_concerto_namespaces && EXCLUDE_NS.contains(&mf.namespace()) {
                 continue;
             }
-            models.push(if resolve {
-                self.resolve_meta_model(mf.ast())?
-            } else {
-                mf.ast().clone()
+            models.push(match &prior_models {
+                Some(prior_models) => metamodel_util::resolve_local_names(prior_models, mf.ast())?,
+                None => mf.ast().clone(),
             });
         }
         Ok(serde_json::json!({
@@ -2655,8 +2663,24 @@ impl ModelManager {
     /// (`metamodel_util`, below this `impl` block), the only consumer this
     /// manager has for it.
     pub fn resolve_meta_model(&self, meta_model: &Value) -> Result<Value> {
-        let prior_models = self.models_ast(false, true)?;
-        metamodel_util::resolve_local_names(&prior_models, meta_model)
+        metamodel_util::resolve_local_names(&self.prior_models(), meta_model)
+    }
+
+    /// The models `resolve_meta_model` resolves against — TS's
+    /// `this.getAst(false, true).models`, every registered model file's own
+    /// AST (system namespaces included) in [`ModelManager::model_files`]
+    /// order — borrowed and indexed by each AST's own `namespace`, instead
+    /// of deep-cloned into a `Models` envelope. The first model with a given
+    /// namespace wins, the same as TS `findNamespace`'s `Array.find`.
+    fn prior_models(&self) -> metamodel_util::PriorModels<'_> {
+        let mut prior_models = metamodel_util::PriorModels::new();
+        for mf in self.model_files() {
+            let ast = mf.ast();
+            if let Some(namespace) = ast.get("namespace").and_then(Value::as_str) {
+                prior_models.entry(namespace).or_insert(ast);
+            }
+        }
+        prior_models
     }
 
     /// TS `BaseModelManager.get<Kind>Declarations()` (basemodelmanager.ts,
@@ -3251,16 +3275,15 @@ mod metamodel_util {
         resolved_name: Option<String>,
     }
 
-    /// TS `findNamespace`: the model in `prior_models` (`getAst(false,
-    /// true)`'s `{$class, models}` shape) whose namespace is `namespace`, if
-    /// one is registered.
-    fn find_namespace<'a>(prior_models: &'a Value, namespace: &str) -> Option<&'a Value> {
-        prior_models
-            .get("models")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|model| model.get("namespace").and_then(Value::as_str) == Some(namespace))
+    /// The registered models (`getAst(false, true).models`), borrowed and
+    /// keyed by namespace (first model wins, as TS `findNamespace`'s
+    /// `Array.find` does); see `ModelManager::prior_models`.
+    pub(super) type PriorModels<'a> = HashMap<&'a str, &'a Value>;
+
+    /// TS `findNamespace`: the model in `prior_models` whose namespace is
+    /// `namespace`, if one is registered.
+    fn find_namespace<'a>(prior_models: &PriorModels<'a>, namespace: &str) -> Option<&'a Value> {
+        prior_models.get(namespace).copied()
     }
 
     /// TS `findDeclaration`: `model`'s own declaration named `name`, if any.
@@ -3329,7 +3352,7 @@ mod metamodel_util {
     /// finally every name `meta_model` declares itself (overriding its own
     /// imports), the same override order as TS's two `forEach` loops.
     fn create_name_table(
-        prior_models: &Value,
+        prior_models: &PriorModels<'_>,
         meta_model: &Value,
     ) -> Result<HashMap<String, ResolvedName>> {
         let mut table: HashMap<String, ResolvedName> =
@@ -3618,8 +3641,11 @@ mod metamodel_util {
 
     /// TS `resolveLocalNames`: `meta_model` with every type name it holds
     /// resolved to its declaring namespace, against `prior_models`
-    /// (`ModelManager.getAst(false, true)`'s shape).
-    pub(super) fn resolve_local_names(prior_models: &Value, meta_model: &Value) -> Result<Value> {
+    /// (`ModelManager.getAst(false, true)`'s models, see [`PriorModels`]).
+    pub(super) fn resolve_local_names(
+        prior_models: &PriorModels<'_>,
+        meta_model: &Value,
+    ) -> Result<Value> {
         let table = create_name_table(prior_models, meta_model)?;
         let mut result = meta_model.clone();
         resolve_type_names(&mut result, &table)?;
