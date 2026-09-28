@@ -3,6 +3,8 @@
 //! 5 row 6, option B), over [`crate::populator`], [`crate::generator`] and
 //! [`concerto_core::instance::validate`] (task P3-01b, accordproject/concerto-rust#124).
 
+use std::borrow::Cow;
+
 use indexmap::IndexMap;
 
 use super::resource;
@@ -74,11 +76,12 @@ impl Serializer {
     }
 
     /// `options ? Object.assign({}, this.defaultOptions, options) :
-    /// this.defaultOptions`.
-    fn options(&self, options: Option<&SerializerOptions>) -> SerializerOptions {
+    /// this.defaultOptions`: borrowed in the second case, which is read
+    /// only (P5-16: the copy was a measurable part of a `fromJSON` call).
+    fn options(&self, options: Option<&SerializerOptions>) -> Cow<'_, SerializerOptions> {
         match options {
-            Some(options) => assign(&self.default_options, options),
-            None => self.default_options.clone(),
+            Some(options) => Cow::Owned(assign(&self.default_options, options)),
+            None => Cow::Borrowed(&self.default_options),
         }
     }
 
