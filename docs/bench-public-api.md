@@ -28,8 +28,9 @@ numbers and the TS reference so the three routes line up.
   `migration/bench/results/P6-04-{ts-reference-5.0.0,rust-via-ts}-{1,2}.json`
   (`run-ts.mjs`'s format).
 - **The full three-way table, machine/toolchain record, and discussion:**
-  `migration/bench/RESULTS.md` in the `concerto` repo (the "P6-04" section,
-  at the top). This page is a short pointer into it, not a duplicate of it.
+  `migration/bench/RESULTS.md` in the `concerto` repo (the "P6-04" section;
+  the "P5-21" section above it has the updated validateAst figures).
+  This page is a short pointer into it, not a duplicate of it.
 
 ## What it covers
 
@@ -37,7 +38,7 @@ numbers and the TS reference so the three routes line up.
 |---|---|---|
 | model load | `ModelManager::add_model_ast` (+ batch `add_model_asts`) | `load_validate.rs`'s `load` (uses the deprecated `add_model`) |
 | model validate | `ModelManager::validate_models` | `load_validate.rs`'s `validate` (same call) |
-| validateAst | `concerto_core::metamodel::validate_ast` (the crate-root free function — see the caveat below) | `validate_metamodel.rs`'s `concerto-core/validate_ast` (`ModelManager::validate_ast`, the resident-metamodel method) |
+| validateAst | `concerto_core::metamodel::validate_ast` (the crate-root free function; resident metamodel since P5-21 — see footnote 1 below) | `validate_metamodel.rs`'s `concerto-core/validate_ast` (`ModelManager::validate_ast`, the resident-metamodel method) |
 | instance populate + validate | `ModelManager::validate_instance` (first error), `ModelManager::check_instance` (collect-all, accordproject/concerto#1239) | `instance_validate.rs`'s `validate_instance_native` (same call, benchmarked there too) and `from_json` (`concerto-core-js`'s `Serializer`, not public API) |
 | serialisation | *not benchmarked* — `Serializer`/`Factory`/`Resource`/`InstanceGenerator` are explicitly out of D11's scope (`docs/public-api.md` §1) and live in the unpublished `concerto-core-js` crate | `instance_validate.rs`'s `from_json` |
 
@@ -61,16 +62,30 @@ this table doesn't use the run 1/2 median here:
 |---|---|---|
 | load (conformance) | 4.1× slower | 7.7× slower |
 | validate (conformance) | 2.5× slower | 4.9× slower |
-| validateAst (conformance) | 7.4× slower¹ | **2.4× faster** |
+| validateAst (conformance) | **3.4× faster**¹ (was 7.4× slower before P5-21) | **2.4× faster** |
 | instance populate+validate (500 synthetic) | **1.1× faster** | 3.8× slower |
 
-¹ **Not a like-for-like validateAst comparison** — the native number times
-the crate-root free function, which rebuilds the metamodel check on every
-call; the WASM route goes through the resident-metamodel method
-(`ModelManager::validate_ast`), paying that cost once per manager instead
-of once per call. See RESULTS.md's "The validateAst outlier" for the full
-explanation and the open question it raises for a public, resident-metamodel
-validateAst entry point.
+¹ **Updated by P5-21 (accordproject/concerto-rust#319).** P6-04's native
+figure (7.4× slower) timed the crate-root free function
+`concerto_core::metamodel::validate_ast` when it still rebuilt the
+metamodel check on every call, while the WASM route went through the
+resident-metamodel method (`ModelManager::validate_ast`, P5-13), paying
+that cost once per manager. P5-21 made the free function run on a
+per-thread resident metamodel manager, with the same public signature,
+results and error kinds. Re-measured on 2026-09-28 (criterion
+`validate_metamodel.rs`'s `concerto-core/metamodel::validate_ast`, results
+in `benches/results/P5-21/native-{1,2}.json`): conformance 60.6 / 61.7 µs
+per model (P6-04 measured 2230 µs, on a different machine), against
+202.6 / 215.4 / 204.5 µs for the TS 5.0.0 reference on the same machine
+(median 204.5 µs, so 0.30×, about 3.4× faster); concerto-core-test-data
+147.1 / 147.0 µs against a TS median of 521.2 µs (0.28×). That machine
+was shared (TS start loads 3.59, 2.04 and 2.24, above P6-04's quiet gate
+of 2), so the figures are indicative, but the margin is well above the
+up-to-1.6× contention effect P6-04 recorded. The other columns of this
+table are still P6-04's.
+See RESULTS.md's "P5-21" section (in the `concerto` repo) for the runs,
+machine loads and the TS raw results, and "The validateAst outlier" for
+the original P6-04 analysis.
 
 ² Native run 1 only (quiet start to finish), against the TS median.
 Native run 2 ran under load contention (RESULTS.md's "Native round 2 was

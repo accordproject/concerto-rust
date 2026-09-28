@@ -26,7 +26,8 @@
 //!     (already the public entry point; unchanged from `load_validate.rs`,
 //!     repeated here so this file stands alone as the public-API baseline).
 //!   - **validateAst**: [`concerto_core::metamodel::validate_ast`], the
-//!     crate-root free function (`ModelManager::validate_ast(&ModelFile)`,
+//!     crate-root free function, which since P5-21 runs on a per-thread
+//!     resident metamodel manager (`ModelManager::validate_ast(&ModelFile)`,
 //!     the resident-metamodel method form P5-13 optimised, is already
 //!     benchmarked in `validate_metamodel.rs`).
 //!   - **instance populate and validate**:
@@ -131,10 +132,10 @@ fn bench_model_set(c: &mut Criterion, set_name: &str) {
     }
 
     // validateAst (metamodel::validate_ast, the crate-root free function):
-    // checked once outside the timed section (see validate_metamodel.rs -
-    // it accepts a different subset of these fixtures than
-    // `ModelManager::validate_ast`, since it runs no resident-metamodel
-    // fast path).
+    // checked once outside the timed section (see validate_metamodel.rs,
+    // which benchmarks it next to `ModelManager::validate_ast`). Since
+    // P5-21 (accordproject/concerto-rust#319) it runs on a per-thread
+    // resident metamodel manager rather than rebuilding one per call.
     let accepted: Vec<&Value> = set
         .iter()
         .map(|(_, ast)| ast)
