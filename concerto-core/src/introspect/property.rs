@@ -3,8 +3,8 @@
 //! [`Property`] is a sum type whose variants are newtypes over the generated
 //! metamodel structs: the eight field kinds of [`mm::Property`] and
 //! [`mm::EnumProperty`]. Each node is deserialized into the concrete struct its
-//! `$class` names, whether the `$class` is fully qualified or given as its bare
-//! short name, so the validators and the referenced `type` are kept whole. A
+//! fully qualified metamodel `$class` names (`property_kind`), so the
+//! validators and the referenced `type` are kept whole. A
 //! class declaration keeps its properties as this type too, because it also
 //! accepts an `EnumProperty`, which the generated `mm::Property` union does
 //! not cover. The getters hang off the enum directly, and those it shares
@@ -19,8 +19,8 @@ use crate::introspect::decorator::{
     Decorated, Decorator, WithDecorators, null_decorator, parse_decorators,
 };
 use crate::introspect::validators;
-use crate::introspect::{FullyQualified, Named, Typed, declared_class};
-use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
+use crate::introspect::{FullyQualified, METAMODEL_NAMESPACE, Named, Typed, declared_class};
+use crate::model_util::{is_system_property, is_valid_identifier};
 
 /// What `Property.process` computes, after `super.process()` (which belongs
 /// to `Decorated`).
@@ -117,7 +117,9 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
         .get("$class")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let short = get_short_name(class);
+    // TS `switch (this.ast.$class)` matches the full metamodel `$class`
+    // (`===`); anything else takes no arm (accordproject/concerto-rust#285).
+    let short = property_kind(class).unwrap_or_default();
     let object_or_relationship_type = || {
         ast.get("type")
             .and_then(|t| t.get("name"))
@@ -186,7 +188,7 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
 /// non-null `type`. `name` is the (already validated) property name.
 pub(crate) fn relationship_without_type(ast: &Value, name: &str) -> Option<ContractError> {
     let class = ast.get("$class").and_then(Value::as_str)?;
-    if get_short_name(class) != "RelationshipProperty" {
+    if property_kind(class) != Some("RelationshipProperty") {
         return None;
     }
     if !ast.get("type").is_none_or(Value::is_null) {
@@ -330,6 +332,51 @@ impl Decorated for Property {
     }
 }
 
+/// The property `$class` short names TS `ClassDeclaration.process` builds a
+/// property view for.
+const PROPERTY_KINDS: [&str; 9] = [
+    "RelationshipProperty",
+    "EnumProperty",
+    "BooleanProperty",
+    "StringProperty",
+    "IntegerProperty",
+    "LongProperty",
+    "DoubleProperty",
+    "DateTimeProperty",
+    "ObjectProperty",
+];
+
+/// A property node's kind (its `$class` short name), when its `$class` is
+/// one of the nine full metamodel property classes; `None` otherwise.
+///
+/// TS: `ClassDeclaration.process`'s properties loop
+/// (src/introspect/classdeclaration.ts) compares `thing.$class` with each
+/// `` `${MetaModelNamespace}.<Kind>Property` `` by `===`, and throws
+/// "Unrecognised model element" for anything else: a bare short name
+/// (`StringProperty`), another namespace's (`foo.StringProperty`), or any
+/// other text that merely ends in a property class's short name
+/// (`concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty`).
+/// Matching by `get_short_name` (the text after the last `.`) accepted
+/// all three (accordproject/concerto-rust#285, BC-25).
+pub(crate) fn property_kind(class: &str) -> Option<&str> {
+    let kind = class.strip_prefix(METAMODEL_NAMESPACE)?.strip_prefix('.')?;
+    PROPERTY_KINDS.contains(&kind).then_some(kind)
+}
+
+/// TS: the `else` branch of `ClassDeclaration.process`'s properties loop
+/// (classdeclaration.ts): `IllegalModelException` naming the unrecognised
+/// `thing.$class`. `this.modelFile`/`this.ast.location` there are the
+/// *class's*, which [`Property::try_from`] has no way to reach (the module
+/// doc on [`BoundElement`]), so this carries neither.
+fn unrecognised_property(class: &str) -> ConcertoError {
+    ContractError::new(
+        ErrorKind::IllegalModel,
+        "classdeclaration-process-unrecmodelelem",
+        vec![("type", class.to_string())],
+    )
+    .into()
+}
+
 /// The keys of a property node of kind `kind` (its `$class` short name)
 /// that [`Property::try_from`] keeps out of the strict decode into the
 /// generated struct, and rebuilds from the raw AST instead
@@ -381,6 +428,19 @@ impl TryFrom<&serde_json::Value> for Property {
     type Error = ConcertoError;
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
+        // Concerto keeps a set of property names for itself, so a model may
+        // not declare a field with one of them. TS: the first check of
+        // `ClassDeclaration.process`'s properties loop, ahead of its `$class`
+        // match.
+        if let Some(name) = value.get("name").and_then(|n| n.as_str())
+            && is_system_property(name)
+        {
+            return Err(ConcertoError::IllegalModel {
+                message: format!("Invalid field name '{name}'"),
+                file_name: None,
+                location: None,
+            });
+        }
         let class = declared_class(value);
         if class.is_empty() {
             return Err(ConcertoError::IllegalModel {
@@ -389,6 +449,12 @@ impl TryFrom<&serde_json::Value> for Property {
                 location: None,
             });
         }
+        // TS: `ClassDeclaration.process`'s loop matches the full `$class`
+        // (`===`) before it constructs the property, so an unrecognised one
+        // is reported ahead of everything `Property.process` checks.
+        let Some(kind) = property_kind(class) else {
+            return Err(unrecognised_property(class));
+        };
         // TS `Property.process` (property.ts) starts with `super.process()`
         // (`Decorated.process`), so a `null` decorator node (DV-018,
         // `null_decorator`) is reported ahead of every other property check.
@@ -413,18 +479,6 @@ impl TryFrom<&serde_json::Value> for Property {
             )
             .into());
         }
-        // Concerto keeps a set of property names for itself, so a model may
-        // not declare a field with one of them.
-        if let Some(name) = value.get("name").and_then(|n| n.as_str())
-            && is_system_property(name)
-        {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("Invalid field name '{name}'"),
-                file_name: None,
-                location: None,
-            });
-        }
-        let kind = get_short_name(class);
 
         // DV-017: a `RelationshipProperty` with a missing or `null` `type`
         // (see [`relationship_without_type`]). TS's `Property.process` checks
@@ -531,19 +585,7 @@ impl TryFrom<&serde_json::Value> for Property {
                 serde_json::from_value(sanitized).map_err(bad)?,
                 decorators,
             )),
-            _ => {
-                // TS: `ClassDeclaration.process`'s own `properties` loop
-                // (classdeclaration.ts), not `Property`'s constructor —
-                // `this.modelFile`/`this.ast.location` there are the
-                // *class's*, which `try_from` has no way to reach (the
-                // module doc on [`BoundElement`]), so this carries neither.
-                return Err(ContractError::new(
-                    ErrorKind::IllegalModel,
-                    "classdeclaration-process-unrecmodelelem",
-                    vec![("type", class.to_string())],
-                )
-                .into());
-            }
+            _ => return Err(unrecognised_property(class)),
         };
         property.set_ast_validators(|key| value.get(key));
         if !is_valid_identifier(property.name()) {
@@ -1510,15 +1552,90 @@ mod tests {
     }
 
     #[test]
-    fn a_property_class_may_be_given_as_the_short_name() {
-        let p = prop(serde_json::json!({
-            "$class": "StringProperty",
-            "name": "email",
-            "isArray": false,
-            "isOptional": false
-        }));
-        assert_eq!(p.name(), "email");
-        assert!(p.is_primitive());
+    fn only_the_full_metamodel_property_classes_are_recognised() {
+        // TS `ClassDeclaration.process` matches each property's `$class`
+        // with `===` against the full metamodel classes; a short name,
+        // another namespace's, or text that merely ends in a property
+        // class's short name is "Unrecognised model element"
+        // (accordproject/concerto-rust#285, BC-25).
+        for class in [
+            "StringProperty",
+            "foo.StringProperty",
+            "concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty",
+            "concerto.metamodel@1.0.0.EnumPropertyconcerto.metamodel@1.0.0.EnumProperty",
+            "concerto.metamodel@1.0.0.RelationshipPropertyconcerto.metamodel@1.0.0.RelationshipProperty",
+            "concerto.metamodel@2.0.0.StringProperty",
+            "concerto.metamodel@1.0.0.Foo.StringProperty",
+        ] {
+            let err = Property::try_from(&serde_json::json!({
+                "$class": class,
+                "name": "email",
+                "isArray": false,
+                "isOptional": false,
+                "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "T" }
+            }))
+            .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("Unrecognised model element \"{class}\"."),
+                "{class}"
+            );
+            assert!(matches!(
+                &err,
+                ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+            ));
+        }
+        for kind in PROPERTY_KINDS {
+            assert_eq!(
+                property_kind(&format!("concerto.metamodel@1.0.0.{kind}")),
+                Some(kind)
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_property_class_is_reported_before_the_property_checks() {
+        // TS: the `$class` match comes before `Property.process`, so it wins
+        // over a null decorator (DV-018), a missing name (a plain `Error`)
+        // and an invalid name.
+        for extra in [
+            serde_json::json!({ "name": "a", "decorators": [null] }),
+            serde_json::json!({}),
+            serde_json::json!({ "name": "1bad" }),
+        ] {
+            let mut ast = serde_json::json!({ "$class": "foo.StringProperty" });
+            for (key, value) in extra.as_object().unwrap() {
+                ast[key] = value.clone();
+            }
+            let err = Property::try_from(&ast).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Unrecognised model element \"foo.StringProperty\".",
+                "{ast}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_matches_the_full_property_class() {
+        // TS `Property.process`'s `switch (this.ast.$class)` has no arm for
+        // a class that only ends in a property class's short name, so
+        // `this.type` is left unassigned, and a `RelationshipProperty`
+        // short name with no `type` does not reach its unguarded arm.
+        for class in ["StringProperty", "foo.StringProperty"] {
+            let processed = process::<ContractError>(&serde_json::json!({
+                "$class": class, "name": "s"
+            }))
+            .unwrap();
+            assert_eq!(processed.property_type, None, "{class}");
+            assert!(!processed.type_set, "{class}");
+        }
+        assert!(
+            process::<ContractError>(&serde_json::json!({
+                "$class": "RelationshipProperty", "name": "r"
+            }))
+            .is_ok()
+        );
     }
 
     #[test]

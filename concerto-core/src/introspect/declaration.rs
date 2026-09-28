@@ -2319,17 +2319,36 @@ mod tests {
     }
 
     #[test]
-    fn a_class_declaration_property_class_may_be_given_as_the_short_name() {
-        let d = decl(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-            "name": "Person",
-            "properties": [
-                { "$class": "StringProperty", "name": "firstName", "isArray": false, "isOptional": false }
-            ]
-        }));
-        let c = d.as_class().unwrap();
-        assert_eq!(c.own_properties().len(), 1);
-        assert_eq!(c.own_properties()[0].type_name(), Some("String"));
+    fn a_class_declaration_property_class_must_be_the_full_metamodel_class() {
+        // TS `ClassDeclaration.process` matches the full `$class` (`===`),
+        // so neither a bare short name nor a doubled class that merely ends
+        // in one is accepted (accordproject/concerto-rust#285, BC-25).
+        for class in [
+            "StringProperty",
+            "concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty",
+        ] {
+            let err = Declaration::from_model_json(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "Person",
+                    "isAbstract": false,
+                    "properties": [
+                        { "$class": class, "name": "firstName", "isArray": false, "isOptional": false }
+                    ]
+                }),
+                "org.acme@1.0.0",
+                Some("x.cto"),
+            )
+            .unwrap_err();
+            let ConcertoError::Contract(err) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(err.kind, ErrorKind::IllegalModel);
+            assert_eq!(
+                err.final_message(),
+                format!("Unrecognised model element \"{class}\". File 'x.cto': ")
+            );
+        }
     }
 
     #[test]
