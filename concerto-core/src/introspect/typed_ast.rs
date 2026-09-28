@@ -66,12 +66,12 @@ use serde::de::value::{BorrowedStrDeserializer, MapAccessDeserializer, StringDes
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
+use crate::introspect::METAMODEL_NAMESPACE;
 use crate::introspect::declaration::{ClassKind, ClassNode, normalize_class_fields};
 use crate::introspect::decorator::{WithDecorators, parse_decorator_list};
 use crate::introspect::property::{
     Property, ast_validator_keys, object_type_placeholder, property_kind,
 };
-use crate::introspect::{METAMODEL_NAMESPACE, Named};
 use crate::model_util::{is_system_property, is_valid_identifier};
 
 type Error = serde_json::Error;
@@ -877,8 +877,8 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    use crate::ModelFile;
     use crate::introspect::Decorated;
-    use crate::{ConcertoError, ModelFile};
 
     /// Everything a [`ModelFile`] holds, in a stable order (its own `Debug`
     /// prints a `HashMap` whose order varies between instances).
@@ -892,7 +892,7 @@ mod tests {
                 file.declarations(),
                 file.file_name(),
                 file.ast(),
-                file.get_decorators(),
+                file.decorators(),
                 file.concerto_version(),
                 file.definitions(),
                 file.is_external(),
@@ -1133,9 +1133,7 @@ mod tests {
             assert!(!check(&text));
             assert!(matches!(
                 ModelFile::from_json_text(&text, None, None),
-                Ok(Err(
-                    ConcertoError::Contract(_) | ConcertoError::IllegalModel { .. }
-                ))
+                Ok(Err(e)) if !e.is_unported_type_not_found()
             ));
         }
         assert!(!check("{\"namespace\": }"));

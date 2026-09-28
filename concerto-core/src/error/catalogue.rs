@@ -498,7 +498,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "classdeclaration-getnestedproperty-primitiveorenum",
         template: "Property {propertyName} is a primitive or enum. Invalid property path: {propertyPath}",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
         // at the throw site in model_manager.rs): the one throw in
         // `getNestedProperty` that TS does not build through
         // `IllegalModelException`.
@@ -510,7 +510,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Globalize,
         // InstanceGenerator.findConcreteSubclass (RUST), reached from
         // newInstance; not yet called. Thrown as a plain `Error`, not
-        // `IllegalModelException` (ErrorKind::Error, table 2.3).
+        // `IllegalModelException` (ErrorKind::InvalidArgument, table 2.3).
         sources: &["src/serializer/instancegenerator.ts:204"],
     },
     CatalogueEntry {
@@ -518,7 +518,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         template: "\"Serializer.toJSON\" only accepts \"Concept\", \"Event\", \"Asset\", \"Participant\" or \"Transaction\".",
         renderer: Renderer::Globalize,
         // Serializer.toJSON (HYBRID); not yet called. `Globalize.formatMessage`
-        // (no params), thrown as a plain `Error` (ErrorKind::Error, table 2.3).
+        // (no params), thrown as a plain `Error` (ErrorKind::InvalidArgument, table 2.3).
         sources: &["src/serializer.ts:102"],
     },
     // ResourceValidator (HYBRID): every `report*` method's key, none called yet.
@@ -577,7 +577,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["src/serializer/resourcevalidator.ts:668"],
     },
     // ---- P3-01: ResourceValidator's own inline templates (plain `Error`,
-    //      ErrorKind::Error — never `ValidationException`, table 2.3), 2.2
+    //      ErrorKind::InvalidArgument — never `ValidationException`, table 2.3), 2.2
     //      step 2. Each `${expr}` becomes a named `{param}`. ----
     CatalogueEntry {
         code: "resourcevalidator-checkmaptype-expectedstring",
@@ -667,7 +667,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "property-getfullyqualifiedtypename-notfound",
         template: "Failed to find fully qualified type name for property {name} with type {type}",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
         // at the throw site in model_manager.rs).
         sources: &["src/introspect/property.ts:218"],
     },
@@ -684,7 +684,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "property-process-noname",
         template: "No name for type {ast}",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
         // at the throw site).
         sources: &[
             "src/introspect/property.ts:124",
@@ -760,7 +760,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "field-getscalarfield-notscalar",
         template: "Field {name} is not a scalar property.",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::Error`
+        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
         // at the throw site).
         sources: &["src/introspect/field.ts:186"],
     },

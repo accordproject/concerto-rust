@@ -1022,7 +1022,7 @@ impl<'h> Session<'h> {
             .property_ids(decl)
             .nth(usize::try_from(index).unwrap_or(usize::MAX))
             .ok_or_else(not_found)?;
-        match mm.property(id) {
+        match mm.property_by_id(id) {
             Some(p) if p.name() == name => Ok((owner, id)),
             _ => Err(not_found()),
         }
@@ -1133,9 +1133,9 @@ impl DecoParent {
     pub fn decorators<'a>(&self, r: &'a Replayed) -> Option<&'a [concerto_core::Decorator]> {
         use concerto_core::Decorated;
         match self {
-            Self::Decl(id) => r.mm.declaration(*id).map(Decorated::get_decorators),
-            Self::Prop(id) => r.mm.property(*id).map(Decorated::get_decorators),
-            Self::File(ns) => r.mm.model_file(ns).map(Decorated::get_decorators),
+            Self::Decl(id) => r.mm.declaration(*id).map(Decorated::decorators),
+            Self::Prop(id) => r.mm.property_by_id(*id).map(Decorated::decorators),
+            Self::File(ns) => r.mm.model_file(ns).map(Decorated::decorators),
             Self::MapPart(id, is_key) => match r.mm.declaration(*id) {
                 Some(Declaration::Map(map)) if *is_key => Some(map.key_decorators()),
                 Some(Declaration::Map(map)) => Some(map.value_decorators()),
@@ -1183,7 +1183,7 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let fqn = model_util::get_fully_qualified_name(&namespace, &type_name);
+    let fqn = model_util::qualify(&namespace, &type_name);
     let identifier_field_name = fields
         .get("$identifierFieldName")
         .and_then(Value::as_str)
@@ -1739,6 +1739,7 @@ impl Replayed {
             Declaration::Enum(_) => "EnumDeclaration",
             Declaration::Scalar(_) => "ScalarDeclaration",
             Declaration::Map(_) => "MapDeclaration",
+            other => other.declaration_kind(),
         };
         Some(json!({
             M: "Declaration",

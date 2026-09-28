@@ -1,142 +1,423 @@
 //! Error types for `concerto-core` (PORTING.md section 2: the error contract).
 //!
-//! [`ConcertoError`] covers the hard failures that stop a model from being
-//! used: a type that cannot be resolved, or model JSON that does not satisfy
-//! the metamodel. Each variant carries enough context to report what went
-//! wrong and, where known, where.
+//! [`Error`] is the one error type of the crate: an opaque value with
+//! accessors for its [`ErrorKind`], its stable catalogue [`code`](Error::code),
+//! its message params, its [`Location`] in the model and its structured
+//! [`Detail`]s (docs/public-api.md section 5.6). [`Result`] defaults to it.
 //!
-//! [`ContractError`] is the `{kind, code, params, location}` shape every
-//! ported member builds its errors from (section 2.1). `kind` selects the TS
+//! Behind it is the `{kind, code, params, location}` shape every ported
+//! member builds its errors from (section 2.1). `kind` selects the TS
 //! exception class the shim throws (section 2.3); `code` is a key into the
-//! [`catalogue`] module, the verbatim port of `messages/en.json` and the
-//! inline templates the reference throws (section 2.2), scoped to the keys
-//! OD-5 lists. A call site that has not yet been faithfully ported from TS
-//! builds its `ContractError` with [`ContractError::pre_port`] instead of a
-//! catalogue code, so that it compiles against this contract without
-//! claiming a verbatim TS message it does not have; the unit that later
-//! ports that member (named in its doc comment) replaces the call with a
-//! real catalogue entry and its golden test (section 7.2).
+//! message catalogue, the verbatim port of `messages/en.json` and the inline
+//! templates the reference throws (section 2.2), scoped to the keys OD-5
+//! lists. A call site that has not yet been faithfully ported from TS uses
+//! the catalogue's `"pre-port"` entry instead, so that it compiles against
+//! this contract without claiming a verbatim TS message it does not have; the
+//! unit that later ports that member (named in its doc comment) replaces the
+//! call with a real catalogue entry and its golden test (section 7.2).
+//!
+//! That shape (`ContractError`), the catalogue and the TS-specific parts of
+//! the contract are the JS binding's: they are public only with the
+//! `js-compat` feature.
 
 mod catalogue;
 
+#[cfg(not(feature = "js-compat"))]
+use catalogue::catalogue_entry;
+/// The message catalogue and its lookup (PORTING.md section 2.2).
+#[cfg(feature = "js-compat")]
 pub use catalogue::{CATALOGUE, catalogue_entry};
 
-use thiserror::Error;
+/// Shorthand `Result` used all over `concerto-core`, with [`Error`] as its
+/// default error type.
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Shorthand `Result` used all over `concerto-core`.
-pub type Result<T> = std::result::Result<T, ConcertoError>;
+/// The error type of `concerto-core`: a model that cannot be loaded, a type
+/// that cannot be resolved, a model or an instance that fails validation.
+///
+/// It is opaque: read it through its accessors. [`kind`](Error::kind) is the
+/// class of failure (one TS exception class each), and
+/// [`code`](Error::code) the stable catalogue key, safe to match on. The
+/// message (`Display`) is the TS message today, but its wording carries no
+/// stability promise (docs/public-api.md section 2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Error(Box<Inner>);
 
-/// A hard failure raised while loading a model or resolving a type.
-#[derive(Debug, Error)]
-pub enum ConcertoError {
-    /// A fully-qualified type could not be resolved in any loaded model.
-    #[error("type not found: {type_name}")]
-    TypeNotFound {
-        /// The name that failed to resolve (qualified or short).
-        type_name: String,
-    },
-
-    /// The model JSON is malformed or violates a metamodel rule.
-    #[error("illegal model: {message}")]
-    IllegalModel {
-        /// A description of the problem.
-        message: String,
-        /// The originating file, if known.
-        file_name: Option<String>,
-        /// The AST node's `location` (`concerto.metamodel@1.0.0.Range`),
-        /// copied verbatim, exactly as [`ContractError::location`] is
-        /// (PORTING.md section 2.1). `None` where the check has no AST node
-        /// in scope, or where TS itself passes none.
-        location: Option<serde_json::Value>,
-    },
-
-    /// An error in the `{kind, code, params, location}` shape of PORTING.md
-    /// section 2, raised by a ported member. The message is the TS message,
-    /// byte for byte.
-    #[error("{}", .0.message())]
-    Contract(Box<ContractError>),
+/// What an [`Error`] holds.
+#[derive(Debug, Clone, PartialEq)]
+struct Inner {
+    contract: ContractError,
+    /// Which pre-port check made the error, if one did.
+    legacy: Legacy,
 }
 
-impl From<ContractError> for ConcertoError {
-    fn from(err: ContractError) -> Self {
-        Self::Contract(Box::new(err))
+/// The error type under its earlier name.
+#[deprecated(
+    since = "0.1.0",
+    note = "renamed `Error`; the variants are gone, read the error through its accessors"
+)]
+pub type ConcertoError = Error;
+
+impl Error {
+    /// The class of failure.
+    pub fn kind(&self) -> ErrorKind {
+        self.0.contract.kind
+    }
+
+    /// The catalogue key of the message: a stable identifier, safe to match
+    /// on. An error raised by a check whose message is not yet a faithful
+    /// port of the TS message has the code `"pre-port"`.
+    pub fn code(&self) -> &'static str {
+        self.0.contract.code
+    }
+
+    /// The params the message is rendered with, in template order. Each value
+    /// is the string TS interpolates.
+    pub fn params(&self) -> &[(&'static str, String)] {
+        &self.0.contract.params
+    }
+
+    /// Where in the model the problem is, when the error has a location that
+    /// is a well-formed `concerto.metamodel@1.0.0.Range`.
+    pub fn location(&self) -> Option<Location> {
+        self.0
+            .contract
+            .location
+            .as_ref()
+            .and_then(Location::from_value)
+    }
+
+    /// The name of the model file the error is about, when it names one.
+    pub fn file_name(&self) -> Option<&str> {
+        match &self.0.legacy {
+            Legacy::IllegalModel { file_name } => file_name.as_deref(),
+            Legacy::None | Legacy::TypeNotFound => self
+                .0
+                .contract
+                .model_file
+                .as_ref()
+                .and_then(|name| name.as_deref()),
+        }
+    }
+
+    /// The structured violations of a strict-option rejection
+    /// (accordproject/concerto#1273); empty for every other error.
+    pub fn details(&self) -> &[Detail] {
+        &self.0.contract.details
+    }
+
+    js_compat_pub! {
+        /// The contract shape behind this error (PORTING.md section 2.1),
+        /// which the JS binding hands to the TS error factory.
+        pub fn contract(&self) -> &ContractError {
+            &self.0.contract
+        }
+    }
+
+    js_compat_pub! {
+        /// [`Error::contract`], by value.
+        pub fn into_contract(self) -> ContractError {
+            self.0.contract
+        }
+    }
+
+    /// The contract shape behind this error, unless a pre-port check made it
+    /// ([`Error::type_not_found`], [`Error::illegal_model`]).
+    #[allow(dead_code)]
+    pub(crate) fn ported(&self) -> Option<&ContractError> {
+        matches!(self.0.legacy, Legacy::None).then_some(&self.0.contract)
+    }
+
+    js_compat_pub! {
+        /// The ported contract error, by value: `None` for the two pre-port
+        /// shapes (`Error::type_not_found`, `Error::illegal_model`).
+        pub fn into_ported(self) -> Option<ContractError> {
+            matches!(self.0.legacy, Legacy::None).then_some(self.0.contract)
+        }
+    }
+
+    /// The contract shape behind this error, to amend in place.
+    pub(crate) fn contract_mut(&mut self) -> &mut ContractError {
+        &mut self.0.contract
+    }
+
+    js_compat_pub! {
+        /// A type that could not be resolved, raised by a check that has no
+        /// catalogue entry yet: `"pre-port"`, `typeName` set, and the message
+        /// `type not found: {type_name}`.
+        pub fn type_not_found(type_name: impl Into<String>) -> Self {
+            let type_name = type_name.into();
+            let mut err = ContractError::pre_port(
+                ErrorKind::TypeNotFound,
+                format!("type not found: {type_name}"),
+                None,
+            );
+            // `TypeNotFound` payloads carry `typeName` (table 2.3).
+            err.params.push(("typeName", type_name));
+            Self(Box::new(Inner {
+                contract: err,
+                legacy: Legacy::TypeNotFound,
+            }))
+        }
+    }
+
+    js_compat_pub! {
+        /// A model that cannot be loaded, raised by a check that has no catalogue
+        /// entry yet: `"pre-port"`, with `message` verbatim.
+        pub fn illegal_model(
+            message: impl Into<String>,
+            file_name: Option<String>,
+            location: Option<serde_json::Value>,
+        ) -> Self {
+            let contract = ContractError::pre_port(ErrorKind::IllegalModel, message.into(), location);
+            Self(Box::new(Inner {
+                contract,
+                legacy: Legacy::IllegalModel { file_name },
+            }))
+        }
+    }
+
+    /// Whether the error was made by [`Error::type_not_found`].
+    pub(crate) fn is_unported_type_not_found(&self) -> bool {
+        matches!(self.0.legacy, Legacy::TypeNotFound)
+    }
+
+    js_compat_pub! {
+        /// The name that failed to resolve, when the error comes from a
+        /// `TypeNotFound` check that has no catalogue entry yet (its message
+        /// is not the TS one).
+        pub fn unported_type_not_found(&self) -> Option<&str> {
+            match self.0.legacy {
+                Legacy::TypeNotFound => self.0.contract.param("typeName"),
+                Legacy::None | Legacy::IllegalModel { .. } => None,
+            }
+        }
+    }
+
+    js_compat_pub! {
+        /// The message, when the error comes from an `IllegalModel` check
+        /// that has no catalogue entry yet.
+        pub fn unported_illegal_model(&self) -> Option<&str> {
+            match self.0.legacy {
+                Legacy::IllegalModel { .. } => self.0.contract.param("message"),
+                Legacy::None | Legacy::TypeNotFound => None,
+            }
+        }
     }
 }
 
-/// Selects the TS class the shim throws (PORTING.md table 2.3). Only the
-/// kinds a ported (or minimally adapted, section 7.2) unit raises exist so
-/// far; `ParseException` and `SecurityException` have no Rust throw site
-/// (2.3) and so no kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorKind {
-    /// `IllegalModelException(message, modelFile, location)`.
-    IllegalModel,
-    /// `TypeNotFoundException(typeName, message)`. `params` must include
-    /// `typeName` (table 2.3); build these with [`ContractError::type_not_found`].
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.legacy {
+            Legacy::IllegalModel { .. } => {
+                write!(
+                    f,
+                    "illegal model: {}",
+                    self.0.contract.param("message").unwrap_or("")
+                )
+            }
+            Legacy::None | Legacy::TypeNotFound => f.write_str(&self.0.contract.message()),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<ContractError> for Error {
+    fn from(contract: ContractError) -> Self {
+        Self(Box::new(Inner {
+            contract,
+            legacy: Legacy::None,
+        }))
+    }
+}
+
+/// A position in a model's source: `concerto.metamodel@1.0.0.Position`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Position {
+    /// The line, from 1.
+    pub line: u64,
+    /// The column, from 1.
+    pub column: u64,
+    /// The offset from the start of the source, from 0.
+    pub offset: u64,
+}
+
+/// Where in a model's source an error is: `concerto.metamodel@1.0.0.Range`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Location {
+    /// Where the node starts.
+    pub start: Position,
+    /// Where the node ends.
+    pub end: Position,
+    /// The source the positions refer to, when the AST names one.
+    pub source: Option<String>,
+}
+
+impl Location {
+    /// Reads a `Range` node. `None` when a position is missing or one of its
+    /// numbers is not a non-negative integer.
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        fn number(value: &serde_json::Value) -> Option<u64> {
+            value.as_u64().or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f < 18_446_744_073_709_551_616.0)
+                    .map(|f| f as u64)
+            })
+        }
+        fn position(value: Option<&serde_json::Value>) -> Option<Position> {
+            let value = value?;
+            Some(Position {
+                line: number(value.get("line")?)?,
+                column: number(value.get("column")?)?,
+                offset: number(value.get("offset")?)?,
+            })
+        }
+        Some(Self {
+            start: position(value.get("start"))?,
+            end: position(value.get("end"))?,
+            source: value
+                .get("source")
+                .and_then(|source| source.as_str())
+                .map(str::to_string),
+        })
+    }
+}
+
+/// Which pre-port check made an error, where the error must still show the
+/// shape it had before [`Error`] replaced the `Error` enum: its
+/// `Display` text and file name (docs/public-api.md section 5.6).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) enum Legacy {
+    /// A catalogue error.
+    #[default]
+    None,
+    /// [`Error::type_not_found`].
     TypeNotFound,
-    /// concerto-util `BaseException(message, undefined, errorType)`, thrown by
-    /// `Validator.reportError`.
+    /// [`Error::illegal_model`], with the file name it was given.
+    IllegalModel { file_name: Option<String> },
+}
+
+/// The kind of failure an error reports.
+///
+/// Each kind is one TS exception class (PORTING.md table 2.3), which the
+/// doc comment of each variant names. The variants carry Rust names: the TS
+/// class name is only available to the JS binding, through
+/// `ErrorKind::ts_class` behind the `js-compat` feature. Only the kinds a
+/// ported (or minimally adapted, section 7.2) unit raises exist so far;
+/// `ParseException` and `SecurityException` have no Rust throw site (2.3)
+/// and so no kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    /// The model is not valid.
+    ///
+    /// TS: `IllegalModelException(message, modelFile, location)`.
+    IllegalModel,
+    /// A type the model refers to is not declared. `params` must include
+    /// `typeName` (table 2.3); build these with `ContractError::type_not_found`.
+    ///
+    /// TS: `TypeNotFoundException(typeName, message)`.
+    TypeNotFound,
+    /// A value fails a validator declared on a field or scalar.
+    ///
+    /// TS: concerto-util `BaseException(message, undefined, errorType)`,
+    /// thrown by `Validator.reportError`.
     Validator,
-    /// `ValidationException(message)` (table 2.3), thrown by `ResourceValidator`
-    /// (P3-01, `src/serializer/resourcevalidator.ts`, every `report*` method).
+    /// An instance does not conform to its model.
+    ///
+    /// TS: `ValidationException(message)` (table 2.3), thrown by
+    /// `ResourceValidator` (P3-01, `src/serializer/resourcevalidator.ts`,
+    /// every `report*` method).
     Validation,
-    /// A plain JS `Error(message)`.
-    Error,
-    /// A JS `TypeError(message)` the V8 engine raises in the TS code.
-    JsTypeError,
-    /// A JS `RangeError(message)` the V8 engine raises in the TS code: a
-    /// stack overflow at a TS recursion point that has no cycle check
-    /// (PORTING.md 2.5), always `engine-rangeerror-maxcallstack`.
-    JsRangeError,
-    /// `MetamodelException(message)` (`src/metamodelexception.ts`), thrown by
-    /// `BaseModelManager.validateAst` (task P3-04,
+    /// An argument or input value is not acceptable to the operation.
+    ///
+    /// TS: a plain `Error(message)`.
+    InvalidArgument,
+    /// The input has the wrong shape for the operation reading it, such as a
+    /// missing node or a value of the wrong kind where the TS code assumes
+    /// one.
+    ///
+    /// TS: a `TypeError(message)` the V8 engine raises in the TS code.
+    MalformedInput,
+    /// A recursion point with no cycle check went too deep (PORTING.md 2.5),
+    /// always `engine-rangeerror-maxcallstack`.
+    ///
+    /// TS: a `RangeError(message)` the V8 engine raises in the TS code (a
+    /// stack overflow).
+    RecursionLimit,
+    /// A document fails the metamodel check.
+    ///
+    /// TS: `MetamodelException(message)` (`src/metamodelexception.ts`),
+    /// thrown by `BaseModelManager.validateAst` (task P3-04,
     /// `concerto_core::instance::metamodel`).
     Metamodel,
 }
 
 impl ErrorKind {
     /// The TS class name the shim throws for this kind, as the oracle records
-    /// it in `error.class`.
+    /// it in `error.class`. Only for the JS binding (the `js-compat`
+    /// feature).
+    #[cfg(feature = "js-compat")]
     pub fn ts_class(self) -> &'static str {
-        match self {
-            Self::IllegalModel => "IllegalModelException",
-            Self::TypeNotFound => "TypeNotFoundException",
-            Self::Validator => "BaseException",
-            Self::Validation => "ValidationException",
-            Self::Error => "Error",
-            Self::JsTypeError => "TypeError",
-            Self::JsRangeError => "RangeError",
-            Self::Metamodel => "MetamodelException",
-        }
+        ts_class(self)
+    }
+
+    /// The TS class name for this kind; see the `js-compat` build's
+    /// `ErrorKind::ts_class`.
+    #[cfg(not(feature = "js-compat"))]
+    pub(crate) fn ts_class(self) -> &'static str {
+        ts_class(self)
     }
 }
 
-/// How a catalogue template is rendered (PORTING.md section 2.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Renderer {
-    /// `Globalize.formatMessage(key)`: the en.json text, used without params.
-    Globalize,
-    /// An inline template literal or string concatenation: each `{param}` is
-    /// replaced once, and inserted values are never scanned again.
-    Inline,
-    /// Not a catalogue template at all: the single `message` param is used
-    /// verbatim. Reserved for [`ContractError::pre_port`]; never cite this
-    /// renderer as a faithful TS port (section 2.2), and its one entry
-    /// (`code = "pre-port"`) is exempt from the OD-5 completeness test.
-    Raw,
+/// PORTING.md table 2.3: the TS exception class of each kind.
+fn ts_class(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::IllegalModel => "IllegalModelException",
+        ErrorKind::TypeNotFound => "TypeNotFoundException",
+        ErrorKind::Validator => "BaseException",
+        ErrorKind::Validation => "ValidationException",
+        ErrorKind::InvalidArgument => "Error",
+        ErrorKind::MalformedInput => "TypeError",
+        ErrorKind::RecursionLimit => "RangeError",
+        ErrorKind::Metamodel => "MetamodelException",
+    }
 }
 
-/// One message template.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CatalogueEntry {
-    /// The catalogue key (`code`).
-    pub code: &'static str,
-    /// The template text, byte for byte.
-    pub template: &'static str,
-    /// Which renderer applies.
-    pub renderer: Renderer,
-    /// Every throw site that uses the template, in the frozen TS reference.
-    pub sources: &'static [&'static str],
+js_compat_pub! {
+    /// How a catalogue template is rendered (PORTING.md section 2.2).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Renderer {
+        /// `Globalize.formatMessage(key)`: the en.json text, used without params.
+        Globalize,
+        /// An inline template literal or string concatenation: each `{param}` is
+        /// replaced once, and inserted values are never scanned again.
+        Inline,
+        /// Not a catalogue template at all: the single `message` param is used
+        /// verbatim. Reserved for [`ContractError::pre_port`]; never cite this
+        /// renderer as a faithful TS port (section 2.2), and its one entry
+        /// (`code = "pre-port"`) is exempt from the OD-5 completeness test.
+        Raw,
+    }
+}
+
+js_compat_pub! {
+    /// One message template.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CatalogueEntry {
+        /// The catalogue key (`code`).
+        pub code: &'static str,
+        /// The template text, byte for byte.
+        pub template: &'static str,
+        /// Which renderer applies.
+        pub renderer: Renderer,
+        /// Every throw site that uses the template, in the frozen TS reference.
+        pub sources: &'static [&'static str],
+    }
 }
 
 /// Renders a template with its params.
@@ -264,47 +545,52 @@ fn substitute_dollar_sequences(value: &str, matched: &str, before: &str, after: 
     out
 }
 
-/// What `Validator.reportError` adds to a validator message: the instance
-/// identifier, the fully qualified name of the field or scalar, and the
-/// concerto-util `errorType`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidatorReport {
-    /// `String(id)`: `"null"` when TS passes `null`.
-    pub id: String,
-    /// `getFieldOrScalarDeclaration().getFullyQualifiedName()`.
-    pub fqn: String,
-    /// The concerto-util `ErrorCodes` value.
-    pub error_type: &'static str,
+js_compat_pub! {
+    /// What `Validator.reportError` adds to a validator message: the instance
+    /// identifier, the fully qualified name of the field or scalar, and the
+    /// concerto-util `errorType`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ValidatorReport {
+        /// `String(id)`: `"null"` when TS passes `null`.
+        pub id: String,
+        /// `getFieldOrScalarDeclaration().getFullyQualifiedName()`.
+        pub fqn: String,
+        /// The concerto-util `ErrorCodes` value.
+        pub error_type: &'static str,
+    }
 }
 
-/// An error in the shape of PORTING.md section 2.1.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContractError {
-    /// Selects the TS class.
-    pub kind: ErrorKind,
-    /// The catalogue key.
-    pub code: &'static str,
-    /// Each param is the JS `ToString` of what TS interpolates, in template
-    /// order.
-    pub params: Vec<(&'static str, String)>,
-    /// The AST node's `location`, verbatim, or `None` where TS passes none.
-    pub location: Option<serde_json::Value>,
-    /// `IllegalModel` only: `Some` when TS passes a model file to the
-    /// exception, holding that file's name (`modelFile.getName()`, `None`
-    /// when it has none). The WASM shim passes the real JS model file instead.
-    pub model_file: Option<Option<String>>,
-    /// `Validator` only: what `Validator.reportError` adds.
-    pub validator: Option<ValidatorReport>,
-    /// `ValidationException.details` (accordproject/concerto#1273): one
-    /// entry per violation the error reports, for callers that enumerate
-    /// them instead of parsing the message. Empty for every error that is
-    /// not a [`DeserializeOptions`](crate::instance::DeserializeOptions)
-    /// rejection.
-    pub details: Vec<ValidationDetail>,
+js_compat_pub! {
+    /// An error in the shape of PORTING.md section 2.1.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ContractError {
+        /// Selects the TS class.
+        pub kind: ErrorKind,
+        /// The catalogue key.
+        pub code: &'static str,
+        /// Each param is the JS `ToString` of what TS interpolates, in template
+        /// order.
+        pub params: Vec<(&'static str, String)>,
+        /// The AST node's `location`, verbatim, or `None` where TS passes none.
+        pub location: Option<serde_json::Value>,
+        /// `IllegalModel` only: `Some` when TS passes a model file to the
+        /// exception, holding that file's name (`modelFile.getName()`, `None`
+        /// when it has none). The WASM shim passes the real JS model file instead.
+        pub model_file: Option<Option<String>>,
+        /// `Validator` only: what `Validator.reportError` adds.
+        pub validator: Option<ValidatorReport>,
+        /// `ValidationException.details` (accordproject/concerto#1273): one
+        /// entry per violation the error reports, for callers that enumerate
+        /// them instead of parsing the message. Empty for every error that is
+        /// not a [`ValidationOptions`](crate::instance::ValidationOptions)
+        /// rejection.
+        pub details: Vec<Detail>,
+    }
 }
 
-/// The `code` of a [`ValidationDetail`] (accordproject/concerto#1273).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The `code` of a [`Detail`] (accordproject/concerto#1273).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DetailCode {
     /// A key the declaration does not declare, rejected by
     /// `reject_unknown_keys`.
@@ -324,10 +610,11 @@ impl DetailCode {
     }
 }
 
-/// One structured violation in [`ContractError::details`]: #1273's
+/// One structured violation in [`Error::details`]: #1273's
 /// `{ path, code, expected, actual }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidationDetail {
+#[non_exhaustive]
+pub struct Detail {
     /// The JSON path of the offending value (`$.declarations[0].name`).
     pub path: String,
     /// What kind of violation it is.
@@ -338,7 +625,19 @@ pub struct ValidationDetail {
     pub actual: Option<String>,
 }
 
+/// [`Detail`] under its earlier name.
+#[deprecated(since = "0.1.0", note = "renamed `Detail`")]
+pub type ValidationDetail = Detail;
+
 impl ContractError {
+    /// The value of the param `name`, if the error has one.
+    pub(crate) fn param(&self, name: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(param, _)| *param == name)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// An error with no location and no model file.
     pub fn new(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Self {
         Self {
@@ -452,9 +751,9 @@ impl ContractError {
             ErrorKind::TypeNotFound
             | ErrorKind::Validator
             | ErrorKind::Validation
-            | ErrorKind::Error
-            | ErrorKind::JsTypeError
-            | ErrorKind::JsRangeError
+            | ErrorKind::InvalidArgument
+            | ErrorKind::MalformedInput
+            | ErrorKind::RecursionLimit
             // TS: `MetamodelException` (src/metamodelexception.ts) is a bare
             // `BaseException(message)`: no suffix, no location.
             | ErrorKind::Metamodel => message,
@@ -462,6 +761,7 @@ impl ContractError {
     }
 
     /// The `component` the oracle records for this error.
+    #[cfg(feature = "js-compat")]
     pub fn component(&self) -> Option<&'static str> {
         match self.kind {
             ErrorKind::IllegalModel | ErrorKind::TypeNotFound => {
@@ -477,7 +777,9 @@ impl ContractError {
             ErrorKind::Validator | ErrorKind::Validation | ErrorKind::Metamodel => {
                 Some("@accordproject/concerto-util")
             }
-            ErrorKind::Error | ErrorKind::JsTypeError | ErrorKind::JsRangeError => None,
+            ErrorKind::InvalidArgument | ErrorKind::MalformedInput | ErrorKind::RecursionLimit => {
+                None
+            }
         }
     }
 }
@@ -533,7 +835,7 @@ mod tests {
 
     fn contract(code: &'static str, params: &[(&'static str, &str)]) -> ContractError {
         ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             code,
             params.iter().map(|(k, v)| (*k, (*v).to_string())).collect(),
         )
@@ -813,7 +1115,7 @@ mod tests {
     #[test]
     fn golden_engine_rangeerror_maxcallstack() {
         let err = ContractError::new(
-            ErrorKind::JsRangeError,
+            ErrorKind::RecursionLimit,
             "engine-rangeerror-maxcallstack",
             Vec::new(),
         );
@@ -2272,19 +2574,13 @@ mod tests {
 
     #[test]
     fn type_not_found_displays_name() {
-        let err = ConcertoError::TypeNotFound {
-            type_name: "org.acme@1.0.0.Foo".into(),
-        };
+        let err = Error::type_not_found("org.acme@1.0.0.Foo");
         assert!(err.to_string().contains("org.acme@1.0.0.Foo"));
     }
 
     #[test]
     fn illegal_model_displays_message() {
-        let err = ConcertoError::IllegalModel {
-            message: "missing 'namespace'".into(),
-            file_name: Some("model.json".into()),
-            location: None,
-        };
+        let err = Error::illegal_model("missing 'namespace'", Some("model.json".into()), None);
         assert!(err.to_string().contains("missing 'namespace'"));
     }
 

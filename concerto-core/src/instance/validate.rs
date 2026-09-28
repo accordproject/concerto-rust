@@ -16,10 +16,10 @@
 //!   which already walks the whole super type chain);
 //! - abstract and nested `$class` values were not checked (fixed: every
 //!   object, at any depth, is re-resolved by its own `$class` and checked
-//!   with [`ClassDeclaration::is_abstract`]);
+//!   with `ClassDeclaration::is_abstract`);
 //! - Long, DateTime, relationships, enums, maps and scalars had no support
 //!   (all six are implemented below);
-//! - errors were stringly typed (fixed: every error is a [`ContractError`]
+//! - errors were stringly typed (fixed: every error is a `ContractError`
 //!   with the P1-05 `{kind, code, params, location}` shape, structured, not
 //!   a `String`).
 //!
@@ -44,11 +44,11 @@
 //! `instanceof`-shaped, not shape/parse-shaped, exactly like TS's own
 //! post-population checks:
 //!
-//! - [`DAYJS_TAG`] (`"$$dayjs"`) on an object marks an already-coerced
+//! - `DAYJS_TAG` (`"$$dayjs"`) on an object marks an already-coerced
 //!   `DateTime` value (its doc comment has the detail);
-//! - [`RELATIONSHIP_TAG`] (`"$$relationship"`) on an object marks an
+//! - `RELATIONSHIP_TAG` (`"$$relationship"`) on an object marks an
 //!   already-coerced `Relationship` value, carrying the pointed-at type as
-//!   `$class` (its doc comment on [`check_relationship`] has the detail).
+//!   `$class` (its doc comment on `check_relationship` has the detail).
 //!
 //! A caller that already has real wire JSON (a `DateTime` as an ISO string,
 //! a relationship as a URI string) is expected to coerce it into this shape
@@ -67,7 +67,7 @@
 //! exactly what `checkItem`'s `instanceof`-style check rejects in TS too),
 //! not an approximation of it.
 //!
-//! A third marker, [`UNDEFINED_TAG`] ([`js_undefined`]), stands for a JS
+//! A third marker, `UNDEFINED_TAG` (`js_undefined`), stands for a JS
 //! `undefined` held *inside* a value, such as an array element
 //! (`["a", undefined, "b"]`) or a map value. JSON has no `undefined`, and
 //! `null` is a different JS value (`typeof null` is `'object'`,
@@ -82,16 +82,16 @@
 //! 3): `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()`,
 //! and `reportNotResouceViolation`/`reportNotRelationshipViolation` call
 //! `value.toString()`, on whatever value reached them (DV-008,
-//! [`invalid_field_assignment_shape`], [`js_method_receiver_error`]).
+//! `invalid_field_assignment_shape`, `js_method_receiver_error`).
 //!
 //! # Walk
 //!
 //! [`validate_instance`] is the entry point (TS `Resource.validate`): it
 //! resolves the root value's own `$class` and calls
-//! [`visit_class_declaration`], which is the port of
+//! `visit_class_declaration`, which is the port of
 //! `ResourceValidator.visitClassDeclaration` and recurses through
-//! [`visit_property`] (`Property.accept`/`visitField`/
-//! `visitRelationshipDeclaration`) and [`visit_map_declaration`]
+//! `visit_property` (`Property.accept`/`visitField`/
+//! `visitRelationshipDeclaration`) and `visit_map_declaration`
 //! (`MapDeclaration.accept`), mirroring the TS visitor one function per
 //! method, in the same order, so that the first error raised matches
 //! (PORTING.md 2.4).
@@ -100,10 +100,10 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::Value;
 
 use crate::ecma;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::{CollectionSizeValidator, NumberValidator, StringValidator};
-use crate::introspect::{Declaration, FullyQualified, Named, Property, Typed};
+use crate::introspect::{Declaration, FullyQualified, Property};
 use crate::model_manager::{ModelManager, ValidatedElement};
 use crate::model_util;
 
@@ -143,70 +143,74 @@ pub fn validate_instance(
     validate_instance_from(mm, value, options, String::new())
 }
 
-/// [`validate_instance`], with the `rootResourceIdentifier` the caller
-/// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
-/// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
-/// sets none, which a report made before the walk sets one prints as
-/// `undefined`.
-pub fn validate_instance_from(
-    mm: &ModelManager,
-    value: &Value,
-    options: &ValidateOptions,
-    root_resource_identifier: String,
-) -> Result<()> {
-    let declared_fqn = value
-        .get("$class")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            // Not a TS-reachable path: a real `Resource` always has a
-            // `$class` (it is how `getFullyQualifiedType()` answers at
-            // all). A JSON document with none has no declared type to
-            // report a violation against, so this is a harness-level
-            // error, not a ported TS message.
-            ContractError::pre_port(
-                ErrorKind::Error,
-                "cannot validate an instance with no $class".to_string(),
-                None,
-            )
-        })?
-        .to_string();
-    let mut params = Params {
-        mm,
-        options,
-        root_resource_identifier,
-        current_identifier: None,
-    };
-    visit_class_declaration(&mut params, &declared_fqn, value)
+js_compat_pub! {
+    /// [`validate_instance`], with the `rootResourceIdentifier` the caller
+    /// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
+    /// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
+    /// sets none, which a report made before the walk sets one prints as
+    /// `undefined`.
+    pub fn validate_instance_from(
+        mm: &ModelManager,
+        value: &Value,
+        options: &ValidateOptions,
+        root_resource_identifier: String,
+    ) -> Result<()> {
+        let declared_fqn = value
+            .get("$class")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                // Not a TS-reachable path: a real `Resource` always has a
+                // `$class` (it is how `getFullyQualifiedType()` answers at
+                // all). A JSON document with none has no declared type to
+                // report a violation against, so this is a harness-level
+                // error, not a ported TS message.
+                ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    "cannot validate an instance with no $class".to_string(),
+                    None,
+                )
+            })?
+            .to_string();
+        let mut params = Params {
+            mm,
+            options,
+            root_resource_identifier,
+            current_identifier: None,
+        };
+        visit_class_declaration(&mut params, &declared_fqn, value)
+    }
 }
 
-/// Validates one property value, as `ValidatedResource.setPropertyValue`
-/// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
-/// parameters)` with `value` alone on the stack and the instance's
-/// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
-/// accordproject/concerto-rust#124).
-///
-/// `owner_fqn` is the declaration that declares `property` (its
-/// `getParent()`), as [`ModelManager::get_property`] reports it.
-///
-/// TS: `field.accept(this.$validator, parameters)` in
-/// `ValidatedResource.setPropertyValue`/`addArrayValue`
-/// (src/model/validatedresource.ts), which dispatches to
-/// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
-pub fn validate_property_value(
-    mm: &ModelManager,
-    owner_fqn: &str,
-    property: &Property,
-    value: &Value,
-    root_resource_identifier: String,
-    options: &ValidateOptions,
-) -> Result<()> {
-    let mut params = Params {
-        mm,
-        options,
-        root_resource_identifier,
-        current_identifier: None,
-    };
-    visit_property(&mut params, owner_fqn, property, value)
+js_compat_pub! {
+    /// Validates one property value, as `ValidatedResource.setPropertyValue`
+    /// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
+    /// parameters)` with `value` alone on the stack and the instance's
+    /// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
+    /// accordproject/concerto-rust#124).
+    ///
+    /// `owner_fqn` is the declaration that declares `property` (its
+    /// `getParent()`), as [`ModelManager::get_property`] reports it.
+    ///
+    /// TS: `field.accept(this.$validator, parameters)` in
+    /// `ValidatedResource.setPropertyValue`/`addArrayValue`
+    /// (src/model/validatedresource.ts), which dispatches to
+    /// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
+    pub fn validate_property_value(
+        mm: &ModelManager,
+        owner_fqn: &str,
+        property: &Property,
+        value: &Value,
+        root_resource_identifier: String,
+        options: &ValidateOptions,
+    ) -> Result<()> {
+        let mut params = Params {
+            mm,
+            options,
+            root_resource_identifier,
+            current_identifier: None,
+        };
+        visit_property(&mut params, owner_fqn, property, value)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -286,13 +290,15 @@ fn visit_class_declaration_dispatch(
         // path (a Resource is never constructed with one of those types),
         // so this is a harness error, not a ported message.
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!("'{own_fqn}' is not a class-like type and cannot back a Resource"),
             None,
         )
         .into());
     };
-    let identifier_field_name = p.mm.identifier_field_name(&to_be_assigned_fqn)?;
+    let identifier_field_name =
+        p.mm.identifier_field(&to_be_assigned_fqn)
+            .map(|f| f.map(str::to_string))?;
 
     // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
     // obj.getFullyQualifiedIdentifier(); }`. Every `obj` reaching this point
@@ -323,7 +329,7 @@ fn visit_class_declaration_dispatch(
     // `let props = Object.getOwnPropertyNames(obj)` — bug fix (only the
     // direct super type was merged): `get_all_properties` walks the whole
     // chain, so a property declared two or more levels up is found.
-    let all_properties = p.mm.get_all_properties(&to_be_assigned_fqn)?;
+    let all_properties = p.mm.properties(&to_be_assigned_fqn)?;
     let declared_is_identified = p.mm.is_identified(declared_fqn)?;
     for key in obj.keys() {
         if model_util::is_system_property(key) {
@@ -435,7 +441,8 @@ fn identifiable_parts(p: &Params, value: &Value) -> Option<(String, String)> {
     let obj = value.as_object()?;
     let fqn = obj.get("$class")?.as_str()?.to_string();
     let id_field =
-        p.mm.identifier_field_name(&fqn)
+        p.mm.identifier_field(&fqn)
+            .map(|f| f.map(str::to_string))
             .ok()
             .flatten()
             .unwrap_or_else(|| "$identifier".to_string());
@@ -508,7 +515,7 @@ fn resolve_object_target(
     ti: &mm::TypeIdentifier,
 ) -> Result<ObjectTarget> {
     let namespace = model_util::get_namespace(Some(owner_fqn))?;
-    let fqn = mm.resolve_type_name(namespace, &ti.name, None)?;
+    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None)?;
     let decl = mm.get_declaration(&fqn)?;
     Ok(if decl.is_enum_declaration() {
         ObjectTarget::Enum(fqn)
@@ -537,7 +544,7 @@ fn visit_property(
         // *value* member (only an `EnumDeclaration`'s do, reached through
         // `visit_enum_declaration` instead) — defensive, not TS-reachable.
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "an EnumProperty cannot be a class declaration's own field".to_string(),
             None,
         )
@@ -775,70 +782,88 @@ fn primitive_type_matches(type_name: &str, value: &Value) -> bool {
     }
 }
 
-/// A `DateTime` value that has already gone through `JSONPopulator`'s
-/// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
-/// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
-/// when it decodes an oracle `"typed"` receiver into this validator's wire
-/// form, so `is_populated_datetime` below can tell a real (possibly
-/// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
-/// mirroring TS's own post-population check, `typeof obj === 'object' &&
-/// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
-/// does *not* itself re-validate the date's shape or calendar range: a
-/// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
-/// accepts it at this point regardless (`dayjs.isValid()` is never called
-/// here). A bare `Value::String`/`Value::Number` reaching this check was
-/// never coerced, so it is always rejected here, exactly as a raw string
-/// left on a `Resource` field (for example by `setPropertyValue`, bypassing
-/// `JSONPopulator`) would be in TS.
-pub const DAYJS_TAG: &str = "$$dayjs";
-
-/// A value that has already been populated as a `Relationship` instance
-/// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
-/// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
-/// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
-pub const RELATIONSHIP_TAG: &str = "$$relationship";
-
-/// A JS `undefined` held inside a value: an array element or a map value
-/// (module doc "Scope"). The value is the one-key object
-/// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
-/// `undefined`, and writing `null` instead would change what TS reports:
-/// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
-/// where `null` gives `'object'` and `null`.
-pub const UNDEFINED_TAG: &str = "$$undefined";
-
-/// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
-/// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
-/// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
-/// `reportFieldTypeViolation` prints it with `value.toString()`.
-pub const NUMBER_TAG: &str = "$$number";
-
-/// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
-/// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
-/// `reportFieldTypeViolation` prints it with `value.toString()` because
-/// `JSON.stringify` throws on a `BigInt`.
-pub const BIGINT_TAG: &str = "$$bigint";
-
-/// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
-/// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
-/// its keys keep their JS type (a number key is not a string), and a plain
-/// object is told apart from a `Map` (`obj instanceof Map`).
-pub const MAP_TAG: &str = "$$map";
-
-/// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
-pub fn js_special_number(text: &str) -> Value {
-    serde_json::json!({ NUMBER_TAG: text })
+js_compat_pub! {
+    /// A `DateTime` value that has already gone through `JSONPopulator`'s
+    /// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
+    /// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
+    /// when it decodes an oracle `"typed"` receiver into this validator's wire
+    /// form, so `is_populated_datetime` below can tell a real (possibly
+    /// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
+    /// mirroring TS's own post-population check, `typeof obj === 'object' &&
+    /// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
+    /// does *not* itself re-validate the date's shape or calendar range: a
+    /// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
+    /// accepts it at this point regardless (`dayjs.isValid()` is never called
+    /// here). A bare `Value::String`/`Value::Number` reaching this check was
+    /// never coerced, so it is always rejected here, exactly as a raw string
+    /// left on a `Resource` field (for example by `setPropertyValue`, bypassing
+    /// `JSONPopulator`) would be in TS.
+    pub const DAYJS_TAG: &str = "$$dayjs";
 }
 
-/// The value that stands for a JS `Map` ([`MAP_TAG`]).
-pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
-    serde_json::json!({
-        MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
-    })
+js_compat_pub! {
+    /// A value that has already been populated as a `Relationship` instance
+    /// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
+    /// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
+    /// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
+    pub const RELATIONSHIP_TAG: &str = "$$relationship";
 }
 
-/// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
-pub fn js_bigint(text: &str) -> Value {
-    serde_json::json!({ BIGINT_TAG: text })
+js_compat_pub! {
+    /// A JS `undefined` held inside a value: an array element or a map value
+    /// (module doc "Scope"). The value is the one-key object
+    /// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
+    /// `undefined`, and writing `null` instead would change what TS reports:
+    /// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
+    /// where `null` gives `'object'` and `null`.
+    pub const UNDEFINED_TAG: &str = "$$undefined";
+}
+
+js_compat_pub! {
+    /// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
+    /// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
+    /// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
+    /// `reportFieldTypeViolation` prints it with `value.toString()`.
+    pub const NUMBER_TAG: &str = "$$number";
+}
+
+js_compat_pub! {
+    /// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
+    /// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
+    /// `reportFieldTypeViolation` prints it with `value.toString()` because
+    /// `JSON.stringify` throws on a `BigInt`.
+    pub const BIGINT_TAG: &str = "$$bigint";
+}
+
+js_compat_pub! {
+    /// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
+    /// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
+    /// its keys keep their JS type (a number key is not a string), and a plain
+    /// object is told apart from a `Map` (`obj instanceof Map`).
+    pub const MAP_TAG: &str = "$$map";
+}
+
+js_compat_pub! {
+    /// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
+    pub fn js_special_number(text: &str) -> Value {
+        serde_json::json!({ NUMBER_TAG: text })
+    }
+}
+
+js_compat_pub! {
+    /// The value that stands for a JS `Map` ([`MAP_TAG`]).
+    pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
+        serde_json::json!({
+            MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
+        })
+    }
+}
+
+js_compat_pub! {
+    /// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
+    pub fn js_bigint(text: &str) -> Value {
+        serde_json::json!({ BIGINT_TAG: text })
+    }
 }
 
 /// The JS spelling of a [`NUMBER_TAG`] value.
@@ -877,16 +902,44 @@ fn map_entries(value: &Value) -> Option<Vec<(&Value, &Value)>> {
     )
 }
 
-/// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
-pub fn js_undefined() -> Value {
-    serde_json::json!({ UNDEFINED_TAG: true })
+js_compat_pub! {
+    /// ECMAScript `Number::toString` (radix 10): `1` not `1.0`, `1e+21`,
+    /// `NaN`, `Infinity`, and `-0` gives `"0"`.
+    pub fn js_number_to_string(n: f64) -> String {
+        ecma::number_to_string(n)
+    }
 }
 
-/// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
-pub fn is_js_undefined(value: &Value) -> bool {
-    value
-        .as_object()
-        .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
+js_compat_pub! {
+    /// A JS number in the validator's value shape: an integral one as a JSON
+    /// integer, so that the messages that print it (`JSON.stringify`,
+    /// `String`) read `1`, not `1.0`; a non-finite one as
+    /// [`js_special_number`].
+    pub fn js_number(n: f64) -> Value {
+        if !n.is_finite() {
+            return js_special_number(&ecma::number_to_string(n));
+        }
+        if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
+            return Value::Number(serde_json::Number::from(n as i64));
+        }
+        serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
+    }
+}
+
+js_compat_pub! {
+    /// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+    pub fn js_undefined() -> Value {
+        serde_json::json!({ UNDEFINED_TAG: true })
+    }
+}
+
+js_compat_pub! {
+    /// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+    pub fn is_js_undefined(value: &Value) -> bool {
+        value
+            .as_object()
+            .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
+    }
 }
 
 /// `value` as a JS object, which a JS `undefined` ([`UNDEFINED_TAG`]) is not.
@@ -1028,7 +1081,7 @@ fn check_scalar_item(
     let scalar = decl
         .as_scalar()
         .expect("resolve_object_target only returns Scalar for a scalar declaration");
-    let type_name = scalar.scalar_type().unwrap_or_default();
+    let type_name = scalar.processed_type().unwrap_or_default();
     if !primitive_type_matches(type_name, value) {
         return Err(field_type_violation(p, owner_fqn, property, value));
     }
@@ -1043,8 +1096,8 @@ fn check_scalar_item(
             length_validator,
         }) => {
             let bad = |e: serde_json::Error| {
-                ConcertoError::from(ContractError::pre_port(
-                    ErrorKind::Error,
+                Error::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
                     format!("invalid string validator: {e}"),
                     None,
                 ))
@@ -1123,12 +1176,12 @@ fn owner_fqn_for_object(_property: &Property, declared_class_fqn: &str) -> Strin
 /// (module doc: "recurse") stays clear against `checkItem`'s TS body, which
 /// has no separate remapping of its own either.
 fn retarget_not_resource(
-    e: ConcertoError,
+    e: Error,
     _p: &Params,
     _owner_fqn: &str,
     _property: &Property,
     _value: &Value,
-) -> ConcertoError {
+) -> Error {
     e
 }
 
@@ -1147,7 +1200,7 @@ fn visit_enum_declaration(p: &Params, enum_fqn: &str, value: &Value) -> Result<(
     let decl = p.mm.get_declaration(enum_fqn)?;
     let Declaration::Enum(enum_decl) = decl else {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!("'{enum_fqn}' is not an enum declaration"),
             None,
         )
@@ -1247,9 +1300,13 @@ fn check_relationship(
     };
     let _ = target_class;
 
-    if p.mm.identifier_field_name(&target_fqn)?.is_none() {
+    if p.mm
+        .identifier_field(&target_fqn)
+        .map(|f| f.map(str::to_string))?
+        .is_none()
+    {
         return Err(ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "resourcevalidator-checkrelationship-notidentifiable",
             Vec::new(),
         )
@@ -1257,7 +1314,7 @@ fn check_relationship(
     }
 
     let namespace = model_util::get_namespace(Some(owner_fqn))?;
-    let declared_fqn = p.mm.resolve_type_name(namespace, &type_id.name, None)?;
+    let declared_fqn = p.mm.resolve_type_name_at(namespace, &type_id.name, None)?;
     if !p.mm.is_assignable_to(&target_fqn, &declared_fqn)? {
         return Err(invalid_field_assignment(
             p,
@@ -1280,7 +1337,7 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
         // `'Expected a Map, but found ' + JSON.stringify(obj)`:
         // `JSON.stringify(undefined)` is `undefined`, which `+` spells out.
         return Err(ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "resourcevalidator-visitmapdeclaration-notamap",
             vec![(
                 "obj",
@@ -1292,7 +1349,7 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
     let decl = p.mm.get_declaration(map_fqn)?;
     let Some(map) = decl.as_map() else {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!("'{map_fqn}' is not a map declaration"),
             None,
         )
@@ -1343,7 +1400,7 @@ fn map_key_is_scalar(
         return Ok(false);
     };
     let namespace = model_util::get_namespace(Some(map_fqn))?;
-    let fqn = mm.resolve_type_name(namespace, &ti.name, None)?;
+    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None)?;
     Ok(mm.get_declaration(&fqn)?.is_scalar_declaration())
 }
 
@@ -1373,7 +1430,7 @@ fn check_map_type(
         // thing.getType(); }` — ported verbatim (see `map_key_is_scalar`'s
         // doc): this only ever matters when `thing` actually is a scalar.
         if key_is_scalar && let Some(scalar) = decl.as_scalar() {
-            scalar.scalar_type().unwrap_or_default().to_string()
+            scalar.processed_type().unwrap_or_default().to_string()
         } else if decl.is_enum_declaration() {
             // `thing.accept(this, parameters)`, dispatched by TS's `visit()`
             // to `visitEnumDeclaration` (bug fix: relationship/enum map
@@ -1397,7 +1454,7 @@ fn check_map_type(
     match primitive_type_name.as_str() {
         "String" if !value.is_string() => {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expectedstring",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
@@ -1408,7 +1465,7 @@ fn check_map_type(
         }
         "DateTime" if !parses_as_dayjs(value) => {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expecteddatetime",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
@@ -1419,7 +1476,7 @@ fn check_map_type(
         }
         "Boolean" if !value.is_boolean() => {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expectedboolean",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
@@ -1439,7 +1496,7 @@ fn check_map_type(
 }
 
 fn mm_resolve(mm: &ModelManager, namespace: &str, short: &str) -> Result<String> {
-    mm.resolve_type_name(namespace, short, None)
+    mm.resolve_type_name_at(namespace, short, None)
 }
 
 /// The primitive name a primitive map key/value `$class` short kind
@@ -1482,7 +1539,7 @@ impl<'a> FieldElement<'a> {
 }
 
 impl FullyQualified for FieldElement<'_> {
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn fully_qualified_name(&self) -> Result<String> {
         Ok(format!("{}.{}", self.owner_fqn, self.property.name()))
@@ -1607,12 +1664,7 @@ fn field_value_param(value: &Value) -> String {
 }
 
 /// TS: `ResourceValidator.reportFieldTypeViolation` (resourcevalidator.ts:520).
-fn field_type_violation(
-    p: &Params,
-    owner_fqn: &str,
-    property: &Property,
-    value: &Value,
-) -> ConcertoError {
+fn field_type_violation(p: &Params, owner_fqn: &str, property: &Property, value: &Value) -> Error {
     let is_array = if property.is_array() { "[]" } else { "" };
     let _ = owner_fqn;
     // `if(value instanceof Identifiable) { typeOfValue =
@@ -1646,7 +1698,7 @@ fn field_type_violation(
 /// TS: `ResourceValidator.reportNotResouceViolation` (resourcevalidator.ts:560).
 /// `value.toString()` is a V8 `TypeError` for a `null` or `undefined` value
 /// (DV-008), and `'Relationship {id=...}'` for a `Relationship`.
-fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> ConcertoError {
+fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> Error {
     not_resource_violation_with(p, class_fqn, value, true)
 }
 
@@ -1664,7 +1716,7 @@ fn not_resource_violation_with(
     class_fqn: &str,
     value: &Value,
     try_identifiable: bool,
-) -> ConcertoError {
+) -> Error {
     if is_js_null(value) {
         // DV-008
         return js_method_receiver_error(value, "value.toString", "toString");
@@ -1690,7 +1742,7 @@ fn not_resource_violation_with(
 /// when `value` has no such method (PORTING.md 2.2 step 3): `Cannot read
 /// properties of null (reading 'method')` when `value` is `null` or
 /// `undefined`, and `expression is not a function` otherwise.
-fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> ConcertoError {
+fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Error {
     if is_js_null(value) {
         let receiver = if is_js_undefined(value) {
             "undefined"
@@ -1698,7 +1750,7 @@ fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Co
             "null"
         };
         return ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", receiver.to_string()),
@@ -1708,7 +1760,7 @@ fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Co
         .into();
     }
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
         vec![("expression", expression.to_string())],
     )
@@ -1721,14 +1773,14 @@ fn not_relationship_violation(
     owner_fqn: &str,
     property: &Property,
     value: &Value,
-) -> ConcertoError {
+) -> Error {
     if is_js_null(value) {
         // DV-008: `value.toString()` on `null`/`undefined`.
         return js_method_receiver_error(value, "value.toString", "toString");
     }
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
-    let class_fqn = model_util::get_fully_qualified_name(namespace, type_name);
+    let class_fqn = model_util::qualify(namespace, type_name);
     // `value.toString()`: a nested Resource or (wrongly, per this check)
     // Relationship-shaped value that reaches here is `Identifiable`, whose
     // own `toString()` is `'Resource {id=...}'`/`'Relationship {id=...}'`
@@ -1750,7 +1802,7 @@ fn not_relationship_violation(
 }
 
 /// TS: `ResourceValidator.reportMissingRequiredProperty` (resourcevalidator.ts:591).
-fn missing_required_property(resource_id: &str, property: &Property) -> ConcertoError {
+fn missing_required_property(resource_id: &str, property: &Property) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-missingrequiredproperty",
@@ -1763,7 +1815,7 @@ fn missing_required_property(resource_id: &str, property: &Property) -> Concerto
 }
 
 /// TS: `ResourceValidator.reportEmptyIdentifier` (resourcevalidator.ts:605).
-fn empty_identifier(resource_id: &str) -> ConcertoError {
+fn empty_identifier(resource_id: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-emptyidentifier",
@@ -1777,7 +1829,7 @@ fn empty_identifier(resource_id: &str) -> ConcertoError {
 /// declaration's name ([`visit_enum_declaration`]).
 /// `value` is the JS `String(obj)` of the value, which for a `Resource`
 /// or a `Relationship` is its own `toString()`.
-fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> ConcertoError {
+fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-invalidenumvalue",
@@ -1791,7 +1843,7 @@ fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> Conce
 }
 
 /// TS: `ResourceValidator.reportAbstractClass` (resourcevalidator.ts:634).
-fn abstract_class(class_fqn: &str) -> ConcertoError {
+fn abstract_class(class_fqn: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-abstractclass",
@@ -1801,7 +1853,7 @@ fn abstract_class(class_fqn: &str) -> ConcertoError {
 }
 
 /// TS: `ResourceValidator.reportUndeclaredField` (resourcevalidator.ts:649).
-fn undeclared_field(resource_id: &str, property_name: &str, fqn: &str) -> ConcertoError {
+fn undeclared_field(resource_id: &str, property_name: &str, fqn: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-undeclaredfield",
@@ -1820,10 +1872,10 @@ fn invalid_field_assignment(
     owner_fqn: &str,
     property: &Property,
     object_type: &str,
-) -> ConcertoError {
+) -> Error {
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
-    let mut field_type = model_util::get_fully_qualified_name(namespace, type_name);
+    let mut field_type = model_util::qualify(namespace, type_name);
     if property.is_array() {
         field_type.push_str("[]");
     }
@@ -1854,7 +1906,7 @@ fn invalid_field_assignment_shape(
     owner_fqn: &str,
     property: &Property,
     value: &Value,
-) -> ConcertoError {
+) -> Error {
     match identifiable_parts(p, value) {
         Some((object_type, _)) => invalid_field_assignment(p, owner_fqn, property, &object_type),
         // DV-008
@@ -1864,23 +1916,23 @@ fn invalid_field_assignment_shape(
     }
 }
 
-/// Remaps the generic [`ConcertoError::TypeNotFound`]
+/// Remaps the generic pre-port `TypeNotFound`
 /// [`ModelManager::get_declaration`] raises into the catalogue's
 /// `TypeNotFoundException` shape (table 2.3's default message), the same
 /// way `model_manager.rs`'s own collaborator calls already do at their call
 /// sites (`super_type_fqn`), since `get_declaration` itself is pre-port
 /// (module doc on `error/mod.rs`, section 2.3).
-fn remap_type_not_found(err: ConcertoError, fqn: &str, _hint: &str) -> ConcertoError {
-    match err {
-        ConcertoError::TypeNotFound { .. } => ContractError::type_not_found(
+fn remap_type_not_found(err: Error, fqn: &str, _hint: &str) -> Error {
+    if err.is_unported_type_not_found() {
+        return ContractError::type_not_found(
             "typenotfounderror-defaultmessage",
             Vec::new(),
             fqn.to_string(),
             None,
         )
-        .into(),
-        other => other,
+        .into();
     }
+    err
 }
 
 // ---------------------------------------------------------------------
@@ -1896,31 +1948,27 @@ fn remap_type_not_found(err: ConcertoError, fqn: &str, _hint: &str) -> ConcertoE
 // pass. Where a leaf check already gives a single, TS-faithful verdict
 // (a primitive/scalar/enum/relationship/map value, or a whole array of
 // them), the walk reuses [`validate_property_value`] as-is rather than
-// re-deriving its many branches, and turns its one [`ConcertoError`], if
+// re-deriving its many branches, and turns its one [`Error`], if
 // any, into one [`Diagnostic`] ([`classify_error`]); only the recursive,
 // class-shaped part of the tree — where TS-faithful first-error would stop
 // the *whole* walk at the first nested object's first problem — is walked
 // here directly, so that sibling properties and sibling array elements each
 // get their own chance to report.
 
-use crate::instance::diagnostic::{Diagnostic, DiagnosticCode, ValidationResult};
+use crate::instance::diagnostic::{Diagnostic, DiagnosticCode, ValidationReport};
 
 /// Checks that `value`'s own `$class` (when present) is assignable to
 /// `declared_fqn`. [`visit_class_declaration`]/[`collect_class`] both walk
 /// by `value`'s own `$class`, regardless of what `declared_fqn` says (module
 /// doc): the right behaviour for `Resource.validate`, which always validates
 /// a resource against its own type, but not for
-/// [`ClassDeclaration::validate_instance`]/`validate_instance_or_throw`
-/// (crate::introspect::declaration::ClassDeclaration), whose whole point is
-/// to validate against the declaration they were called on. Returns `Ok(())`
+/// [`ModelManager::validate_instance_as`], whose whole point is to validate
+/// against the type it names. Returns `Ok(())`
 /// when `value` carries no `$class` (or isn't shaped like a Resource at
 /// all): the ordinary walk that follows already reports that case
 /// correctly, so there's nothing extra to check here; likewise `Ok(())` when
-/// `declared_fqn` itself is `value`'s own `$class`, so a
-/// [`ModelManager::validate_instance_or_throw`](crate::model_manager::ModelManager::validate_instance_or_throw)
-/// call (which always passes `value`'s own `$class` as `declared_fqn`) never
-/// pays for this check.
-fn check_assignable_to_declaration(
+/// `declared_fqn` itself is `value`'s own `$class`.
+pub(crate) fn check_assignable_to_declaration(
     mm: &ModelManager,
     declared_fqn: &str,
     value: &Value,
@@ -1953,27 +2001,6 @@ fn check_assignable_to_declaration(
     }
 }
 
-/// [`validate_instance_from`], but validated against `declared_fqn` instead
-/// of `value`'s own `$class` — what [`ClassDeclaration::validate_instance_or_throw`]
-/// (crate::introspect::declaration::ClassDeclaration::validate_instance_or_throw)
-/// needs to validate `value` against a specific declaration it already holds,
-/// rather than whatever `value` claims to be.
-pub(crate) fn validate_instance_against(
-    mm: &ModelManager,
-    declared_fqn: &str,
-    value: &Value,
-    options: &ValidateOptions,
-) -> Result<()> {
-    check_assignable_to_declaration(mm, declared_fqn, value)?;
-    let mut params = Params {
-        mm,
-        options,
-        root_resource_identifier: String::new(),
-        current_identifier: None,
-    };
-    visit_class_declaration(&mut params, declared_fqn, value)
-}
-
 /// State threaded through the collect-all walk: the pieces
 /// [`Params`] threads through the first-error walk, minus the
 /// TS-message-only `root_resource_identifier`/`current_identifier` fields
@@ -1992,58 +2019,82 @@ impl Collector<'_> {
             .push(Diagnostic::error(pointer, code, message));
     }
 
-    fn push_error(&mut self, pointer: String, err: ConcertoError) {
+    fn push_error(&mut self, pointer: String, err: Error) {
         let (code, message) = classify_error(&err);
         self.push(pointer, code, message);
     }
 }
 
-/// Maps a [`ConcertoError`] a leaf check raised to the [`DiagnosticCode`] it
+/// Maps a [`Error`] a leaf check raised to the [`DiagnosticCode`] it
 /// reports as, keeping the check's own rendered message. A code this table
 /// does not recognise (a JS-engine-shaped error, PORTING.md 2.2 step 3, or a
 /// future check this table has not been updated for) falls back to
 /// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
 /// diagnostic is always produced rather than silently dropped.
-fn classify_error(err: &ConcertoError) -> (DiagnosticCode, String) {
-    match err {
-        ConcertoError::TypeNotFound { type_name } => (
+pub(crate) fn classify_error(err: &Error) -> (DiagnosticCode, String) {
+    if let Some(type_name) = err.unported_type_not_found() {
+        return (
             DiagnosticCode::TypeNotFound,
             format!("type not found: {type_name}"),
-        ),
-        ConcertoError::IllegalModel { message, .. } => {
-            (DiagnosticCode::TypeViolation, message.clone())
-        }
-        ConcertoError::Contract(ce) => {
-            let message = ce.message();
-            if ce.validator.is_some() {
-                return (DiagnosticCode::ValidatorFailure, message);
-            }
-            let code = match ce.code {
-                "resourcevalidator-missingrequiredproperty" => {
-                    DiagnosticCode::MissingRequiredProperty
-                }
-                "resourcevalidator-undeclaredfield" => DiagnosticCode::UndeclaredField,
-                "resourcevalidator-emptyidentifier" => DiagnosticCode::EmptyIdentifier,
-                "resourcevalidator-invalidenumvalue" => DiagnosticCode::InvalidEnumValue,
-                "resourcevalidator-abstractclass" => DiagnosticCode::AbstractClass,
-                "resourcevalidator-invalidfieldassignment" => DiagnosticCode::NotAssignable,
-                "resourcevalidator-notresourceorconcept" => DiagnosticCode::NotResource,
-                "resourcevalidator-notrelationship"
-                | "resourcevalidator-checkrelationship-notidentifiable" => {
-                    DiagnosticCode::NotRelationship
-                }
-                "typenotfounderror-defaultmessage" => DiagnosticCode::TypeNotFound,
-                _ => DiagnosticCode::TypeViolation,
-            };
-            (code, message)
-        }
+        );
     }
+    if let Some(message) = err.unported_illegal_model() {
+        return (DiagnosticCode::TypeViolation, message.to_string());
+    }
+    let ce = err.contract();
+    let message = ce.message();
+    if ce.validator.is_some() {
+        return (DiagnosticCode::ValidatorFailure, message);
+    }
+    let code = match ce.code {
+        "resourcevalidator-missingrequiredproperty" => DiagnosticCode::MissingRequiredProperty,
+        "resourcevalidator-undeclaredfield" => DiagnosticCode::UndeclaredField,
+        "resourcevalidator-emptyidentifier" => DiagnosticCode::EmptyIdentifier,
+        "resourcevalidator-invalidenumvalue" => DiagnosticCode::InvalidEnumValue,
+        "resourcevalidator-abstractclass" => DiagnosticCode::AbstractClass,
+        "resourcevalidator-invalidfieldassignment" => DiagnosticCode::NotAssignable,
+        "resourcevalidator-notresourceorconcept" => DiagnosticCode::NotResource,
+        "resourcevalidator-notrelationship"
+        | "resourcevalidator-checkrelationship-notidentifiable" => DiagnosticCode::NotRelationship,
+        "typenotfounderror-defaultmessage" => DiagnosticCode::TypeNotFound,
+        _ => DiagnosticCode::TypeViolation,
+    };
+    (code, message)
 }
 
 /// A JSON Pointer (RFC 6901) one segment deeper than `base`, escaping `~`
 /// and `/` in `segment` as the spec requires.
 fn push_pointer(base: &str, segment: &str) -> String {
     format!("{base}/{}", segment.replace('~', "~0").replace('/', "~1"))
+}
+
+/// The diagnostic of an instance whose own `$class` is not assignable to
+/// `declared_fqn` (or does not resolve): the collect-all counterpart of
+/// [`check_assignable_to_declaration`]. `None` when there is nothing to
+/// report.
+pub(crate) fn assignability_diagnostic(
+    mm: &ModelManager,
+    declared_fqn: &str,
+    value: &Value,
+) -> Option<ValidationReport> {
+    let own_fqn = value
+        .as_object()
+        .and_then(|o| o.get("$class"))
+        .and_then(Value::as_str)
+        .filter(|own| *own != declared_fqn)?;
+    match mm.is_assignable_to(own_fqn, declared_fqn) {
+        Ok(true) => None,
+        Ok(false) => Some(ValidationReport::new(vec![Diagnostic::error(
+            String::new(),
+            DiagnosticCode::NotAssignable,
+            format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
+        )])),
+        Err(_) => Some(ValidationReport::new(vec![Diagnostic::error(
+            String::new(),
+            DiagnosticCode::TypeNotFound,
+            format!("type not found: {own_fqn}"),
+        )])),
+    }
 }
 
 /// Collect-all instance validation (task P3-03, accordproject/concerto-rust#58):
@@ -2055,39 +2106,14 @@ pub(crate) fn collect_diagnostics(
     declared_fqn: &str,
     value: &Value,
     options: &ValidateOptions,
-) -> ValidationResult {
-    // Same declared-vs-own-`$class` check [`check_assignable_to_declaration`]
-    // makes for the first-error walk: [`collect_class`] otherwise walks by
-    // `value`'s own `$class` regardless of `declared_fqn` (its own doc
-    // comment), so a `ClassDeclaration::validate_instance` call would
-    // silently validate a mismatched type as if it matched. Built inline
-    // (rather than through [`classify_error`]) so the diagnostic keeps the
-    // same [`DiagnosticCode`] [`collect_class_property_item`]'s own
-    // assignability check uses for the same kind of mismatch, one level
-    // down the tree.
-    if let Some(own_fqn) = value
-        .as_object()
-        .and_then(|o| o.get("$class"))
-        .and_then(Value::as_str)
-        && own_fqn != declared_fqn
-    {
-        match mm.is_assignable_to(own_fqn, declared_fqn) {
-            Ok(true) => {}
-            Ok(false) => {
-                return ValidationResult::new(vec![Diagnostic::error(
-                    String::new(),
-                    DiagnosticCode::NotAssignable,
-                    format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
-                )]);
-            }
-            Err(_) => {
-                return ValidationResult::new(vec![Diagnostic::error(
-                    String::new(),
-                    DiagnosticCode::TypeNotFound,
-                    format!("type not found: {own_fqn}"),
-                )]);
-            }
-        }
+) -> ValidationReport {
+    // [`collect_class`] walks by `value`'s own `$class` regardless of
+    // `declared_fqn` (its own doc comment), so a mismatched type is reported
+    // first, with the same [`DiagnosticCode`]
+    // [`collect_class_property_item`]'s own assignability check uses for the
+    // same kind of mismatch, one level down the tree.
+    if let Some(report) = assignability_diagnostic(mm, declared_fqn, value) {
+        return report;
     }
     let mut collector = Collector {
         mm,
@@ -2095,24 +2121,7 @@ pub(crate) fn collect_diagnostics(
         diagnostics: Vec::new(),
     };
     collect_class(&mut collector, declared_fqn, value, "");
-    ValidationResult::new(collector.diagnostics)
-}
-
-/// [`collect_diagnostics`], resolving the declared type from `value`'s own
-/// `$class`, the way [`validate_instance`] does for a root call.
-pub(crate) fn collect_diagnostics_from_value(
-    mm: &ModelManager,
-    value: &Value,
-    options: &ValidateOptions,
-) -> ValidationResult {
-    let Some(fqn) = value.get("$class").and_then(Value::as_str) else {
-        return ValidationResult::new(vec![Diagnostic::error(
-            String::new(),
-            DiagnosticCode::NotResource,
-            "cannot validate an instance with no $class".to_string(),
-        )]);
-    };
-    collect_diagnostics(mm, fqn, value, options)
+    ValidationReport::new(collector.diagnostics)
 }
 
 /// The collect-all counterpart of [`visit_class_declaration`]: same shape
@@ -2168,7 +2177,7 @@ fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: 
         );
     }
 
-    let Ok(all_properties) = c.mm.get_all_properties(&own_fqn) else {
+    let Ok(all_properties) = c.mm.properties(&own_fqn) else {
         c.push(
             pointer.to_string(),
             DiagnosticCode::TypeNotFound,
@@ -2193,7 +2202,8 @@ fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: 
 
     if c.mm.is_identified(declared_fqn).unwrap_or(false) {
         let id_field =
-            c.mm.identifier_field_name(&own_fqn)
+            c.mm.identifier_field(&own_fqn)
+                .map(|f| f.map(str::to_string))
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| "$identifier".to_string());
@@ -2213,7 +2223,11 @@ fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: 
     // explicitly-identified type (`identifier_field_name` names its own
     // field instead) is not really missing — [`visit_class_declaration`]
     // skips it the same way.
-    let own_identifier_field_name = c.mm.identifier_field_name(&own_fqn).ok().flatten();
+    let own_identifier_field_name =
+        c.mm.identifier_field(&own_fqn)
+            .map(|f| f.map(str::to_string))
+            .ok()
+            .flatten();
     for (owner_fqn, property) in &all_properties {
         let prop_pointer = push_pointer(pointer, property.name());
         match obj.get(property.name()) {
@@ -2366,7 +2380,7 @@ mod tests {
     /// fields with validators.
     fn fixture() -> ModelManager {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -2527,7 +2541,7 @@ mod tests {
         mgr
     }
 
-    fn err_of(result: Result<()>) -> ConcertoError {
+    fn err_of(result: Result<()>) -> Error {
         result.expect_err("expected a validation failure")
     }
 
@@ -2660,7 +2674,7 @@ mod tests {
     fn an_undeclared_field_s_reported_resource_id_depends_on_whether_the_declared_type_is_identified()
      {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.nest@1.0.0",
@@ -3059,7 +3073,7 @@ mod tests {
             json!({ "$class": "org.acme@1.0.0.Missing", "name": "x" }),
         )]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ItemMap", &map));
-        assert!(matches!(&err, ConcertoError::Contract(e) if e.kind == ErrorKind::Validation));
+        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
         let message = err.to_string();
         assert!(
             message.contains("Expected a \"Resource\" or a \"Concept\""),
@@ -3275,7 +3289,7 @@ mod tests {
     #[test]
     fn a_missing_required_property_with_a_default_value_is_accepted() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme.defaults@1.0.0",
@@ -3375,8 +3389,8 @@ mod tests {
     }
 
     /// The TS class and message of a failure, as the oracle records them.
-    fn class_and_message(err: &ConcertoError) -> (&'static str, String) {
-        let ConcertoError::Contract(contract) = err else {
+    fn class_and_message(err: &Error) -> (&'static str, String) {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a contract error, got {err:?}");
         };
         (contract.kind.ts_class(), err.to_string())
@@ -3522,7 +3536,7 @@ mod tests {
     // that collect-all really does gather more than one diagnostic in a
     // single pass, which is the point of the mode.
 
-    fn diag_of(result: ValidationResult) -> Diagnostic {
+    fn diag_of(result: ValidationReport) -> Diagnostic {
         let mut diagnostics = result.into_diagnostics();
         assert_eq!(
             diagnostics.len(),
@@ -3775,47 +3789,42 @@ mod tests {
         let _ = err;
     }
 
-    /// [`ModelManager::validate_instance`] resolves the declared type from
-    /// the value's own `$class`, and [`ModelManager::validate_instance_or_throw`]
-    /// is exactly the first-error [`validate_instance`] free function.
+    /// [`ModelManager::check_instance`] resolves the declared type from the
+    /// value's own `$class`, and [`ModelManager::validate_instance`] reports
+    /// the first error, as the free [`validate_instance`] does.
     #[test]
     fn model_manager_entry_points_agree_with_the_free_functions() {
         let mgr = fixture();
         let leaf = json!({ "$class": "org.acme@1.0.0.Leaf", "b": "2", "c": "3" });
+        let options = crate::instance::ValidationOptions::default();
 
-        let result = mgr.validate_instance(&leaf, &ValidateOptions::default());
+        let result = mgr.check_instance(&leaf, &options);
         assert_eq!(
             diag_of(result).code,
             DiagnosticCode::MissingRequiredProperty
         );
 
-        let err = err_of(mgr.validate_instance_or_throw(&leaf, &ValidateOptions::default()));
+        let err = err_of(mgr.validate_instance(&leaf, &options));
         assert!(err.to_string().contains("\"a\""), "{err}");
+        let free = err_of(validate_instance(&mgr, &leaf, &ValidateOptions::default()));
+        assert_eq!(err.kind(), free.kind());
+        assert_eq!(err.code(), free.code());
     }
 
-    /// [`ClassDeclaration::validate_instance`]/`validate_instance_or_throw`
-    /// validate against the declaration's own `fqn`, not the value's `$class`.
+    /// The `_as` entry points check against the named type: an empty
+    /// identifier is the `Factory` error `Serializer.fromJSON` raises.
     #[test]
-    fn class_declaration_entry_points_validate_against_their_own_fqn() {
+    fn the_as_entry_points_validate_against_the_named_type() {
         let mgr = fixture();
         let fqn = "org.acme@1.0.0.Vehicle";
-        let class = mgr
-            .get_declaration(fqn)
-            .expect("Vehicle is in the fixture")
-            .as_class()
-            .expect("Vehicle is a class-like declaration");
-        let vehicle = json!({ "$class": fqn, "vin": "", "mileage": 1 });
+        let vehicle = json!({ "vin": "", "mileage": 1 });
+        let options = crate::instance::ValidationOptions::default();
 
-        let result = class.validate_instance(&mgr, fqn, &vehicle, &ValidateOptions::default());
+        let result = mgr.check_instance_as(fqn, &vehicle, &options);
         assert_eq!(diag_of(result).code, DiagnosticCode::EmptyIdentifier);
 
-        let err = err_of(class.validate_instance_or_throw(
-            &mgr,
-            fqn,
-            &vehicle,
-            &ValidateOptions::default(),
-        ));
-        assert!(err.to_string().contains("identifier"), "{err}");
+        let err = err_of(mgr.validate_instance_as(fqn, &vehicle, &options));
+        assert_eq!(err.code(), "factory-newinstance-missingidentifier");
     }
 
     /// Review finding (P3-03): `collect_property`'s class-typed-array branch
@@ -3858,38 +3867,24 @@ mod tests {
         );
     }
 
-    /// Review finding (P3-03): `ClassDeclaration::validate_instance`/
-    /// `validate_instance_or_throw` must check the value's own `$class`
-    /// against the declaration's own `fqn`, not silently validate whatever
+    /// Review finding (P3-03): the `_as` entry points must check the value's
+    /// own `$class` against the named type, not silently validate whatever
     /// `value` claims to be (which is what `collect_class`/
-    /// `visit_class_declaration` do on their own, module doc). Unlike
-    /// `class_declaration_entry_points_validate_against_their_own_fqn`
-    /// above, this uses a value whose own `$class` differs from `fqn`, so it
-    /// can actually distinguish the two behaviours.
+    /// `visit_class_declaration` do on their own, module doc).
     #[test]
-    fn class_declaration_entry_points_reject_a_value_not_assignable_to_their_fqn() {
+    fn the_as_entry_points_reject_a_value_not_assignable_to_the_named_type() {
         let mgr = fixture();
         let dog_fqn = "org.acme@1.0.0.Dog";
-        let dog_decl = mgr
-            .get_declaration(dog_fqn)
-            .expect("Dog is in the fixture")
-            .as_class()
-            .expect("Dog is a class-like declaration");
         // A `Base` instance (unrelated to `Dog`/`Animal`), passed against
         // `Dog`'s own fqn.
         let base_instance = json!({ "$class": "org.acme@1.0.0.Base", "a": "x" });
+        let options = crate::instance::ValidationOptions::default();
 
-        let result =
-            dog_decl.validate_instance(&mgr, dog_fqn, &base_instance, &ValidateOptions::default());
+        let result = mgr.check_instance_as(dog_fqn, &base_instance, &options);
         assert!(!result.is_valid(), "{result:?}");
         assert_eq!(diag_of(result).code, DiagnosticCode::NotAssignable);
 
-        let err = err_of(dog_decl.validate_instance_or_throw(
-            &mgr,
-            dog_fqn,
-            &base_instance,
-            &ValidateOptions::default(),
-        ));
+        let err = err_of(mgr.validate_instance_as(dog_fqn, &base_instance, &options));
         assert!(err.to_string().contains("not assignable"), "{err}");
     }
 }

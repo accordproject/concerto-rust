@@ -6,11 +6,11 @@
 //! D7 keeps these objects in TS: on the WASM path the TS classes stay the
 //! user-visible objects, and Rust only builds or reads their state in one
 //! call (the Serializer fast path, PORTING.md section 5 row 6). This module
-//! is that state, as the populator ([`super::populator`]) produces it and
-//! the generator ([`super::generator`]) and the validator
-//! ([`super::validate`]) consume it. It holds no model data: an instance
+//! is that state, as the populator (`concerto_core_js::populator`) produces it and
+//! the generator (`concerto_core_js::generator`) and the validator
+//! ([`concerto_core::instance::validate`]) consume it. It holds no model data: an instance
 //! names its declaration by fully-qualified name, and every operation that
-//! needs the model takes the [`ModelManager`](crate::ModelManager).
+//! needs the model takes the [`ModelManager`](concerto_core::ModelManager).
 //!
 //! An [`Instance`] keeps every own property of the TS object in insertion
 //! order (`$namespace`, `$type`, `$identifierFieldName`, `$identifier`, the
@@ -21,26 +21,30 @@
 //! reports, which `ResourceValidator` walks (first undeclared field wins).
 
 use indexmap::IndexMap;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::dayjs::Dayjs;
-use super::resource_id::ResourceId;
-use super::validate::{
-    DAYJS_TAG, RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_special_number,
+use concerto_core::error::Result;
+use concerto_core::instance::dayjs::Dayjs;
+use concerto_core::instance::resource_id::ResourceId;
+use concerto_core::instance::validate::{
+    RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_number, js_number_to_string,
     js_undefined,
 };
-use crate::ecma;
-use crate::error::Result;
 
 /// A JS value held by an instance field or passed to the serializer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsValue {
+    /// JS `undefined`: an absent value, distinct from `null`.
     Undefined,
+    /// JS `null`.
     Null,
+    /// A JS boolean.
     Bool(bool),
     /// A JS number (an IEEE double, PORTING.md 3.1).
     Number(f64),
+    /// A JS string.
     String(String),
+    /// A JS array, in index order.
     Array(Vec<JsValue>),
     /// A plain object: its own enumerable properties, in `Object.keys`
     /// order.
@@ -61,8 +65,13 @@ pub enum JsValue {
 /// Which TS class an [`Instance`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstanceKind {
+    /// A TS `Resource`: a concept, asset, participant, transaction or event
+    /// instance.
     Resource,
+    /// A TS `ValidatedResource`, a `Resource` whose every field assignment
+    /// is validated.
     ValidatedResource,
+    /// A TS `Relationship`: a reference to an identified resource.
     Relationship,
 }
 
@@ -203,7 +212,7 @@ impl Instance {
         Ok(ResourceId::new(self.namespace(), self.type_name(), id)?.to_uri())
     }
 
-    /// This instance in the value shape [`super::validate::validate_instance`]
+    /// This instance in the value shape [`concerto_core::instance::validate::validate_instance`]
     /// reads (its module doc, "Scope"): a `Relationship` as a
     /// [`RELATIONSHIP_TAG`]-tagged `{$class, <identifying field>}` object,
     /// anything else as a `$class`-tagged object with every own property
@@ -290,7 +299,7 @@ impl JsValue {
             Self::Undefined => "undefined".to_string(),
             Self::Null => "null".to_string(),
             Self::Bool(b) => b.to_string(),
-            Self::Number(n) => ecma::number_to_string(*n),
+            Self::Number(n) => js_number_to_string(*n),
             Self::String(s) => s.clone(),
             Self::Array(items) => items
                 .iter()
@@ -327,18 +336,18 @@ impl JsValue {
         }
     }
 
-    /// This value in the shape [`super::validate::validate_instance`] reads
-    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`]-tagged object,
+    /// This value in the shape [`concerto_core::instance::validate::validate_instance`] reads
+    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`](concerto_core::instance::validate::DAYJS_TAG)-tagged object,
     /// `undefined` as [`js_undefined`], a `Map` as the list of its
     /// entries ([`js_map`]), an instance through
     /// [`Instance::to_validator_value`], and a non-finite number as
-    /// [`js_special_number`].
+    /// [`js_special_number`](concerto_core::instance::validate::js_special_number).
     pub fn to_validator_value(&self) -> Value {
         match self {
             Self::Undefined => js_undefined(),
             Self::Null => Value::Null,
             Self::Bool(b) => Value::Bool(*b),
-            Self::Number(n) => validator_number(*n),
+            Self::Number(n) => js_number(*n),
             Self::String(s) => Value::String(s.clone()),
             Self::Array(items) => {
                 Value::Array(items.iter().map(Self::to_validator_value).collect())
@@ -354,22 +363,9 @@ impl JsValue {
                     .map(|(k, v)| (k.to_validator_value(), v.to_validator_value()))
                     .collect(),
             ),
-            Self::DateTime(d) => json!({ DAYJS_TAG: d.to_iso_string() }),
+            Self::DateTime(d) => d.validator_value(),
             Self::Instance(i) => i.to_validator_value(),
             Self::BigInt(s) => js_bigint(s),
         }
     }
-}
-
-/// A JS number as a JSON number: an integral one as an integer, so that the
-/// messages that print it (`JSON.stringify`, `String`) read `1`, not `1.0`;
-/// a non-finite one as [`js_special_number`].
-fn validator_number(n: f64) -> Value {
-    if !n.is_finite() {
-        return js_special_number(&ecma::number_to_string(n));
-    }
-    if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
-        return Value::Number(serde_json::Number::from(n as i64));
-    }
-    serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
 }

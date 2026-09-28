@@ -31,9 +31,9 @@
 //! [`validate_command`] runs against it as in TS. Of `Serializer.fromJSON`,
 //! the `$class` check and `getType` are hand-ported here to keep TS's own
 //! errors for a missing or non-string `$class`
-//! ([`from_json_against`]); the rest — the `JSONPopulator` walk and the
+//! (`from_json_against`); the rest — the `JSONPopulator` walk and the
 //! `ResourceValidator` pass — now runs as the real, ported
-//! `Serializer::from_json` (P3-01b, `src/instance/serializer.rs`), raising
+//! `Serializer.fromJSON` over plain JSON (P3-01b; `crate::instance::from_json` since P6-01), raising
 //! the same `ValidationException`-style errors TS does.
 //! [`validate_dcs_structure`] used to stand in for that; nothing here still
 //! calls it (kept for its own unit tests).
@@ -59,7 +59,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
@@ -131,7 +131,7 @@ fn falsy_or_equal_in_string(test: Option<&Value>, values: &str) -> bool {
 /// `isUnversionedNamespaceEqual(modelFile, unversionedNamespace)`
 /// (`src/decoratormanager.ts`).
 fn is_unversioned_namespace_equal(model_file: &ModelFile, unversioned_namespace: &str) -> bool {
-    match model_util::parse_namespace(Some(model_file.namespace()), false) {
+    match model_util::parse_namespace_with(Some(model_file.namespace()), false) {
         Ok(ParsedNamespace::Full { name, .. }) | Ok(ParsedNamespace::NameOnly { name }) => {
             name == unversioned_namespace
         }
@@ -280,7 +280,7 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
                 if let ParsedNamespace::Full {
                     version: Some(version),
                     ..
-                } = model_util::parse_namespace(Some(ns), false)?
+                } = model_util::parse_namespace_with(Some(ns), false)?
                 {
                     // `String.prototype.replace` with a string pattern
                     // replaces only the first occurrence.
@@ -307,7 +307,7 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
 /// than duplicating it — this crate exposes no standalone semver parser
 /// (`model_util::semver_parse` is private).
 fn parse_version(version: &str) -> Option<model_util::SemVer> {
-    match model_util::parse_namespace(Some(&format!("x@{version}")), false) {
+    match model_util::parse_namespace_with(Some(&format!("x@{version}")), false) {
         Ok(ParsedNamespace::Full { version_parsed, .. }) => version_parsed,
         _ => None,
     }
@@ -316,9 +316,9 @@ fn parse_version(version: &str) -> Option<model_util::SemVer> {
 /// node-semver's `new SemVer(undefined)` (`classes/semver.js`), which
 /// `semver.major`/`semver.minor` raise for a `$class` namespace that has no
 /// version.
-fn semver_not_a_string() -> ConcertoError {
+fn semver_not_a_string() -> Error {
     ContractError::pre_port(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "Invalid version. Must be a string. Got type \"undefined\".".to_string(),
         None,
     )
@@ -327,9 +327,9 @@ fn semver_not_a_string() -> ConcertoError {
 
 /// A JS `TypeError` for reading `property` of `undefined` (`is_null` false)
 /// or `null` (`is_null` true).
-fn read_properties_error(is_null: bool, property: &str) -> ConcertoError {
+fn read_properties_error(is_null: bool, property: &str) -> Error {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-readproperties",
         vec![
             (
@@ -367,7 +367,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
         // `fqn.lastIndexOf('.')` on a truthy non-string.
         Some(v) if crate::ecma::is_truthy(v) => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-notafunction",
                 vec![("expression", "fqn.lastIndexOf".to_string())],
             )
@@ -377,7 +377,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
         _ => None,
     };
     let ns = model_util::get_namespace(class)?;
-    let input_version = match model_util::parse_namespace(Some(ns), false)? {
+    let input_version = match model_util::parse_namespace_with(Some(ns), false)? {
         ParsedNamespace::Full {
             version: Some(v), ..
         } => v,
@@ -457,7 +457,7 @@ pub fn apply_decorator(
         }
         other => {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!("Unknown command type {other}"),
                 None,
             )
@@ -559,7 +559,7 @@ pub fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<(
         .get("namespace")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let name = match model_util::parse_namespace(namespace.as_deref(), false)? {
+    let name = match model_util::parse_namespace_with(namespace.as_deref(), false)? {
         ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
     };
     let namespace = namespace.unwrap_or_default();
@@ -613,7 +613,7 @@ pub fn execute_command(
 ) -> Result<()> {
     let (command_type, decorator, target) = command_parts(command);
     // The namespace version is already validated by `decorate_models`.
-    let name = match model_util::parse_namespace(Some(namespace), true)? {
+    let name = match model_util::parse_namespace_with(Some(namespace), true)? {
         ParsedNamespace::NameOnly { name } | ParsedNamespace::Full { name, .. } => name,
     };
     let declaration_name = declaration
@@ -729,7 +729,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         resolved_model_file = model_manager.model_file(namespace);
         if resolved_model_file.is_none()
             && let ParsedNamespace::Full { name, version, .. } =
-                model_util::parse_namespace(Some(namespace), false)?
+                model_util::parse_namespace_with(Some(namespace), false)?
             && version.is_none()
         {
             // TS `getModelFiles()`: the user's model files only.
@@ -740,7 +740,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         }
         if resolved_model_file.is_none() {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "Decorator Command references namespace \"{namespace}\" which does not exist: {}",
                     serde_json::to_string_pretty(command).unwrap_or_default()
@@ -774,7 +774,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         && target.get("property").is_some_and(crate::ecma::is_truthy)
     {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "Decorator Command references both property and properties. You must either reference a single property or a list of properites.".to_string(),
             None,
         )
@@ -799,10 +799,12 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
             .and_then(Value::as_str)
             .filter(|v| !v.is_empty())
         {
-            let found = model_manager.get_property(&fqn, property)?;
+            let found = model_manager
+                .property(&fqn, property)
+                .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
             if found.is_none() {
                 return Err(ContractError::pre_port(
-                    ErrorKind::Error,
+                    ErrorKind::InvalidArgument,
                     format!(
                         "Decorator Command references property \"{namespace}.{declaration}.{property}\" which does not exist."
                     ),
@@ -814,10 +816,12 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
 
         if let Some(properties) = target.get("properties").and_then(Value::as_array) {
             for property in properties.iter().filter_map(Value::as_str) {
-                let found = model_manager.get_property(&fqn, property)?;
+                let found = model_manager
+                    .property(&fqn, property)
+                    .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
                 if found.is_none() {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!(
                             "Decorator Command references property \"{namespace}.{declaration}.{property}\" which does not exist."
                         ),
@@ -856,7 +860,7 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
         )
         .into());
     };
-    let short = model_util::get_short_name(type_name);
+    let short = model_util::short_name(type_name);
     if mf.resolve_local_type(short).as_deref() == Some(type_name) {
         Ok(())
     } else {
@@ -874,7 +878,7 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
 }
 
 fn structural_error(message: impl Into<String>) -> ContractError {
-    ContractError::pre_port(ErrorKind::Error, message.into(), None)
+    ContractError::pre_port(ErrorKind::InvalidArgument, message.into(), None)
 }
 
 fn require_string_field(obj: &Map<String, Value>, key: &str, context: &str) -> Result<()> {
@@ -1064,14 +1068,14 @@ fn new_validation_model_manager() -> Result<ModelManager> {
     let mut model_manager = ModelManager::new()?;
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    model_manager.add_models([(&metamodel, Some(META_MODEL_NAMESPACE.to_string()))])?;
+    model_manager.load_models([(&metamodel, Some(META_MODEL_NAMESPACE.to_string()))])?;
     Ok(model_manager)
 }
 
 /// `validationModelManager.addModelFiles(modelFiles)`: `model_files`' ASTs,
 /// under their own file names, added and validated together.
 fn add_model_files(model_manager: &mut ModelManager, model_files: &[&ModelFile]) -> Result<()> {
-    model_manager.add_models(
+    model_manager.load_models(
         model_files
             .iter()
             .map(|mf| (mf.ast(), mf.file_name().map(str::to_string))),
@@ -1083,7 +1087,7 @@ fn add_model_files(model_manager: &mut ModelManager, model_files: &[&ModelFile])
 fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()> {
     let dcs_model: Value =
         serde_json::from_str(DCS_MODEL_AST_JSON).expect("the DCS model AST is JSON");
-    model_manager.add_models([(&dcs_model, Some(file_name.to_string()))])?;
+    model_manager.load_models([(&dcs_model, Some(file_name.to_string()))])?;
     Ok(())
 }
 
@@ -1091,10 +1095,10 @@ fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()
 /// building and validating a decorator command set instance
 /// ([`from_json_against`]). Neither is reachable in practice: no
 /// declaration in `DCS_MODEL` is system-identified or timestamped, so this
-/// exists only to satisfy [`crate::instance::InstanceEnv`].
+/// exists only to satisfy [`crate::instance::from_json::InstanceEnv`].
 struct DcsInstanceEnv;
 
-impl crate::instance::InstanceEnv for DcsInstanceEnv {
+impl crate::instance::from_json::InstanceEnv for DcsInstanceEnv {
     fn new_id(&mut self) -> String {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1120,8 +1124,8 @@ impl crate::instance::InstanceEnv for DcsInstanceEnv {
 /// unknown type fails as TS fails ([`get_type`], TS's own `getType` call).
 /// The rest, populating and validating a resource from the JSON, now runs
 /// as the rest of `Serializer.fromJSON` does: its `JSONPopulator` walk and
-/// `ResourceValidator` pass, ported in full by P3-01b
-/// (`src/instance/serializer.rs`). [`validate_dcs_structure`] used to stand
+/// `ResourceValidator` pass, ported in full by P3-01b, over plain JSON
+/// (`crate::instance::from_json`, P6-01). [`validate_dcs_structure`] used to stand
 /// in for that; it is kept only for its own unit tests below, and is no
 /// longer reachable from here.
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
@@ -1131,7 +1135,7 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         Some(v) if crate::ecma::is_truthy(v) => {
             // `ModelUtil.getNamespace` calls `fqn.lastIndexOf('.')`.
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-notafunction",
                 vec![("expression", "fqn.lastIndexOf".to_string())],
             )
@@ -1139,7 +1143,7 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
         _ => {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "Invalid JSON data. Does not contain a $class type identifier.".to_string(),
                 None,
             )
@@ -1147,12 +1151,8 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
     };
     get_type(model_manager, class)?;
-    let serializer = crate::instance::Serializer::new(true, true, None)
-        .expect("Serializer::new with a truthy factory and model manager cannot fail");
-    let json_instance = crate::instance::JsValue::from_json(instance);
-    let mut env = DcsInstanceEnv;
-    serializer
-        .from_json(model_manager, &json_instance, None, &mut env)
+    let options = crate::instance::from_json::FromJsonOptions::default();
+    crate::instance::from_json::from_json(model_manager, instance, &options, &mut DcsInstanceEnv)
         .map(|_| ())
 }
 
@@ -1175,10 +1175,7 @@ fn get_type(model_manager: &ModelManager, qualified_name: &str) -> Result<()> {
         return Err(ContractError::type_not_found(
             "modelmanager-gettype-notypeinns",
             vec![
-                (
-                    "type",
-                    model_util::get_short_name(qualified_name).to_string(),
-                ),
+                ("type", model_util::short_name(qualified_name).to_string()),
                 ("namespace", namespace.to_string()),
             ],
             qualified_name.to_string(),
@@ -1193,7 +1190,7 @@ fn get_type(model_manager: &ModelManager, qualified_name: &str) -> Result<()> {
 /// (`src/decoratormanager.ts`): builds the validation model manager (the
 /// decorator, root and metamodel models, then `model_files` if given, then
 /// the DCS model), checks `decorator_command_set` against it
-/// ([`from_json_against`]), and returns it.
+/// (`from_json_against`), and returns it.
 pub fn validate(
     decorator_command_set: &Value,
     model_files: Option<&[&ModelFile]>,
@@ -1228,7 +1225,7 @@ pub fn validated_yaml_to_json(yaml_input: &str) -> Result<Value> {
 /// `should_validate` — matching the reference's nesting, *only* then —
 /// builds the validation model manager (the metamodel, `model_manager`'s own
 /// model files and the DCS model), checks each command set against it
-/// ([`from_json_against`]) and, when also `should_validate_commands`, runs
+/// (`from_json_against`) and, when also `should_validate_commands`, runs
 /// [`validate_command`] over every command against it.
 /// `should_validate_commands` alone (`should_validate` false) validates
 /// nothing at all, exactly as the reference's `if (shouldValidate) { ...
@@ -1332,7 +1329,7 @@ pub fn decorate_models(
                 .model_files()
                 .filter(|mf| !crate::model_manager::EXCLUDE_NS.contains(&mf.namespace()))
             {
-                same.add_model(mf.ast(), mf.file_name().map(str::to_string))?;
+                same.load_model(mf.ast(), mf.file_name().map(str::to_string))?;
             }
             Ok(same)
         }
@@ -1369,7 +1366,7 @@ pub fn prepare_decoration(
             || options.disable_metamodel_validation == Some(false)
         {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "skipValidationAndResolution cannot be used with disableMetamodelResolution or disableMetamodelValidation options as false".to_string(),
                 None,
             )
@@ -1425,7 +1422,7 @@ pub fn apply_decoration(
 ) -> Result<ModelManager> {
     // `options?.disableMetamodelResolution ? getAst(false, true) : getAst(true, true)`.
     let resolve = options.disable_metamodel_resolution != Some(true);
-    let mut models = models_of(model_manager.get_ast(resolve, true)?);
+    let mut models = models_of(model_manager.models_ast(resolve, true)?);
     for model in models.iter_mut() {
         decorate_model(model, &prepared.decorator_imports, &prepared.maps)?;
     }
@@ -1437,7 +1434,7 @@ pub fn apply_decoration(
             .and_then(Value::as_str)
             .is_some_and(|ns| crate::model_manager::EXCLUDE_NS.contains(&ns))
     }) {
-        decorated.add_model(model, None)?;
+        decorated.load_model(model, None)?;
     }
     if options.disable_metamodel_validation != Some(true) {
         decorated.validate_models()?;
@@ -1483,7 +1480,7 @@ fn synthetic_decorator_imports(
             }
             Some(v) if crate::ecma::is_truthy(v) => {
                 return Err(ContractError::new(
-                    ErrorKind::JsTypeError,
+                    ErrorKind::MalformedInput,
                     "engine-typeerror-notafunction",
                     vec![(
                         "expression",
@@ -1546,7 +1543,7 @@ fn decorate_model(
         }
     }
 
-    let namespace_name = match model_util::parse_namespace(Some(&namespace), false)? {
+    let namespace_name = match model_util::parse_namespace_with(Some(&namespace), false)? {
         ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
     };
 
@@ -1715,7 +1712,7 @@ pub fn extract_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        model_manager.get_ast(true, true)?,
+        model_manager.models_ast(true, true)?,
         extractor::Action::ExtractAll,
     )
     .extract()
@@ -1733,7 +1730,7 @@ pub fn extract_vocabularies(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        model_manager.get_ast(true, true)?,
+        model_manager.models_ast(true, true)?,
         extractor::Action::ExtractVocab,
     )
     .extract()
@@ -1751,7 +1748,7 @@ pub fn extract_non_vocab_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        model_manager.get_ast(true, false)?,
+        model_manager.models_ast(true, false)?,
         extractor::Action::ExtractNonVocab,
     )
     .extract()
@@ -1765,7 +1762,7 @@ mod tests {
     /// `org.acme@1.0.0` with a single `Person { name: String }`.
     fn sample_manager() -> ModelManager {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -2114,7 +2111,7 @@ mod tests {
     #[test]
     fn decorate_models_upsert_replaces_an_existing_decorator_of_the_same_name() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",

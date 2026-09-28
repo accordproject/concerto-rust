@@ -46,7 +46,9 @@ pub struct Dayjs {
 /// `|n| <= 16`), or a `±HH:mm` string.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UtcOffset {
+    /// A number of minutes, or of hours when `|n| <= 16`.
     Number(f64),
+    /// A `±HH:mm` offset string.
     String(String),
 }
 
@@ -73,7 +75,7 @@ impl Dayjs {
     /// A string that does not end in `Z` (case-insensitively) and matches
     /// dayjs's `REGEX_PARSE` is built with `Date.UTC` from its parts;
     /// anything else goes to `new Date(string)`, ECMAScript `Date.parse`
-    /// ([`date_parse`]).
+    /// (`date_parse`).
     pub fn utc_parse(s: &str) -> Self {
         Self::with_time(parse_date_utc(s), true)
     }
@@ -116,9 +118,16 @@ impl Dayjs {
     }
 
     /// `Date.parse(s)` under `TZ=UTC`, as a time value (`NaN` when it does
-    /// not parse): the ECMAScript date time string format ([`date_parse`]).
+    /// not parse): the ECMAScript date time string format (`date_parse`).
     pub fn parse_instant(s: &str) -> f64 {
         date_parse(s)
+    }
+
+    /// This date in the instance validator's value shape: a
+    /// `DAYJS_TAG`-tagged object holding its ISO string (`null` when
+    /// invalid).
+    pub fn validator_value(&self) -> serde_json::Value {
+        serde_json::json!({ super::validate::DAYJS_TAG: self.to_iso_string() })
     }
 
     /// `isValid()`: `!(this.$d.toString() === 'Invalid Date')`.

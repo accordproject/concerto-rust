@@ -19,18 +19,14 @@
 //! `ModelManager.getType`, which is `Relationship`'s own job and stays out
 //! of scope here).
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::model_util;
 
 /// `RESOURCE_SCHEME` in `src/model/resourceid.ts`.
 const RESOURCE_SCHEME: &str = "resource";
 
 /// A [`ContractError`] as the crate's error type.
-fn error(
-    kind: ErrorKind,
-    code: &'static str,
-    params: Vec<(&'static str, String)>,
-) -> ConcertoError {
+fn error(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(kind, code, params).into()
 }
 
@@ -124,7 +120,7 @@ fn parse_uri(uri: &str) -> Result<UriComponents> {
             if !maybe_port.is_empty() {
                 if !maybe_port.bytes().all(|b| b.is_ascii_digit()) {
                     return Err(error(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         "resourceid-parseuri-invalidport",
                         Vec::new(),
                     ));
@@ -189,8 +185,13 @@ fn encode_uri(input: &str) -> String {
 /// coupled test exercises, and no ported member's message catalogue entry
 /// claims it. [`ContractError::pre_port`] carries the real V8 text without
 /// overclaiming a verbatim catalogue port (PORTING.md section 7.2).
-fn malformed_uri_error() -> ConcertoError {
-    ContractError::pre_port(ErrorKind::Error, "URI malformed".to_string(), None).into()
+fn malformed_uri_error() -> Error {
+    ContractError::pre_port(
+        ErrorKind::InvalidArgument,
+        "URI malformed".to_string(),
+        None,
+    )
+    .into()
 }
 
 /// `decodeURIComponent(id)`: every `%XX` triplet becomes the byte `XX`:
@@ -259,21 +260,21 @@ impl ResourceId {
         let id = id.into();
         if namespace.is_empty() {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-constructor-missingnamespace",
                 Vec::new(),
             ));
         }
         if type_name.is_empty() {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-constructor-missingtype",
                 Vec::new(),
             ));
         }
         if id.is_empty() {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-constructor-missingid",
                 Vec::new(),
             ));
@@ -313,7 +314,7 @@ impl ResourceId {
     ) -> Result<Self> {
         let components = parse_uri(uri).map_err(|_| {
             error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-fromuri-invaliduri",
                 vec![("uri", uri.to_string())],
             )
@@ -324,7 +325,7 @@ impl ResourceId {
             && scheme != RESOURCE_SCHEME
         {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-fromuri-invalidscheme",
                 vec![("uri", uri.to_string())],
             ));
@@ -335,7 +336,7 @@ impl ResourceId {
             || is_present(&components.query)
         {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-fromuri-invalidformat",
                 vec![("uri", uri.to_string())],
             ));
@@ -346,7 +347,7 @@ impl ResourceId {
                 // The whole path is a qualified type name.
                 let qualified_type = components.path.as_str();
                 let namespace = model_util::get_namespace(Some(qualified_type))?.to_string();
-                let type_name = model_util::get_short_name(qualified_type).to_string();
+                let type_name = model_util::short_name(qualified_type).to_string();
                 (namespace, type_name, id.clone())
             }
             None => {
@@ -366,7 +367,7 @@ impl ResourceId {
     ///
     /// TS: ResourceId.prototype.toURI (`src/model/resourceid.ts`)
     pub fn to_uri(&self) -> String {
-        let qualified_type = model_util::get_fully_qualified_name(&self.namespace, &self.type_name);
+        let qualified_type = model_util::qualify(&self.namespace, &self.type_name);
         format!(
             "{RESOURCE_SCHEME}:{qualified_type}#{}",
             encode_uri(&self.id)

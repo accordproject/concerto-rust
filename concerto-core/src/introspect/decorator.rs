@@ -10,7 +10,7 @@
 //!
 //! # Reading a decorator's arguments (OD-3)
 //!
-//! The generated [`mm::Decorator`] is not faithful enough to read: its
+//! The generated `mm::Decorator` is not faithful enough to read: its
 //! `arguments` are typed `Vec<DecoratorLiteral>`, and `DecoratorLiteral` is
 //! codegen's abstract base for the union (`DecoratorString`,
 //! `DecoratorNumber`, `DecoratorBoolean`, `DecoratorTypeReference`) with none
@@ -23,15 +23,15 @@
 //! [`WithDecorators`] is the small wrapper that does this for a
 //! newtype-over-`mm::*` element ([`super::declaration::EnumDeclaration`],
 //! every [`super::property::Property`] variant); [`ClassDeclaration`] and
-//! [`ModelFile`] have room for the same `Vec<Decorator>` as an ordinary field.
+//! `ModelFile` have room for the same `Vec<Decorator>` as an ordinary field.
 
 use serde_json::Value;
 
 use crate::ecma::number_to_string;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::ClassDeclaration;
 use crate::introspect::property::Property;
-use crate::introspect::{Named, Typed, qualified_class};
+use crate::introspect::qualified_class;
 use crate::model_manager::ModelManager;
 use crate::model_util::is_primitive_type;
 
@@ -55,6 +55,7 @@ pub struct TypeReferenceArgument {
 ///
 /// TS: `DecoratorArgument` (src/introspect/decorator.ts).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum DecoratorArgument {
     /// A `DecoratorString` literal.
     String(String),
@@ -123,20 +124,22 @@ impl Decorator {
         &self.name
     }
 
-    /// The name as TS's `Decorator.getName()` holds it for
-    /// `Decorated.validate`'s duplicate check: `None` for a node with no
-    /// `name` at all (JS `undefined`), which is a different `Set` entry from
-    /// every string name, `""` included. `pub`, not `pub(crate)`: the WASM
-    /// binding's own `decoratorProcess` (`concerto-wasm/src/lib.rs`) needs
-    /// this to give the JS-side `Decorator.name` field the same `undefined`
-    /// TS's own unconditional `this.name = ast.name` leaves it with,
-    /// rather than the empty-string default [`Decorator::name`] gives every
-    /// other reader (accordproject/concerto-rust#219: a model-file-level
-    /// `Decorator` built this way, with no name, previously surfaced as
-    /// `this.name === ""`, so two of them collided as "Duplicate decorator "
-    /// instead of TS's own "Duplicate decorator undefined").
-    pub fn js_name(&self) -> Option<&str> {
-        self.name_present.then_some(self.name.as_str())
+    js_compat_pub! {
+        /// The name as TS's `Decorator.getName()` holds it for
+        /// `Decorated.validate`'s duplicate check: `None` for a node with no
+        /// `name` at all (JS `undefined`), which is a different `Set` entry from
+        /// every string name, `""` included. `pub`, not `pub(crate)`: the WASM
+        /// binding's own `decoratorProcess` (`concerto-wasm/src/lib.rs`) needs
+        /// this to give the JS-side `Decorator.name` field the same `undefined`
+        /// TS's own unconditional `this.name = ast.name` leaves it with,
+        /// rather than the empty-string default [`Decorator::name`] gives every
+        /// other reader (accordproject/concerto-rust#219: a model-file-level
+        /// `Decorator` built this way, with no name, previously surfaced as
+        /// `this.name === ""`, so two of them collided as "Duplicate decorator "
+        /// instead of TS's own "Duplicate decorator undefined").
+        pub fn js_name(&self) -> Option<&str> {
+            self.name_present.then_some(self.name.as_str())
+        }
     }
 
     /// The arguments given to this decorator, in order.
@@ -146,51 +149,53 @@ impl Decorator {
         &self.arguments
     }
 
-    /// Semantic validation of the decorator: that its name and any type
-    /// reference argument resolve, and that its arguments match the count
-    /// and types of the properties of the type it names, if that type is
-    /// itself a declaration.
-    ///
-    /// Runs only when `manager`'s [`DecoratorValidationOptions`] enable it: TS
-    /// guards the whole body on `validationOptions.missingDecorator ||
-    /// validationOptions.invalidDecorator` and does nothing at all otherwise
-    /// (`DEFAULT_DECORATOR_VALIDATION` leaves both `undefined`).
-    ///
-    /// `context` is the fully qualified name of the decorated element, used
-    /// only to describe *where* an unresolved name was found; pass `None` for
-    /// a model file's own decorators, which have no such name in TS either.
-    ///
-    /// **Log vs throw**, faithfully: every problem found is reported through
-    /// [`DecoratorValidationOptions::invalid_decorator`], except the
-    /// decorator's own name failing to resolve, which is reported through
-    /// [`DecoratorValidationOptions::missing_decorator`] instead — and *any*
-    /// problem thrown while checking arguments is also caught and re-reported
-    /// through `missing_decorator` (TS wraps the whole check in one
-    /// `try`/`catch`). Reporting only throws when the option is the exact
-    /// string `"error"`; anything else (including `"warn"`) only logs, and
-    /// this Rust port has no logger yet (Logger.dispatch is not ported;
-    /// nothing observes it), so an option other than `"error"` here is
-    /// silently accepted.
-    ///
-    /// TS: `Decorator.validate` (src/introspect/decorator.ts).
-    pub fn validate(
-        &self,
-        manager: &ModelManager,
-        namespace: &str,
-        context: Option<&str>,
-    ) -> Result<()> {
-        let options = manager.decorator_validation();
-        if !options.is_enabled() {
-            return Ok(());
-        }
-        match self.try_validate(manager, namespace, context, options) {
-            Ok(()) => Ok(()),
-            Err(problem) => self.rethrow(
-                manager,
-                namespace,
-                options.missing_decorator.as_deref(),
-                problem,
-            ),
+    js_compat_pub! {
+        /// Semantic validation of the decorator: that its name and any type
+        /// reference argument resolve, and that its arguments match the count
+        /// and types of the properties of the type it names, if that type is
+        /// itself a declaration.
+        ///
+        /// Runs only when `manager`'s [`DecoratorValidationOptions`] enable it: TS
+        /// guards the whole body on `validationOptions.missingDecorator ||
+        /// validationOptions.invalidDecorator` and does nothing at all otherwise
+        /// (`DEFAULT_DECORATOR_VALIDATION` leaves both `undefined`).
+        ///
+        /// `context` is the fully qualified name of the decorated element, used
+        /// only to describe *where* an unresolved name was found; pass `None` for
+        /// a model file's own decorators, which have no such name in TS either.
+        ///
+        /// **Log vs throw**, faithfully: every problem found is reported through
+        /// [`DecoratorValidationOptions::invalid_decorator`], except the
+        /// decorator's own name failing to resolve, which is reported through
+        /// [`DecoratorValidationOptions::missing_decorator`] instead — and *any*
+        /// problem thrown while checking arguments is also caught and re-reported
+        /// through `missing_decorator` (TS wraps the whole check in one
+        /// `try`/`catch`). Reporting only throws when the option is the exact
+        /// string `"error"`; anything else (including `"warn"`) only logs, and
+        /// this Rust port has no logger yet (Logger.dispatch is not ported;
+        /// nothing observes it), so an option other than `"error"` here is
+        /// silently accepted.
+        ///
+        /// TS: `Decorator.validate` (src/introspect/decorator.ts).
+        pub fn validate(
+            &self,
+            manager: &ModelManager,
+            namespace: &str,
+            context: Option<&str>,
+        ) -> Result<()> {
+            let options = manager.decorator_validation();
+            if !options.is_enabled() {
+                return Ok(());
+            }
+            match self.try_validate(manager, namespace, context, options) {
+                Ok(()) => Ok(()),
+                Err(problem) => self.rethrow(
+                    manager,
+                    namespace,
+                    options.missing_decorator.as_deref(),
+                    problem,
+                ),
+            }
         }
     }
 
@@ -201,7 +206,7 @@ impl Decorator {
         namespace: &str,
         context: Option<&str>,
         options: &DecoratorValidationOptions,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         // TS: `mf.resolveType(decoratedName, this.getName(), this.ast.location)`.
         let fqn = self.resolve_own_name(manager, namespace, context)?;
         // TS: `mf.getType(this.getName())`.
@@ -215,9 +220,9 @@ impl Decorator {
             return Ok(());
         };
         // Each property comes paired with its declaring type's name
-        // (`ModelManager::get_all_properties`); only the property is read here.
-        let all_properties: Vec<Property> = manager
-            .get_all_properties(&fqn)?
+        // (`ModelManager::properties`); only the property is read here.
+        let all_properties: Vec<&Property> = manager
+            .properties(&fqn)?
             .into_iter()
             .map(|(_, p)| p)
             .collect();
@@ -277,14 +282,14 @@ impl Decorator {
         manager: &ModelManager,
         namespace: &str,
         context: Option<&str>,
-    ) -> std::result::Result<String, ConcertoError> {
+    ) -> std::result::Result<String, Error> {
         if is_primitive_type(&self.name) {
             return Ok(self.name.clone());
         }
         manager
-            .resolve_type_name(namespace, &self.name, self.location.clone())
+            .resolve_type_name_at(namespace, &self.name, self.location.clone())
             .map_err(|_| {
-                let err: ConcertoError = ContractError::new(
+                let err: Error = ContractError::new(
                     ErrorKind::IllegalModel,
                     "modelfile-resolvetype-undecltype",
                     vec![
@@ -310,12 +315,7 @@ impl Decorator {
     /// [`Self::rethrow`] re-reports it, matching TS's `this`/`this.getParent().
     /// getModelFile()`, which is resolved synchronously at each throw site
     /// (DV-016).
-    fn attach_file(
-        &self,
-        manager: &ModelManager,
-        namespace: &str,
-        err: ConcertoError,
-    ) -> ConcertoError {
+    fn attach_file(&self, manager: &ModelManager, namespace: &str, err: Error) -> Error {
         match manager.model_file(namespace) {
             Some(model_file) => crate::validation::attach_model_file(err, model_file),
             None => err,
@@ -332,7 +332,7 @@ impl Decorator {
         property: &Property,
         arg: &DecoratorArgument,
         options: &DecoratorValidationOptions,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         match property.type_name() {
             Some("Integer") | Some("Double") | Some("Long") => {
                 if !matches!(arg, DecoratorArgument::Number(_)) {
@@ -387,7 +387,7 @@ impl Decorator {
         property: &Property,
         arg: &DecoratorArgument,
         options: &DecoratorValidationOptions,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         let Some(type_reference) = (match arg {
             DecoratorArgument::TypeReference(t) => Some(t),
             _ => None,
@@ -407,7 +407,7 @@ impl Decorator {
         // nullish result, whether the name resolves to nothing or resolves to
         // something this model manager has not loaded.
         let resolved = manager
-            .resolve_type_name(namespace, &type_reference.name, None)
+            .resolve_type_name_at(namespace, &type_reference.name, None)
             .ok()
             .and_then(|fqn| manager.get_declaration(&fqn).ok().map(|_| fqn));
 
@@ -426,7 +426,7 @@ impl Decorator {
                     return Ok(());
                 };
                 let property_fqn = manager
-                    .resolve_type_name(namespace, declared_type, None)
+                    .resolve_type_name_at(namespace, declared_type, None)
                     .unwrap_or_else(|_| declared_type.to_string());
                 if !manager.is_assignable_to(&type_fqn, &property_fqn)? {
                     self.report_invalid(
@@ -451,7 +451,7 @@ impl Decorator {
         namespace: &str,
         options: &DecoratorValidationOptions,
         message: String,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         self.handle(
             manager,
             namespace,
@@ -474,7 +474,7 @@ impl Decorator {
         namespace: &str,
         level: Option<&str>,
         message: String,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         if level == Some("error") {
             let err = illegal_model(message, self.location.clone());
             return Err(self.attach_file(manager, namespace, err));
@@ -501,7 +501,7 @@ impl Decorator {
         manager: &ModelManager,
         namespace: &str,
         level: Option<&str>,
-        problem: ConcertoError,
+        problem: Error,
     ) -> Result<()> {
         if level == Some("error") {
             let (class, message) = js_class_and_message(&problem);
@@ -515,25 +515,26 @@ impl Decorator {
 /// `new IllegalModelException(message, mf, location)`, built the way every
 /// pre-port throw site in this crate is (`ContractError::pre_port`): this is
 /// not a catalogue template, since the message was already assembled inline.
-fn illegal_model(message: String, location: Option<Value>) -> ConcertoError {
+fn illegal_model(message: String, location: Option<Value>) -> Error {
     ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
 }
 
 /// The TS class name and message an already-thrown error would report, the
-/// same two fields `ops.rs`'s oracle harness reads off a [`ConcertoError`]
+/// same two fields `ops.rs`'s oracle harness reads off a [`Error`]
 /// (`to_oracle_error`), needed here to reproduce [`Decorator::rethrow`]'s
 /// string coercion of a caught exception.
-fn js_class_and_message(err: &ConcertoError) -> (&'static str, String) {
-    match err {
-        ConcertoError::Contract(ce) => (ce.kind.ts_class(), ce.final_message()),
-        ConcertoError::TypeNotFound { type_name } => (
+fn js_class_and_message(err: &Error) -> (&'static str, String) {
+    if let Some(type_name) = err.unported_type_not_found() {
+        return (
             ErrorKind::TypeNotFound.ts_class(),
             format!("Type \"{type_name}\" not found."),
-        ),
-        ConcertoError::IllegalModel { message, .. } => {
-            (ErrorKind::IllegalModel.ts_class(), message.clone())
-        }
+        );
     }
+    if let Some(message) = err.unported_illegal_model() {
+        return (ErrorKind::IllegalModel.ts_class(), message.to_string());
+    }
+    let ce = err.contract();
+    (ce.kind.ts_class(), ce.final_message())
 }
 
 /// JS `typeof` of a decoded argument, as `Decorator.validate` reports it.
@@ -655,15 +656,17 @@ pub(crate) fn null_decorator(ast: &Value) -> Option<ContractError> {
         .then(|| not_an_object("null"))
 }
 
-/// The DV-018 error for a decorator node that is `value` (`null`, or
-/// `undefined` through the WASM boundary), with no location and no model
-/// file yet (module doc on [`null_decorator`]).
-pub fn not_an_object(value: &str) -> ContractError {
-    ContractError::new(
-        ErrorKind::IllegalModel,
-        "decorator-process-notobject",
-        vec![("value", value.to_string())],
-    )
+js_compat_pub! {
+    /// The DV-018 error for a decorator node that is `value` (`null`, or
+    /// `undefined` through the WASM boundary), with no location and no model
+    /// file yet (module doc on `null_decorator`).
+    pub fn not_an_object(value: &str) -> ContractError {
+        ContractError::new(
+            ErrorKind::IllegalModel,
+            "decorator-process-notobject",
+            vec![("value", value.to_string())],
+        )
+    }
 }
 
 /// Wraps a generated metamodel node together with its processed decorators
@@ -708,7 +711,7 @@ impl<T> std::ops::Deref for WithDecorators<T> {
 /// Only the exact string `"error"` is ever tested against here (matching
 /// every test and fixture in this scope); any other non-empty string,
 /// including `"warn"`, enables the check but never throws (module doc on
-/// [`Decorator::handle`]).
+/// `Decorator::handle`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DecoratorValidationOptions {
     /// The log level for a decorator whose own name does not resolve.
@@ -734,31 +737,43 @@ pub trait Decorated {
     /// The decorators attached to the element, in the order they are given.
     ///
     /// TS: `Decorated.getDecorators`.
-    fn get_decorators(&self) -> &[Decorator];
+    fn decorators(&self) -> &[Decorator];
 
     /// The decorator attached to the element with the given name, or `None`
     /// if it has none by that name.
     ///
     /// TS: `Decorated.getDecorator`.
+    fn decorator(&self, name: &str) -> Option<&Decorator> {
+        self.decorators().iter().find(|d| d.name() == name)
+    }
+
+    /// Deprecated name of [`Decorated::decorators`].
+    #[deprecated(since = "0.1.0", note = "use `decorators`")]
+    fn get_decorators(&self) -> &[Decorator] {
+        self.decorators()
+    }
+
+    /// Deprecated name of [`Decorated::decorator`].
+    #[deprecated(since = "0.1.0", note = "use `decorator`")]
     fn get_decorator(&self, name: &str) -> Option<&Decorator> {
-        self.get_decorators().iter().find(|d| d.name() == name)
+        self.decorator(name)
     }
 }
 
 impl Decorated for ClassDeclaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         ClassDeclaration::decorators(self)
     }
 }
 
 impl Decorated for crate::introspect::declaration::Declaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         use crate::introspect::declaration::Declaration;
         match self {
-            Declaration::Class(class) => class.get_decorators(),
-            Declaration::Enum(enm) => enm.get_decorators(),
-            Declaration::Scalar(scalar) => scalar.get_decorators(),
-            Declaration::Map(map) => map.get_decorators(),
+            Declaration::Class(class) => Decorated::decorators(class),
+            Declaration::Enum(enm) => Decorated::decorators(enm),
+            Declaration::Scalar(scalar) => Decorated::decorators(scalar),
+            Declaration::Map(map) => Decorated::decorators(map),
         }
     }
 }
@@ -942,7 +957,7 @@ mod tests {
     fn manager_with(cto_declarations: Value) -> ModelManager {
         let mut manager = ModelManager::new().expect("system models load");
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.acme@1.0.0",
@@ -975,7 +990,7 @@ mod tests {
             serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
         )]));
         let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.get_decorator("category").unwrap();
+        let decorator = decl.decorator("category").unwrap();
         assert!(
             decorator
                 .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
@@ -999,7 +1014,7 @@ mod tests {
             invalid_decorator: None,
         });
         let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.get_decorator("category").unwrap();
+        let decorator = decl.decorator("category").unwrap();
         let err = decorator
             .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
             .unwrap_err();
@@ -1025,7 +1040,7 @@ mod tests {
         let decl = with_invalid_only
             .get_declaration("org.acme@1.0.0.Car")
             .unwrap();
-        let decorator = decl.get_decorator("category").unwrap();
+        let decorator = decl.decorator("category").unwrap();
         assert!(
             decorator
                 .validate(
@@ -1067,7 +1082,7 @@ mod tests {
             invalid_decorator: Some("error".into()),
         });
         let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.get_decorator("Category").unwrap();
+        let decorator = decl.decorator("Category").unwrap();
         let err = decorator
             .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
             .unwrap_err();

@@ -12,13 +12,14 @@
 //! | Optional field = `null` | skipped | skipped | skipped |
 //!
 //! A rejection is a `ValidationException` whose
-//! [`details`](crate::error::ContractError::details) lists each violation.
+//! [`details`](concerto_core::Error::details) lists each violation.
 //! On the serializer's option bag the flags are the keys
 //! `rejectUnknownKeys` and `rejectRequiredNull`; they apply while the
 //! document is populated, so they hold with `validate: false` too.
 
-use super::serializer::SerializerOptions;
-use super::value::JsValue;
+use crate::value::JsValue;
+
+use crate::serializer::SerializerOptions;
 
 /// The serializer option key for [`DeserializeOptions::reject_unknown_keys`].
 const REJECT_UNKNOWN_KEYS: &str = "rejectUnknownKeys";
@@ -62,7 +63,7 @@ impl DeserializeOptions {
     }
 
     /// The flags a serializer option bag sets (each one truthy).
-    pub(crate) fn from_serializer_options(options: &SerializerOptions) -> Self {
+    pub fn from_serializer_options(options: &SerializerOptions) -> Self {
         let truthy = |key: &str| options.get(key).is_some_and(JsValue::is_truthy);
         Self {
             reject_unknown_keys: truthy(REJECT_UNKNOWN_KEYS),

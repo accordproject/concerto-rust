@@ -7,23 +7,31 @@
 //! `JSONGenerator` (`modelManager.getType(...)`, then `classDecl.isX()`),
 //! kept in one place so that each port reads the same way as its TS.
 
+use serde_json::Value;
+
+use crate::Error;
 use crate::error::{ContractError, ErrorKind, Result};
+use crate::introspect::FullyQualified;
 use crate::introspect::scalar::ScalarValidator;
-use crate::introspect::{ClassKind, Declaration, Named, Property, Typed};
-use crate::model_manager::{DeclId, ModelManager};
+use crate::introspect::validators::StringValidator;
+use crate::introspect::{ClassKind, Declaration, Property};
+use crate::model_manager::{DeclId, ModelManager, ValidatedElement};
 use crate::model_util;
 
 /// A declaration found by [`get_type`]: what TS holds after
 /// `modelManager.getType(name)`.
 #[derive(Clone, Copy)]
-pub(crate) struct TypeRef<'a> {
+pub struct TypeRef<'a> {
+    /// The model manager the declaration is in.
     pub mm: &'a ModelManager,
+    /// The declaration's handle.
     pub id: DeclId,
+    /// The declaration.
     pub decl: &'a Declaration,
 }
 
 /// TS: `modelManager.getType(qualifiedName)` (`BaseModelManager.getType`).
-pub(crate) fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result<TypeRef<'a>> {
+pub fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result<TypeRef<'a>> {
     let id = mm.get_type_declaration(qualified_name)?;
     let decl = mm
         .declaration(id)
@@ -32,9 +40,9 @@ pub(crate) fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result
 }
 
 /// V8's `TypeError: <expression> is not a function`.
-pub(crate) fn not_a_function(expression: &str) -> crate::ConcertoError {
+pub fn not_a_function(expression: &str) -> crate::Error {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
         vec![("expression", expression.to_string())],
     )
@@ -43,9 +51,9 @@ pub(crate) fn not_a_function(expression: &str) -> crate::ConcertoError {
 
 /// `'Unrecognised ' + JSON.stringify(thing)` for an introspection object:
 /// `JSON.stringify` throws V8's circular-structure `TypeError` first. DV-010
-pub(crate) fn unrecognised() -> crate::ConcertoError {
+pub fn unrecognised() -> crate::Error {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-circularjson",
         Vec::new(),
     )
@@ -55,7 +63,7 @@ pub(crate) fn unrecognised() -> crate::ConcertoError {
 impl<'a> TypeRef<'a> {
     /// TS `getFullyQualifiedName()`.
     pub fn fqn(&self) -> String {
-        model_util::get_fully_qualified_name(&self.namespace(), self.name())
+        model_util::qualify(&self.namespace(), self.name())
     }
 
     /// TS `getNamespace()`: the model file's namespace.
@@ -124,9 +132,10 @@ impl<'a> TypeRef<'a> {
     /// `ScalarDeclaration`'s default) for a map or a scalar.
     pub fn identifier_field_name(&self) -> Result<Option<String>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => {
-                self.mm.identifier_field_name(&self.fqn())
-            }
+            Declaration::Class(_) | Declaration::Enum(_) => self
+                .mm
+                .identifier_field(&self.fqn())
+                .map(|f| f.map(str::to_string)),
             Declaration::Scalar(_) | Declaration::Map(_) => Ok(None),
         }
     }
@@ -146,7 +155,12 @@ impl<'a> TypeRef<'a> {
     /// own (V8's `TypeError`, which no instance path reaches with one).
     pub fn properties(&self, expression: &str) -> Result<Vec<(String, Property)>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => self.mm.get_all_properties(&self.fqn()),
+            Declaration::Class(_) | Declaration::Enum(_) => Ok(self
+                .mm
+                .properties(&self.fqn())?
+                .into_iter()
+                .map(|(owner, property)| (owner, property.clone()))
+                .collect()),
             _ => Err(not_a_function(expression)),
         }
     }
@@ -157,7 +171,10 @@ impl<'a> TypeRef<'a> {
         // property first (P5-06): `get_property` resolves the same super
         // chain and returns the same first match.
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => self.mm.get_property(&self.fqn(), name),
+            Declaration::Class(_) | Declaration::Enum(_) => self
+                .mm
+                .property(&self.fqn(), name)
+                .map(|found| found.map(|(owner, property)| (owner, property.clone()))),
             _ => Err(not_a_function("classDeclaration.getProperty")),
         }
     }
@@ -167,15 +184,18 @@ impl<'a> TypeRef<'a> {
 /// declaration that declares it (`Field.isPrimitive`, `isTypeEnum`,
 /// `isTypeScalar`, `ModelUtil.isMap`, and `RelationshipDeclaration`).
 #[derive(Debug, Clone)]
-pub(crate) enum FieldType {
+pub enum FieldType {
     /// A primitive field (`isPrimitive()`): its type name.
     Primitive(&'static str),
     /// A field whose type is a scalar (`isTypeScalar()`): the primitive it
     /// aliases, its default value and its validator (what
     /// `getScalarField()` copies from the scalar's AST).
     Scalar {
+        /// The primitive type the scalar aliases.
         primitive: Option<&'static str>,
+        /// The scalar's default value.
         default_value: Option<serde_json::Value>,
+        /// The scalar's validator.
         validator: Option<Box<ScalarValidator>>,
     },
     /// A field whose type is an enum (`isTypeEnum()`).
@@ -194,11 +214,13 @@ pub(crate) enum FieldType {
 /// A property of an instance's declaration, with what its type resolves
 /// to.
 #[derive(Debug, Clone)]
-pub(crate) struct Field {
+pub struct Field {
     /// The fully-qualified name of the declaration that declares it
     /// (`getParent().getFullyQualifiedName()`).
     pub owner_fqn: String,
+    /// The property.
     pub property: Property,
+    /// What its type resolves to.
     pub field_type: FieldType,
 }
 
@@ -261,19 +283,19 @@ impl Field {
 }
 
 /// Resolves a property's declared type in its owner's model file.
-pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<Field> {
+pub fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<Field> {
     let field_type = match &property {
         Property::Relationship(rp) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
-            FieldType::Relationship(mm.resolve_type_name(namespace, &rp.type_.name, None)?)
+            FieldType::Relationship(mm.resolve_type_name_at(namespace, &rp.type_.name, None)?)
         }
         Property::Object(op) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
-            let fqn = mm.resolve_type_name(namespace, &op.type_.name, None)?;
+            let fqn = mm.resolve_type_name_at(namespace, &op.type_.name, None)?;
             match mm.get_declaration(&fqn)? {
                 Declaration::Enum(_) => FieldType::Enum(fqn),
                 Declaration::Scalar(s) => FieldType::Scalar {
-                    primitive: s.scalar_type(),
+                    primitive: s.processed_type(),
                     default_value: s.default_value().cloned(),
                     validator: s.validator().cloned().map(Box::new),
                 },
@@ -294,4 +316,88 @@ pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> R
         property,
         field_type,
     })
+}
+
+/// The element a string validator is attached to, for building one: its
+/// name and fully-qualified name only (the default value was checked when
+/// the model loaded).
+struct IdElement {
+    name: String,
+    fqn: String,
+}
+
+impl FullyQualified for IdElement {
+    type Error = Error;
+
+    fn fully_qualified_name(&self) -> Result<String> {
+        Ok(self.fqn.clone())
+    }
+}
+
+impl ValidatedElement for IdElement {
+    fn default_value(&self) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    fn name(&self) -> Result<String> {
+        Ok(self.name.clone())
+    }
+}
+
+/// `idFullField?.validator` when it has a `regex`: the identifying
+/// property (unboxed with `getScalarField()` when its type is a scalar) and
+/// its string validator.
+pub fn identifier_regex(
+    class_decl: &TypeRef,
+    id_field: &str,
+) -> Result<Option<StringValidator>> {
+    let Some((owner_fqn, property)) = class_decl.property(id_field)? else {
+        return Ok(None);
+    };
+    let element = IdElement {
+        name: id_field.to_string(),
+        fqn: format!("{owner_fqn}.{id_field}"),
+    };
+    let field = field(class_decl.mm, &owner_fqn, property)?;
+    let validator = match (&field.field_type, &field.property) {
+        (FieldType::Primitive("String"), Property::String(sp)) if sp.validator.is_some() => {
+            StringValidator::new(
+                &element,
+                sp.validator.as_ref(),
+                sp.length_validator.as_ref(),
+                None,
+            )?
+        }
+        (
+            FieldType::Scalar {
+                primitive: Some("String"),
+                validator: Some(scalar_validator),
+                ..
+            },
+            _,
+        ) => {
+            let ScalarValidator::String {
+                validator: Some(regex),
+                length_validator,
+            } = scalar_validator.as_ref()
+            else {
+                return Ok(None);
+            };
+            let bad = |e: serde_json::Error| {
+                Error::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("invalid string validator: {e}"),
+                    None,
+                ))
+            };
+            let regex = serde_json::from_value(regex.clone()).map_err(bad)?;
+            let length = length_validator
+                .as_ref()
+                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
+                .transpose()?;
+            StringValidator::new(&element, Some(&regex), length.as_ref(), None)?
+        }
+        _ => return Ok(None),
+    };
+    Ok(validator.regex().is_some().then_some(validator))
 }

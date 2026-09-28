@@ -5,21 +5,21 @@
 //! accordproject/concerto-rust#124).
 //!
 //! D7 keeps these objects in TS; the checks they run are the validator's
-//! ([`super::validate`]), which is where their Rust behaviour lives. These
+//! ([`concerto_core::instance::validate`]), which is where their Rust behaviour lives. These
 //! functions are the glue the Rust serializer needs to build and validate
 //! an instance the way TS does.
 
-use super::model;
-use super::validate::{self, validate_instance_from};
-use super::value::{Instance, InstanceKind, JsValue};
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::model_manager::ModelManager;
+use crate::value::{Instance, InstanceKind, JsValue};
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::model;
+use concerto_core::instance::validate::{self, validate_instance_from};
+use concerto_core::model_manager::ModelManager;
 
 /// `'The instance with id ' + this.getIdentifier() + ' trying to set field
 /// ' + propName + ' which is not declared in the model.'`
-fn undeclared(instance: &Instance, prop_name: &str) -> crate::ConcertoError {
+fn undeclared(instance: &Instance, prop_name: &str) -> concerto_core::Error {
     ContractError::new(
-        ErrorKind::Error,
+        ErrorKind::InvalidArgument,
         "validatedresource-setpropertyvalue-undeclaredfield",
         vec![
             ("id", instance.get_identifier().to_js_string()),
@@ -86,7 +86,7 @@ pub fn add_array_value(
         };
         if !field.is_array() {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "validatedresource-addarrayvalue-notanarray",
                 vec![
                     ("id", instance.get_identifier().to_js_string()),
@@ -140,7 +140,9 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if instance.kind == InstanceKind::Relationship {
         return Ok(());
     }
-    if let Some(field) = mm.identifier_field_name(&instance.class_fqn)?
+    if let Some(field) = mm
+        .identifier_field(&instance.class_fqn)
+        .map(|f| f.map(str::to_string))?
         && field != "$identifier"
     {
         let id = instance.get_identifier().clone();
@@ -167,12 +169,15 @@ fn sync_value(mm: &ModelManager, value: &mut JsValue) -> Result<()> {
 pub fn to_json(
     mm: &ModelManager,
     instance: &Instance,
-    serializer: &super::Serializer,
+    serializer: &super::serializer::Serializer,
 ) -> Result<JsValue> {
     if instance.kind == InstanceKind::Relationship {
-        return Err(
-            ContractError::new(ErrorKind::Error, "typed-tojson-useserializer", Vec::new()).into(),
-        );
+        return Err(ContractError::new(
+            ErrorKind::InvalidArgument,
+            "typed-tojson-useserializer",
+            Vec::new(),
+        )
+        .into());
     }
     serializer.to_json(mm, &JsValue::Instance(Box::new(instance.clone())), None)
 }
