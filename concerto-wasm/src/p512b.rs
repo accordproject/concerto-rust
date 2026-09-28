@@ -31,6 +31,15 @@
 //!
 //! `p512bStage`/`p512bStageJson`/`p512bPrepare`/`p512bValidatePrepared`
 //! stop part way, for the per-stage cost split.
+//!
+//! The cheap-error candidate (e, error return): `validateResourceBinaryCode`
+//! takes the (c) layout and returns a code instead of throwing: 0 valid,
+//! 1 a `Validation` error, 2 any other error. The error itself stays in the
+//! engine; `p512bLastErrorMessage` renders the message of a code-1 error on
+//! demand (TS then throws `new ValidationException(message)`, exactly what
+//! the error factory builds for that kind), and `p512bTakeError` builds the
+//! full exception through the unchanged `throw`/error-factory path for a
+//! code-2 error.
 
 use std::cell::RefCell;
 
@@ -42,7 +51,8 @@ use serde_json::{Map, Number, Value};
 use wasm_bindgen::prelude::*;
 
 use super::{
-    CoreValue, Error, ModelManagerHandle, Result, decode_wire, decode_wire_options, run, wire_error,
+    CoreValue, Error, ModelManagerHandle, Result, decode_wire, decode_wire_options, run, throw,
+    wire_error,
 };
 
 thread_local! {
@@ -50,6 +60,42 @@ thread_local! {
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// A validator value parsed once, for `p512bValidatePrepared`.
     static PREPARED: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// The last error `validateResourceBinaryCode` returned a code for.
+    static LAST_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
+}
+
+/// A result as a code, keeping the error for `p512bLastErrorMessage` or
+/// `p512bTakeError`.
+fn code_of(result: Result<()>) -> u32 {
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            let code = match &err {
+                Error::Contract(c) if c.kind == ErrorKind::Validation => 1,
+                _ => 2,
+            };
+            LAST_ERROR.with(|l| *l.borrow_mut() = Some(err));
+            code
+        }
+    }
+}
+
+/// The rendered message of the kept error (and drops it).
+#[wasm_bindgen(js_name = p512bLastErrorMessage)]
+pub fn p512b_last_error_message() -> String {
+    LAST_ERROR.with(|l| match l.borrow_mut().take() {
+        Some(Error::Contract(c)) => c.message(),
+        _ => String::new(),
+    })
+}
+
+/// The kept error as the exception `run` would have thrown (and drops it).
+#[wasm_bindgen(js_name = p512bTakeError)]
+pub fn p512b_take_error() -> JsValue {
+    LAST_ERROR.with(|l| match l.borrow_mut().take() {
+        Some(err) => throw(err, None),
+        None => JsValue::UNDEFINED,
+    })
 }
 
 fn options_from_flags(flags: u32) -> ValidateOptions {
@@ -288,6 +334,13 @@ impl ModelManagerHandle {
             let value = with_scratch(len, decode_binary)?;
             validate(self, &value, root_id, flags)
         })
+    }
+
+    /// (c) with the cheap error return: a code, not a thrown exception (see
+    /// the module doc).
+    #[wasm_bindgen(js_name = validateResourceBinaryCode)]
+    pub fn validate_resource_binary_code(&self, bytes: &[u8], root_id: &str, flags: u32) -> u32 {
+        code_of(decode_binary(bytes).and_then(|value| validate(self, &value, root_id, flags)))
     }
 
     /// Profiling only: P5-12's `validateResource`, stopped after `stage`:
