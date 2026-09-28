@@ -49,15 +49,20 @@ table compares byte-identical models.
 
 ## The headline numbers (two runs, 2026-09-28; see RESULTS.md for the full table)
 
-Speed relative to the TS 5.0.0 reference, median of two runs (lower is
-faster):
+Speed relative to the TS 5.0.0 reference (lower is faster). `Rust via TS
+API (WASM) / TS` is the median of its two runs, both run on a quiet
+machine. `Native Rust / TS` uses native **run 1 only**: native run 2 ran
+under load contention (another workload started on the machine partway
+through that criterion run) and is excluded from the ratio — see
+RESULTS.md's "Native round 2 was contended" for the recorded loads and why
+this table doesn't use the run 1/2 median here:
 
-| Workload | Native Rust / TS | Rust via TS API (WASM) / TS |
+| Workload | Native Rust / TS² | Rust via TS API (WASM) / TS |
 |---|---|---|
-| load (conformance) | 4.4× slower | 7.7× slower |
-| validate (conformance) | 3.2× slower | 4.9× slower |
-| validateAst (conformance) | 9.3× slower¹ | **2.4× faster** |
-| instance populate+validate (500 synthetic) | 1.1× slower | 3.8× slower |
+| load (conformance) | 4.1× slower | 7.7× slower |
+| validate (conformance) | 2.5× slower | 4.9× slower |
+| validateAst (conformance) | 7.4× slower¹ | **2.4× faster** |
+| instance populate+validate (500 synthetic) | **1.1× faster** | 3.8× slower |
 
 ¹ **Not a like-for-like validateAst comparison** — the native number times
 the crate-root free function, which rebuilds the metamodel check on every
@@ -67,11 +72,18 @@ of once per call. See RESULTS.md's "The validateAst outlier" for the full
 explanation and the open question it raises for a public, resident-metamodel
 validateAst entry point.
 
+² Native run 1 only (quiet start to finish), against the TS median.
+Native run 2 ran under load contention (RESULTS.md's "Native round 2 was
+contended"); folding it in via the run 1/2 median, as the rest of this
+table's ratios do for the other routes, would show every native/TS ratio
+1.2×-1.6× worse, including a **slower**, not faster, instance
+populate+validate figure — that contended figure is not reported here.
+
 The one clear win for a native caller today is **instance
-populate-and-validate**: `ModelManager::validate_instance` is close to the
-TS reference directly (1.1×) and 3.4× faster than the same work done
-through the TS public API, since it pays no WASM marshalling cost per
-call.
+populate-and-validate**: on the quiet run, `ModelManager::validate_instance`
+is slightly faster than the TS reference directly (0.88×) and 4.3× faster
+than the same work done through the TS public API, since it pays no WASM
+marshalling cost per call.
 
 ## Running it yourself
 
