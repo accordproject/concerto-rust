@@ -46,7 +46,9 @@ pub struct Dayjs {
 /// `|n| <= 16`), or a `±HH:mm` string.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UtcOffset {
+    /// A number of minutes, or of hours when `|n| <= 16`.
     Number(f64),
+    /// A `±HH:mm` offset string.
     String(String),
 }
 

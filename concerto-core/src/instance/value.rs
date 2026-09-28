@@ -35,12 +35,17 @@ use crate::error::Result;
 /// A JS value held by an instance field or passed to the serializer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsValue {
+    /// JS `undefined`: an absent value, distinct from `null`.
     Undefined,
+    /// JS `null`.
     Null,
+    /// A JS boolean.
     Bool(bool),
     /// A JS number (an IEEE double, PORTING.md 3.1).
     Number(f64),
+    /// A JS string.
     String(String),
+    /// A JS array, in index order.
     Array(Vec<JsValue>),
     /// A plain object: its own enumerable properties, in `Object.keys`
     /// order.
@@ -61,8 +66,13 @@ pub enum JsValue {
 /// Which TS class an [`Instance`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstanceKind {
+    /// A TS `Resource`: a concept, asset, participant, transaction or event
+    /// instance.
     Resource,
+    /// A TS `ValidatedResource`, a `Resource` whose every field assignment
+    /// is validated.
     ValidatedResource,
+    /// A TS `Relationship`: a reference to an identified resource.
     Relationship,
 }
 

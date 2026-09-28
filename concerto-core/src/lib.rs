@@ -7,6 +7,9 @@
 //! Everything sits on top of the generated [`concerto_metamodel`] types. We
 //! wrap those in our own enums rather than redefining the schema by hand.
 
+// P6-01 (accordproject/concerto-rust#83): every public item is documented.
+#![warn(missing_docs)]
+
 // The derives name the traits by their `::concerto_core` paths, which also
 // have to resolve inside this crate.
 extern crate self as concerto_core;

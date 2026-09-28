@@ -25,9 +25,19 @@ use crate::model_util;
 /// The `JSONGenerator` constructor's options.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneratorOptions {
+    /// `convertResourcesToRelationships`: accept a resource in a
+    /// relationship field and write it as a relationship (its URI, or its
+    /// id with `convert_resources_to_id`).
     pub convert_resources_to_relationships: bool,
+    /// `permitResourcesForRelationships`: write a resource held by a
+    /// relationship field in full, as a nested object; a resource already
+    /// being written further up is written as a relationship instead.
     pub permit_resources_for_relationships: bool,
+    /// `deduplicateResources`: write an identifiable resource seen before in
+    /// the same document as its URI string.
     pub deduplicate_resources: bool,
+    /// `convertResourcesToId`: write a relationship as its bare identifier
+    /// rather than its URI.
     pub convert_resources_to_id: bool,
     /// `utcOffset || 0`.
     pub utc_offset: JsValue,

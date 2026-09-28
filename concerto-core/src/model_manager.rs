@@ -773,9 +773,6 @@ impl ModelManager {
         Ok(file_id)
     }
 
-    /// A counter that every mutation of the manager increases. A snapshot of
-    /// an element taken at one generation is current while the generation is
-    /// unchanged.
     /// TS: `BaseModelManager.getDecoratorValidation`.
     pub fn decorator_validation(
         &self,
@@ -904,6 +901,9 @@ impl ModelManager {
         self.add_model_file(model_file)
     }
 
+    /// A counter that every mutation of the manager increases. A snapshot of
+    /// an element taken at one generation is current while the generation is
+    /// unchanged.
     pub fn generation(&self) -> u64 {
         self.generation
     }
