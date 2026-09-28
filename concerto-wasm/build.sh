@@ -12,7 +12,9 @@
 #
 # Needs the wasm32-unknown-unknown target and wasm-bindgen-cli 0.2.128 (the
 # exact wasm-bindgen crate version). wasm-opt (binaryen) is used when it is on
-# PATH; `npm run build` puts the pinned npm binaryen there.
+# PATH; `npm run build` puts the pinned npm binaryen there. jq is needed only
+# to resolve the target directory via `cargo metadata` when CARGO_TARGET_DIR
+# is unset; without jq, the build falls back to the plain `target` dir.
 #
 # The build fails when the optimised module is over the size budget,
 # BUDGET bytes (spike REPORT §2: Chromium compiles at most 8 MiB
@@ -27,10 +29,18 @@ cargo build --release --target wasm32-unknown-unknown
 
 # Resolve the build's target directory the same way cargo did: honour
 # CARGO_TARGET_DIR when it's set (the worker workflows' no-shared-target-dir
-# rule redirects it), otherwise ask cargo, which also accounts for a
-# target-dir set in .cargo/config.toml. Without this, RAW below could point
-# at a stale or missing ./target file while cargo actually wrote elsewhere.
-TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)}"
+# rule redirects it), otherwise ask cargo (needs jq), which also accounts for
+# a target-dir set in .cargo/config.toml, falling back to plain `target`
+# (relative to this directory, since we already cd'd above) when jq isn't on
+# PATH. Without this, RAW below could point at a stale or missing ./target
+# file while cargo actually wrote elsewhere.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+  TARGET_DIR="$CARGO_TARGET_DIR"
+elif command -v jq >/dev/null 2>&1; then
+  TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+else
+  TARGET_DIR="target"
+fi
 RAW="$TARGET_DIR/wasm32-unknown-unknown/release/$NAME.wasm"
 
 rm -rf pkg
