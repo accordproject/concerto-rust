@@ -55,18 +55,54 @@ pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 /// addMetamodel: true })` adds), so this module vendors no copy of its own.
 const METAMODEL_AST_JSON: &str = include_str!("../dcs/metamodel.json");
 
-/// A fresh [`ModelManager`] with the metamodel model itself loaded. Built
-/// new on every call, the same way TS's `validateAst` adds
-/// `this.metamodelModelFile` only for the duration of the check (and only
-/// when a metamodel is not already present) rather than caching it — see
-/// the module doc on why the caller's own model manager is out of scope
-/// here.
+/// A fresh [`ModelManager`] with the metamodel model itself loaded. TS's
+/// `validateAst` adds `this.metamodelModelFile` only for the duration of
+/// the check (and only when a metamodel is not already present) rather
+/// than caching it; [`validate_metamodel`] runs on
+/// [`with_resident_metamodel_manager`]'s per-thread copy of this manager
+/// instead (P5-21), which holds the same models and gives the same answer.
 fn metamodel_model_manager() -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
     mm.load_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
     Ok(mm)
+}
+
+/// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
+/// P5-21, accordproject/concerto-rust#319), as P5-13's
+/// `ModelManager::validate_ast_value` does for its own resident manager:
+/// built on the first call on each thread, then kept with its caches warm,
+/// so a later call pays for no system-model or metamodel load.
+///
+/// The manager is only ever read ([`from_json`] takes it by shared
+/// reference, and nothing else can reach it), so every call sees the same
+/// models a fresh manager would hold, and gets the same result and error.
+/// A build error is returned and not cached, exactly as an uncached build
+/// returns it. Being per-thread, the cache adds no shared state: nothing
+/// here changes what is `Send` or `Sync` (P6-01).
+fn with_resident_metamodel_manager<R>(f: impl FnOnce(&ModelManager) -> Result<R>) -> Result<R> {
+    thread_local! {
+        static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    RESIDENT.with(|cell| {
+        if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
+            let mm = metamodel_model_manager()?;
+            if let Ok(mut slot) = cell.try_borrow_mut() {
+                *slot = Some(mm);
+            }
+        }
+        match cell.try_borrow() {
+            Ok(resident) => match resident.as_ref() {
+                Some(mm) => f(mm),
+                None => f(&metamodel_model_manager()?),
+            },
+            // Unreachable in practice (the closure cannot re-enter this
+            // function), but a fresh manager is always a correct answer.
+            Err(_) => f(&metamodel_model_manager()?),
+        }
+    })
 }
 
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
@@ -96,16 +132,20 @@ fn ts_message(err: &Error) -> String {
 /// Any failure — no `$class`, an unresolvable type, a structural mismatch —
 /// is re-thrown as `MetamodelException(error.message)`, exactly as TS's
 /// `catch` block does.
+///
+/// The metamodel manager is resident per thread (task P5-21,
+/// `with_resident_metamodel_manager`), not rebuilt on every call.
 pub fn validate_metamodel(ast: &Value) -> Result<()> {
-    let mm = metamodel_model_manager()?;
     let options = FromJsonOptions {
         reject_unknown_keys: true,
         reject_required_null: true,
         ..FromJsonOptions::default()
     };
-    from_json(&mm, ast, &options, &mut FixedEnv)
-        .map(|_resource| ())
-        .map_err(|err| wrapped(&err))
+    with_resident_metamodel_manager(|mm| {
+        from_json(mm, ast, &options, &mut FixedEnv)
+            .map(|_resource| ())
+            .map_err(|err| wrapped(&err))
+    })
 }
 
 /// `throw new MetamodelException(error.message)`: `validateAst`'s `catch`
@@ -560,6 +600,71 @@ mod tests {
             "undeclared": []
         });
         assert!(validate_ast(&ast).is_err());
+    }
+
+    // ---- the resident metamodel manager (task P5-21) ----
+
+    /// The structural check on a fresh metamodel manager, as
+    /// `validate_metamodel` ran it before P5-21.
+    fn validate_metamodel_on_a_fresh_manager(ast: &Value) -> Result<()> {
+        let mm = metamodel_model_manager()?;
+        let options = FromJsonOptions {
+            reject_unknown_keys: true,
+            reject_required_null: true,
+            ..FromJsonOptions::default()
+        };
+        from_json(&mm, ast, &options, &mut FixedEnv)
+            .map(|_resource| ())
+            .map_err(|err| wrapped(&err))
+    }
+
+    fn outcome(result: Result<()>) -> Option<(ErrorKind, String)> {
+        result.err().map(|err| (err.kind(), err.to_string()))
+    }
+
+    #[test]
+    fn validate_ast_on_the_resident_manager_matches_a_fresh_one_in_any_order() {
+        let metamodel: Value = serde_json::from_str(METAMODEL_AST_JSON).unwrap();
+        let cases = [
+            metamodel.clone(),
+            json!({ "$class": "concerto.metamodel@1.0.0.Model", "namespace": "org.acme@1.0.0", "undeclared": [] }),
+            json!({ "$class": "concerto.metamodel@1.0.0.Model", "namespace": "org.acme@1.0.0", "imports": [], "declarations": [] }),
+            json!({ "$class": "concerto.metamodel@1.0.0.Model", "namespace": null, "declarations": [] }),
+            json!({ "$class": "concerto.metamodel@1.0.0.Nope", "namespace": "org.acme@1.0.0" }),
+            json!({ "$class": "concerto.metamodel@1.0.0.Model" }),
+            json!({ "namespace": "org.acme@1.0.0" }),
+            metamodel,
+        ];
+        // Twice over, so the second pass runs on a manager every case has
+        // already been through.
+        for _ in 0..2 {
+            for ast in &cases {
+                assert_eq!(
+                    outcome(validate_metamodel(ast)),
+                    outcome(validate_metamodel_on_a_fresh_manager(ast)),
+                    "{ast}"
+                );
+                let fresh = check_version(ast).and_then(|()| validate_metamodel_on_a_fresh_manager(ast));
+                assert_eq!(outcome(validate_ast(ast)), outcome(fresh), "{ast}");
+            }
+        }
+    }
+
+    #[test]
+    fn validate_ast_on_the_resident_manager_is_per_thread() {
+        let ok = json!({ "$class": "concerto.metamodel@1.0.0.Model", "namespace": "org.acme@1.0.0", "imports": [], "declarations": [] });
+        let bad = json!({ "$class": "concerto.metamodel@1.0.0.Model", "namespace": "org.acme@1.0.0", "undeclared": [] });
+        let expected = outcome(validate_metamodel_on_a_fresh_manager(&bad));
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..3 {
+                        assert!(validate_ast(&ok).is_ok());
+                        assert_eq!(outcome(validate_ast(&bad)), expected);
+                    }
+                });
+            }
+        });
     }
 
     // ---- ModelManager::validate_ast: `validateAst` on a caller's own

@@ -128,7 +128,12 @@ comparison with `critcmp` or criterion's own baseline diffing.
    when the `validate-rs` feature is enabled (off by default - see
    "Running" and "Repo layout this assumes"),
    `concerto_validator_rs::validate_metamodel` from the separate
-   `concerto-validate-rs` crate, over the same fixtures.
+   `concerto-validate-rs` crate, over the same fixtures. Also benchmarks
+   `ModelManager::validate_ast` (`concerto-core/validate_ast`, P5-13) and
+   the public free function `concerto_core::metamodel::validate_ast`
+   (`concerto-core/metamodel::validate_ast`, P5-21, which runs on a
+   resident per-thread metamodel manager), each over the models it
+   accepts.
 3. **`instance_validate`** (task P5-04) - `validate_instance` over 500
    generated instances of a small synthetic concept, the same workload
    the TS harness's `instance_validate` builds. Counterpart to TS's
