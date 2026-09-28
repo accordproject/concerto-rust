@@ -4872,6 +4872,56 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-12 SPIKE (DO NOT MERGE; accordproject/concerto-rust#289, variant
+    /// B): `ValidatedResource.validate()` as one engine call per resource.
+    /// Additive. `wire_text` is the resource's `"typed"` wire encoding (as
+    /// for [`Self::serializer_to_json`]); `options_text` is the resource's
+    /// validator options (`convertResourcesToRelationships`,
+    /// `permitResourcesForRelationships`) or `"null"`. Runs the existing
+    /// instance validator (`validate.rs`) with the instance's
+    /// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier`, exactly
+    /// as `resource::validate` does, and throws what it throws. The
+    /// `$identifier` write-back (`resource::sync_identifiers`) is left to
+    /// the caller, which owns the live object.
+    #[wasm_bindgen(js_name = validateResource)]
+    pub fn validate_resource(
+        &self,
+        wire_text: &str,
+        options_text: &str,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let wire_value: Value = serde_json::from_str(wire_text)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let resource = decode_wire(&wire_value)?;
+            let CoreValue::Instance(instance) = resource else {
+                return Err(ContractError::pre_port(
+                    ErrorKind::Error,
+                    "typed wire value expected for validateResource".to_string(),
+                    None,
+                )
+                .into());
+            };
+            let options = decode_wire_options(options_text)?;
+            let truthy = |key: &str| {
+                options
+                    .as_ref()
+                    .and_then(|o| o.get(key))
+                    .is_some_and(CoreValue::is_truthy)
+            };
+            let validate_options = concerto_core::instance::ValidateOptions {
+                convert_resources_to_relationships: truthy("convertResourcesToRelationships"),
+                permit_resources_for_relationships: truthy("permitResourcesForRelationships"),
+            };
+            concerto_core::instance::validate::validate_instance_from(
+                &self.manager,
+                &instance.to_validator_value(),
+                &validate_options,
+                instance.fully_qualified_identifier(),
+            )?;
+            Ok(())
+        })
+    }
+
     /// Loads a model from its JSON AST, as [`Self::add_model`] does, but
     /// also keeps `definitions` (the CTO source text, when the caller has
     /// it) exactly as [`ModelManager::add_model_with_definitions`] does —
