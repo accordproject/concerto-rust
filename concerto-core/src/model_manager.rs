@@ -2153,6 +2153,99 @@ impl ModelManager {
         }
     }
 
+    js_compat_pub! {
+        /// TS `BaseModelManager._throwAlreadyExists(modelFile)` (P5-11,
+        /// accordproject/concerto-rust#287): the plain `Error` for a model
+        /// file named `new_file_name` declaring `namespace`, which the model
+        /// file registered under it already declares; `Ok` when nothing is
+        /// registered under `namespace`.
+        pub fn check_namespace_available(
+            &self,
+            namespace: &str,
+            new_file_name: Option<&str>,
+        ) -> Result<()> {
+            match self.model_file(namespace) {
+                Some(existing) => Err(already_exists(namespace, new_file_name, existing)),
+                None => Ok(()),
+            }
+        }
+    }
+
+    js_compat_pub! {
+        /// TS `BaseModelManager.getType(qualifiedName)`, answered by name
+        /// (P5-11, accordproject/concerto-rust#287): the fully-qualified name
+        /// of the declaration [`ModelManager::type_declaration`] finds, with
+        /// its `TypeNotFoundException`s. The view maps the name to its own
+        /// declaration view.
+        pub fn type_declaration_name(&self, fqn: &str) -> Result<String> {
+            let id = self.type_declaration_impl(fqn)?;
+            self.declaration_fqn(id)
+        }
+    }
+
+    js_compat_pub! {
+        /// TS `ModelFile.getType(type)` of the model file `file`, answered by
+        /// name (P5-11, accordproject/concerto-rust#287): a primitive type's
+        /// own name, the fully-qualified name of the declaration the type
+        /// resolves to (a local declaration, or an import's target in the
+        /// model file registered under its namespace), or `None` (TS `null`)
+        /// when it resolves to neither. A primitive name never contains a
+        /// dot and a fully-qualified name always does, so the view tells the
+        /// two apart without another call.
+        pub fn model_file_type_name(
+            &self,
+            file: ModelFileId,
+            type_name: &str,
+        ) -> Result<Option<String>> {
+            match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(type_name))? {
+                Some(Node::Primitive(primitive)) => Ok(Some(primitive.to_string())),
+                Some(Node::Declaration(id)) => self.declaration_fqn(id).map(Some),
+                Some(_) | None => Ok(None),
+            }
+        }
+    }
+
+    js_compat_pub! {
+        /// TS `ModelFile.resolveType(context, type, fileLocation)` of the
+        /// model file `file` (P5-11, accordproject/concerto-rust#287): a
+        /// primitive passes; a name the file imports must resolve in the
+        /// model file of the import's namespace
+        /// ([`ModelManager::resolve_type`], TS
+        /// `this.getModelManager().resolveType(context, this.resolveImport(type))`);
+        /// any other name must be declared locally, or the
+        /// `IllegalModelException` `modelfile-resolvetype-undecltype` naming
+        /// this file is raised, at `location` (TS `fileLocation`).
+        pub fn model_file_resolve_type(
+            &self,
+            file: ModelFileId,
+            context: &str,
+            type_name: &str,
+            location: Option<serde_json::Value>,
+        ) -> Result<()> {
+            if is_primitive_type(type_name) {
+                return Ok(());
+            }
+            let mf = self.file(file).ok_or_else(|| unknown(Node::ModelFile(file)))?;
+            if let Some(fqn) = imported_type(mf, type_name) {
+                return self.resolve_type(context, &fqn).map(|_| ());
+            }
+            if mf.is_local_type(type_name) {
+                return Ok(());
+            }
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "modelfile-resolvetype-undecltype",
+                vec![
+                    ("type", type_name.to_string()),
+                    ("context", context.to_string()),
+                ],
+            );
+            err.model_file = Some(mf.file_name().map(str::to_string));
+            err.location = location;
+            Err(err.into())
+        }
+    }
+
     /// The cached [`ClassInfo`] of a declaration, computed on first use.
     ///
     /// TS walks the chain by recursion (`ClassDeclaration.getProperties`,
@@ -2809,6 +2902,21 @@ impl ModelManager {
             &mut self,
             external_models: impl IntoIterator<Item = ModelFileSource>,
         ) -> Result<Vec<ModelFile>> {
+            self.update_external_models_naming_file(external_models)
+                .map_err(|(_, err)| err)
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::update_external_models`], with the namespace of
+        /// the model file whose validation failed, when that is the failure
+        /// (P5-11, accordproject/concerto-rust#287): TS's final
+        /// `validateModelFiles()` throws that file's own `validate()` error,
+        /// which names the file.
+        pub fn update_external_models_naming_file(
+            &mut self,
+            external_models: impl IntoIterator<Item = ModelFileSource>,
+        ) -> std::result::Result<Vec<ModelFile>, (Option<String>, Error)> {
             let mut updated: Option<Self> = None;
             let mut registered = Vec::new();
             for source in external_models {
@@ -2817,17 +2925,23 @@ impl ModelManager {
                     &source.ast,
                     source.definitions,
                     source.file_name,
-                )?;
+                )
+                .map_err(|err| (None, err))?;
                 let next = if current.model_file(mf.namespace()).is_some() {
-                    current.update_model_file(mf.clone(), false)?
+                    current.update_model_file(mf.clone(), false)
                 } else {
                     // `addModelFile`'s already-exists check cannot fire here.
-                    current.with_model_file_registered(&mf)?
-                };
+                    current.with_model_file_registered(&mf)
+                }
+                .map_err(|err| (None, err))?;
                 updated = Some(next);
                 registered.push(mf);
             }
-            updated.as_ref().unwrap_or(self).validate_models()?;
+            updated
+                .as_ref()
+                .unwrap_or(self)
+                .validate_models_naming_file()
+                .map_err(|(namespace, err)| (Some(namespace), err))?;
             if let Some(updated) = updated {
                 *self = updated;
             }
@@ -5356,5 +5470,155 @@ mod tests {
                 "Namespace is not defined for type \"org.acme.l1@1.0.0.Base\"."
             );
         }
+    }
+
+    /// Loads `org.other@1.0.0` (a concept `Shape`) and `org.main@1.0.0`
+    /// (a concept `Local`), which imports `Shape` under the alias `Figure`.
+    fn aliased_manager() -> ModelManager {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.other@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Shape",
+                      "isAbstract": false, "properties": [] }
+                ]
+            }),
+            Some("other.cto".into()),
+        )
+        .unwrap();
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.main@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.other@1.0.0",
+                      "types": ["Shape"],
+                      "aliasedTypes": [ { "$class": "concerto.metamodel@1.0.0.AliasedType",
+                                          "name": "Shape", "aliasedName": "Figure" } ] }
+                ],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Local",
+                      "isAbstract": false, "properties": [] }
+                ]
+            }),
+            Some("main.cto".into()),
+        )
+        .unwrap();
+        mgr
+    }
+
+    /// TS `ModelFile.getType` by name (P5-11, accordproject/concerto-rust#287):
+    /// a primitive's own name, a local type's and an aliased import's
+    /// fully-qualified name, and `None` for an unknown or unaliased name.
+    #[test]
+    fn model_file_type_name_answers_like_model_file_get_type() {
+        let mgr = aliased_manager();
+        let main = mgr.model_file_id("org.main@1.0.0").unwrap();
+        let name = |t: &str| mgr.model_file_type_name(main, t).unwrap();
+        assert_eq!(name("String").as_deref(), Some("String"));
+        assert_eq!(name("Local").as_deref(), Some("org.main@1.0.0.Local"));
+        assert_eq!(
+            name("org.main@1.0.0.Local").as_deref(),
+            Some("org.main@1.0.0.Local")
+        );
+        assert_eq!(name("Figure").as_deref(), Some("org.other@1.0.0.Shape"));
+        assert_eq!(name("Shape"), None);
+        assert_eq!(name("Missing"), None);
+    }
+
+    /// TS `BaseModelManager.getType` by name (P5-11): the declaration's
+    /// fully-qualified name, or the `TypeNotFoundException` for an unknown
+    /// namespace or type.
+    #[test]
+    fn type_declaration_name_answers_like_get_type() {
+        let mgr = aliased_manager();
+        assert_eq!(
+            mgr.type_declaration_name("org.other@1.0.0.Shape").unwrap(),
+            "org.other@1.0.0.Shape"
+        );
+        for missing in [
+            "org.nowhere@1.0.0.Shape",
+            "org.other@1.0.0.Missing",
+            "String",
+        ] {
+            let err = mgr.type_declaration_name(missing).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::TypeNotFound, "{missing}");
+        }
+    }
+
+    /// TS `ModelFile.resolveType` (P5-11): a primitive, a local type and an
+    /// import resolving in its own namespace pass; any other name is the
+    /// undeclared-type `IllegalModelException`, naming the file and carrying
+    /// the caller's location.
+    #[test]
+    fn model_file_resolve_type_rejects_an_undeclared_type() {
+        let mgr = aliased_manager();
+        let main = mgr.model_file_id("org.main@1.0.0").unwrap();
+        for ok in ["Integer", "Local", "Figure"] {
+            mgr.model_file_resolve_type(main, "ctx", ok, None).unwrap();
+        }
+        let location = serde_json::json!({ "start": { "line": 1 } });
+        let err = mgr
+            .model_file_resolve_type(main, "ctx", "Missing", Some(location.clone()))
+            .unwrap_err();
+        let contract = err.contract();
+        assert_eq!(contract.kind, ErrorKind::IllegalModel);
+        assert_eq!(contract.code, "modelfile-resolvetype-undecltype");
+        assert_eq!(contract.model_file, Some(Some("main.cto".to_string())));
+        assert_eq!(contract.location, Some(location));
+    }
+
+    /// TS `_throwAlreadyExists` (P5-11): the plain `Error` naming both files
+    /// for a registered namespace; nothing for one that is not registered.
+    #[test]
+    fn check_namespace_available_names_both_files() {
+        let mgr = aliased_manager();
+        let err = mgr
+            .check_namespace_available("org.other@1.0.0", Some("new.cto"))
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+        assert_eq!(
+            err.to_string(),
+            "Namespace org.other@1.0.0 specified in file new.cto is already declared in file other.cto"
+        );
+        mgr.check_namespace_available("org.free@1.0.0", None)
+            .unwrap();
+    }
+
+    /// `update_external_models_naming_file` (P5-11) names the namespace of
+    /// the file whose validation failed, and leaves the manager unchanged.
+    #[test]
+    fn update_external_models_names_the_failing_file_and_rolls_back() {
+        let mut mgr = aliased_manager();
+        let before: Vec<String> = mgr
+            .model_files()
+            .map(|f| f.namespace().to_string())
+            .collect();
+        let broken = ModelFileSource {
+            ast: serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.broken@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Bad",
+                      "isAbstract": false,
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Nowhere" },
+                      "properties": [] }
+                ]
+            }),
+            definitions: None,
+            file_name: Some("@broken.cto".into()),
+        };
+        let (namespace, err) = mgr
+            .update_external_models_naming_file([broken])
+            .unwrap_err();
+        assert_eq!(namespace.as_deref(), Some("org.broken@1.0.0"));
+        assert_eq!(err.kind(), ErrorKind::IllegalModel);
+        let after: Vec<String> = mgr
+            .model_files()
+            .map(|f| f.namespace().to_string())
+            .collect();
+        assert_eq!(before, after);
     }
 }
