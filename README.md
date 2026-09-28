@@ -26,6 +26,18 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+## Using `concerto-core` natively from Rust
+
+`concerto-core` can be used directly from Rust, with no TypeScript or WASM
+involved: loading a model set from JSON ASTs, introspecting it, and
+validating instances with diagnostics. See
+[`docs/native-guide.md`](./docs/native-guide.md) for a walkthrough, and
+[`concerto-core/examples/standalone.rs`](./concerto-core/examples/standalone.rs)
+for the runnable example it is built from
+(`cargo run --example standalone -p accordproject-concerto-core`). The
+design behind the public surface this guide covers is
+[`docs/public-api.md`](./docs/public-api.md).
+
 ## Contributing
 
 Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/),
