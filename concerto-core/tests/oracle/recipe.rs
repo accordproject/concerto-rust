@@ -1133,9 +1133,9 @@ impl DecoParent {
     pub fn decorators<'a>(&self, r: &'a Replayed) -> Option<&'a [concerto_core::Decorator]> {
         use concerto_core::Decorated;
         match self {
-            Self::Decl(id) => r.mm.declaration(*id).map(Decorated::get_decorators),
-            Self::Prop(id) => r.mm.property_by_id(*id).map(Decorated::get_decorators),
-            Self::File(ns) => r.mm.model_file(ns).map(Decorated::get_decorators),
+            Self::Decl(id) => r.mm.declaration(*id).map(Decorated::decorators),
+            Self::Prop(id) => r.mm.property_by_id(*id).map(Decorated::decorators),
+            Self::File(ns) => r.mm.model_file(ns).map(Decorated::decorators),
             Self::MapPart(id, is_key) => match r.mm.declaration(*id) {
                 Some(Declaration::Map(map)) if *is_key => Some(map.key_decorators()),
                 Some(Declaration::Map(map)) => Some(map.value_decorators()),
@@ -1739,6 +1739,7 @@ impl Replayed {
             Declaration::Enum(_) => "EnumDeclaration",
             Declaration::Scalar(_) => "ScalarDeclaration",
             Declaration::Map(_) => "MapDeclaration",
+            other => other.declaration_kind(),
         };
         Some(json!({
             M: "Declaration",

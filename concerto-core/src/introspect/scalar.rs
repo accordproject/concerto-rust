@@ -394,7 +394,7 @@ impl ScalarDeclaration {
 }
 
 impl Decorated for ScalarDeclaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         self.decorators()
     }
 }

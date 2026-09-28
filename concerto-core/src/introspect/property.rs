@@ -211,6 +211,7 @@ pub(crate) fn relationship_without_type(ast: &Value, name: &str) -> Option<Contr
 /// carries its processed decorators (module doc on
 /// [`crate::introspect::decorator::WithDecorators`]).
 #[derive(Debug, Clone, Named)]
+#[non_exhaustive]
 pub enum Property {
     /// A `Boolean` primitive field.
     Boolean(WithDecorators<mm::BooleanProperty>),
@@ -351,12 +352,12 @@ impl Property {
     ///
     /// TS: `Decorated.getDecorators` (src/introspect/decorated.ts)
     pub fn decorators(&self) -> &[Decorator] {
-        Decorated::get_decorators(self)
+        Decorated::decorators(self)
     }
 }
 
 impl Decorated for Property {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         property_field!(self, p => p.decorators(), p => p.decorators())
     }
 }

@@ -1718,6 +1718,9 @@ fn decorators_view_snapshot(decorators: Option<&Value>) -> Option<Value> {
                     Some(array) => json!({ "type": "Identifier", "name": t.name, "array": array }),
                     None => json!({ "type": "Identifier", "name": t.name }),
                 },
+                // `DecoratorArgument` is `#[non_exhaustive]`: a kind the
+                // fast path does not know falls back to the view.
+                _ => return None,
             });
         }
         let mut entry = serde_json::Map::new();
@@ -3701,6 +3704,9 @@ fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
             set(&out, "array", &array);
             out.into()
         }
+        // `DecoratorArgument` is `#[non_exhaustive]`; no other kind exists
+        // today.
+        _ => JsValue::UNDEFINED,
     }
 }
 

@@ -99,7 +99,7 @@ fn class_declarations_and_properties_carry_their_decorators() {
     let class = concept.as_class().unwrap();
     let names = |decorated: &dyn Decorated| -> Vec<String> {
         decorated
-            .get_decorators()
+            .decorators()
             .iter()
             .map(|d| d.name().to_string())
             .collect()
@@ -123,7 +123,7 @@ fn class_declarations_and_properties_carry_their_decorators() {
 fn scalar_and_map_declarations_carry_their_own_decorators() {
     let names = |decorated: &dyn Decorated| -> Vec<String> {
         decorated
-            .get_decorators()
+            .decorators()
             .iter()
             .map(|d| d.name().to_string())
             .collect()
@@ -171,7 +171,7 @@ fn enum_values_carry_their_own_decorators() {
     assert_eq!(values.len(), 1);
     assert_eq!(
         values[0]
-            .get_decorators()
+            .decorators()
             .iter()
             .map(|d| d.name())
             .collect::<Vec<_>>(),

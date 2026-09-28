@@ -26,7 +26,8 @@ use crate::model_util::{MAP_KEY_KINDS, MAP_VALUE_KINDS, is_valid_identifier, qua
 
 /// Which class-like declaration a [`ClassDeclaration`] represents. Its
 /// [`DeclarationKind`] is the metamodel `$class` short name for the kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, DeclarationKind)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DeclarationKind)]
+#[non_exhaustive]
 pub enum ClassKind {
     /// A `concept`.
     #[concerto(kind = "ConceptDeclaration")]
@@ -938,6 +939,7 @@ fn load_scalar(
 #[derive(Debug, Clone, Named, DeclarationKind)]
 #[concerto(delegate)]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum Declaration {
     /// A concept-like declaration (see [`ClassDeclaration`]).
     Class(ClassDeclaration),
@@ -1001,7 +1003,7 @@ impl EnumDeclaration {
 }
 
 impl crate::introspect::Decorated for EnumDeclaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         self.inner.decorators()
     }
 }
@@ -1189,7 +1191,7 @@ impl MapDeclaration {
 }
 
 impl crate::introspect::Decorated for MapDeclaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         &self.decorators
     }
 }
@@ -2928,7 +2930,7 @@ mod tests {
             vec!["onValue1", "onValue2"]
         );
         assert_eq!(
-            crate::introspect::Decorated::get_decorators(d)
+            crate::introspect::Decorated::decorators(d)
                 .iter()
                 .map(Decorator::name)
                 .collect::<Vec<_>>(),

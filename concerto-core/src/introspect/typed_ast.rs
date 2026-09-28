@@ -892,7 +892,7 @@ mod tests {
                 file.declarations(),
                 file.file_name(),
                 file.ast(),
-                file.get_decorators(),
+                file.decorators(),
                 file.concerto_version(),
                 file.definitions(),
                 file.is_external(),

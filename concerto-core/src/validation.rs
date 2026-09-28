@@ -590,7 +590,7 @@ fn validate_decorators(
     if !manager.decorator_validation().is_enabled() {
         return Ok(());
     }
-    for decorator in element.get_decorators() {
+    for decorator in element.decorators() {
         decorator.validate(manager, namespace, context)?;
     }
     Ok(())
@@ -602,7 +602,7 @@ fn check_unique_decorators(
     location: Option<serde_json::Value>,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for decorator in element.get_decorators() {
+    for decorator in element.decorators() {
         // TS keys its `Set` on `getName()` and interpolates it into the
         // message as is, so a decorator with no `name` at all is its own
         // entry and reads `undefined` (accordproject/concerto-rust#218).

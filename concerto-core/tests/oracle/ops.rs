@@ -1955,6 +1955,9 @@ fn declaration_kind_op(r: &Replayed, id: DeclId) -> Dispatch {
             // TS `ScalarDeclaration` has no `declarationKind` at all.
             return unsupported("declarationKind on a ScalarDeclaration receiver");
         }
+        // `Declaration` is `#[non_exhaustive]`: a kind this harness does not
+        // know yet.
+        _ => return unsupported("declarationKind on an unknown declaration kind"),
     };
     ran(Ok(Value::String(kind.to_string())))
 }
@@ -2068,6 +2071,7 @@ fn declaration_value(namespace: &str, declaration: &Declaration) -> Value {
         Declaration::Enum(_) => "EnumDeclaration",
         Declaration::Scalar(_) => "ScalarDeclaration",
         Declaration::Map(_) => "MapDeclaration",
+        other => other.declaration_kind(),
     };
     json!({
         M: "Declaration",
@@ -3479,6 +3483,9 @@ fn encode_decorator_argument(arg: &concerto_core::DecoratorArgument) -> Value {
                 None => recipe::undefined(),
             },
         }),
+        // `DecoratorArgument` is `#[non_exhaustive]`: an argument kind this
+        // harness does not know yet.
+        _ => recipe::undefined(),
     }
 }
 

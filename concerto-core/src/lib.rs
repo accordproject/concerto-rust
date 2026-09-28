@@ -66,6 +66,18 @@ pub mod rootmodel;
 mod semver_range;
 pub mod validation;
 
+/// Checking a model's JSON AST against the Concerto metamodel
+/// (`concerto.metamodel@1.0.0`), before it is loaded.
+pub mod metamodel {
+    /// The metamodel's namespace, `concerto.metamodel@1.0.0`.
+    pub use crate::instance::metamodel::METAMODEL_NAMESPACE as NAMESPACE;
+    /// The version check and the structural check, as TS
+    /// `BaseModelManager.validateAst` runs them.
+    pub use crate::instance::metamodel::validate_ast;
+    /// The structural check alone (TS `MetaModelUtil.validateMetaModel`).
+    pub use crate::instance::metamodel::validate_metamodel as validate_structure;
+}
+
 /// The introspection traits, for code that is generic over the element
 /// types: `use concerto_core::prelude::*;`. The types also have the same
 /// methods as inherent methods (`name`, `type_name`, `decorators`,
@@ -74,7 +86,9 @@ pub mod prelude {
     pub use crate::introspect::{DeclarationKind, Decorated, Named, Typed};
 }
 
-pub use error::{Error, Result};
+#[allow(deprecated)]
+pub use error::ConcertoError;
+pub use error::{Error, ErrorKind, Result};
 pub use introspect::{
     ClassDeclaration, ClassKind, Declaration, DeclarationKind, Decorated, Decorator,
     DecoratorArgument, DecoratorValidationOptions, Import, ModelFile, Named, Property,
@@ -83,3 +97,14 @@ pub use introspect::{
 #[cfg(feature = "js-compat")]
 pub use introspect::{FullyQualified, HasValidators, Validate};
 pub use model_manager::ModelManager;
+
+/// Guarantee 6 of docs/public-api.md section 2: the manager, a model file
+/// and the error type can cross threads, and the error type is a standard
+/// `'static` error.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    const fn std_error<T: std::error::Error + Send + Sync + 'static>() {}
+    send_sync::<ModelManager>();
+    send_sync::<ModelFile>();
+    std_error::<Error>();
+};

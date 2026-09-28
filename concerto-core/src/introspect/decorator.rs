@@ -55,6 +55,7 @@ pub struct TypeReferenceArgument {
 ///
 /// TS: `DecoratorArgument` (src/introspect/decorator.ts).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum DecoratorArgument {
     /// A `DecoratorString` literal.
     String(String),
@@ -736,31 +737,43 @@ pub trait Decorated {
     /// The decorators attached to the element, in the order they are given.
     ///
     /// TS: `Decorated.getDecorators`.
-    fn get_decorators(&self) -> &[Decorator];
+    fn decorators(&self) -> &[Decorator];
 
     /// The decorator attached to the element with the given name, or `None`
     /// if it has none by that name.
     ///
     /// TS: `Decorated.getDecorator`.
+    fn decorator(&self, name: &str) -> Option<&Decorator> {
+        self.decorators().iter().find(|d| d.name() == name)
+    }
+
+    /// Deprecated name of [`Decorated::decorators`].
+    #[deprecated(since = "0.1.0", note = "use `decorators`")]
+    fn get_decorators(&self) -> &[Decorator] {
+        self.decorators()
+    }
+
+    /// Deprecated name of [`Decorated::decorator`].
+    #[deprecated(since = "0.1.0", note = "use `decorator`")]
     fn get_decorator(&self, name: &str) -> Option<&Decorator> {
-        self.get_decorators().iter().find(|d| d.name() == name)
+        self.decorator(name)
     }
 }
 
 impl Decorated for ClassDeclaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         ClassDeclaration::decorators(self)
     }
 }
 
 impl Decorated for crate::introspect::declaration::Declaration {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         use crate::introspect::declaration::Declaration;
         match self {
-            Declaration::Class(class) => class.get_decorators(),
-            Declaration::Enum(enm) => enm.get_decorators(),
-            Declaration::Scalar(scalar) => scalar.get_decorators(),
-            Declaration::Map(map) => map.get_decorators(),
+            Declaration::Class(class) => Decorated::decorators(class),
+            Declaration::Enum(enm) => Decorated::decorators(enm),
+            Declaration::Scalar(scalar) => Decorated::decorators(scalar),
+            Declaration::Map(map) => Decorated::decorators(map),
         }
     }
 }
@@ -977,7 +990,7 @@ mod tests {
             serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
         )]));
         let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.get_decorator("category").unwrap();
+        let decorator = decl.decorator("category").unwrap();
         assert!(
             decorator
                 .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
@@ -1001,7 +1014,7 @@ mod tests {
             invalid_decorator: None,
         });
         let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.get_decorator("category").unwrap();
+        let decorator = decl.decorator("category").unwrap();
         let err = decorator
             .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
             .unwrap_err();
@@ -1027,7 +1040,7 @@ mod tests {
         let decl = with_invalid_only
             .get_declaration("org.acme@1.0.0.Car")
             .unwrap();
-        let decorator = decl.get_decorator("category").unwrap();
+        let decorator = decl.decorator("category").unwrap();
         assert!(
             decorator
                 .validate(
@@ -1069,7 +1082,7 @@ mod tests {
             invalid_decorator: Some("error".into()),
         });
         let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.get_decorator("Category").unwrap();
+        let decorator = decl.decorator("Category").unwrap();
         let err = decorator
             .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
             .unwrap_err();

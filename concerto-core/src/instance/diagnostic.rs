@@ -46,6 +46,7 @@ use super::validate::{self, ValidateOptions};
 /// future check that is worth surfacing without failing validation on its
 /// own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Severity {
     /// The instance is not valid as it stands.
     Error,
@@ -58,6 +59,7 @@ pub enum Severity {
 /// [`Diagnostic::message`], the way #1273's [`DetailCode`](crate::error::DetailCode)
 /// already does for the two `DeserializeOptions` rejections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DiagnosticCode {
     /// A required property has no value, and no default to fall back to.
     MissingRequiredProperty,
@@ -115,6 +117,7 @@ impl std::fmt::Display for DiagnosticCode {
 /// One violation found while validating an instance, as the collect-all walk
 /// (`super::validate::collect_diagnostics`) reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Diagnostic {
     /// A JSON Pointer (RFC 6901) from the root of the validated value to the
     /// offending location: `""` for the root value itself, `"/vin"` for a

@@ -49,7 +49,7 @@ pub struct ModelFile {
 }
 
 impl Decorated for ModelFile {
-    fn get_decorators(&self) -> &[Decorator] {
+    fn decorators(&self) -> &[Decorator] {
         &self.decorators
     }
 }
