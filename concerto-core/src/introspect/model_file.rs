@@ -11,7 +11,6 @@
 //! says: its key order, its `null`s and its numbers exactly as given. The typed
 //! declarations and imports are a view of it, used for the runtime's logic.
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
