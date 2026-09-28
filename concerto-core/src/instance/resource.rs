@@ -19,7 +19,7 @@ use crate::model_manager::ModelManager;
 /// ' + propName + ' which is not declared in the model.'`
 fn undeclared(instance: &Instance, prop_name: &str) -> crate::ConcertoError {
     ContractError::new(
-        ErrorKind::Error,
+        ErrorKind::InvalidArgument,
         "validatedresource-setpropertyvalue-undeclaredfield",
         vec![
             ("id", instance.get_identifier().to_js_string()),
@@ -86,7 +86,7 @@ pub fn add_array_value(
         };
         if !field.is_array() {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "validatedresource-addarrayvalue-notanarray",
                 vec![
                     ("id", instance.get_identifier().to_js_string()),
@@ -167,12 +167,15 @@ fn sync_value(mm: &ModelManager, value: &mut JsValue) -> Result<()> {
 pub fn to_json(
     mm: &ModelManager,
     instance: &Instance,
-    serializer: &super::Serializer,
+    serializer: &super::serializer::Serializer,
 ) -> Result<JsValue> {
     if instance.kind == InstanceKind::Relationship {
-        return Err(
-            ContractError::new(ErrorKind::Error, "typed-tojson-useserializer", Vec::new()).into(),
-        );
+        return Err(ContractError::new(
+            ErrorKind::InvalidArgument,
+            "typed-tojson-useserializer",
+            Vec::new(),
+        )
+        .into());
     }
     serializer.to_json(mm, &JsValue::Instance(Box::new(instance.clone())), None)
 }

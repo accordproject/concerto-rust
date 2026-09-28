@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::Named;
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
 use crate::introspect::import::Import;
@@ -59,7 +58,7 @@ impl Decorated for ModelFile {
 
 impl ModelFile {
     /// Builds a model file from the JSON AST of a `concerto.metamodel@….Model`,
-    /// with no CTO source text ([`ModelFile::get_definitions`] will answer
+    /// with no CTO source text (`ModelFile::get_definitions` will answer
     /// `None`). TS: `new ModelFile(modelManager, ast, definitions, fileName)`
     /// with `definitions` omitted.
     pub fn from_json(value: &serde_json::Value, file_name: Option<String>) -> Result<Self> {
@@ -67,7 +66,7 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_json`], keeping the given CTO source text verbatim
-    /// for [`ModelFile::get_definitions`] — never parsed or checked against
+    /// for `ModelFile::get_definitions` — never parsed or checked against
     /// `value` here (CTO parsing is `concerto-cto`, out of scope).
     pub fn from_json_with_definitions(
         value: &serde_json::Value,
@@ -283,45 +282,47 @@ impl ModelFile {
         })
     }
 
-    /// TS: the argument checks `new ModelFile(modelManager, ast, definitions,
-    /// fileName)` runs before it reads the AST at all, for a caller that
-    /// holds arbitrary JS values rather than this crate's typed arguments (a
-    /// binding, or the oracle harness). Each argument is `None` for JS
-    /// `undefined`. In TS's order, each a plain `Error`:
-    /// `Decorated`'s constructor rejects a falsy `ast` (`ast not
-    /// specified`); `ModelFile`'s rejects an `ast` that is not an object,
-    /// then a truthy `definitions` that is not a string, then a truthy
-    /// `fileName` that is not a string (P2-08).
-    pub fn check_constructor_arguments(
-        ast: Option<&serde_json::Value>,
-        definitions: Option<&serde_json::Value>,
-        file_name: Option<&serde_json::Value>,
-    ) -> Result<()> {
-        let truthy = |v: Option<&serde_json::Value>| v.is_some_and(crate::ecma::is_truthy);
-        if !truthy(ast) {
-            return Err(plain_error("ast not specified".into()));
+    js_compat_pub! {
+        /// TS: the argument checks `new ModelFile(modelManager, ast, definitions,
+        /// fileName)` runs before it reads the AST at all, for a caller that
+        /// holds arbitrary JS values rather than this crate's typed arguments (a
+        /// binding, or the oracle harness). Each argument is `None` for JS
+        /// `undefined`. In TS's order, each a plain `Error`:
+        /// `Decorated`'s constructor rejects a falsy `ast` (`ast not
+        /// specified`); `ModelFile`'s rejects an `ast` that is not an object,
+        /// then a truthy `definitions` that is not a string, then a truthy
+        /// `fileName` that is not a string (P2-08).
+        pub fn check_constructor_arguments(
+            ast: Option<&serde_json::Value>,
+            definitions: Option<&serde_json::Value>,
+            file_name: Option<&serde_json::Value>,
+        ) -> Result<()> {
+            let truthy = |v: Option<&serde_json::Value>| v.is_some_and(crate::ecma::is_truthy);
+            if !truthy(ast) {
+                return Err(plain_error("ast not specified".into()));
+            }
+            // `typeof ast !== 'object'`: an array is an object too; `null` is
+            // already rejected above as falsy.
+            if !matches!(
+                ast,
+                Some(serde_json::Value::Object(_) | serde_json::Value::Array(_))
+            ) {
+                return Err(plain_error(
+                    "ModelFile expects a Concerto model AST as input.".into(),
+                ));
+            }
+            if truthy(definitions) && !matches!(definitions, Some(serde_json::Value::String(_))) {
+                return Err(plain_error(
+                    "ModelFile expects an (optional) Concerto model definition as a string.".into(),
+                ));
+            }
+            if truthy(file_name) && !matches!(file_name, Some(serde_json::Value::String(_))) {
+                return Err(plain_error(
+                    "ModelFile expects an (optional) filename as a string.".into(),
+                ));
+            }
+            Ok(())
         }
-        // `typeof ast !== 'object'`: an array is an object too; `null` is
-        // already rejected above as falsy.
-        if !matches!(
-            ast,
-            Some(serde_json::Value::Object(_) | serde_json::Value::Array(_))
-        ) {
-            return Err(plain_error(
-                "ModelFile expects a Concerto model AST as input.".into(),
-            ));
-        }
-        if truthy(definitions) && !matches!(definitions, Some(serde_json::Value::String(_))) {
-            return Err(plain_error(
-                "ModelFile expects an (optional) Concerto model definition as a string.".into(),
-            ));
-        }
-        if truthy(file_name) && !matches!(file_name, Some(serde_json::Value::String(_))) {
-            return Err(plain_error(
-                "ModelFile expects an (optional) filename as a string.".into(),
-            ));
-        }
-        Ok(())
     }
 
     /// The full namespace, including the version, e.g. `org.example@1.0.0`.
@@ -522,7 +523,7 @@ impl ModelFile {
     /// visible under any import, carries this file's own name for the
     /// `IllegalModelException` message's `File '…':` decoration, the same as
     /// every check in [`crate::validation`] does; its `imports` parameter is
-    /// TS's `JSON.stringify(this.imports)` ([`ModelFile::imports_json`]).
+    /// TS's `JSON.stringify(this.imports)` (`ModelFile::imports_json`).
     pub fn resolve_import(&self, type_name: &str) -> Result<String> {
         self.find_import(type_name).ok_or_else(|| {
             let mut err = ContractError::new(
@@ -878,11 +879,11 @@ fn check_compatible_version(value: &serde_json::Value) -> Result<Option<String>>
 /// `concertoVersion` range against.
 const CONCERTO_CORE_VERSION: &str = "5.0.0";
 
-/// A plain JS `Error(message)` (`ErrorKind::Error`), for the several
+/// A plain JS `Error(message)` (`ErrorKind::InvalidArgument`), for the several
 /// hardcoded, non-catalogue messages `ModelFile.fromAst`/`isCompatibleVersion`
 /// throw this way rather than as an `IllegalModelException`.
 fn plain_error(message: String) -> ConcertoError {
-    ContractError::pre_port(ErrorKind::Error, message, None).into()
+    ContractError::pre_port(ErrorKind::InvalidArgument, message, None).into()
 }
 
 /// `ModelFile.fromAst`'s own namespace handling (modelfile.ts, P2-08): parses
@@ -1005,7 +1006,7 @@ mod tests {
         use serde_json::json;
         let message = |r: Result<()>| match r.unwrap_err() {
             ConcertoError::Contract(c) => {
-                assert_eq!(c.kind, ErrorKind::Error);
+                assert_eq!(c.kind, ErrorKind::InvalidArgument);
                 c.message()
             }
             other => panic!("expected a plain Error, got {other:?}"),

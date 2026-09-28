@@ -9,7 +9,7 @@
 
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::introspect::scalar::ScalarValidator;
-use crate::introspect::{ClassKind, Declaration, Named, Property, Typed};
+use crate::introspect::{ClassKind, Declaration, Property};
 use crate::model_manager::{DeclId, ModelManager};
 use crate::model_util;
 
@@ -34,7 +34,7 @@ pub(crate) fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result
 /// V8's `TypeError: <expression> is not a function`.
 pub(crate) fn not_a_function(expression: &str) -> crate::ConcertoError {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
         vec![("expression", expression.to_string())],
     )
@@ -45,7 +45,7 @@ pub(crate) fn not_a_function(expression: &str) -> crate::ConcertoError {
 /// `JSON.stringify` throws V8's circular-structure `TypeError` first. DV-010
 pub(crate) fn unrecognised() -> crate::ConcertoError {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-circularjson",
         Vec::new(),
     )
@@ -273,7 +273,7 @@ pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> R
             match mm.get_declaration(&fqn)? {
                 Declaration::Enum(_) => FieldType::Enum(fqn),
                 Declaration::Scalar(s) => FieldType::Scalar {
-                    primitive: s.scalar_type(),
+                    primitive: s.processed_type(),
                     default_value: s.default_value().cloned(),
                     validator: s.validator().cloned().map(Box::new),
                 },

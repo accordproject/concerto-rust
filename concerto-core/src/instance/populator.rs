@@ -7,7 +7,7 @@
 //! is this module's. Each function here is one TS method, in the same
 //! order, so that the first error thrown is the same one (2.4). The TS
 //! `jsonStack`/`resourceStack` pushes and pops become arguments and return
-//! values; `parameters.path` is [`Populator::path`].
+//! values; `parameters.path` is `Populator::path`.
 
 use indexmap::IndexMap;
 
@@ -48,7 +48,7 @@ fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> Concer
 }
 
 fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, params).into()
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// TS: `JSONPopulator.convertToObject`'s primitive-type switch alone (task
@@ -142,7 +142,7 @@ pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
 /// V8's `TypeError: Cannot read properties of <value> (reading '<property>')`.
 pub(crate) fn read_properties_error(value: &JsValue, property: &str) -> ConcertoError {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-readproperties",
         vec![
             ("value", value.to_js_string()),
@@ -184,7 +184,7 @@ pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
     Ok(match value {
         JsValue::Undefined | JsValue::Null => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-convertnulltoobject",
                 Vec::new(),
             )
@@ -331,7 +331,7 @@ impl<'a> Populator<'a> {
                 // `parameters.resourceStack.pop()` on an empty stack: not
                 // reached, since every caller pushes a resource first.
                 ConcertoError::from(ContractError::pre_port(
-                    ErrorKind::Error,
+                    ErrorKind::InvalidArgument,
                     "Stack is empty!".to_string(),
                     None,
                 ))
@@ -594,7 +594,7 @@ impl<'a> Populator<'a> {
         // DV-015: see instance/serializer.rs from_json.
         let Some(type_name) = type_name.as_str() else {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "a $class that is not a string: {}",
                     type_name.to_js_string()
@@ -735,7 +735,7 @@ impl<'a> Populator<'a> {
         // DV-015: see instance/serializer.rs from_json.
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "a $class that is not a string: {}",
                     class_name.to_js_string()

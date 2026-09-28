@@ -124,7 +124,7 @@ fn parse_uri(uri: &str) -> Result<UriComponents> {
             if !maybe_port.is_empty() {
                 if !maybe_port.bytes().all(|b| b.is_ascii_digit()) {
                     return Err(error(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         "resourceid-parseuri-invalidport",
                         Vec::new(),
                     ));
@@ -190,7 +190,12 @@ fn encode_uri(input: &str) -> String {
 /// claims it. [`ContractError::pre_port`] carries the real V8 text without
 /// overclaiming a verbatim catalogue port (PORTING.md section 7.2).
 fn malformed_uri_error() -> ConcertoError {
-    ContractError::pre_port(ErrorKind::Error, "URI malformed".to_string(), None).into()
+    ContractError::pre_port(
+        ErrorKind::InvalidArgument,
+        "URI malformed".to_string(),
+        None,
+    )
+    .into()
 }
 
 /// `decodeURIComponent(id)`: every `%XX` triplet becomes the byte `XX`:
@@ -259,21 +264,21 @@ impl ResourceId {
         let id = id.into();
         if namespace.is_empty() {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-constructor-missingnamespace",
                 Vec::new(),
             ));
         }
         if type_name.is_empty() {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-constructor-missingtype",
                 Vec::new(),
             ));
         }
         if id.is_empty() {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-constructor-missingid",
                 Vec::new(),
             ));
@@ -313,7 +318,7 @@ impl ResourceId {
     ) -> Result<Self> {
         let components = parse_uri(uri).map_err(|_| {
             error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-fromuri-invaliduri",
                 vec![("uri", uri.to_string())],
             )
@@ -324,7 +329,7 @@ impl ResourceId {
             && scheme != RESOURCE_SCHEME
         {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-fromuri-invalidscheme",
                 vec![("uri", uri.to_string())],
             ));
@@ -335,7 +340,7 @@ impl ResourceId {
             || is_present(&components.query)
         {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourceid-fromuri-invalidformat",
                 vec![("uri", uri.to_string())],
             ));

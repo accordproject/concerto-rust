@@ -20,15 +20,15 @@
 //! `test/data/decoratorcommands/possible-decorator-command-targets.{json,yaml}`
 //! and the inline fixtures of `test/dcsconverter.js`.
 //!
-//! [`render_scalar_failsafe`]'s quoting decision (plain vs. `JSON.stringify`
+//! `render_scalar_failsafe`'s quoting decision (plain vs. `JSON.stringify`
 //! double-quoted) matches the reference for every value these two functions
 //! ever build or accept: DCS identifiers, namespaces, decorator argument
-//! text stringified with [`js_value_to_string`]. It diverges, documented,
+//! text stringified with `js_value_to_string`. It diverges, documented,
 //! from `yaml.stringify`'s own choice of *style* — a single-quoted
 //! rendering when a value has more `"` than `'`, or a block-literal (`|-`)
 //! rendering for an embedded newline or a document-marker-like value
 //! (`"---"`, `"..."`) — none of which the DCS data this converter round-trips
-//! is expected to contain; see [`yaml_quote::needs_quoting_failsafe`].
+//! is expected to contain; see `yaml_quote::needs_quoting_failsafe`.
 use serde_json::{Map, Number, Value};
 
 use crate::error::{ContractError, ErrorKind, Result};
@@ -48,7 +48,7 @@ enum Yaml {
 }
 
 fn pre_port(message: impl Into<String>) -> ContractError {
-    ContractError::pre_port(ErrorKind::Error, message.into(), None)
+    ContractError::pre_port(ErrorKind::InvalidArgument, message.into(), None)
 }
 
 // ---------------------------------------------------------------------
@@ -196,7 +196,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     // `$class` is its "FQN is invalid." error.
     if dcs_json.is_null() {
         return Err(ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", "null".to_string()),
@@ -218,7 +218,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
         Some(Value::Array(commands)) => commands,
         None | Some(Value::Null) => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-readproperties",
                 vec![
                     (
@@ -237,7 +237,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
         }
         Some(_) => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-notafunction",
                 vec![("expression", "dcsJson.commands.map".to_string())],
             )
@@ -739,7 +739,7 @@ pub fn yaml_to_json(yaml_string: &str) -> Result<Value> {
             .collect::<Result<Vec<_>>>()?,
         None => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-readproperties",
                 vec![
                     ("value", "undefined".to_string()),

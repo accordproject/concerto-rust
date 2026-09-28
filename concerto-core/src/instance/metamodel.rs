@@ -24,7 +24,7 @@
 //! other half of this row. Task P4-08b (accordproject/concerto-rust#174)
 //! added it as [`ModelManager::validate_ast`] (with
 //! [`ModelManager::set_metamodel_validation`]), built on this module's
-//! [`check_version`], [`metamodel_model_file`] and [`deserialize_ast`].
+//! `check_version`, `metamodel_model_file` and `deserialize_ast`.
 //!
 //! accordproject/concerto-rust#265 adds the two `src/introspect/metamodel.ts`
 //! functions the ledger also places here, [`validate_meta_model_instance`]
@@ -183,7 +183,7 @@ pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
 }
 
 /// `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`):
-/// the version check ([`check_version`]), then the structural check
+/// the version check (`check_version`), then the structural check
 /// ([`validate_metamodel`]).
 ///
 /// Unlike the TS reference, this takes the AST directly rather than a
@@ -191,7 +191,7 @@ pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
 /// `concerto-validate-rs` provided (module doc), not the `ModelFile`/
 /// `ModelManager` view integration (task P4-08). A missing or non-string
 /// `$class` fails the version check exactly as it does in TS
-/// ([`check_version`]'s doc), before any structural check runs.
+/// (`check_version`'s doc), before any structural check runs.
 pub fn validate_ast(ast: &Value) -> Result<()> {
     check_version(ast)?;
     validate_metamodel(ast)
@@ -234,7 +234,7 @@ pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
 ///    model, null, null)` and a validating `addModelFile(mf, null, null)`:
 ///    a namespace already registered is the already-exists error, otherwise
 ///    the new file alone is validated against the manager as it stands
-///    ([`ModelManager::validate_detached_model_file`]) before it is
+///    (`ModelManager::validate_detached_model_file`) before it is
 ///    registered;
 /// 4. `validateModelFiles()` over the whole manager.
 ///
@@ -248,7 +248,7 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
     let mut mm = ModelManager::new()?;
     let read_properties = |value: &str, property: &str| -> ConcertoError {
         ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", value.to_string()),
@@ -747,11 +747,27 @@ mod tests {
 
     #[test]
     fn validate_ast_without_a_class_is_an_invalid_fqn() {
-        assert_bad_class(None, ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!(null)), ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!("")), ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!(0)), ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!(false)), ErrorKind::Error, "FQN is invalid.");
+        assert_bad_class(None, ErrorKind::InvalidArgument, "FQN is invalid.");
+        assert_bad_class(
+            Some(json!(null)),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
+        assert_bad_class(
+            Some(json!("")),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
+        assert_bad_class(
+            Some(json!(0)),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
+        assert_bad_class(
+            Some(json!(false)),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
     }
 
     #[test]
@@ -759,18 +775,18 @@ mod tests {
         for class in [json!(5), json!(true), json!({})] {
             assert_bad_class(
                 Some(class),
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "fqn.lastIndexOf is not a function",
             );
         }
         assert_bad_class(
             Some(json!(["."])),
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "fqn.substr is not a function",
         );
         assert_bad_class(
             Some(json!(["concerto.metamodel@1.0.0.Model"])),
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "Namespace is null or undefined.",
         );
     }
@@ -904,11 +920,11 @@ mod tests {
     fn model_manager_from_meta_model_without_models_is_a_type_error() {
         for doc in [json!({}), json!({"models": null}), json!(null)] {
             let err = model_manager_from_meta_model(&doc, false).expect_err("no models array");
-            assert_eq!(kind_of(&err), Some(ErrorKind::JsTypeError), "{doc}");
+            assert_eq!(kind_of(&err), Some(ErrorKind::MalformedInput), "{doc}");
         }
         let err = model_manager_from_meta_model(&json!({"models": "x"}), false)
             .expect_err("models is not an array");
-        assert_eq!(kind_of(&err), Some(ErrorKind::JsTypeError));
+        assert_eq!(kind_of(&err), Some(ErrorKind::MalformedInput));
     }
 
     #[test]

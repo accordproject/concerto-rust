@@ -158,7 +158,7 @@ impl TryFrom<&serde_json::Value> for Import {
             // does not name the namespace.
             "ImportAll" => {
                 return Err(crate::error::ContractError::pre_port(
-                    crate::error::ErrorKind::Error,
+                    crate::error::ErrorKind::InvalidArgument,
                     "Wildcard Imports are not permitted.".to_string(),
                     None,
                 )

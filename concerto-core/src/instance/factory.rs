@@ -52,7 +52,7 @@ pub struct NewResourceCheck {
 
 /// A `Factory.newResource` error: a plain `Error` from the catalogue.
 fn error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, params).into()
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// The model checks of `Factory.newResource`, in TS order (#32 point 4):
@@ -194,7 +194,7 @@ fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<Strin
             };
             let bad = |e: serde_json::Error| {
                 ConcertoError::from(ContractError::pre_port(
-                    ErrorKind::Error,
+                    ErrorKind::InvalidArgument,
                     format!("invalid string validator: {e}"),
                     None,
                 ))

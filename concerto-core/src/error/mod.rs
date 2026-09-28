@@ -8,7 +8,7 @@
 //! [`ContractError`] is the `{kind, code, params, location}` shape every
 //! ported member builds its errors from (section 2.1). `kind` selects the TS
 //! exception class the shim throws (section 2.3); `code` is a key into the
-//! [`catalogue`] module, the verbatim port of `messages/en.json` and the
+//! `catalogue` module, the verbatim port of `messages/en.json` and the
 //! inline templates the reference throws (section 2.2), scoped to the keys
 //! OD-5 lists. A call site that has not yet been faithfully ported from TS
 //! builds its `ContractError` with [`ContractError::pre_port`] instead of a
@@ -63,51 +63,89 @@ impl From<ContractError> for ConcertoError {
     }
 }
 
-/// Selects the TS class the shim throws (PORTING.md table 2.3). Only the
-/// kinds a ported (or minimally adapted, section 7.2) unit raises exist so
-/// far; `ParseException` and `SecurityException` have no Rust throw site
-/// (2.3) and so no kind.
+/// The kind of failure an error reports.
+///
+/// Each kind is one TS exception class (PORTING.md table 2.3), which the
+/// doc comment of each variant names. The variants carry Rust names: the TS
+/// class name is only available to the JS binding, through
+/// `ErrorKind::ts_class` behind the `js-compat` feature. Only the kinds a
+/// ported (or minimally adapted, section 7.2) unit raises exist so far;
+/// `ParseException` and `SecurityException` have no Rust throw site (2.3)
+/// and so no kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
-    /// `IllegalModelException(message, modelFile, location)`.
+    /// The model is not valid.
+    ///
+    /// TS: `IllegalModelException(message, modelFile, location)`.
     IllegalModel,
-    /// `TypeNotFoundException(typeName, message)`. `params` must include
+    /// A type the model refers to is not declared. `params` must include
     /// `typeName` (table 2.3); build these with [`ContractError::type_not_found`].
+    ///
+    /// TS: `TypeNotFoundException(typeName, message)`.
     TypeNotFound,
-    /// concerto-util `BaseException(message, undefined, errorType)`, thrown by
-    /// `Validator.reportError`.
+    /// A value fails a validator declared on a field or scalar.
+    ///
+    /// TS: concerto-util `BaseException(message, undefined, errorType)`,
+    /// thrown by `Validator.reportError`.
     Validator,
-    /// `ValidationException(message)` (table 2.3), thrown by `ResourceValidator`
-    /// (P3-01, `src/serializer/resourcevalidator.ts`, every `report*` method).
+    /// An instance does not conform to its model.
+    ///
+    /// TS: `ValidationException(message)` (table 2.3), thrown by
+    /// `ResourceValidator` (P3-01, `src/serializer/resourcevalidator.ts`,
+    /// every `report*` method).
     Validation,
-    /// A plain JS `Error(message)`.
-    Error,
-    /// A JS `TypeError(message)` the V8 engine raises in the TS code.
-    JsTypeError,
-    /// A JS `RangeError(message)` the V8 engine raises in the TS code: a
-    /// stack overflow at a TS recursion point that has no cycle check
-    /// (PORTING.md 2.5), always `engine-rangeerror-maxcallstack`.
-    JsRangeError,
-    /// `MetamodelException(message)` (`src/metamodelexception.ts`), thrown by
-    /// `BaseModelManager.validateAst` (task P3-04,
+    /// An argument or input value is not acceptable to the operation.
+    ///
+    /// TS: a plain `Error(message)`.
+    InvalidArgument,
+    /// The input has the wrong shape for the operation reading it, such as a
+    /// missing node or a value of the wrong kind where the TS code assumes
+    /// one.
+    ///
+    /// TS: a `TypeError(message)` the V8 engine raises in the TS code.
+    MalformedInput,
+    /// A recursion point with no cycle check went too deep (PORTING.md 2.5),
+    /// always `engine-rangeerror-maxcallstack`.
+    ///
+    /// TS: a `RangeError(message)` the V8 engine raises in the TS code (a
+    /// stack overflow).
+    RecursionLimit,
+    /// A document fails the metamodel check.
+    ///
+    /// TS: `MetamodelException(message)` (`src/metamodelexception.ts`),
+    /// thrown by `BaseModelManager.validateAst` (task P3-04,
     /// `concerto_core::instance::metamodel`).
     Metamodel,
 }
 
 impl ErrorKind {
     /// The TS class name the shim throws for this kind, as the oracle records
-    /// it in `error.class`.
+    /// it in `error.class`. Only for the JS binding (the `js-compat`
+    /// feature).
+    #[cfg(feature = "js-compat")]
     pub fn ts_class(self) -> &'static str {
-        match self {
-            Self::IllegalModel => "IllegalModelException",
-            Self::TypeNotFound => "TypeNotFoundException",
-            Self::Validator => "BaseException",
-            Self::Validation => "ValidationException",
-            Self::Error => "Error",
-            Self::JsTypeError => "TypeError",
-            Self::JsRangeError => "RangeError",
-            Self::Metamodel => "MetamodelException",
-        }
+        ts_class(self)
+    }
+
+    /// The TS class name for this kind; see the `js-compat` build's
+    /// `ErrorKind::ts_class`.
+    #[cfg(not(feature = "js-compat"))]
+    pub(crate) fn ts_class(self) -> &'static str {
+        ts_class(self)
+    }
+}
+
+/// PORTING.md table 2.3: the TS exception class of each kind.
+fn ts_class(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::IllegalModel => "IllegalModelException",
+        ErrorKind::TypeNotFound => "TypeNotFoundException",
+        ErrorKind::Validator => "BaseException",
+        ErrorKind::Validation => "ValidationException",
+        ErrorKind::InvalidArgument => "Error",
+        ErrorKind::MalformedInput => "TypeError",
+        ErrorKind::RecursionLimit => "RangeError",
+        ErrorKind::Metamodel => "MetamodelException",
     }
 }
 
@@ -452,9 +490,9 @@ impl ContractError {
             ErrorKind::TypeNotFound
             | ErrorKind::Validator
             | ErrorKind::Validation
-            | ErrorKind::Error
-            | ErrorKind::JsTypeError
-            | ErrorKind::JsRangeError
+            | ErrorKind::InvalidArgument
+            | ErrorKind::MalformedInput
+            | ErrorKind::RecursionLimit
             // TS: `MetamodelException` (src/metamodelexception.ts) is a bare
             // `BaseException(message)`: no suffix, no location.
             | ErrorKind::Metamodel => message,
@@ -477,7 +515,9 @@ impl ContractError {
             ErrorKind::Validator | ErrorKind::Validation | ErrorKind::Metamodel => {
                 Some("@accordproject/concerto-util")
             }
-            ErrorKind::Error | ErrorKind::JsTypeError | ErrorKind::JsRangeError => None,
+            ErrorKind::InvalidArgument | ErrorKind::MalformedInput | ErrorKind::RecursionLimit => {
+                None
+            }
         }
     }
 }
@@ -533,7 +573,7 @@ mod tests {
 
     fn contract(code: &'static str, params: &[(&'static str, &str)]) -> ContractError {
         ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             code,
             params.iter().map(|(k, v)| (*k, (*v).to_string())).collect(),
         )
@@ -813,7 +853,7 @@ mod tests {
     #[test]
     fn golden_engine_rangeerror_maxcallstack() {
         let err = ContractError::new(
-            ErrorKind::JsRangeError,
+            ErrorKind::RecursionLimit,
             "engine-rangeerror-maxcallstack",
             Vec::new(),
         );

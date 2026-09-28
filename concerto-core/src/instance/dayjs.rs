@@ -75,7 +75,7 @@ impl Dayjs {
     /// A string that does not end in `Z` (case-insensitively) and matches
     /// dayjs's `REGEX_PARSE` is built with `Date.UTC` from its parts;
     /// anything else goes to `new Date(string)`, ECMAScript `Date.parse`
-    /// ([`date_parse`]).
+    /// (`date_parse`).
     pub fn utc_parse(s: &str) -> Self {
         Self::with_time(parse_date_utc(s), true)
     }
@@ -118,7 +118,7 @@ impl Dayjs {
     }
 
     /// `Date.parse(s)` under `TZ=UTC`, as a time value (`NaN` when it does
-    /// not parse): the ECMAScript date time string format ([`date_parse`]).
+    /// not parse): the ECMAScript date time string format (`date_parse`).
     pub fn parse_instant(s: &str) -> f64 {
         date_parse(s)
     }

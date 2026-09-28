@@ -16,7 +16,7 @@
 //!   which already walks the whole super type chain);
 //! - abstract and nested `$class` values were not checked (fixed: every
 //!   object, at any depth, is re-resolved by its own `$class` and checked
-//!   with [`ClassDeclaration::is_abstract`]);
+//!   with `ClassDeclaration::is_abstract`);
 //! - Long, DateTime, relationships, enums, maps and scalars had no support
 //!   (all six are implemented below);
 //! - errors were stringly typed (fixed: every error is a [`ContractError`]
@@ -44,11 +44,11 @@
 //! `instanceof`-shaped, not shape/parse-shaped, exactly like TS's own
 //! post-population checks:
 //!
-//! - [`DAYJS_TAG`] (`"$$dayjs"`) on an object marks an already-coerced
+//! - `DAYJS_TAG` (`"$$dayjs"`) on an object marks an already-coerced
 //!   `DateTime` value (its doc comment has the detail);
-//! - [`RELATIONSHIP_TAG`] (`"$$relationship"`) on an object marks an
+//! - `RELATIONSHIP_TAG` (`"$$relationship"`) on an object marks an
 //!   already-coerced `Relationship` value, carrying the pointed-at type as
-//!   `$class` (its doc comment on [`check_relationship`] has the detail).
+//!   `$class` (its doc comment on `check_relationship` has the detail).
 //!
 //! A caller that already has real wire JSON (a `DateTime` as an ISO string,
 //! a relationship as a URI string) is expected to coerce it into this shape
@@ -67,7 +67,7 @@
 //! exactly what `checkItem`'s `instanceof`-style check rejects in TS too),
 //! not an approximation of it.
 //!
-//! A third marker, [`UNDEFINED_TAG`] ([`js_undefined`]), stands for a JS
+//! A third marker, `UNDEFINED_TAG` (`js_undefined`), stands for a JS
 //! `undefined` held *inside* a value, such as an array element
 //! (`["a", undefined, "b"]`) or a map value. JSON has no `undefined`, and
 //! `null` is a different JS value (`typeof null` is `'object'`,
@@ -82,16 +82,16 @@
 //! 3): `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()`,
 //! and `reportNotResouceViolation`/`reportNotRelationshipViolation` call
 //! `value.toString()`, on whatever value reached them (DV-008,
-//! [`invalid_field_assignment_shape`], [`js_method_receiver_error`]).
+//! `invalid_field_assignment_shape`, `js_method_receiver_error`).
 //!
 //! # Walk
 //!
 //! [`validate_instance`] is the entry point (TS `Resource.validate`): it
 //! resolves the root value's own `$class` and calls
-//! [`visit_class_declaration`], which is the port of
+//! `visit_class_declaration`, which is the port of
 //! `ResourceValidator.visitClassDeclaration` and recurses through
-//! [`visit_property`] (`Property.accept`/`visitField`/
-//! `visitRelationshipDeclaration`) and [`visit_map_declaration`]
+//! `visit_property` (`Property.accept`/`visitField`/
+//! `visitRelationshipDeclaration`) and `visit_map_declaration`
 //! (`MapDeclaration.accept`), mirroring the TS visitor one function per
 //! method, in the same order, so that the first error raised matches
 //! (PORTING.md 2.4).
@@ -103,7 +103,7 @@ use crate::ecma;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::{CollectionSizeValidator, NumberValidator, StringValidator};
-use crate::introspect::{Declaration, FullyQualified, Named, Property, Typed};
+use crate::introspect::{Declaration, FullyQualified, Property};
 use crate::model_manager::{ModelManager, ValidatedElement};
 use crate::model_util;
 
@@ -143,70 +143,74 @@ pub fn validate_instance(
     validate_instance_from(mm, value, options, String::new())
 }
 
-/// [`validate_instance`], with the `rootResourceIdentifier` the caller
-/// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
-/// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
-/// sets none, which a report made before the walk sets one prints as
-/// `undefined`.
-pub fn validate_instance_from(
-    mm: &ModelManager,
-    value: &Value,
-    options: &ValidateOptions,
-    root_resource_identifier: String,
-) -> Result<()> {
-    let declared_fqn = value
-        .get("$class")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            // Not a TS-reachable path: a real `Resource` always has a
-            // `$class` (it is how `getFullyQualifiedType()` answers at
-            // all). A JSON document with none has no declared type to
-            // report a violation against, so this is a harness-level
-            // error, not a ported TS message.
-            ContractError::pre_port(
-                ErrorKind::Error,
-                "cannot validate an instance with no $class".to_string(),
-                None,
-            )
-        })?
-        .to_string();
-    let mut params = Params {
-        mm,
-        options,
-        root_resource_identifier,
-        current_identifier: None,
-    };
-    visit_class_declaration(&mut params, &declared_fqn, value)
+js_compat_pub! {
+    /// [`validate_instance`], with the `rootResourceIdentifier` the caller
+    /// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
+    /// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
+    /// sets none, which a report made before the walk sets one prints as
+    /// `undefined`.
+    pub fn validate_instance_from(
+        mm: &ModelManager,
+        value: &Value,
+        options: &ValidateOptions,
+        root_resource_identifier: String,
+    ) -> Result<()> {
+        let declared_fqn = value
+            .get("$class")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                // Not a TS-reachable path: a real `Resource` always has a
+                // `$class` (it is how `getFullyQualifiedType()` answers at
+                // all). A JSON document with none has no declared type to
+                // report a violation against, so this is a harness-level
+                // error, not a ported TS message.
+                ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    "cannot validate an instance with no $class".to_string(),
+                    None,
+                )
+            })?
+            .to_string();
+        let mut params = Params {
+            mm,
+            options,
+            root_resource_identifier,
+            current_identifier: None,
+        };
+        visit_class_declaration(&mut params, &declared_fqn, value)
+    }
 }
 
-/// Validates one property value, as `ValidatedResource.setPropertyValue`
-/// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
-/// parameters)` with `value` alone on the stack and the instance's
-/// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
-/// accordproject/concerto-rust#124).
-///
-/// `owner_fqn` is the declaration that declares `property` (its
-/// `getParent()`), as [`ModelManager::get_property`] reports it.
-///
-/// TS: `field.accept(this.$validator, parameters)` in
-/// `ValidatedResource.setPropertyValue`/`addArrayValue`
-/// (src/model/validatedresource.ts), which dispatches to
-/// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
-pub fn validate_property_value(
-    mm: &ModelManager,
-    owner_fqn: &str,
-    property: &Property,
-    value: &Value,
-    root_resource_identifier: String,
-    options: &ValidateOptions,
-) -> Result<()> {
-    let mut params = Params {
-        mm,
-        options,
-        root_resource_identifier,
-        current_identifier: None,
-    };
-    visit_property(&mut params, owner_fqn, property, value)
+js_compat_pub! {
+    /// Validates one property value, as `ValidatedResource.setPropertyValue`
+    /// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
+    /// parameters)` with `value` alone on the stack and the instance's
+    /// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
+    /// accordproject/concerto-rust#124).
+    ///
+    /// `owner_fqn` is the declaration that declares `property` (its
+    /// `getParent()`), as [`ModelManager::get_property`] reports it.
+    ///
+    /// TS: `field.accept(this.$validator, parameters)` in
+    /// `ValidatedResource.setPropertyValue`/`addArrayValue`
+    /// (src/model/validatedresource.ts), which dispatches to
+    /// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
+    pub fn validate_property_value(
+        mm: &ModelManager,
+        owner_fqn: &str,
+        property: &Property,
+        value: &Value,
+        root_resource_identifier: String,
+        options: &ValidateOptions,
+    ) -> Result<()> {
+        let mut params = Params {
+            mm,
+            options,
+            root_resource_identifier,
+            current_identifier: None,
+        };
+        visit_property(&mut params, owner_fqn, property, value)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -286,7 +290,7 @@ fn visit_class_declaration_dispatch(
         // path (a Resource is never constructed with one of those types),
         // so this is a harness error, not a ported message.
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!("'{own_fqn}' is not a class-like type and cannot back a Resource"),
             None,
         )
@@ -537,7 +541,7 @@ fn visit_property(
         // *value* member (only an `EnumDeclaration`'s do, reached through
         // `visit_enum_declaration` instead) — defensive, not TS-reachable.
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "an EnumProperty cannot be a class declaration's own field".to_string(),
             None,
         )
@@ -775,70 +779,88 @@ fn primitive_type_matches(type_name: &str, value: &Value) -> bool {
     }
 }
 
-/// A `DateTime` value that has already gone through `JSONPopulator`'s
-/// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
-/// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
-/// when it decodes an oracle `"typed"` receiver into this validator's wire
-/// form, so `is_populated_datetime` below can tell a real (possibly
-/// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
-/// mirroring TS's own post-population check, `typeof obj === 'object' &&
-/// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
-/// does *not* itself re-validate the date's shape or calendar range: a
-/// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
-/// accepts it at this point regardless (`dayjs.isValid()` is never called
-/// here). A bare `Value::String`/`Value::Number` reaching this check was
-/// never coerced, so it is always rejected here, exactly as a raw string
-/// left on a `Resource` field (for example by `setPropertyValue`, bypassing
-/// `JSONPopulator`) would be in TS.
-pub const DAYJS_TAG: &str = "$$dayjs";
-
-/// A value that has already been populated as a `Relationship` instance
-/// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
-/// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
-/// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
-pub const RELATIONSHIP_TAG: &str = "$$relationship";
-
-/// A JS `undefined` held inside a value: an array element or a map value
-/// (module doc "Scope"). The value is the one-key object
-/// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
-/// `undefined`, and writing `null` instead would change what TS reports:
-/// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
-/// where `null` gives `'object'` and `null`.
-pub const UNDEFINED_TAG: &str = "$$undefined";
-
-/// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
-/// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
-/// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
-/// `reportFieldTypeViolation` prints it with `value.toString()`.
-pub const NUMBER_TAG: &str = "$$number";
-
-/// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
-/// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
-/// `reportFieldTypeViolation` prints it with `value.toString()` because
-/// `JSON.stringify` throws on a `BigInt`.
-pub const BIGINT_TAG: &str = "$$bigint";
-
-/// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
-/// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
-/// its keys keep their JS type (a number key is not a string), and a plain
-/// object is told apart from a `Map` (`obj instanceof Map`).
-pub const MAP_TAG: &str = "$$map";
-
-/// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
-pub fn js_special_number(text: &str) -> Value {
-    serde_json::json!({ NUMBER_TAG: text })
+js_compat_pub! {
+    /// A `DateTime` value that has already gone through `JSONPopulator`'s
+    /// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
+    /// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
+    /// when it decodes an oracle `"typed"` receiver into this validator's wire
+    /// form, so `is_populated_datetime` below can tell a real (possibly
+    /// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
+    /// mirroring TS's own post-population check, `typeof obj === 'object' &&
+    /// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
+    /// does *not* itself re-validate the date's shape or calendar range: a
+    /// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
+    /// accepts it at this point regardless (`dayjs.isValid()` is never called
+    /// here). A bare `Value::String`/`Value::Number` reaching this check was
+    /// never coerced, so it is always rejected here, exactly as a raw string
+    /// left on a `Resource` field (for example by `setPropertyValue`, bypassing
+    /// `JSONPopulator`) would be in TS.
+    pub const DAYJS_TAG: &str = "$$dayjs";
 }
 
-/// The value that stands for a JS `Map` ([`MAP_TAG`]).
-pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
-    serde_json::json!({
-        MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
-    })
+js_compat_pub! {
+    /// A value that has already been populated as a `Relationship` instance
+    /// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
+    /// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
+    /// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
+    pub const RELATIONSHIP_TAG: &str = "$$relationship";
 }
 
-/// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
-pub fn js_bigint(text: &str) -> Value {
-    serde_json::json!({ BIGINT_TAG: text })
+js_compat_pub! {
+    /// A JS `undefined` held inside a value: an array element or a map value
+    /// (module doc "Scope"). The value is the one-key object
+    /// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
+    /// `undefined`, and writing `null` instead would change what TS reports:
+    /// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
+    /// where `null` gives `'object'` and `null`.
+    pub const UNDEFINED_TAG: &str = "$$undefined";
+}
+
+js_compat_pub! {
+    /// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
+    /// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
+    /// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
+    /// `reportFieldTypeViolation` prints it with `value.toString()`.
+    pub const NUMBER_TAG: &str = "$$number";
+}
+
+js_compat_pub! {
+    /// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
+    /// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
+    /// `reportFieldTypeViolation` prints it with `value.toString()` because
+    /// `JSON.stringify` throws on a `BigInt`.
+    pub const BIGINT_TAG: &str = "$$bigint";
+}
+
+js_compat_pub! {
+    /// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
+    /// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
+    /// its keys keep their JS type (a number key is not a string), and a plain
+    /// object is told apart from a `Map` (`obj instanceof Map`).
+    pub const MAP_TAG: &str = "$$map";
+}
+
+js_compat_pub! {
+    /// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
+    pub fn js_special_number(text: &str) -> Value {
+        serde_json::json!({ NUMBER_TAG: text })
+    }
+}
+
+js_compat_pub! {
+    /// The value that stands for a JS `Map` ([`MAP_TAG`]).
+    pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
+        serde_json::json!({
+            MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
+        })
+    }
+}
+
+js_compat_pub! {
+    /// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
+    pub fn js_bigint(text: &str) -> Value {
+        serde_json::json!({ BIGINT_TAG: text })
+    }
 }
 
 /// The JS spelling of a [`NUMBER_TAG`] value.
@@ -877,16 +899,20 @@ fn map_entries(value: &Value) -> Option<Vec<(&Value, &Value)>> {
     )
 }
 
-/// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
-pub fn js_undefined() -> Value {
-    serde_json::json!({ UNDEFINED_TAG: true })
+js_compat_pub! {
+    /// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+    pub fn js_undefined() -> Value {
+        serde_json::json!({ UNDEFINED_TAG: true })
+    }
 }
 
-/// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
-pub fn is_js_undefined(value: &Value) -> bool {
-    value
-        .as_object()
-        .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
+js_compat_pub! {
+    /// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+    pub fn is_js_undefined(value: &Value) -> bool {
+        value
+            .as_object()
+            .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
+    }
 }
 
 /// `value` as a JS object, which a JS `undefined` ([`UNDEFINED_TAG`]) is not.
@@ -1028,7 +1054,7 @@ fn check_scalar_item(
     let scalar = decl
         .as_scalar()
         .expect("resolve_object_target only returns Scalar for a scalar declaration");
-    let type_name = scalar.scalar_type().unwrap_or_default();
+    let type_name = scalar.processed_type().unwrap_or_default();
     if !primitive_type_matches(type_name, value) {
         return Err(field_type_violation(p, owner_fqn, property, value));
     }
@@ -1044,7 +1070,7 @@ fn check_scalar_item(
         }) => {
             let bad = |e: serde_json::Error| {
                 ConcertoError::from(ContractError::pre_port(
-                    ErrorKind::Error,
+                    ErrorKind::InvalidArgument,
                     format!("invalid string validator: {e}"),
                     None,
                 ))
@@ -1147,7 +1173,7 @@ fn visit_enum_declaration(p: &Params, enum_fqn: &str, value: &Value) -> Result<(
     let decl = p.mm.get_declaration(enum_fqn)?;
     let Declaration::Enum(enum_decl) = decl else {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!("'{enum_fqn}' is not an enum declaration"),
             None,
         )
@@ -1249,7 +1275,7 @@ fn check_relationship(
 
     if p.mm.identifier_field_name(&target_fqn)?.is_none() {
         return Err(ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "resourcevalidator-checkrelationship-notidentifiable",
             Vec::new(),
         )
@@ -1280,7 +1306,7 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
         // `'Expected a Map, but found ' + JSON.stringify(obj)`:
         // `JSON.stringify(undefined)` is `undefined`, which `+` spells out.
         return Err(ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "resourcevalidator-visitmapdeclaration-notamap",
             vec![(
                 "obj",
@@ -1292,7 +1318,7 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
     let decl = p.mm.get_declaration(map_fqn)?;
     let Some(map) = decl.as_map() else {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!("'{map_fqn}' is not a map declaration"),
             None,
         )
@@ -1373,7 +1399,7 @@ fn check_map_type(
         // thing.getType(); }` — ported verbatim (see `map_key_is_scalar`'s
         // doc): this only ever matters when `thing` actually is a scalar.
         if key_is_scalar && let Some(scalar) = decl.as_scalar() {
-            scalar.scalar_type().unwrap_or_default().to_string()
+            scalar.processed_type().unwrap_or_default().to_string()
         } else if decl.is_enum_declaration() {
             // `thing.accept(this, parameters)`, dispatched by TS's `visit()`
             // to `visitEnumDeclaration` (bug fix: relationship/enum map
@@ -1397,7 +1423,7 @@ fn check_map_type(
     match primitive_type_name.as_str() {
         "String" if !value.is_string() => {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expectedstring",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
@@ -1408,7 +1434,7 @@ fn check_map_type(
         }
         "DateTime" if !parses_as_dayjs(value) => {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expecteddatetime",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
@@ -1419,7 +1445,7 @@ fn check_map_type(
         }
         "Boolean" if !value.is_boolean() => {
             return Err(ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expectedboolean",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
@@ -1698,7 +1724,7 @@ fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Co
             "null"
         };
         return ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", receiver.to_string()),
@@ -1708,7 +1734,7 @@ fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Co
         .into();
     }
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
         vec![("expression", expression.to_string())],
     )

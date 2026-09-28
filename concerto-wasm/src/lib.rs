@@ -76,7 +76,7 @@ use concerto_core::introspect::validators::{
 use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
-use concerto_core::{ConcertoError, ModelFile, ModelManager, Named};
+use concerto_core::{ConcertoError, ModelFile, ModelManager};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
@@ -155,9 +155,9 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::TypeNotFound => "TypeNotFound",
         ErrorKind::Validator => "Validator",
         ErrorKind::Validation => "Validation",
-        ErrorKind::Error => "Error",
-        ErrorKind::JsTypeError => "JsTypeError",
-        ErrorKind::JsRangeError => "JsRangeError",
+        ErrorKind::InvalidArgument => "Error",
+        ErrorKind::MalformedInput => "JsTypeError",
+        ErrorKind::RecursionLimit => "JsRangeError",
         ErrorKind::Metamodel => "Metamodel",
     }
 }
@@ -254,12 +254,12 @@ fn run<T>(body: impl FnOnce() -> Result<T>) -> std::result::Result<T, JsValue> {
 
 /// A V8 `TypeError`, built through the catalogue.
 fn type_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(ErrorKind::JsTypeError, code, params).into()
+    ContractError::new(ErrorKind::MalformedInput, code, params).into()
 }
 
 /// A catalogue `Error`, built the same way `type_error` builds a `TypeError`.
 fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(ErrorKind::Error, code, params).into()
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// JS `String(value)`.
@@ -4203,7 +4203,7 @@ const WIRE_TAG: &str = "@@oracle";
 /// way as any other not-yet-ported call site (PORTING.md 7.2), rather than
 /// through the message catalogue.
 fn wire_error(reason: String) -> Error {
-    ContractError::pre_port(ErrorKind::Error, reason, None).into()
+    ContractError::pre_port(ErrorKind::InvalidArgument, reason, None).into()
 }
 
 /// A JS number that is not finite, or `-0`, in [`WIRE_TAG`]'s `"number"`

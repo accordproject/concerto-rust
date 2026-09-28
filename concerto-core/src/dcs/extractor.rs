@@ -374,7 +374,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if matches!(extension_key, "namespace" | "locale" | "declarations") {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: {extension_key}. The key should not be one of the reserved keys: namespace, locale, declarations"),
                         None,
                     )
@@ -405,7 +405,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if extension_key == vocab_target.property {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: \"{extension_key}\". The key should not be the name of the current property."),
                         None,
                     )
@@ -425,7 +425,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if extension_key == vocab_target.map_element {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: \"{extension_key}\". The key should not be the name of the current property."),
                         None,
                     )
@@ -443,7 +443,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if extension_key == "properties" || extension_key == vocab_target.declaration {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: \"{extension_key}\". The key cannot be a reserved word such as \"properties\" or the name of the current declaration."),
                         None,
                     )

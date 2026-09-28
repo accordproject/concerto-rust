@@ -66,12 +66,12 @@ use serde::de::value::{BorrowedStrDeserializer, MapAccessDeserializer, StringDes
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
+use crate::introspect::METAMODEL_NAMESPACE;
 use crate::introspect::declaration::{ClassKind, ClassNode, normalize_class_fields};
 use crate::introspect::decorator::{WithDecorators, parse_decorator_list};
 use crate::introspect::property::{
     Property, ast_validator_keys, object_type_placeholder, property_kind,
 };
-use crate::introspect::{METAMODEL_NAMESPACE, Named};
 use crate::model_util::{is_system_property, is_valid_identifier};
 
 type Error = serde_json::Error;

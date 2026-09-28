@@ -10,7 +10,7 @@
 //!
 //! The functions that, in TS, call collaborator objects (`isAssignableTo`,
 //! `isEnum`, `isMap`, `isScalar`, `isValidMapKeyScalar`) make those calls
-//! through a [`ResolutionContext`].
+//! through a `ResolutionContext`.
 
 use std::sync::LazyLock;
 
@@ -63,7 +63,56 @@ fn error(
     ContractError::new(kind, code, params).into()
 }
 
-/// Returns everything after the last dot, if present, of the source string.
+/// The short name: whatever comes after the last `.`.
+///
+/// ```
+/// # use concerto_core::model_util::short_name;
+/// assert_eq!(short_name("org.example@1.0.0.Person"), "Person");
+/// assert_eq!(short_name("Person"), "Person");
+/// ```
+pub fn short_name(fqn: &str) -> &str {
+    // `lastIndexOf('.')` + `substr(i + 1)` count UTF-16 units. '.' is one
+    // UTF-16 unit and one UTF-8 byte, so the byte split gives the same string.
+    match fqn.rfind('.') {
+        Some(dot) => &fqn[dot + 1..],
+        None => fqn,
+    }
+}
+
+/// The namespace: everything before the last `.`, or the empty string if the
+/// name is not qualified.
+///
+/// ```
+/// # use concerto_core::model_util::namespace_of;
+/// assert_eq!(namespace_of("org.example@1.0.0.Person"), "org.example@1.0.0");
+/// assert_eq!(namespace_of("Person"), "");
+/// ```
+pub fn namespace_of(fqn: &str) -> &str {
+    // As in `short_name`, the split point is the ASCII '.'.
+    match fqn.rfind('.') {
+        Some(dot) => &fqn[..dot],
+        None => "",
+    }
+}
+
+/// Puts a namespace and a short name back together. An empty namespace gives
+/// the short name back unchanged, which is what a primitive type needs.
+///
+/// ```
+/// # use concerto_core::model_util::qualify;
+/// assert_eq!(qualify("org.example@1.0.0", "Person"), "org.example@1.0.0.Person");
+/// assert_eq!(qualify("", "String"), "String");
+/// ```
+pub fn qualify(namespace: &str, short: &str) -> String {
+    if namespace.is_empty() {
+        short.to_string()
+    } else {
+        format!("{namespace}.{short}")
+    }
+}
+
+/// Returns everything after the last dot, if present, of the source string:
+/// the TS name of [`short_name`].
 ///
 /// TS: ModelUtil.getShortName (src/modelutil.ts)
 ///
@@ -73,42 +122,35 @@ fn error(
 /// assert_eq!(get_short_name("Foo"), "Foo");
 /// ```
 pub fn get_short_name(fqn: &str) -> &str {
-    // `lastIndexOf('.')` + `substr(i + 1)` count UTF-16 units. '.' is one
-    // UTF-16 unit and one UTF-8 byte, so the byte split gives the same string.
-    match fqn.rfind('.') {
-        Some(dot) => &fqn[dot + 1..],
-        None => fqn,
-    }
+    short_name(fqn)
 }
 
-/// Returns the namespace of a fully qualified name: everything before the
-/// last dot, or the empty string if there is no dot. `None` (JS `undefined` or
-/// `null`) and `""` fail the TS `!fqn` check.
-///
-/// TS: ModelUtil.getNamespace (src/modelutil.ts)
-///
-/// ```
-/// # use concerto_core::model_util::get_namespace;
-/// assert_eq!(get_namespace(Some("org.acme.baz@1.0.0.Foo")).unwrap(), "org.acme.baz@1.0.0");
-/// assert_eq!(get_namespace(Some("Foo")).unwrap(), "");
-/// assert!(get_namespace(None).is_err());
-/// ```
-pub fn get_namespace(fqn: Option<&str>) -> Result<&str> {
-    let fqn = match fqn {
-        Some(fqn) if !fqn.is_empty() => fqn,
-        _ => {
-            return Err(error(
-                ErrorKind::Error,
-                "modelutil-getnamespace-nofnq",
-                Vec::new(),
-            ));
-        }
-    };
-    // As in `get_short_name`, the split point is the ASCII '.'.
-    Ok(match fqn.rfind('.') {
-        Some(dot) => &fqn[..dot],
-        None => "",
-    })
+js_compat_pub! {
+    /// Returns the namespace of a fully qualified name: everything before the
+    /// last dot, or the empty string if there is no dot. `None` (JS `undefined` or
+    /// `null`) and `""` fail the TS `!fqn` check.
+    ///
+    /// TS: ModelUtil.getNamespace (src/modelutil.ts)
+    ///
+    /// ```
+    /// # use concerto_core::model_util::get_namespace;
+    /// assert_eq!(get_namespace(Some("org.acme.baz@1.0.0.Foo")).unwrap(), "org.acme.baz@1.0.0");
+    /// assert_eq!(get_namespace(Some("Foo")).unwrap(), "");
+    /// assert!(get_namespace(None).is_err());
+    /// ```
+    pub fn get_namespace(fqn: Option<&str>) -> Result<&str> {
+        let fqn = match fqn {
+            Some(fqn) if !fqn.is_empty() => fqn,
+            _ => {
+                return Err(error(
+                    ErrorKind::InvalidArgument,
+                    "modelutil-getnamespace-nofnq",
+                    Vec::new(),
+                ));
+            }
+        };
+        Ok(namespace_of(fqn))
+    }
 }
 
 /// A prerelease identifier of a [`SemVer`]: numeric identifiers below
@@ -260,7 +302,7 @@ pub fn parse_namespace(ns: Option<&str>, disable_version_parsing: bool) -> Resul
         Some(ns) if !ns.is_empty() => ns,
         _ => {
             return Err(error(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "modelutil-parsenamespace-nullorundefined",
                 Vec::new(),
             ));
@@ -268,7 +310,7 @@ pub fn parse_namespace(ns: Option<&str>, disable_version_parsing: bool) -> Resul
     };
     let invalid = || {
         error(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "modelutil-parsenamespace-invalidnamespace",
             vec![("ns", ns.to_string())],
         )
@@ -297,50 +339,52 @@ pub fn parse_namespace(ns: Option<&str>, disable_version_parsing: bool) -> Resul
     })
 }
 
-/// Returns the fully qualified names an import brings in. `imp` is the
-/// import's AST node (`None` is JS `undefined`). The TS member delegates to
-/// `MetaModelUtil.importFullyQualifiedNames` (concerto-metamodel 3.17.0), which
-/// is ported here with it.
-///
-/// TS: ModelUtil.importFullyQualifiedNames (src/modelutil.ts)
-pub fn import_fully_qualified_names(imp: Option<&Value>) -> Result<Vec<String>> {
-    let class = class_of(imp)?;
-    let imp = imp.unwrap_or(&Value::Null);
-    let field = |name: &str| {
-        imp.get(name)
-            .map_or_else(|| "undefined".to_string(), ecma::to_js_string)
-    };
-    let is = |short: &str| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str());
-    if is("ImportAll") {
-        Ok(vec![format!("{}.*", field("namespace"))])
-    } else if is("ImportType") {
-        Ok(vec![format!("{}.{}", field("namespace"), field("name"))])
-    } else if is("ImportTypes") {
-        match imp.get("types") {
-            Some(Value::Array(types)) => Ok(types
-                .iter()
-                .map(|t| format!("{}.{}", field("namespace"), ecma::to_js_string(t)))
-                .collect()),
-            None | Some(Value::Null) => Err(error(
-                ErrorKind::JsTypeError,
-                "engine-typeerror-readproperties",
-                vec![
-                    ("value", field("types")),
-                    ("property", "forEach".to_string()),
-                ],
-            )),
-            Some(_) => Err(error(
-                ErrorKind::JsTypeError,
-                "engine-typeerror-notafunction",
-                vec![("expression", "imp.types.forEach".to_string())],
-            )),
+js_compat_pub! {
+    /// Returns the fully qualified names an import brings in. `imp` is the
+    /// import's AST node (`None` is JS `undefined`). The TS member delegates to
+    /// `MetaModelUtil.importFullyQualifiedNames` (concerto-metamodel 3.17.0), which
+    /// is ported here with it.
+    ///
+    /// TS: ModelUtil.importFullyQualifiedNames (src/modelutil.ts)
+    pub fn import_fully_qualified_names(imp: Option<&Value>) -> Result<Vec<String>> {
+        let class = class_of(imp)?;
+        let imp = imp.unwrap_or(&Value::Null);
+        let field = |name: &str| {
+            imp.get(name)
+                .map_or_else(|| "undefined".to_string(), ecma::to_js_string)
+        };
+        let is = |short: &str| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str());
+        if is("ImportAll") {
+            Ok(vec![format!("{}.*", field("namespace"))])
+        } else if is("ImportType") {
+            Ok(vec![format!("{}.{}", field("namespace"), field("name"))])
+        } else if is("ImportTypes") {
+            match imp.get("types") {
+                Some(Value::Array(types)) => Ok(types
+                    .iter()
+                    .map(|t| format!("{}.{}", field("namespace"), ecma::to_js_string(t)))
+                    .collect()),
+                None | Some(Value::Null) => Err(error(
+                    ErrorKind::MalformedInput,
+                    "engine-typeerror-readproperties",
+                    vec![
+                        ("value", field("types")),
+                        ("property", "forEach".to_string()),
+                    ],
+                )),
+                Some(_) => Err(error(
+                    ErrorKind::MalformedInput,
+                    "engine-typeerror-notafunction",
+                    vec![("expression", "imp.types.forEach".to_string())],
+                )),
+            }
+        } else {
+            Err(error(
+                ErrorKind::InvalidArgument,
+                "metamodelutil-importfullyqualifiednames-unrecognizedimports",
+                vec![("$class", field("$class"))],
+            ))
         }
-    } else {
-        Err(error(
-            ErrorKind::Error,
-            "metamodelutil-importfullyqualifiednames-unrecognizedimports",
-            vec![("$class", field("$class"))],
-        ))
     }
 }
 
@@ -357,65 +401,69 @@ pub fn is_primitive_type(type_name: &str) -> bool {
     PRIMITIVE_TYPES.contains(&type_name)
 }
 
-/// Returns true if a value of type `type_name` can be assigned to `property`.
-/// A primitive on either side must match exactly; otherwise the type is looked
-/// up in `model_file` and its super types are searched.
-///
-/// TS: ModelUtil.isAssignableTo (src/modelutil.ts)
-pub fn is_assignable_to<C: ResolutionContext>(
-    ctx: &C,
-    model_file: &C::Node,
-    type_name: &str,
-    property: &C::Node,
-) -> std::result::Result<bool, C::Error> {
-    let property_type_name = ctx.get_fully_qualified_type_name(property)?;
+js_compat_pub! {
+    /// Returns true if a value of type `type_name` can be assigned to `property`.
+    /// A primitive on either side must match exactly; otherwise the type is looked
+    /// up in `model_file` and its super types are searched.
+    ///
+    /// TS: ModelUtil.isAssignableTo (src/modelutil.ts)
+    pub fn is_assignable_to<C: ResolutionContext>(
+        ctx: &C,
+        model_file: &C::Node,
+        type_name: &str,
+        property: &C::Node,
+    ) -> std::result::Result<bool, C::Error> {
+        let property_type_name = ctx.get_fully_qualified_type_name(property)?;
 
-    let is_direct_match = type_name == property_type_name;
-    if is_direct_match || is_primitive_type(type_name) || is_primitive_type(&property_type_name) {
-        return Ok(is_direct_match);
-    }
-
-    let Some(type_declaration) = ctx.get_type(model_file, Some(type_name))? else {
-        return Err(ContractError::new(
-            ErrorKind::Error,
-            "modelutil-isassignableto-cannotfindtype",
-            vec![("typeName", type_name.to_string())],
-        )
-        .into());
-    };
-
-    // `.some(...)` stops at the first match, so the names are read lazily.
-    for super_type in ctx.get_all_super_type_declarations(&type_declaration)? {
-        if ctx.get_fully_qualified_name(&super_type)? == property_type_name {
-            return Ok(true);
+        let is_direct_match = type_name == property_type_name;
+        if is_direct_match || is_primitive_type(type_name) || is_primitive_type(&property_type_name) {
+            return Ok(is_direct_match);
         }
+
+        let Some(type_declaration) = ctx.get_type(model_file, Some(type_name))? else {
+            return Err(ContractError::new(
+                ErrorKind::InvalidArgument,
+                "modelutil-isassignableto-cannotfindtype",
+                vec![("typeName", type_name.to_string())],
+            )
+            .into());
+        };
+
+        // `.some(...)` stops at the first match, so the names are read lazily.
+        for super_type in ctx.get_all_super_type_declarations(&type_declaration)? {
+            if ctx.get_fully_qualified_name(&super_type)? == property_type_name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
-    Ok(false)
 }
 
-/// Returns the string with its first character (one UTF-16 code unit)
-/// upper-cased.
-///
-/// TS: ModelUtil.capitalizeFirstLetter (src/modelutil.ts)
-///
-/// ```
-/// # use concerto_core::model_util::capitalize_first_letter;
-/// assert_eq!(capitalize_first_letter("aBcDeF"), "ABcDeF");
-/// ```
-pub fn capitalize_first_letter(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        // A code point outside the BMP is a surrogate pair in JS: `charAt(0)`
-        // takes the lone high surrogate, which `toUpperCase` leaves alone, so
-        // the string comes back unchanged.
-        Some(first) if first.len_utf16() > 1 => s.to_string(),
-        // `toUpperCase` uses the full (unconditional SpecialCasing) mapping,
-        // as `char::to_uppercase` does: 'ß' becomes "SS".
-        Some(first) => {
-            let mut out: String = first.to_uppercase().collect();
-            out.push_str(chars.as_str());
-            out
+js_compat_pub! {
+    /// Returns the string with its first character (one UTF-16 code unit)
+    /// upper-cased.
+    ///
+    /// TS: ModelUtil.capitalizeFirstLetter (src/modelutil.ts)
+    ///
+    /// ```
+    /// # use concerto_core::model_util::capitalize_first_letter;
+    /// assert_eq!(capitalize_first_letter("aBcDeF"), "ABcDeF");
+    /// ```
+    pub fn capitalize_first_letter(s: &str) -> String {
+        let mut chars = s.chars();
+        match chars.next() {
+            None => String::new(),
+            // A code point outside the BMP is a surrogate pair in JS: `charAt(0)`
+            // takes the lone high surrogate, which `toUpperCase` leaves alone, so
+            // the string comes back unchanged.
+            Some(first) if first.len_utf16() > 1 => s.to_string(),
+            // `toUpperCase` uses the full (unconditional SpecialCasing) mapping,
+            // as `char::to_uppercase` does: 'ß' becomes "SS".
+            Some(first) => {
+                let mut out: String = first.to_uppercase().collect();
+                out.push_str(chars.as_str());
+                out
+            }
         }
     }
 }
@@ -432,45 +480,51 @@ fn field_type_declaration<C: ResolutionContext>(
     ctx.get_type(&model_file, type_name.as_deref())
 }
 
-/// Returns whether the field's type is an enum, or `None` (JS `undefined`)
-/// when the type is not found.
-///
-/// TS: ModelUtil.isEnum (src/modelutil.ts)
-pub fn is_enum<C: ResolutionContext>(
-    ctx: &C,
-    field: &C::Node,
-) -> std::result::Result<Option<bool>, C::Error> {
-    match field_type_declaration(ctx, field)? {
-        Some(declaration) => Ok(Some(ctx.is_enum(&declaration)?)),
-        None => Ok(None),
+js_compat_pub! {
+    /// Returns whether the field's type is an enum, or `None` (JS `undefined`)
+    /// when the type is not found.
+    ///
+    /// TS: ModelUtil.isEnum (src/modelutil.ts)
+    pub fn is_enum<C: ResolutionContext>(
+        ctx: &C,
+        field: &C::Node,
+    ) -> std::result::Result<Option<bool>, C::Error> {
+        match field_type_declaration(ctx, field)? {
+            Some(declaration) => Ok(Some(ctx.is_enum(&declaration)?)),
+            None => Ok(None),
+        }
     }
 }
 
-/// Returns whether the field's type is a map, or `None` (JS `undefined`) when
-/// the type is not found or has no `isMapDeclaration` method.
-///
-/// TS: ModelUtil.isMap (src/modelutil.ts)
-pub fn is_map<C: ResolutionContext>(
-    ctx: &C,
-    field: &C::Node,
-) -> std::result::Result<Option<bool>, C::Error> {
-    match field_type_declaration(ctx, field)? {
-        Some(declaration) => ctx.is_map_declaration(&declaration),
-        None => Ok(None),
+js_compat_pub! {
+    /// Returns whether the field's type is a map, or `None` (JS `undefined`) when
+    /// the type is not found or has no `isMapDeclaration` method.
+    ///
+    /// TS: ModelUtil.isMap (src/modelutil.ts)
+    pub fn is_map<C: ResolutionContext>(
+        ctx: &C,
+        field: &C::Node,
+    ) -> std::result::Result<Option<bool>, C::Error> {
+        match field_type_declaration(ctx, field)? {
+            Some(declaration) => ctx.is_map_declaration(&declaration),
+            None => Ok(None),
+        }
     }
 }
 
-/// Returns whether the field's type is a scalar, or `None` (JS `undefined`)
-/// when the type is not found or has no `isScalarDeclaration` method.
-///
-/// TS: ModelUtil.isScalar (src/modelutil.ts)
-pub fn is_scalar<C: ResolutionContext>(
-    ctx: &C,
-    field: &C::Node,
-) -> std::result::Result<Option<bool>, C::Error> {
-    match field_type_declaration(ctx, field)? {
-        Some(declaration) => ctx.is_scalar_declaration(&declaration),
-        None => Ok(None),
+js_compat_pub! {
+    /// Returns whether the field's type is a scalar, or `None` (JS `undefined`)
+    /// when the type is not found or has no `isScalarDeclaration` method.
+    ///
+    /// TS: ModelUtil.isScalar (src/modelutil.ts)
+    pub fn is_scalar<C: ResolutionContext>(
+        ctx: &C,
+        field: &C::Node,
+    ) -> std::result::Result<Option<bool>, C::Error> {
+        match field_type_declaration(ctx, field)? {
+            Some(declaration) => ctx.is_scalar_declaration(&declaration),
+            None => Ok(None),
+        }
     }
 }
 
@@ -504,7 +558,8 @@ pub fn is_valid_identifier(name: &str) -> bool {
 }
 
 /// Returns the fully qualified name of a type: `namespace.type`, or `type`
-/// alone when the namespace is empty (falsy in TS).
+/// alone when the namespace is empty (falsy in TS). The TS name of
+/// [`qualify`].
 ///
 /// TS: ModelUtil.getFullyQualifiedName (src/modelutil.ts)
 ///
@@ -514,36 +569,34 @@ pub fn is_valid_identifier(name: &str) -> bool {
 /// assert_eq!(get_fully_qualified_name("", "type"), "type");
 /// ```
 pub fn get_fully_qualified_name(namespace: &str, type_name: &str) -> String {
-    if namespace.is_empty() {
-        type_name.to_string()
-    } else {
-        format!("{namespace}.{type_name}")
-    }
+    qualify(namespace, type_name)
 }
 
-/// Removes the namespace version from a fully qualified name. Primitive types
-/// are returned unchanged. `None` (JS `undefined` or `null`) fails like `""`.
-///
-/// TS: ModelUtil.removeNamespaceVersionFromFullyQualifiedName (src/modelutil.ts)
-///
-/// ```
-/// # use concerto_core::model_util::remove_namespace_version_from_fully_qualified_name as remove;
-/// assert_eq!(remove(Some("org.acme@1.0.0.Person")).unwrap(), "org.acme.Person");
-/// assert_eq!(remove(Some("String")).unwrap(), "String");
-/// ```
-pub fn remove_namespace_version_from_fully_qualified_name(fqn: Option<&str>) -> Result<String> {
-    if let Some(fqn) = fqn
-        && is_primitive_type(fqn)
-    {
-        return Ok(fqn.to_string());
+js_compat_pub! {
+    /// Removes the namespace version from a fully qualified name. Primitive types
+    /// are returned unchanged. `None` (JS `undefined` or `null`) fails like `""`.
+    ///
+    /// TS: ModelUtil.removeNamespaceVersionFromFullyQualifiedName (src/modelutil.ts)
+    ///
+    /// ```
+    /// # use concerto_core::model_util::remove_namespace_version_from_fully_qualified_name as remove;
+    /// assert_eq!(remove(Some("org.acme@1.0.0.Person")).unwrap(), "org.acme.Person");
+    /// assert_eq!(remove(Some("String")).unwrap(), "String");
+    /// ```
+    pub fn remove_namespace_version_from_fully_qualified_name(fqn: Option<&str>) -> Result<String> {
+        if let Some(fqn) = fqn
+            && is_primitive_type(fqn)
+        {
+            return Ok(fqn.to_string());
+        }
+        let ns = get_namespace(fqn)?;
+        let namespace = match parse_namespace(Some(ns), false)? {
+            ParsedNamespace::NameOnly { name } | ParsedNamespace::Full { name, .. } => name,
+        };
+        // `get_namespace` succeeded, so `fqn` is a non-empty string.
+        let type_name = get_short_name(fqn.unwrap_or_default());
+        Ok(get_fully_qualified_name(&namespace, type_name))
     }
-    let ns = get_namespace(fqn)?;
-    let namespace = match parse_namespace(Some(ns), false)? {
-        ParsedNamespace::NameOnly { name } | ParsedNamespace::Full { name, .. } => name,
-    };
-    // `get_namespace` succeeded, so `fqn` is a non-empty string.
-    let type_name = get_short_name(fqn.unwrap_or_default());
-    Ok(get_fully_qualified_name(&namespace, type_name))
 }
 
 /// Returns true if the property name is reserved by Concerto.
@@ -573,7 +626,7 @@ pub fn is_private_system_property(property_name: &str) -> bool {
 fn class_of(node: Option<&Value>) -> Result<Option<&str>> {
     match node {
         None | Some(Value::Null) => Err(error(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 (
@@ -587,82 +640,92 @@ fn class_of(node: Option<&Value>) -> Result<Option<&str>> {
     }
 }
 
-/// The key kinds the specification allows: a `String` or `DateTime`, or an
-/// object key naming a scalar over one of those.
-///
-/// The single source for this list: `ModelUtil.isValidMapKey` (below) checks
-/// an AST node's `$class` against it directly, and
-/// `validation::validate_map_key` and `introspect::declaration`'s generated-
-/// union check (`MM_MAP_KEY_KINDS`) both refer to it rather than keeping
-/// their own copies, so the three checks cannot drift apart.
-pub const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
-
-/// The value kinds the specification allows: any primitive, or an object or
-/// relationship value naming a declared type.
-///
-/// TS: `ModelUtil.isValidMapValue` (src/modelutil.ts) lists the same eight
-/// kinds, including `RelationshipMapValueType`. The single source for this
-/// list, for the same reason as [`MAP_KEY_KINDS`].
-pub const MAP_VALUE_KINDS: &[&str] = &[
-    "BooleanMapValueType",
-    "DateTimeMapValueType",
-    "DoubleMapValueType",
-    "IntegerMapValueType",
-    "LongMapValueType",
-    "StringMapValueType",
-    "ObjectMapValueType",
-    "RelationshipMapValueType",
-];
-
-/// Returns true if the map key AST node is a valid map key type.
-///
-/// TS: ModelUtil.isValidMapKey (src/modelutil.ts)
-pub fn is_valid_map_key(key: Option<&Value>) -> Result<bool> {
-    let class = class_of(key)?;
-    Ok(MAP_KEY_KINDS
-        .iter()
-        .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
+js_compat_pub! {
+    /// The key kinds the specification allows: a `String` or `DateTime`, or an
+    /// object key naming a scalar over one of those.
+    ///
+    /// The single source for this list: `ModelUtil.isValidMapKey` (below) checks
+    /// an AST node's `$class` against it directly, and
+    /// `validation::validate_map_key` and `introspect::declaration`'s generated-
+    /// union check (`MM_MAP_KEY_KINDS`) both refer to it rather than keeping
+    /// their own copies, so the three checks cannot drift apart.
+    pub const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
 }
 
-/// Returns whether the declaration is a String or DateTime scalar, keeping the
-/// JS result of `a && b || c && d`: `None` (JS `undefined`) when `decl` is
-/// absent or has no `isScalarDeclaration` method.
-///
-/// TS: ModelUtil.isValidMapKeyScalar (src/modelutil.ts)
-pub fn is_valid_map_key_scalar<C: ResolutionContext>(
-    ctx: &C,
-    decl: Option<&C::Node>,
-) -> std::result::Result<Option<bool>, C::Error> {
-    // `decl?.isScalarDeclaration?.() && decl?.ast.$class === <scalar>`; each
-    // side of the `||` calls `isScalarDeclaration` again, as TS does.
-    let side = |scalar: &str| -> std::result::Result<Option<bool>, C::Error> {
-        let Some(decl) = decl else {
-            return Ok(None);
-        };
-        match ctx.is_scalar_declaration(decl)? {
-            Some(true) => {
-                let class = ctx.get_ast_class(decl)?;
-                Ok(Some(
-                    class.as_deref() == Some(format!("{METAMODEL_NAMESPACE}.{scalar}").as_str()),
-                ))
-            }
-            falsy => Ok(falsy),
-        }
-    };
-    match side("StringScalar")? {
-        Some(true) => Ok(Some(true)),
-        _ => side("DateTimeScalar"),
+js_compat_pub! {
+    /// The value kinds the specification allows: any primitive, or an object or
+    /// relationship value naming a declared type.
+    ///
+    /// TS: `ModelUtil.isValidMapValue` (src/modelutil.ts) lists the same eight
+    /// kinds, including `RelationshipMapValueType`. The single source for this
+    /// list, for the same reason as [`MAP_KEY_KINDS`].
+    pub const MAP_VALUE_KINDS: &[&str] = &[
+        "BooleanMapValueType",
+        "DateTimeMapValueType",
+        "DoubleMapValueType",
+        "IntegerMapValueType",
+        "LongMapValueType",
+        "StringMapValueType",
+        "ObjectMapValueType",
+        "RelationshipMapValueType",
+    ];
+}
+
+js_compat_pub! {
+    /// Returns true if the map key AST node is a valid map key type.
+    ///
+    /// TS: ModelUtil.isValidMapKey (src/modelutil.ts)
+    pub fn is_valid_map_key(key: Option<&Value>) -> Result<bool> {
+        let class = class_of(key)?;
+        Ok(MAP_KEY_KINDS
+            .iter()
+            .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
     }
 }
 
-/// Returns true if the map value AST node is a valid map value type.
-///
-/// TS: ModelUtil.isValidMapValue (src/modelutil.ts)
-pub fn is_valid_map_value(value: Option<&Value>) -> Result<bool> {
-    let class = class_of(value)?;
-    Ok(MAP_VALUE_KINDS
-        .iter()
-        .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
+js_compat_pub! {
+    /// Returns whether the declaration is a String or DateTime scalar, keeping the
+    /// JS result of `a && b || c && d`: `None` (JS `undefined`) when `decl` is
+    /// absent or has no `isScalarDeclaration` method.
+    ///
+    /// TS: ModelUtil.isValidMapKeyScalar (src/modelutil.ts)
+    pub fn is_valid_map_key_scalar<C: ResolutionContext>(
+        ctx: &C,
+        decl: Option<&C::Node>,
+    ) -> std::result::Result<Option<bool>, C::Error> {
+        // `decl?.isScalarDeclaration?.() && decl?.ast.$class === <scalar>`; each
+        // side of the `||` calls `isScalarDeclaration` again, as TS does.
+        let side = |scalar: &str| -> std::result::Result<Option<bool>, C::Error> {
+            let Some(decl) = decl else {
+                return Ok(None);
+            };
+            match ctx.is_scalar_declaration(decl)? {
+                Some(true) => {
+                    let class = ctx.get_ast_class(decl)?;
+                    Ok(Some(
+                        class.as_deref() == Some(format!("{METAMODEL_NAMESPACE}.{scalar}").as_str()),
+                    ))
+                }
+                falsy => Ok(falsy),
+            }
+        };
+        match side("StringScalar")? {
+            Some(true) => Ok(Some(true)),
+            _ => side("DateTimeScalar"),
+        }
+    }
+}
+
+js_compat_pub! {
+    /// Returns true if the map value AST node is a valid map value type.
+    ///
+    /// TS: ModelUtil.isValidMapValue (src/modelutil.ts)
+    pub fn is_valid_map_value(value: Option<&Value>) -> Result<bool> {
+        let class = class_of(value)?;
+        Ok(MAP_VALUE_KINDS
+            .iter()
+            .any(|short| class == Some(format!("{METAMODEL_NAMESPACE}.{short}").as_str())))
+    }
 }
 
 #[cfg(test)]

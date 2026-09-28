@@ -23,7 +23,9 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-accordproject-concerto-core = { path = "../concerto-core" }
+# `js-compat` (P6-01, docs/public-api.md section 4.6): the JS object model and
+# the seam the binding is built on, which are not in core's default API.
+accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
 # P4-04: builds the typed metamodel ASTs (StringRegexValidator,
 # StringLengthValidator, CollectionSizeValidator) the core validators take,
 # from the plain JSON the JS views and their unit tests hand across the

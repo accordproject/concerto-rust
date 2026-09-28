@@ -44,6 +44,9 @@ fn every_declaration_is_named_and_knows_its_kind() {
     for (class, body) in cases {
         let name = body["name"].as_str().unwrap().to_string();
         let declaration = declaration(class, body);
+        assert_eq!(Named::name(&declaration), name);
+        assert_eq!(DeclarationKind::declaration_kind(&declaration), class);
+        // `main`'s inherent methods (P6-01) give the same answers.
         assert_eq!(declaration.name(), name);
         assert_eq!(declaration.declaration_kind(), class);
     }
@@ -53,6 +56,7 @@ fn every_declaration_is_named_and_knows_its_kind() {
         json!({ "name": "Happened", "isAbstract": false, "properties": [] }),
     );
     let class = class.as_class().unwrap();
+    assert_eq!(Named::name(class), "Happened");
     assert_eq!(class.name(), "Happened");
     assert_eq!(class.declaration_kind(), "EventDeclaration");
     assert_eq!(class.kind().declaration_kind(), "EventDeclaration");
@@ -188,6 +192,7 @@ fn a_loaded_element_passes_its_validator_checks() {
             .check_bound_validators("test@1.0.0.Person", None)
             .is_ok()
     );
+    assert_eq!(Typed::type_name(&property), Some("Integer"));
     assert_eq!(property.type_name(), Some("Integer"));
 
     let scalar = declaration(
@@ -286,4 +291,15 @@ fn a_string_scalars_default_value_is_checked_against_its_own_validator() {
         "defaultValue": "ABC"
     }));
     assert!(ok.is_ok());
+}
+
+#[test]
+fn the_prelude_brings_the_traits_into_scope() {
+    fn kind_of<T: concerto_core::prelude::DeclarationKind>(element: &T) -> &'static str {
+        element.declaration_kind()
+    }
+    let scalar = declaration("StringScalar", json!({ "name": "Email" }));
+    assert_eq!(kind_of(&scalar), "StringScalar");
+    assert_eq!(kind_of(scalar.as_scalar().unwrap()), "StringScalar");
+    assert_eq!(scalar.as_scalar().unwrap().scalar_type(), "String");
 }

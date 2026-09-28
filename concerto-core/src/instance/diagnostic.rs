@@ -15,7 +15,7 @@
 //! P3-01/P3-02 leaf checks directly wherever a TS-faithful single verdict is
 //! enough, and only re-walks the recursive, class-shaped part of the tree
 //! itself so it can keep going past one nested object's own first error);
-//! the walk that gathers diagnostics is [`super::validate::collect_diagnostics`].
+//! the walk that gathers diagnostics is `super::validate::collect_diagnostics`.
 //!
 //! [`ClassDeclaration::validate_instance`]/[`validate_instance_or_throw`] and
 //! [`ModelManager::validate_instance`]/[`validate_instance_or_throw`] are the
@@ -113,7 +113,7 @@ impl std::fmt::Display for DiagnosticCode {
 }
 
 /// One violation found while validating an instance, as the collect-all walk
-/// ([`super::validate::collect_diagnostics`]) reports it.
+/// (`super::validate::collect_diagnostics`) reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     /// A JSON Pointer (RFC 6901) from the root of the validated value to the

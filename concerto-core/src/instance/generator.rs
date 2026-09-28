@@ -6,7 +6,7 @@
 //! section 5 row 6) and every check it runs is here, one function per TS
 //! method, in the same order. `parameters.stack` pushes and pops become
 //! arguments; `parameters.seenResources` and `dedupeResources` are
-//! [`Generator`]'s sets.
+//! `Generator`'s sets.
 
 use std::collections::HashSet;
 
@@ -44,7 +44,7 @@ pub struct GeneratorOptions {
 }
 
 fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, params).into()
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// TS: `JSONGenerator.convertToJSON`'s body (task P4-10,
@@ -108,7 +108,7 @@ fn for_in_values(obj: &JsValue) -> Result<Vec<JsValue>> {
         | JsValue::Map(_) => Vec::new(),
         JsValue::DateTime(_) | JsValue::Instance(_) => {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "for...in over an object with its own enumerable state".to_string(),
                 None,
             )

@@ -31,7 +31,7 @@
 //! [`validate_command`] runs against it as in TS. Of `Serializer.fromJSON`,
 //! the `$class` check and `getType` are hand-ported here to keep TS's own
 //! errors for a missing or non-string `$class`
-//! ([`from_json_against`]); the rest — the `JSONPopulator` walk and the
+//! (`from_json_against`); the rest — the `JSONPopulator` walk and the
 //! `ResourceValidator` pass — now runs as the real, ported
 //! `Serializer::from_json` (P3-01b, `src/instance/serializer.rs`), raising
 //! the same `ValidationException`-style errors TS does.
@@ -318,7 +318,7 @@ fn parse_version(version: &str) -> Option<model_util::SemVer> {
 /// version.
 fn semver_not_a_string() -> ConcertoError {
     ContractError::pre_port(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "Invalid version. Must be a string. Got type \"undefined\".".to_string(),
         None,
     )
@@ -329,7 +329,7 @@ fn semver_not_a_string() -> ConcertoError {
 /// or `null` (`is_null` true).
 fn read_properties_error(is_null: bool, property: &str) -> ConcertoError {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-readproperties",
         vec![
             (
@@ -367,7 +367,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
         // `fqn.lastIndexOf('.')` on a truthy non-string.
         Some(v) if crate::ecma::is_truthy(v) => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-notafunction",
                 vec![("expression", "fqn.lastIndexOf".to_string())],
             )
@@ -457,7 +457,7 @@ pub fn apply_decorator(
         }
         other => {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!("Unknown command type {other}"),
                 None,
             )
@@ -740,7 +740,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         }
         if resolved_model_file.is_none() {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "Decorator Command references namespace \"{namespace}\" which does not exist: {}",
                     serde_json::to_string_pretty(command).unwrap_or_default()
@@ -774,7 +774,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         && target.get("property").is_some_and(crate::ecma::is_truthy)
     {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "Decorator Command references both property and properties. You must either reference a single property or a list of properites.".to_string(),
             None,
         )
@@ -802,7 +802,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
             let found = model_manager.get_property(&fqn, property)?;
             if found.is_none() {
                 return Err(ContractError::pre_port(
-                    ErrorKind::Error,
+                    ErrorKind::InvalidArgument,
                     format!(
                         "Decorator Command references property \"{namespace}.{declaration}.{property}\" which does not exist."
                     ),
@@ -817,7 +817,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
                 let found = model_manager.get_property(&fqn, property)?;
                 if found.is_none() {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!(
                             "Decorator Command references property \"{namespace}.{declaration}.{property}\" which does not exist."
                         ),
@@ -874,7 +874,7 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
 }
 
 fn structural_error(message: impl Into<String>) -> ContractError {
-    ContractError::pre_port(ErrorKind::Error, message.into(), None)
+    ContractError::pre_port(ErrorKind::InvalidArgument, message.into(), None)
 }
 
 fn require_string_field(obj: &Map<String, Value>, key: &str, context: &str) -> Result<()> {
@@ -1091,10 +1091,10 @@ fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()
 /// building and validating a decorator command set instance
 /// ([`from_json_against`]). Neither is reachable in practice: no
 /// declaration in `DCS_MODEL` is system-identified or timestamped, so this
-/// exists only to satisfy [`crate::instance::InstanceEnv`].
+/// exists only to satisfy [`crate::instance::factory::InstanceEnv`].
 struct DcsInstanceEnv;
 
-impl crate::instance::InstanceEnv for DcsInstanceEnv {
+impl crate::instance::factory::InstanceEnv for DcsInstanceEnv {
     fn new_id(&mut self) -> String {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1131,7 +1131,7 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         Some(v) if crate::ecma::is_truthy(v) => {
             // `ModelUtil.getNamespace` calls `fqn.lastIndexOf('.')`.
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-notafunction",
                 vec![("expression", "fqn.lastIndexOf".to_string())],
             )
@@ -1139,7 +1139,7 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
         _ => {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "Invalid JSON data. Does not contain a $class type identifier.".to_string(),
                 None,
             )
@@ -1147,9 +1147,9 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
     };
     get_type(model_manager, class)?;
-    let serializer = crate::instance::Serializer::new(true, true, None)
+    let serializer = crate::instance::serializer::Serializer::new(true, true, None)
         .expect("Serializer::new with a truthy factory and model manager cannot fail");
-    let json_instance = crate::instance::JsValue::from_json(instance);
+    let json_instance = crate::instance::value::JsValue::from_json(instance);
     let mut env = DcsInstanceEnv;
     serializer
         .from_json(model_manager, &json_instance, None, &mut env)
@@ -1193,7 +1193,7 @@ fn get_type(model_manager: &ModelManager, qualified_name: &str) -> Result<()> {
 /// (`src/decoratormanager.ts`): builds the validation model manager (the
 /// decorator, root and metamodel models, then `model_files` if given, then
 /// the DCS model), checks `decorator_command_set` against it
-/// ([`from_json_against`]), and returns it.
+/// (`from_json_against`), and returns it.
 pub fn validate(
     decorator_command_set: &Value,
     model_files: Option<&[&ModelFile]>,
@@ -1228,7 +1228,7 @@ pub fn validated_yaml_to_json(yaml_input: &str) -> Result<Value> {
 /// `should_validate` — matching the reference's nesting, *only* then —
 /// builds the validation model manager (the metamodel, `model_manager`'s own
 /// model files and the DCS model), checks each command set against it
-/// ([`from_json_against`]) and, when also `should_validate_commands`, runs
+/// (`from_json_against`) and, when also `should_validate_commands`, runs
 /// [`validate_command`] over every command against it.
 /// `should_validate_commands` alone (`should_validate` false) validates
 /// nothing at all, exactly as the reference's `if (shouldValidate) { ...
@@ -1369,7 +1369,7 @@ pub fn prepare_decoration(
             || options.disable_metamodel_validation == Some(false)
         {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "skipValidationAndResolution cannot be used with disableMetamodelResolution or disableMetamodelValidation options as false".to_string(),
                 None,
             )
@@ -1483,7 +1483,7 @@ fn synthetic_decorator_imports(
             }
             Some(v) if crate::ecma::is_truthy(v) => {
                 return Err(ContractError::new(
-                    ErrorKind::JsTypeError,
+                    ErrorKind::MalformedInput,
                     "engine-typeerror-notafunction",
                     vec![(
                         "expression",

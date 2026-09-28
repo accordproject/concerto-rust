@@ -30,7 +30,7 @@ pub struct Serializer {
 }
 
 fn plain_error(code: &'static str) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, Vec::new()).into()
+    ContractError::new(ErrorKind::InvalidArgument, code, Vec::new()).into()
 }
 
 /// `Object.assign({}, a, b)`.
@@ -102,7 +102,7 @@ impl Serializer {
         // (maintainer-accepted, accordproject/concerto-rust#156).
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "a $class that is not a string: {}",
                     class_name.to_js_string()
@@ -186,7 +186,7 @@ impl Serializer {
                 // resource: no instance is built with such a type.
                 Declaration::Enum(_) | Declaration::Map(_) => {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!(
                             "an instance of {}, which is not a class",
                             instance.class_fqn

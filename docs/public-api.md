@@ -14,14 +14,26 @@
   P5-07 breaking-changes plan (concerto `migration/BREAKING-CHANGES-PLAN.md`,
   rows BR-01 to BR-11) and the P5-06d typed deserialisation (#239).
 
-The only code change that ships with this revision is documentation. The 15
-public items that had no doc comment now have one, and `lib.rs` sets
-`#![warn(missing_docs)]` (section 7, step 0). Everything else is proposed
-here and is implemented by later P6 tasks once the maintainer agrees to the
-design. The comment on #83 of 2026-09-28 requires a maintainer decision
-before any change to public naming or error types beyond this note, and
-sections 4 to 6 are written as that proposal. Section 8 lists what is still
-open.
+This revision ships with the code for section 7's steps 0 to 2 and the
+naming half of step 3:
+
+- **Step 0:** the 15 public items that had no doc comment now have one, and
+  `lib.rs` sets `#![warn(missing_docs)]`.
+- **Step 1:** the `js-compat` feature. The JS object model, the `$$` tag
+  encoding, the TS class mapping and the seam are public only with it, so
+  core's default public API has no JS type (exit condition 3).
+- **Step 2:** `main`'s names are back: the inherent `name`, `type_name`,
+  `decorators`, `declaration_kind` and `scalar_type`, the functions
+  `model_util::{short_name, namespace_of, qualify}`, and a `prelude`.
+- **Step 3, naming:** `ErrorKind::{Error, JsTypeError, JsRangeError}` are
+  `InvalidArgument`, `MalformedInput` and `RecursionLimit`, and
+  `ErrorKind::ts_class` is behind `js-compat`.
+
+concerto-wasm enables `js-compat` and its exported JS API is unchanged (it
+still reports the kinds to JS by their old names). The comment on #83 of
+2026-09-28 requires a maintainer decision before any change to public naming
+or error types beyond this note. The rest of section 7 is still a proposal,
+and section 8 lists what is still open.
 
 Every number and name below describes `claude/tender-pascal-ocwf9q` at
 `af207c5`, unless it says otherwise. "`main`" means concerto-rust `main` at
@@ -195,8 +207,8 @@ rule holds and its purpose does not. The same holds for `Dayjs`,
 `SerializerOptions` (an `IndexMap<String, JsValue>` option bag), the `$$` tag
 constants and helpers, `InstanceKind::ctor` (a TS class name),
 `ErrorKind::{JsTypeError, JsRangeError}` and `ErrorKind::ts_class`. The exit
-condition "no `concerto-wasm` or JS type appears in core's public API" is not
-met until section 7's step 1.
+condition "no `concerto-wasm` or JS type appears in core's public API" was
+not met at `af207c5`. Section 7's step 1, done in this revision, meets it.
 
 **F3. The binding sets the shape of the surface.** Five traits
 (`ResolutionContext`, `ValidatedElement`, `FullyQualified`'s associated
@@ -223,10 +235,10 @@ code; 41 non-test references construct or match them. No enum in the crate is
 variants (`JsValue` 5, `InstanceKind` 3, `UtcOffset` 2), 4 fields of
 `GeneratorOptions`, and `ModelManager::generation`, whose doc comment had
 drifted onto `decorator_validation`. This revision fixes all 15 and turns the
-lint on (section 7, step 0). Rustdoc still reports 55 other warnings: 49
-public docs that link to private items and 6 unresolved links. They are
-fixed in step 1, because most of them go away when the seam leaves the
-default build.
+lint on (section 7, step 0). Rustdoc also reported 55 other warnings: 49
+public docs that link to private items and 6 unresolved links. Step 1, done
+in this revision, fixes them: rustdoc gives no warning for core with or
+without `js-compat`.
 
 **F8. The #1273 options are only reachable through the JS object model.**
 `DeserializeOptions` takes effect only inside `JSONPopulator`, through
@@ -746,21 +758,63 @@ stay byte-identical in its JS behaviour.
    missing_docs" cargo doc -p accordproject-concerto-core --no-deps` passes,
    and so does clippy with `-D warnings`, so any new undocumented public item
    now fails CI (exit condition 2).
-1. **`js-compat` feature** (4.6, part 1; BR-03, BR-04). Add `[features]
-   js-compat = []`, and enable it in concerto-wasm and in core's
-   `[dev-dependencies]` (a self dev-dependency with the feature, for the
-   oracle harness and the unit tests). Gate each JS object model and Seam row
-   of 3.3 with `#[cfg(feature = "js-compat")] pub` and `#[cfg(not(feature =
-   "js-compat"))] pub(crate)`, where stable code uses it internally. Fix the
-   55 rustdoc warnings. After this step, exit condition 3 holds: `cargo
-   public-api -p accordproject-concerto-core` shows no JS type.
-2. **`main`'s names** (5.8): the inherent methods, `model_util`'s three
-   functions, `get_all_properties`, `scalar_type`, and the `prelude`.
-   Additive, apart from the two signature restorations.
-3. **Errors** (5.6; BR-07). Finish the P1-05 migration of the legacy
-   construction sites. Introduce `Error`, the renamed `ErrorKind` and
-   `Location`, and alias `ConcertoError`. `ts_class` moves behind
-   `js-compat`.
+1. **`js-compat` feature (done in this revision)** (4.6, part 1; BR-03,
+   BR-04). `[features] js-compat = []` is enabled in concerto-wasm and in
+   core's `[dev-dependencies]` (a self dev-dependency with the feature, for
+   the oracle harness and the unit tests). A module is gated with
+   `#[cfg(feature = "js-compat")] pub mod` and `#[cfg(not(feature =
+   "js-compat"))] pub(crate) mod`, and a single item with the crate's
+   `js_compat_pub!` macro, which writes both forms. Without the feature the
+   code is still compiled, because stable code uses some of it internally
+   (F8). Gated:
+   - the JS object model: `instance::{dayjs, factory, generator, populator,
+     resource, resource_id, serializer, value}` and their re-exports
+     (`JsValue`, `Instance`, `InstanceKind`, `Dayjs`, `UtcOffset`,
+     `GeneratorOptions`, `Serializer`, `SerializerOptions`, `InstanceEnv`),
+     and `DeserializeOptions::serializer_options`;
+   - the `$$` encoding: `instance::validate::{DAYJS_TAG, RELATIONSHIP_TAG,
+     UNDEFINED_TAG, NUMBER_TAG, BIGINT_TAG, MAP_TAG, js_special_number,
+     js_map, js_bigint, js_undefined, is_js_undefined,
+     validate_instance_from, validate_property_value}`;
+   - the TS classes: `ErrorKind::ts_class` and `Decorator::js_name`;
+   - the seam: `model_manager::{ResolutionContext, ValidatedElement, Node}`,
+     `ModelManager::generation`, the ids' `from_index` and `index`,
+     `validate_detached_*`, `validation::{validate_map_key,
+     validate_map_value}`, the `process` family of 3.3 (`Processed*`,
+     `ProcessDecision`, `field::{process, to_string, scalar_to_field_ast}`,
+     `property::process`, `ScalarDeclaration::{process, validate_new,
+     build_standalone, validate, to_string}`, `ClassDeclaration::{
+     process_decision, kinds_compatible, identifier_redeclare_conflict,
+     is_kind, to_string}`, `EnumDeclaration::to_string`,
+     `MapDeclaration::to_string`, `ModelFile::check_constructor_arguments`,
+     `Property::check_bound_validators`, `Decorator::validate`), the
+     validators' `new` and `validate`, and `model_util`'s seam row;
+   - `dcs` (Q3).
+
+   Exit condition 3 now holds: rustdoc for core with default features names
+   none of the JS object model's types, no `$$` tag and no TS class mapping.
+   The handle lookups (`declaration(DeclId)` and the rest) stay public, since
+   stable methods return `DeclId`s (5.3), until step 4 settles one lookup
+   style.
+2. **`main`'s names (done in this revision)** (5.8): the inherent `name`
+   (`Declaration`, `ClassDeclaration`, `EnumDeclaration`, `MapDeclaration`,
+   `ScalarDeclaration`, `Property`), `Property::{type_name, decorators}`,
+   `declaration_kind` (`Declaration`, `ScalarDeclaration`, and `ClassKind`
+   by value), `ScalarDeclaration::scalar_type() -> &'static str` read from
+   the loaded node (the TS `getType`, `None` for a `$class` that is not
+   fully qualified, stays as `Typed::type_name`), `model_util::{short_name,
+   namespace_of, qualify}` (`get_short_name` and `get_fully_qualified_name`
+   delegate to them), and `concerto_core::prelude`. Two parts of 5.8 move
+   to step 4, where the other names get their `#[deprecated]` aliases:
+   deprecating `get_short_name` and `get_fully_qualified_name`, and
+   `get_all_properties -> Vec<&Property>`, whose owner-carrying callers need
+   step 4's `properties` first.
+3. **Errors** (5.6; BR-07). **Done in this revision:** the `ErrorKind`
+   renames (`Error` to `InvalidArgument`, `JsTypeError` to `MalformedInput`,
+   `JsRangeError` to `RecursionLimit`, with the TS class in each variant's
+   doc comment) and `ts_class` behind `js-compat`. **Still to do:** finish
+   the P1-05 migration of the legacy construction sites, introduce `Error`
+   and `Location`, and alias `ConcertoError`.
 4. **Loading and introspection renames** (5.2, 5.3, 5.5; BR-05, BR-06), with
    `#[deprecated]` aliases. The concerto-conformance harness and
    `concerto-validate-rs` keep compiling unchanged.

@@ -101,9 +101,7 @@ use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
-use concerto_core::introspect::{
-    Declaration, DeclarationKind, MapDeclaration, Named, Typed, Validate,
-};
+use concerto_core::introspect::{Declaration, DeclarationKind, MapDeclaration, Validate};
 use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use concerto_core::validation;
@@ -935,8 +933,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                             ))
                         },
                     ),
-                    "getType" => ran(Ok(scalar
-                        .scalar_type()
+                    "getType" => ran(Ok(concerto_core::Typed::type_name(scalar)
                         .map_or(Value::Null, |t| Value::String(t.to_string())))),
                     "getDefaultValue" => {
                         ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
@@ -1556,8 +1553,6 @@ fn scalar_declaration_validator(
     decl_id: DeclId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
-    use concerto_core::introspect::Named;
-
     if part != "validator" {
         return Err(Fault::Unsupported(format!(
             "a scalar declaration's validatorref part {part:?} with no Rust counterpart"
@@ -1626,7 +1621,6 @@ fn build_property_validator(
     prop_id: concerto_core::model_manager::PropId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
-    use concerto_core::introspect::Named;
     use concerto_core::introspect::Property;
 
     let r = session.pool.get(mm_idx).ok_or_else(|| {
@@ -2751,7 +2745,7 @@ fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
     // TS's `Field.getScalarField` recognises; each maps to its `*Property`
     // metamodel class by name, the same correspondence the metamodel itself
     // draws between e.g. `StringScalar` and `StringProperty`.
-    let property_class = match scalar.scalar_type() {
+    let property_class = match concerto_core::Typed::type_name(scalar) {
         Some(primitive) => format!("concerto.metamodel@1.0.0.{primitive}Property"),
         None => {
             return Dispatch::Fault(Fault::Divergence(format!(

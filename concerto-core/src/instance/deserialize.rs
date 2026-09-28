@@ -44,21 +44,24 @@ pub const STRICT_VALIDATE_OPTIONS: DeserializeOptions = DeserializeOptions {
 };
 
 impl DeserializeOptions {
-    /// The flags as serializer options, to pass to `Serializer::from_json`
-    /// (or merge into a larger option bag).
-    pub fn serializer_options(self) -> SerializerOptions {
-        [
-            (
-                REJECT_UNKNOWN_KEYS.to_string(),
-                JsValue::Bool(self.reject_unknown_keys),
-            ),
-            (
-                REJECT_REQUIRED_NULL.to_string(),
-                JsValue::Bool(self.reject_required_null),
-            ),
-        ]
-        .into_iter()
-        .collect()
+    js_compat_pub! {
+        /// The flags as serializer options, to pass to `Serializer::from_json`
+        /// (or merge into a larger option bag). Only with the `js-compat`
+        /// feature.
+        pub fn serializer_options(self) -> SerializerOptions {
+            [
+                (
+                    REJECT_UNKNOWN_KEYS.to_string(),
+                    JsValue::Bool(self.reject_unknown_keys),
+                ),
+                (
+                    REJECT_REQUIRED_NULL.to_string(),
+                    JsValue::Bool(self.reject_required_null),
+                ),
+            ]
+            .into_iter()
+            .collect()
+        }
     }
 
     /// The flags a serializer option bag sets (each one truthy).

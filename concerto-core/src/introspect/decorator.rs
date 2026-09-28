@@ -10,7 +10,7 @@
 //!
 //! # Reading a decorator's arguments (OD-3)
 //!
-//! The generated [`mm::Decorator`] is not faithful enough to read: its
+//! The generated `mm::Decorator` is not faithful enough to read: its
 //! `arguments` are typed `Vec<DecoratorLiteral>`, and `DecoratorLiteral` is
 //! codegen's abstract base for the union (`DecoratorString`,
 //! `DecoratorNumber`, `DecoratorBoolean`, `DecoratorTypeReference`) with none
@@ -23,7 +23,7 @@
 //! [`WithDecorators`] is the small wrapper that does this for a
 //! newtype-over-`mm::*` element ([`super::declaration::EnumDeclaration`],
 //! every [`super::property::Property`] variant); [`ClassDeclaration`] and
-//! [`ModelFile`] have room for the same `Vec<Decorator>` as an ordinary field.
+//! `ModelFile` have room for the same `Vec<Decorator>` as an ordinary field.
 
 use serde_json::Value;
 
@@ -31,7 +31,7 @@ use crate::ecma::number_to_string;
 use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
 use crate::introspect::declaration::ClassDeclaration;
 use crate::introspect::property::Property;
-use crate::introspect::{Named, Typed, qualified_class};
+use crate::introspect::qualified_class;
 use crate::model_manager::ModelManager;
 use crate::model_util::is_primitive_type;
 
@@ -123,20 +123,22 @@ impl Decorator {
         &self.name
     }
 
-    /// The name as TS's `Decorator.getName()` holds it for
-    /// `Decorated.validate`'s duplicate check: `None` for a node with no
-    /// `name` at all (JS `undefined`), which is a different `Set` entry from
-    /// every string name, `""` included. `pub`, not `pub(crate)`: the WASM
-    /// binding's own `decoratorProcess` (`concerto-wasm/src/lib.rs`) needs
-    /// this to give the JS-side `Decorator.name` field the same `undefined`
-    /// TS's own unconditional `this.name = ast.name` leaves it with,
-    /// rather than the empty-string default [`Decorator::name`] gives every
-    /// other reader (accordproject/concerto-rust#219: a model-file-level
-    /// `Decorator` built this way, with no name, previously surfaced as
-    /// `this.name === ""`, so two of them collided as "Duplicate decorator "
-    /// instead of TS's own "Duplicate decorator undefined").
-    pub fn js_name(&self) -> Option<&str> {
-        self.name_present.then_some(self.name.as_str())
+    js_compat_pub! {
+        /// The name as TS's `Decorator.getName()` holds it for
+        /// `Decorated.validate`'s duplicate check: `None` for a node with no
+        /// `name` at all (JS `undefined`), which is a different `Set` entry from
+        /// every string name, `""` included. `pub`, not `pub(crate)`: the WASM
+        /// binding's own `decoratorProcess` (`concerto-wasm/src/lib.rs`) needs
+        /// this to give the JS-side `Decorator.name` field the same `undefined`
+        /// TS's own unconditional `this.name = ast.name` leaves it with,
+        /// rather than the empty-string default [`Decorator::name`] gives every
+        /// other reader (accordproject/concerto-rust#219: a model-file-level
+        /// `Decorator` built this way, with no name, previously surfaced as
+        /// `this.name === ""`, so two of them collided as "Duplicate decorator "
+        /// instead of TS's own "Duplicate decorator undefined").
+        pub fn js_name(&self) -> Option<&str> {
+            self.name_present.then_some(self.name.as_str())
+        }
     }
 
     /// The arguments given to this decorator, in order.
@@ -146,51 +148,53 @@ impl Decorator {
         &self.arguments
     }
 
-    /// Semantic validation of the decorator: that its name and any type
-    /// reference argument resolve, and that its arguments match the count
-    /// and types of the properties of the type it names, if that type is
-    /// itself a declaration.
-    ///
-    /// Runs only when `manager`'s [`DecoratorValidationOptions`] enable it: TS
-    /// guards the whole body on `validationOptions.missingDecorator ||
-    /// validationOptions.invalidDecorator` and does nothing at all otherwise
-    /// (`DEFAULT_DECORATOR_VALIDATION` leaves both `undefined`).
-    ///
-    /// `context` is the fully qualified name of the decorated element, used
-    /// only to describe *where* an unresolved name was found; pass `None` for
-    /// a model file's own decorators, which have no such name in TS either.
-    ///
-    /// **Log vs throw**, faithfully: every problem found is reported through
-    /// [`DecoratorValidationOptions::invalid_decorator`], except the
-    /// decorator's own name failing to resolve, which is reported through
-    /// [`DecoratorValidationOptions::missing_decorator`] instead — and *any*
-    /// problem thrown while checking arguments is also caught and re-reported
-    /// through `missing_decorator` (TS wraps the whole check in one
-    /// `try`/`catch`). Reporting only throws when the option is the exact
-    /// string `"error"`; anything else (including `"warn"`) only logs, and
-    /// this Rust port has no logger yet (Logger.dispatch is not ported;
-    /// nothing observes it), so an option other than `"error"` here is
-    /// silently accepted.
-    ///
-    /// TS: `Decorator.validate` (src/introspect/decorator.ts).
-    pub fn validate(
-        &self,
-        manager: &ModelManager,
-        namespace: &str,
-        context: Option<&str>,
-    ) -> Result<()> {
-        let options = manager.decorator_validation();
-        if !options.is_enabled() {
-            return Ok(());
-        }
-        match self.try_validate(manager, namespace, context, options) {
-            Ok(()) => Ok(()),
-            Err(problem) => self.rethrow(
-                manager,
-                namespace,
-                options.missing_decorator.as_deref(),
-                problem,
-            ),
+    js_compat_pub! {
+        /// Semantic validation of the decorator: that its name and any type
+        /// reference argument resolve, and that its arguments match the count
+        /// and types of the properties of the type it names, if that type is
+        /// itself a declaration.
+        ///
+        /// Runs only when `manager`'s [`DecoratorValidationOptions`] enable it: TS
+        /// guards the whole body on `validationOptions.missingDecorator ||
+        /// validationOptions.invalidDecorator` and does nothing at all otherwise
+        /// (`DEFAULT_DECORATOR_VALIDATION` leaves both `undefined`).
+        ///
+        /// `context` is the fully qualified name of the decorated element, used
+        /// only to describe *where* an unresolved name was found; pass `None` for
+        /// a model file's own decorators, which have no such name in TS either.
+        ///
+        /// **Log vs throw**, faithfully: every problem found is reported through
+        /// [`DecoratorValidationOptions::invalid_decorator`], except the
+        /// decorator's own name failing to resolve, which is reported through
+        /// [`DecoratorValidationOptions::missing_decorator`] instead — and *any*
+        /// problem thrown while checking arguments is also caught and re-reported
+        /// through `missing_decorator` (TS wraps the whole check in one
+        /// `try`/`catch`). Reporting only throws when the option is the exact
+        /// string `"error"`; anything else (including `"warn"`) only logs, and
+        /// this Rust port has no logger yet (Logger.dispatch is not ported;
+        /// nothing observes it), so an option other than `"error"` here is
+        /// silently accepted.
+        ///
+        /// TS: `Decorator.validate` (src/introspect/decorator.ts).
+        pub fn validate(
+            &self,
+            manager: &ModelManager,
+            namespace: &str,
+            context: Option<&str>,
+        ) -> Result<()> {
+            let options = manager.decorator_validation();
+            if !options.is_enabled() {
+                return Ok(());
+            }
+            match self.try_validate(manager, namespace, context, options) {
+                Ok(()) => Ok(()),
+                Err(problem) => self.rethrow(
+                    manager,
+                    namespace,
+                    options.missing_decorator.as_deref(),
+                    problem,
+                ),
+            }
         }
     }
 
@@ -657,7 +661,7 @@ pub(crate) fn null_decorator(ast: &Value) -> Option<ContractError> {
 
 /// The DV-018 error for a decorator node that is `value` (`null`, or
 /// `undefined` through the WASM boundary), with no location and no model
-/// file yet (module doc on [`null_decorator`]).
+/// file yet (module doc on `null_decorator`).
 pub fn not_an_object(value: &str) -> ContractError {
     ContractError::new(
         ErrorKind::IllegalModel,
@@ -708,7 +712,7 @@ impl<T> std::ops::Deref for WithDecorators<T> {
 /// Only the exact string `"error"` is ever tested against here (matching
 /// every test and fixture in this scope); any other non-empty string,
 /// including `"warn"`, enables the check but never throws (module doc on
-/// [`Decorator::handle`]).
+/// `Decorator::handle`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DecoratorValidationOptions {
     /// The log level for a decorator whose own name does not resolve.

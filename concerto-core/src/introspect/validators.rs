@@ -168,7 +168,7 @@ fn validator_string_field(ast: &Value, key: &str) -> String {
 /// Builds a [`mm::CollectionSizeValidator`] straight from the raw
 /// `sizeValidator` AST node, bypassing `serde`'s strict decode of its
 /// `minSize`/`maxSize` fields (which requires an actual JSON number) the way
-/// [`validator_number_field`]'s doc comment describes. `$class` is never read
+/// `validator_number_field`'s doc comment describes. `$class` is never read
 /// by any behaviour this crate ports (only kept for a faithful struct), so a
 /// non-string or absent one is coerced/defaulted the same permissive way.
 /// `raw` is `ast.get("sizeValidator")`; `None` (the key absent) and an
@@ -182,11 +182,11 @@ fn validator_string_field(ast: &Value, key: &str) -> String {
 /// `pub`, not `pub(crate)`: concerto-wasm's own `collectionSizeValidatorNew`
 /// binding is TS's *other* call site for this exact constructor (`Property.process`
 /// builds the view directly, per this module's own doc comment on
-/// [`CollectionSizeValidator::new`]) and needs the same leniency
+/// `CollectionSizeValidator::new`) and needs the same leniency
 /// (accordproject/concerto-rust#217) — a fuzz-mutated `minSize`/`maxSize`
 /// there hits `serde`'s strict decode just as surely as it did here, since
 /// that binding decoded the raw AST the same strict way before calling
-/// through to [`CollectionSizeValidator::new`].
+/// through to `CollectionSizeValidator::new`.
 pub fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
     let raw = raw.filter(|value| !value.is_null())?;
     Some(mm::CollectionSizeValidator {
@@ -237,7 +237,7 @@ fn length_bound_field(ast: &Value, key: &str) -> Option<f64> {
 
 /// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
 /// `validator` (`mm::StringRegexValidator`, `{pattern, flags}`) —
-/// [`validator_string_field`]'s doc comment covers the `pattern`/`flags`
+/// `validator_string_field`'s doc comment covers the `pattern`/`flags`
 /// coercion, which mirrors `new RegExp(validator.pattern, validator.flags)`
 /// rather than a plain `ToString`. `pub` for the same reason as
 /// [`size_validator_from_ast`].
@@ -275,72 +275,74 @@ fn bound(ast: &Value, key: &str) -> Option<Value> {
 }
 
 impl NumberValidator {
-    /// Builds the validator from its AST (`{lower, upper}`), checking the
-    /// bounds and the element's default value.
-    ///
-    /// TS: NumberValidator.constructor (src/introspect/numbervalidator.ts)
-    pub fn new<F: ValidatedElement>(field: &F, ast: &Value) -> Result<Self, F::Error> {
-        // The hasOwnProperty guards: an absent bound stays null.
-        let lower_bound = bound(ast, "lower");
-        let upper_bound = bound(ast, "upper");
+    js_compat_pub! {
+        /// Builds the validator from its AST (`{lower, upper}`), checking the
+        /// bounds and the element's default value.
+        ///
+        /// TS: NumberValidator.constructor (src/introspect/numbervalidator.ts)
+        pub fn new<F: ValidatedElement>(field: &F, ast: &Value) -> Result<Self, F::Error> {
+            // The hasOwnProperty guards: an absent bound stays null.
+            let lower_bound = bound(ast, "lower");
+            let upper_bound = bound(ast, "upper");
 
-        match (&lower_bound, &upper_bound) {
-            (None, None) => {
-                return Err(report_error(
-                    field,
-                    None,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "numbervalidator-constructor-nobounds",
-                    Vec::new(),
-                ));
+            match (&lower_bound, &upper_bound) {
+                (None, None) => {
+                    return Err(report_error(
+                        field,
+                        None,
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "numbervalidator-constructor-nobounds",
+                        Vec::new(),
+                    ));
+                }
+                (Some(lower), Some(upper)) if ecma::greater_than(lower, upper) => {
+                    return Err(report_error(
+                        field,
+                        None,
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "numbervalidator-constructor-lowerhigherthanupper",
+                        Vec::new(),
+                    ));
+                }
+                _ => {}
             }
-            (Some(lower), Some(upper)) if ecma::greater_than(lower, upper) => {
-                return Err(report_error(
-                    field,
-                    None,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "numbervalidator-constructor-lowerhigherthanupper",
-                    Vec::new(),
-                ));
+
+            if let Some(value) = field.default_value()? {
+                if let Some(lower) = &lower_bound
+                    && ecma::less_than(&value, lower)
+                {
+                    return Err(report_error(
+                        field,
+                        None,
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "numbervalidator-constructor-outsidelowerbound",
+                        vec![
+                            ("value", ecma::to_js_string(&value)),
+                            ("lowerBound", ecma::to_js_string(lower)),
+                        ],
+                    ));
+                }
+                if let Some(upper) = &upper_bound
+                    && ecma::greater_than(&value, upper)
+                {
+                    return Err(report_error(
+                        field,
+                        None,
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "numbervalidator-constructor-outsideupperbound",
+                        vec![
+                            ("value", ecma::to_js_string(&value)),
+                            ("upperBound", ecma::to_js_string(upper)),
+                        ],
+                    ));
+                }
             }
-            _ => {}
+
+            Ok(Self {
+                lower_bound,
+                upper_bound,
+            })
         }
-
-        if let Some(value) = field.default_value()? {
-            if let Some(lower) = &lower_bound
-                && ecma::less_than(&value, lower)
-            {
-                return Err(report_error(
-                    field,
-                    None,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "numbervalidator-constructor-outsidelowerbound",
-                    vec![
-                        ("value", ecma::to_js_string(&value)),
-                        ("lowerBound", ecma::to_js_string(lower)),
-                    ],
-                ));
-            }
-            if let Some(upper) = &upper_bound
-                && ecma::greater_than(&value, upper)
-            {
-                return Err(report_error(
-                    field,
-                    None,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "numbervalidator-constructor-outsideupperbound",
-                    vec![
-                        ("value", ecma::to_js_string(&value)),
-                        ("upperBound", ecma::to_js_string(upper)),
-                    ],
-                ));
-            }
-        }
-
-        Ok(Self {
-            lower_bound,
-            upper_bound,
-        })
     }
 
     /// The lower bound, or `None` (JS `null`) when there is none.
@@ -357,49 +359,51 @@ impl NumberValidator {
         self.upper_bound.as_ref()
     }
 
-    /// Checks an instance value. `None` is JS `null`, which is always
-    /// accepted. `field` is the element the validator is attached to, read
-    /// only to report an error.
-    ///
-    /// TS: NumberValidator.validate (src/introspect/numbervalidator.ts)
-    pub fn validate<F: ValidatedElement>(
-        &self,
-        field: &F,
-        identifier: Option<&str>,
-        value: Option<f64>,
-    ) -> Result<(), F::Error> {
-        let Some(value) = value else {
-            return Ok(());
-        };
-        if let Some(lower) = &self.lower_bound
-            && ecma::number_less_than(value, lower)
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "numbervalidator-constructor-outsidelowerbound",
-                vec![
-                    ("value", ecma::number_to_string(value)),
-                    ("lowerBound", ecma::to_js_string(lower)),
-                ],
-            ));
+    js_compat_pub! {
+        /// Checks an instance value. `None` is JS `null`, which is always
+        /// accepted. `field` is the element the validator is attached to, read
+        /// only to report an error.
+        ///
+        /// TS: NumberValidator.validate (src/introspect/numbervalidator.ts)
+        pub fn validate<F: ValidatedElement>(
+            &self,
+            field: &F,
+            identifier: Option<&str>,
+            value: Option<f64>,
+        ) -> Result<(), F::Error> {
+            let Some(value) = value else {
+                return Ok(());
+            };
+            if let Some(lower) = &self.lower_bound
+                && ecma::number_less_than(value, lower)
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "numbervalidator-constructor-outsidelowerbound",
+                    vec![
+                        ("value", ecma::number_to_string(value)),
+                        ("lowerBound", ecma::to_js_string(lower)),
+                    ],
+                ));
+            }
+            if let Some(upper) = &self.upper_bound
+                && ecma::number_greater_than(value, upper)
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "numbervalidator-constructor-outsideupperbound",
+                    vec![
+                        ("value", ecma::number_to_string(value)),
+                        ("upperBound", ecma::to_js_string(upper)),
+                    ],
+                ));
+            }
+            Ok(())
         }
-        if let Some(upper) = &self.upper_bound
-            && ecma::number_greater_than(value, upper)
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "numbervalidator-constructor-outsideupperbound",
-                vec![
-                    ("value", ecma::number_to_string(value)),
-                    ("upperBound", ecma::to_js_string(upper)),
-                ],
-            ));
-        }
-        Ok(())
     }
 
     /// Whether every value this validator accepts is accepted by `other`.
@@ -455,56 +459,58 @@ pub struct CollectionSizeValidator {
 }
 
 impl CollectionSizeValidator {
-    /// Builds the validator from its AST (`{minSize, maxSize}`).
-    ///
-    /// The metamodel's `min_size`/`max_size` already collapse an absent bound
-    /// and an explicit `null` one into `None` alike (OD-3), which matches TS
-    /// `validator.minSize ?? null` exactly: unlike `StringValidator`'s length
-    /// bounds (below), `CollectionSizeValidator` reads its AST with `??`, not
-    /// a strict `=== null` check, so there is no absent/null distinction to
-    /// lose here.
-    ///
-    /// TS: CollectionSizeValidator.constructor
-    /// (src/introspect/collectionsizevalidator.ts)
-    pub fn new<F: ValidatedElement>(
-        field: &F,
-        validator: &mm::CollectionSizeValidator,
-        raw: Option<&Value>,
-    ) -> Result<Self, F::Error> {
-        let min_size = validator.min_size;
-        let max_size = validator.max_size;
+    js_compat_pub! {
+        /// Builds the validator from its AST (`{minSize, maxSize}`).
+        ///
+        /// The metamodel's `min_size`/`max_size` already collapse an absent bound
+        /// and an explicit `null` one into `None` alike (OD-3), which matches TS
+        /// `validator.minSize ?? null` exactly: unlike `StringValidator`'s length
+        /// bounds (below), `CollectionSizeValidator` reads its AST with `??`, not
+        /// a strict `=== null` check, so there is no absent/null distinction to
+        /// lose here.
+        ///
+        /// TS: CollectionSizeValidator.constructor
+        /// (src/introspect/collectionsizevalidator.ts)
+        pub fn new<F: ValidatedElement>(
+            field: &F,
+            validator: &mm::CollectionSizeValidator,
+            raw: Option<&Value>,
+        ) -> Result<Self, F::Error> {
+            let min_size = validator.min_size;
+            let max_size = validator.max_size;
 
-        if min_size.is_none() && max_size.is_none() {
-            return Err(report_error(
-                field,
-                Some(&field.name()?),
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "collectionsizevalidator-constructor-nosize",
-                Vec::new(),
-            ));
-        } else if min_size.unwrap_or(0.0) < 0.0 || max_size.unwrap_or(0.0) < 0.0 {
-            return Err(report_error(
-                field,
-                Some(&field.name()?),
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "collectionsizevalidator-constructor-negativesize",
-                Vec::new(),
-            ));
-        } else if let Some((min, max)) = min_size.zip(max_size)
-            && bounds_out_of_order(raw, "minSize", "maxSize", min, max)
-        {
-            // When either bound is absent, this is fine: no need to check
-            // whether minSize > maxSize.
-            return Err(report_error(
-                field,
-                Some(&field.name()?),
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "collectionsizevalidator-constructor-mingreaterthanmax",
-                Vec::new(),
-            ));
+            if min_size.is_none() && max_size.is_none() {
+                return Err(report_error(
+                    field,
+                    Some(&field.name()?),
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "collectionsizevalidator-constructor-nosize",
+                    Vec::new(),
+                ));
+            } else if min_size.unwrap_or(0.0) < 0.0 || max_size.unwrap_or(0.0) < 0.0 {
+                return Err(report_error(
+                    field,
+                    Some(&field.name()?),
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "collectionsizevalidator-constructor-negativesize",
+                    Vec::new(),
+                ));
+            } else if let Some((min, max)) = min_size.zip(max_size)
+                && bounds_out_of_order(raw, "minSize", "maxSize", min, max)
+            {
+                // When either bound is absent, this is fine: no need to check
+                // whether minSize > maxSize.
+                return Err(report_error(
+                    field,
+                    Some(&field.name()?),
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "collectionsizevalidator-constructor-mingreaterthanmax",
+                    Vec::new(),
+                ));
+            }
+
+            Ok(Self { min_size, max_size })
         }
-
-        Ok(Self { min_size, max_size })
     }
 
     /// The minimum size, or `None` (JS `null`) when there is none.
@@ -523,39 +529,41 @@ impl CollectionSizeValidator {
         self.max_size
     }
 
-    /// Checks an instance collection's size.
-    ///
-    /// TS: CollectionSizeValidator.validate
-    /// (src/introspect/collectionsizevalidator.ts)
-    pub fn validate<F: ValidatedElement>(
-        &self,
-        field: &F,
-        identifier: Option<&str>,
-        value: f64,
-    ) -> Result<(), F::Error> {
-        if let Some(min) = self.min_size
-            && value < min
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "collectionsizevalidator-validate-belowminsize",
-                vec![("minSize", ecma::number_to_string(min))],
-            ));
+    js_compat_pub! {
+        /// Checks an instance collection's size.
+        ///
+        /// TS: CollectionSizeValidator.validate
+        /// (src/introspect/collectionsizevalidator.ts)
+        pub fn validate<F: ValidatedElement>(
+            &self,
+            field: &F,
+            identifier: Option<&str>,
+            value: f64,
+        ) -> Result<(), F::Error> {
+            if let Some(min) = self.min_size
+                && value < min
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "collectionsizevalidator-validate-belowminsize",
+                    vec![("minSize", ecma::number_to_string(min))],
+                ));
+            }
+            if let Some(max) = self.max_size
+                && value > max
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "collectionsizevalidator-validate-abovemaxsize",
+                    vec![("maxSize", ecma::number_to_string(max))],
+                ));
+            }
+            Ok(())
         }
-        if let Some(max) = self.max_size
-            && value > max
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "collectionsizevalidator-validate-abovemaxsize",
-                vec![("maxSize", ecma::number_to_string(max))],
-            ));
-        }
-        Ok(())
     }
 
     /// Whether every collection size this validator accepts is accepted by
@@ -715,98 +723,71 @@ pub struct StringValidator {
 }
 
 impl StringValidator {
-    /// Builds the validator from its AST: an optional regex (`{pattern,
-    /// flags}`) and an optional length range (`{minLength, maxLength}`), in
-    /// that order (TS checks the length range, then the regex, then the
-    /// element's default value).
-    ///
-    /// TS: StringValidator.constructor (src/introspect/stringvalidator.ts)
-    pub fn new<F: ValidatedElement>(
-        field: &F,
-        validator: Option<&mm::StringRegexValidator>,
-        length_validator: Option<&mm::StringLengthValidator>,
-        raw_length_validator: Option<&Value>,
-    ) -> Result<Self, F::Error> {
-        let mut min_length = None;
-        let mut max_length = None;
+    js_compat_pub! {
+        /// Builds the validator from its AST: an optional regex (`{pattern,
+        /// flags}`) and an optional length range (`{minLength, maxLength}`), in
+        /// that order (TS checks the length range, then the regex, then the
+        /// element's default value).
+        ///
+        /// TS: StringValidator.constructor (src/introspect/stringvalidator.ts)
+        pub fn new<F: ValidatedElement>(
+            field: &F,
+            validator: Option<&mm::StringRegexValidator>,
+            length_validator: Option<&mm::StringLengthValidator>,
+            raw_length_validator: Option<&Value>,
+        ) -> Result<Self, F::Error> {
+            let mut min_length = None;
+            let mut max_length = None;
 
-        if let Some(lv) = length_validator {
-            min_length = lv.min_length;
-            max_length = lv.max_length;
+            if let Some(lv) = length_validator {
+                min_length = lv.min_length;
+                max_length = lv.max_length;
 
-            if min_length.is_none() && max_length.is_none() {
-                return Err(report_error(
-                    field,
-                    Some(&field.name()?),
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "stringvalidator-constructor-invalidlength",
-                    Vec::new(),
-                ));
-            } else if min_length.unwrap_or(0.0) < 0.0 || max_length.unwrap_or(0.0) < 0.0 {
-                return Err(report_error(
-                    field,
-                    Some(&field.name()?),
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "stringvalidator-constructor-negativelength",
-                    Vec::new(),
-                ));
-            } else if let Some((min, max)) = min_length.zip(max_length)
-                && bounds_out_of_order(raw_length_validator, "minLength", "maxLength", min, max)
-            {
-                // When either bound is absent, this is fine: no need to
-                // check minLength > maxLength.
-                return Err(report_error(
-                    field,
-                    Some(&field.name()?),
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "stringvalidator-constructor-mingreaterthanmax",
-                    Vec::new(),
-                ));
-            }
-        }
-
-        let regex = match validator {
-            None => None,
-            Some(v) => {
-                // PORTING.md section 3.2 ("Flags"): `new RegExp(pattern,
-                // flags)` validates `flags` itself before ever touching
-                // `pattern`, throwing `Invalid flags supplied to RegExp
-                // constructor '<flags>'` for a duplicate, unrecognised, or
-                // mutually-exclusive (`u` with `v`) flag. `regress::Flags`
-                // (and so `regress::Regex::with_flags`) silently ignores
-                // anything it does not recognise instead of rejecting it, so
-                // that check has to happen here.
-                if !valid_js_regex_flags(v.flags.as_str()) {
-                    let message =
-                        format!("Invalid flags supplied to RegExp constructor '{}'", v.flags);
+                if min_length.is_none() && max_length.is_none() {
                     return Err(report_error(
                         field,
                         Some(&field.name()?),
-                        REGEX_VALIDATOR_EXCEPTION,
-                        "stringvalidator-constructor-invalidregex",
-                        vec![("message", message)],
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "stringvalidator-constructor-invalidlength",
+                        Vec::new(),
+                    ));
+                } else if min_length.unwrap_or(0.0) < 0.0 || max_length.unwrap_or(0.0) < 0.0 {
+                    return Err(report_error(
+                        field,
+                        Some(&field.name()?),
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "stringvalidator-constructor-negativelength",
+                        Vec::new(),
+                    ));
+                } else if let Some((min, max)) = min_length.zip(max_length)
+                    && bounds_out_of_order(raw_length_validator, "minLength", "maxLength", min, max)
+                {
+                    // When either bound is absent, this is fine: no need to
+                    // check minLength > maxLength.
+                    return Err(report_error(
+                        field,
+                        Some(&field.name()?),
+                        DEFAULT_VALIDATOR_EXCEPTION,
+                        "stringvalidator-constructor-mingreaterthanmax",
+                        Vec::new(),
                     ));
                 }
-                match compile_regex(v.pattern.as_str(), v.flags.as_str()) {
-                    Ok(regex) => Some(CompiledRegex {
-                        pattern: v.pattern.clone(),
-                        flags: v.flags.clone(),
-                        regex,
-                    }),
-                    Err(error) => {
-                        // OD-4: V8's wording for the reasons `regress` can
-                        // map (P2-08c review: this was reached only by
-                        // `ScalarDeclaration`'s own regex before a Field's
-                        // own `StringValidator` construction was wired in
-                        // here, so no fixture observed an unmapped reason
-                        // until then); any other reason is an `engine`
-                        // divergence.
-                        let message = format!(
-                            "Invalid regular expression: /{}/{}: {}",
-                            v.pattern,
-                            v.flags,
-                            v8_regex_reason(&error.to_string())
-                        );
+            }
+
+            let regex = match validator {
+                None => None,
+                Some(v) => {
+                    // PORTING.md section 3.2 ("Flags"): `new RegExp(pattern,
+                    // flags)` validates `flags` itself before ever touching
+                    // `pattern`, throwing `Invalid flags supplied to RegExp
+                    // constructor '<flags>'` for a duplicate, unrecognised, or
+                    // mutually-exclusive (`u` with `v`) flag. `regress::Flags`
+                    // (and so `regress::Regex::with_flags`) silently ignores
+                    // anything it does not recognise instead of rejecting it, so
+                    // that check has to happen here.
+                    if !valid_js_regex_flags(v.flags.as_str()) {
+                        let message =
+                            format!("Invalid flags supplied to RegExp constructor '{}'", v.flags);
                         return Err(report_error(
                             field,
                             Some(&field.name()?),
@@ -815,30 +796,59 @@ impl StringValidator {
                             vec![("message", message)],
                         ));
                     }
+                    match compile_regex(v.pattern.as_str(), v.flags.as_str()) {
+                        Ok(regex) => Some(CompiledRegex {
+                            pattern: v.pattern.clone(),
+                            flags: v.flags.clone(),
+                            regex,
+                        }),
+                        Err(error) => {
+                            // OD-4: V8's wording for the reasons `regress` can
+                            // map (P2-08c review: this was reached only by
+                            // `ScalarDeclaration`'s own regex before a Field's
+                            // own `StringValidator` construction was wired in
+                            // here, so no fixture observed an unmapped reason
+                            // until then); any other reason is an `engine`
+                            // divergence.
+                            let message = format!(
+                                "Invalid regular expression: /{}/{}: {}",
+                                v.pattern,
+                                v.flags,
+                                v8_regex_reason(&error.to_string())
+                            );
+                            return Err(report_error(
+                                field,
+                                Some(&field.name()?),
+                                REGEX_VALIDATOR_EXCEPTION,
+                                "stringvalidator-constructor-invalidregex",
+                                vec![("message", message)],
+                            ));
+                        }
+                    }
                 }
+            };
+
+            let built = Self {
+                min_length,
+                max_length,
+                regex,
+            };
+
+            // `if(this.field?.ast?.defaultValue) { this.validate(field.getName(), this.field.ast.defaultValue); }`:
+            // a plain JS truthy check, so a `null`, `false`, `0` or `""` default
+            // skips the check, and only a string default reaches `.length`/regex
+            // logic below (a non-string default is a model TS itself does not
+            // guard against; this port skips the check for one rather than
+            // guessing at JS's coercions).
+            if let Some(value) = field.default_value()?
+                && ecma::is_truthy(&value)
+                && let Some(text) = value.as_str()
+            {
+                built.validate(field, Some(&field.name()?), Some(text))?;
             }
-        };
 
-        let built = Self {
-            min_length,
-            max_length,
-            regex,
-        };
-
-        // `if(this.field?.ast?.defaultValue) { this.validate(field.getName(), this.field.ast.defaultValue); }`:
-        // a plain JS truthy check, so a `null`, `false`, `0` or `""` default
-        // skips the check, and only a string default reaches `.length`/regex
-        // logic below (a non-string default is a model TS itself does not
-        // guard against; this port skips the check for one rather than
-        // guessing at JS's coercions).
-        if let Some(value) = field.default_value()?
-            && ecma::is_truthy(&value)
-            && let Some(text) = value.as_str()
-        {
-            built.validate(field, Some(&field.name()?), Some(text))?;
+            Ok(built)
         }
-
-        Ok(built)
     }
 
     /// The minimum length, or `None` (JS `null`/`undefined`) when there is
@@ -874,61 +884,63 @@ impl StringValidator {
         self.regex.as_ref().is_none_or(|regex| regex.matches(value))
     }
 
-    /// Checks an instance value. `None` is JS `null`, which is always
-    /// accepted. String length is measured in UTF-16 code units, as JS
-    /// `String.prototype.length` counts them.
-    ///
-    /// TS: StringValidator.validate (src/introspect/stringvalidator.ts)
-    pub fn validate<F: ValidatedElement>(
-        &self,
-        field: &F,
-        identifier: Option<&str>,
-        value: Option<&str>,
-    ) -> Result<(), F::Error> {
-        let Some(value) = value else {
-            return Ok(());
-        };
-        let length = value.encode_utf16().count() as f64;
-        if let Some(min) = self.min_length
-            && length < min
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "stringvalidator-validate-belowminlength",
-                vec![
-                    ("value", value.to_string()),
-                    ("minLength", ecma::number_to_string(min)),
-                ],
-            ));
+    js_compat_pub! {
+        /// Checks an instance value. `None` is JS `null`, which is always
+        /// accepted. String length is measured in UTF-16 code units, as JS
+        /// `String.prototype.length` counts them.
+        ///
+        /// TS: StringValidator.validate (src/introspect/stringvalidator.ts)
+        pub fn validate<F: ValidatedElement>(
+            &self,
+            field: &F,
+            identifier: Option<&str>,
+            value: Option<&str>,
+        ) -> Result<(), F::Error> {
+            let Some(value) = value else {
+                return Ok(());
+            };
+            let length = value.encode_utf16().count() as f64;
+            if let Some(min) = self.min_length
+                && length < min
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "stringvalidator-validate-belowminlength",
+                    vec![
+                        ("value", value.to_string()),
+                        ("minLength", ecma::number_to_string(min)),
+                    ],
+                ));
+            }
+            if let Some(max) = self.max_length
+                && length > max
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "stringvalidator-validate-abovemaxlength",
+                    vec![
+                        ("value", value.to_string()),
+                        ("maxLength", ecma::number_to_string(max)),
+                    ],
+                ));
+            }
+            if let Some(regex) = &self.regex
+                && !regex.matches(value)
+            {
+                return Err(report_error(
+                    field,
+                    identifier,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "stringvalidator-validate-regexmismatch",
+                    vec![("value", value.to_string()), ("regex", regex.to_string())],
+                ));
+            }
+            Ok(())
         }
-        if let Some(max) = self.max_length
-            && length > max
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "stringvalidator-validate-abovemaxlength",
-                vec![
-                    ("value", value.to_string()),
-                    ("maxLength", ecma::number_to_string(max)),
-                ],
-            ));
-        }
-        if let Some(regex) = &self.regex
-            && !regex.matches(value)
-        {
-            return Err(report_error(
-                field,
-                identifier,
-                DEFAULT_VALIDATOR_EXCEPTION,
-                "stringvalidator-validate-regexmismatch",
-                vec![("value", value.to_string()), ("regex", regex.to_string())],
-            ));
-        }
-        Ok(())
     }
 
     /// Whether every value this validator accepts is accepted by `other`:
