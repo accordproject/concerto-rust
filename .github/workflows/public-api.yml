@@ -70,4 +70,5 @@ jobs:
         run: |
           cargo semver-checks check-release \
             --package accordproject-concerto-core \
+            --default-features \
             --baseline-rev "${{ steps.baseline.outputs.sha }}"
