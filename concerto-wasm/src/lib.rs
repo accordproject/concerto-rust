@@ -5841,6 +5841,9 @@ pub fn decorator_manager_extract_non_vocab_decorators(
     })
 }
 
+// P5-12b SPIKE (DO NOT MERGE; accordproject/concerto-rust#292).
+mod p512b;
+
 #[cfg(test)]
 mod tests {
     // Host-side tests of the pure wire codec (no `js_sys` call is reached on
