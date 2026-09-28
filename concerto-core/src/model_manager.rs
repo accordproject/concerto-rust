@@ -1125,19 +1125,24 @@ impl ModelManager {
         self.model_file_by_optional_file_name(Some(file_name))
     }
 
-    /// [`model_file_by_file_name`] for a `fileName` that may be JS
-    /// `undefined`. TS compares with `mf.getName() === fileName`, so an
-    /// omitted or `undefined` argument matches the first non-system model
-    /// file that was loaded without a file name (for example
-    /// `addCTOModel(text)` or `addModel(ast)` with no `fileName`), whose
-    /// `getName()` is `undefined`. `None` here finds that file, the one
-    /// whose [`ModelFile::file_name`] is `None`.
-    ///
-    /// [`model_file_by_file_name`]: Self::model_file_by_file_name
-    pub fn model_file_by_optional_file_name(&self, file_name: Option<&str>) -> Option<&ModelFile> {
-        self.model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
-            .find(|mf| mf.file_name() == file_name)
+    js_compat_pub! {
+        /// [`model_file_by_file_name`] for a `fileName` that may be JS
+        /// `undefined`. TS compares with `mf.getName() === fileName`, so an
+        /// omitted or `undefined` argument matches the first non-system model
+        /// file that was loaded without a file name (for example
+        /// `addCTOModel(text)` or `addModel(ast)` with no `fileName`), whose
+        /// `getName()` is `undefined`. `None` here finds that file, the one
+        /// whose [`ModelFile::file_name`] is `None`.
+        ///
+        /// [`model_file_by_file_name`]: Self::model_file_by_file_name
+        pub fn model_file_by_optional_file_name(
+            &self,
+            file_name: Option<&str>,
+        ) -> Option<&ModelFile> {
+            self.model_files()
+                .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+                .find(|mf| mf.file_name() == file_name)
+        }
     }
 
     /// The handle of the loaded model file for a namespace, if there is one.
