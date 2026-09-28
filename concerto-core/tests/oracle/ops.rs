@@ -3513,11 +3513,15 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
         // those system files (`ModelManager::model_file_by_file_name`).
         "getModelFileByFileName" => match plain(0) {
             // TS `mf.getName() === fileName`: an omitted or explicitly
-            // `undefined` argument never strictly-equals a registered
-            // file's name (a string, or itself `undefined` only for a
-            // detached `ModelFile` this manager never holds), so the
-            // answer is `undefined` without a lookup.
-            Some(v) if recipe::is_undefined(&v) => ran(Ok(recipe::undefined())),
+            // `undefined` argument matches the first loaded file whose
+            // `getName()` is `undefined`, i.e. one added with no file name
+            // (`addCTOModel(text)`), and is `undefined` only when every
+            // loaded file is named.
+            Some(v) if recipe::is_undefined(&v) => ran(Ok(r
+                .mm
+                .model_file_by_optional_file_name(None)
+                .and_then(|mf| r.model_file_summary(mf.namespace()))
+                .unwrap_or_else(recipe::undefined))),
             Some(Value::String(file_name)) => ran(Ok(r
                 .mm
                 .model_file_by_file_name(&file_name)

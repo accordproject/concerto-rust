@@ -4695,17 +4695,17 @@ impl ModelManagerHandle {
     /// including when `file_name` names one of those system files
     /// (P2-11b-U4). The caller looks the namespace up in its own
     /// `this.modelFiles`, the way `getModelFile(namespace)` already does.
-    /// An omitted or `undefined` `file_name` answers `undefined` without a
-    /// lookup, as the oracle harness's `getModelFileByFileName` does
-    /// (tests/oracle/ops.rs), rather than failing the argument conversion
-    /// (accordproject/concerto-rust#262).
+    /// An omitted or `undefined` `file_name` matches, as TS
+    /// `getName() === undefined` does, the first such file loaded with no
+    /// file name (`addCTOModel(text)` with no `fileName`), rather than
+    /// failing the argument conversion (accordproject/concerto-rust#262).
     #[wasm_bindgen(js_name = modelManagerGetModelFileByFileName)]
     pub fn model_manager_get_model_file_by_file_name(
         &self,
         file_name: Option<String>,
     ) -> Option<String> {
         self.manager
-            .model_file_by_file_name(file_name.as_deref()?)
+            .model_file_by_optional_file_name(file_name.as_deref())
             .map(|mf| mf.namespace().to_string())
     }
 
