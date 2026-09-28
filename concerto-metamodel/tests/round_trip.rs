@@ -47,3 +47,23 @@ fn the_metamodel_round_trips() {
 fn the_decorator_command_model_round_trips() {
     round_trips("org.accordproject.decoratorcommands@0.4.0.json");
 }
+
+/// A hand-built declaration's `location` may omit `$class` on its `Range`
+/// and `Position`s, as v5.0.0 accepts (accordproject/concerto-rust#262). It
+/// deserialises, and serialises back exactly as given, without a `$class`.
+#[test]
+fn a_location_without_class_round_trips() {
+    let original = serde_json::json!({
+        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+        "name": "B",
+        "isAbstract": false,
+        "properties": [],
+        "location": {
+            "start": { "line": 3, "column": 1, "offset": 0 },
+            "end": { "line": 3, "column": 26, "offset": 25 }
+        }
+    });
+    let declaration: mm::Declaration = serde_json::from_value(original.clone()).unwrap();
+    let back = serde_json::to_value(&declaration).unwrap();
+    assert_eq!(normalise(back), normalise(original));
+}

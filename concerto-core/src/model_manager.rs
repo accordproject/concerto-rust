@@ -1122,9 +1122,27 @@ impl ModelManager {
     ///
     /// [`model_files`]: Self::model_files
     pub fn model_file_by_file_name(&self, file_name: &str) -> Option<&ModelFile> {
-        self.model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
-            .find(|mf| mf.file_name() == Some(file_name))
+        self.model_file_by_optional_file_name(Some(file_name))
+    }
+
+    js_compat_pub! {
+        /// [`model_file_by_file_name`] for a `fileName` that may be JS
+        /// `undefined`. TS compares with `mf.getName() === fileName`, so an
+        /// omitted or `undefined` argument matches the first non-system model
+        /// file that was loaded without a file name (for example
+        /// `addCTOModel(text)` or `addModel(ast)` with no `fileName`), whose
+        /// `getName()` is `undefined`. `None` here finds that file, the one
+        /// whose [`ModelFile::file_name`] is `None`.
+        ///
+        /// [`model_file_by_file_name`]: Self::model_file_by_file_name
+        pub fn model_file_by_optional_file_name(
+            &self,
+            file_name: Option<&str>,
+        ) -> Option<&ModelFile> {
+            self.model_files()
+                .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+                .find(|mf| mf.file_name() == file_name)
+        }
     }
 
     /// The handle of the loaded model file for a namespace, if there is one.
@@ -4773,6 +4791,40 @@ mod tests {
         assert!(
             mgr.model_file_by_file_name("concerto_decorator_1.0.0.cto")
                 .is_none()
+        );
+    }
+
+    /// TS `getModelFileByFileName(undefined)` returns the first loaded
+    /// model file whose `getName()` is `undefined`, i.e. one added with no
+    /// file name; a named file never matches (accordproject/concerto-rust#262).
+    #[test]
+    fn model_file_by_optional_file_name_none_finds_the_unnamed_file() {
+        let mut mgr = ModelManager::new().unwrap();
+        assert!(mgr.model_file_by_optional_file_name(None).is_none());
+        for (ns, name) in [
+            ("org.named@1.0.0", Some("named.cto".to_string())),
+            ("org.unnamed@1.0.0", None),
+            ("org.unnamed2@1.0.0", None),
+        ] {
+            mgr.add_model_with_definitions(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": ns, "declarations": []
+                }),
+                None,
+                name,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            mgr.model_file_by_optional_file_name(None)
+                .map(ModelFile::namespace),
+            Some("org.unnamed@1.0.0")
+        );
+        assert_eq!(
+            mgr.model_file_by_optional_file_name(Some("named.cto"))
+                .map(ModelFile::namespace),
+            Some("org.named@1.0.0")
         );
     }
 
