@@ -1470,10 +1470,27 @@ fn drop_unreadable_annotations(node: &mut serde_json::Map<String, serde_json::Va
     }
 }
 
-/// The `$class` short name of a map key or value node.
+/// The kind of a map key or value node: its `$class` without the
+/// `concerto.metamodel@1.0.0.` prefix, or empty when the `$class` does not
+/// carry that exact prefix.
+///
+/// TS: `ModelUtil.isValidMapKey`/`isValidMapValue` (src/modelutil.ts), which
+/// `MapDeclaration.process` calls at construction, compare `$class` with each
+/// `` `${MetaModelNamespace}.<Kind>` `` by `===`. A bare short name
+/// (`StringMapKeyType`), another namespace's (`foo.StringMapKeyType`) or any
+/// other text that merely ends in a kind is not valid there, so it must not
+/// pass the `MAP_KEY_KINDS`/`MAP_VALUE_KINDS` checks here either. Matching by
+/// `get_short_name` (the text after the last `.`) accepted all of them, and
+/// with lazy views that moved TS's construction-time error to the first read
+/// of the declarations (accordproject/concerto-rust#285, BC-25).
 fn node_kind(node: Option<&serde_json::Value>) -> String {
-    node.map(|n| get_short_name(declared_class(n)).to_string())
-        .unwrap_or_default()
+    node.and_then(|n| {
+        declared_class(n)
+            .strip_prefix(super::METAMODEL_NAMESPACE)?
+            .strip_prefix('.')
+    })
+    .unwrap_or_default()
+    .to_string()
 }
 
 /// The type a map key or value node points at. Primitive keys and values carry
@@ -2319,17 +2336,36 @@ mod tests {
     }
 
     #[test]
-    fn a_class_declaration_property_class_may_be_given_as_the_short_name() {
-        let d = decl(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-            "name": "Person",
-            "properties": [
-                { "$class": "StringProperty", "name": "firstName", "isArray": false, "isOptional": false }
-            ]
-        }));
-        let c = d.as_class().unwrap();
-        assert_eq!(c.own_properties().len(), 1);
-        assert_eq!(c.own_properties()[0].type_name(), Some("String"));
+    fn a_class_declaration_property_class_must_be_the_full_metamodel_class() {
+        // TS `ClassDeclaration.process` matches the full `$class` (`===`),
+        // so neither a bare short name nor a doubled class that merely ends
+        // in one is accepted (accordproject/concerto-rust#285, BC-25).
+        for class in [
+            "StringProperty",
+            "concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty",
+        ] {
+            let err = Declaration::from_model_json(
+                &serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "Person",
+                    "isAbstract": false,
+                    "properties": [
+                        { "$class": class, "name": "firstName", "isArray": false, "isOptional": false }
+                    ]
+                }),
+                "org.acme@1.0.0",
+                Some("x.cto"),
+            )
+            .unwrap_err();
+            let ConcertoError::Contract(err) = err else {
+                panic!("expected a contract error, got {err:?}");
+            };
+            assert_eq!(err.kind, ErrorKind::IllegalModel);
+            assert_eq!(
+                err.final_message(),
+                format!("Unrecognised model element \"{class}\". File 'x.cto': ")
+            );
+        }
     }
 
     #[test]
@@ -2435,16 +2471,54 @@ mod tests {
         }
     }
 
+    // TS `ModelUtil.isValidMapKey`/`isValidMapValue` match the full
+    // metamodel `$class` by `===`, so a bare short name, another namespace's
+    // class or a doubled class is rejected at construction
+    // (accordproject/concerto-rust#285, BC-25).
     #[test]
-    fn a_map_key_class_may_be_given_as_the_short_name() {
-        let d = decl(map_to_nope(
-            serde_json::json!({ "$class": "StringMapKeyType" }),
-            serde_json::json!({}),
-        ));
-        let map = d.as_map().unwrap();
-        assert!(map.is_typed());
-        assert_eq!(map.key_kind(), "StringMapKeyType");
-        assert_eq!(map.value_type().map(|t| t.name.as_str()), Some("Nope"));
+    fn a_map_key_class_that_is_not_the_full_metamodel_class_is_rejected() {
+        for class in [
+            "StringMapKeyType",
+            "foo.StringMapKeyType",
+            "concerto.metamodel@1.0.1.StringMapKeyType",
+            "concerto.metamodel@1.0.0.StringMapKeyTypeconcerto.metamodel@1.0.0.StringMapKeyType",
+            "xconcerto.metamodel@1.0.0.StringMapKeyType",
+        ] {
+            let err = Declaration::try_from(&map_to_nope(
+                serde_json::json!({ "$class": class }),
+                serde_json::json!({}),
+            ))
+            .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("MapDeclaration must contain valid MapKeyType  M"),
+                "{class}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_map_value_class_that_is_not_the_full_metamodel_class_is_rejected() {
+        for class in [
+            "StringMapValueType",
+            "foo.StringMapValueType",
+            "concerto.metamodel@1.0.1.StringMapValueType",
+            "concerto.metamodel@1.0.0.StringMapValueTypeconcerto.metamodel@1.0.0.StringMapValueType",
+        ] {
+            let err = Declaration::try_from(&serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                "name": "M",
+                "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                "value": { "$class": class }
+            }))
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(
+                    "MapDeclaration must contain valid MapValueType, for MapDeclaration M"
+                ),
+                "{class}: {err}"
+            );
+        }
     }
 
     // TS `MapDeclaration.process` (mapdeclaration.ts): `ModelUtil.isValidMapKey`

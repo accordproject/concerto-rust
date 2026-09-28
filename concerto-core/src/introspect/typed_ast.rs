@@ -68,9 +68,11 @@ use serde_json::{Map, Value};
 
 use crate::introspect::declaration::{ClassKind, ClassNode, normalize_class_fields};
 use crate::introspect::decorator::{WithDecorators, parse_decorator_list};
-use crate::introspect::property::{Property, ast_validator_keys, object_type_placeholder};
+use crate::introspect::property::{
+    Property, ast_validator_keys, object_type_placeholder, property_kind,
+};
 use crate::introspect::{METAMODEL_NAMESPACE, Named};
-use crate::model_util::{get_short_name, is_system_property, is_valid_identifier};
+use crate::model_util::{is_system_property, is_valid_identifier};
 
 type Error = serde_json::Error;
 
@@ -373,7 +375,10 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     mut map: A,
 ) -> Result<(Property, Value), Error> {
     let class = read_class(&mut map)?;
-    let kind = get_short_name(&class);
+    // `Property::try_from` matches the full metamodel `$class`, as TS does
+    // (accordproject/concerto-rust#285): anything else is left to the
+    // `Value` path, which reports it.
+    let kind = property_kind(&class).ok_or_else(|| refuse("unrecognised property $class"))?;
     let mut decorators = None;
     let mut taken = Map::new();
     // `Property::try_from` gives an `ObjectProperty` with no (or a `null`)
@@ -1119,6 +1124,10 @@ mod tests {
             json!({"$class": "concerto.metamodel@1.0.0.StringProperty", "name": "a", "decorators": [null]}),
             json!({"$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "r"}),
             json!({"$class": "concerto.metamodel@1.0.0.NopeProperty", "name": "a"}),
+            // accordproject/concerto-rust#285: only the full metamodel class.
+            json!({"$class": "StringProperty", "name": "a"}),
+            json!({"$class": "foo.StringProperty", "name": "a"}),
+            json!({"$class": "concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty", "name": "a"}),
         ] {
             let text = model(json!([concept(json!([property]))])).to_string();
             assert!(!check(&text));
