@@ -652,7 +652,7 @@ impl<'a> Populator<'a> {
             default_namespace =
                 model_util::get_namespace(Some(&relationship.owner_fqn))?.to_string();
         }
-        let default_type = model_util::get_short_name(&type_fqn).to_string();
+        let default_type = model_util::short_name(&type_fqn).to_string();
 
         if relationship.is_array() {
             let JsValue::Array(items) = json else {

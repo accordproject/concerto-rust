@@ -209,7 +209,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     let dcs_namespace = model_util::get_namespace(class.filter(|c| !c.is_empty()))?;
     // `ModelUtil.parseNamespace(dcsNamespace).version`, `undefined` for an
     // unversioned namespace.
-    let version = match model_util::parse_namespace(Some(dcs_namespace), false)? {
+    let version = match model_util::parse_namespace_with(Some(dcs_namespace), false)? {
         ParsedNamespace::Full { version, .. } => version,
         ParsedNamespace::NameOnly { .. } => None,
     };
@@ -565,10 +565,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         let mut type_obj = Map::new();
         type_obj.insert(
             "$class".to_string(),
-            Value::String(model_util::get_fully_qualified_name(
-                META_MODEL_NAMESPACE,
-                "TypeIdentifier",
-            )),
+            Value::String(model_util::qualify(META_MODEL_NAMESPACE, "TypeIdentifier")),
         );
         type_obj.insert("name".to_string(), Value::String(yaml_scalar(tr, "name")?));
         if let Some(Yaml::Scalar(ns)) = yaml_get(tr, "namespace") {
@@ -581,7 +578,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         let mut out = Map::new();
         out.insert(
             "$class".to_string(),
-            Value::String(model_util::get_fully_qualified_name(
+            Value::String(model_util::qualify(
                 META_MODEL_NAMESPACE,
                 "DecoratorTypeReference",
             )),
@@ -649,10 +646,7 @@ fn restore_decorator(decorator: &Yaml) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            META_MODEL_NAMESPACE,
-            "Decorator",
-        )),
+        Value::String(model_util::qualify(META_MODEL_NAMESPACE, "Decorator")),
     );
     out.insert("name".to_string(), Value::String(name));
     out.insert("arguments".to_string(), Value::Array(arguments));
@@ -668,10 +662,7 @@ fn restore_command(dcs_namespace: &str, command: &Yaml) -> Result<Value> {
     let mut target_obj = Map::new();
     target_obj.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            dcs_namespace,
-            "CommandTarget",
-        )),
+        Value::String(model_util::qualify(dcs_namespace, "CommandTarget")),
     );
     if let Some(Yaml::Map(target_entries)) = yaml_get(entries, "target") {
         for (key, value) in target_entries {
@@ -685,10 +676,7 @@ fn restore_command(dcs_namespace: &str, command: &Yaml) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            dcs_namespace,
-            "Command",
-        )),
+        Value::String(model_util::qualify(dcs_namespace, "Command")),
     );
     out.insert("type".to_string(), Value::String(action));
     out.insert("target".to_string(), Value::Object(target_obj));
@@ -754,10 +742,7 @@ pub fn yaml_to_json(yaml_string: &str) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            &dcs_namespace,
-            "DecoratorCommandSet",
-        )),
+        Value::String(model_util::qualify(&dcs_namespace, "DecoratorCommandSet")),
     );
     // `name: parsedJson.name`, `version: parsedJson.version`: a key left
     // `undefined` in TS is left out here.

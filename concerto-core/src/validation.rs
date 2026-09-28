@@ -28,8 +28,8 @@ use crate::introspect::property::Property;
 use crate::introspect::{DeclarationKind, Decorated, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{
-    self, ParsedNamespace, get_fully_qualified_name, get_namespace, get_short_name,
-    is_primitive_type, parse_namespace,
+    self, ParsedNamespace, get_namespace, is_primitive_type, parse_namespace_with, qualify,
+    short_name,
 };
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
@@ -305,7 +305,7 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
             return Err(failed(
                 format!(
                     "Duplicate class name {}",
-                    get_fully_qualified_name(model_file.namespace(), declaration.name())
+                    qualify(model_file.namespace(), declaration.name())
                 ),
                 None,
             ));
@@ -414,7 +414,7 @@ impl Validate for Declaration {
             Declaration::Class(class) => class.validate(manager, namespace),
             Declaration::Map(map) => map.validate(manager, namespace),
             Declaration::Enum(enm) => {
-                let fqn = get_fully_qualified_name(namespace, enm.name());
+                let fqn = qualify(namespace, enm.name());
                 // TS: `EnumDeclaration` inherits `ClassDeclaration.validate`
                 // unchanged, whose own `super.validate()` reaches
                 // `Declaration.validate`'s decorator and import-clash checks
@@ -444,7 +444,7 @@ impl Validate for Declaration {
                 Ok(())
             }
             Declaration::Scalar(scalar) => {
-                let fqn = get_fully_qualified_name(namespace, scalar.name());
+                let fqn = qualify(namespace, scalar.name());
                 // TS: `ScalarDeclaration.validate`'s `super.validate()` goes
                 // straight to `Declaration.validate` (it extends
                 // `Declaration`, not `ClassDeclaration`): decorators, then
@@ -467,7 +467,7 @@ impl Validate for Declaration {
 
 impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        let fqn = get_fully_qualified_name(namespace, self.name());
+        let fqn = qualify(namespace, self.name());
         // TS: `ClassDeclaration.validate`'s `super.validate()`
         // (classdeclaration.ts) reaches `Declaration.validate`'s
         // `super.validate()` first — `Decorated.validate`'s decorator checks
@@ -498,8 +498,8 @@ impl Validate for ClassDeclaration {
         // chain), each validated in this class's own pass (P2-08 review:
         // this used to loop over `own_properties()` only, so a file
         // validated on its own never checked what it inherits).
-        for (owner_fqn, property) in manager.get_all_properties(&fqn)? {
-            validate_property(manager, namespace, self, &owner_fqn, &property)?;
+        for (owner_fqn, property) in manager.properties(&fqn)? {
+            validate_property(manager, namespace, self, &owner_fqn, property)?;
         }
         Ok(())
     }
@@ -526,7 +526,7 @@ fn validate_property(
     property: &Property,
 ) -> Result<()> {
     let owner_ns = get_namespace(Some(owner_fqn))?;
-    let owner_name = get_short_name(owner_fqn);
+    let owner_name = short_name(owner_fqn);
     let property_fqn = format!("{owner_fqn}.{}", property.name());
     // `field.getModelFile()`: the declaring file, for an inherited
     // property's own `Decorated.validate` errors.
@@ -705,7 +705,7 @@ fn check_unique_field_names(
     fqn: &str,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for (_, property) in manager.get_all_properties(fqn)? {
+    for (_, property) in manager.properties(fqn)? {
         if !seen.insert(property.name().to_string()) {
             return Err(catalogue_error(
                 "classdeclaration-validate-duplicatefieldname",
@@ -734,9 +734,9 @@ fn check_identifier(
     let Some(field_name) = class.identifier_field_name() else {
         return Ok(());
     };
-    let fqn = get_fully_qualified_name(namespace, class.name());
+    let fqn = qualify(namespace, class.name());
     let (owner, field) = manager
-        .get_all_properties(&fqn)?
+        .properties(&fqn)?
         .into_iter()
         .find(|(_, property)| property.name() == field_name)
         .ok_or_else(|| {
@@ -756,7 +756,7 @@ fn check_identifier(
     // resolves the field's type in the file that *declares* the field, which
     // for an inherited identifier is the super type's, not this class's.
     let owner_namespace = get_namespace(Some(&owner))?;
-    if !is_string_typed(manager, owner_namespace, &field) {
+    if !is_string_typed(manager, owner_namespace, field) {
         return Err(catalogue_error(
             "classdeclaration-validate-identifiernotstring",
             vec![
@@ -808,7 +808,7 @@ fn check_property_type(
     class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
-    let owner_fqn = get_fully_qualified_name(owner_ns, owner);
+    let owner_fqn = qualify(owner_ns, owner);
     let Some(type_identifier) = property.type_identifier() else {
         // A primitive field: TS's `resolveType` of a primitive always
         // succeeds, so the size-validator check is all that is left.
@@ -964,8 +964,11 @@ fn check_property_type(
         // src/introspect/relationshipdeclaration.ts) — inherited, so a
         // target that has no identity of its own but extends one that does
         // (every `Asset`/`Participant`, for one) still counts.
-        let identifiable =
-            target.is_class_declaration() && manager.identifier_field_name(&target_fqn)?.is_some();
+        let identifiable = target.is_class_declaration()
+            && manager
+                .identifier_field(&target_fqn)
+                .map(|f| f.map(str::to_string))?
+                .is_some();
         if !identifiable {
             // TS: `'Relationship ' + this.getName() + ' must be to a class
             // that has an identifier, but this is to ' +
@@ -1034,7 +1037,7 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
     // mean "does not resolve" and build their own message (`failed`,
     // below), so the location `resolve_type_name` would attach to its own
     // error never surfaces. Passing `None` here is exact, not a shortcut.
-    manager.resolve_type_name(namespace, name, None).ok()
+    manager.resolve_type_name_at(namespace, name, None).ok()
 }
 
 /// TS `ModelFile.validate`'s single loop over `this.getImports()`
@@ -1060,13 +1063,13 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
 /// namespace-import mismatch off #219).
 fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
     let mut seen_versions: HashMap<String, Option<String>> = HashMap::new();
-    for import_fqn in model_file.get_imports() {
+    for import_fqn in model_file.imported_type_names() {
         let import_namespace = get_namespace(Some(&import_fqn))?;
-        let import_short_name = get_short_name(&import_fqn);
+        let import_short_name = short_name(&import_fqn);
 
         let found = manager.model_file(import_namespace);
         let ParsedNamespace::Full { name, version, .. } =
-            parse_namespace(Some(import_namespace), false)?
+            parse_namespace_with(Some(import_namespace), false)?
         else {
             unreachable!("disable_version_parsing is false")
         };
@@ -1140,7 +1143,10 @@ fn check_identity_matches_super(
     // TS: `superType.isIdentified()` — inherited, so a direct super type
     // with no identity of its own but an identified ancestor still gates
     // this check.
-    let Some(super_id_field) = manager.identifier_field_name(&super_fqn)? else {
+    let Some(super_id_field) = manager
+        .identifier_field(&super_fqn)
+        .map(|f| f.map(str::to_string))?
+    else {
         return Ok(());
     };
     // TS: within `if (this.idField)`, `this.isSystemIdentified()` reduces to
@@ -1184,7 +1190,7 @@ impl Validate for MapDeclaration {
     /// `validate_map_key` and `validate_map_value` in isolation (see
     /// `tests/oracle/ops.rs`).
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        let fqn = get_fully_qualified_name(namespace, self.name());
+        let fqn = qualify(namespace, self.name());
         validate_decorators(manager, namespace, self, Some(&fqn))?;
         check_unique_decorators(self, None)?;
         check_import_clash(manager, namespace, self.name(), None)?;
@@ -1467,7 +1473,7 @@ mod tests {
         // same as TS — before `validate_models` below ever runs — so this
         // no longer `.unwrap()`s: a caller whose declarations are malformed
         // that way sees the `add_model` error itself, not a panic.
-        manager.add_model(
+        manager.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -1928,7 +1934,7 @@ mod tests {
     fn string_decorators_on_a_model_are_duplicate_undefined_decorators() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": [],
@@ -1953,7 +1959,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": "\u{1F4A5}emoji",
@@ -2013,7 +2019,7 @@ mod tests {
             }
             let mut manager = ModelManager::new().unwrap();
             let err = manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "decorators": [],
@@ -2094,7 +2100,7 @@ mod tests {
         });
         ModelManager::new()
             .unwrap()
-            .add_model(&model, Some("test.cto".into()))
+            .load_model(&model, Some("test.cto".into()))
             .expect("the unmutated model loads");
         let sites: [&[&str]; 8] = [
             &["decorators"],
@@ -2117,7 +2123,7 @@ mod tests {
             for file_name in [Some("test.cto"), None] {
                 let err = ModelManager::new()
                     .unwrap()
-                    .add_model(&model, file_name.map(String::from))
+                    .load_model(&model, file_name.map(String::from))
                     .unwrap_err();
                 let Some(contract) = err.ported() else {
                     panic!("{pointer}: expected an IllegalModelException, got {err:?}");
@@ -2159,7 +2165,7 @@ mod tests {
         let load = |declarations: serde_json::Value| {
             ModelManager::new()
                 .unwrap()
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.example@1.0.0",
@@ -2206,7 +2212,7 @@ mod tests {
             serde_json::json!("x"),
             serde_json::json!(true),
         ] {
-            let result = ModelManager::new().unwrap().add_model(
+            let result = ModelManager::new().unwrap().load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": [element],
@@ -2232,7 +2238,7 @@ mod tests {
     fn an_empty_super_type_name_is_not_found() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": [],
@@ -2268,7 +2274,7 @@ mod tests {
     fn single_code_unit_string_decorators_are_accepted() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2285,7 +2291,7 @@ mod tests {
     /// `decorators`, and validates it.
     fn validate_model_decorators(decorators: serde_json::Value) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
-        manager.add_model(
+        manager.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -2527,7 +2533,7 @@ mod tests {
     fn duplicate_decorator_on_a_namespace_is_rejected() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2569,7 +2575,7 @@ mod tests {
     ) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.common@1.0.0",
@@ -2579,7 +2585,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2599,7 +2605,7 @@ mod tests {
     fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -2626,7 +2632,7 @@ mod tests {
         }))];
         declarations.extend(extra.as_array().unwrap().iter().cloned());
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.b@1.0.0",
@@ -2704,7 +2710,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "A@1.0.0",
@@ -2734,7 +2740,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "A@1.0.0",
@@ -2750,7 +2756,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "B@1.0.0",
@@ -2786,7 +2792,7 @@ mod tests {
         // A self-import makes the local declaration clash with itself.
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2871,7 +2877,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         for (namespace, declared) in [("org.a@1.0.0", "X"), ("org.a@2.0.0", "Y")] {
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": namespace,
@@ -2882,7 +2888,7 @@ mod tests {
                 .unwrap();
         }
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.t@1.0.0",
@@ -3227,7 +3233,7 @@ mod tests {
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3269,7 +3275,7 @@ mod tests {
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "test@1.0.0",
@@ -3313,10 +3319,11 @@ mod tests {
     /// subtype declares its own identity, and
     /// [`ModelManager::identifier_field_name`] inherits it.
     #[test]
+    #[allow(deprecated)]
     fn an_asset_inherits_the_system_identifier_field() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3337,9 +3344,7 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let properties = manager
-            .get_all_properties("org.example@1.0.0.Order")
-            .unwrap();
+        let properties = manager.properties("org.example@1.0.0.Order").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["price", "$identifier"]);
         assert_eq!(
@@ -3358,10 +3363,11 @@ mod tests {
     /// identified", `ClassDeclaration.getProperties`), even though its own
     /// identity is `sku`.
     #[test]
+    #[allow(deprecated)]
     fn an_explicitly_identified_asset_still_inherits_the_system_identifier_field() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3385,9 +3391,7 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let properties = manager
-            .get_all_properties("org.example@1.0.0.Order")
-            .unwrap();
+        let properties = manager.properties("org.example@1.0.0.Order").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["sku", "price", "$identifier"]);
         assert_eq!(
@@ -3406,7 +3410,7 @@ mod tests {
     fn a_transaction_inherits_the_system_timestamp_field() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3427,9 +3431,7 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let properties = manager
-            .get_all_properties("org.example@1.0.0.Payment")
-            .unwrap();
+        let properties = manager.properties("org.example@1.0.0.Payment").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["amount", "$timestamp"]);
     }
@@ -3669,7 +3671,7 @@ mod tests {
     fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "maps@1.0.0",
@@ -3683,7 +3685,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "t@1.0.0",
@@ -3801,7 +3803,7 @@ mod tests {
     fn reserved_field_name_is_rejected_at_load() {
         // A `$`-prefixed field name is rejected while loading, before validation.
         let mut manager = ModelManager::new().unwrap();
-        let result = manager.add_model(
+        let result = manager.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -3864,7 +3866,7 @@ mod tests {
     fn duplicate_declaration_is_accepted_on_load_and_rejected_by_validation() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(&duplicate_model("org.dup@1.0.0"), Some("dup.cto".into()))
+            .load_model(&duplicate_model("org.dup@1.0.0"), Some("dup.cto".into()))
             .expect("loading without validation accepts a duplicate name");
         let file = manager.model_file("org.dup@1.0.0").unwrap();
         assert_eq!(file.declarations().len(), 2);
@@ -3882,7 +3884,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         let model = duplicate_model("org.dup@1.0.0");
         let err = manager
-            .add_models([(&model, Some("dup.cto".to_string()))])
+            .load_models([(&model, Some("dup.cto".to_string()))])
             .unwrap_err();
         assert_duplicate_class_name(err, "org.dup@1.0.0.A");
         assert!(manager.model_file("org.dup@1.0.0").is_none());
@@ -3898,7 +3900,7 @@ mod tests {
         model["declarations"][0]["superType"] = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing"
         });
-        manager.add_model(&model, None).unwrap();
+        manager.load_model(&model, None).unwrap();
         assert_duplicate_class_name(manager.validate_models().unwrap_err(), "org.dup@1.0.0.A");
 
         let mut manager = ModelManager::new().unwrap();
@@ -3907,7 +3909,7 @@ mod tests {
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.missing@1.0.0", "name": "X" }
         ]);
-        manager.add_model(&model, None).unwrap();
+        manager.load_model(&model, None).unwrap();
         let message = manager.validate_models().unwrap_err().to_string();
         assert!(!message.contains("Duplicate class name"), "{message}");
     }
@@ -3932,7 +3934,7 @@ mod tests {
             "declarations": [concept(serde_json::json!({ "name": "Widget" }))]
         });
         manager
-            .add_model(&valid, Some("namesake.cto".into()))
+            .load_model(&valid, Some("namesake.cto".into()))
             .unwrap();
 
         let mut invalid = valid;
@@ -4004,7 +4006,7 @@ mod tests {
         use crate::introspect::model_file::ModelFile;
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.common@1.0.0",
@@ -4311,7 +4313,7 @@ mod tests {
     fn a_map_key_imported_from_another_namespace_and_not_string_or_datetime_is_rejected() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.base@1.0.0",
@@ -4321,7 +4323,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -4355,7 +4357,7 @@ mod tests {
     fn a_map_key_imported_from_another_namespace_and_is_a_string_scalar_validates() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.base@1.0.0",
@@ -4367,7 +4369,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -4533,7 +4535,7 @@ mod tests {
         ] {
             let mut manager = ModelManager::new().unwrap();
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.base@1.0.0",
@@ -4543,7 +4545,7 @@ mod tests {
                 )
                 .unwrap();
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.example@1.0.0",
@@ -4580,7 +4582,7 @@ mod tests {
     fn aliased_map_manager() -> ModelManager {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "child@1.0.0",
@@ -4593,7 +4595,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "parent@1.0.0",
@@ -4788,7 +4790,7 @@ mod tests {
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "com.acme@1.0.0",
@@ -4830,7 +4832,7 @@ mod tests {
             .extend(s_extra.as_object().unwrap().clone());
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -4883,7 +4885,7 @@ mod tests {
         );
 
         // `addModelFile(B)` with validation: B alone is validated.
-        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        manager.load_model(&b, Some("b.cto".into())).unwrap();
         let registered = manager.model_file("org.b@1.0.0").unwrap();
         assert_eq!(
             final_message(manager.validate_model_file(registered).unwrap_err()),
@@ -4986,12 +4988,12 @@ mod tests {
     #[test]
     fn a_valid_inherited_property_passes_the_subclass_pass() {
         let (mut manager, b) = inherited_property_files(serde_json::json!({}));
-        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        manager.load_model(&b, Some("b.cto".into())).unwrap();
         assert!(manager.validate_models().is_ok());
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -5009,7 +5011,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        manager.load_model(&b, Some("b.cto".into())).unwrap();
         let registered = manager.model_file("org.b@1.0.0").unwrap();
         assert!(manager.validate_model_file(registered).is_ok());
         assert!(manager.validate_models().is_ok());
@@ -5025,7 +5027,7 @@ mod tests {
             let mut manager = ModelManager::new().unwrap();
             if load_c {
                 manager
-                    .add_model(
+                    .load_model(
                         &serde_json::json!({
                             "$class": "concerto.metamodel@1.0.0.Model",
                             "namespace": "org.c@1.0.0",
@@ -5036,7 +5038,7 @@ mod tests {
                     .unwrap();
             }
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.a@1.0.0",
@@ -5056,7 +5058,7 @@ mod tests {
                 )
                 .unwrap();
             let (_, b) = inherited_property_files(serde_json::json!({}));
-            manager.add_model(&b, Some("b.cto".into())).unwrap();
+            manager.load_model(&b, Some("b.cto".into())).unwrap();
             let file = manager.model_file("org.b@1.0.0").unwrap();
             let err = manager.validate_model_file(file).unwrap_err();
             let Some(err) = err.ported().cloned() else {
@@ -5090,7 +5092,7 @@ mod tests {
         use crate::introspect::model_file::ModelFile;
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.c@1.0.0",
@@ -5100,7 +5102,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -5169,7 +5171,7 @@ mod tests {
         use crate::introspect::model_file::ModelFile;
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -5436,7 +5438,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.x@1.0.0",
@@ -5455,7 +5457,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.a@1.0.0",
@@ -5476,7 +5478,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.b@1.0.0",

@@ -219,9 +219,9 @@ impl Decorator {
             return Ok(());
         };
         // Each property comes paired with its declaring type's name
-        // (`ModelManager::get_all_properties`); only the property is read here.
-        let all_properties: Vec<Property> = manager
-            .get_all_properties(&fqn)?
+        // (`ModelManager::properties`); only the property is read here.
+        let all_properties: Vec<&Property> = manager
+            .properties(&fqn)?
             .into_iter()
             .map(|(_, p)| p)
             .collect();
@@ -286,7 +286,7 @@ impl Decorator {
             return Ok(self.name.clone());
         }
         manager
-            .resolve_type_name(namespace, &self.name, self.location.clone())
+            .resolve_type_name_at(namespace, &self.name, self.location.clone())
             .map_err(|_| {
                 let err: Error = ContractError::new(
                     ErrorKind::IllegalModel,
@@ -406,7 +406,7 @@ impl Decorator {
         // nullish result, whether the name resolves to nothing or resolves to
         // something this model manager has not loaded.
         let resolved = manager
-            .resolve_type_name(namespace, &type_reference.name, None)
+            .resolve_type_name_at(namespace, &type_reference.name, None)
             .ok()
             .and_then(|fqn| manager.get_declaration(&fqn).ok().map(|_| fqn));
 
@@ -425,7 +425,7 @@ impl Decorator {
                     return Ok(());
                 };
                 let property_fqn = manager
-                    .resolve_type_name(namespace, declared_type, None)
+                    .resolve_type_name_at(namespace, declared_type, None)
                     .unwrap_or_else(|_| declared_type.to_string());
                 if !manager.is_assignable_to(&type_fqn, &property_fqn)? {
                     self.report_invalid(
@@ -944,7 +944,7 @@ mod tests {
     fn manager_with(cto_declarations: Value) -> ModelManager {
         let mut manager = ModelManager::new().expect("system models load");
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.acme@1.0.0",

@@ -565,7 +565,7 @@ impl ResolutionContext for JsContext {
 /// TS: ModelUtil.getShortName
 #[wasm_bindgen(js_name = modelUtilGetShortName)]
 pub fn model_util_get_short_name(fqn: JsValue) -> std::result::Result<String, JsValue> {
-    run(|| Ok(mu::get_short_name(&receiver(&fqn, "fqn", "lastIndexOf")?).to_string()))
+    run(|| Ok(mu::short_name(&receiver(&fqn, "fqn", "lastIndexOf")?).to_string()))
 }
 
 /// TS: ModelUtil.getNamespace. `!fqn` covers every falsy value.
@@ -591,9 +591,9 @@ pub fn model_util_parse_namespace(
         let disable = !nullish(&options) && get(&options, "disableVersionParsing")?.is_truthy();
         let parsed = if ns.is_truthy() {
             let ns = receiver(&ns, "ns", "split")?;
-            mu::parse_namespace(Some(&ns), disable)?
+            mu::parse_namespace_with(Some(&ns), disable)?
         } else {
-            mu::parse_namespace(None, disable)?
+            mu::parse_namespace_with(None, disable)?
         };
         let out = Object::new();
         match parsed {
@@ -713,7 +713,7 @@ pub fn model_util_get_fully_qualified_name(
         if !namespace.is_truthy() {
             return Ok(type_name);
         }
-        let joined = mu::get_fully_qualified_name(&js_string(&namespace)?, &js_string(&type_name)?);
+        let joined = mu::qualify(&js_string(&namespace)?, &js_string(&type_name)?);
         Ok(JsValue::from_str(&joined))
     })
 }
@@ -1930,7 +1930,7 @@ fn declaration_view_entry(declaration: &ViewDeclaration, namespace: &str) -> Opt
     if namespace.is_empty() || !mu::is_valid_identifier(name) {
         return None;
     }
-    let fqn = mu::get_fully_qualified_name(namespace, name);
+    let fqn = mu::qualify(namespace, name);
 
     // `ModelFile.fromAst`'s default super type for four declaration kinds.
     let class = declaration.class.as_ref().and_then(Value::as_str);
@@ -4771,7 +4771,7 @@ impl ModelManagerHandle {
             let ast = self.declaration_ast(id)?;
             snapshot(&json!({
                 "name": found.name(),
-                "fullyQualifiedName": mu::get_fully_qualified_name(file.namespace(), found.name()),
+                "fullyQualifiedName": mu::qualify(file.namespace(), found.name()),
                 "modelFile": file_id.index(),
                 "ast": ast,
             }))
@@ -4786,7 +4786,7 @@ impl ModelManagerHandle {
         run(|| {
             let id = PropId::from_index(property);
             let missing = || unknown(Node::Property(id));
-            let found = self.manager.property(id).ok_or_else(missing)?;
+            let found = self.manager.property_by_id(id).ok_or_else(missing)?;
             let parent = self.manager.parent_of(id).ok_or_else(missing)?;
             let index = self
                 .manager
@@ -5100,7 +5100,7 @@ impl ModelManagerHandle {
         run(|| {
             Ok(self
                 .require_file(model_file)?
-                .get_imports()
+                .imported_type_names()
                 .iter()
                 .map(|n| JsValue::from_str(n))
                 .collect())
@@ -5118,7 +5118,7 @@ impl ModelManagerHandle {
         run(|| {
             let file = self.require_file(model_file)?;
             let out = Object::new();
-            for (fqn, uri) in file.get_external_imports() {
+            for (fqn, uri) in file.external_imports() {
                 Reflect::set(&out, &JsValue::from_str(&fqn), &JsValue::from_str(&uri))
                     .map_err(Error::Js)?;
             }
@@ -5224,7 +5224,7 @@ impl ModelManagerHandle {
                     mf.declarations().iter().map(move |decl| {
                         (
                             decl as *const concerto_core::introspect::Declaration,
-                            mu::get_fully_qualified_name(namespace, decl.name()),
+                            mu::qualify(namespace, decl.name()),
                         )
                     })
                 })
@@ -5239,9 +5239,7 @@ impl ModelManagerHandle {
                     let fqn = fqn_by_decl
                         .get(&(decl as *const concerto_core::introspect::Declaration))
                         .cloned()
-                        .unwrap_or_else(|| {
-                            mu::get_fully_qualified_name(&file_namespace, decl.name())
-                        });
+                        .unwrap_or_else(|| mu::qualify(&file_namespace, decl.name()));
                     match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
                         Ok(v) => v.is_truthy(),
                         Err(e) => {
@@ -5261,7 +5259,9 @@ impl ModelManagerHandle {
             let ast = filtered.ast().clone();
             let ns = filtered.namespace().to_string();
             let new_file_name = filtered.file_name().map(str::to_string);
-            target.manager.add_model(&ast, new_file_name)?;
+            target
+                .manager
+                .add_model_with_definitions(&ast, None, new_file_name)?;
             target
                 .manager
                 .model_file_id(&ns)
@@ -5328,7 +5328,7 @@ pub fn model_file_from_ast(
             "fileName": file.file_name(),
             "ast": file.ast(),
             "isSystemModelFile": file.is_system_namespace(),
-            "imports": file.get_imports(),
+            "imports": file.imported_type_names(),
         }))
     })
 }
@@ -5468,7 +5468,7 @@ impl ModelManagerHandle {
 fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     for model in models {
-        mm.add_model(model, None)?;
+        mm.add_model_with_definitions(model, None, None)?;
     }
     Ok(mm)
 }
@@ -5485,7 +5485,7 @@ fn model_manager_from_asts_with_user_ns(
     let mut mm = ModelManager::new()?;
     let mut user_ns = HashSet::new();
     for model in models {
-        mm.add_model(model, None)?;
+        mm.add_model_with_definitions(model, None, None)?;
         if let Some(ns) = model.get("namespace").and_then(Value::as_str) {
             user_ns.insert(ns.to_string());
         }

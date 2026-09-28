@@ -232,7 +232,7 @@ fn a_string_scalar_with_a_bad_validator_is_rejected_at_load() {
 fn a_declaration_validates_against_the_loaded_models() {
     let mut manager = ModelManager::new().unwrap();
     manager
-        .add_model(
+        .add_model_ast(
             &json!({
                 "$class": format!("{MM}.Model"),
                 "namespace": "org.example@1.0.0",

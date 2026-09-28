@@ -113,10 +113,12 @@ pub fn qualify(namespace: &str, short: &str) -> String {
 /// TS: ModelUtil.getShortName (src/modelutil.ts)
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// # use concerto_core::model_util::get_short_name;
 /// assert_eq!(get_short_name("org.acme.baz@1.0.0.Foo"), "Foo");
 /// assert_eq!(get_short_name("Foo"), "Foo");
 /// ```
+#[deprecated(since = "0.1.0", note = "use `short_name`")]
 pub fn get_short_name(fqn: &str) -> &str {
     short_name(fqn)
 }
@@ -279,60 +281,79 @@ pub enum ParsedNamespace {
     },
 }
 
-/// Parses a namespace into its name and version. `None` (JS `undefined` or
-/// `null`) and `""` fail the TS `!ns` check. An unversioned namespace is
-/// accepted, with `version: null` (D6, PORTING.md 3.6; DV-003).
-///
-/// TS: ModelUtil.parseNamespace (src/modelutil.ts)
+/// Parses a namespace into its name and its version. An unversioned
+/// namespace is accepted, with no version (DV-003); an empty one is an
+/// error.
 ///
 /// ```
 /// # use concerto_core::model_util::{parse_namespace, ParsedNamespace};
-/// let ParsedNamespace::Full { name, version, .. } = parse_namespace(Some("org.acme@1.0.0"), false).unwrap() else {
+/// let ParsedNamespace::Full { name, version, .. } = parse_namespace("org.acme@1.0.0").unwrap() else {
 ///     unreachable!()
 /// };
 /// assert_eq!((name.as_str(), version.as_deref()), ("org.acme", Some("1.0.0")));
-/// assert!(parse_namespace(Some("org.acme@1.0.0@2.3"), false).is_err());
+/// assert!(parse_namespace("org.acme@1.0.0@2.3").is_err());
 /// ```
-pub fn parse_namespace(ns: Option<&str>, disable_version_parsing: bool) -> Result<ParsedNamespace> {
-    let ns = match ns {
-        Some(ns) if !ns.is_empty() => ns,
-        _ => {
-            return Err(error(
+pub fn parse_namespace(ns: &str) -> Result<ParsedNamespace> {
+    parse_namespace_with(Some(ns), false)
+}
+
+js_compat_pub! {
+    /// [`parse_namespace`], in the shape of TS `ModelUtil.parseNamespace(ns,
+    /// disableVersionParsing)`. `None` (JS `undefined` or `null`) and `""` fail
+    /// the TS `!ns` check. An unversioned namespace is
+    /// accepted, with `version: null` (D6, PORTING.md 3.6; DV-003).
+    ///
+    /// TS: ModelUtil.parseNamespace (src/modelutil.ts)
+    ///
+    /// ```
+    /// # use concerto_core::model_util::{parse_namespace_with, ParsedNamespace};
+    /// let ParsedNamespace::Full { name, version, .. } = parse_namespace_with(Some("org.acme@1.0.0"), false).unwrap() else {
+    ///     unreachable!()
+    /// };
+    /// assert_eq!((name.as_str(), version.as_deref()), ("org.acme", Some("1.0.0")));
+    /// assert!(parse_namespace_with(Some("org.acme@1.0.0@2.3"), false).is_err());
+    /// ```
+    pub fn parse_namespace_with(ns: Option<&str>, disable_version_parsing: bool) -> Result<ParsedNamespace> {
+        let ns = match ns {
+            Some(ns) if !ns.is_empty() => ns,
+            _ => {
+                return Err(error(
+                    ErrorKind::InvalidArgument,
+                    "modelutil-parsenamespace-nullorundefined",
+                    Vec::new(),
+                ));
+            }
+        };
+        let invalid = || {
+            error(
                 ErrorKind::InvalidArgument,
-                "modelutil-parsenamespace-nullorundefined",
-                Vec::new(),
-            ));
+                "modelutil-parsenamespace-invalidnamespace",
+                vec![("ns", ns.to_string())],
+            )
+        };
+        let parts: Vec<&str> = ns.split('@').collect();
+        if parts.len() > 2 {
+            return Err(invalid());
         }
-    };
-    let invalid = || {
-        error(
-            ErrorKind::InvalidArgument,
-            "modelutil-parsenamespace-invalidnamespace",
-            vec![("ns", ns.to_string())],
-        )
-    };
-    let parts: Vec<&str> = ns.split('@').collect();
-    if parts.len() > 2 {
-        return Err(invalid());
+        let mut version_parsed = None;
+        if let [_, version] = parts.as_slice()
+            && !disable_version_parsing
+        {
+            version_parsed = Some(semver_parse(version).ok_or_else(invalid)?);
+        }
+        let name = parts.first().copied().unwrap_or_default().to_string();
+        if disable_version_parsing {
+            return Ok(ParsedNamespace::NameOnly { name });
+        }
+        Ok(ParsedNamespace::Full {
+            name,
+            // `String.prototype.replace` with a string pattern replaces the first
+            // occurrence only.
+            escaped_namespace: ns.replacen('@', "_", 1),
+            version: parts.get(1).map(|v| (*v).to_string()),
+            version_parsed,
+        })
     }
-    let mut version_parsed = None;
-    if let [_, version] = parts.as_slice()
-        && !disable_version_parsing
-    {
-        version_parsed = Some(semver_parse(version).ok_or_else(invalid)?);
-    }
-    let name = parts.first().copied().unwrap_or_default().to_string();
-    if disable_version_parsing {
-        return Ok(ParsedNamespace::NameOnly { name });
-    }
-    Ok(ParsedNamespace::Full {
-        name,
-        // `String.prototype.replace` with a string pattern replaces the first
-        // occurrence only.
-        escaped_namespace: ns.replacen('@', "_", 1),
-        version: parts.get(1).map(|v| (*v).to_string()),
-        version_parsed,
-    })
 }
 
 js_compat_pub! {
@@ -560,10 +581,12 @@ pub fn is_valid_identifier(name: &str) -> bool {
 /// TS: ModelUtil.getFullyQualifiedName (src/modelutil.ts)
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// # use concerto_core::model_util::get_fully_qualified_name;
 /// assert_eq!(get_fully_qualified_name("a.namespace", "type"), "a.namespace.type");
 /// assert_eq!(get_fully_qualified_name("", "type"), "type");
 /// ```
+#[deprecated(since = "0.1.0", note = "use `qualify`")]
 pub fn get_fully_qualified_name(namespace: &str, type_name: &str) -> String {
     qualify(namespace, type_name)
 }
@@ -586,12 +609,12 @@ js_compat_pub! {
             return Ok(fqn.to_string());
         }
         let ns = get_namespace(fqn)?;
-        let namespace = match parse_namespace(Some(ns), false)? {
+        let namespace = match parse_namespace_with(Some(ns), false)? {
             ParsedNamespace::NameOnly { name } | ParsedNamespace::Full { name, .. } => name,
         };
         // `get_namespace` succeeded, so `fqn` is a non-empty string.
-        let type_name = get_short_name(fqn.unwrap_or_default());
-        Ok(get_fully_qualified_name(&namespace, type_name))
+        let type_name = short_name(fqn.unwrap_or_default());
+        Ok(qualify(&namespace, type_name))
     }
 }
 
@@ -869,13 +892,13 @@ mod tests {
         // #getShortName > should handle a name with a namespace
         #[test]
         fn get_short_name_should_handle_a_name_with_a_namespace() {
-            assert_eq!(get_short_name("org.acme.baz@1.0.0.Foo"), "Foo");
+            assert_eq!(short_name("org.acme.baz@1.0.0.Foo"), "Foo");
         }
 
         // #getShortName > should handle a name without a namespace
         #[test]
         fn get_short_name_should_handle_a_name_without_a_namespace() {
-            assert_eq!(get_short_name("Foo"), "Foo");
+            assert_eq!(short_name("Foo"), "Foo");
         }
 
         // #getNamespace > check getNamespace
@@ -915,16 +938,13 @@ mod tests {
         // #getFullyQualifiedName > valid inputs
         #[test]
         fn get_fully_qualified_name_valid_inputs() {
-            assert_eq!(
-                get_fully_qualified_name("a.namespace", "type"),
-                "a.namespace.type"
-            );
+            assert_eq!(qualify("a.namespace", "type"), "a.namespace.type");
         }
 
         // #getFullyQualifiedName > empty namespace should return the type with no leading dot
         #[test]
         fn get_fully_qualified_name_empty_namespace_should_return_the_type_with_no_leading_dot() {
-            assert_eq!(get_fully_qualified_name("", "type"), "type");
+            assert_eq!(qualify("", "type"), "type");
         }
 
         // #removeNamespaceVersionFromFullyQualifiedName > valid inputs
@@ -954,7 +974,7 @@ mod tests {
                 escaped_namespace,
                 version,
                 version_parsed,
-            } = parse_namespace(Some("org.acme@1.0.0"), false).unwrap()
+            } = parse_namespace_with(Some("org.acme@1.0.0"), false).unwrap()
             else {
                 unreachable!("version parsing is not disabled")
             };
@@ -972,7 +992,7 @@ mod tests {
             // semver, and the result carries `name` only (no
             // `escapedNamespace`/`version`/`versionParsed` properties).
             let ParsedNamespace::NameOnly { name } =
-                parse_namespace(Some("org.acme@1.0.x"), true).unwrap()
+                parse_namespace_with(Some("org.acme@1.0.x"), true).unwrap()
             else {
                 unreachable!("version parsing is disabled")
             };
@@ -982,21 +1002,21 @@ mod tests {
         // #parseNamespace > invalid (null)
         #[test]
         fn parse_namespace_invalid_null() {
-            let err = parse_namespace(None, false).unwrap_err();
+            let err = parse_namespace_with(None, false).unwrap_err();
             assert!(err.to_string().contains("Namespace is null"), "{err}");
         }
 
         // #parseNamespace > invalid (org.acme@1.0.0@2.3)
         #[test]
         fn parse_namespace_invalid_two_at_signs() {
-            let err = parse_namespace(Some("org.acme@1.0.0@2.3"), false).unwrap_err();
+            let err = parse_namespace_with(Some("org.acme@1.0.0@2.3"), false).unwrap_err();
             assert!(err.to_string().contains("Invalid namespace"), "{err}");
         }
 
         // #parseNamespace > invalid version
         #[test]
         fn parse_namespace_invalid_version() {
-            let err = parse_namespace(Some("org.acme@1.1.2+.123"), false).unwrap_err();
+            let err = parse_namespace_with(Some("org.acme@1.1.2+.123"), false).unwrap_err();
             assert!(err.to_string().contains("Invalid namespace"), "{err}");
         }
     }

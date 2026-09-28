@@ -18,9 +18,7 @@ use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
 use crate::introspect::import::Import;
-use crate::model_util::{
-    self, get_fully_qualified_name, get_short_name, is_primitive_type, is_valid_identifier,
-};
+use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
 /// A parsed model file for one namespace.
 #[derive(Debug, Clone)]
@@ -205,7 +203,7 @@ impl ModelFile {
                 }
             }
             let versioned = matches!(
-                model_util::parse_namespace(Some(imp.namespace()), false)?,
+                model_util::parse_namespace_with(Some(imp.namespace()), false)?,
                 model_util::ParsedNamespace::Full {
                     version: Some(_),
                     ..
@@ -413,7 +411,7 @@ impl ModelFile {
             return Some(fqn);
         }
         if self.local_types.contains_key(short) {
-            return Some(get_fully_qualified_name(&self.namespace, short));
+            return Some(qualify(&self.namespace, short));
         }
         None
     }
@@ -443,48 +441,63 @@ impl ModelFile {
     /// is: by the *first* fully-qualified name the owning import brings in,
     /// not by its bare namespace (`ModelUtil.importFullyQualifiedNames(imp)[0]`,
     /// modelfile.ts). `None` if no import with that key carries a URI.
-    pub fn get_import_uri(&self, key: &str) -> Option<&str> {
+    pub fn import_uri(&self, key: &str) -> Option<&str> {
         self.imports.iter().find_map(|imp| {
             let uri = imp.uri()?;
             let first = imp.imported_names().first()?;
-            (get_fully_qualified_name(imp.namespace(), first) == key).then_some(uri)
+            (qualify(imp.namespace(), first) == key).then_some(uri)
         })
+    }
+
+    /// Deprecated name of [`ModelFile::import_uri`].
+    #[deprecated(since = "0.1.0", note = "use `import_uri`")]
+    pub fn get_import_uri(&self, key: &str) -> Option<&str> {
+        self.import_uri(key)
     }
 
     /// TS: `ModelFile.getExternalImports` — every import-URI pair
     /// [`ModelFile::get_import_uri`] can answer, keyed the same way.
-    pub fn get_external_imports(&self) -> HashMap<String, String> {
+    pub fn external_imports(&self) -> HashMap<String, String> {
         self.imports
             .iter()
             .filter_map(|imp| {
                 let uri = imp.uri()?;
                 let first = imp.imported_names().first()?;
-                Some((
-                    get_fully_qualified_name(imp.namespace(), first),
-                    uri.to_string(),
-                ))
+                Some((qualify(imp.namespace(), first), uri.to_string()))
             })
             .collect()
+    }
+
+    /// Deprecated name of [`ModelFile::external_imports`].
+    #[deprecated(since = "0.1.0", note = "use `external_imports`")]
+    pub fn get_external_imports(&self) -> HashMap<String, String> {
+        self.external_imports()
     }
 
     /// TS: `ModelFile.getImports` — the fully-qualified names this file
     /// imports (the declared name of each, never an alias, matching
     /// `ModelUtil.importFullyQualifiedNames`), including the built-in system
     /// import for a non-system file.
-    pub fn get_imports(&self) -> Vec<String> {
+    pub fn imported_type_names(&self) -> Vec<String> {
         self.imports
             .iter()
             .flat_map(|imp| {
                 imp.imported_names()
                     .iter()
-                    .map(|name| get_fully_qualified_name(imp.namespace(), name))
+                    .map(|name| qualify(imp.namespace(), name))
             })
             .collect()
     }
 
+    /// Deprecated name of [`ModelFile::imported_type_names`].
+    #[deprecated(since = "0.1.0", note = "use `imported_type_names`")]
+    pub fn get_imports(&self) -> Vec<String> {
+        self.imported_type_names()
+    }
+
     /// TS: `ModelFile.getLocalType` — accepts either a short name, or a name
     /// already qualified with this file's own namespace.
-    pub fn get_local_type(&self, type_name: &str) -> Option<&Declaration> {
+    pub fn local_type(&self, type_name: &str) -> Option<&Declaration> {
         let short = type_name
             .strip_prefix(self.namespace.as_str())
             .and_then(|rest| rest.strip_prefix('.'))
@@ -492,9 +505,15 @@ impl ModelFile {
         self.local_declaration(short)
     }
 
+    /// Deprecated name of [`ModelFile::local_type`].
+    #[deprecated(since = "0.1.0", note = "use `local_type`")]
+    pub fn get_local_type(&self, type_name: &str) -> Option<&Declaration> {
+        self.local_type(type_name)
+    }
+
     /// TS: `ModelFile.isLocalType`.
     pub fn is_local_type(&self, type_name: &str) -> bool {
-        !type_name.is_empty() && self.get_local_type(type_name).is_some()
+        !type_name.is_empty() && self.local_type(type_name).is_some()
     }
 
     /// The fully-qualified name a locally-visible import name resolves to
@@ -508,7 +527,7 @@ impl ModelFile {
                 .into_iter()
                 .zip(imp.imported_names())
                 .rfind(|(local, _)| *local == type_name)
-                .map(|(_, imported)| get_fully_qualified_name(imp.namespace(), imported))
+                .map(|(_, imported)| qualify(imp.namespace(), imported))
         })
     }
 
@@ -540,15 +559,21 @@ impl ModelFile {
 
     /// TS: `ModelFile.getImportedType` — the actual (possibly aliased) local
     /// name's target short name, from the namespace it is imported from.
-    pub fn get_imported_type(&self, type_name: &str) -> Result<String> {
+    pub fn imported_type(&self, type_name: &str) -> Result<String> {
         self.resolve_import(type_name)
-            .map(|fqn| get_short_name(&fqn).to_string())
+            .map(|fqn| short_name(&fqn).to_string())
+    }
+
+    /// Deprecated name of [`ModelFile::imported_type`].
+    #[deprecated(since = "0.1.0", note = "use `imported_type`")]
+    pub fn get_imported_type(&self, type_name: &str) -> Result<String> {
+        self.imported_type(type_name)
     }
 
     /// TS: `ModelFile.isDefined` — a primitive, or a type this file declares
     /// itself (an imported-only name is not "defined" by this file).
     pub fn is_defined(&self, type_name: &str) -> bool {
-        is_primitive_type(type_name) || self.get_local_type(type_name).is_some()
+        is_primitive_type(type_name) || self.local_type(type_name).is_some()
     }
 
     /// TS: `ModelFile.getFullyQualifiedTypeName` — entirely local: a
@@ -558,108 +583,186 @@ impl ModelFile {
     /// implementation already serves `ModelFile.getType` and
     /// `Property.getFullyQualifiedTypeName`, the two members that need the
     /// owning `ModelManager` to chase into another file; this one never does.
-    pub fn get_fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
+    pub fn fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
         if is_primitive_type(type_name) {
             return Some(type_name.to_string());
         }
         if let Some(fqn) = self.find_import(type_name) {
             return Some(fqn);
         }
-        self.get_local_type(type_name)
-            .map(|d| get_fully_qualified_name(&self.namespace, d.name()))
+        self.local_type(type_name)
+            .map(|d| qualify(&self.namespace, d.name()))
+    }
+
+    /// Deprecated name of [`ModelFile::fully_qualified_type_name`].
+    #[deprecated(since = "0.1.0", note = "use `fully_qualified_type_name`")]
+    pub fn get_fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
+        self.fully_qualified_type_name(type_name)
     }
 
     /// TS: `ModelFile.getAssetDeclaration`.
-    pub fn get_asset_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.get_local_type(name)
+    pub fn asset_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.local_type(name)
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_asset))
     }
 
+    /// Deprecated name of [`ModelFile::asset_declaration`].
+    #[deprecated(since = "0.1.0", note = "use `asset_declaration`")]
+    pub fn get_asset_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.asset_declaration(name)
+    }
+
     /// TS: `ModelFile.getTransactionDeclaration`.
-    pub fn get_transaction_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.get_local_type(name)
+    pub fn transaction_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.local_type(name)
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_transaction))
     }
 
+    /// Deprecated name of [`ModelFile::transaction_declaration`].
+    #[deprecated(since = "0.1.0", note = "use `transaction_declaration`")]
+    pub fn get_transaction_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.transaction_declaration(name)
+    }
+
     /// TS: `ModelFile.getEventDeclaration`.
-    pub fn get_event_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.get_local_type(name)
+    pub fn event_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.local_type(name)
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_event))
     }
 
+    /// Deprecated name of [`ModelFile::event_declaration`].
+    #[deprecated(since = "0.1.0", note = "use `event_declaration`")]
+    pub fn get_event_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.event_declaration(name)
+    }
+
     /// TS: `ModelFile.getParticipantDeclaration`.
-    pub fn get_participant_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.get_local_type(name)
+    pub fn participant_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.local_type(name)
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_participant))
     }
 
+    /// Deprecated name of [`ModelFile::participant_declaration`].
+    #[deprecated(since = "0.1.0", note = "use `participant_declaration`")]
+    pub fn get_participant_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.participant_declaration(name)
+    }
+
     /// TS: `ModelFile.getAssetDeclarations`.
-    pub fn get_asset_declarations(&self) -> Vec<&Declaration> {
+    pub fn asset_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_asset)
     }
 
+    /// Deprecated name of [`ModelFile::asset_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `asset_declarations`")]
+    pub fn get_asset_declarations(&self) -> Vec<&Declaration> {
+        self.asset_declarations().collect()
+    }
+
     /// TS: `ModelFile.getTransactionDeclarations`.
-    pub fn get_transaction_declarations(&self) -> Vec<&Declaration> {
+    pub fn transaction_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_transaction)
     }
 
+    /// Deprecated name of [`ModelFile::transaction_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `transaction_declarations`")]
+    pub fn get_transaction_declarations(&self) -> Vec<&Declaration> {
+        self.transaction_declarations().collect()
+    }
+
     /// TS: `ModelFile.getEventDeclarations`.
-    pub fn get_event_declarations(&self) -> Vec<&Declaration> {
+    pub fn event_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_event)
     }
 
+    /// Deprecated name of [`ModelFile::event_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `event_declarations`")]
+    pub fn get_event_declarations(&self) -> Vec<&Declaration> {
+        self.event_declarations().collect()
+    }
+
     /// TS: `ModelFile.getParticipantDeclarations`.
-    pub fn get_participant_declarations(&self) -> Vec<&Declaration> {
+    pub fn participant_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_participant)
     }
 
+    /// Deprecated name of [`ModelFile::participant_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `participant_declarations`")]
+    pub fn get_participant_declarations(&self) -> Vec<&Declaration> {
+        self.participant_declarations().collect()
+    }
+
     /// TS: `ModelFile.getConceptDeclarations`.
-    pub fn get_concept_declarations(&self) -> Vec<&Declaration> {
+    pub fn concept_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_concept)
     }
 
-    fn by_class_kind(&self, matches_kind: fn(&ClassDeclaration) -> bool) -> Vec<&Declaration> {
+    /// Deprecated name of [`ModelFile::concept_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `concept_declarations`")]
+    pub fn get_concept_declarations(&self) -> Vec<&Declaration> {
+        self.concept_declarations().collect()
+    }
+
+    fn by_class_kind(
+        &self,
+        matches_kind: fn(&ClassDeclaration) -> bool,
+    ) -> impl Iterator<Item = &Declaration> {
         self.declarations
             .iter()
-            .filter(|d| d.as_class().is_some_and(matches_kind))
-            .collect()
+            .filter(move |d| d.as_class().is_some_and(matches_kind))
     }
 
     /// TS: `ModelFile.getClassDeclarations` — `instanceof ClassDeclaration`,
     /// which `EnumDeclaration` also satisfies (it extends `ClassDeclaration`
     /// in TS, module doc on [`crate::introspect::declaration::EnumDeclaration`]);
     /// only a map or scalar declaration is left out. The same predicate
-    /// [`crate::model_manager::ModelManager::class_declarations`]
+    /// `crate::model_manager::ModelManager::class_declarations`
     /// (`Introspector.getClassDeclarations`) uses.
-    pub fn get_class_declarations(&self) -> Vec<&Declaration> {
+    pub fn class_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.declarations
             .iter()
             .filter(|d| !d.is_map_declaration() && !d.is_scalar_declaration())
-            .collect()
+    }
+
+    /// Deprecated name of [`ModelFile::class_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `class_declarations`")]
+    pub fn get_class_declarations(&self) -> Vec<&Declaration> {
+        self.class_declarations().collect()
     }
 
     /// TS: `ModelFile.getEnumDeclarations`.
+    pub fn enum_declarations(&self) -> impl Iterator<Item = &Declaration> {
+        self.declarations.iter().filter(|d| d.is_enum_declaration())
+    }
+
+    /// Deprecated name of [`ModelFile::enum_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `enum_declarations`")]
     pub fn get_enum_declarations(&self) -> Vec<&Declaration> {
-        self.declarations
-            .iter()
-            .filter(|d| d.is_enum_declaration())
-            .collect()
+        self.enum_declarations().collect()
     }
 
     /// TS: `ModelFile.getMapDeclarations`.
+    pub fn map_declarations(&self) -> impl Iterator<Item = &Declaration> {
+        self.declarations.iter().filter(|d| d.is_map_declaration())
+    }
+
+    /// Deprecated name of [`ModelFile::map_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `map_declarations`")]
     pub fn get_map_declarations(&self) -> Vec<&Declaration> {
-        self.declarations
-            .iter()
-            .filter(|d| d.is_map_declaration())
-            .collect()
+        self.map_declarations().collect()
     }
 
     /// TS: `ModelFile.getScalarDeclarations`.
-    pub fn get_scalar_declarations(&self) -> Vec<&Declaration> {
+    pub fn scalar_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.declarations
             .iter()
             .filter(|d| d.is_scalar_declaration())
-            .collect()
+    }
+
+    /// Deprecated name of [`ModelFile::scalar_declarations`].
+    #[deprecated(since = "0.1.0", note = "use `scalar_declarations`")]
+    pub fn get_scalar_declarations(&self) -> Vec<&Declaration> {
+        self.scalar_declarations().collect()
     }
 
     /// TS: `ModelFile.filter` — a new model file with only the declarations
@@ -710,13 +813,13 @@ impl ModelFile {
                         return Some(imp);
                     }
                     let short_class =
-                        get_short_name(imp.get("$class").and_then(|v| v.as_str()).unwrap_or(""));
+                        short_name(imp.get("$class").and_then(|v| v.as_str()).unwrap_or(""));
                     let source_file = source_manager.model_file(&namespace);
                     match short_class {
                         "ImportType" => {
                             let name = imp.get("name").and_then(|v| v.as_str())?;
                             let keep = source_file
-                                .is_none_or(|sf| sf.get_local_type(name).is_none_or(&predicate));
+                                .is_none_or(|sf| sf.local_type(name).is_none_or(&predicate));
                             keep.then_some(imp)
                         }
                         "ImportTypes" => {
@@ -727,7 +830,7 @@ impl ModelFile {
                             let kept_types: Vec<String> = types
                                 .iter()
                                 .filter_map(|t| t.as_str())
-                                .filter(|name| sf.get_local_type(name).is_none_or(&predicate))
+                                .filter(|name| sf.local_type(name).is_none_or(&predicate))
                                 .map(str::to_string)
                                 .collect();
                             if kept_types.is_empty() {
@@ -900,7 +1003,7 @@ fn parse_namespace_version(
     is_system: bool,
     file_name: &Option<String>,
 ) -> Result<String> {
-    let (name, version) = match model_util::parse_namespace(Some(namespace), false)? {
+    let (name, version) = match model_util::parse_namespace_with(Some(namespace), false)? {
         model_util::ParsedNamespace::Full { name, version, .. } => (name, version),
         model_util::ParsedNamespace::NameOnly { name } => (name, None),
     };
@@ -1098,6 +1201,7 @@ mod tests {
     /// `ModelFile.validate()`'s job (P2-08 review: this test used to assert
     /// that construction itself failed, which TS never does).
     #[test]
+    #[allow(deprecated)]
     fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
         let mf = ModelFile::from_json(
             &serde_json::json!({
@@ -1245,6 +1349,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn resolves_and_reports_imported_types_by_their_visible_local_name() {
         let mf = sample();
         assert!(mf.is_imported_type("Address"));
@@ -1262,6 +1367,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn get_imports_lists_declared_names_never_aliases() {
         let mf = ModelFile::from_json(
             &serde_json::json!({
@@ -1289,6 +1395,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn get_import_uri_is_keyed_by_the_imports_first_fully_qualified_name() {
         let mf = ModelFile::from_json(
             &serde_json::json!({
@@ -1352,7 +1459,7 @@ mod tests {
     fn filter_drops_an_import_whose_only_type_is_filtered_out_of_its_source_file() {
         let mut manager = crate::model_manager::ModelManager::new().unwrap();
         manager
-            .add_model(&model_with_two_concepts("org.src@1.0.0"), None)
+            .load_model(&model_with_two_concepts("org.src@1.0.0"), None)
             .unwrap();
 
         let importing = serde_json::json!({

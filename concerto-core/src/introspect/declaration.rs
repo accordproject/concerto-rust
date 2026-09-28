@@ -22,9 +22,7 @@ use crate::introspect::typed_ast::TypedDeclaration;
 use crate::introspect::{
     DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
 };
-use crate::model_util::{
-    MAP_KEY_KINDS, MAP_VALUE_KINDS, get_fully_qualified_name, get_short_name, is_valid_identifier,
-};
+use crate::model_util::{MAP_KEY_KINDS, MAP_VALUE_KINDS, is_valid_identifier, qualify, short_name};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents. Its
 /// [`DeclarationKind`] is the metamodel `$class` short name for the kind.
@@ -373,7 +371,7 @@ impl ClassDeclaration {
         /// `want` is the metamodel short name to compare against
         /// (`"AssetDeclaration"`, …).
         pub fn is_kind(ast_class: &str, want: &str) -> bool {
-            get_short_name(ast_class) == want
+            short_name(ast_class) == want
         }
     }
 
@@ -676,7 +674,7 @@ impl ClassDeclaration {
         // need. The two synthesized system fields above never carry a
         // validator, so checking every property here (not just the AST's
         // own) is a no-op for them.
-        let fqn = get_fully_qualified_name(namespace, &name);
+        let fqn = qualify(namespace, &name);
         // `raw_properties`, indexed the same way `parse_properties` walked
         // `value.get("properties")` to build `properties`, is each
         // property's own AST node — needed so a fuzzed `sizeValidator`/
@@ -929,7 +927,7 @@ fn load_scalar(
     // The name was already checked by `Declaration::from_model_json`
     // (`check_declaration_name`), TS `Declaration.process`.
     let name = scalar::node_name(&node);
-    let fqn = get_fully_qualified_name(namespace, name);
+    let fqn = qualify(namespace, name);
     let processed = ScalarDeclaration::process(value, file_name, &|| Ok::<_, Error>(fqn.clone()))?;
     let scalar = ScalarDeclaration::new(node, processed, parse_decorators(value));
     scalar.check_validators()?;
@@ -1959,7 +1957,7 @@ mod tests {
     /// it falls to the `else` branch instead, exactly as if `$class` held any
     /// other unrelated string (system-identified, `idField = '$identifier'`,
     /// `addIdentifierField()` runs). Before this fix, matching by short name
-    /// alone (`get_short_name(class) == "IdentifiedBy"`) wrongly took the
+    /// alone (`short_name(class) == "IdentifiedBy"`) wrongly took the
     /// explicit branch here, using the field named `email` as the identifier
     /// instead of adding the system `$identifier` field.
     #[test]

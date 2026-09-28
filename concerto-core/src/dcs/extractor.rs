@@ -142,9 +142,9 @@ impl DecoratorExtractor {
             return Ok(());
         }
         let ParsedNamespace::Full { name, version, .. } =
-            model_util::parse_namespace(Some(namespace), false)?
+            model_util::parse_namespace_with(Some(namespace), false)?
         else {
-            unreachable!("parse_namespace(_, false) always returns Full")
+            unreachable!("parse_namespace_with(_, false) always returns Full")
         };
         let mut m = Map::new();
         m.insert(
@@ -700,7 +700,7 @@ impl DecoratorExtractor {
                 .and_then(Value::as_str)
                 .is_some_and(|ns| crate::model_manager::EXCLUDE_NS.contains(&ns))
         }) {
-            model_manager.add_model(model, None)?;
+            model_manager.load_model(model, None)?;
         }
         model_manager.validate_models()?;
 

@@ -309,7 +309,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
             let Ok(fqn) = decode::as_str(&arg0) else {
                 bad_args!()
             };
-            Ok(Value::String(model_util::get_short_name(fqn).to_string()))
+            Ok(Value::String(model_util::short_name(fqn).to_string()))
         }
         "ModelUtil.getNamespace" => {
             let arg0 = decode::arg(&args, 0);
@@ -326,7 +326,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
             let Ok(disable) = decode::disable_version_parsing(args.get(1)) else {
                 bad_args!()
             };
-            model_util::parse_namespace(ns, disable).map(encode_parsed_namespace)
+            model_util::parse_namespace_with(ns, disable).map(encode_parsed_namespace)
         }
         "ModelUtil.importFullyQualifiedNames" => {
             let arg0 = decode::arg(&args, 0);
@@ -398,9 +398,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
                 let Ok(type_name) = decode::as_str(&arg1) else {
                     bad_args!()
                 };
-                Ok(Value::String(model_util::get_fully_qualified_name(
-                    ns, type_name,
-                )))
+                Ok(Value::String(model_util::qualify(ns, type_name)))
             }
         }
         "ModelUtil.removeNamespaceVersionFromFullyQualifiedName" => {
@@ -1288,9 +1286,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 let name = declaration.name();
                 Ok(match member {
                     "getName" => ran(Ok(Value::String(name.to_string()))),
-                    "getFullyQualifiedName" => ran(Ok(Value::String(
-                        model_util::get_fully_qualified_name(file.namespace(), name),
-                    ))),
+                    "getFullyQualifiedName" => ran(Ok(Value::String(model_util::qualify(
+                        file.namespace(),
+                        name,
+                    )))),
                     _ => unsupported(format!(
                         "Declaration.{member} on a declaration of a model file never registered"
                     )),
@@ -1341,7 +1340,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 ));
             };
             let r = &session.pool[index];
-            let Some(property) = r.mm.property(id) else {
+            let Some(property) = r.mm.property_by_id(id) else {
                 return Err(Fault::Divergence(
                     "state divergence: the property handle does not resolve".into(),
                 ));
@@ -1365,7 +1364,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 ));
             };
             let r = &session.pool[index];
-            let Some(property) = r.mm.property(id) else {
+            let Some(property) = r.mm.property_by_id(id) else {
                 return Err(Fault::Divergence(
                     "state divergence: the property handle does not resolve".into(),
                 ));
@@ -1626,7 +1625,7 @@ fn build_property_validator(
     let r = session.pool.get(mm_idx).ok_or_else(|| {
         Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
     })?;
-    let prop = r.mm.property(prop_id).ok_or_else(|| {
+    let prop = r.mm.property_by_id(prop_id).ok_or_else(|| {
         Fault::Divergence("state divergence: the validatorref's property was not found".into())
     })?;
     let fqn =
@@ -1791,6 +1790,11 @@ fn property_summary(owner_fqn: &str, p: &Property) -> Value {
 /// `get_assignable_class_declarations`/`get_direct_subclasses`) gives, each
 /// resolved back to its declaration and encoded the outcome-only way
 /// (`declaration_summary`).
+/// The fully-qualified names of `found`, in order.
+fn names_of(found: Vec<(String, &Declaration)>) -> Vec<String> {
+    found.into_iter().map(|(name, _)| name).collect()
+}
+
 fn declaration_summaries(r: &Replayed, fqns: &[String]) -> Value {
     Value::Array(
         fqns.iter()
@@ -1844,13 +1848,13 @@ fn class_declaration_op(
             };
             ran(Ok(Value::Bool(value)))
         }
-        "getIdentifierFieldName" => from_engine(r.mm.identifier_field_name(fqn), |name| {
-            name.map_or(Value::Null, Value::String)
+        "getIdentifierFieldName" => from_engine(r.mm.identifier_field(fqn), |name| {
+            name.map_or(Value::Null, |name| Value::String(name.to_string()))
         }),
-        "getOwnProperties" => from_engine(r.mm.get_own_properties(fqn), |props| {
+        "getOwnProperties" => from_engine(r.mm.own_properties(fqn), |props| {
             Value::Array(props.iter().map(|p| property_summary(fqn, p)).collect())
         }),
-        "getProperties" => from_engine(r.mm.get_all_properties(fqn), |props| {
+        "getProperties" => from_engine(r.mm.properties(fqn), |props| {
             Value::Array(
                 props
                     .iter()
@@ -1862,35 +1866,33 @@ fn class_declaration_op(
             let Some(name) = arg_str(0) else {
                 return unsupported("getProperty with a name that is not a string");
             };
-            from_engine(r.mm.get_property(fqn, name), |found| {
-                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, &p))
+            from_engine(r.mm.property(fqn, name), |found| {
+                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, p))
             })
         }
-        "getSuperType" => from_engine(r.mm.get_super_type(fqn), |name| {
-            name.map_or(Value::Null, Value::String)
+        "getSuperType" => from_engine(r.mm.super_type(fqn), |found| {
+            found.map_or(Value::Null, |(name, _)| Value::String(name))
         }),
         "getSuperTypeDeclaration" => from_engine(r.mm.get_super_type_declaration(fqn), |found| {
             found
                 .and_then(|id| r.declaration_summary(id))
                 .unwrap_or(Value::Null)
         }),
-        "getAllSuperTypeDeclarations" => from_engine(r.mm.get_all_super_type_names(fqn), |names| {
-            declaration_summaries(r, &names)
+        "getAllSuperTypeDeclarations" => from_engine(r.mm.super_types(fqn), |found| {
+            declaration_summaries(r, &names_of(found))
         }),
-        "getAssignableClassDeclarations" => {
-            from_engine(r.mm.get_assignable_class_declarations(fqn), |names| {
-                declaration_summaries(r, &names)
-            })
-        }
-        "getDirectSubclasses" => from_engine(r.mm.get_direct_subclasses(fqn), |names| {
-            declaration_summaries(r, &names)
+        "getAssignableClassDeclarations" => from_engine(r.mm.assignable_types(fqn), |found| {
+            declaration_summaries(r, &names_of(found))
+        }),
+        "getDirectSubclasses" => from_engine(r.mm.subclasses(fqn), |found| {
+            declaration_summaries(r, &names_of(found))
         }),
         "getNestedProperty" => {
             let Some(path) = arg_str(0) else {
                 return unsupported("getNestedProperty with a path that is not a string");
             };
-            from_engine(r.mm.get_nested_property(fqn, path), |(owner, p)| {
-                property_summary(&owner, &p)
+            from_engine(r.mm.property_path(fqn, path), |(owner, p)| {
+                property_summary(&owner, p)
             })
         }
         "isEnum" => ran(Ok(Value::Bool(declaration.is_enum_declaration()))),
@@ -2177,38 +2179,41 @@ fn model_file_op(
         "isModelFile" => ran(Ok(Value::Bool(true))),
         "isSystemModelFile" => ran(Ok(Value::Bool(mf.is_system_namespace()))),
         "getAllDeclarations" => ran(Ok(decls(mf.declarations().iter().collect()))),
-        "getClassDeclarations" => ran(Ok(decls(mf.get_class_declarations()))),
-        "getEnumDeclarations" => ran(Ok(decls(mf.get_enum_declarations()))),
-        "getScalarDeclarations" => ran(Ok(decls(mf.get_scalar_declarations()))),
-        "getAssetDeclarations" => ran(Ok(decls(mf.get_asset_declarations()))),
-        "getTransactionDeclarations" => ran(Ok(decls(mf.get_transaction_declarations()))),
-        "getEventDeclarations" => ran(Ok(decls(mf.get_event_declarations()))),
-        "getAssetDeclaration" => ran(Ok(decl(mf.get_asset_declaration(str_arg!(0))))),
-        "getTransactionDeclaration" => ran(Ok(decl(mf.get_transaction_declaration(str_arg!(0))))),
-        "getEventDeclaration" => ran(Ok(decl(mf.get_event_declaration(str_arg!(0))))),
-        "getParticipantDeclaration" => ran(Ok(decl(mf.get_participant_declaration(str_arg!(0))))),
+        "getClassDeclarations" => ran(Ok(decls(mf.class_declarations().collect()))),
+        "getEnumDeclarations" => ran(Ok(decls(mf.enum_declarations().collect()))),
+        "getScalarDeclarations" => ran(Ok(decls(mf.scalar_declarations().collect()))),
+        "getAssetDeclarations" => ran(Ok(decls(mf.asset_declarations().collect()))),
+        "getTransactionDeclarations" => ran(Ok(decls(mf.transaction_declarations().collect()))),
+        "getEventDeclarations" => ran(Ok(decls(mf.event_declarations().collect()))),
+        "getAssetDeclaration" => ran(Ok(decl(mf.asset_declaration(str_arg!(0))))),
+        "getTransactionDeclaration" => ran(Ok(decl(mf.transaction_declaration(str_arg!(0))))),
+        "getEventDeclaration" => ran(Ok(decl(mf.event_declaration(str_arg!(0))))),
+        "getParticipantDeclaration" => ran(Ok(decl(mf.participant_declaration(str_arg!(0))))),
         "getImports" => ran(Ok(Value::Array(
-            mf.get_imports().into_iter().map(Value::String).collect(),
+            mf.imported_type_names()
+                .into_iter()
+                .map(Value::String)
+                .collect(),
         ))),
         // TS `getExternalImports()` returns `this.importUriMap` directly:
         // an object keyed by each import's fully-qualified name, valued by
         // its URI (P2-11b-U4).
         "getExternalImports" => ran(Ok(Value::Object(
-            mf.get_external_imports()
+            mf.external_imports()
                 .into_iter()
                 .map(|(fqn, uri)| (fqn, Value::String(uri)))
                 .collect(),
         ))),
         "getImportURI" => ran(Ok(mf
-            .get_import_uri(str_arg!(0))
+            .import_uri(str_arg!(0))
             .map_or(Value::Null, |u| Value::String(u.to_string())))),
         "isImportedType" => ran(Ok(Value::Bool(mf.is_imported_type(str_arg!(0))))),
         "isLocalType" => ran(Ok(Value::Bool(mf.is_local_type(str_arg!(0))))),
         "isDefined" => ran(Ok(Value::Bool(mf.is_defined(str_arg!(0))))),
         "resolveImport" => from_engine(mf.resolve_import(str_arg!(0)), Value::String),
-        "getImportedType" => from_engine(mf.get_imported_type(str_arg!(0)), Value::String),
+        "getImportedType" => from_engine(mf.imported_type(str_arg!(0)), Value::String),
         "getFullyQualifiedTypeName" => ran(Ok(mf
-            .get_fully_qualified_type_name(str_arg!(0))
+            .fully_qualified_type_name(str_arg!(0))
             .map_or(Value::Null, Value::String))),
         "getModelManager" => match registered_file(session, file) {
             Ok(r) => ran(Ok(r.summary())),
@@ -3515,7 +3520,13 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
             if !resolve {
                 return ran(Ok(r.ast(include)));
             }
-            from_engine(r.mm.get_ast(true, include), |v| v)
+            from_engine(
+                r.mm.ast(concerto_core::model_manager::AstOptions {
+                    resolve: true,
+                    include_system_models: include,
+                }),
+                |v| v,
+            )
         }
         "resolveMetaModel" => {
             let Some(Arg::Plain(meta_model)) = args.first() else {
@@ -3705,7 +3716,7 @@ fn model_manager_filter_op(r: &Replayed, args: &[Arg]) -> Dispatch {
     };
     match r
         .mm
-        .filter(|fqn| names.iter().any(|n| n == fqn), disable_validation)
+        .filter_by_fqn(|fqn| names.iter().any(|n| n == fqn), disable_validation)
     {
         Ok(mm) => ran(Ok(recipe::summary_of(recipe::Kind::BaseModelManager, &mm))),
         Err(e) => ran(Err(to_oracle_error(&e))),

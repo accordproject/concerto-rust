@@ -281,7 +281,7 @@ mod tests {
             ]
         });
         let mut mm = ModelManager::new().expect("a model manager");
-        mm.add_model(&ast, Some("test.cto".into()))
+        mm.load_model(&ast, Some("test.cto".into()))
             .expect("the model loads");
         mm
     }

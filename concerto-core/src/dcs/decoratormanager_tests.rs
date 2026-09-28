@@ -42,7 +42,7 @@ fn model_manager_with(ast_json: &str, file_name: &str) -> ModelManager {
     let ast: Value = serde_json::from_str(ast_json).expect("test AST is JSON");
     let mut model_manager = ModelManager::new().unwrap();
     model_manager
-        .add_models([(&ast, Some(file_name.to_string()))])
+        .load_models([(&ast, Some(file_name.to_string()))])
         .unwrap();
     model_manager
 }

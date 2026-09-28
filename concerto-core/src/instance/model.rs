@@ -55,7 +55,7 @@ pub(crate) fn unrecognised() -> crate::Error {
 impl<'a> TypeRef<'a> {
     /// TS `getFullyQualifiedName()`.
     pub fn fqn(&self) -> String {
-        model_util::get_fully_qualified_name(&self.namespace(), self.name())
+        model_util::qualify(&self.namespace(), self.name())
     }
 
     /// TS `getNamespace()`: the model file's namespace.
@@ -124,9 +124,10 @@ impl<'a> TypeRef<'a> {
     /// `ScalarDeclaration`'s default) for a map or a scalar.
     pub fn identifier_field_name(&self) -> Result<Option<String>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => {
-                self.mm.identifier_field_name(&self.fqn())
-            }
+            Declaration::Class(_) | Declaration::Enum(_) => self
+                .mm
+                .identifier_field(&self.fqn())
+                .map(|f| f.map(str::to_string)),
             Declaration::Scalar(_) | Declaration::Map(_) => Ok(None),
         }
     }
@@ -146,7 +147,12 @@ impl<'a> TypeRef<'a> {
     /// own (V8's `TypeError`, which no instance path reaches with one).
     pub fn properties(&self, expression: &str) -> Result<Vec<(String, Property)>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => self.mm.get_all_properties(&self.fqn()),
+            Declaration::Class(_) | Declaration::Enum(_) => Ok(self
+                .mm
+                .properties(&self.fqn())?
+                .into_iter()
+                .map(|(owner, property)| (owner, property.clone()))
+                .collect()),
             _ => Err(not_a_function(expression)),
         }
     }
@@ -157,7 +163,10 @@ impl<'a> TypeRef<'a> {
         // property first (P5-06): `get_property` resolves the same super
         // chain and returns the same first match.
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => self.mm.get_property(&self.fqn(), name),
+            Declaration::Class(_) | Declaration::Enum(_) => self
+                .mm
+                .property(&self.fqn(), name)
+                .map(|found| found.map(|(owner, property)| (owner, property.clone()))),
             _ => Err(not_a_function("classDeclaration.getProperty")),
         }
     }
@@ -265,11 +274,11 @@ pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> R
     let field_type = match &property {
         Property::Relationship(rp) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
-            FieldType::Relationship(mm.resolve_type_name(namespace, &rp.type_.name, None)?)
+            FieldType::Relationship(mm.resolve_type_name_at(namespace, &rp.type_.name, None)?)
         }
         Property::Object(op) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
-            let fqn = mm.resolve_type_name(namespace, &op.type_.name, None)?;
+            let fqn = mm.resolve_type_name_at(namespace, &op.type_.name, None)?;
             match mm.get_declaration(&fqn)? {
                 Declaration::Enum(_) => FieldType::Enum(fqn),
                 Declaration::Scalar(s) => FieldType::Scalar {

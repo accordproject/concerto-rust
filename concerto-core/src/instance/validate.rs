@@ -296,7 +296,9 @@ fn visit_class_declaration_dispatch(
         )
         .into());
     };
-    let identifier_field_name = p.mm.identifier_field_name(&to_be_assigned_fqn)?;
+    let identifier_field_name =
+        p.mm.identifier_field(&to_be_assigned_fqn)
+            .map(|f| f.map(str::to_string))?;
 
     // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
     // obj.getFullyQualifiedIdentifier(); }`. Every `obj` reaching this point
@@ -327,7 +329,7 @@ fn visit_class_declaration_dispatch(
     // `let props = Object.getOwnPropertyNames(obj)` — bug fix (only the
     // direct super type was merged): `get_all_properties` walks the whole
     // chain, so a property declared two or more levels up is found.
-    let all_properties = p.mm.get_all_properties(&to_be_assigned_fqn)?;
+    let all_properties = p.mm.properties(&to_be_assigned_fqn)?;
     let declared_is_identified = p.mm.is_identified(declared_fqn)?;
     for key in obj.keys() {
         if model_util::is_system_property(key) {
@@ -439,7 +441,8 @@ fn identifiable_parts(p: &Params, value: &Value) -> Option<(String, String)> {
     let obj = value.as_object()?;
     let fqn = obj.get("$class")?.as_str()?.to_string();
     let id_field =
-        p.mm.identifier_field_name(&fqn)
+        p.mm.identifier_field(&fqn)
+            .map(|f| f.map(str::to_string))
             .ok()
             .flatten()
             .unwrap_or_else(|| "$identifier".to_string());
@@ -512,7 +515,7 @@ fn resolve_object_target(
     ti: &mm::TypeIdentifier,
 ) -> Result<ObjectTarget> {
     let namespace = model_util::get_namespace(Some(owner_fqn))?;
-    let fqn = mm.resolve_type_name(namespace, &ti.name, None)?;
+    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None)?;
     let decl = mm.get_declaration(&fqn)?;
     Ok(if decl.is_enum_declaration() {
         ObjectTarget::Enum(fqn)
@@ -1273,7 +1276,11 @@ fn check_relationship(
     };
     let _ = target_class;
 
-    if p.mm.identifier_field_name(&target_fqn)?.is_none() {
+    if p.mm
+        .identifier_field(&target_fqn)
+        .map(|f| f.map(str::to_string))?
+        .is_none()
+    {
         return Err(ContractError::new(
             ErrorKind::InvalidArgument,
             "resourcevalidator-checkrelationship-notidentifiable",
@@ -1283,7 +1290,7 @@ fn check_relationship(
     }
 
     let namespace = model_util::get_namespace(Some(owner_fqn))?;
-    let declared_fqn = p.mm.resolve_type_name(namespace, &type_id.name, None)?;
+    let declared_fqn = p.mm.resolve_type_name_at(namespace, &type_id.name, None)?;
     if !p.mm.is_assignable_to(&target_fqn, &declared_fqn)? {
         return Err(invalid_field_assignment(
             p,
@@ -1369,7 +1376,7 @@ fn map_key_is_scalar(
         return Ok(false);
     };
     let namespace = model_util::get_namespace(Some(map_fqn))?;
-    let fqn = mm.resolve_type_name(namespace, &ti.name, None)?;
+    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None)?;
     Ok(mm.get_declaration(&fqn)?.is_scalar_declaration())
 }
 
@@ -1465,7 +1472,7 @@ fn check_map_type(
 }
 
 fn mm_resolve(mm: &ModelManager, namespace: &str, short: &str) -> Result<String> {
-    mm.resolve_type_name(namespace, short, None)
+    mm.resolve_type_name_at(namespace, short, None)
 }
 
 /// The primitive name a primitive map key/value `$class` short kind
@@ -1749,7 +1756,7 @@ fn not_relationship_violation(
     }
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
-    let class_fqn = model_util::get_fully_qualified_name(namespace, type_name);
+    let class_fqn = model_util::qualify(namespace, type_name);
     // `value.toString()`: a nested Resource or (wrongly, per this check)
     // Relationship-shaped value that reaches here is `Identifiable`, whose
     // own `toString()` is `'Resource {id=...}'`/`'Relationship {id=...}'`
@@ -1844,7 +1851,7 @@ fn invalid_field_assignment(
 ) -> Error {
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
-    let mut field_type = model_util::get_fully_qualified_name(namespace, type_name);
+    let mut field_type = model_util::qualify(namespace, type_name);
     if property.is_array() {
         field_type.push_str("[]");
     }
@@ -2184,7 +2191,7 @@ fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: 
         );
     }
 
-    let Ok(all_properties) = c.mm.get_all_properties(&own_fqn) else {
+    let Ok(all_properties) = c.mm.properties(&own_fqn) else {
         c.push(
             pointer.to_string(),
             DiagnosticCode::TypeNotFound,
@@ -2209,7 +2216,8 @@ fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: 
 
     if c.mm.is_identified(declared_fqn).unwrap_or(false) {
         let id_field =
-            c.mm.identifier_field_name(&own_fqn)
+            c.mm.identifier_field(&own_fqn)
+                .map(|f| f.map(str::to_string))
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| "$identifier".to_string());
@@ -2229,7 +2237,11 @@ fn collect_class(c: &mut Collector, declared_fqn: &str, value: &Value, pointer: 
     // explicitly-identified type (`identifier_field_name` names its own
     // field instead) is not really missing — [`visit_class_declaration`]
     // skips it the same way.
-    let own_identifier_field_name = c.mm.identifier_field_name(&own_fqn).ok().flatten();
+    let own_identifier_field_name =
+        c.mm.identifier_field(&own_fqn)
+            .map(|f| f.map(str::to_string))
+            .ok()
+            .flatten();
     for (owner_fqn, property) in &all_properties {
         let prop_pointer = push_pointer(pointer, property.name());
         match obj.get(property.name()) {
@@ -2382,7 +2394,7 @@ mod tests {
     /// fields with validators.
     fn fixture() -> ModelManager {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -2676,7 +2688,7 @@ mod tests {
     fn an_undeclared_field_s_reported_resource_id_depends_on_whether_the_declared_type_is_identified()
      {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.nest@1.0.0",
@@ -3291,7 +3303,7 @@ mod tests {
     #[test]
     fn a_missing_required_property_with_a_default_value_is_accepted() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme.defaults@1.0.0",

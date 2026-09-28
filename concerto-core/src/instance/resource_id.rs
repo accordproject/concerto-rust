@@ -347,7 +347,7 @@ impl ResourceId {
                 // The whole path is a qualified type name.
                 let qualified_type = components.path.as_str();
                 let namespace = model_util::get_namespace(Some(qualified_type))?.to_string();
-                let type_name = model_util::get_short_name(qualified_type).to_string();
+                let type_name = model_util::short_name(qualified_type).to_string();
                 (namespace, type_name, id.clone())
             }
             None => {
@@ -367,7 +367,7 @@ impl ResourceId {
     ///
     /// TS: ResourceId.prototype.toURI (`src/model/resourceid.ts`)
     pub fn to_uri(&self) -> String {
-        let qualified_type = model_util::get_fully_qualified_name(&self.namespace, &self.type_name);
+        let qualified_type = model_util::qualify(&self.namespace, &self.type_name);
         format!(
             "{RESOURCE_SCHEME}:{qualified_type}#{}",
             encode_uri(&self.id)

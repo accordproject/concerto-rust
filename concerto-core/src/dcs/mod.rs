@@ -131,7 +131,7 @@ fn falsy_or_equal_in_string(test: Option<&Value>, values: &str) -> bool {
 /// `isUnversionedNamespaceEqual(modelFile, unversionedNamespace)`
 /// (`src/decoratormanager.ts`).
 fn is_unversioned_namespace_equal(model_file: &ModelFile, unversioned_namespace: &str) -> bool {
-    match model_util::parse_namespace(Some(model_file.namespace()), false) {
+    match model_util::parse_namespace_with(Some(model_file.namespace()), false) {
         Ok(ParsedNamespace::Full { name, .. }) | Ok(ParsedNamespace::NameOnly { name }) => {
             name == unversioned_namespace
         }
@@ -280,7 +280,7 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
                 if let ParsedNamespace::Full {
                     version: Some(version),
                     ..
-                } = model_util::parse_namespace(Some(ns), false)?
+                } = model_util::parse_namespace_with(Some(ns), false)?
                 {
                     // `String.prototype.replace` with a string pattern
                     // replaces only the first occurrence.
@@ -307,7 +307,7 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
 /// than duplicating it — this crate exposes no standalone semver parser
 /// (`model_util::semver_parse` is private).
 fn parse_version(version: &str) -> Option<model_util::SemVer> {
-    match model_util::parse_namespace(Some(&format!("x@{version}")), false) {
+    match model_util::parse_namespace_with(Some(&format!("x@{version}")), false) {
         Ok(ParsedNamespace::Full { version_parsed, .. }) => version_parsed,
         _ => None,
     }
@@ -377,7 +377,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
         _ => None,
     };
     let ns = model_util::get_namespace(class)?;
-    let input_version = match model_util::parse_namespace(Some(ns), false)? {
+    let input_version = match model_util::parse_namespace_with(Some(ns), false)? {
         ParsedNamespace::Full {
             version: Some(v), ..
         } => v,
@@ -559,7 +559,7 @@ pub fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<(
         .get("namespace")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let name = match model_util::parse_namespace(namespace.as_deref(), false)? {
+    let name = match model_util::parse_namespace_with(namespace.as_deref(), false)? {
         ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
     };
     let namespace = namespace.unwrap_or_default();
@@ -613,7 +613,7 @@ pub fn execute_command(
 ) -> Result<()> {
     let (command_type, decorator, target) = command_parts(command);
     // The namespace version is already validated by `decorate_models`.
-    let name = match model_util::parse_namespace(Some(namespace), true)? {
+    let name = match model_util::parse_namespace_with(Some(namespace), true)? {
         ParsedNamespace::NameOnly { name } | ParsedNamespace::Full { name, .. } => name,
     };
     let declaration_name = declaration
@@ -729,7 +729,7 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         resolved_model_file = model_manager.model_file(namespace);
         if resolved_model_file.is_none()
             && let ParsedNamespace::Full { name, version, .. } =
-                model_util::parse_namespace(Some(namespace), false)?
+                model_util::parse_namespace_with(Some(namespace), false)?
             && version.is_none()
         {
             // TS `getModelFiles()`: the user's model files only.
@@ -799,7 +799,9 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
             .and_then(Value::as_str)
             .filter(|v| !v.is_empty())
         {
-            let found = model_manager.get_property(&fqn, property)?;
+            let found = model_manager
+                .property(&fqn, property)
+                .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
             if found.is_none() {
                 return Err(ContractError::pre_port(
                     ErrorKind::InvalidArgument,
@@ -814,7 +816,9 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
 
         if let Some(properties) = target.get("properties").and_then(Value::as_array) {
             for property in properties.iter().filter_map(Value::as_str) {
-                let found = model_manager.get_property(&fqn, property)?;
+                let found = model_manager
+                    .property(&fqn, property)
+                    .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
                 if found.is_none() {
                     return Err(ContractError::pre_port(
                         ErrorKind::InvalidArgument,
@@ -856,7 +860,7 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
         )
         .into());
     };
-    let short = model_util::get_short_name(type_name);
+    let short = model_util::short_name(type_name);
     if mf.resolve_local_type(short).as_deref() == Some(type_name) {
         Ok(())
     } else {
@@ -1064,14 +1068,14 @@ fn new_validation_model_manager() -> Result<ModelManager> {
     let mut model_manager = ModelManager::new()?;
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    model_manager.add_models([(&metamodel, Some(META_MODEL_NAMESPACE.to_string()))])?;
+    model_manager.load_models([(&metamodel, Some(META_MODEL_NAMESPACE.to_string()))])?;
     Ok(model_manager)
 }
 
 /// `validationModelManager.addModelFiles(modelFiles)`: `model_files`' ASTs,
 /// under their own file names, added and validated together.
 fn add_model_files(model_manager: &mut ModelManager, model_files: &[&ModelFile]) -> Result<()> {
-    model_manager.add_models(
+    model_manager.load_models(
         model_files
             .iter()
             .map(|mf| (mf.ast(), mf.file_name().map(str::to_string))),
@@ -1083,7 +1087,7 @@ fn add_model_files(model_manager: &mut ModelManager, model_files: &[&ModelFile])
 fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()> {
     let dcs_model: Value =
         serde_json::from_str(DCS_MODEL_AST_JSON).expect("the DCS model AST is JSON");
-    model_manager.add_models([(&dcs_model, Some(file_name.to_string()))])?;
+    model_manager.load_models([(&dcs_model, Some(file_name.to_string()))])?;
     Ok(())
 }
 
@@ -1175,10 +1179,7 @@ fn get_type(model_manager: &ModelManager, qualified_name: &str) -> Result<()> {
         return Err(ContractError::type_not_found(
             "modelmanager-gettype-notypeinns",
             vec![
-                (
-                    "type",
-                    model_util::get_short_name(qualified_name).to_string(),
-                ),
+                ("type", model_util::short_name(qualified_name).to_string()),
                 ("namespace", namespace.to_string()),
             ],
             qualified_name.to_string(),
@@ -1332,7 +1333,7 @@ pub fn decorate_models(
                 .model_files()
                 .filter(|mf| !crate::model_manager::EXCLUDE_NS.contains(&mf.namespace()))
             {
-                same.add_model(mf.ast(), mf.file_name().map(str::to_string))?;
+                same.load_model(mf.ast(), mf.file_name().map(str::to_string))?;
             }
             Ok(same)
         }
@@ -1425,7 +1426,7 @@ pub fn apply_decoration(
 ) -> Result<ModelManager> {
     // `options?.disableMetamodelResolution ? getAst(false, true) : getAst(true, true)`.
     let resolve = options.disable_metamodel_resolution != Some(true);
-    let mut models = models_of(model_manager.get_ast(resolve, true)?);
+    let mut models = models_of(model_manager.models_ast(resolve, true)?);
     for model in models.iter_mut() {
         decorate_model(model, &prepared.decorator_imports, &prepared.maps)?;
     }
@@ -1437,7 +1438,7 @@ pub fn apply_decoration(
             .and_then(Value::as_str)
             .is_some_and(|ns| crate::model_manager::EXCLUDE_NS.contains(&ns))
     }) {
-        decorated.add_model(model, None)?;
+        decorated.load_model(model, None)?;
     }
     if options.disable_metamodel_validation != Some(true) {
         decorated.validate_models()?;
@@ -1546,7 +1547,7 @@ fn decorate_model(
         }
     }
 
-    let namespace_name = match model_util::parse_namespace(Some(&namespace), false)? {
+    let namespace_name = match model_util::parse_namespace_with(Some(&namespace), false)? {
         ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
     };
 
@@ -1715,7 +1716,7 @@ pub fn extract_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        model_manager.get_ast(true, true)?,
+        model_manager.models_ast(true, true)?,
         extractor::Action::ExtractAll,
     )
     .extract()
@@ -1733,7 +1734,7 @@ pub fn extract_vocabularies(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        model_manager.get_ast(true, true)?,
+        model_manager.models_ast(true, true)?,
         extractor::Action::ExtractVocab,
     )
     .extract()
@@ -1751,7 +1752,7 @@ pub fn extract_non_vocab_decorators(
         options.remove_decorators_from_model,
         options.locale.clone(),
         DCS_VERSION,
-        model_manager.get_ast(true, false)?,
+        model_manager.models_ast(true, false)?,
         extractor::Action::ExtractNonVocab,
     )
     .extract()
@@ -1765,7 +1766,7 @@ mod tests {
     /// `org.acme@1.0.0` with a single `Person { name: String }`.
     fn sample_manager() -> ModelManager {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -2114,7 +2115,7 @@ mod tests {
     #[test]
     fn decorate_models_upsert_replaces_an_existing_decorator_of_the_same_name() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",

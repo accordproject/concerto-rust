@@ -23,7 +23,7 @@
 //! `this.metamodelModelFile` so `getType` resolves it — is `SEAM_LEDGER.tsv`'s
 //! other half of this row. Task P4-08b (accordproject/concerto-rust#174)
 //! added it as [`ModelManager::validate_ast`] (with
-//! [`ModelManager::set_metamodel_validation`]), built on this module's
+//! `ModelManager::set_metamodel_validation`), built on this module's
 //! `check_version`, `metamodel_model_file` and `deserialize_ast`.
 //!
 //! accordproject/concerto-rust#265 adds the two `src/introspect/metamodel.ts`
@@ -84,7 +84,7 @@ fn metamodel_model_manager() -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    mm.add_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
+    mm.load_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
     Ok(mm)
 }
 
@@ -329,9 +329,9 @@ pub(crate) fn check_version(ast: &Value) -> Result<()> {
 
 /// `ModelUtil.parseNamespace(ns).version`.
 fn namespace_version(ns: &str) -> Result<Option<String>> {
-    let ParsedNamespace::Full { version, .. } = model_util::parse_namespace(Some(ns), false)?
+    let ParsedNamespace::Full { version, .. } = model_util::parse_namespace_with(Some(ns), false)?
     else {
-        unreachable!("parse_namespace(_, false) always returns ParsedNamespace::Full")
+        unreachable!("parse_namespace_with(_, false) always returns ParsedNamespace::Full")
     };
     Ok(version)
 }
@@ -608,7 +608,7 @@ mod tests {
         assert!(!mm.metamodel_validation());
         mm.set_metamodel_validation(true);
         assert!(mm.metamodel_validation());
-        mm.add_model(
+        mm.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",

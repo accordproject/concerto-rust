@@ -140,7 +140,9 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if instance.kind == InstanceKind::Relationship {
         return Ok(());
     }
-    if let Some(field) = mm.identifier_field_name(&instance.class_fqn)?
+    if let Some(field) = mm
+        .identifier_field(&instance.class_fqn)
+        .map(|f| f.map(str::to_string))?
         && field != "$identifier"
     {
         let id = instance.get_identifier().clone();

@@ -265,7 +265,7 @@ impl ScalarDeclaration {
             file_name: Option<&str>,
             ast: &Value,
         ) -> crate::error::Result<(String, ProcessedScalar)> {
-            let fqn = crate::model_util::get_fully_qualified_name(
+            let fqn = crate::model_util::qualify(
                 namespace,
                 ast.get("name").and_then(Value::as_str).unwrap_or_default(),
             );

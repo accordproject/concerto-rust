@@ -69,7 +69,7 @@ pub fn check_new_resource(
     id: JsValue,
     new_id: &mut dyn FnMut() -> String,
 ) -> Result<NewResourceCheck> {
-    let qualified_name = model_util::get_fully_qualified_name(ns, type_name);
+    let qualified_name = model_util::qualify(ns, type_name);
     let class_decl = model::get_type(mm, &qualified_name)?;
 
     if class_decl.is_abstract("classDecl.isAbstract")? {
@@ -291,7 +291,7 @@ pub fn new_relationship(
     type_name: &str,
     id: JsValue,
 ) -> Result<Instance> {
-    let fqn = model_util::get_fully_qualified_name(ns, type_name);
+    let fqn = model_util::qualify(ns, type_name);
     let class_decl = model::get_type(mm, &fqn)?;
     if !class_decl.is_identified()? {
         return Err(error(
@@ -333,7 +333,7 @@ pub fn relationship_from_uri(
 ) -> Result<Instance> {
     let resource_id =
         super::resource_id::ResourceId::from_uri(uri, default_namespace, default_type)?;
-    let fqt = model_util::get_fully_qualified_name(&resource_id.namespace, &resource_id.type_name);
+    let fqt = model_util::qualify(&resource_id.namespace, &resource_id.type_name);
     let class_decl = model::get_type(mm, &fqt)?;
     relationship(
         mm,
@@ -410,7 +410,7 @@ pub fn new_event(
 fn raw_default_value(mm: &ModelManager, owner_fqn: &str, name: &str) -> Option<Value> {
     let decl = mm.declaration_id(owner_fqn)?;
     let prop = mm.property_ids(decl).find(|id| {
-        mm.property(*id)
+        mm.property_by_id(*id)
             .is_some_and(|p| crate::Named::name(p) == name)
     })?;
     mm.property_default_value(prop).cloned()
@@ -483,7 +483,7 @@ mod tests {
 
     fn manager(cto_ast: serde_json::Value) -> ModelManager {
         let mut mm = ModelManager::new().expect("a model manager");
-        mm.add_model(&cto_ast, Some("test.cto".into()))
+        mm.load_model(&cto_ast, Some("test.cto".into()))
             .expect("the model loads");
         mm
     }
