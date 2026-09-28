@@ -1,0 +1,73 @@
+name: Public API and semver
+
+# P6-03 (accordproject/concerto-rust#85, plan accordproject/concerto-rust#29
+# D11/P6-01): a cargo-public-api snapshot and cargo-semver-checks for
+# `accordproject-concerto-core`, so a change to its public API (default
+# features, js-compat off - docs/public-api.md section 2) fails CI unless the
+# snapshot is updated deliberately and the version is bumped when the change
+# is breaking.
+
+on:
+  push:
+    branches: [main, claude/tender-pascal-ocwf9q]
+  pull_request:
+    # The migration integration branch too, for the same reason as ci.yml:
+    # otherwise a merge into it can change core's public API unnoticed.
+    branches: [main, claude/tender-pascal-ocwf9q]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  public-api-snapshot:
+    name: cargo public-api snapshot (concerto-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install nightly toolchain (rustdoc JSON)
+        # `rustdoc` ships as part of the `rustc` component; no separate
+        # component to request. cargo-public-api shells out to `cargo rustdoc`
+        # with the unstable `--output-format json` flag, so it needs a
+        # nightly toolchain present (scripts/check-public-api.sh runs it
+        # through `rustup run nightly`, not a nightly default).
+        run: rustup toolchain install nightly --profile minimal
+      - name: Install cargo-public-api
+        run: cargo install cargo-public-api --locked
+      - name: Check the public API snapshot
+        run: scripts/check-public-api.sh --check
+
+  semver-checks:
+    name: cargo semver-checks (concerto-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # cargo-semver-checks checks out the baseline commit itself, and
+          # needs its history to be present.
+          fetch-depth: 0
+      - name: Install stable toolchain
+        run: rustup update stable && rustup default stable
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+      - name: Determine the baseline commit
+        id: baseline
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # A first push on a new branch, or a push whose "before" is the
+          # all-zero SHA, has no usable baseline that way: fall back to the
+          # merge-base with the integration branch.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags origin claude/tender-pascal-ocwf9q
+            base="$(git merge-base HEAD origin/claude/tender-pascal-ocwf9q)"
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - name: cargo semver-checks (default features)
+        run: |
+          cargo semver-checks check-release \
+            --package accordproject-concerto-core \
+            --baseline-rev "${{ steps.baseline.outputs.sha }}"
