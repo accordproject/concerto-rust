@@ -64,6 +64,9 @@ const SOURCES: &[Source] = &[
 /// The root namespace, whose transaction and event carry a timestamp.
 const ROOT: &str = "concerto@1.0.0";
 
+/// The metamodel namespace, whose `Range` and `Position` may omit `$class`.
+const METAMODEL: &str = "concerto.metamodel@1.0.0";
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=vendor");
@@ -381,7 +384,19 @@ impl<'a> TypeTable<'a> {
         code.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
         let _ = writeln!(code, "pub struct {} {{", d.name);
         if !self.is_variant(fqn) {
-            code.push_str("    #[serde(rename = \"$class\")]\n    pub _class: String,\n");
+            if d.namespace == METAMODEL && matches!(d.name, "Range" | "Position") {
+                // A declaration's `location` is read, never type-checked, by
+                // TS (`location.start.line` and so on), so v5.0.0 loads a
+                // hand-built AST whose Range or Position has no `$class`
+                // (accordproject/concerto-rust#262). Accept that, and write
+                // the node back without one, so the AST round-trips as given.
+                code.push_str(concat!(
+                    "    #[serde(rename = \"$class\", default, skip_serializing_if = \"String::is_empty\")]\n",
+                    "    pub _class: String,\n",
+                ));
+            } else {
+                code.push_str("    #[serde(rename = \"$class\")]\n    pub _class: String,\n");
+            }
         }
         if d.ast
             .get("identified")
