@@ -14,6 +14,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+use indexmap::IndexMap;
+
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
@@ -459,20 +461,27 @@ impl ModelFile {
 
     /// TS: `ModelFile.getExternalImports` — every import-URI pair
     /// [`ModelFile::get_import_uri`] can answer, keyed the same way.
-    pub fn external_imports(&self) -> HashMap<String, String> {
-        self.imports
-            .iter()
-            .filter_map(|imp| {
-                let uri = imp.uri()?;
-                let first = imp.imported_names().first()?;
-                Some((qualify(imp.namespace(), first), uri.to_string()))
-            })
-            .collect()
+    ///
+    /// Returned in import order, matching TS's `importUriMap`: a plain
+    /// object built by assigning `importUriMap[key] = uri` for each import
+    /// in file order, so JS keeps insertion order and a later duplicate key
+    /// overwrites the value in place without moving it (PORTING.md 3.7 —
+    /// no `HashMap` iteration on an observable path).
+    pub fn external_imports(&self) -> IndexMap<String, String> {
+        let mut out = IndexMap::new();
+        for imp in &self.imports {
+            let Some(uri) = imp.uri() else { continue };
+            let Some(first) = imp.imported_names().first() else {
+                continue;
+            };
+            out.insert(qualify(imp.namespace(), first), uri.to_string());
+        }
+        out
     }
 
     /// Deprecated name of [`ModelFile::external_imports`].
     #[deprecated(since = "0.1.0", note = "use `external_imports`")]
-    pub fn get_external_imports(&self) -> HashMap<String, String> {
+    pub fn get_external_imports(&self) -> IndexMap<String, String> {
         self.external_imports()
     }
 
@@ -1421,6 +1430,77 @@ mod tests {
         assert_eq!(
             mf.get_external_imports().get("org.common@1.0.0.Address"),
             Some(&"https://example.org/common.cto".to_string())
+        );
+    }
+
+    #[test]
+    fn external_imports_preserves_import_order_for_several_uri_imports() {
+        // Issue #263: `getExternalImports` must come back in import order
+        // (TS builds `importUriMap` by assigning one key per import, in
+        // file order), not the arbitrary order a `HashMap` would give.
+        let n = 12;
+        let imports: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.ImportType",
+                    "namespace": format!("org.n{i}@1.0.0"),
+                    "name": format!("T{i}"),
+                    "uri": format!("https://example.com/m{i}.cto"),
+                })
+            })
+            .collect();
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.order@1.0.0",
+                "imports": imports,
+                "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+
+        let expected: Vec<String> = (0..n).map(|i| format!("org.n{i}@1.0.0.T{i}")).collect();
+        let actual: Vec<String> = mf.external_imports().keys().cloned().collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn external_imports_last_write_wins_in_place_for_a_duplicate_key() {
+        // Matches TS's `importUriMap[key] = imp.uri`: assigning to an
+        // existing plain-object key updates the value without moving it.
+        let mf = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.dup@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.common@1.0.0", "name": "Address",
+                      "uri": "https://example.org/first.cto" },
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.other@1.0.0", "name": "Thing",
+                      "uri": "https://example.org/other.cto" },
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "org.common@1.0.0", "name": "Address",
+                      "uri": "https://example.org/second.cto" }
+                ],
+                "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+
+        let imports = mf.external_imports();
+        assert_eq!(
+            imports.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "org.common@1.0.0.Address".to_string(),
+                "org.other@1.0.0.Thing".to_string(),
+            ]
+        );
+        assert_eq!(
+            imports.get("org.common@1.0.0.Address"),
+            Some(&"https://example.org/second.cto".to_string())
         );
     }
 
