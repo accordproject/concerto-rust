@@ -14,6 +14,16 @@ homepage.workspace = true
 [lib]
 name = "concerto_core"
 
+[[example]]
+name = "standalone"
+# P6-02 (accordproject/concerto-rust#84): without `test = true` here, `cargo
+# test --workspace` (what ci.yml runs) compiles this example but never runs
+# its #[test], so a CI regression in the walkthrough would go unnoticed. This
+# is what makes `cargo test -p accordproject-concerto-core` actually execute
+# `native_acceptance_walkthrough_runs`, not just `cargo test --example
+# standalone` (a command CI never runs).
+test = true
+
 [dependencies]
 accordproject-concerto-macros = { path = "../concerto-macros", version = "0.1.0" }
 accordproject-concerto-metamodel = { path = "../concerto-metamodel", version = "3.17.0"}
