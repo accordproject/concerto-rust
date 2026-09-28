@@ -12,15 +12,15 @@ use std::collections::HashSet;
 
 use indexmap::IndexMap;
 
-use super::dayjs::UtcOffset;
-use super::model::{self, Field, FieldType, TypeRef};
 use super::populator::read_properties_error;
-use super::value::{Instance, InstanceKind, JsValue};
-use crate::Error;
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::introspect::Declaration;
-use crate::model_manager::ModelManager;
-use crate::model_util;
+use concerto_core::Error;
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::dayjs::UtcOffset;
+use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
+use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
+use concerto_core::introspect::Declaration;
+use concerto_core::model_manager::ModelManager;
+use concerto_core::model_util;
 
 /// The `JSONGenerator` constructor's options.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,7 +189,7 @@ impl<'a> Generator<'a> {
         for (owner_fqn, property) in
             class_declaration.properties("classDeclaration.getProperties")?
         {
-            let name = crate::Named::name(&property).to_string();
+            let name = concerto_core::Named::name(&property).to_string();
             let value = resource.get(&name).clone();
             if value.is_nullish() {
                 continue;

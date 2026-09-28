@@ -21,14 +21,17 @@ use crate::model_util;
 /// A declaration found by [`get_type`]: what TS holds after
 /// `modelManager.getType(name)`.
 #[derive(Clone, Copy)]
-pub(crate) struct TypeRef<'a> {
+pub struct TypeRef<'a> {
+    /// The model manager the declaration is in.
     pub mm: &'a ModelManager,
+    /// The declaration's handle.
     pub id: DeclId,
+    /// The declaration.
     pub decl: &'a Declaration,
 }
 
 /// TS: `modelManager.getType(qualifiedName)` (`BaseModelManager.getType`).
-pub(crate) fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result<TypeRef<'a>> {
+pub fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result<TypeRef<'a>> {
     let id = mm.get_type_declaration(qualified_name)?;
     let decl = mm
         .declaration(id)
@@ -37,7 +40,7 @@ pub(crate) fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result
 }
 
 /// V8's `TypeError: <expression> is not a function`.
-pub(crate) fn not_a_function(expression: &str) -> crate::Error {
+pub fn not_a_function(expression: &str) -> crate::Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
@@ -48,7 +51,7 @@ pub(crate) fn not_a_function(expression: &str) -> crate::Error {
 
 /// `'Unrecognised ' + JSON.stringify(thing)` for an introspection object:
 /// `JSON.stringify` throws V8's circular-structure `TypeError` first. DV-010
-pub(crate) fn unrecognised() -> crate::Error {
+pub fn unrecognised() -> crate::Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-circularjson",
@@ -181,15 +184,18 @@ impl<'a> TypeRef<'a> {
 /// declaration that declares it (`Field.isPrimitive`, `isTypeEnum`,
 /// `isTypeScalar`, `ModelUtil.isMap`, and `RelationshipDeclaration`).
 #[derive(Debug, Clone)]
-pub(crate) enum FieldType {
+pub enum FieldType {
     /// A primitive field (`isPrimitive()`): its type name.
     Primitive(&'static str),
     /// A field whose type is a scalar (`isTypeScalar()`): the primitive it
     /// aliases, its default value and its validator (what
     /// `getScalarField()` copies from the scalar's AST).
     Scalar {
+        /// The primitive type the scalar aliases.
         primitive: Option<&'static str>,
+        /// The scalar's default value.
         default_value: Option<serde_json::Value>,
+        /// The scalar's validator.
         validator: Option<Box<ScalarValidator>>,
     },
     /// A field whose type is an enum (`isTypeEnum()`).
@@ -208,11 +214,13 @@ pub(crate) enum FieldType {
 /// A property of an instance's declaration, with what its type resolves
 /// to.
 #[derive(Debug, Clone)]
-pub(crate) struct Field {
+pub struct Field {
     /// The fully-qualified name of the declaration that declares it
     /// (`getParent().getFullyQualifiedName()`).
     pub owner_fqn: String,
+    /// The property.
     pub property: Property,
+    /// What its type resolves to.
     pub field_type: FieldType,
 }
 
@@ -275,7 +283,7 @@ impl Field {
 }
 
 /// Resolves a property's declared type in its owner's model file.
-pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<Field> {
+pub fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<Field> {
     let field_type = match &property {
         Property::Relationship(rp) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
@@ -339,7 +347,7 @@ impl ValidatedElement for IdElement {
 /// `idFullField?.validator` when it has a `regex`: the identifying
 /// property (unboxed with `getScalarField()` when its type is a scalar) and
 /// its string validator.
-pub(crate) fn identifier_regex(
+pub fn identifier_regex(
     class_decl: &TypeRef,
     id_field: &str,
 ) -> Result<Option<StringValidator>> {

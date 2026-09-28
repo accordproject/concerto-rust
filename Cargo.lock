@@ -9,6 +9,7 @@ dependencies = [
  "accordproject-concerto-core",
  "accordproject-concerto-macros",
  "accordproject-concerto-metamodel",
+ "concerto-core-js",
  "indexmap",
  "regress",
  "ryu-js",
@@ -105,6 +106,15 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "concerto-core-js"
+version = "0.0.0"
+dependencies = [
+ "accordproject-concerto-core",
+ "indexmap",
+ "serde_json",
 ]
 
 [[package]]

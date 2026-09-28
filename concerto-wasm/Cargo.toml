@@ -26,6 +26,9 @@ crate-type = ["cdylib"]
 # `js-compat` (P6-01, docs/public-api.md section 4.6): the JS object model and
 # the seam the binding is built on, which are not in core's default API.
 accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
+# The JS object model (P6-01 step 5, docs/public-api.md section 4.6): the
+# `Serializer`, the `Resource` state and the JS values it holds.
+concerto-core-js = { path = "../concerto-core-js" }
 # P4-04: builds the typed metamodel ASTs (StringRegexValidator,
 # StringLengthValidator, CollectionSizeValidator) the core validators take,
 # from the plain JSON the JS views and their unit tests hand across the

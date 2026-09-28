@@ -14,18 +14,15 @@
 //! generator) stays in TS (ledger: "Factory generate path (D7)"); these
 //! functions build the instance as TS does when `options.generate` is falsy.
 
-use super::dayjs::Dayjs;
-use super::from_json::{self, FieldDefault, IdentifierArg};
-use super::model::{self, TypeRef};
-use super::value::{Instance, InstanceKind, JsValue};
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::model_manager::ModelManager;
-use crate::{Error, model_util};
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::dayjs::Dayjs;
+use concerto_core::instance::from_json::{self, FieldDefault, IdentifierArg};
+use concerto_core::instance::model::{self, TypeRef};
+use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
+use concerto_core::model_manager::ModelManager;
+use concerto_core::{Error, model_util};
 
-#[cfg(feature = "js-compat")]
-pub use super::from_json::InstanceEnv;
-#[cfg(not(feature = "js-compat"))]
-pub(crate) use super::from_json::InstanceEnv;
+pub use concerto_core::instance::from_json::InstanceEnv;
 
 /// What [`check_new_resource`] settles: everything `newResource` needs
 /// from the model before it builds the object.
@@ -177,8 +174,11 @@ pub fn relationship_from_uri(
     default_namespace: Option<&str>,
     default_type: Option<&str>,
 ) -> Result<Instance> {
-    let resource_id =
-        super::resource_id::ResourceId::from_uri(uri, default_namespace, default_type)?;
+    let resource_id = concerto_core::instance::resource_id::ResourceId::from_uri(
+        uri,
+        default_namespace,
+        default_type,
+    )?;
     let fqt = model_util::qualify(&resource_id.namespace, &resource_id.type_name);
     let class_decl = model::get_type(mm, &fqt)?;
     relationship(
@@ -290,7 +290,7 @@ mod tests {
 
     fn manager(cto_ast: serde_json::Value) -> ModelManager {
         let mut mm = ModelManager::new().expect("a model manager");
-        mm.load_model(&cto_ast, Some("test.cto".into()))
+        mm.add_model_with_definitions(&cto_ast, None, Some("test.cto".into()))
             .expect("the model loads");
         mm
     }

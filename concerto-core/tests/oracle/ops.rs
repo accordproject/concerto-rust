@@ -2566,7 +2566,7 @@ fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, Error> {
 
 /// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
 /// defaultType?)` (src/model/relationship.ts), over
-/// [`concerto_core::instance::factory::relationship_from_uri`] (which looks
+/// [`concerto_core_js::factory::relationship_from_uri`] (which looks
 /// the type up with `BaseModelManager.getType`,
 /// [`ModelManager::get_type_declaration`]), written as the oracle encodes a
 /// `Typed` value ([`super::instances::encode_instance`]).
@@ -2587,7 +2587,7 @@ fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
     };
     let r = &session.pool[*index];
     from_engine(
-        concerto_core::instance::factory::relationship_from_uri(
+        concerto_core_js::factory::relationship_from_uri(
             &r.mm,
             uri,
             default_namespace,

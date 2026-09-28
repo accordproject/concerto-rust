@@ -6,8 +6,8 @@
 //! D7 keeps these objects in TS: on the WASM path the TS classes stay the
 //! user-visible objects, and Rust only builds or reads their state in one
 //! call (the Serializer fast path, PORTING.md section 5 row 6). This module
-//! is that state, as the populator ([`super::populator`]) produces it and
-//! the generator ([`super::generator`]) and the validator
+//! is that state, as the populator (`concerto_core_js::populator`) produces it and
+//! the generator (`concerto_core_js::generator`) and the validator
 //! ([`super::validate`]) consume it. It holds no model data: an instance
 //! names its declaration by fully-qualified name, and every operation that
 //! needs the model takes the [`ModelManager`](crate::ModelManager).

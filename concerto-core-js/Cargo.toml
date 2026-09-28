@@ -1,0 +1,21 @@
+[package]
+name = "concerto-core-js"
+description = "The JS object model of concerto-core (the TS Resource objects and the JS values they hold), for the WASM binding. Not published."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+name = "concerto_core_js"
+
+[dependencies]
+# `js-compat` (docs/public-api.md section 4.6): the seam this crate is built
+# on, which is not in core's default API.
+accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
+indexmap = "2"
+serde_json = { workspace = true, features = ["preserve_order"] }

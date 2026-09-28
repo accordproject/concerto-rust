@@ -5,19 +5,19 @@
 //! accordproject/concerto-rust#124).
 //!
 //! D7 keeps these objects in TS; the checks they run are the validator's
-//! ([`super::validate`]), which is where their Rust behaviour lives. These
+//! ([`concerto_core::instance::validate`]), which is where their Rust behaviour lives. These
 //! functions are the glue the Rust serializer needs to build and validate
 //! an instance the way TS does.
 
-use super::model;
-use super::validate::{self, validate_instance_from};
-use super::value::{Instance, InstanceKind, JsValue};
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::model_manager::ModelManager;
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::model;
+use concerto_core::instance::validate::{self, validate_instance_from};
+use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
+use concerto_core::model_manager::ModelManager;
 
 /// `'The instance with id ' + this.getIdentifier() + ' trying to set field
 /// ' + propName + ' which is not declared in the model.'`
-fn undeclared(instance: &Instance, prop_name: &str) -> crate::Error {
+fn undeclared(instance: &Instance, prop_name: &str) -> concerto_core::Error {
     ContractError::new(
         ErrorKind::InvalidArgument,
         "validatedresource-setpropertyvalue-undeclaredfield",

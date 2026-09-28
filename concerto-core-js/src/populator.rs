@@ -11,15 +11,18 @@
 
 use indexmap::IndexMap;
 
-use super::dayjs::{Dayjs, UtcOffset};
-use super::deserialize::DeserializeOptions;
 use super::factory::{self, InstanceEnv};
-use super::model::{self, Field, FieldType, TypeRef};
-use super::value::{Instance, JsValue};
-use crate::error::{ContractError, Detail, DetailCode, ErrorKind, Result};
-use crate::introspect::Declaration;
-use crate::model_manager::ModelManager;
-use crate::{Error, model_util};
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
+use concerto_core::instance::deserialize::DeserializeOptions;
+use concerto_core::instance::from_json::{
+    required_null_error, strict_qualified_date_time, unknown_keys_error,
+};
+use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
+use concerto_core::instance::value::{Instance, JsValue};
+use concerto_core::introspect::Declaration;
+use concerto_core::model_manager::ModelManager;
+use concerto_core::{Error, model_util};
 
 /// The `JSONPopulator` constructor's options.
 #[derive(Debug, Clone, PartialEq)]
@@ -220,7 +223,8 @@ pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
             for key in instance.props.keys() {
                 keys.push(key.clone());
                 if key == "$timestamp"
-                    && instance.kind == super::value::InstanceKind::ValidatedResource
+                    && instance.kind
+                        == concerto_core::instance::value::InstanceKind::ValidatedResource
                 {
                     keys.push("$validator".to_string());
                 }
@@ -279,7 +283,7 @@ fn validate_properties(properties: &[String], class_declaration: &TypeRef) -> Re
     let expected: Vec<String> = class_declaration
         .properties("classDeclaration.getProperties")?
         .iter()
-        .map(|(_, p)| crate::Named::name(p).to_string())
+        .map(|(_, p)| concerto_core::Named::name(p).to_string())
         .collect();
     let invalid: Vec<&str> = properties
         .iter()
@@ -390,7 +394,7 @@ impl<'a> Populator<'a> {
         let expected: Vec<String> = class_declaration
             .properties("classDeclaration.getProperties")?
             .iter()
-            .map(|(_, p)| crate::Named::name(p).to_string())
+            .map(|(_, p)| concerto_core::Named::name(p).to_string())
             .collect();
         let unknown: Vec<String> = object_keys(json)?
             .into_iter()
@@ -399,25 +403,11 @@ impl<'a> Populator<'a> {
         if unknown.is_empty() {
             return Ok(());
         }
-        let path = self.path_text();
-        let mut error = ContractError::new(
-            ErrorKind::Validation,
-            "jsonpopulator-rejectunknownkeys-unknownproperties",
-            vec![
-                ("fqn", class_declaration.fqn()),
-                ("properties", unknown.join(", ")),
-            ],
-        );
-        error.details = unknown
-            .iter()
-            .map(|property| Detail {
-                path: format!("{path}.{property}"),
-                code: DetailCode::UnknownProperty,
-                expected: None,
-                actual: None,
-            })
-            .collect();
-        Err(error.into())
+        Err(unknown_keys_error(
+            &class_declaration.fqn(),
+            &self.path_text(),
+            &unknown,
+        ))
     }
 
     /// `rejectRequiredNull` (accordproject/concerto#1273): the first
@@ -435,25 +425,7 @@ impl<'a> Populator<'a> {
             if property.is_optional() {
                 continue;
             }
-            let path = format!("{}.{key}", self.path_text());
-            let mut type_name = crate::introspect::Typed::type_name(&property)
-                .unwrap_or_default()
-                .to_string();
-            if property.is_array() {
-                type_name.push_str("[]");
-            }
-            let mut error = ContractError::new(
-                ErrorKind::Validation,
-                "jsonpopulator-rejectrequirednull-requirednull",
-                vec![("path", path.clone()), ("type", type_name.clone())],
-            );
-            error.details = vec![Detail {
-                path,
-                code: DetailCode::TypeViolation,
-                expected: Some(type_name),
-                actual: Some("null".to_string()),
-            }];
-            return Err(error.into());
+            return Err(required_null_error(&self.path_text(), &key, &property));
         }
         Ok(())
     }
@@ -779,15 +751,6 @@ fn utc_offset_input(value: &JsValue) -> UtcOffset {
         JsValue::Null => UtcOffset::Number(0.0),
         _ => UtcOffset::Number(f64::NAN),
     }
-}
-
-/// `json.match(/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/)`.
-fn strict_qualified_date_time(s: &str) -> bool {
-    let re = regress::Regex::new(
-        r"^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$",
-    )
-    .expect("static pattern");
-    re.find(s).is_some()
 }
 
 /// The populator's options from the serializer's merged options. `pub`

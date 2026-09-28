@@ -1,21 +1,21 @@
 //! `Serializer` (src/serializer.ts): the constructor's checks, and
 //! `fromJSON`/`toJSON` as one whole-document call each (PORTING.md section
-//! 5 row 6, option B), over [`super::populator`], [`super::generator`] and
-//! [`super::validate`] (task P3-01b, accordproject/concerto-rust#124).
+//! 5 row 6, option B), over [`crate::populator`], [`crate::generator`] and
+//! [`concerto_core::instance::validate`] (task P3-01b, accordproject/concerto-rust#124).
 
 use indexmap::IndexMap;
 
-use super::factory::{self, InstanceEnv};
-use super::generator::{Generator, generator_options};
-use super::model;
-use super::populator::{Populator, get_property, populator_options};
 use super::resource;
-use super::validate::{ValidateOptions, validate_instance_from};
-use super::value::{Instance, JsValue};
-use crate::Error;
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::introspect::Declaration;
-use crate::model_manager::ModelManager;
+use crate::factory::{self, InstanceEnv};
+use crate::generator::{Generator, generator_options};
+use crate::populator::{Populator, get_property, populator_options};
+use concerto_core::Error;
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::model;
+use concerto_core::instance::validate::{ValidateOptions, validate_instance_from};
+use concerto_core::instance::value::{Instance, JsValue};
+use concerto_core::introspect::Declaration;
+use concerto_core::model_manager::ModelManager;
 
 /// A serializer options object (`SerializerOptions`), its keys in
 /// insertion order.
@@ -184,7 +184,7 @@ impl Serializer {
                 Declaration::Scalar(_) => {}
                 // `visitEnumDeclaration`/`visitMapDeclaration` over a
                 // resource: no instance is built with such a type.
-                Declaration::Enum(_) | Declaration::Map(_) => {
+                _ => {
                     return Err(ContractError::pre_port(
                         ErrorKind::InvalidArgument,
                         format!(
@@ -208,10 +208,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::error::{Detail, DetailCode};
-    use crate::instance::dayjs::Dayjs;
-    use crate::instance::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
-    use crate::instance::value::InstanceKind;
+    use concerto_core::error::{Detail, DetailCode};
+    use concerto_core::instance::dayjs::Dayjs;
+    use concerto_core::instance::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
+    use concerto_core::instance::value::InstanceKind;
 
     struct Env;
 
@@ -281,7 +281,7 @@ mod tests {
             ]
         });
         let mut mm = ModelManager::new().expect("a model manager");
-        mm.load_model(&ast, Some("test.cto".into()))
+        mm.add_model_with_definitions(&ast, None, Some("test.cto".into()))
             .expect("the model loads");
         mm
     }
@@ -547,7 +547,7 @@ mod tests {
 
     // ---- P3-02: accordproject/concerto#1273's scenario table ----
 
-    fn contract_error(result: Result<Instance>) -> crate::error::ContractError {
+    fn contract_error(result: Result<Instance>) -> concerto_core::error::ContractError {
         match result {
             Err(e) => e.into_contract(),
             other => panic!("expected an error, got {other:?}"),
@@ -583,13 +583,19 @@ mod tests {
         reject_required_null: true,
     };
 
-    fn unknown_property(path: &str) -> Detail {
-        Detail {
-            path: path.to_string(),
-            code: DetailCode::UnknownProperty,
-            expected: None,
-            actual: None,
-        }
+    /// A detail as `(path, code, expected, actual)`: `Detail` is
+    /// `#[non_exhaustive]`, so it is compared field by field.
+    type DetailFields = (String, DetailCode, Option<String>, Option<String>);
+
+    fn fields(details: &[Detail]) -> Vec<DetailFields> {
+        details
+            .iter()
+            .map(|d| (d.path.clone(), d.code, d.expected.clone(), d.actual.clone()))
+            .collect()
+    }
+
+    fn unknown_property(path: &str) -> DetailFields {
+        (path.to_string(), DetailCode::UnknownProperty, None, None)
     }
 
     /// Row 1: an unknown field set to `null`.
@@ -607,7 +613,7 @@ mod tests {
                 error.message(),
                 "Unexpected properties for type org.acme@1.0.0.Car: extra"
             );
-            assert_eq!(error.details, vec![unknown_property("$.extra")]);
+            assert_eq!(fields(&error.details), vec![unknown_property("$.extra")]);
         }
     }
 
@@ -644,7 +650,7 @@ mod tests {
                 "Unexpected properties for type org.acme@1.0.0.Car: extra, other"
             );
             assert_eq!(
-                error.details,
+                fields(&error.details),
                 vec![unknown_property("$.extra"), unknown_property("$.other")]
             );
         }
@@ -654,7 +660,10 @@ mod tests {
             "address": { "$class": "org.acme@1.0.0.Address", "city": "Paris", "zip": null }
         });
         let error = contract_error(deserialize(nested, UNKNOWN_KEYS, true));
-        assert_eq!(error.details, vec![unknown_property("$.address.zip")]);
+        assert_eq!(
+            fields(&error.details),
+            vec![unknown_property("$.address.zip")]
+        );
     }
 
     /// Row 3: a required field set to `null`.
@@ -685,13 +694,13 @@ mod tests {
                     "Expected value at path `$.address.city` to be of type `String`, but got null"
                 );
                 assert_eq!(
-                    error.details,
-                    vec![Detail {
-                        path: "$.address.city".to_string(),
-                        code: DetailCode::TypeViolation,
-                        expected: Some("String".to_string()),
-                        actual: Some("null".to_string()),
-                    }]
+                    fields(&error.details),
+                    vec![(
+                        "$.address.city".to_string(),
+                        DetailCode::TypeViolation,
+                        Some("String".to_string()),
+                        Some("null".to_string()),
+                    )]
                 );
             }
         }

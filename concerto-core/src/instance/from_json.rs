@@ -758,25 +758,11 @@ impl Populator<'_> {
         if unknown.is_empty() {
             return Ok(());
         }
-        let path = self.path_text();
-        let mut error = ContractError::new(
-            ErrorKind::Validation,
-            "jsonpopulator-rejectunknownkeys-unknownproperties",
-            vec![
-                ("fqn", class_declaration.fqn()),
-                ("properties", unknown.join(", ")),
-            ],
-        );
-        error.details = unknown
-            .iter()
-            .map(|property| Detail {
-                path: format!("{path}.{property}"),
-                code: DetailCode::UnknownProperty,
-                expected: None,
-                actual: None,
-            })
-            .collect();
-        Err(error.into())
+        Err(unknown_keys_error(
+            &class_declaration.fqn(),
+            &self.path_text(),
+            &unknown,
+        ))
     }
 
     /// `rejectRequiredNull` (accordproject/concerto#1273): the first
@@ -800,25 +786,7 @@ impl Populator<'_> {
             if property.is_optional() {
                 continue;
             }
-            let path = format!("{}.{key}", self.path_text());
-            let mut type_name = crate::introspect::Typed::type_name(&property)
-                .unwrap_or_default()
-                .to_string();
-            if property.is_array() {
-                type_name.push_str("[]");
-            }
-            let mut error = ContractError::new(
-                ErrorKind::Validation,
-                "jsonpopulator-rejectrequirednull-requirednull",
-                vec![("path", path.clone()), ("type", type_name.clone())],
-            );
-            error.details = vec![Detail {
-                path,
-                code: DetailCode::TypeViolation,
-                expected: Some(type_name),
-                actual: Some("null".to_string()),
-            }];
-            return Err(error.into());
+            return Err(required_null_error(&self.path_text(), &key, &property));
         }
         Ok(())
     }
@@ -1121,6 +1089,57 @@ impl Populator<'_> {
             id,
         )?;
         self.accept_declaration(&class_declaration, item, Some(sub_resource))
+    }
+}
+
+js_compat_pub! {
+    /// The `rejectUnknownKeys` rejection (accordproject/concerto#1273): the
+    /// keys of the object at `path` that `fqn` does not declare, in one
+    /// `ValidationException` with one `UNKNOWN_PROPERTY` detail per key.
+    pub fn unknown_keys_error(fqn: &str, path: &str, unknown: &[String]) -> Error {
+        let mut error = ContractError::new(
+            ErrorKind::Validation,
+            "jsonpopulator-rejectunknownkeys-unknownproperties",
+            vec![("fqn", fqn.to_string()), ("properties", unknown.join(", "))],
+        );
+        error.details = unknown
+            .iter()
+            .map(|property| Detail {
+                path: format!("{path}.{property}"),
+                code: DetailCode::UnknownProperty,
+                expected: None,
+                actual: None,
+            })
+            .collect();
+        error.into()
+    }
+}
+
+js_compat_pub! {
+    /// The `rejectRequiredNull` rejection (accordproject/concerto#1273): the
+    /// required `property`, set to `null` under the key `key` of the object
+    /// at `path`, with its path and declared type and a `TYPE_VIOLATION`
+    /// detail.
+    pub fn required_null_error(path: &str, key: &str, property: &crate::Property) -> Error {
+        let path = format!("{path}.{key}");
+        let mut type_name = crate::introspect::Typed::type_name(property)
+            .unwrap_or_default()
+            .to_string();
+        if property.is_array() {
+            type_name.push_str("[]");
+        }
+        let mut error = ContractError::new(
+            ErrorKind::Validation,
+            "jsonpopulator-rejectrequirednull-requirednull",
+            vec![("path", path.clone()), ("type", type_name.clone())],
+        );
+        error.details = vec![Detail {
+            path,
+            code: DetailCode::TypeViolation,
+            expected: Some(type_name),
+            actual: Some("null".to_string()),
+        }];
+        error.into()
     }
 }
 

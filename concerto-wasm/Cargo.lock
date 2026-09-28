@@ -95,11 +95,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "concerto-core-js"
+version = "0.0.0"
+dependencies = [
+ "accordproject-concerto-core",
+ "indexmap",
+ "serde_json",
+]
+
+[[package]]
 name = "concerto-wasm"
 version = "0.0.0"
 dependencies = [
  "accordproject-concerto-core",
  "accordproject-concerto-metamodel",
+ "concerto-core-js",
  "js-sys",
  "serde",
  "serde_json",

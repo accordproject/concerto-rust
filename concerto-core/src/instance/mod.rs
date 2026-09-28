@@ -53,16 +53,11 @@ macro_rules! js_compat_mod {
 js_compat_mod!(dayjs);
 js_compat_mod!(deserialize);
 mod diagnostic;
-js_compat_mod!(factory);
 js_compat_mod!(from_json);
-js_compat_mod!(generator);
 js_compat_mod!(metamodel);
-pub(crate) mod model;
+js_compat_mod!(model);
 mod options;
-js_compat_mod!(populator);
-js_compat_mod!(resource);
 js_compat_mod!(resource_id);
-js_compat_mod!(serializer);
 js_compat_mod!(validate);
 js_compat_mod!(value);
 
@@ -74,14 +69,12 @@ pub use options::ValidationOptions;
 #[cfg(feature = "js-compat")]
 pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
 #[cfg(feature = "js-compat")]
-pub use factory::InstanceEnv;
+pub use from_json::InstanceEnv;
 #[cfg(feature = "js-compat")]
 pub use metamodel::{
     METAMODEL_NAMESPACE, model_manager_from_meta_model, validate_ast, validate_meta_model_instance,
     validate_metamodel,
 };
-#[cfg(feature = "js-compat")]
-pub use serializer::{Serializer, SerializerOptions};
 #[cfg(feature = "js-compat")]
 pub use validate::{ValidateOptions, validate_instance};
 #[cfg(feature = "js-compat")]

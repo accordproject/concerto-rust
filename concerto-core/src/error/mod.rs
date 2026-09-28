@@ -128,10 +128,12 @@ impl Error {
         matches!(self.0.legacy, Legacy::None).then_some(&self.0.contract)
     }
 
-    /// [`Error::ported`], by value.
-    #[allow(dead_code)]
-    pub(crate) fn into_ported(self) -> Option<ContractError> {
-        matches!(self.0.legacy, Legacy::None).then_some(self.0.contract)
+    js_compat_pub! {
+        /// The ported contract error, by value: `None` for the two pre-port
+        /// shapes (`Error::type_not_found`, `Error::illegal_model`).
+        pub fn into_ported(self) -> Option<ContractError> {
+            matches!(self.0.legacy, Legacy::None).then_some(self.0.contract)
+        }
     }
 
     /// The contract shape behind this error, to amend in place.

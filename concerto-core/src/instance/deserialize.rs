@@ -17,8 +17,13 @@
 //! `rejectUnknownKeys` and `rejectRequiredNull`; they apply while the
 //! document is populated, so they hold with `validate: false` too.
 
-use super::serializer::SerializerOptions;
+use indexmap::IndexMap;
+
 use super::value::JsValue;
+
+/// A serializer options object (the JS layer's `SerializerOptions`), its
+/// keys in insertion order.
+pub type SerializerOptions = IndexMap<String, JsValue>;
 
 /// The serializer option key for [`DeserializeOptions::reject_unknown_keys`].
 const REJECT_UNKNOWN_KEYS: &str = "rejectUnknownKeys";
@@ -65,7 +70,7 @@ impl DeserializeOptions {
     }
 
     /// The flags a serializer option bag sets (each one truthy).
-    pub(crate) fn from_serializer_options(options: &SerializerOptions) -> Self {
+    pub fn from_serializer_options(options: &SerializerOptions) -> Self {
         let truthy = |key: &str| options.get(key).is_some_and(JsValue::is_truthy);
         Self {
             reject_unknown_keys: truthy(REJECT_UNKNOWN_KEYS),

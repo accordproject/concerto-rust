@@ -43,6 +43,10 @@ js-compat = []
 # The tests (the native oracle harness among them) drive the JS layer, as the
 # WASM binding does.
 accordproject-concerto-core = { path = ".", features = ["js-compat"] }
+# The JS object model (`Serializer`, `Factory`, the `Resource` state), which
+# the native oracle harness replays the TS instance ops over (P6-01 step 5
+# moved it out of this crate).
+concerto-core-js = { path = "../concerto-core-js" }
 # The native oracle harness (tests/oracle) keys the P1-07a CTO -> AST cache
 # by SHA-256, as migration/oracle/bin/build-cto-cache.js does.
 sha2 = "0.10"
