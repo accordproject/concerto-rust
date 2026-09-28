@@ -326,7 +326,7 @@ fn assign_field_defaults_of(class_decl: &TypeRef, instance: &mut Instance) -> Re
 
 /// Keys of `props`, for tests.
 #[cfg(test)]
-fn keys(props: &indexmap::IndexMap<String, JsValue>) -> Vec<&str> {
+fn keys(props: &crate::value::JsObject) -> Vec<&str> {
     props.keys().map(String::as_str).collect()
 }
 

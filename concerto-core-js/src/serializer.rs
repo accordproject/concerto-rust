@@ -5,12 +5,10 @@
 
 use std::borrow::Cow;
 
-use indexmap::IndexMap;
-
 use super::resource;
 use crate::factory::{self, InstanceEnv};
 use crate::generator::{Generator, generator_options};
-use crate::populator::{Populator, get_property, populator_options};
+use crate::populator::{Populator, PopulatorOptions, get_property, populator_options};
 use crate::value::{Instance, JsValue};
 use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
@@ -21,7 +19,25 @@ use concerto_core::model_manager::ModelManager;
 
 /// A serializer options object (`SerializerOptions`), its keys in
 /// insertion order.
-pub type SerializerOptions = IndexMap<String, JsValue>;
+pub type SerializerOptions = crate::value::JsObject;
+
+/// What [`Serializer::from_json`] reads from its merged options: the
+/// populator's options and `validate` (P5-16).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FromJsonOptions {
+    populator: PopulatorOptions,
+    validate: bool,
+}
+
+impl FromJsonOptions {
+    /// Reads `options`, a `fromJSON` call's merged options.
+    pub fn new(options: &SerializerOptions) -> Self {
+        Self {
+            populator: populator_options(options),
+            validate: options.get("validate").is_some_and(JsValue::is_truthy),
+        }
+    }
+}
 
 /// A `Serializer`: its default options. The factory and the model manager
 /// it holds in TS are the caller's (every call takes the model manager).
@@ -48,7 +64,7 @@ fn assign(a: &SerializerOptions, b: &SerializerOptions) -> SerializerOptions {
 /// is `DateTimeUtil.setCurrentTime().utcOffset`, `dayjs().utcOffset()`,
 /// which under `TZ=UTC` is `-0` (PORTING.md 3.3).
 fn base_default_options() -> SerializerOptions {
-    let mut options = SerializerOptions::new();
+    let mut options = SerializerOptions::default();
     options.insert("validate".to_string(), JsValue::Bool(true));
     options.insert("utcOffset".to_string(), JsValue::Number(-0.0));
     options
@@ -69,7 +85,7 @@ impl Serializer {
         if !model_manager_is_truthy {
             return Err(plain_error("serializer-constructor-modelmanagernull"));
         }
-        let empty = SerializerOptions::new();
+        let empty = SerializerOptions::default();
         Ok(Self {
             default_options: assign(&base_default_options(), options.unwrap_or(&empty)),
         })
@@ -94,7 +110,19 @@ impl Serializer {
         env: &mut dyn InstanceEnv,
     ) -> Result<Instance> {
         let options = self.options(options);
+        self.from_json_prepared(mm, json_object, &FromJsonOptions::new(&options), env)
+    }
 
+    /// [`Self::from_json`] with its merged options already read
+    /// ([`FromJsonOptions`]): a caller that makes many calls with the same
+    /// options reads them once (P5-16, accordproject/concerto-rust#310).
+    pub fn from_json_prepared(
+        &self,
+        mm: &ModelManager,
+        json_object: &JsValue,
+        options: &FromJsonOptions,
+        env: &mut dyn InstanceEnv,
+    ) -> Result<Instance> {
         let class_name = get_property(json_object, "$class")?;
         if !class_name.is_truthy() {
             return Err(plain_error("serializer-fromjson-noclass"));
@@ -139,12 +167,11 @@ impl Serializer {
             factory::new_resource_of(&class_declaration, id, false, env)?
         };
 
-        let populator_options = populator_options(&options);
-        let mut populator = Populator::new(mm, env, &populator_options);
+        let mut populator = Populator::new(mm, env, &options.populator);
         let mut resource =
             populator.visit_class_declaration(&class_declaration, json_object, resource)?;
 
-        if options.get("validate").is_some_and(JsValue::is_truthy) {
+        if options.validate {
             resource::validate(mm, &mut resource)?;
         }
         Ok(resource)

@@ -23,6 +23,17 @@
 use indexmap::IndexMap;
 use serde_json::Value;
 
+/// The key-ordered map behind a plain object ([`JsValue::Object`]), an
+/// instance's own properties ([`Instance::props`]) and the serializer
+/// options (`SerializerOptions`): an `IndexMap` hashed with foldhash's
+/// per-map seeded hasher rather than the standard library's SipHash.
+/// P5-16 (accordproject/concerto-rust#310): these maps are small, built
+/// and probed several times per property on every `fromJSON`, and SipHash
+/// was the largest single cost in the populate and validate steps.
+/// foldhash keeps a random per-map seed, so crafted colliding keys are not
+/// predictable the way a fixed-key hash's would be.
+pub type JsObject = IndexMap<String, JsValue, foldhash::fast::RandomState>;
+
 use concerto_core::error::Result;
 use concerto_core::instance::dayjs::Dayjs;
 use concerto_core::instance::resource_id::ResourceId;
@@ -48,7 +59,7 @@ pub enum JsValue {
     Array(Vec<JsValue>),
     /// A plain object: its own enumerable properties, in `Object.keys`
     /// order.
-    Object(IndexMap<String, JsValue>),
+    Object(JsObject),
     /// A JS `Map` (a populated `MapDeclaration` value), in insertion order.
     Map(Vec<(JsValue, JsValue)>),
     /// A dayjs object.
@@ -95,7 +106,7 @@ pub struct Instance {
     /// `getFullyQualifiedType()` answers.
     pub class_fqn: String,
     /// Every own property other than the three handles, in insertion order.
-    pub props: IndexMap<String, JsValue>,
+    pub props: JsObject,
     /// `$validator.options`, for a `ValidatedResource`.
     pub validator_options: ValidateOptions,
 }
@@ -125,7 +136,7 @@ impl Instance {
             class_fqn: class_fqn.into(),
             // The system properties below, then a few fields (P5-13: sized
             // up front rather than grown).
-            props: IndexMap::with_capacity(8),
+            props: JsObject::with_capacity_and_hasher(8, Default::default()),
             validator_options: ValidateOptions::default(),
         };
         instance.set("$namespace", JsValue::String(namespace.to_string()));
@@ -154,12 +165,10 @@ impl Instance {
     /// `this[key] = value`: a new key goes last, an existing one keeps its
     /// place.
     pub fn set(&mut self, key: &str, value: JsValue) {
-        match self.props.get_mut(key) {
-            Some(slot) => *slot = value,
-            None => {
-                self.props.insert(key.to_string(), value);
-            }
-        }
+        // `IndexMap::insert` keeps an existing key where it is and replaces
+        // its value, so one hashed insert does both cases (P5-16: the
+        // lookup first hashed every new key twice).
+        self.props.insert(key.to_string(), value);
     }
 
     /// `this.$namespace` (TS `getNamespace()`), as JS `ToString`.
@@ -201,6 +210,19 @@ impl Instance {
     /// TS `Identifiable.getFullyQualifiedIdentifier`.
     pub fn fully_qualified_identifier(&self) -> String {
         let id = self.get_identifier();
+        if let JsValue::String(id) = id {
+            // The usual case, built without the formatting machinery
+            // (P5-16): a non-empty string is truthy and is its own
+            // `ToString`.
+            if id.is_empty() {
+                return self.class_fqn.clone();
+            }
+            let mut out = String::with_capacity(self.class_fqn.len() + 1 + id.len());
+            out.push_str(&self.class_fqn);
+            out.push('#');
+            out.push_str(id);
+            return out;
+        }
         if id.is_truthy() {
             format!("{}#{}", self.class_fqn, id.to_js_string())
         } else {

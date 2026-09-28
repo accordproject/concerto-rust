@@ -143,8 +143,12 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if let Some(field) = mm.identifier_field(&instance.class_fqn)?
         && field != "$identifier"
     {
-        let id = instance.get_identifier().clone();
-        instance.set("$identifier", id);
+        // Already the same value (the usual case: the constructor set both):
+        // the assignment would change nothing (P5-16).
+        if instance.props.get("$identifier") != Some(instance.get_identifier()) {
+            let id = instance.get_identifier().clone();
+            instance.set("$identifier", id);
+        }
     }
     for value in instance.props.values_mut() {
         sync_value(mm, value)?;

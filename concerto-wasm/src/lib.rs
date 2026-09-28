@@ -74,8 +74,8 @@ use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, P
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
+use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions, generator, populator};
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
-use concerto_core_js::{Serializer, SerializerOptions, generator, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
@@ -4367,7 +4367,7 @@ fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<Instance> {
         .get("fields")
         .and_then(Value::as_object)
         .ok_or_else(|| wire_error("a typed wire value without fields".to_string()))?;
-    let mut props = SerializerOptions::new();
+    let mut props = SerializerOptions::default();
     for (key, value) in fields {
         props.insert(key.clone(), decode_wire(value)?);
     }
@@ -4395,7 +4395,7 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
             .map(CoreValue::Array),
         Value::Object(map) => match map.get(WIRE_TAG).and_then(Value::as_str) {
             None => {
-                let mut out = SerializerOptions::new();
+                let mut out = SerializerOptions::default();
                 for (key, item) in map {
                     out.insert(key.clone(), decode_wire(item)?);
                 }
@@ -4484,7 +4484,7 @@ fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
     match value {
         Value::Null => Ok(None),
         Value::Object(map) => {
-            let mut options = SerializerOptions::new();
+            let mut options = SerializerOptions::default();
             for (key, item) in &map {
                 options.insert(key.clone(), decode_wire(item)?);
             }
@@ -4685,7 +4685,10 @@ impl<'de> serde::de::Visitor<'de> for WireSeed<'_> {
     ) -> std::result::Result<CoreValue, A::Error> {
         // serde_json gives no size hint; most documents' objects have a
         // handful of keys, so start with room for 8 rather than regrow.
-        let mut map = SerializerOptions::with_capacity(access.size_hint().unwrap_or(8));
+        let mut map = SerializerOptions::with_capacity_and_hasher(
+            access.size_hint().unwrap_or(8),
+            Default::default(),
+        );
         while let Some(key) = access.next_key::<String>()? {
             let value = access.next_value_seed(WireSeed { error: self.error })?;
             map.insert(key, value);
@@ -4813,12 +4816,17 @@ fn parse_wire(text: &str) -> Result<CoreValue> {
 /// A [`CoreValue`] written as [`encode_wire`]'s JSON text, without building
 /// the `serde_json::Value` first: `serde_json::to_string(&WireOut(v))` is
 /// `serde_json::to_string(&encode_wire(v))`.
-struct WireOut<'a>(&'a CoreValue);
+///
+/// With `INTS` (the compact result, P5-16), a finite number with no
+/// fractional part below 2^53 in magnitude is written as an integer (`42`,
+/// not `42.0`): the same number to `JSON.parse`, which reads an integer
+/// literal faster.
+struct WireOut<'a, const INTS: bool = false>(&'a CoreValue);
 
 /// An [`Instance`] written as [`encode_wire_instance`]'s JSON text.
-struct WireInstanceOut<'a>(&'a Instance);
+struct WireInstanceOut<'a, const INTS: bool = false>(&'a Instance);
 
-impl serde::Serialize for WireOut<'_> {
+impl<const INTS: bool> serde::Serialize for WireOut<'_, INTS> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::{SerializeMap, SerializeSeq};
         match self.0 {
@@ -4847,6 +4855,12 @@ impl serde::Serialize for WireOut<'_> {
                         map.serialize_entry("value", text)?;
                         map.end()
                     }
+                    // `n` is finite and not `-0` here, so it is exactly
+                    // representable as an `i64` when it is integral and
+                    // below 2^53.
+                    None if INTS && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 => {
+                        s.serialize_i64(n as i64)
+                    }
                     None => s.serialize_f64(n),
                 }
             }
@@ -4854,46 +4868,46 @@ impl serde::Serialize for WireOut<'_> {
             CoreValue::Array(items) => {
                 let mut seq = s.serialize_seq(Some(items.len()))?;
                 for item in items {
-                    seq.serialize_element(&WireOut(item))?;
+                    seq.serialize_element(&WireOut::<INTS>(item))?;
                 }
                 seq.end()
             }
             CoreValue::Object(entries) => {
                 let mut map = s.serialize_map(Some(entries.len()))?;
                 for (key, item) in entries {
-                    map.serialize_entry(key, &WireOut(item))?;
+                    map.serialize_entry(key, &WireOut::<INTS>(item))?;
                 }
                 map.end()
             }
             CoreValue::Map(entries) => {
-                struct Pair<'a>(&'a CoreValue, &'a CoreValue);
-                impl serde::Serialize for Pair<'_> {
+                struct Pair<'a, const I: bool>(&'a CoreValue, &'a CoreValue);
+                impl<const I: bool> serde::Serialize for Pair<'_, I> {
                     fn serialize<S: serde::Serializer>(
                         &self,
                         s: S,
                     ) -> std::result::Result<S::Ok, S::Error> {
                         let mut seq = s.serialize_seq(Some(2))?;
-                        seq.serialize_element(&WireOut(self.0))?;
-                        seq.serialize_element(&WireOut(self.1))?;
+                        seq.serialize_element(&WireOut::<I>(self.0))?;
+                        seq.serialize_element(&WireOut::<I>(self.1))?;
                         seq.end()
                     }
                 }
-                struct Entries<'a>(&'a [(CoreValue, CoreValue)]);
-                impl serde::Serialize for Entries<'_> {
+                struct Entries<'a, const I: bool>(&'a [(CoreValue, CoreValue)]);
+                impl<const I: bool> serde::Serialize for Entries<'_, I> {
                     fn serialize<S: serde::Serializer>(
                         &self,
                         s: S,
                     ) -> std::result::Result<S::Ok, S::Error> {
                         let mut seq = s.serialize_seq(Some(self.0.len()))?;
                         for (key, value) in self.0 {
-                            seq.serialize_element(&Pair(key, value))?;
+                            seq.serialize_element(&Pair::<I>(key, value))?;
                         }
                         seq.end()
                     }
                 }
                 let mut map = s.serialize_map(Some(2))?;
                 map.serialize_entry(WIRE_TAG, "map")?;
-                map.serialize_entry("entries", &Entries(entries))?;
+                map.serialize_entry("entries", &Entries::<INTS>(entries))?;
                 map.end()
             }
             CoreValue::DateTime(d) => {
@@ -4910,7 +4924,7 @@ impl serde::Serialize for WireOut<'_> {
                 map.serialize_entry("utcOffset", &d.utc_offset())?;
                 map.end()
             }
-            CoreValue::Instance(i) => WireInstanceOut(i).serialize(s),
+            CoreValue::Instance(i) => WireInstanceOut::<INTS>(i).serialize(s),
             CoreValue::BigInt(text) => {
                 let mut map = s.serialize_map(Some(2))?;
                 map.serialize_entry(WIRE_TAG, "bigint")?;
@@ -4921,18 +4935,18 @@ impl serde::Serialize for WireOut<'_> {
     }
 }
 
-impl serde::Serialize for WireInstanceOut<'_> {
+impl<const INTS: bool> serde::Serialize for WireInstanceOut<'_, INTS> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        struct Fields<'a>(&'a SerializerOptions);
-        impl serde::Serialize for Fields<'_> {
+        struct Fields<'a, const I: bool>(&'a SerializerOptions);
+        impl<const I: bool> serde::Serialize for Fields<'_, I> {
             fn serialize<S: serde::Serializer>(
                 &self,
                 s: S,
             ) -> std::result::Result<S::Ok, S::Error> {
                 let mut map = s.serialize_map(Some(self.0.len()))?;
                 for (key, value) in self.0 {
-                    map.serialize_entry(key, &WireOut(value))?;
+                    map.serialize_entry(key, &WireOut::<I>(value))?;
                 }
                 map.end()
             }
@@ -4941,7 +4955,7 @@ impl serde::Serialize for WireInstanceOut<'_> {
         map.serialize_entry(WIRE_TAG, "typed")?;
         map.serialize_entry("ctor", self.0.kind.ctor())?;
         map.serialize_entry("fqn", &self.0.class_fqn)?;
-        map.serialize_entry("fields", &Fields(&self.0.props))?;
+        map.serialize_entry("fields", &Fields::<INTS>(&self.0.props))?;
         map.end()
     }
 }
@@ -4986,33 +5000,46 @@ impl serde::Serialize for CompactInstanceOut<'_> {
                     {
                         continue;
                     }
-                    map.serialize_entry(key, &WireOut(value))?;
+                    map.serialize_entry(key, &WireOut::<true>(value))?;
                 }
                 map.end()
             }
         }
         let props = &self.0.props;
-        let identifier_field = match props.get("$identifierFieldName") {
-            Some(CoreValue::String(name)) => Some(name.as_str()),
+        // The header values, found in one pass over the properties rather
+        // than one hashed lookup each.
+        let mut header: [&CoreValue; 5] = [&UNDEFINED; 5];
+        for (key, value) in props {
+            if let Some(slot) = COMPACT_HEADER_KEYS
+                .iter()
+                .position(|k| k == key)
+                .and_then(|i| header.get_mut(i))
+            {
+                *slot = value;
+            }
+        }
+        let [_, _, identifier_field_name, _, _] = header;
+        let identifier_field = match identifier_field_name {
+            CoreValue::String(name) => Some(name.as_str()),
             _ => None,
         };
         let mut seq = s.serialize_seq(Some(8))?;
         seq.serialize_element(self.0.kind.ctor())?;
         seq.serialize_element(&self.0.class_fqn)?;
-        for key in COMPACT_HEADER_KEYS {
-            seq.serialize_element(&WireOut(props.get(key).unwrap_or(&UNDEFINED)))?;
+        for value in header {
+            seq.serialize_element(&WireOut::<true>(value))?;
         }
         seq.serialize_element(&Rest(props, identifier_field))?;
         seq.end()
     }
 }
 
-/// The serializer of the last `serializerFromJson` call, keyed by that
-/// call's options text (P5-16): a caller normally passes the same merged
-/// options on every call, and [`Serializer::new`] depends on nothing else,
-/// so a call with the same text reuses it instead of decoding the options
-/// and building the serializer again.
-type SerializerCacheEntry = (String, Serializer);
+/// The serializer of the last `serializerFromJson` call and its merged
+/// options as `from_json` reads them, keyed by that call's options text
+/// (P5-16): a caller normally passes the same merged options on every call,
+/// and both depend on nothing else, so a call with the same text reuses
+/// them instead of decoding the options and building them again.
+type SerializerCacheEntry = (String, Serializer, FromJsonOptions);
 
 thread_local! {
     static FROM_JSON_SERIALIZER: RefCell<Option<SerializerCacheEntry>> =
@@ -5034,23 +5061,25 @@ impl ModelManagerHandle {
         let cached = FROM_JSON_SERIALIZER.with(|slot| {
             slot.borrow_mut()
                 .take()
-                .filter(|(text, _)| text == options_text)
+                .filter(|(text, _, _)| text == options_text)
         });
-        let (text, serializer) = match cached {
+        let (text, serializer, prepared) = match cached {
             Some(entry) => entry,
             None => {
                 let options = decode_wire_options(options_text)?;
                 let serializer = Serializer::new(true, true, options.as_ref())?;
-                (options_text.to_string(), serializer)
+                // `from_json(options)` merges `options` over the
+                // serializer's defaults, which were built from the same
+                // `options` over the base defaults: merging them again
+                // changes nothing, so the defaults are the merged options.
+                let prepared = FromJsonOptions::new(&serializer.default_options);
+                (options_text.to_string(), serializer, prepared)
             }
         };
         let mut js_env = JsInstanceEnv { env };
-        // `from_json(options)` merges `options` over the serializer's
-        // defaults, which were built from the same `options` over the base
-        // defaults: merging them again changes nothing, so `None` (the
-        // defaults as they are, not copied) gives the same result.
-        let resource = serializer.from_json(&self.manager, &object, None, &mut js_env);
-        FROM_JSON_SERIALIZER.with(|slot| *slot.borrow_mut() = Some((text, serializer)));
+        let resource =
+            serializer.from_json_prepared(&self.manager, &object, &prepared, &mut js_env);
+        FROM_JSON_SERIALIZER.with(|slot| *slot.borrow_mut() = Some((text, serializer, prepared)));
         Ok(resource?)
     }
 }
@@ -5467,7 +5496,7 @@ impl ModelManagerHandle {
     ) -> std::result::Result<String, JsValue> {
         run(|| {
             let resource = self.build_from_json(json_text, options_text, env)?;
-            serde_json::to_string(&WireInstanceOut(&resource))
+            serde_json::to_string(&WireInstanceOut::<false>(&resource))
                 .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
     }
@@ -7001,13 +7030,13 @@ mod tests {
                 "{text}"
             );
             assert_eq!(
-                serde_json::to_string(&WireOut(&parsed)).unwrap(),
+                serde_json::to_string(&WireOut::<false>(&parsed)).unwrap(),
                 via_value,
                 "{text}"
             );
             if let CoreValue::Instance(instance) = &parsed {
                 assert_eq!(
-                    serde_json::to_string(&WireInstanceOut(instance)).unwrap(),
+                    serde_json::to_string(&WireInstanceOut::<false>(instance)).unwrap(),
                     serde_json::to_string(&encode_wire_instance(instance)).unwrap(),
                     "{text}"
                 );
@@ -7062,8 +7091,41 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&CompactInstanceOut(&instance)).unwrap(),
             format!(
-                r#"["Resource","a.B",{undefined},{undefined},1.0,{undefined},{undefined},{{"1":true}}]"#
+                r#"["Resource","a.B",{undefined},{undefined},1,{undefined},{undefined},{{"1":true}}]"#
             )
         );
+    }
+
+    /// P5-16: `WireOut::<true>` writes an integral number as an integer
+    /// literal, which reads back as the same double, and every other number
+    /// exactly as `WireOut::<false>` does.
+    #[test]
+    fn wire_out_ints_reads_back_the_same_numbers() {
+        for n in [
+            0.0,
+            1.0,
+            -1.0,
+            42.0,
+            1.5,
+            -3.25,
+            9_007_199_254_740_991.0,
+            -9_007_199_254_740_991.0,
+            9_007_199_254_740_992.0,
+            1e21,
+            1e-7,
+            5e-324,
+            f64::MAX,
+        ] {
+            let value = CoreValue::Number(n);
+            let ints = serde_json::to_string(&WireOut::<true>(&value)).unwrap();
+            let plain = serde_json::to_string(&WireOut::<false>(&value)).unwrap();
+            let back: f64 = serde_json::from_str(&ints).unwrap();
+            assert_eq!(back.to_bits(), n.to_bits(), "{ints}");
+            if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+                assert!(!ints.contains('.') && !ints.contains('e'), "{ints}");
+            } else {
+                assert_eq!(ints, plain);
+            }
+        }
     }
 }
