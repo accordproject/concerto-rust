@@ -21,10 +21,17 @@ set -eu
 cd "$(dirname "$0")"
 
 NAME=concerto_wasm
-RAW="target/wasm32-unknown-unknown/release/$NAME.wasm"
 BUDGET=4194304
 
 cargo build --release --target wasm32-unknown-unknown
+
+# Resolve the build's target directory the same way cargo did: honour
+# CARGO_TARGET_DIR when it's set (the worker workflows' no-shared-target-dir
+# rule redirects it), otherwise ask cargo, which also accounts for a
+# target-dir set in .cargo/config.toml. Without this, RAW below could point
+# at a stale or missing ./target file while cargo actually wrote elsewhere.
+TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)}"
+RAW="$TARGET_DIR/wasm32-unknown-unknown/release/$NAME.wasm"
 
 rm -rf pkg
 wasm-bindgen --target web    --out-dir pkg/web  "$RAW"
