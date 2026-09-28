@@ -624,7 +624,7 @@ pub fn concerto_core::introspect::model_file::ModelFile::definitions(&self) -> c
 pub fn concerto_core::introspect::model_file::ModelFile::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::event_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::file_name(&self) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::filter(&self, impl core::ops::function::Fn(&concerto_core::introspect::declaration::Declaration) -> bool, &concerto_core::model_manager::ModelManager) -> concerto_core::error::Result<core::option::Option<Self>>
 pub fn concerto_core::introspect::model_file::ModelFile::from_json(&serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
@@ -639,7 +639,7 @@ pub fn concerto_core::introspect::model_file::ModelFile::get_concept_declaration
 pub fn concerto_core::introspect::model_file::ModelFile::get_enum_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_event_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_import_uri(&self, &str) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::get_imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
@@ -1158,7 +1158,7 @@ pub fn concerto_core::introspect::model_file::ModelFile::definitions(&self) -> c
 pub fn concerto_core::introspect::model_file::ModelFile::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::event_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::file_name(&self) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::filter(&self, impl core::ops::function::Fn(&concerto_core::introspect::declaration::Declaration) -> bool, &concerto_core::model_manager::ModelManager) -> concerto_core::error::Result<core::option::Option<Self>>
 pub fn concerto_core::introspect::model_file::ModelFile::from_json(&serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
@@ -1173,7 +1173,7 @@ pub fn concerto_core::introspect::model_file::ModelFile::get_concept_declaration
 pub fn concerto_core::introspect::model_file::ModelFile::get_enum_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_event_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_import_uri(&self, &str) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::get_imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
@@ -1995,7 +1995,7 @@ pub fn concerto_core::introspect::model_file::ModelFile::definitions(&self) -> c
 pub fn concerto_core::introspect::model_file::ModelFile::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::event_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::file_name(&self) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::filter(&self, impl core::ops::function::Fn(&concerto_core::introspect::declaration::Declaration) -> bool, &concerto_core::model_manager::ModelManager) -> concerto_core::error::Result<core::option::Option<Self>>
 pub fn concerto_core::introspect::model_file::ModelFile::from_json(&serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
@@ -2010,7 +2010,7 @@ pub fn concerto_core::introspect::model_file::ModelFile::get_concept_declaration
 pub fn concerto_core::introspect::model_file::ModelFile::get_enum_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_event_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_import_uri(&self, &str) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::get_imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>

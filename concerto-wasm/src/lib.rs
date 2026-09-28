@@ -5121,7 +5121,8 @@ impl ModelManagerHandle {
 
     /// TS: `ModelFile.getExternalImports` — `this.importUriMap` directly:
     /// a plain object keyed by each import's fully-qualified name, valued
-    /// by its URI (P2-11b-U4).
+    /// by its URI, in import order (issue #263: `external_imports` returns
+    /// an `IndexMap`, so this iterates and inserts in that same order).
     #[wasm_bindgen(js_name = modelFileGetExternalImports)]
     pub fn model_file_get_external_imports(
         &self,
