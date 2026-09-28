@@ -75,7 +75,9 @@ struct SetData {
 }
 
 fn load(set: &str) -> SetData {
-    let path = common::fixtures_dir().join("p515").join(format!("{set}.json"));
+    let path = common::fixtures_dir()
+        .join("p515")
+        .join(format!("{set}.json"));
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("reading {}: {e} (run p515-prepare.mjs)", path.display()));
     let v: Value = serde_json::from_str(&text).expect("p515 fixture JSON");
@@ -138,7 +140,8 @@ fn manager_of<'a>(models: impl Iterator<Item = &'a (String, Value, String)>) -> 
     let mut mm = ModelManager::new().expect("a fresh manager");
     for (name, _, text) in models {
         let mf = file_of(name, text);
-        mm.validate_detached_model_file(&mf).expect("model validates");
+        mm.validate_detached_model_file(&mf)
+            .expect("model validates");
         mm.add_model_file(mf).expect("model adds");
     }
     mm
@@ -210,7 +213,11 @@ fn bench(c: &mut Criterion) {
         // ---- Serializer and Factory --------------------------------------
         let mm = manager_of(d.models.iter());
         let serializer = Serializer::new(true, true, None).unwrap();
-        let objects: Vec<JsValue> = d.instances.iter().map(|(_, _, j)| JsValue::from_json(j)).collect();
+        let objects: Vec<JsValue> = d
+            .instances
+            .iter()
+            .map(|(_, _, j)| JsValue::from_json(j))
+            .collect();
         n("from_json", objects.len());
         g.bench_function(format!("from_json/{set}"), |b| {
             b.iter(|| {
@@ -221,7 +228,11 @@ fn bench(c: &mut Criterion) {
         });
         let resources: Vec<JsValue> = objects
             .iter()
-            .map(|o| JsValue::Instance(Box::new(serializer.from_json(&mm, o, None, &mut FixedEnv).unwrap())))
+            .map(|o| {
+                JsValue::Instance(Box::new(
+                    serializer.from_json(&mm, o, None, &mut FixedEnv).unwrap(),
+                ))
+            })
             .collect();
         n("to_json", resources.len());
         g.bench_function(format!("to_json/{set}"), |b| {
@@ -235,7 +246,9 @@ fn bench(c: &mut Criterion) {
             .instances
             .iter()
             .map(|(fqn, id, _)| {
-                let decl = mm.declaration(mm.get_type_declaration(fqn).unwrap()).unwrap();
+                let decl = mm
+                    .declaration(mm.get_type_declaration(fqn).unwrap())
+                    .unwrap();
                 let ns = fqn.rsplit_once('.').unwrap().0.to_string();
                 let id_value = id.clone().map_or(JsValue::Undefined, JsValue::String);
                 (ns, decl.name().to_string(), id_value)
@@ -245,7 +258,10 @@ fn bench(c: &mut Criterion) {
         g.bench_function(format!("new_resource/{set}"), |b| {
             b.iter(|| {
                 for (ns, name, id) in &targets {
-                    black_box(factory::new_resource(&mm, ns, name, id.clone(), false, &mut FixedEnv).unwrap());
+                    black_box(
+                        factory::new_resource(&mm, ns, name, id.clone(), false, &mut FixedEnv)
+                            .unwrap(),
+                    );
                 }
             })
         });
@@ -256,7 +272,11 @@ fn bench(c: &mut Criterion) {
         g.bench_function(format!("dcs_decorate/{set}"), |b| {
             b.iter_batched(
                 || vec![d.dcs.clone()],
-                |mut sets| black_box(dcs::decorate_models(&dmm, &mut sets, &mut decorate_options()).unwrap()),
+                |mut sets| {
+                    black_box(
+                        dcs::decorate_models(&dmm, &mut sets, &mut decorate_options()).unwrap(),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -279,9 +299,12 @@ fn bench(c: &mut Criterion) {
                 || vec![d.dcs.clone()],
                 |mut sets| {
                     let mm = rebuild(&dcs_asts);
-                    let out = dcs::decorate_models(&mm, &mut sets, &mut decorate_options()).unwrap();
+                    let out =
+                        dcs::decorate_models(&mm, &mut sets, &mut decorate_options()).unwrap();
                     let models: Vec<Value> = out.model_files().map(|mf| mf.ast().clone()).collect();
-                    black_box(json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models }))
+                    black_box(
+                        json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models }),
+                    )
                 },
                 BatchSize::SmallInput,
             )
@@ -299,9 +322,16 @@ fn bench(c: &mut Criterion) {
                 black_box(dcs::validate(&d.dcs, Some(&files)).unwrap())
             })
         });
-        let decorated = dcs::decorate_models(&dmm, &mut [d.dcs.clone()], &mut decorate_options()).unwrap();
-        let decorated_asts: Vec<Value> = user_files(&decorated, &d).iter().map(|mf| mf.ast().clone()).collect();
-        for (op, vocab) in [("extract_decorators", false), ("extract_vocabularies", true)] {
+        let decorated =
+            dcs::decorate_models(&dmm, &mut [d.dcs.clone()], &mut decorate_options()).unwrap();
+        let decorated_asts: Vec<Value> = user_files(&decorated, &d)
+            .iter()
+            .map(|mf| mf.ast().clone())
+            .collect();
+        for (op, vocab) in [
+            ("extract_decorators", false),
+            ("extract_vocabularies", true),
+        ] {
             n(op, 1);
             g.bench_function(format!("{op}/{set}"), |b| {
                 b.iter(|| {
