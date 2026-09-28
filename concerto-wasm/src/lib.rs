@@ -5784,6 +5784,10 @@ pub fn decorator_manager_extract_non_vocab_decorators(
     })
 }
 
+// P5-12c (accordproject/concerto-rust#293): `ValidatedResource.validate()`,
+// `setPropertyValue` and `addArrayValue` in one engine call each.
+mod validate_resource;
+
 #[cfg(test)]
 mod tests {
     // Host-side tests of the pure wire codec (no `js_sys` call is reached on
