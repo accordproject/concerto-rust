@@ -56,20 +56,24 @@ pub fn check_new_resource(
     id: JsValue,
     new_id: &mut dyn FnMut() -> String,
 ) -> Result<NewResourceCheck> {
-    let arg = match &id {
-        JsValue::Undefined | JsValue::Null => IdentifierArg::Nullish,
-        JsValue::String(s) => IdentifierArg::String(s),
-        other => IdentifierArg::Other {
-            truthy: other.is_truthy(),
-        },
-    };
-    let check = from_json::check_new_resource(mm, ns, type_name, arg, new_id)?;
+    let check = from_json::check_new_resource(mm, ns, type_name, identifier_arg(&id), new_id)?;
     Ok(NewResourceCheck {
         class_fqn: check.class_fqn,
         identifier_field_name: check.identifier_field_name,
         id: check.generated_id.map_or(id, JsValue::String),
         timestamped: check.timestamped,
     })
+}
+
+/// The identifier `Factory.newResource`'s checks read.
+fn identifier_arg(id: &JsValue) -> IdentifierArg<'_> {
+    match id {
+        JsValue::Undefined | JsValue::Null => IdentifierArg::Nullish,
+        JsValue::String(s) => IdentifierArg::String(s),
+        other => IdentifierArg::Other {
+            truthy: other.is_truthy(),
+        },
+    }
 }
 
 /// Builds a `Resource` or `ValidatedResource` the way `Factory.newResource`
@@ -127,6 +131,53 @@ pub fn new_resource(
     build_resource(mm, ns, type_name, check, disable_validation, env)
 }
 
+/// [`new_resource`] for a declaration already found (P5-13): what
+/// `newResource(decl.getNamespace(), decl.getName(), id)` does, whose own
+/// type lookup finds `decl` again. The identifiable field name and the
+/// field defaults are read off `decl` itself.
+pub(crate) fn new_resource_of(
+    decl: &TypeRef,
+    id: JsValue,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+) -> Result<Instance> {
+    let (ns, type_name) = (decl.namespace(), decl.name());
+    let check =
+        from_json::check_new_resource_of(decl, ns, type_name, identifier_arg(&id), &mut || {
+            env.new_id()
+        })?;
+    let id = check.generated_id.map_or(id, JsValue::String);
+    let timestamp = if check.timestamped {
+        JsValue::DateTime(Dayjs::utc_now(env.now_ms()))
+    } else {
+        JsValue::Null
+    };
+    let kind = if disable_validation {
+        InstanceKind::Resource
+    } else {
+        InstanceKind::ValidatedResource
+    };
+    // `identifiable_field_name`: `getModelFile(ns).getType(fqn)` is `decl`.
+    let identifier_field_name = decl
+        .identifier_field_name()?
+        .filter(|f| !f.is_empty())
+        .map(str::to_string);
+    let mut instance = Instance::new(
+        kind,
+        check.class_fqn,
+        ns,
+        type_name,
+        identifier_field_name,
+        id.clone(),
+        timestamp,
+    );
+    assign_field_defaults_of(decl, &mut instance)?;
+    if let Some(id_field) = &check.identifier_field_name {
+        instance.set(id_field, id);
+    }
+    Ok(instance)
+}
+
 /// TS: `Factory.newRelationship(ns, type, id)`.
 pub fn new_relationship(
     mm: &ModelManager,
@@ -154,7 +205,7 @@ pub(crate) fn relationship(
     id: JsValue,
 ) -> Result<Instance> {
     let class_fqn = class_decl.fqn();
-    let identifier_field_name = from_json::identifiable_field_name(mm, ns, &class_fqn)?;
+    let identifier_field_name = from_json::identifiable_field_name(mm, ns, class_fqn)?;
     Ok(Instance::new(
         InstanceKind::Relationship,
         class_fqn,
@@ -255,8 +306,14 @@ pub fn new_event(
 /// ([`from_json::assign_field_defaults`]), through `this.setPropertyValue`
 /// (which validates it on a `ValidatedResource`).
 pub fn assign_field_defaults(mm: &ModelManager, instance: &mut Instance) -> Result<()> {
-    let class_fqn = instance.class_fqn.clone();
-    from_json::assign_field_defaults(mm, &class_fqn, &mut |name, value| {
+    let class_decl = model::get_type(mm, &instance.class_fqn)?;
+    assign_field_defaults_of(&class_decl, instance)
+}
+
+/// [`assign_field_defaults`] for the declaration of `instance`.
+fn assign_field_defaults_of(class_decl: &TypeRef, instance: &mut Instance) -> Result<()> {
+    let mm = class_decl.mm;
+    from_json::assign_field_defaults_of(class_decl, &mut |name, value| {
         let value = match value {
             FieldDefault::Number(n) => JsValue::Number(n),
             FieldDefault::Bool(b) => JsValue::Bool(b),

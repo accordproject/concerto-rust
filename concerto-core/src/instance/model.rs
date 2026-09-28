@@ -15,7 +15,7 @@ use crate::introspect::FullyQualified;
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::StringValidator;
 use crate::introspect::{ClassKind, Declaration, Property};
-use crate::model_manager::{DeclId, ModelManager, ValidatedElement};
+use crate::model_manager::{ClassProperties, DeclId, ModelManager, ValidatedElement};
 use crate::model_util;
 
 /// A declaration found by [`get_type`]: what TS holds after
@@ -32,7 +32,7 @@ pub struct TypeRef<'a> {
 
 /// TS: `modelManager.getType(qualifiedName)` (`BaseModelManager.getType`).
 pub fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result<TypeRef<'a>> {
-    let id = mm.get_type_declaration(qualified_name)?;
+    let id = mm.type_declaration(qualified_name)?;
     let decl = mm
         .declaration(id)
         .expect("get_type_declaration returns a live handle");
@@ -61,17 +61,18 @@ pub fn unrecognised() -> crate::Error {
 }
 
 impl<'a> TypeRef<'a> {
-    /// TS `getFullyQualifiedName()`.
-    pub fn fqn(&self) -> String {
-        model_util::qualify(&self.namespace(), self.name())
+    /// TS `getFullyQualifiedName()`, which the manager keeps for every
+    /// declaration (P5-13).
+    pub fn fqn(&self) -> &'a str {
+        self.mm.decl_fqn(self.id).unwrap_or_default()
     }
 
     /// TS `getNamespace()`: the model file's namespace.
-    pub fn namespace(&self) -> String {
+    pub fn namespace(&self) -> &'a str {
         self.mm
             .model_file_of(self.id)
             .and_then(|f| self.mm.file(f))
-            .map(|f| f.namespace().to_string())
+            .map(|f| f.namespace())
             .unwrap_or_default()
     }
 
@@ -130,12 +131,9 @@ impl<'a> TypeRef<'a> {
     /// TS `getIdentifierFieldName()`: the inherited identifying field of a
     /// class or enum declaration, and `null` (`Declaration`'s and
     /// `ScalarDeclaration`'s default) for a map or a scalar.
-    pub fn identifier_field_name(&self) -> Result<Option<String>> {
+    pub fn identifier_field_name(&self) -> Result<Option<&'a str>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => self
-                .mm
-                .identifier_field(&self.fqn())
-                .map(|f| f.map(str::to_string)),
+            Declaration::Class(_) | Declaration::Enum(_) => self.mm.identifier_field_of(self.id),
             Declaration::Scalar(_) | Declaration::Map(_) => Ok(None),
         }
     }
@@ -147,34 +145,26 @@ impl<'a> TypeRef<'a> {
 
     /// TS `isSystemIdentified()`.
     pub fn is_system_identified(&self) -> Result<bool> {
-        Ok(self.identifier_field_name()?.as_deref() == Some("$identifier"))
+        Ok(self.identifier_field_name()? == Some("$identifier"))
     }
 
     /// TS `getProperties()`: each property with the fully-qualified name of
-    /// the declaration that declares it. A map or a scalar has none of its
-    /// own (V8's `TypeError`, which no instance path reaches with one).
-    pub fn properties(&self, expression: &str) -> Result<Vec<(String, Property)>> {
+    /// the declaration that declares it, borrowed from the model (P5-13). A
+    /// map or a scalar has none of its own (V8's `TypeError`, which no
+    /// instance path reaches with one).
+    pub fn properties(&self, expression: &str) -> Result<ClassProperties<'a>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => Ok(self
-                .mm
-                .properties(&self.fqn())?
-                .into_iter()
-                .map(|(owner, property)| (owner, property.clone()))
-                .collect()),
+            Declaration::Class(_) | Declaration::Enum(_) => self.mm.class_properties_of(self.id),
             _ => Err(not_a_function(expression)),
         }
     }
 
     /// TS `getProperty(name)`.
-    pub fn property(&self, name: &str) -> Result<Option<(String, Property)>> {
-        // `properties(...)` then `find`, without cloning every other
-        // property first (P5-06): `get_property` resolves the same super
-        // chain and returns the same first match.
+    pub fn property(&self, name: &str) -> Result<Option<(&'a str, &'a Property)>> {
         match self.decl {
-            Declaration::Class(_) | Declaration::Enum(_) => self
-                .mm
-                .property(&self.fqn(), name)
-                .map(|found| found.map(|(owner, property)| (owner, property.clone()))),
+            Declaration::Class(_) | Declaration::Enum(_) => {
+                Ok(self.mm.class_properties_of(self.id)?.find(name))
+            }
             _ => Err(not_a_function("classDeclaration.getProperty")),
         }
     }
@@ -182,9 +172,10 @@ impl<'a> TypeRef<'a> {
 
 /// What a field's declared type resolves to, in the model file of the
 /// declaration that declares it (`Field.isPrimitive`, `isTypeEnum`,
-/// `isTypeScalar`, `ModelUtil.isMap`, and `RelationshipDeclaration`).
+/// `isTypeScalar`, `ModelUtil.isMap`, and `RelationshipDeclaration`),
+/// borrowed from the model (P5-13).
 #[derive(Debug, Clone)]
-pub enum FieldType {
+pub enum FieldType<'a> {
     /// A primitive field (`isPrimitive()`): its type name.
     Primitive(&'static str),
     /// A field whose type is a scalar (`isTypeScalar()`): the primitive it
@@ -194,16 +185,16 @@ pub enum FieldType {
         /// The primitive type the scalar aliases.
         primitive: Option<&'static str>,
         /// The scalar's default value.
-        default_value: Option<serde_json::Value>,
+        default_value: Option<&'a serde_json::Value>,
         /// The scalar's validator.
-        validator: Option<Box<ScalarValidator>>,
+        validator: Option<&'a ScalarValidator>,
     },
     /// A field whose type is an enum (`isTypeEnum()`).
-    Enum(String),
+    Enum(&'a str),
     /// A field whose type is a map (`ModelUtil.isMap(field)`).
-    Map(String),
+    Map(&'a str),
     /// A field whose type is a concept-like declaration.
-    Class(String),
+    Class(&'a str),
     /// A relationship: the fully-qualified name of its target.
     Relationship(String),
     /// An enum value member (an `EnumDeclaration`'s own property), which
@@ -212,19 +203,19 @@ pub enum FieldType {
 }
 
 /// A property of an instance's declaration, with what its type resolves
-/// to.
+/// to, borrowed from the model (P5-13).
 #[derive(Debug, Clone)]
-pub struct Field {
+pub struct Field<'a> {
     /// The fully-qualified name of the declaration that declares it
     /// (`getParent().getFullyQualifiedName()`).
-    pub owner_fqn: String,
+    pub owner_fqn: &'a str,
     /// The property.
-    pub property: Property,
+    pub property: &'a Property,
     /// What its type resolves to.
-    pub field_type: FieldType,
+    pub field_type: FieldType<'a>,
 }
 
-impl Field {
+impl Field<'_> {
     /// TS `getName()`.
     pub fn name(&self) -> &str {
         self.property.name()
@@ -237,27 +228,21 @@ impl Field {
 
     /// TS `getType()`: the declared type name as written (a primitive's own
     /// name), or, for the unboxed `getScalarField()`, the scalar's primitive.
-    pub fn type_name(&self) -> String {
+    pub fn type_name(&self) -> &str {
         match &self.field_type {
-            FieldType::Scalar { primitive, .. } => {
-                primitive.map(str::to_string).unwrap_or_default()
-            }
-            _ => self.property.type_name().unwrap_or_default().to_string(),
+            FieldType::Scalar { primitive, .. } => primitive.unwrap_or_default(),
+            _ => self.property.type_name().unwrap_or_default(),
         }
     }
 
     /// TS `getFullyQualifiedTypeName()`.
-    pub fn fully_qualified_type_name(&self) -> String {
+    pub fn fully_qualified_type_name(&self) -> &str {
         match &self.field_type {
-            FieldType::Primitive(p) => (*p).to_string(),
-            FieldType::Scalar { primitive, .. } => {
-                primitive.map(str::to_string).unwrap_or_default()
-            }
-            FieldType::Enum(f)
-            | FieldType::Map(f)
-            | FieldType::Class(f)
-            | FieldType::Relationship(f) => f.clone(),
-            FieldType::EnumValue => String::new(),
+            FieldType::Primitive(p) => p,
+            FieldType::Scalar { primitive, .. } => primitive.unwrap_or_default(),
+            FieldType::Enum(f) | FieldType::Map(f) | FieldType::Class(f) => f,
+            FieldType::Relationship(f) => f,
+            FieldType::EnumValue => "",
         }
     }
 
@@ -283,8 +268,12 @@ impl Field {
 }
 
 /// Resolves a property's declared type in its owner's model file.
-pub fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<Field> {
-    let field_type = match &property {
+pub fn field<'a>(
+    mm: &'a ModelManager,
+    owner_fqn: &'a str,
+    property: &'a Property,
+) -> Result<Field<'a>> {
+    let field_type = match property {
         Property::Relationship(rp) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
             FieldType::Relationship(mm.resolve_type_name_at(namespace, &rp.type_.name, None)?)
@@ -292,15 +281,23 @@ pub fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<F
         Property::Object(op) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
             let fqn = mm.resolve_type_name_at(namespace, &op.type_.name, None)?;
-            match mm.get_declaration(&fqn)? {
-                Declaration::Enum(_) => FieldType::Enum(fqn),
+            // `get_declaration(&fqn)`, keeping the handle for its name.
+            let id = mm
+                .declaration_id(&fqn)
+                .ok_or_else(|| Error::type_not_found(fqn.clone()))?;
+            let target = mm.decl_fqn(id)?;
+            match mm
+                .declaration(id)
+                .expect("declaration_id returns a live handle")
+            {
+                Declaration::Enum(_) => FieldType::Enum(target),
                 Declaration::Scalar(s) => FieldType::Scalar {
                     primitive: s.processed_type(),
-                    default_value: s.default_value().cloned(),
-                    validator: s.validator().cloned().map(Box::new),
+                    default_value: s.default_value(),
+                    validator: s.validator(),
                 },
-                Declaration::Map(_) => FieldType::Map(fqn),
-                Declaration::Class(_) => FieldType::Class(fqn),
+                Declaration::Map(_) => FieldType::Map(target),
+                Declaration::Class(_) => FieldType::Class(target),
             }
         }
         Property::Enum(_) => FieldType::EnumValue,
@@ -312,7 +309,7 @@ pub fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> Result<F
         Property::DateTime(_) => FieldType::Primitive("DateTime"),
     };
     Ok(Field {
-        owner_fqn: owner_fqn.to_string(),
+        owner_fqn,
         property,
         field_type,
     })
@@ -358,8 +355,8 @@ pub fn identifier_regex(
         name: id_field.to_string(),
         fqn: format!("{owner_fqn}.{id_field}"),
     };
-    let field = field(class_decl.mm, &owner_fqn, property)?;
-    let validator = match (&field.field_type, &field.property) {
+    let field = field(class_decl.mm, owner_fqn, property)?;
+    let validator = match (&field.field_type, field.property) {
         (FieldType::Primitive("String"), Property::String(sp)) if sp.validator.is_some() => {
             StringValidator::new(
                 &element,
@@ -379,7 +376,7 @@ pub fn identifier_regex(
             let ScalarValidator::String {
                 validator: Some(regex),
                 length_validator,
-            } = scalar_validator.as_ref()
+            } = scalar_validator
             else {
                 return Ok(None);
             };

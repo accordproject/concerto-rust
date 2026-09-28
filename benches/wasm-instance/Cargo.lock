@@ -96,25 +96,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "concerto-bench-wasm-instance"
+version = "0.0.0"
+dependencies = [
+ "accordproject-concerto-core",
+ "concerto-core-js",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "concerto-core-js"
 version = "0.0.0"
 dependencies = [
  "accordproject-concerto-core",
  "indexmap",
  "serde_json",
-]
-
-[[package]]
-name = "concerto-wasm"
-version = "0.0.0"
-dependencies = [
- "accordproject-concerto-core",
- "accordproject-concerto-metamodel",
- "concerto-core-js",
- "js-sys",
- "serde",
- "serde_json",
- "wasm-bindgen",
 ]
 
 [[package]]

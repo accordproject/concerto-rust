@@ -664,6 +664,102 @@ mod tests {
         assert_eq!(namespaces(&mm), expected);
     }
 
+    // ---- ModelManager::validate_ast_value (P5-13,
+    //      accordproject/concerto-rust#297): the check over the AST alone,
+    //      on the resident metamodel manager where that is exact ----
+
+    /// An AST the `ModelFile` constructor rejects (no `namespace`,
+    /// `declarations` not an array) reaches the structural check, which
+    /// throws TS's `MetamodelException` and leaves the metamodel
+    /// registered, as TS 5.0.0's `validateAst` does.
+    #[test]
+    fn manager_validate_ast_value_reports_a_model_file_shape_error_as_a_metamodel_error() {
+        for ast in [
+            json!({ "$class": "concerto.metamodel@1.0.0.Model", "imports": [], "declarations": [] }),
+            json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "imports": [],
+                "declarations": "not an array"
+            }),
+        ] {
+            assert!(ModelFile::from_json(&ast, None).is_err());
+            let mut mm = ModelManager::new().unwrap();
+            let err = mm.validate_ast_value(&ast).expect_err("the check fails");
+            assert_eq!(kind_of(&err), Some(ErrorKind::Metamodel));
+            assert!(mm.model_file(METAMODEL_NAMESPACE).is_some());
+        }
+    }
+
+    /// A pass on the resident metamodel leaves the caller's manager exactly
+    /// as it was: no namespace, no mutation counted.
+    #[test]
+    fn manager_validate_ast_value_pass_leaves_the_manager_unchanged() {
+        let mut mm = ModelManager::new().unwrap();
+        let (before, generation) = (namespaces(&mm), mm.generation());
+        let ast = json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.acme@1.0.0",
+            "imports": [],
+            "declarations": []
+        });
+        for _ in 0..2 {
+            mm.validate_ast_value(&ast).unwrap();
+            assert_eq!(namespaces(&mm), before);
+            assert_eq!(mm.generation(), generation);
+        }
+    }
+
+    /// A document typed by the caller's own model is resolved against the
+    /// caller's manager, as TS's `getSerializer().fromJSON` does: it fails
+    /// on the resident metamodel manager, which does not hold that type, so
+    /// the check runs on the caller's manager, where it passes, and the
+    /// metamodel is removed again.
+    #[test]
+    fn manager_validate_ast_value_resolves_the_callers_own_types() {
+        let mut mm = ModelManager::new().unwrap();
+        mm.load_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "imports": [],
+                "declarations": [{
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "Person",
+                    "isAbstract": false,
+                    "properties": []
+                }]
+            }),
+            None,
+        )
+        .unwrap();
+        let before = namespaces(&mm);
+        mm.validate_ast_value(&json!({ "$class": "org.acme@1.0.0.Person" }))
+            .unwrap();
+        assert_eq!(namespaces(&mm), before);
+    }
+
+    /// A manager without the system models (`ModelManager::default()`) does
+    /// not match the resident manager's, so its own check runs, as before
+    /// P5-13: the metamodel's declarations cannot resolve their implicit
+    /// `Concept` super type there.
+    #[test]
+    fn manager_validate_ast_value_without_system_models_checks_the_manager_itself() {
+        let ast = json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.acme@1.0.0",
+            "imports": [],
+            "declarations": []
+        });
+        assert!(ModelManager::new().unwrap().validate_ast_value(&ast).is_ok());
+        let mut bare = ModelManager::default();
+        let err = bare
+            .validate_ast_value(&ast)
+            .expect_err("no system models to resolve against");
+        assert_eq!(kind_of(&err), Some(ErrorKind::Metamodel));
+        assert!(bare.model_file(METAMODEL_NAMESPACE).is_some());
+    }
+
     #[test]
     fn manager_validate_ast_version_mismatch_adds_nothing() {
         let mut mm = ModelManager::new().unwrap();

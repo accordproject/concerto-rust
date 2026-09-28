@@ -24,6 +24,7 @@
 //! outcome, error and populated instance.
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
 use serde_json::{Map, Value};
 
@@ -33,7 +34,7 @@ use super::resource_id::ResourceId;
 use super::validate::{self, ValidateOptions, js_map, js_number, js_undefined};
 use crate::error::{ContractError, Detail, DetailCode, ErrorKind, Result};
 use crate::introspect::Declaration;
-use crate::model_manager::{ModelManager, Node, ResolutionContext};
+use crate::model_manager::{ClassProperties, DeclId, ModelManager, Node, ResolutionContext};
 use crate::{Error, ecma, model_util};
 
 js_compat_pub! {
@@ -135,16 +136,17 @@ pub(crate) fn from_json_as(
 ) -> Result<Value> {
     let class_declaration = model::get_type(mm, class_name)?;
     let ns = class_declaration.namespace();
-    let name = class_declaration.name().to_string();
+    let name = class_declaration.name();
     let id = match class_declaration.identifier_field_name()? {
-        Some(field) => get_property(Some(json), &field)?,
+        Some(field) => get_property(Some(json), field)?,
         None => get_property(Some(json), "null")?,
     };
     let mut populator = Populator {
         mm,
         env,
         options,
-        path: vec!["$".to_string()],
+        path: "$".to_string(),
+        path_marks: Vec::new(),
         instances: Vec::new(),
     };
     let resource = if class_declaration.is_transaction() || class_declaration.is_event() {
@@ -159,7 +161,7 @@ pub(crate) fn from_json_as(
                 Vec::new(),
             ));
         }
-        let resource = populator.new_resource(&ns, &name, id)?;
+        let resource = populator.new_resource(ns, name, id)?;
         let decl = model::get_type(mm, &resource.class_fqn)?;
         if class_declaration.is_transaction() && !decl.is_transaction() {
             return Err(plain_error(
@@ -174,14 +176,14 @@ pub(crate) fn from_json_as(
             ));
         }
         resource
-    } else if class_declaration.is_concept() {
-        populator.new_resource(&ns, &name, id)?
     } else if class_declaration.is_map_declaration() {
         return Err(plain_error("serializer-fromjson-mapnotsupported", Vec::new()));
     } else if class_declaration.is_enum() {
         return Err(plain_error("serializer-fromjson-enumnotsupported", Vec::new()));
     } else {
-        populator.new_resource(&ns, &name, id)?
+        // A concept, or any other class declaration:
+        // `this.factory.newResource(ns, name, id)`.
+        populator.new_resource_of(&class_declaration, id)?
     };
 
     let resource = populator.visit_class_declaration(&class_declaration, Some(json), resource)?;
@@ -192,8 +194,8 @@ pub(crate) fn from_json_as(
         // `ResourceValidator.visitClassDeclaration` writes each resource's
         // identifier back (the JS layer's `resource::sync_identifiers`),
         // which reads each one's identifying field; only that read can fail.
-        for fqn in &populator.instances {
-            mm.identifier_field(fqn)?;
+        for id in &populator.instances {
+            mm.identifier_field_of(*id)?;
         }
     }
     Ok(value)
@@ -259,8 +261,9 @@ fn get_property<'v>(value: Option<&'v Value>, key: &str) -> Result<Js<'v>> {
 }
 
 /// `Object.keys(value)`: V8's `TypeError` for `undefined` and `null`, and
-/// the integer-like keys first, in ascending order.
-fn object_keys(value: Option<&Value>) -> Result<Vec<String>> {
+/// the integer-like keys first, in ascending order. Each key an object
+/// holds is borrowed (P5-13).
+fn object_keys(value: Option<&Value>) -> Result<Vec<Cow<'_, str>>> {
     Ok(match value {
         None | Some(Value::Null) => {
             return Err(ContractError::new(
@@ -281,15 +284,25 @@ fn object_keys(value: Option<&Value>) -> Result<Vec<String>> {
                 })
                 .collect();
             indices.sort_by_key(|(i, _)| *i);
-            let mut keys: Vec<String> = indices.into_iter().map(|(_, k)| k.clone()).collect();
-            let rest: Vec<String> = map.keys().filter(|k| !keys.contains(k)).cloned().collect();
+            let mut keys: Vec<Cow<'_, str>> = indices
+                .into_iter()
+                .map(|(_, k)| Cow::Borrowed(k.as_str()))
+                .collect();
+            let leading = keys.len();
+            let rest: Vec<Cow<'_, str>> = map
+                .keys()
+                .filter(|k| !keys[..leading].iter().any(|seen| seen == k.as_str()))
+                .map(|k| Cow::Borrowed(k.as_str()))
+                .collect();
             keys.extend(rest);
             keys
         }
         Some(Value::String(s)) => (0..s.encode_utf16().count())
-            .map(|i| i.to_string())
+            .map(|i| Cow::Owned(i.to_string()))
             .collect(),
-        Some(Value::Array(items)) => (0..items.len()).map(|i| i.to_string()).collect(),
+        Some(Value::Array(items)) => (0..items.len())
+            .map(|i| Cow::Owned(i.to_string()))
+            .collect(),
         Some(_) => Vec::new(),
     })
 }
@@ -400,6 +413,21 @@ js_compat_pub! {
     ) -> Result<ResourceCheck> {
         let qualified_name = model_util::qualify(ns, type_name);
         let class_decl = model::get_type(mm, &qualified_name)?;
+        check_new_resource_of(&class_decl, ns, type_name, id, new_id)
+    }
+}
+
+js_compat_pub! {
+    /// [`check_new_resource`] once its type lookup found `class_decl`
+    /// (P5-13): a caller that already holds the declaration of `ns` and
+    /// `type_name` need not look it up again.
+    pub fn check_new_resource_of(
+        class_decl: &TypeRef,
+        ns: &str,
+        type_name: &str,
+        id: IdentifierArg<'_>,
+        new_id: &mut dyn FnMut() -> String,
+    ) -> Result<ResourceCheck> {
         let ns_and_type = || {
             vec![
                 ("namespace", ns.to_string()),
@@ -412,13 +440,14 @@ js_compat_pub! {
         }
 
         let id_field = class_decl.identifier_field_name()?;
-        let generated_id = (class_decl.is_system_identified()? && id == IdentifierArg::Nullish)
-            .then(new_id);
+        // `isSystemIdentified()`: the same inherited identifying field.
+        let generated_id =
+            (id_field == Some("$identifier") && id == IdentifierArg::Nullish).then(new_id);
         let id = match &generated_id {
             Some(generated) => IdentifierArg::String(generated),
             None => id,
         };
-        if let Some(id_field) = &id_field {
+        if let Some(id_field) = id_field {
             let IdentifierArg::String(id_text) = id else {
                 return Err(plain_error(
                     "factory-newinstance-invalididentifier",
@@ -432,7 +461,7 @@ js_compat_pub! {
                 ));
             }
             // `if (id)`: a non-empty string here.
-            if let Some(regex) = model::identifier_regex(&class_decl, id_field)?
+            if let Some(regex) = model::identifier_regex(class_decl, id_field)?
                 && !regex.matches_regex(id_text)
             {
                 return Err(plain_error(
@@ -445,13 +474,13 @@ js_compat_pub! {
         {
             return Err(plain_error(
                 "factory-newresource-notidentifiable",
-                vec![("fqn", class_decl.fqn())],
+                vec![("fqn", class_decl.fqn().to_string())],
             ));
         }
 
         Ok(ResourceCheck {
-            class_fqn: class_decl.fqn(),
-            identifier_field_name: id_field,
+            class_fqn: class_decl.fqn().to_string(),
+            identifier_field_name: id_field.map(str::to_string),
             generated_id,
             timestamped: class_decl.is_transaction() || class_decl.is_event(),
         })
@@ -480,7 +509,10 @@ js_compat_pub! {
             id,
             decl: mm.declaration(id).expect("a live handle"),
         };
-        Ok(decl.identifier_field_name()?.filter(|f| !f.is_empty()))
+        Ok(decl
+            .identifier_field_name()?
+            .filter(|f| !f.is_empty())
+            .map(str::to_string))
     }
 }
 
@@ -513,59 +545,100 @@ js_compat_pub! {
         assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
     ) -> Result<()> {
         let class_decl = model::get_type(mm, class_fqn)?;
-        for (owner_fqn, property) in class_decl.properties("classDeclaration.getProperties")? {
-            // `isField?.()`: relationships are not `Field`s.
-            if property.is_relationship() || property.is_enum_value() {
-                continue;
-            }
-            let name = crate::Named::name(&property).to_string();
-            let field = model::field(mm, &owner_fqn, property)?;
-            let (default_value, type_name) = match &field.field_type {
-                FieldType::Scalar {
-                    default_value,
-                    primitive,
-                    ..
-                } => (
-                    default_value.clone(),
-                    primitive.map(str::to_string).unwrap_or_default(),
-                ),
-                _ => (raw_default_value(mm, &owner_fqn, &name), field.type_name()),
-            };
-            let Some(default_value) = default_value.filter(|v| !v.is_null()) else {
-                continue;
-            };
-            let value = match type_name.as_str() {
-                "Integer" | "Long" => {
-                    FieldDefault::Number(ecma::parse_int(&ecma::to_js_string(&default_value)))
-                }
-                "Double" => {
-                    FieldDefault::Number(ecma::parse_float(&ecma::to_js_string(&default_value)))
-                }
-                "Boolean" => FieldDefault::Bool(default_value == Value::Bool(true)),
-                "DateTime" => FieldDefault::DateTime(match &default_value {
-                    Value::String(s) => Dayjs::utc_parse(s),
-                    Value::Number(n) => Dayjs::utc_from_number(n.as_f64().unwrap_or(f64::NAN)),
-                    _ => Dayjs::utc_invalid(),
-                }),
-                // String, and "if we get this far the field should be an enum".
-                _ => FieldDefault::Json(default_value),
-            };
-            assign(&name, value)?;
+        assign_field_defaults_of(&class_decl, assign)
+    }
+}
+
+js_compat_pub! {
+    /// [`assign_field_defaults`] for the declaration `class_fqn` names.
+    ///
+    /// Every step but `assign` depends only on the model, so the converted
+    /// defaults are cached per declaration (P5-13,
+    /// [`ModelManager::cached_instance_facts`]). TS resolves each field's
+    /// type and assigns its default in one pass, so a field whose type does
+    /// not resolve fails only after every earlier default was assigned: the
+    /// list is cached only when every field resolves, and otherwise this
+    /// runs that same pass field by field, so the first error is TS's.
+    pub fn assign_field_defaults_of(
+        class_decl: &TypeRef,
+        assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
+    ) -> Result<()> {
+        let defaults = class_decl
+            .mm
+            .cached_instance_facts(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())));
+        let Ok(defaults) = defaults else {
+            field_defaults(class_decl, assign)?;
+            return Ok(());
+        };
+        for (name, value) in &defaults.0 {
+            assign(name, value.clone())?;
         }
         Ok(())
     }
 }
 
+/// The defaults [`assign_field_defaults_of`] caches for one declaration.
+struct FieldDefaults(Vec<(String, FieldDefault)>);
+
+/// `assignFieldDefaults`' pass over `class_decl`'s fields: each converted
+/// default is handed to `assign` as it is found, and also returned.
+fn field_defaults(
+    class_decl: &TypeRef,
+    assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
+) -> Result<FieldDefaults> {
+    let mm = class_decl.mm;
+    let mut defaults = Vec::new();
+    for (owner_fqn, property) in class_decl
+        .properties("classDeclaration.getProperties")?
+        .iter()
+    {
+        // `isField?.()`: relationships are not `Field`s.
+        if property.is_relationship() || property.is_enum_value() {
+            continue;
+        }
+        let name = crate::Named::name(property);
+        let field = model::field(mm, owner_fqn, property)?;
+        let (default_value, type_name) = match &field.field_type {
+            FieldType::Scalar {
+                default_value,
+                primitive,
+                ..
+            } => (*default_value, primitive.unwrap_or_default()),
+            _ => (raw_default_value(mm, owner_fqn, name), field.type_name()),
+        };
+        let Some(default_value) = default_value.filter(|v| !v.is_null()) else {
+            continue;
+        };
+        let value = match type_name {
+            "Integer" | "Long" => {
+                FieldDefault::Number(ecma::parse_int(&ecma::to_js_string(default_value)))
+            }
+            "Double" => FieldDefault::Number(ecma::parse_float(&ecma::to_js_string(default_value))),
+            "Boolean" => FieldDefault::Bool(*default_value == Value::Bool(true)),
+            "DateTime" => FieldDefault::DateTime(match default_value {
+                Value::String(s) => Dayjs::utc_parse(s),
+                Value::Number(n) => Dayjs::utc_from_number(n.as_f64().unwrap_or(f64::NAN)),
+                _ => Dayjs::utc_invalid(),
+            }),
+            // String, and "if we get this far the field should be an enum".
+            _ => FieldDefault::Json(default_value.clone()),
+        };
+        assign(name, value.clone())?;
+        defaults.push((name.to_string(), value));
+    }
+    Ok(FieldDefaults(defaults))
+}
+
 /// The raw AST `defaultValue` of a property of `owner_fqn`
 /// (`Field.getDefaultValue()`, `null` when nullish), read off the AST as TS
 /// does: the typed `DateTimeProperty` carries none.
-fn raw_default_value(mm: &ModelManager, owner_fqn: &str, name: &str) -> Option<Value> {
+fn raw_default_value<'a>(mm: &'a ModelManager, owner_fqn: &str, name: &str) -> Option<&'a Value> {
     let decl = mm.declaration_id(owner_fqn)?;
     let prop = mm.property_ids(decl).find(|id| {
         mm.property_by_id(*id)
             .is_some_and(|p| crate::Named::name(p) == name)
     })?;
-    mm.property_default_value(prop).cloned()
+    mm.property_default_value(prop)
 }
 
 // ---------------------------------------------------------------------
@@ -576,6 +649,8 @@ fn raw_default_value(mm: &ModelManager, owner_fqn: &str, name: &str) -> Option<V
 /// order, each in the validator's value shape, without the private ones the
 /// validator never reads (`$namespace`, `$type`, `$identifierFieldName`).
 struct Resource {
+    /// Its declaration, for the identifier write-back.
+    decl: DeclId,
     class_fqn: String,
     /// `this.$identifierFieldName`.
     identifier_key: String,
@@ -613,21 +688,40 @@ struct Populator<'a> {
     mm: &'a ModelManager,
     env: &'a mut dyn InstanceEnv,
     options: &'a FromJsonOptions,
-    /// `parameters.path`, a `TypedStack` that starts as `['$']`.
-    path: Vec<String>,
-    /// The type of each resource built, for the identifier write-back.
-    instances: Vec<String>,
+    /// `parameters.path`, a `TypedStack` that starts as `['$']`, kept
+    /// joined (P5-13): what `path.stack.join('')` reads, with
+    /// [`Self::path_marks`] recording where each pushed segment starts.
+    path: String,
+    path_marks: Vec<usize>,
+    /// The declaration of each resource built, for the identifier
+    /// write-back.
+    instances: Vec<DeclId>,
 }
 
 impl Populator<'_> {
+    /// `parameters.path.stack.join('')`.
     fn path_text(&self) -> String {
-        self.path.concat()
+        self.path.clone()
+    }
+
+    /// `parameters.path.push(segment)`.
+    fn push_path(&mut self, segment: std::fmt::Arguments<'_>) {
+        self.path_marks.push(self.path.len());
+        // Writing to a `String` cannot fail.
+        let _ = self.path.write_fmt(segment);
+    }
+
+    /// `parameters.path.pop()`.
+    fn pop_path(&mut self) {
+        if let Some(mark) = self.path_marks.pop() {
+            self.path.truncate(mark);
+        }
     }
 
     /// A finished resource, in the validator's value shape.
     fn finish(&mut self, resource: Resource) -> Value {
-        self.instances.push(resource.class_fqn.clone());
-        let mut wire = Map::new();
+        self.instances.push(resource.decl);
+        let mut wire = Map::with_capacity(resource.props.len() + 1);
         wire.insert("$class".to_string(), Value::String(resource.class_fqn));
         for (key, value) in resource.props {
             wire.insert(key, value);
@@ -640,9 +734,28 @@ impl Populator<'_> {
     /// `assignFieldDefaults()` (each default validated as it is set), then
     /// the identifying field.
     fn new_resource(&mut self, ns: &str, type_name: &str, id: Js) -> Result<Resource> {
+        let class_decl = model::get_type(self.mm, &model_util::qualify(ns, type_name))?;
+        self.new_resource_at(&class_decl, ns, type_name, id)
+    }
+
+    /// [`Self::new_resource`] for a declaration already found (P5-13):
+    /// `newResource(decl.getNamespace(), decl.getName(), id)`, whose own
+    /// type lookup finds `decl` again.
+    fn new_resource_of(&mut self, decl: &TypeRef, id: Js) -> Result<Resource> {
+        self.new_resource_at(decl, decl.namespace(), decl.name(), id)
+    }
+
+    /// [`Self::new_resource`] once its type lookup found `class_decl`.
+    fn new_resource_at(
+        &mut self,
+        class_decl: &TypeRef,
+        ns: &str,
+        type_name: &str,
+        id: Js,
+    ) -> Result<Resource> {
         let env = &mut *self.env;
-        let check = check_new_resource(
-            self.mm,
+        let check = check_new_resource_of(
+            class_decl,
             ns,
             type_name,
             IdentifierArg::of(id.as_deref()),
@@ -657,19 +770,25 @@ impl Populator<'_> {
         } else {
             Value::Null
         };
-        let identifier_key = identifiable_field_name(self.mm, ns, &check.class_fqn)?
-            .unwrap_or_else(|| "$identifier".to_string());
+        // `identifiable_field_name`: `getModelFile(ns).getType(fqn)` is
+        // `class_decl`.
+        let identifier_key = class_decl
+            .identifier_field_name()?
+            .filter(|f| !f.is_empty())
+            .unwrap_or("$identifier")
+            .to_string();
         let mut props = Map::new();
         props.insert("$identifier".to_string(), id.clone());
         props.insert(identifier_key.clone(), id.clone());
         props.insert("$timestamp".to_string(), timestamp);
         let mut resource = Resource {
-            class_fqn: check.class_fqn.clone(),
+            decl: class_decl.id,
+            class_fqn: check.class_fqn,
             identifier_key,
             props,
         };
         let mm = self.mm;
-        assign_field_defaults(mm, &check.class_fqn, &mut |name, value| {
+        assign_field_defaults_of(class_decl, &mut |name, value| {
             let value = match value {
                 FieldDefault::Number(n) => js_number(n),
                 FieldDefault::Bool(b) => Value::Bool(b),
@@ -725,21 +844,25 @@ impl Populator<'_> {
         if self.options.reject_unknown_keys {
             self.reject_unknown_keys(json, class_declaration)?;
         }
-        validate_properties(&properties, class_declaration)?;
+        // `classDeclaration.getProperties()`, read once for
+        // `validateProperties` and each `getProperty` below (the same answer
+        // every time: the model does not change mid-walk).
+        let class_properties = class_declaration.properties("classDeclaration.getProperties")?;
+        validate_properties(&properties, class_declaration, &class_properties)?;
         if self.options.reject_required_null {
             self.reject_required_null(json, class_declaration)?;
         }
         for property in properties {
             let value = get_property(json, &property)?;
             if value.as_deref() != Some(&Value::Null) {
-                self.path.push(format!(".{property}"));
-                let (owner_fqn, class_property) = class_declaration
-                    .property(&property)?
+                self.push_path(format_args!(".{property}"));
+                let (owner_fqn, class_property) = class_properties
+                    .find(&property)
                     .expect("validateProperties found every property");
-                let field = model::field(self.mm, &owner_fqn, class_property)?;
+                let field = model::field(self.mm, owner_fqn, class_property)?;
                 let populated = self.visit_property(&field, value.as_deref())?;
-                resource.props.insert(property, populated);
-                self.path.pop();
+                resource.props.insert(property.into_owned(), populated);
+                self.pop_path();
             }
         }
         Ok(resource)
@@ -750,16 +873,17 @@ impl Populator<'_> {
     /// whatever its value (`null` included), in one error with one
     /// `UNKNOWN_PROPERTY` detail per key.
     fn reject_unknown_keys(&self, json: Option<&Value>, class_declaration: &TypeRef) -> Result<()> {
-        let expected = property_names(class_declaration)?;
+        let expected = class_declaration.properties("classDeclaration.getProperties")?;
         let unknown: Vec<String> = object_keys(json)?
             .into_iter()
             .filter(|p| !model_util::is_system_property(p) && !expected.contains(p))
+            .map(Cow::into_owned)
             .collect();
         if unknown.is_empty() {
             return Ok(());
         }
         Err(unknown_keys_error(
-            &class_declaration.fqn(),
+            class_declaration.fqn(),
             &self.path_text(),
             &unknown,
         ))
@@ -786,7 +910,7 @@ impl Populator<'_> {
             if property.is_optional() {
                 continue;
             }
-            return Err(required_null_error(&self.path_text(), &key, &property));
+            return Err(required_null_error(&self.path_text(), &key, property));
         }
         Ok(())
     }
@@ -822,10 +946,14 @@ impl Populator<'_> {
         for key in object_keys(json)? {
             let value = get_property(json, &key)?;
             if key == "$class" {
-                map_set(&mut result, Value::String(key), plain(value.as_deref()));
+                map_set(
+                    &mut result,
+                    Value::String(key.into_owned()),
+                    plain(value.as_deref()),
+                );
                 continue;
             }
-            let key_json = Value::String(key);
+            let key_json = Value::String(key.into_owned());
             let key = if model_util::is_primitive_type(&key_type) {
                 key_json
             } else {
@@ -862,7 +990,7 @@ impl Populator<'_> {
             let name = match class_name.as_deref() {
                 Some(Value::String(s)) => s.clone(),
                 Some(_) => return None,
-                None => mm.model_file_fully_qualified_type_name(&namespace, type_name)?,
+                None => mm.model_file_fully_qualified_type_name(namespace, type_name)?,
             };
             model::get_type(mm, &name).ok()
         })();
@@ -871,10 +999,11 @@ impl Populator<'_> {
         {
             // `newConcept(ns, name, decl.getIdentifierFieldName())`: the
             // field's name as the identifier. DV-011
-            let id = declaration.identifier_field_name()?.map(Value::String);
+            let id = declaration
+                .identifier_field_name()?
+                .map(|name| Value::String(name.to_string()));
             let id = Some(Cow::Owned(id.unwrap_or(Value::Null)));
-            let sub_resource =
-                self.new_resource(&declaration.namespace(), declaration.name(), id)?;
+            let sub_resource = self.new_resource_of(&declaration, id)?;
             return self.accept_declaration(&declaration, value, Some(sub_resource));
         }
         // TS's `catch` leaves `value` exactly as parsed.
@@ -888,14 +1017,17 @@ impl Populator<'_> {
             let Some(Value::Array(items)) = json else {
                 return Err(validation(
                     "jsonpopulator-visitfield-notarray",
-                    vec![("path", self.path_text()), ("type", field.type_name())],
+                    vec![
+                        ("path", self.path_text()),
+                        ("type", field.type_name().to_string()),
+                    ],
                 ));
             };
             let mut result = Vec::with_capacity(items.len());
             for (n, item) in items.iter().enumerate() {
-                self.path.push(format!("[{n}]"));
+                self.push_path(format_args!("[{n}]"));
                 result.push(self.convert_item(field, Some(item))?);
-                self.path.pop();
+                self.pop_path();
             }
             Ok(Value::Array(result))
         } else {
@@ -911,24 +1043,22 @@ impl Populator<'_> {
         let class_name = get_property(json_item, "$class")?;
         let type_name = if is_truthy(class_name.as_deref()) {
             match class_name.as_deref() {
-                Some(Value::String(s)) => s.clone(),
+                Some(Value::String(s)) => s.as_str(),
                 // DV-015: see the JS layer's `Serializer::from_json`.
                 other => return Err(not_a_string_class(other)),
             }
         } else {
             field.fully_qualified_type_name()
         };
-        let declaration = model::get_type(self.mm, &type_name)?;
+        let declaration = model::get_type(self.mm, type_name)?;
         let sub_resource = if declaration.is_map_declaration() {
             None
-        } else if declaration.is_identified()? {
-            let id_field = declaration
-                .identifier_field_name()?
-                .expect("an identified declaration names its identifying field");
-            let id = get_property(json_item, &id_field)?;
-            Some(self.new_resource(&declaration.namespace(), declaration.name(), id)?)
+        } else if let Some(id_field) = declaration.identifier_field_name()? {
+            // `isIdentified()`, then `getIdentifierFieldName()`.
+            let id = get_property(json_item, id_field)?;
+            Some(self.new_resource_of(&declaration, id)?)
         } else {
-            Some(self.new_resource(&declaration.namespace(), declaration.name(), None)?)
+            Some(self.new_resource_of(&declaration, None)?)
         };
         self.accept_declaration(&declaration, json_item, sub_resource)
     }
@@ -936,14 +1066,14 @@ impl Populator<'_> {
     /// TS: JSONPopulator.convertToObject: the primitive-type switch.
     fn convert_to_object(&mut self, field: &Field, json: Option<&Value>) -> Result<Value> {
         let type_name = field.type_name();
-        let path = self.path_text();
+        let path = self.path.as_str();
         let wrong_type = || {
             validation(
                 "jsonpopulator-converttoobject-wrongtype",
-                vec![("path", path.clone()), ("type", type_name.clone())],
+                vec![("path", path.to_string()), ("type", type_name.to_string())],
             )
         };
-        Ok(match type_name.as_str() {
+        Ok(match type_name {
             "DateTime" => {
                 let Some(Value::String(s)) = json else {
                     return Err(wrong_type());
@@ -955,7 +1085,7 @@ impl Populator<'_> {
                 } else {
                     return Err(validation(
                         "jsonpopulator-converttoobject-datetimeformat",
-                        vec![("path", path.clone()), ("type", type_name.clone())],
+                        vec![("path", path.to_string()), ("type", type_name.to_string())],
                     ));
                 };
                 if !result.is_valid() {
@@ -996,12 +1126,12 @@ impl Populator<'_> {
         json: Option<&Value>,
     ) -> Result<Value> {
         let type_fqn = relationship.fully_qualified_type_name();
-        let mut default_namespace = model_util::get_namespace(Some(&type_fqn))?.to_string();
+        let mut default_namespace = model_util::get_namespace(Some(type_fqn))?.to_string();
         if default_namespace.is_empty() {
             default_namespace =
-                model_util::get_namespace(Some(&relationship.owner_fqn))?.to_string();
+                model_util::get_namespace(Some(relationship.owner_fqn))?.to_string();
         }
-        let default_type = model_util::short_name(&type_fqn).to_string();
+        let default_type = model_util::short_name(type_fqn).to_string();
 
         if relationship.is_array() {
             let Some(Value::Array(items)) = json else {
@@ -1009,7 +1139,7 @@ impl Populator<'_> {
                     "jsonpopulator-visitfield-notarray",
                     vec![
                         ("path", self.path_text()),
-                        ("type", relationship.type_name()),
+                        ("type", relationship.type_name().to_string()),
                     ],
                 ));
             };
@@ -1080,14 +1210,10 @@ impl Populator<'_> {
         };
         let class_declaration = model::get_type(self.mm, class_name)?;
         let id = match class_declaration.identifier_field_name()? {
-            Some(field) => get_property(item, &field)?,
+            Some(field) => get_property(item, field)?,
             None => get_property(item, "null")?,
         };
-        let sub_resource = self.new_resource(
-            &class_declaration.namespace(),
-            class_declaration.name(),
-            id,
-        )?;
+        let sub_resource = self.new_resource_of(&class_declaration, id)?;
         self.accept_declaration(&class_declaration, item, Some(sub_resource))
     }
 }
@@ -1155,7 +1281,7 @@ fn relationship_from_uri(
     let resource_id = ResourceId::from_uri(uri, Some(default_namespace), Some(default_type))?;
     let fqt = model_util::qualify(&resource_id.namespace, &resource_id.type_name);
     let class_decl = model::get_type(mm, &fqt)?;
-    let class_fqn = class_decl.fqn();
+    let class_fqn = class_decl.fqn().to_string();
     let identifier_key = identifiable_field_name(mm, &resource_id.namespace, &class_fqn)?
         .unwrap_or_else(|| "$identifier".to_string());
     Ok(relationship_value(class_fqn, identifier_key, resource_id.id))
@@ -1183,8 +1309,8 @@ fn set_property_value(
     };
     validate::validate_property_value(
         mm,
-        &owner_fqn,
-        &field,
+        owner_fqn,
+        field,
         &value,
         resource.fully_qualified_identifier(),
         &ValidateOptions::default(),
@@ -1193,34 +1319,24 @@ fn set_property_value(
     Ok(())
 }
 
-/// The declared property names of a class declaration
-/// (`classDeclaration.getProperties()`).
-fn property_names(class_declaration: &TypeRef) -> Result<Vec<String>> {
-    Ok(class_declaration
-        .properties("classDeclaration.getProperties")?
-        .iter()
-        .map(|(_, p)| crate::Named::name(p).to_string())
-        .collect())
-}
-
 /// TS `getAssignableProperties(resourceData, classDeclaration)`: the keys
 /// that have a value and are not system properties, after the reserved
 /// property and `$timestamp` checks.
-fn get_assignable_properties(
-    resource_data: Option<&Value>,
+fn get_assignable_properties<'v>(
+    resource_data: Option<&'v Value>,
     declaration: &TypeRef,
-) -> Result<Vec<String>> {
+) -> Result<Vec<Cow<'v, str>>> {
     let properties = object_keys(resource_data)?;
     let private: Vec<&str> = properties
         .iter()
         .filter(|p| model_util::is_private_system_property(p))
-        .map(String::as_str)
+        .map(|p| &**p)
         .collect();
     if !private.is_empty() {
         return Err(validation(
             "jsonpopulator-getassignableproperties-reservedproperties",
             vec![
-                ("fqn", declaration.fqn()),
+                ("fqn", declaration.fqn().to_string()),
                 ("properties", private.join(", ")),
             ],
         ));
@@ -1230,10 +1346,10 @@ fn get_assignable_properties(
     {
         return Err(validation(
             "jsonpopulator-getassignableproperties-timestamp",
-            vec![("fqn", declaration.fqn())],
+            vec![("fqn", declaration.fqn().to_string())],
         ));
     }
-    let mut assignable = Vec::new();
+    let mut assignable = Vec::with_capacity(properties.len());
     for property in properties {
         if model_util::is_system_property(&property) {
             continue;
@@ -1246,19 +1362,23 @@ fn get_assignable_properties(
     Ok(assignable)
 }
 
-/// TS `validateProperties(properties, classDeclaration)`.
-fn validate_properties(properties: &[String], class_declaration: &TypeRef) -> Result<()> {
-    let expected = property_names(class_declaration)?;
+/// TS `validateProperties(properties, classDeclaration)`, against the
+/// declaration's `getProperties()`.
+fn validate_properties(
+    properties: &[Cow<'_, str>],
+    class_declaration: &TypeRef,
+    expected: &ClassProperties,
+) -> Result<()> {
     let invalid: Vec<&str> = properties
         .iter()
         .filter(|p| !expected.contains(p))
-        .map(String::as_str)
+        .map(|p| &**p)
         .collect();
     if !invalid.is_empty() {
         return Err(validation(
             "jsonpopulator-validateproperties-unexpectedproperties",
             vec![
-                ("fqn", class_declaration.fqn()),
+                ("fqn", class_declaration.fqn().to_string()),
                 ("properties", invalid.join(", ")),
             ],
         ));

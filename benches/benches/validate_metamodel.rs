@@ -3,16 +3,23 @@
 //! The TS side of this workload is `ModelManager.validateAst`, which
 //! deserialises the AST against the metamodel schema via the serializer
 //! (see `run-ts.mjs`'s `validateAst` workload in the `concerto` repo). The
-//! two Rust-side counterparts benchmarked here, per the issue:
-//!   - `concerto-core`: `ModelFile::from_json`, which performs the
-//!     equivalent structural check by deserialising the AST into
-//!     `concerto-metamodel`'s strongly-typed schema (concerto-core has no
-//!     separate "validate the AST" step; construction *is* that check).
+//! Rust-side counterparts benchmarked here:
+//!   - `concerto-core/validate_ast` (task P5-13,
+//!     accordproject/concerto-rust#297): `ModelManager::validate_ast`, the
+//!     port of `validateAst` itself (the version check, then
+//!     `Serializer::from_json` against the metamodel), on a manager that
+//!     does not hold the metamodel, over the models it accepts - as
+//!     `run-ts.mjs`'s `benchValidateAst` keeps them.
+//!   - `concerto-core`: `ModelFile::from_json`, which builds the model file
+//!     by deserialising the AST into `concerto-metamodel`'s strongly-typed
+//!     schema. This is model loading, not the metamodel check
+//!     (P5-12d, accordproject/concerto-rust#296), and is kept for
+//!     comparison with the earlier runs.
 //!   - `concerto-validate-rs`: its own, independent `validate_metamodel`
 //!     function, over the same fixtures (only when the `validate-rs`
 //!     feature is enabled; see benches/README.md).
 
-use concerto_core::ModelFile;
+use concerto_core::{ModelFile, ModelManager};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 #[path = "common/mod.rs"]
@@ -23,6 +30,33 @@ fn bench_model_set(c: &mut Criterion, set_name: &str) {
     assert!(!set.is_empty(), "fixture set '{set_name}' is empty - run generate-fixtures.mjs in the concerto repo first");
 
     let mut group = c.benchmark_group(format!("validate_metamodel/{set_name}"));
+
+    // The models `validate_ast` accepts, checked once outside the timed
+    // section (`run-ts.mjs` benchmarks the same subset).
+    let mut mm = ModelManager::new().expect("system models load");
+    let accepted: Vec<ModelFile> = set
+        .iter()
+        .filter_map(|(name, ast)| ModelFile::from_json(ast, Some(name.clone())).ok())
+        .filter(|mf| mm.validate_ast(mf).is_ok())
+        .collect();
+    if accepted.is_empty() {
+        eprintln!("validate_metamodel/{set_name}/concerto-core/validate_ast: SKIPPED - it accepts none of the models");
+    } else {
+        // A failed check leaves the metamodel registered, as TS does; start
+        // from a manager without it, as `run-ts.mjs`'s own does.
+        let mut mm = ModelManager::new().expect("system models load");
+        group.bench_with_input(
+            BenchmarkId::new("concerto-core/validate_ast", accepted.len()),
+            &accepted,
+            |b, accepted| {
+                b.iter(|| {
+                    for mf in accepted {
+                        mm.validate_ast(mf).expect("accepted above");
+                    }
+                });
+            },
+        );
+    }
 
     group.bench_with_input(
         BenchmarkId::new("concerto-core/from_json", set.len()),

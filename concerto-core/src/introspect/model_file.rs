@@ -11,7 +11,6 @@
 //! says: its key order, its `null`s and its numbers exactly as given. The typed
 //! declarations and imports are a view of it, used for the runtime's logic.
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
@@ -29,7 +28,9 @@ pub struct ModelFile {
     version: String,
     imports: Vec<Import>,
     declarations: Vec<Declaration>,
-    local_types: HashMap<String, usize>,
+    /// Declaration names to their index, for `getLocalType` (FxHash,
+    /// P5-13: only ever looked up, never iterated).
+    local_types: rustc_hash::FxHashMap<String, usize>,
     file_name: Option<String>,
     ast: Ast,
     decorators: Vec<Decorator>,
@@ -220,7 +221,7 @@ impl ModelFile {
         }
 
         let mut declarations = Vec::new();
-        let mut local_types = HashMap::new();
+        let mut local_types = rustc_hash::FxHashMap::default();
         if let Some(typed) = typed {
             declarations.reserve(typed.len());
             for raw in typed {
