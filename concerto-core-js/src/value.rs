@@ -30,8 +30,9 @@ use serde_json::Value;
 /// P5-16 (accordproject/concerto-rust#310): these maps are small, built
 /// and probed several times per property on every `fromJSON`, and SipHash
 /// was the largest single cost in the populate and validate steps.
-/// foldhash keeps a random per-map seed, so crafted colliding keys are not
-/// predictable the way a fixed-key hash's would be.
+/// foldhash seeds each map differently (from a global seed and a per-map
+/// value that changes from one map to the next). Unlike SipHash, it is not
+/// designed to resist crafted colliding keys.
 pub type JsObject = IndexMap<String, JsValue, foldhash::fast::RandomState>;
 
 use concerto_core::error::Result;
