@@ -25,17 +25,21 @@
 //! - `metamodel` (task P3-04, accordproject/concerto-rust#59):
 //!   `BaseModelManager.validateAst` and the `introspect/metamodel.ts`
 //!   functions, whose stable names are in [`crate::metamodel`];
+//! - `model`: the model queries the instance layer makes (`getType`, then
+//!   `isX()`), with TS's semantics for each declaration kind;
 //! - `dayjs` and `resource_id`: the `DateTime` and relationship URI
-//!   semantics `from_json` reads plain JSON with;
-//! - the JS object model (task P3-01b, accordproject/concerto-rust#124):
-//!   `value`, `factory`, `populator`, `generator`, `resource`, `serializer`
-//!   and `deserialize` (#1273's `DeserializeOptions`, task P3-02), which
-//!   model the TS `Resource` objects and the JS values they hold for the
-//!   WASM binding.
+//!   semantics `from_json` reads plain JSON with, which the JS object model
+//!   shares.
+//!
+//! The JS object model itself (task P3-01b, accordproject/concerto-rust#124:
+//! the TS `Resource` objects, the JS values they hold, and the `Serializer`,
+//! `Factory`, `JSONPopulator` and `JSONGenerator`, with #1273's
+//! `DeserializeOptions` from task P3-02) is the `concerto-core-js` crate,
+//! built on this seam for the WASM binding (P6-01 step 5).
 //!
 //! Without the feature these modules are crate-private. Crate-private, they
 //! lose clippy's exemption for exported names, which the JS-facing names
-//! (`Serializer::from_json`) keep through the `allow`s below.
+//! (`from_json::from_json`) keep through the `allow`s below.
 
 /// Declares a module that is `pub` with the `js-compat` feature and
 /// crate-private without it (docs/public-api.md section 4.6).

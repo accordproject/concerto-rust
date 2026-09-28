@@ -10,6 +10,10 @@ This repository is a Cargo workspace:
 
 - [`concerto-core`](./concerto-core/): Runtime for Concerto. Holds the
   in-memory representation of Concerto models, implements type validation.
+- [`concerto-core-js`](./concerto-core-js/): the JS object model (the TS
+  `Resource` objects and the JS values they hold, `Serializer`, `Factory`)
+  that the WASM binding (`concerto-wasm`) is built on. Not published; a
+  native caller does not need it (`docs/public-api.md` section 4.6).
 - [`concerto-vocabulary`](./concerto-vocabulary/): Runtime for Concerto Vocabularies.
   **To be implemented.**
 - [`concerto-metamodel`](./concerto-metamodel/): generated Rust types for the

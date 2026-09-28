@@ -1,6 +1,6 @@
 # The public API of `concerto-core` as a standalone Rust library
 
-**Status: design for maintainer agreement, revision 3.** Task P6-01
+**Status: design for maintainer agreement, revision 4.** Task P6-01
 (accordproject/concerto-rust#83), plan decision D11
 (accordproject/concerto-rust#29).
 
@@ -14,9 +14,8 @@
   P5-07 breaking-changes plan (concerto `migration/BREAKING-CHANGES-PLAN.md`,
   rows BR-01 to BR-11) and the P5-06d typed deserialisation (#239). It
   shipped section 7's steps 0 to 2 and the naming half of step 3.
-- **Revision 3** is this one. It follows the coordinator's scope of
-  2026-09-28 on #83 after the review of `838ca0b`, and ships steps 3, 4
-  and 6 as well:
+- **Revision 3** followed the coordinator's scope of 2026-09-28 on #83
+  after the review of `838ca0b`, and shipped steps 3, 4 and 6 as well:
   - **Step 3:** the opaque `Error`, `Location`, the deprecated
     `ConcertoError` alias, and the shim-only error items behind
     `js-compat`.
@@ -26,9 +25,19 @@
   - **Step 6:** `#[non_exhaustive]` and the `Send + Sync` assertion.
 
   Section 3.5 records where the code differs from the sketches of
-  revision 2, and why. Step 5 (instance validation and the
-  `concerto-core-js` crate) is not in this revision; Q9 proposes it as a
-  follow-up task, which needs the maintainer's approval.
+  revision 2, and why.
+- **Revision 4** is this one. It ships step 5, which the coordinator's
+  comment of 2026-09-28 on #83 (5865108023) keeps in P6-01, so revision 3's
+  Q9 (a follow-up task for it) is withdrawn:
+  - **Step 5a:** the instance-validation API of section 5.7 over a plain
+    `&Value`, with the #1273 options in `ValidationOptions`, on a native
+    route of `Serializer.fromJSON` (`instance::from_json`) that the
+    metamodel checks now take too (F8).
+  - **Step 5b:** the JS object model moves out of core into the new,
+    unpublished `concerto-core-js` crate, which concerto-wasm depends on.
+
+  Section 3.5 and the sketch sections (4.4, 5.4 and 5.7) record where the
+  code differs from revision 3's plan, and why.
 
 concerto-wasm enables `js-compat`, and its exported JS API is unchanged: it
 still reports the error kinds to JS by their old names, and it sends the TS
@@ -209,8 +218,10 @@ rule holds and its purpose does not. The same holds for `Dayjs`,
 constants and helpers, `InstanceKind::ctor` (a TS class name),
 `ErrorKind::{JsTypeError, JsRangeError}` and `ErrorKind::ts_class`. The exit
 condition "no `concerto-wasm` or JS type appears in core's public API" was
-not met at `af207c5`. Section 7's step 1, done in revision 2, meets it, and
-revision 3 puts the rest of the seam behind the same feature.
+not met at `af207c5`. Section 7's step 1, done in revision 2, meets it,
+revision 3 puts the rest of the seam behind the same feature, and revision
+4 (step 5) moves the JS object model out of core: no type named `JsValue`
+is left in `concerto-core/src`.
 
 **F3. The binding sets the shape of the surface.** Five traits
 (`ResolutionContext`, `ValidatedElement`, `FullyQualified`'s associated
@@ -247,7 +258,12 @@ without `js-compat`.
 `Serializer::from_json` with a `SerializerOptions` bag of `JsValue`s. The
 native `validate_instance(&Value, &ValidateOptions)` does not take them.
 `validate_metamodel` gets them by building a `Serializer` internally, so the
-stable `validate_ast` depends on the JS object model today.
+stable `validate_ast` depends on the JS object model today. And the native
+`validate_instance` only accepts the validator's own value shape: a
+`DateTime` given as its ISO string, or a relationship given as its URI
+(what `Serializer.toJSON` writes), is a type violation there, because only
+the populator turns them into a dayjs and a `Relationship`. Revision 4
+(step 5a) fixes both: section 5.7.
 
 **F9. `main`'s public names were moved or renamed (the maintainer's
 criticism).** Section 5.8 has the list. `name()`, `type_name()`,
@@ -263,22 +279,25 @@ methods or changed shape, so callers now need trait imports. The functions
 This was so on `main` too (`#[derive(Default)]`). `new()` loads the system
 models, and `default()` does not, so the two constructors disagree. See Q7.
 
-### 3.5 Where the groups stand at revision 3
+### 3.5 Where the groups stand at revision 4
 
-| Group (3.3) | At revision 3 |
+| Group (3.3) | At revision 4 |
 |---|---|
-| Stable | Public with default features, under the names of sections 5.2 to 5.6 and 5.8. The TS-named forms they replace are `#[deprecated]` aliases (5.8's policy). |
-| JS object model | Behind `js-compat`, still in core's source (step 5 moves it, Q9). |
+| Stable | Public with default features, under the names of sections 5.2 to 5.8. The TS-named forms they replace are `#[deprecated]` aliases (5.8's policy). |
+| JS object model | Moved to the `concerto-core-js` crate (step 5b): `JsValue`, `Instance`, `InstanceKind`, `Serializer`, `SerializerOptions`, the factory, populator, generator and `Resource` functions, and `DeserializeOptions`. `Dayjs`, `UtcOffset` and `ResourceId` stay in core's seam (4.4). |
 | Seam | Behind `js-compat`: the handle API but the four cheap-key lookups (5.3), the collaborator traits (`ResolutionContext`, `ValidatedElement`, `FullyQualified`, `Node`), the `process` family, the option setters, the CTO and file-level loaders, `resolve_type_name_at`, `filter_by_fqn`, `parse_namespace_with`, and the TS side of the error contract (5.6). |
-| Follow-up | Behind `js-compat` with the object model (`Serializer`, `Factory`, `Resource`, `InstanceGenerator`). |
+| Follow-up | In `concerto-core-js` with the object model (`Serializer`, `Factory`, `Resource`, `InstanceGenerator`'s JSON generator). |
 | Internal | `HasValidators` and `Validate` are behind `js-compat` rather than crate-private, since the oracle harness calls `Validate`. `SemVer` and `PrereleaseIdentifier` stay public, because the stable `ParsedNamespace::Full` carries a `SemVer`. |
 
 Where the built signatures differ from revision 2's sketches, the section
 that has the sketch says so: 5.2 (non-JSON text, the builder and the
 setters), 5.3 (names returned with declarations, `filter`'s predicate, `ast`
 returning `Result`, `FullyQualified` in the seam, the cheap-key lookups),
-5.4 (`validate_model_file`, the `metamodel` module) and 5.6 (the pre-port
-sites, `Location` by value, the catalogue behind the feature).
+5.4 (`validate_model_file`, the `metamodel` module), 5.6 (the pre-port
+sites, `Location` by value, the catalogue behind the feature) and, for
+revision 4, 4.4 (what stays in core's seam) and 5.7 (the #1273 checks run
+as the document is read, the `_as` forms, the report of an unreadable
+document).
 
 ---
 
@@ -363,6 +382,33 @@ mapping. concerto-wasm depends on it.
   Each piece has parity risk (R3), and the validator change also has a
   performance risk on the hottest path (P5-06, #227).
 
+**As built in revision 4 (step 5).** The crate is `concerto-core-js`
+(`publish = false`), a workspace member that depends on core with
+`js-compat`. concerto-wasm and core's oracle harness (a dev-dependency)
+depend on it. It holds `JsValue`, `Instance`, `InstanceKind`, `Serializer`,
+`SerializerOptions`, the factory, populator, generator and `Resource`
+functions, and `DeserializeOptions` (about 3,200 lines). The plan above
+changed in four places:
+
+- **`Dayjs`, `UtcOffset` and `ResourceId` stay in core's seam.** The native
+  route of `Serializer.fromJSON` (5.7) must read a `DateTime` string and a
+  relationship URI exactly as the JS layer does, so the date arithmetic and
+  the URI parsing are kind (b) of 4.1: Concerto semantics that give native
+  and JS callers the same verdict. Neither type holds a JS value.
+- **The `$$` encoding and `ts_class` stay in core's seam.** The validator
+  reads the tags (the "seam entry point that takes tagged values" above:
+  `validate_instance_from`), and core builds some TS-faithful messages from
+  the TS class name (`introspect::decorator`). Neither is in the default API.
+- **`instance::model` stays in core's seam,** unchanged, because the native
+  route uses it too: it is shared, not rewritten.
+- **The `Factory` checks and the #1273 rejections are shared.** The JS
+  layer's `check_new_resource`, `assign_field_defaults`,
+  `identifiable_field_name` and the two #1273 errors call core's
+  (`instance::from_json`), so there is one copy of each check. What is
+  duplicated is the populator's walk itself, once over `JsValue` in the JS
+  crate and once over `serde_json::Value` in core; the oracle harness checks
+  the two agree (7, step 5).
+
 ### 4.5 Comparison
 
 | | A: feature | B: separate crate | A then B (recommended) |
@@ -384,19 +430,24 @@ feature keeps only the seam.**
    behaviour. concerto-wasm adds `features = ["js-compat"]` and changes
    nothing else. Its exported JS API stays as it is, as the comment of
    2026-09-28 asks.
-2. **`concerto-core-js` crate (P6, step 5).** Move the JS object model out
-   of core into the new crate, one module at a time, starting with the
-   modules whose core dependencies are already public (`dayjs`, `value`,
-   `resource_id`, `generator`). Each move has to keep the oracle at
-   `baseline.tsv`. After the move, `js-compat` holds only the seam, which has
-   no JS types, and its crate docs say it is unstable and for the binding
-   only. concerto-core-js enables it.
+2. **`concerto-core-js` crate (P6, step 5; done in revision 4).** Move the
+   JS object model out of core into the new crate. Each move has to keep the
+   oracle at `baseline.tsv`. After the move, `js-compat` holds only the
+   seam, which has no JS value type, and its docs say it is unstable and for
+   the binding only. concerto-core-js enables it. The modules could not move
+   one at a time in the order first planned: `serializer`, `populator`,
+   `factory`, `resource` and `generator` depend on each other in a cycle, so
+   they moved in one commit, then `deserialize`, then `value` (the one every
+   other depends on). `dayjs` and `resource_id` stay (4.4).
 
 The feature is called `js-compat`, as the maintainer's input names it. That
 also marks it as JS-only, where revision 1 called it `binding`.
 
-**Keeping R3 honest.** Every step is a move, a rename or a `cfg`. No step
-changes a check or a message. Each step is merged only after these pass:
+**Keeping R3 honest.** Every step but 5a is a move, a rename or a `cfg`,
+and changes no check or message. Step 5a adds a second route to the
+`Serializer.fromJSON` checks, which the oracle harness compares with the
+first on every recorded call (7, step 5). Each step is merged only after
+these pass:
 
 - the native oracle, full canonical corpus plus supplement (16,242
   fixtures, 0 regressions) with `CONCERTO_ORACLE_FIXTURES` set;
@@ -409,8 +460,9 @@ changes a check or a message. Each step is merged only after these pass:
   step.
 
 PORTING.md section 4's grep becomes: no `wasm_bindgen` or `js_sys` in core,
-and no `JsValue`, `Dayjs`, `SerializerOptions`, `$$` tag or `ts_class` in
-`cargo public-api -p accordproject-concerto-core` (default features).
+no type named `JsValue` in `concerto-core/src`, and no `Dayjs`,
+`SerializerOptions`, `$$` tag or `ts_class` in `cargo public-api -p
+accordproject-concerto-core` (default features).
 
 ---
 
@@ -418,9 +470,9 @@ and no `JsValue`, `Dayjs`, `SerializerOptions`, `$$` tag or `ts_class` in
 
 The sketches below are signatures, not code to paste. Where a current item
 is kept, its current name is in brackets. Sections 5.1 to 5.6 and 5.8 are
-implemented in revision 3, and their sketches show the signatures as built;
-section 3.5 lists where they differ from revision 2's. Section 5.7 is still
-a proposal (step 5).
+implemented in revision 3, and 5.7 in revision 4; the sketches show the
+signatures as built, and section 3.5 lists where they differ from the
+earlier revisions'.
 
 ### 5.1 Crate layout
 
@@ -433,7 +485,7 @@ concerto_core
 │                Decorator, DecoratorArgument, TypeReferenceArgument,
 │                validators::{Validator, NumberValidator, StringValidator,
 │                             CollectionSizeValidator}}
-├── instance::{ValidationOptions, Diagnostic, DiagnosticCode, Severity, ValidationReport}   (step 5)
+├── instance::{ValidationOptions, Diagnostic, DiagnosticCode, Severity, ValidationReport}
 ├── metamodel::{validate_ast, validate_structure, NAMESPACE}
 ├── model_util::{short_name, namespace_of, qualify, parse_namespace,
 │                is_valid_identifier, is_primitive_type, is_system_property}
@@ -608,14 +660,17 @@ pub mod metamodel {
   proposed a namespace. The loaded file is what `model_file(namespace)`
   returns, so the change would add a not-found error for no gain.
 - **`metamodel` is a new module at the crate root.** It re-exports
-  `instance::metamodel`'s check under the names above; the `instance` names
-  stay until step 5 reshapes that module.
+  `instance::metamodel`'s check under the names above. Step 5 put
+  `instance::metamodel` and its old re-exports at `instance::` in the
+  seam: the TS ports `validateMetaModel` and `modelManagerFromMetaModel`
+  there are for the oracle harness.
 - **`validate_models` keeps its name.** Revision 1 renamed it `validate`.
   It is the conformance harness's entry point and `main`'s name, so it stays.
-- **`validate_ast` must not depend on the JS object model.** Today it goes
-  through `Serializer::from_json` (F8). Step 5 gives it a direct route over
-  `&Value` to the same populator checks, before the `Serializer` leaves
-  core.
+- **`validate_ast` does not depend on the JS object model.** It went
+  through `Serializer::from_json` (F8). Step 5a gave it a direct route over
+  `&Value` to the same checks (`instance::from_json`, 5.7), which
+  `ModelManager::validate_ast`, `validateMetaModel` and the decorator
+  command sets take too, before the `Serializer` left core.
 
 ### 5.5 Naming rules
 
@@ -731,7 +786,7 @@ impl ValidationOptions {
 }
 
 impl ModelManager {
-    /// First error, as TS `Resource.validate` (the #1273 checks run first).
+    /// First error, as TS `serializer.fromJSON(instance, {validate: true, ...})` throws it.
     pub fn validate_instance(&self, instance: &Value, opts: &ValidationOptions) -> Result<()>;     // [validate_instance_or_throw]
     /// Every violation (#1239).
     pub fn check_instance(&self, instance: &Value, opts: &ValidationOptions) -> ValidationReport;  // [validate_instance → ValidationResult]
@@ -740,13 +795,15 @@ impl ModelManager {
     pub fn check_instance_as(&self, fqn: &str, instance: &Value, opts: &ValidationOptions) -> ValidationReport;
 }
 
-pub struct ValidationReport { /* Vec<Diagnostic> */ }       // [ValidationResult]
+pub struct ValidationReport { /* Vec<Diagnostic> */ }       // [ValidationResult], kept as a deprecated alias
 impl ValidationReport {
     pub fn is_valid(&self) -> bool;
     pub fn diagnostics(&self) -> &[Diagnostic];
+    pub fn into_diagnostics(self) -> Vec<Diagnostic>;
     pub fn into_result(self) -> Result<(), Self>;
 }
 impl IntoIterator for ValidationReport { /* Diagnostic */ }
+impl<'a> IntoIterator for &'a ValidationReport { /* &Diagnostic */ }
 
 #[non_exhaustive] pub struct Diagnostic { pub pointer: String, pub code: DiagnosticCode, pub severity: Severity, pub message: String }
 #[non_exhaustive] pub enum DiagnosticCode { /* the 11 P3-03 codes */ }
@@ -754,20 +811,49 @@ impl IntoIterator for ValidationReport { /* Diagnostic */ }
 ```
 
 - **Naming (Q2).** `validate_*` returns `Result`, and `check_*` returns a
-  report. `_or_throw` is a JS idiom.
-- **The #1273 checks move to the validator entry (BR-08).** When
-  `reject_unknown_keys` or `reject_required_null` is set, both entries run
-  the same pre-walk checks that `JSONPopulator` runs today, before the
-  `ResourceValidator` walk. The populator's private `reject_unknown_keys` and
-  `reject_required_null` take `&JsValue` today, so this is a conversion to
-  `&Value`, not only a change of visibility. The oracle's
-  `Serializer.fromJSON` strict fixtures pin the order.
+  report. `_or_throw` is a JS idiom. This is Q2's recommended default,
+  built; the maintainer can still choose #1239's TS names instead.
 - **Inputs are plain JSON,** as `Serializer.toJSON` writes it: no `$$`
-  tagging, and a `DateTime` is its ISO string. The tagged form, which
-  carries a live JS `Resource`, `undefined`, a `Map` or a dayjs object across
-  the boundary, is seam only (4.2).
-- **`ClassDeclaration::validate_instance(&self, mm, fqn, …)` is dropped** from
-  the stable surface. It ignores `self` and needs the manager anyway.
+  tagging, a `DateTime` is its ISO string, and a relationship is its URI.
+  The tagged form, which carries a live JS `Resource`, `undefined`, a `Map`
+  or a dayjs object across the boundary, is seam only (4.2).
+- **Both modes read the document as `Serializer.fromJSON` does** (step 5a,
+  `instance::from_json`): the `Factory` checks, `JSONPopulator`'s checks and
+  coercions (a `DateTime` string parsed, a URI made a relationship, a
+  default assigned and validated), then the `ResourceValidator` walk. So
+  `validate_instance` returns the error TS `fromJSON` with `validate: true`
+  throws for the same document. The route builds the validator's value
+  shape directly, without the JS object model, and the oracle harness
+  replays every recorded plain-JSON `Serializer.fromJSON` call (2,072 of the
+  2,080 fixtures) through it and through the JS layer's serializer, and
+  fails on any difference in outcome, error (kind, code, parameters and
+  details) or populated instance.
+- **The #1273 checks run as the document is read (BR-08),** where
+  `JSONPopulator` runs them, not in a separate pre-walk as revision 3
+  proposed: that keeps their order against the populator's other checks,
+  which the oracle's `Serializer.fromJSON` strict fixtures pin. They are
+  lifted from `&JsValue` to `&Value` in the route above; the two error
+  builders are shared with the JS layer.
+- **The relationship options.** A relationship property can hold a
+  resource only if the reader accepts one (`acceptResourcesForRelationships`),
+  so either relationship option turns that on as well as setting the
+  validator's option of the same name.
+- **A document that cannot be read** (a malformed `DateTime`, an unknown
+  `$class`, an empty identifier, a #1273 rejection) makes `check_instance`
+  report that failure as its diagnostics: one per #1273 detail, with the
+  detail's path as a JSON Pointer, or one for the error, with its code
+  mapped to the closest `DiagnosticCode`. A readable document is then walked
+  collect-all, as P3-03 built it.
+- **The `_as` forms.** An instance with a `$class` must be of a type
+  assignable to the named one (else `Validation`, or a `NotAssignable`
+  diagnostic), and is then read as its own type; one with no `$class` is
+  read as the named type.
+- **`ClassDeclaration::validate_instance(&self, mm, fqn, …)` is dropped,**
+  with `validate_instance_or_throw`. It ignored `self` and needed the
+  manager anyway; `validate_instance_as` replaces it. `ValidateOptions`,
+  the free `validate_instance` over the tagged shape, `DeserializeOptions`
+  and `STRICT_VALIDATE_OPTIONS` leave the default API: the first two are
+  the seam, the last two moved to `concerto-core-js` with the populator.
 
 ### 5.8 `main`'s names (R4)
 
@@ -807,12 +893,12 @@ CHANGELOG entries (BR-06).
 |---|---|---|
 | BR-01 | DV-001: the first malformed field is named in node key order. | Documented in the error docs of `add_model_ast` (step 3). No change. |
 | BR-02 | DV-005: Integer and Long AST fields are `f64`, so a typed round trip prints `5.0`. | `concerto-metamodel`, not core's API. It is needed before `ModelFile::ast()` and the `mm::*` accessors can promise `JSON.stringify` output. A separate task, before 1.0. |
-| BR-03 | JS-modelling types in the default API. | Sections 4.6 and 7, steps 1 and 5 (`js-compat`, then `concerto-core-js`). The P5-07 row says `binding` feature; the feature is now called `js-compat`. |
+| BR-03 | JS-modelling types in the default API. | Sections 4.6 and 7, steps 1 and 5 (`js-compat`, then `concerto-core-js`), both done. The P5-07 row says `binding` feature; the feature is now called `js-compat`. |
 | BR-04 | Binding-shaped traits and the `process` family are public. | The seam, behind `js-compat` (step 1). |
 | BR-05 | Two lookup styles. | 5.3 (step 4). |
 | BR-06 | 44 `get_*` names, and `add_model` takes a JSON AST. | 5.5 and 5.8, with deprecation aliases (step 4). |
 | BR-07 | Three error shapes; no `#[non_exhaustive]`. | 5.6 (step 3) and step 6. |
-| BR-08 | #1273 options are only reachable through `SerializerOptions`. | 5.7 (step 5). |
+| BR-08 | #1273 options are only reachable through `SerializerOptions`. | 5.7 (step 5a, done): `ValidationOptions` over `&Value`. |
 | BR-09 | The typed decode falls back to the `Value` path for every error. | 6.2. After BC-19; not in P6 unless BC-19 has landed. |
 | BR-10 | The native loader treats truthy non-string names differently from TS. | A kind (c) behaviour (4.1). Fixed as a faithful port, or made strict with BC-19. It changes no signature. |
 | BR-11 | Cross-reference to BR-01 and BR-02. | – |
@@ -925,10 +1011,31 @@ stay byte-identical in its JS behaviour.
    deprecation warning for `add_model`); `concerto-validate-rs` does not
    depend on core at its current head.
 5. **Instance validation and `concerto-core-js`** (5.7, 4.6 part 2; BR-08).
-   Lift the #1273 checks onto `&Value`, give `validate_ast` a route that
-   avoids the `Serializer`, merge the options, and add `check_*`. Then move
-   the JS object model into `concerto-core-js`, one module per commit.
-   **Not done; proposed as a follow-up task (Q9).**
+   **Done in revision 4,** in four commits:
+   - **5a:** `instance::from_json`, `Serializer.fromJSON` over plain JSON
+     (with the `Factory` checks the JS layer now shares), the section 5.7
+     API on it, and `validate_ast`, `validateMetaModel`,
+     `ModelManager::validate_ast` and the decorator command sets moved onto
+     it (F8). The oracle harness replays every recorded plain-JSON
+     `Serializer.fromJSON` call through both routes and fails on any
+     difference: 2,072 calls, 1,669 accepted and 403 rejected, all the same.
+   - **5b:** the new `concerto-core-js` crate takes `serializer`,
+     `populator`, `factory`, `resource` and `generator` (one commit, because
+     they form a dependency cycle), then `deserialize`, then `value`
+     (4.4, 4.6). Each commit is a move plus path changes; the oracle stays at
+     `baseline.tsv` after each.
+
+   The native route is not slower on the P5-06 hot path: over the 77 model
+   ASTs of `migration/bench/fixtures/model-sets` (20 rounds, release build,
+   strict options), the metamodel check took 0.57 to 0.65 s on the native
+   route against 0.89 to 0.91 s through the JS layer's serializer, with the
+   same verdicts. (It skips building the JS objects and converting them to
+   the validator's value shape.)
+
+   The oracle (16,242 fixtures: 14,132 pass, 2,110 unsupported, 0
+   regressions), the concerto-wasm fast checks and concerto's core suite
+   through the rebuilt module pass on the result; the concerto-wasm exported
+   JS API is unchanged.
 6. **`#[non_exhaustive]`** on the enums named in 5.3, 5.6 and 5.7, and the
    `Send + Sync` static assertion (guarantee 6). **Done in revision 3,** as a
    compile-time assertion in `lib.rs` for `ModelManager`, `ModelFile` and
@@ -952,4 +1059,4 @@ stay byte-identical in its JS behaviour.
 | Q6 | Is the crate renamed from `accordproject-concerto-core`? | **No.** Publishing is out of scope (D9). |
 | Q7 | `ModelManager: Default` builds a manager without the system models (F10). Keep it? | **Make `default()` equal to `new()`,** loading the system models and panicking only on the vendored-model bug that `new()` reports as an error. Removing `Default` would break `main`. |
 | Q8 | `ErrorKind` names for the TS `Error`, `TypeError` and `RangeError` kinds. | `InvalidArgument`, `MalformedInput` and `RecursionLimit` (5.6). |
-| Q9 | Does step 5 (instance validation, 5.7, and the `concerto-core-js` crate, 4.6 part 2) stay in P6-01, or become its own task? | **Its own task, after P6-01 merges.** It is the only step that changes behaviour or moves code: it re-ports `JSONPopulator`'s #1273 checks from `&JsValue` to `&Value` (each rejection's path and order are pinned by the `Serializer.fromJSON` strict fixtures), gives `validate_ast` a route that avoids the `Serializer` on the P5-06 hot path, and moves about 4,600 lines into a new crate. Each part needs its own oracle, fuzz and conformance gate (4.6). Its naming also rests on Q2: the recommended `validate_instance`/`check_instance` pair gives the name `ModelManager::validate_instance` a new return type, which no deprecated alias can bridge. Until then the `instance` module keeps today's items (`ValidateOptions`, `DeserializeOptions`, `ValidationResult`, `ModelManager::validate_instance(_or_throw)`, `ClassDeclaration::validate_instance(_or_throw)`), none of which names a JS type. |
+| Q9 | *Withdrawn in revision 4.* Does step 5 (instance validation, 5.7, and the `concerto-core-js` crate, 4.6 part 2) stay in P6-01, or become its own task? The coordinator's comment 5865108023 on #83 keeps it in P6-01, and revision 4 ships it (section 7). The text below is revision 3's, for the record. | **Its own task, after P6-01 merges.** It is the only step that changes behaviour or moves code: it re-ports `JSONPopulator`'s #1273 checks from `&JsValue` to `&Value` (each rejection's path and order are pinned by the `Serializer.fromJSON` strict fixtures), gives `validate_ast` a route that avoids the `Serializer` on the P5-06 hot path, and moves about 4,600 lines into a new crate. Each part needs its own oracle, fuzz and conformance gate (4.6). Its naming also rests on Q2: the recommended `validate_instance`/`check_instance` pair gives the name `ModelManager::validate_instance` a new return type, which no deprecated alias can bridge. Until then the `instance` module keeps today's items (`ValidateOptions`, `DeserializeOptions`, `ValidationResult`, `ModelManager::validate_instance(_or_throw)`, `ClassDeclaration::validate_instance(_or_throw)`), none of which names a JS type. |

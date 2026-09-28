@@ -1052,15 +1052,19 @@ concerto-wasm/      wasm-bindgen binding (P4-01): the ModelManagerHandle handle 
     `concerto-wasm`.
   - `DeclId` and `PropId` are ordinary core types, because the arena uses them
     natively. Their JS wrappers belong in `concerto-wasm`.
-  - The JS object model core still compiles (`JsValue`, `Dayjs`, the
-    `Serializer`), the `$$` tag encoding, the TS exception-class mapping and
-    the collaborator seam are public only with core's `js-compat` feature,
-    which concerto-wasm enables (P6-01, `docs/public-api.md` section 4.6).
+  - The JS object model (`JsValue`, `Instance`, the `Serializer`,
+    `Factory`, `JSONPopulator` and `JSONGenerator`) lives in the
+    `concerto-core-js` crate, which concerto-wasm depends on (P6-01 step 5,
+    `docs/public-api.md` section 4.6). The seam it is built on (the `$$` tag
+    encoding, `Dayjs`, `ResourceId`, the TS exception-class mapping and the
+    collaborator traits) is public only with core's `js-compat` feature,
+    which concerto-core-js and concerto-wasm enable.
   - Check: `cargo tree -p accordproject-concerto-core -e normal | grep -E 'wasm-bindgen|js-sys|web-sys'`
-    prints nothing, no `#[wasm_bindgen]` appears in `concerto-core/src`, and
+    prints nothing, no `#[wasm_bindgen]` appears in `concerto-core/src`,
+    `grep -rn 'JsValue' concerto-core/src` finds no type of that name, and
     rustdoc for core with default features (`cargo doc -p
-    accordproject-concerto-core --no-deps`) has no page for `JsValue`,
-    `Dayjs`, `SerializerOptions`, a `$$` tag constant or `ts_class`.
+    accordproject-concerto-core --no-deps`) has no page for `Dayjs`,
+    `SerializerOptions`, a `$$` tag constant or `ts_class`.
 - Core's public API is idiomatic Rust (`&str`, `Option`, `Result<_, ConcertoError>`,
   iterators). TS-shaped conveniences that exist only for a view belong in
   `concerto-wasm`.

@@ -5,8 +5,8 @@
 //! for a document that JSON can carry, without building the TS `Resource`
 //! objects.
 //!
-//! The JS layer's serializer (`instance::serializer`, with the
-//! `js-compat` feature) populates a JS `Resource` from any JS value,
+//! The JS layer's serializer (`concerto_core_js::serializer`, in the
+//! `concerto-core-js` crate) populates a JS `Resource` from any JS value,
 //! `undefined`, a dayjs or a live `Resource` included, because that is what
 //! a JS caller can hand it. A native caller holds JSON, and all it needs is
 //! the verdict. This module walks the same steps in the same order over a

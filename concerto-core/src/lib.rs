@@ -9,11 +9,16 @@
 //!
 //! ## Features
 //!
-//! - `js-compat` (off by default): the JS-compatibility layer the WASM
-//!   binding (`concerto-wasm`) is built on. It makes public the JS object
-//!   model (`instance::{value, dayjs, serializer, factory, populator,
-//!   generator, resource, resource_id}`), the `$$` tag encoding of JS values
-//!   in `instance::validate`, the TS exception-class mapping
+//! - `js-compat` (off by default): the seam the JS-compatibility layer is
+//!   built on. The JS object model itself (the TS `Resource` objects and the
+//!   JS values they hold, the `Serializer`, `Factory`, `JSONPopulator` and
+//!   `JSONGenerator`) is in the `concerto-core-js` crate, which enables this
+//!   feature, as the WASM binding (`concerto-wasm`) does. The feature makes
+//!   public what that layer needs from core: `Serializer.fromJSON` over plain
+//!   JSON and the `Factory` checks (`instance::from_json`), the
+//!   `ResourceValidator` port with the `$$` tag encoding of JS values
+//!   (`instance::validate`), the `DateTime` and relationship URI semantics
+//!   (`instance::{dayjs, resource_id}`), the TS exception-class mapping
 //!   (`ErrorKind::ts_class`), the collaborator fallback
 //!   (`model_manager::{ResolutionContext, ValidatedElement, Node}`), the
 //!   `process` family the TS views are built with, and the decorator command

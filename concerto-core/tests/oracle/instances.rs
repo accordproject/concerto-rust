@@ -3,7 +3,7 @@
 //! `newRelationship`/`newTransaction`/`newEvent`, and the members that
 //! change or serialize a `Resource` (`Resource.setPropertyValue`,
 //! `addArrayValue`, `toJSON`, `Identifiable.setIdentifier`), replayed over
-//! `concerto_core::instance`.
+//! the JS object model (`concerto_core_js`, P6-01 step 5).
 //!
 //! It also holds the oracle's encoding of instances in both directions:
 //! [`decode_instance`] reads an input `"typed"` node (`codec.js`

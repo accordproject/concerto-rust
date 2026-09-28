@@ -30,13 +30,15 @@ ryu-js = "1.0"
 
 [features]
 # P6-01 (accordproject/concerto-rust#83, docs/public-api.md section 4.6):
-# the JS-compatibility layer the WASM binding (concerto-wasm) is built on: the
-# JS object model (`instance::{value, dayjs, serializer, factory, populator,
-# generator, resource, resource_id}`), the `$$` tag encoding of JS values, and
-# the TS exception-class mapping (`ErrorKind::ts_class`). Off by default, so
-# none of it is in the crate's public API; its items carry no stability
-# promise. The code is compiled either way (the native API is built on parts
-# of it), and is crate-private without the feature.
+# the seam the JS-compatibility layer is built on. The JS object model is the
+# concerto-core-js crate, which enables this feature, as the WASM binding
+# (concerto-wasm) does: `instance::from_json` (`Serializer.fromJSON` over plain
+# JSON, and the `Factory` checks), the `ResourceValidator` port with the `$$`
+# tag encoding of JS values, the `DateTime` and relationship URI semantics,
+# the TS exception-class mapping (`ErrorKind::ts_class`) and the collaborator
+# traits. Off by default, so none of it is in the crate's public API; its
+# items carry no stability promise. The code is compiled either way (the
+# native API is built on it), and is crate-private without the feature.
 js-compat = []
 
 [dev-dependencies]

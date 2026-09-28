@@ -33,7 +33,7 @@
 //! errors for a missing or non-string `$class`
 //! (`from_json_against`); the rest — the `JSONPopulator` walk and the
 //! `ResourceValidator` pass — now runs as the real, ported
-//! `Serializer::from_json` (P3-01b, `src/instance/serializer.rs`), raising
+//! `Serializer.fromJSON` over plain JSON (P3-01b; `crate::instance::from_json` since P6-01), raising
 //! the same `ValidationException`-style errors TS does.
 //! [`validate_dcs_structure`] used to stand in for that; nothing here still
 //! calls it (kept for its own unit tests).
