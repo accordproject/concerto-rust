@@ -1033,9 +1033,13 @@ stay byte-identical in its JS behaviour.
    the validator's value shape.)
 
    The oracle (16,242 fixtures: 14,132 pass, 2,110 unsupported, 0
-   regressions), the concerto-wasm fast checks and concerto's core suite
-   through the rebuilt module pass on the result; the concerto-wasm exported
-   JS API is unchanged.
+   regressions), the concerto-wasm fast checks, concerto's core suite
+   through the rebuilt module and the concerto-conformance Rust harness pass
+   on the result, and the concerto-wasm exported JS API is unchanged. A
+   fixed-seed fuzz shard (`migration/fuzz/bin/fuzz.js --count 20000
+   --run-seed 42`) gives the same outcome for every case with the module
+   built from `cc41902` (before step 5) and from the result: 18,979 agree,
+   890 expected and 131 unresolved divergences, byte-identical lists.
 6. **`#[non_exhaustive]`** on the enums named in 5.3, 5.6 and 5.7, and the
    `Send + Sync` static assertion (guarantee 6). **Done in revision 3,** as a
    compile-time assertion in `lib.rs` for `ModelManager`, `ModelFile` and
