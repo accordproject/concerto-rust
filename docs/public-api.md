@@ -1,42 +1,43 @@
 # The public API of `concerto-core` as a standalone Rust library
 
-**Status: design for maintainer agreement, revision 2.** Task P6-01
+**Status: design for maintainer agreement, revision 3.** Task P6-01
 (accordproject/concerto-rust#83), plan decision D11
 (accordproject/concerto-rust#29).
 
 - **Revision 1** was the early draft, merged through #161 at `b211ae9`. It was
   written before P5-03 (#74) and changed no code.
-- **Revision 2** is this one. P5-03 is closed and P5-10d (#285) has merged, so
-  the audit is redone at the integration head `af207c5`. The revision takes in
-  the maintainer's input of 2026-09-27 on #83: the integration branch has made
-  `concerto-core` JS-centric compared with `main`, and the design must isolate
-  the JS-compatibility layer from the crate's public API. It also takes in the
+- **Revision 2** redid the audit at the integration head `af207c5`, after
+  P5-03 closed and P5-10d (#285) merged. It took in the maintainer's input of
+  2026-09-27 on #83: the integration branch has made `concerto-core`
+  JS-centric compared with `main`, and the design must isolate the
+  JS-compatibility layer from the crate's public API. It also took in the
   P5-07 breaking-changes plan (concerto `migration/BREAKING-CHANGES-PLAN.md`,
-  rows BR-01 to BR-11) and the P5-06d typed deserialisation (#239).
+  rows BR-01 to BR-11) and the P5-06d typed deserialisation (#239). It
+  shipped section 7's steps 0 to 2 and the naming half of step 3.
+- **Revision 3** is this one. It follows the coordinator's scope of
+  2026-09-28 on #83 after the review of `838ca0b`, and ships steps 3, 4
+  and 6 as well:
+  - **Step 3:** the opaque `Error`, `Location`, the deprecated
+    `ConcertoError` alias, and the shim-only error items behind
+    `js-compat`.
+  - **Step 4:** the loading and introspection names of sections 5.2, 5.3
+    and 5.5, with `#[deprecated]` aliases for the TS names, and the rest of
+    section 5.8.
+  - **Step 6:** `#[non_exhaustive]` and the `Send + Sync` assertion.
 
-This revision ships with the code for section 7's steps 0 to 2 and the
-naming half of step 3:
+  Section 3.5 records where the code differs from the sketches of
+  revision 2, and why. Step 5 (instance validation and the
+  `concerto-core-js` crate) is not in this revision; Q9 proposes it as a
+  follow-up task, which needs the maintainer's approval.
 
-- **Step 0:** the 15 public items that had no doc comment now have one, and
-  `lib.rs` sets `#![warn(missing_docs)]`.
-- **Step 1:** the `js-compat` feature. The JS object model, the `$$` tag
-  encoding, the TS class mapping and the seam are public only with it, so
-  core's default public API has no JS type (exit condition 3).
-- **Step 2:** `main`'s names are back: the inherent `name`, `type_name`,
-  `decorators`, `declaration_kind` and `scalar_type`, the functions
-  `model_util::{short_name, namespace_of, qualify}`, and a `prelude`.
-- **Step 3, naming:** `ErrorKind::{Error, JsTypeError, JsRangeError}` are
-  `InvalidArgument`, `MalformedInput` and `RecursionLimit`, and
-  `ErrorKind::ts_class` is behind `js-compat`.
+concerto-wasm enables `js-compat`, and its exported JS API is unchanged: it
+still reports the error kinds to JS by their old names, and it sends the TS
+error factory the same payload. The comment on #83 of 2026-09-28 requires a
+maintainer decision before any change to public naming or error types beyond
+this note. Section 8 lists what is still open.
 
-concerto-wasm enables `js-compat` and its exported JS API is unchanged (it
-still reports the kinds to JS by their old names). The comment on #83 of
-2026-09-28 requires a maintainer decision before any change to public naming
-or error types beyond this note. The rest of section 7 is still a proposal,
-and section 8 lists what is still open.
-
-Every number and name below describes `claude/tender-pascal-ocwf9q` at
-`af207c5`, unless it says otherwise. "`main`" means concerto-rust `main` at
+Every number and name in sections 3 to 6 describes `claude/tender-pascal-ocwf9q`
+at `af207c5`, the code before this task, unless it says otherwise. "`main`" means concerto-rust `main` at
 `a80e562`, the commit the maintainer's input compares against. Today's
 `c582700` differs from it only in a CI workflow file.
 
@@ -208,7 +209,8 @@ rule holds and its purpose does not. The same holds for `Dayjs`,
 constants and helpers, `InstanceKind::ctor` (a TS class name),
 `ErrorKind::{JsTypeError, JsRangeError}` and `ErrorKind::ts_class`. The exit
 condition "no `concerto-wasm` or JS type appears in core's public API" was
-not met at `af207c5`. Section 7's step 1, done in this revision, meets it.
+not met at `af207c5`. Section 7's step 1, done in revision 2, meets it, and
+revision 3 puts the rest of the seam behind the same feature.
 
 **F3. The binding sets the shape of the surface.** Five traits
 (`ResolutionContext`, `ValidatedElement`, `FullyQualified`'s associated
@@ -234,10 +236,10 @@ code; 41 non-test references construct or match them. No enum in the crate is
 **F7. `missing_docs`.** At `af207c5` the lint gave 15 warnings: 10 enum
 variants (`JsValue` 5, `InstanceKind` 3, `UtcOffset` 2), 4 fields of
 `GeneratorOptions`, and `ModelManager::generation`, whose doc comment had
-drifted onto `decorator_validation`. This revision fixes all 15 and turns the
+drifted onto `decorator_validation`. Revision 2 fixes all 15 and turns the
 lint on (section 7, step 0). Rustdoc also reported 55 other warnings: 49
 public docs that link to private items and 6 unresolved links. Step 1, done
-in this revision, fixes them: rustdoc gives no warning for core with or
+in revision 2, fixes them: rustdoc gives no warning for core with or
 without `js-compat`.
 
 **F8. The #1273 options are only reachable through the JS object model.**
@@ -260,6 +262,23 @@ methods or changed shape, so callers now need trait imports. The functions
 **F10. `ModelManager: Default` gives a manager without the system models.**
 This was so on `main` too (`#[derive(Default)]`). `new()` loads the system
 models, and `default()` does not, so the two constructors disagree. See Q7.
+
+### 3.5 Where the groups stand at revision 3
+
+| Group (3.3) | At revision 3 |
+|---|---|
+| Stable | Public with default features, under the names of sections 5.2 to 5.6 and 5.8. The TS-named forms they replace are `#[deprecated]` aliases (5.8's policy). |
+| JS object model | Behind `js-compat`, still in core's source (step 5 moves it, Q9). |
+| Seam | Behind `js-compat`: the handle API but the four cheap-key lookups (5.3), the collaborator traits (`ResolutionContext`, `ValidatedElement`, `FullyQualified`, `Node`), the `process` family, the option setters, the CTO and file-level loaders, `resolve_type_name_at`, `filter_by_fqn`, `parse_namespace_with`, and the TS side of the error contract (5.6). |
+| Follow-up | Behind `js-compat` with the object model (`Serializer`, `Factory`, `Resource`, `InstanceGenerator`). |
+| Internal | `HasValidators` and `Validate` are behind `js-compat` rather than crate-private, since the oracle harness calls `Validate`. `SemVer` and `PrereleaseIdentifier` stay public, because the stable `ParsedNamespace::Full` carries a `SemVer`. |
+
+Where the built signatures differ from revision 2's sketches, the section
+that has the sketch says so: 5.2 (non-JSON text, the builder and the
+setters), 5.3 (names returned with declarations, `filter`'s predicate, `ast`
+returning `Result`, `FullyQualified` in the seam, the cheap-key lookups),
+5.4 (`validate_model_file`, the `metamodel` module) and 5.6 (the pre-port
+sites, `Location` by value, the catalogue behind the feature).
 
 ---
 
@@ -398,7 +417,10 @@ and no `JsValue`, `Dayjs`, `SerializerOptions`, `$$` tag or `ts_class` in
 ## 5. The proposed stable surface (R1)
 
 The sketches below are signatures, not code to paste. Where a current item
-is kept, its current name is in brackets.
+is kept, its current name is in brackets. Sections 5.1 to 5.6 and 5.8 are
+implemented in revision 3, and their sketches show the signatures as built;
+section 3.5 lists where they differ from revision 2's. Section 5.7 is still
+a proposal (step 5).
 
 ### 5.1 Crate layout
 
@@ -411,13 +433,14 @@ concerto_core
 │                Decorator, DecoratorArgument, TypeReferenceArgument,
 │                validators::{Validator, NumberValidator, StringValidator,
 │                             CollectionSizeValidator}}
-├── instance::{ValidationOptions, Diagnostic, DiagnosticCode, Severity, ValidationReport}
-├── metamodel::{validate_ast, NAMESPACE}
+├── instance::{ValidationOptions, Diagnostic, DiagnosticCode, Severity, ValidationReport}   (step 5)
+├── metamodel::{validate_ast, validate_structure, NAMESPACE}
 ├── model_util::{short_name, namespace_of, qualify, parse_namespace,
 │                is_valid_identifier, is_primitive_type, is_system_property}
 ├── rootmodel::{root_model_ast, root_model, decorator_model_ast, decorator_model}
-├── prelude::{Named, FullyQualified, Typed, Decorated, DeclarationKind}
-└── Error, ErrorKind, Result, Location, DetailCode, Detail
+├── prelude::{Named, Typed, Decorated, DeclarationKind}
+└── error::{Error, ErrorKind, Result, Location, Position, DetailCode, Detail}
+    (Error, ErrorKind and Result also at the crate root)
 ```
 
 Revision 1 proposed new `decl`, `prop`, `names` and `system` modules. They
@@ -433,7 +456,7 @@ impl ModelManager {
     pub fn add_model_ast(&mut self, ast: &Value, file_name: Option<&str>) -> Result<ModelFileId>;
     pub fn add_model_ast_text(&mut self, json: &str, file_name: Option<&str>) -> Result<ModelFileId>; // the typed fast path (#239)
     pub fn add_model_asts<'a>(&mut self, models: impl IntoIterator<Item = (&'a Value, Option<&'a str>)>)
-        -> Result<Vec<ModelFileId>>;                               // [add_models]
+        -> Result<Vec<ModelFileId>>;                               // [add_models], deprecated
     pub fn update_model_ast(&mut self, ast: &Value, file_name: Option<&str>) -> Result<ModelFileId>;
     pub fn remove_model(&mut self, namespace: &str) -> Result<()>; // [delete_model_file]
     #[deprecated] pub fn add_model(&mut self, value: &Value, file_name: Option<String>) -> Result<()>; // main's signature
@@ -463,8 +486,16 @@ impl ModelManagerBuilder {
 - **Validation stays explicit.** `add_model_ast` loads without the semantic
   pass, and `add_model_asts` validates the batch and rolls back on failure
   (P1-06).
-- **`update_model_ast` and `remove_model` mutate in place.** Today they
-  return a new manager, because that is how the TS rollback was ported.
+- **`update_model_ast` and `remove_model` mutate in place.** The seam's
+  `update_model_file` and `delete_model_file` return a new manager, because
+  that is how the TS rollback was ported. Like `add_model_ast`,
+  `update_model_ast` checks the structure only.
+- **Text that is not JSON** is an `IllegalModel` error from
+  `add_model_ast_text`, with the pre-port code (no TS path reads JSON text
+  here).
+- **The builder replaces the option setters,** which move to the seam with
+  the `dangerously_…` getter. The getters `decorator_validation()` and
+  `metamodel_validation()` stay.
 - **CTO source text** (`definitions`), `update_external_models` and
   `ModelFileSource` go to the seam until their follow-ups (CTO parsing, and
   a native model download).
@@ -479,21 +510,40 @@ impl ModelManager {
     pub fn model_file(&self, namespace: &str) -> Option<&ModelFile>;        // unchanged from main
     pub fn model_files(&self) -> impl Iterator<Item = &ModelFile>;          // unchanged from main
     pub fn get_declaration(&self, fqn: &str) -> Result<&Declaration>;       // unchanged from main
-    pub fn declarations(&self) -> impl Iterator<Item = &Declaration>;
-    pub fn class_declarations_of_kind(&self, kind: ClassKind) -> impl Iterator<Item = &ClassDeclaration>; // [get_asset_declarations …]
-    pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String>; // unchanged from main
+    pub fn model_file_id(&self, namespace: &str) -> Option<ModelFileId>;    // the cheap keys
+    pub fn declaration_id(&self, fqn: &str) -> Option<DeclId>;
+    pub fn file(&self, id: ModelFileId) -> Option<&ModelFile>;
+    pub fn declaration(&self, id: DeclId) -> Option<&Declaration>;
+    pub fn declarations(&self) -> impl Iterator<Item = (String, &Declaration)>;
+    pub fn class_declarations_of_kind(&self, kind: ClassKind)
+        -> impl Iterator<Item = (String, &ClassDeclaration)>;              // [get_asset_declarations …]
+    pub fn enum_declarations(&self) -> impl Iterator<Item = (String, &EnumDeclaration)>; // [get_enum_declarations]
+    pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String>; // main's signature restored
     pub fn is_assignable_to(&self, sub: &str, sup: &str) -> Result<bool>;   // unchanged from main
-    pub fn super_type(&self, fqn: &str) -> Result<Option<&ClassDeclaration>>;
-    pub fn super_types(&self, fqn: &str) -> Result<impl Iterator<Item = &ClassDeclaration>>;
-    pub fn subclasses(&self, fqn: &str) -> Result<impl Iterator<Item = &ClassDeclaration>>;
-    pub fn assignable_types(&self, fqn: &str) -> Result<impl Iterator<Item = &ClassDeclaration>>;
+    pub fn super_type(&self, fqn: &str) -> Result<Option<(String, &Declaration)>>;     // [get_super_type]
+    pub fn super_types(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>>;       // [get_all_super_type_names]
+    pub fn subclasses(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>>;        // [get_direct_subclasses]
+    pub fn assignable_types(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>>;  // [get_assignable_class_declarations]
     pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<&Property>>;  // main's signature restored
-    pub fn properties(&self, fqn: &str) -> Result<impl Iterator<Item = (&str, &Property)>>; // with the owner's fqn
-    pub fn property(&self, fqn: &str, name: &str) -> Result<Option<(&str, &Property)>>;
-    pub fn property_path(&self, fqn: &str, path: &str) -> Result<&Property>; // [get_nested_property]
+    pub fn properties(&self, fqn: &str) -> Result<Vec<(String, &Property)>>; // with the owner's fqn
+    pub fn own_properties(&self, fqn: &str) -> Result<&[Property]>;         // [get_own_properties]
+    pub fn property(&self, fqn: &str, name: &str) -> Result<Option<(String, &Property)>>; // [get_property]
+    pub fn property_path(&self, fqn: &str, path: &str) -> Result<(String, &Property)>;   // [get_nested_property]
     pub fn identifier_field(&self, fqn: &str) -> Result<Option<&str>>;      // [identifier_field_name]
-    pub fn ast(&self, opts: AstOptions) -> Value;                           // [get_ast(resolve, include_concerto)]
-    pub fn filter(&self, keep: impl Fn(&Declaration) -> bool) -> Result<ModelManager>;
+    pub fn ast(&self, options: AstOptions) -> Result<Value>;                // [get_ast(resolve, include_concerto)]
+    pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<ModelManager>;
+}
+
+impl ModelFile {                                                            // each [get_…] kept, deprecated
+    pub fn local_type(&self, name: &str) -> Option<&Declaration>;           // short or qualified name
+    pub fn fully_qualified_type_name(&self, name: &str) -> Option<String>;
+    pub fn imported_type(&self, name: &str) -> Result<String>;
+    pub fn imported_type_names(&self) -> Vec<String>;                       // [get_imports]; `imports()` is main's
+    pub fn import_uri(&self, key: &str) -> Option<&str>;
+    pub fn external_imports(&self) -> HashMap<String, String>;
+    pub fn asset_declaration(&self, name: &str) -> Option<&Declaration>;    // and participant, transaction, event
+    pub fn class_declarations(&self) -> impl Iterator<Item = &Declaration>; // and asset, participant, transaction,
+                                                                            // event, concept, enum, map, scalar
 }
 ```
 
@@ -504,23 +554,46 @@ impl ModelManager {
   renaming `main`'s `get_declaration` gains nothing.
 - **Borrows instead of clones.** The integration branch's `get_all_properties`
   returns `(String, Property)` clones. `main`'s `Vec<&Property>` comes back,
-  and `properties` adds the owner without cloning.
-- **`filter` takes a predicate over `&Declaration`,** as TS does. The FQN-set
-  form the oracle uses goes to the seam.
+  and `properties` adds the owner without cloning the property.
+- **A declaration comes with its fully-qualified name.** A loaded
+  `Declaration` does not know its namespace (its model file does), so every
+  method that finds declarations or properties by walking the models returns
+  the name alongside. Revision 2's `&ClassDeclaration` could not name an
+  enum, which is a super type's subclass too, so the element is a
+  `&Declaration`. The walks compute their answer, so they return a `Vec`
+  (rule 2 of 5.5).
+- **`filter` takes a predicate over the name and the declaration,** as TS's
+  predicate over a `Declaration` that knows its name. The FQN-set form the
+  oracle uses goes to the seam (`filter_by_fqn`).
+- **`ast` returns `Result`,** because resolving the names can fail, as TS's
+  `getAst(true)` throws.
 - **`#[non_exhaustive]`** on `Declaration`, `Property`, `ClassKind`,
   `DecoratorArgument` and `Validator`, so that a metamodel addition is not a
   breaking change. The `ast()` accessors returning `&mm::…` stay (PORTING.md
   1.2).
-- **`FullyQualified` loses its associated `Error`.** A loaded element always
-  knows its name, so the method becomes `fn fully_qualified_name(&self) ->
-  String`. The fallible form moves to the seam with `ResolutionContext`.
+- **`FullyQualified` moves to the seam.** Revision 2 proposed an infallible
+  stable form. But no loaded element implements the trait: only the seam's
+  element views do, and a loaded `Declaration` or `Property` does not know
+  its namespace. So the fallible trait moves to the seam with
+  `ResolutionContext`, and the prelude does not have it. The stable way to a
+  name is the `(String, &Declaration)` pairs above, or
+  `model_util::qualify(model_file.namespace(), declaration.name())`.
+- **The handle lookups that stay stable** are `model_file_id`,
+  `declaration_id`, `file` and `declaration`: the "optional cheap keys", and
+  what `add_model_ast`'s `ModelFileId` is good for. The rest of the handle
+  API (`property_by_id`, `declaration_ids`, `property_ids`,
+  `class_declarations`, `model_file_of`, `parent_of`,
+  `property_default_value`, `get_type_declaration`,
+  `get_super_type_declaration`, `is_type_assignable_to`,
+  `get_assignable_concrete_types`, `generation`, and the six
+  `get_*_declarations` that return handles) is the seam, behind `js-compat`.
 
 ### 5.4 Semantic validation
 
 ```rust
 impl ModelManager {
     pub fn validate_models(&self) -> Result<()>;                       // unchanged; the conformance entry
-    pub fn validate_model_file(&self, namespace: &str) -> Result<()>;  // [validate_model_file(&ModelFile)]
+    pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()>; // unchanged
 }
 pub mod metamodel {
     pub const NAMESPACE: &str = "concerto.metamodel@1.0.0";           // [METAMODEL_NAMESPACE]
@@ -531,6 +604,12 @@ pub mod metamodel {
 
 - **First error only**, as in TS. A collect-all mode for model validation is
   a new feature (Q5).
+- **`validate_model_file` keeps its `&ModelFile` argument.** Revision 2
+  proposed a namespace. The loaded file is what `model_file(namespace)`
+  returns, so the change would add a not-found error for no gain.
+- **`metamodel` is a new module at the crate root.** It re-exports
+  `instance::metamodel`'s check under the names above; the `instance` names
+  stay until step 5 reshapes that module.
 - **`validate_models` keeps its name.** Revision 1 renamed it `validate`.
   It is the conformance harness's entry point and `main`'s name, so it stays.
 - **`validate_ast` must not depend on the JS object model.** Today it goes
@@ -561,17 +640,20 @@ pub mod metamodel {
 A single opaque error type, with accessors:
 
 ```rust
-#[derive(Debug, Clone)]
-pub struct Error { /* Box<ContractError> */ }
+#[derive(Debug, Clone, PartialEq)]
+pub struct Error { /* Box<{ ContractError, which pre-port check made it }> */ }
 
 impl Error {
     pub fn kind(&self) -> ErrorKind;
     pub fn code(&self) -> &'static str;           // the catalogue key, stable
     pub fn params(&self) -> &[(&'static str, String)];
-    pub fn location(&self) -> Option<&Location>;  // typed Range, not serde_json::Value
+    pub fn location(&self) -> Option<Location>;   // typed Range, not serde_json::Value
     pub fn file_name(&self) -> Option<&str>;
     pub fn details(&self) -> &[Detail];           // #1273; empty unless a strict-option rejection
 }
+
+#[non_exhaustive] pub struct Location { pub start: Position, pub end: Position, pub source: Option<String> }
+#[non_exhaustive] pub struct Position { pub line: u64, pub column: u64, pub offset: u64 }
 impl std::fmt::Display for Error { /* the message */ }
 impl std::error::Error for Error {}
 
@@ -600,22 +682,38 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
   verdict, so a native caller gets that detail too.
 - **Why one type.** Today a caller has to match three variants of
   `ConcertoError` to find a code, and two of them have none (F6).
-- **Prerequisite (BR-07).** Move the 41 remaining `TypeNotFound` and
-  `IllegalModel` construction sites and matches (F6) to catalogue entries, so
-  that `code()` is total. The oracle already pins their messages.
-- **`Location` becomes a typed struct** over `concerto.metamodel@1.0.0.Range`.
-  The seam keeps the verbatim `serde_json::Value` it hands to TS.
+- **`code()` is total (BR-07).** Revision 2 proposed moving the 41
+  `ConcertoError::{TypeNotFound, IllegalModel}` construction sites (F6) to
+  catalogue entries first. Revision 3 builds them instead with two
+  crate-private constructors, as the `"pre-port"` contract error that
+  concerto-wasm already turned them into (a `Raw` catalogue entry, and
+  `typeName` for `TypeNotFound`). `code()` is then `"pre-port"` for them, the
+  binding's payload is byte for byte what it was, and `Display` keeps its
+  text (`type not found: …`, `illegal model: …`), which the conformance
+  harness matches on. Giving each of them a TS message and a catalogue
+  entry of its own is left to the tasks that port those TS throw sites:
+  under the error-parity decision of 2026-09-27 only the class is part of
+  the verdict, and the class is already right.
+- **`Location` is a typed struct** over `concerto.metamodel@1.0.0.Range`,
+  built on demand, so `location()` returns it by value. It is `None` when
+  the AST's `location` is not a well-formed `Range`. The seam keeps the
+  verbatim `serde_json::Value` it hands to TS.
 - **`ConcertoError` stays as a deprecated alias of `Error`** for one minor
   release. `main`'s variants (`NamespaceNotFound`, `ValidationFailed`, and
   `IllegalModel { location: Option<String> }`) are already gone on the
   integration branch and are not restored: they cannot carry a code, and
   the crate is pre-1.0 and unpublished (D9). The crate CHANGELOG records the
   change (5.8).
-- **The catalogue** (`CATALOGUE`, `CatalogueEntry`, `Renderer`) becomes
-  private, apart from what the seam needs for the harness's golden tests.
-  `Renderer::Globalize` names where a template came from in TS. It is not
-  JS behaviour, but the variant is renamed so that no TS name is left in a
-  type.
+- **The TS side of the contract is the seam.** `ContractError` itself (with
+  `pre_port`, `final_message`, `component` and `model_file`),
+  `ValidatorReport`, the catalogue (`CATALOGUE`, `catalogue_entry`,
+  `CatalogueEntry`, `Renderer`), `Error::contract`/`into_contract` and the
+  pre-port constructors are public only with `js-compat`. Revision 2
+  proposed renaming `Renderer::Globalize`; behind the feature it is not in
+  the stable API, so it keeps the name that says where its templates come
+  from.
+- **`ValidationDetail` is `Detail`,** with the old name as a deprecated
+  alias.
 
 ### 5.7 Instance validation (#1273, #1239)
 
@@ -688,12 +786,14 @@ integration branch are what get deprecated, or move to the seam.
 | `model_util::{short_name, namespace_of, qualify}` | `get_short_name`, `get_namespace(Option<&str>) -> Result<&str>`, `get_fully_qualified_name` | **Restore `main`'s three.** `get_short_name` and `get_fully_qualified_name` become deprecated aliases. `get_namespace` (a JS `null` argument) moves to the seam. |
 | `model_util::{Namespace, parse_namespace(&str)}` | `ParsedNamespace`, `parse_namespace(Option<&str>, bool)` | A stable `parse_namespace(&str) -> Result<ParsedNamespace>`. The two-argument TS form moves to the seam. `Namespace` is not restored, since `ParsedNamespace` carries more (the semver parts). |
 | `ModelManager::get_all_properties -> Vec<&Property>` | `-> Vec<(String, Property)>` | Restore `main`'s signature (5.3). |
-| `ModelManager::{new, add_model, model_file, model_files, get_declaration, resolve_type_name, is_assignable_to}` | the same names | Unchanged. `add_model` is deprecated in favour of `add_model_ast`, with `main`'s signature kept. |
+| `ModelManager::{new, add_model, model_file, model_files, get_declaration, resolve_type_name, is_assignable_to}` | the same names; `resolve_type_name` has a third `location` argument | Unchanged. `add_model` is deprecated in favour of `add_model_ast`, with `main`'s signature kept. `resolve_type_name` gets `main`'s two arguments back; the three-argument form is the seam's `resolve_type_name_at`. |
 | `ModelFile::from_json`, `ModelFile::{namespace, version, file_name, declarations, imports, local_declaration, is_system_namespace, resolve_local_type}`, `Import::{namespace, imported_names, local_names, resolve}` | the same | Unchanged. |
 | `ConcertoError::{TypeNotFound, NamespaceNotFound, IllegalModel, ValidationFailed}` | `{TypeNotFound, IllegalModel, Contract}` | Not restored; see 5.6. |
 
 The traits stay public for generic code, and are also re-exported from a new
-`concerto_core::prelude`. **Deprecation policy:** a `#[deprecated(since, note)]`
+`concerto_core::prelude`. `Decorated`'s methods are `decorators` and
+`decorator`; `get_decorators` and `get_decorator` stay as deprecated provided
+methods. **Deprecation policy:** a `#[deprecated(since, note)]`
 alias for one minor release, then removal. P6-03's semver check produces the
 CHANGELOG entries (BR-06).
 
@@ -753,12 +853,12 @@ Each step is its own P6 task and commit, and each keeps the oracle at
 behaviour. Steps 3 to 5 change only Rust signatures, and the WASM build must
 stay byte-identical in its JS behaviour.
 
-0. **Docs (done in this revision).** The 15 `missing_docs` warnings are
+0. **Docs (done in revision 2).** The 15 `missing_docs` warnings are
    fixed, and `#![warn(missing_docs)]` is in `lib.rs`. `RUSTDOCFLAGS="-D
    missing_docs" cargo doc -p accordproject-concerto-core --no-deps` passes,
    and so does clippy with `-D warnings`, so any new undocumented public item
    now fails CI (exit condition 2).
-1. **`js-compat` feature (done in this revision)** (4.6, part 1; BR-03,
+1. **`js-compat` feature (done in revision 2)** (4.6, part 1; BR-03,
    BR-04). `[features] js-compat = []` is enabled in concerto-wasm and in
    core's `[dev-dependencies]` (a self dev-dependency with the feature, for
    the oracle harness and the unit tests). A module is gated with
@@ -791,12 +891,14 @@ stay byte-identical in its JS behaviour.
      validators' `new` and `validate`, and `model_util`'s seam row;
    - `dcs` (Q3).
 
-   Exit condition 3 now holds: rustdoc for core with default features names
-   none of the JS object model's types, no `$$` tag and no TS class mapping.
-   The handle lookups (`declaration(DeclId)` and the rest) stay public, since
-   stable methods return `DeclId`s (5.3), until step 4 settles one lookup
-   style.
-2. **`main`'s names (done in this revision)** (5.8): the inherent `name`
+   Rustdoc for core with default features names none of the JS object
+   model's types, no `$$` tag and no TS class mapping. Revision 3 adds the
+   error items of step 3, the handle API of step 4, the traits
+   `FullyQualified`, `HasValidators` and `Validate` (the audit table's
+   "Internal" row: the oracle harness calls `Validate`, so they are the seam
+   rather than crate-private) and `introspect::validators::{size, length,
+   regex}_validator_from_ast` (for the binding).
+2. **`main`'s names (done in revision 2)** (5.8): the inherent `name`
    (`Declaration`, `ClassDeclaration`, `EnumDeclaration`, `MapDeclaration`,
    `ScalarDeclaration`, `Property`), `Property::{type_name, decorators}`,
    `declaration_kind` (`Declaration`, `ScalarDeclaration`, and `ClassKind`
@@ -804,26 +906,34 @@ stay byte-identical in its JS behaviour.
    the loaded node (the TS `getType`, `None` for a `$class` that is not
    fully qualified, stays as `Typed::type_name`), `model_util::{short_name,
    namespace_of, qualify}` (`get_short_name` and `get_fully_qualified_name`
-   delegate to them), and `concerto_core::prelude`. Two parts of 5.8 move
-   to step 4, where the other names get their `#[deprecated]` aliases:
-   deprecating `get_short_name` and `get_fully_qualified_name`, and
-   `get_all_properties -> Vec<&Property>`, whose owner-carrying callers need
-   step 4's `properties` first.
-3. **Errors** (5.6; BR-07). **Done in this revision:** the `ErrorKind`
-   renames (`Error` to `InvalidArgument`, `JsTypeError` to `MalformedInput`,
+   delegate to them), and `concerto_core::prelude`. Revision 3 does the two
+   parts left for step 4: `get_short_name` and `get_fully_qualified_name`
+   are deprecated, and `get_all_properties` returns `Vec<&Property>`.
+3. **Errors** (5.6; BR-07). **Done.** Revision 2 renamed the `ErrorKind`
+   variants (`Error` to `InvalidArgument`, `JsTypeError` to `MalformedInput`,
    `JsRangeError` to `RecursionLimit`, with the TS class in each variant's
-   doc comment) and `ts_class` behind `js-compat`. **Still to do:** finish
-   the P1-05 migration of the legacy construction sites, introduce `Error`
-   and `Location`, and alias `ConcertoError`.
+   doc comment) and put `ts_class` behind `js-compat`. Revision 3 adds the
+   opaque `Error` with its accessors, `Location` and `Position`, the
+   deprecated `ConcertoError` alias, `Detail` (with `ValidationDetail`
+   deprecated), and puts the TS side of the contract behind `js-compat`
+   (5.6). The pre-port sites keep the `"pre-port"` code (5.6).
 4. **Loading and introspection renames** (5.2, 5.3, 5.5; BR-05, BR-06), with
-   `#[deprecated]` aliases. The concerto-conformance harness and
-   `concerto-validate-rs` keep compiling unchanged.
+   `#[deprecated]` aliases. **Done in revision 3,** with the handle API behind
+   `js-compat` apart from the four cheap-key lookups (5.3), and the
+   `ModelFile`, `model_util` and `Decorated` names of 5.5 and 5.8. The
+   concerto-conformance harness keeps compiling unchanged (with a
+   deprecation warning for `add_model`); `concerto-validate-rs` does not
+   depend on core at its current head.
 5. **Instance validation and `concerto-core-js`** (5.7, 4.6 part 2; BR-08).
    Lift the #1273 checks onto `&Value`, give `validate_ast` a route that
    avoids the `Serializer`, merge the options, and add `check_*`. Then move
    the JS object model into `concerto-core-js`, one module per commit.
+   **Not done; proposed as a follow-up task (Q9).**
 6. **`#[non_exhaustive]`** on the enums named in 5.3, 5.6 and 5.7, and the
-   `Send + Sync` static assertion (guarantee 6).
+   `Send + Sync` static assertion (guarantee 6). **Done in revision 3,** as a
+   compile-time assertion in `lib.rs` for `ModelManager`, `ModelFile` and
+   `Error`. `AstOptions` is a plain options struct without
+   `#[non_exhaustive]`, so a caller can write it as a literal.
 7. **Hand over to P6-02** (the native example) **and P6-03** (`cargo
    public-api` snapshot and `cargo semver-checks` in CI, on core alone with
    default features).
@@ -842,3 +952,4 @@ stay byte-identical in its JS behaviour.
 | Q6 | Is the crate renamed from `accordproject-concerto-core`? | **No.** Publishing is out of scope (D9). |
 | Q7 | `ModelManager: Default` builds a manager without the system models (F10). Keep it? | **Make `default()` equal to `new()`,** loading the system models and panicking only on the vendored-model bug that `new()` reports as an error. Removing `Default` would break `main`. |
 | Q8 | `ErrorKind` names for the TS `Error`, `TypeError` and `RangeError` kinds. | `InvalidArgument`, `MalformedInput` and `RecursionLimit` (5.6). |
+| Q9 | Does step 5 (instance validation, 5.7, and the `concerto-core-js` crate, 4.6 part 2) stay in P6-01, or become its own task? | **Its own task, after P6-01 merges.** It is the only step that changes behaviour or moves code: it re-ports `JSONPopulator`'s #1273 checks from `&JsValue` to `&Value` (each rejection's path and order are pinned by the `Serializer.fromJSON` strict fixtures), gives `validate_ast` a route that avoids the `Serializer` on the P5-06 hot path, and moves about 4,600 lines into a new crate. Each part needs its own oracle, fuzz and conformance gate (4.6). Its naming also rests on Q2: the recommended `validate_instance`/`check_instance` pair gives the name `ModelManager::validate_instance` a new return type, which no deprecated alias can bridge. Until then the `instance` module keeps today's items (`ValidateOptions`, `DeserializeOptions`, `ValidationResult`, `ModelManager::validate_instance(_or_throw)`, `ClassDeclaration::validate_instance(_or_throw)`), none of which names a JS type. |
