@@ -20,6 +20,10 @@ autobenches = false
 # times the `ResourceValidator` walk alone (`instance::validate`), which is
 # part of the JS-compatibility seam, not the default API.
 accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
+# The JS object model (task P5-13, accordproject/concerto-rust#297):
+# `instance_validate`'s `from_json` times its `Serializer::from_json`, what
+# the WASM binding's `serializerFromJson` runs.
+concerto-core-js = { path = "../concerto-core-js" }
 # Not `{ workspace = true }`: this crate is intentionally not a workspace
 # member (see the root Cargo.toml), so workspace dependency inheritance
 # isn't available; this is a literal copy of the root's

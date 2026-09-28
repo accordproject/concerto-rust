@@ -264,14 +264,17 @@ fn visit_class_declaration_dispatch(
     let Some(own_fqn) = obj.get("$class").and_then(Value::as_str) else {
         return Err(not_resource_violation(p, declared_fqn, value));
     };
-    let own_fqn = own_fqn.to_string();
 
     // `toBeAssignedClassDeclaration = modelManager.getType(obj.getFullyQualifiedType())`
     // — bug fix (nested/abstract `$class` unchecked): every object's own
     // `$class`, at any depth, is resolved and checked here, not only the
-    // outermost one.
-    let to_be_assigned = match p.mm.get_declaration(&own_fqn) {
-        Ok(decl) => decl,
+    // outermost one. (`get_declaration`, keeping the handle, P5-13.)
+    let to_be_assigned_id = match p
+        .mm
+        .declaration_id(own_fqn)
+        .ok_or_else(|| Error::type_not_found(own_fqn.to_string()))
+    {
+        Ok(id) => id,
         // See `visit_map_value_class_declaration`'s doc.
         Err(_) if is_map_value => {
             return Err(not_resource_violation_with(p, declared_fqn, value, false));
@@ -279,12 +282,16 @@ fn visit_class_declaration_dispatch(
         Err(e) => {
             return Err(remap_type_not_found(
                 e,
-                &own_fqn,
+                own_fqn,
                 "modelmanager-gettype-notypeinns",
             ));
         }
     };
-    let to_be_assigned_fqn = own_fqn.clone();
+    let to_be_assigned = p
+        .mm
+        .declaration(to_be_assigned_id)
+        .expect("declaration_id returns a live handle");
+    let to_be_assigned_fqn = own_fqn;
     let Some(class) = to_be_assigned.as_class() else {
         // `obj` resolves to an enum/scalar/map `$class`: not a TS-reachable
         // path (a Resource is never constructed with one of those types),
@@ -296,9 +303,7 @@ fn visit_class_declaration_dispatch(
         )
         .into());
     };
-    let identifier_field_name =
-        p.mm.identifier_field(&to_be_assigned_fqn)
-            .map(|f| f.map(str::to_string))?;
+    let identifier_field_name = p.mm.identifier_field_of(to_be_assigned_id)?;
 
     // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
     // obj.getFullyQualifiedIdentifier(); }`. Every `obj` reaching this point
@@ -313,29 +318,28 @@ fn visit_class_declaration_dispatch(
     // `#id` suffix appears — [`fully_qualified_identifier`] carries that
     // part faithfully (an absent or empty identifier both fall back to the
     // bare fqn, exactly as a falsy `""`/`undefined` would in TS).
-    let own_id_field = identifier_field_name
-        .clone()
-        .unwrap_or_else(|| "$identifier".to_string());
-    let own_id = obj.get(&own_id_field).and_then(Value::as_str);
-    p.root_resource_identifier = fully_qualified_identifier(&own_fqn, own_id);
+    let own_id_field = identifier_field_name.unwrap_or("$identifier");
+    let own_id = obj.get(own_id_field).and_then(Value::as_str);
+    // Written into the existing buffer rather than a new string (P5-13).
+    write_fully_qualified_identifier(&mut p.root_resource_identifier, own_fqn, own_id);
 
     // `if(toBeAssignedClassDeclaration.isAbstract())` — bug fix (abstract
     // `$class` unchecked): this now runs for every nested object, not only
     // the root.
     if class.is_abstract() {
-        return Err(abstract_class(&to_be_assigned_fqn));
+        return Err(abstract_class(to_be_assigned_fqn));
     }
 
     // `let props = Object.getOwnPropertyNames(obj)` — bug fix (only the
     // direct super type was merged): `get_all_properties` walks the whole
     // chain, so a property declared two or more levels up is found.
-    let all_properties = p.mm.properties(&to_be_assigned_fqn)?;
-    let declared_is_identified = p.mm.is_identified(declared_fqn)?;
+    let all_properties = p.mm.class_properties_of(to_be_assigned_id)?;
+    let declared_is_identified = p.mm.identifier_field(declared_fqn)?.is_some();
     for key in obj.keys() {
         if model_util::is_system_property(key) {
             continue;
         }
-        if all_properties.iter().any(|(_, prop)| prop.name() == key) {
+        if all_properties.contains(key) {
             continue;
         }
         // `reportUndeclaredField(obj.getIdentifier(), ...)`: the *bare*
@@ -347,7 +351,6 @@ fn visit_class_declaration_dispatch(
         // not an empty string.
         let resource_id = if declared_is_identified && key != "$identifier" {
             let id = identifier_field_name
-                .as_deref()
                 .and_then(|f| obj.get(f))
                 .and_then(Value::as_str);
             js_id_display(id)
@@ -356,15 +359,13 @@ fn visit_class_declaration_dispatch(
                 .clone()
                 .unwrap_or_else(|| "undefined".to_string())
         };
-        return Err(undeclared_field(&resource_id, key, &to_be_assigned_fqn));
+        return Err(undeclared_field(&resource_id, key, to_be_assigned_fqn));
     }
 
-    // `if(classDeclaration.isIdentified())`.
-    if p.mm.is_identified(declared_fqn)? {
-        let id_field = identifier_field_name
-            .clone()
-            .unwrap_or_else(|| "$identifier".to_string());
-        let id = obj.get(&id_field).and_then(Value::as_str).unwrap_or("");
+    // `if(classDeclaration.isIdentified())`: the same answer as above.
+    if declared_is_identified {
+        let id_field = identifier_field_name.unwrap_or("$identifier");
+        let id = obj.get(id_field).and_then(Value::as_str).unwrap_or("");
         if id.trim().is_empty() {
             return Err(empty_identifier(&p.root_resource_identifier));
         }
@@ -372,7 +373,7 @@ fn visit_class_declaration_dispatch(
     }
 
     // `const properties = toBeAssignedClassDeclaration.getProperties();`
-    for (owner_fqn, property) in &all_properties {
+    for (owner_fqn, property) in all_properties.iter() {
         let value = obj.get(property.name());
         match value {
             Some(v) if !is_js_null(v) => {
@@ -381,7 +382,7 @@ fn visit_class_declaration_dispatch(
             _ => {
                 if !property.is_optional() {
                     if property.name() == "$identifier"
-                        && identifier_field_name.as_deref() != Some("$identifier")
+                        && identifier_field_name != Some("$identifier")
                     {
                         continue;
                     }
@@ -410,9 +411,18 @@ fn is_js_null(value: &Value) -> bool {
 /// absent identifier and an empty-string one (both falsy in JS) fall back to
 /// the bare fqn alike.
 fn fully_qualified_identifier(fqn: &str, id: Option<&str>) -> String {
-    match id {
-        Some(id) if !id.is_empty() => format!("{fqn}#{id}"),
-        _ => fqn.to_string(),
+    let mut out = String::new();
+    write_fully_qualified_identifier(&mut out, fqn, id);
+    out
+}
+
+/// [`fully_qualified_identifier`], replacing `out`'s contents.
+fn write_fully_qualified_identifier(out: &mut String, fqn: &str, id: Option<&str>) {
+    out.clear();
+    out.push_str(fqn);
+    if let Some(id) = id.filter(|id| !id.is_empty()) {
+        out.push('#');
+        out.push_str(id);
     }
 }
 
@@ -491,17 +501,17 @@ fn property_has_default_value(property: &Property) -> bool {
 /// What an `Object`-typed property's referenced declaration turns out to
 /// be, for the `isTypeEnum`/`isTypeScalar` dispatch `Property.accept` does
 /// in TS by calling through to the referenced declaration.
-enum ObjectTarget {
+enum ObjectTarget<'m> {
     /// TS: `field.isTypeEnum()` — the referenced declaration is an enum.
-    Enum(String),
+    Enum(&'m str),
     /// TS: `field.isTypeScalar()` (`Field.getScalarField`, ledger P2-04, not
     /// ported there — implemented here, since P3-01 needs it for full
     /// scalar support): the referenced declaration is a scalar.
-    Scalar(String),
+    Scalar(&'m str),
     /// The referenced declaration is itself a map.
-    Map(String),
+    Map(&'m str),
     /// An ordinary concept-like reference.
-    Class(String),
+    Class(&'m str),
 }
 
 /// Resolves what an `Object`-typed property points at, in the namespace of
@@ -509,14 +519,21 @@ enum ObjectTarget {
 ///
 /// TS: `Field.isTypeEnum`/`isTypeScalar`/`Property.getFullyQualifiedTypeName`
 /// (src/introspect/property.ts, field.ts).
-fn resolve_object_target(
-    mm: &ModelManager,
+fn resolve_object_target<'m>(
+    mm: &'m ModelManager,
     owner_fqn: &str,
     ti: &mm::TypeIdentifier,
-) -> Result<ObjectTarget> {
+) -> Result<ObjectTarget<'m>> {
     let namespace = model_util::get_namespace(Some(owner_fqn))?;
-    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None)?;
-    let decl = mm.get_declaration(&fqn)?;
+    let resolved = mm.resolve_type_name_at(namespace, &ti.name, None)?;
+    // `get_declaration(&resolved)`, keeping the handle for its name (P5-13).
+    let id = mm
+        .declaration_id(&resolved)
+        .ok_or_else(|| Error::type_not_found(resolved.clone()))?;
+    let decl = mm
+        .declaration(id)
+        .expect("declaration_id returns a live handle");
+    let fqn = mm.decl_fqn(id)?;
     Ok(if decl.is_enum_declaration() {
         ObjectTarget::Enum(fqn)
     } else if decl.is_scalar_declaration() {
@@ -578,12 +595,12 @@ fn visit_property(
 /// [`visit_field`]/[`check_item`] can share one body across every kind, the
 /// same way `checkItem`'s `if(field.isPrimitive())`/`else` does over the
 /// underlying declaration TS looks up separately at each call site.
-enum Kind {
+enum Kind<'m> {
     Primitive,
-    Enum(String),
-    Scalar(String),
-    MapTyped(String),
-    Class(String),
+    Enum(&'m str),
+    Scalar(&'m str),
+    MapTyped(&'m str),
+    Class(&'m str),
 }
 
 /// TS: `ResourceValidator.visitField` (resourcevalidator.ts:300), folding in
@@ -721,7 +738,7 @@ fn check_primitive_item(
     }
     // `if(field.getValidator() !== null) { field.getValidator().validate(...) }`.
     let elem = FieldElement::new(p.mm, owner_fqn, property);
-    let identifier = p.current_identifier.clone();
+    let identifier = p.current_identifier.as_deref();
     match property {
         Property::String(sp) => {
             if sp.validator.is_some() || sp.length_validator.is_some() {
@@ -731,7 +748,7 @@ fn check_primitive_item(
                     sp.length_validator.as_ref(),
                     None,
                 )?
-                .validate(&elem, identifier.as_deref(), value.as_str())?;
+                .validate(&elem, identifier, value.as_str())?;
             }
         }
         Property::Integer(ip) => {
@@ -739,7 +756,7 @@ fn check_primitive_item(
                 let ast = number_validator_ast(v.lower, v.upper);
                 NumberValidator::new(&elem, &ast)?.validate(
                     &elem,
-                    identifier.as_deref(),
+                    identifier,
                     value.as_f64(),
                 )?;
             }
@@ -749,7 +766,7 @@ fn check_primitive_item(
                 let ast = number_validator_ast(v.lower, v.upper);
                 NumberValidator::new(&elem, &ast)?.validate(
                     &elem,
-                    identifier.as_deref(),
+                    identifier,
                     value.as_f64(),
                 )?;
             }
@@ -759,7 +776,7 @@ fn check_primitive_item(
                 let ast = number_validator_ast(v.lower, v.upper);
                 NumberValidator::new(&elem, &ast)?.validate(
                     &elem,
-                    identifier.as_deref(),
+                    identifier,
                     value.as_f64(),
                 )?;
             }
@@ -1156,7 +1173,7 @@ fn check_object_item(
     }
     visit_class_declaration(
         p,
-        owner_fqn_for_object(property, declared_class_fqn).as_str(),
+        owner_fqn_for_object(property, declared_class_fqn),
         value,
     )
     .map_err(|e| retarget_not_resource(e, p, owner_fqn, property, value))
@@ -1166,8 +1183,8 @@ fn check_object_item(
 /// recursive `accept` call, so a `reportNotResouceViolation` names the
 /// *declared* type, not the value's own `$class`. `own_fqn_for_object` gives
 /// `visit_class_declaration` that same declared type.
-fn owner_fqn_for_object(_property: &Property, declared_class_fqn: &str) -> String {
-    declared_class_fqn.to_string()
+fn owner_fqn_for_object<'f>(_property: &Property, declared_class_fqn: &'f str) -> &'f str {
+    declared_class_fqn
 }
 
 /// `not_resource_violation` raised one recursion level down already carries
@@ -1300,11 +1317,7 @@ fn check_relationship(
     };
     let _ = target_class;
 
-    if p.mm
-        .identifier_field(&target_fqn)
-        .map(|f| f.map(str::to_string))?
-        .is_none()
-    {
+    if p.mm.identifier_field(&target_fqn)?.is_none() {
         return Err(ContractError::new(
             ErrorKind::InvalidArgument,
             "resourcevalidator-checkrelationship-notidentifiable",
@@ -2306,12 +2319,12 @@ fn collect_property(
             }
         }
         for (i, item) in items.iter().enumerate() {
-            collect_class_property_item(c, &class_fqn, item, &format!("{pointer}/{i}"));
+            collect_class_property_item(c, class_fqn, item, &format!("{pointer}/{i}"));
         }
         return;
     }
 
-    collect_class_property_item(c, &class_fqn, value, pointer);
+    collect_class_property_item(c, class_fqn, value, pointer);
 }
 
 /// One value behind a class-typed `Object` property (or one of its array

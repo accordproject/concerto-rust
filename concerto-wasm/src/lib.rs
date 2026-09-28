@@ -4645,6 +4645,24 @@ impl ModelManagerHandle {
         })
     }
 
+    /// [`Self::validate_ast`] over the AST alone (P5-13,
+    /// accordproject/concerto-rust#297): the JSON AST text is checked as it
+    /// is ([`concerto_core::ModelManager::validate_ast_value`]), without
+    /// first building a model file, which the check never reads and whose
+    /// own constructor would reject some malformed ASTs with an
+    /// `IllegalModelException` where TS's `validateAst` throws a
+    /// `MetamodelException`. The TS caller already holds the `ModelFile`.
+    /// Additive; malformed JSON throws a JS `SyntaxError`.
+    #[wasm_bindgen(js_name = validateAstValue)]
+    pub fn validate_ast_value(&mut self, ast: &str) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            Ok(self.manager.validate_ast_value(&value)?)
+        })
+    }
+
     /// The handle's own mutation counter (P5-06): bumped by every binding
     /// that can change this handle, and never reset, so anything a view
     /// read from the handle is still current while the epoch is unchanged.

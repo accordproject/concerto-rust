@@ -27,6 +27,11 @@ thiserror = { workspace = true }
 indexmap = "2"
 regress = "0.12"
 ryu-js = "1.0"
+# P5-13 (accordproject/concerto-rust#297): FxHash, a fast non-cryptographic
+# hasher, for the manager's and model files' internal lookup maps (namespace
+# and declaration names). None of them is ever iterated on an observable
+# path (PORTING.md 3.7).
+rustc-hash = "2"
 
 [features]
 # P6-01 (accordproject/concerto-rust#83, docs/public-api.md section 4.6):

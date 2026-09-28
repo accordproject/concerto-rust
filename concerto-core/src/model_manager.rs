@@ -32,8 +32,12 @@
 //! `Node` as its handle; `concerto-wasm` implements it over JS objects, for
 //! views a white-box test builds over stubbed collaborators (PORTING.md 1.4).
 
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::{Arc, Mutex};
+
+use rustc_hash::FxHashMap;
 
 use serde_json::Value;
 
@@ -266,12 +270,65 @@ struct FileSlot {
 }
 
 /// Where a declaration is: its model file, its position in
-/// [`ModelFile::declarations`], and the handles of its properties.
+/// [`ModelFile::declarations`], the handles of its properties, and its
+/// fully-qualified name (TS keeps it on the declaration, P5-13), built once
+/// when the file is registered.
 #[derive(Debug)]
 struct DeclSlot {
     model_file: ModelFileId,
     index: usize,
     properties: Range<u32>,
+    fqn: Box<str>,
+}
+
+/// The inheritance facts of one class-like or enum declaration, from its
+/// declaration handle up to its root (P5-13): what `super_chain`,
+/// `getProperties`, `getProperty` and `getIdentifierFieldName` walk on every
+/// call. It depends only on the registered files, so it is cached per
+/// declaration until they change ([`ModelManager::invalidate_caches`]).
+#[derive(Debug)]
+struct ClassInfo {
+    /// The declaration itself, then each super type up to the root.
+    chain: Box<[DeclId]>,
+    /// Every property along the chain, in `getProperties()` order.
+    properties: Box<[PropId]>,
+}
+
+/// A fact [`ModelManager::cached_instance_facts`] holds.
+type InstanceFacts = Arc<dyn Any + Send + Sync>;
+
+js_compat_pub! {
+    /// A borrowed view of every property of a class-like or enum
+    /// declaration, own and inherited (TS `getProperties()`), each with the
+    /// fully-qualified name of the declaration that declares it: the
+    /// allocation-free form of [`ModelManager::properties`] (P5-13).
+    #[derive(Clone)]
+    pub struct ClassProperties<'a> {
+        mm: &'a ModelManager,
+        info: Arc<ClassInfo>,
+    }
+}
+
+impl<'a> ClassProperties<'a> {
+    /// Each property with its declaring type's fully-qualified name, in
+    /// `getProperties()` order.
+    pub fn iter(&self) -> impl Iterator<Item = (&'a str, &'a Property)> + '_ {
+        let mm = self.mm;
+        self.info.properties.iter().map(move |id| {
+            mm.property_with_owner(*id)
+                .expect("a cached property handle is live")
+        })
+    }
+
+    /// The first property named `name` (TS `getProperty(name)`).
+    pub fn find(&self, name: &str) -> Option<(&'a str, &'a Property)> {
+        self.iter().find(|(_, p)| p.name() == name)
+    }
+
+    /// Whether a property named `name` exists.
+    pub fn contains(&self, name: &str) -> bool {
+        self.find(name).is_some()
+    }
 }
 
 /// Where a property is: its declaration, and its position in
@@ -301,7 +358,7 @@ js_compat_pub! {
 #[derive(Debug, Default)]
 pub struct ModelManager {
     files: Vec<FileSlot>,
-    namespaces: HashMap<String, ModelFileId>,
+    namespaces: FxHashMap<String, ModelFileId>,
     declarations: Vec<DeclSlot>,
     properties: Vec<PropSlot>,
     generation: u64,
@@ -324,12 +381,21 @@ pub struct ModelManager {
     /// metamodel ([`ModelManager::validate_ast`]) before its semantic
     /// validation. `false` (JS `undefined`) by default. Task P4-08b.
     metamodel_validation: bool,
-    /// [`ModelManager::super_chain`]'s successful answers, by the
-    /// fully-qualified name asked about (P5-06): a chain depends only on the
-    /// registered files, so it is cleared by every change to them
-    /// ([`ModelManager::invalidate_caches`]). A `Mutex` rather than a
-    /// `RefCell` so the manager stays `Sync`.
-    super_chain_cache: std::sync::Mutex<HashMap<String, Vec<(String, DeclId)>>>,
+    /// [`ClassInfo`]s computed so far, by declaration handle (P5-06, keyed
+    /// by declaration and extended with the property list in P5-13): an
+    /// answer depends only on the registered files, so the cache is cleared
+    /// by every change to them ([`ModelManager::invalidate_caches`]). Only
+    /// successful answers are kept. A `Mutex` rather than a `RefCell` so the
+    /// manager stays `Sync`.
+    class_cache: Mutex<Vec<Option<Arc<ClassInfo>>>>,
+    /// Per-declaration answers the instance layers cache with
+    /// [`ModelManager::cached_instance_facts`] (P5-13), by the fact's type
+    /// and the declaration; cleared with [`Self::class_cache`].
+    instance_cache: Mutex<FxHashMap<(TypeId, DeclId), InstanceFacts>>,
+    /// `generation + 1` when [`ModelManager::has_system_files_of`] last
+    /// found this manager's system model files to be the resident
+    /// metamodel manager's own (P5-13); 0 before any such check.
+    system_files_checked: std::sync::atomic::AtomicU64,
 }
 
 /// Options for [`ModelManager::ast`].
@@ -843,6 +909,7 @@ impl ModelManager {
                 model_file: file_id,
                 index,
                 properties: first..end,
+                fqn: qualify(model_file.namespace(), declaration.name()).into_boxed_str(),
             });
         }
         let first = next_index(self.declarations.len())?;
@@ -1035,32 +1102,125 @@ impl ModelManager {
     /// manager keeps `concerto.metamodel@1.0.0` (visible to
     /// `getModelFiles`, `getAst` and every later `validateAst`, which then
     /// finds it already there).
+    ///
+    /// Only the file's AST is read. When this manager does not hold the
+    /// metamodel, steps 2 to 4 first run against a resident manager that
+    /// holds it (P5-13, `validate_ast_value`), with the same outcome and the
+    /// same end state.
     pub fn validate_ast(&mut self, model_file: &ModelFile) -> Result<()> {
-        use crate::instance::metamodel::{
-            METAMODEL_NAMESPACE, check_version, deserialize_ast, metamodel_model_file,
-        };
-        check_version(model_file.ast())?;
-        let already_has_metamodel = self.model_file(METAMODEL_NAMESPACE).is_some();
-        let files_len = self.files.len();
-        let declarations_len = self.declarations.len();
-        let properties_len = self.properties.len();
-        if !already_has_metamodel {
-            self.insert(metamodel_model_file()?)?;
+        self.validate_ast_value(model_file.ast())
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::validate_ast`] over the AST itself (P5-13,
+        /// accordproject/concerto-rust#297): the check reads nothing of the
+        /// model file but its AST, so a caller that holds only the AST (the
+        /// concerto-wasm `validateAstValue` binding, whose TS caller already
+        /// holds the `ModelFile`) need not build one first. Building one
+        /// would also reject some ASTs with the `ModelFile` constructor's own
+        /// `IllegalModelException` (a missing `namespace`, `declarations`
+        /// that is not an array) before the check could throw TS's
+        /// `MetamodelException`.
+        ///
+        /// When this manager does not hold the metamodel, the structural
+        /// check first runs against a resident, per-thread manager that holds
+        /// it permanently, with its caches warm, so a document that passes
+        /// costs no metamodel registration, removal or cache clearing here;
+        /// `self` is then left exactly as TS's add-then-delete leaves it.
+        /// That answer is used only when it is a pass and this manager's
+        /// system model files are the resident's own: every type such a check
+        /// resolves is then in a namespace whose file is the same in both
+        /// managers, so the check in `self` passes too. Anything else — a
+        /// failure, or a manager whose system files were replaced or
+        /// removed — runs the check in `self`, as below, so the error, and
+        /// the metamodel left registered by a failure, are exactly TS's.
+        pub fn validate_ast_value(&mut self, ast: &Value) -> Result<()> {
+            use crate::instance::metamodel::{
+                METAMODEL_NAMESPACE, check_version, deserialize_ast, metamodel_model_file,
+            };
+            check_version(ast)?;
+            let already_has_metamodel = self.model_file(METAMODEL_NAMESPACE).is_some();
+            if !already_has_metamodel && self.passes_on_resident_metamodel(ast) {
+                return Ok(());
+            }
+            let files_len = self.files.len();
+            let declarations_len = self.declarations.len();
+            let properties_len = self.properties.len();
+            if !already_has_metamodel {
+                self.insert(metamodel_model_file()?)?;
+            }
+            deserialize_ast(self, ast)?;
+            if !already_has_metamodel {
+                // `deleteModelFile(MetaModelNamespace)`: the metamodel is the
+                // arena's tail (nothing else was added since step 2), so
+                // removing it is truncating each table back, as `add_models`'s
+                // rollback does; the removal is a mutation of its own.
+                self.files.truncate(files_len);
+                self.declarations.truncate(declarations_len);
+                self.properties.truncate(properties_len);
+                self.invalidate_caches();
+                self.namespaces.remove(METAMODEL_NAMESPACE);
+                self.generation += 1;
+            }
+            Ok(())
         }
-        deserialize_ast(self, model_file.ast())?;
-        if !already_has_metamodel {
-            // `deleteModelFile(MetaModelNamespace)`: the metamodel is the
-            // arena's tail (nothing else was added since step 2), so
-            // removing it is truncating each table back, as `add_models`'s
-            // rollback does; the removal is a mutation of its own.
-            self.files.truncate(files_len);
-            self.declarations.truncate(declarations_len);
-            self.properties.truncate(properties_len);
-            self.invalidate_caches();
-            self.namespaces.remove(METAMODEL_NAMESPACE);
-            self.generation += 1;
+    }
+
+    /// Whether `ast` passes the structural check on the resident metamodel
+    /// manager ([`ModelManager::validate_ast_value`]), when this manager's
+    /// system model files match that manager's. `false` also when the
+    /// resident manager cannot be built, so the caller's own path reports
+    /// that error.
+    fn passes_on_resident_metamodel(&self, ast: &Value) -> bool {
+        use crate::instance::metamodel::{deserialize_ast, metamodel_model_file};
+        thread_local! {
+            static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
+                const { std::cell::RefCell::new(None) };
         }
-        Ok(())
+        RESIDENT.with(|cell| {
+            let Ok(mut cell) = cell.try_borrow_mut() else {
+                return false;
+            };
+            if cell.is_none() {
+                let Ok(mut resident) = ModelManager::new() else {
+                    return false;
+                };
+                let Ok(metamodel) = metamodel_model_file() else {
+                    return false;
+                };
+                if resident.insert(metamodel).is_err() {
+                    return false;
+                }
+                *cell = Some(resident);
+            }
+            let Some(resident) = cell.as_ref() else {
+                return false;
+            };
+            self.has_system_files_of(resident) && deserialize_ast(resident, ast).is_ok()
+        })
+    }
+
+    /// Whether this manager holds the same decorator and root model files
+    /// as `other` (by AST, which is all a model file's lookups are built
+    /// from). Answered once per [`ModelManager::generation`].
+    fn has_system_files_of(&self, other: &ModelManager) -> bool {
+        use std::sync::atomic::Ordering;
+        // `generation + 1`, so that the default 0 means "not checked".
+        let checked = self.generation.wrapping_add(1);
+        if self.system_files_checked.load(Ordering::Relaxed) == checked {
+            return true;
+        }
+        let same = EXCLUDE_NS
+            .iter()
+            .all(|ns| match (self.model_file(ns), other.model_file(ns)) {
+                (Some(mine), Some(theirs)) => mine.ast() == theirs.ast(),
+                (None, None) => true,
+                _ => false,
+            });
+        if same {
+            self.system_files_checked.store(checked, Ordering::Relaxed);
+        }
+        same
     }
 
     /// TS `new ModelManager({ addMetamodel: true })` (`src/basemodelmanager.ts`
@@ -1403,15 +1563,37 @@ impl ModelManager {
     /// TS: `ClassDeclaration.getProperties`, with `Property.getParent()`.
     pub fn properties(&self, fqn: &str) -> Result<Vec<(String, &Property)>> {
         Ok(self
-            .super_chain(fqn)?
-            .into_iter()
-            .flat_map(|(owner, class)| {
-                class
-                    .own_properties()
-                    .iter()
-                    .map(move |property| (owner.clone(), property))
-            })
+            .class_properties(fqn)?
+            .iter()
+            .map(|(owner, property)| (owner.to_string(), property))
             .collect())
+    }
+
+    /// [`ModelManager::properties`], borrowed from the model (P5-13): the
+    /// same properties, owners, order and errors, with nothing copied.
+    pub(crate) fn class_properties(&self, fqn: &str) -> Result<ClassProperties<'_>> {
+        Ok(ClassProperties {
+            mm: self,
+            info: self.class_info(fqn)?,
+        })
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::properties`], borrowed from the model, for a
+        /// declaration handle (P5-13).
+        pub fn class_properties_of(&self, id: DeclId) -> Result<ClassProperties<'_>> {
+            Ok(ClassProperties {
+                mm: self,
+                info: self.class_info_of(id)?,
+            })
+        }
+    }
+
+    /// A property and the fully-qualified name of its declaration.
+    fn property_with_owner(&self, id: PropId) -> Option<(&str, &Property)> {
+        let slot = self.properties.get(id.slot())?;
+        let owner = self.declarations.get(slot.declaration.slot())?;
+        Some((&owner.fqn, self.property_by_id(id)?))
     }
 
     /// The property called `name`, own or inherited, with the
@@ -1419,12 +1601,10 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getProperty`.
     pub fn property(&self, fqn: &str, name: &str) -> Result<Option<(String, &Property)>> {
-        for (owner, class) in self.super_chain(fqn)? {
-            if let Some(property) = class.own_properties().iter().find(|p| p.name() == name) {
-                return Ok(Some((owner, property)));
-            }
-        }
-        Ok(None)
+        Ok(self
+            .class_properties(fqn)?
+            .find(name)
+            .map(|(owner, property)| (owner.to_string(), property)))
     }
 
     /// The property at a dotted `path` (`a.b.c`), following the declared type
@@ -1448,10 +1628,25 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getIdentifierFieldName`.
     pub fn identifier_field(&self, fqn: &str) -> Result<Option<&str>> {
-        Ok(self
-            .super_chain(fqn)?
-            .into_iter()
-            .find_map(|(_, class)| class.own_identifier_field_name()))
+        let info = self.class_info(fqn)?;
+        Ok(self.chain_identifier_field(&info))
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::identifier_field`] for a declaration handle (P5-13).
+        pub fn identifier_field_of(&self, id: DeclId) -> Result<Option<&str>> {
+            let info = self.class_info_of(id)?;
+            Ok(self.chain_identifier_field(&info))
+        }
+    }
+
+    /// The nearest identifying field along a cached chain.
+    fn chain_identifier_field(&self, info: &ClassInfo) -> Option<&str> {
+        info.chain.iter().find_map(|id| {
+            self.declaration(*id)
+                .and_then(ClassLike::from_declaration)
+                .and_then(|class| class.own_identifier_field_name())
+        })
     }
 
     /// Every loaded model's AST, in load order, in the metamodel's `Models`
@@ -1579,9 +1774,9 @@ impl ModelManager {
     /// TS: `ClassDeclaration.getProperties`.
     pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<&Property>> {
         Ok(self
-            .super_chain(fqn)?
-            .into_iter()
-            .flat_map(|(_, class)| class.own_properties().iter())
+            .class_properties(fqn)?
+            .iter()
+            .map(|(_, property)| property)
             .collect())
     }
 
@@ -1880,10 +2075,13 @@ impl ModelManager {
         }
         match self.get_declaration(sub_fqn)?.as_class() {
             None => Ok(false),
-            Some(_) => Ok(self
-                .super_chain(sub_fqn)?
-                .iter()
-                .any(|(fqn, _)| fqn == super_fqn)),
+            Some(_) => {
+                let info = self.class_info(sub_fqn)?;
+                Ok(info
+                    .chain
+                    .iter()
+                    .any(|id| self.decl_fqn(*id).is_ok_and(|fqn| fqn == super_fqn)))
+            }
         }
     }
 
@@ -1897,16 +2095,69 @@ impl ModelManager {
     /// again, returns the `RangeError` V8 raises (rule 2), after the same
     /// earlier checks: a missing or non-class super type still fails first.
     fn super_chain(&self, fqn: &str) -> Result<Vec<(String, ClassLike<'_>)>> {
-        if let Some(chain) = self.cached_super_chain(fqn) {
-            return Ok(chain);
-        }
-        let mut handles = Vec::new();
-        let mut chain = Vec::new();
-        let mut visited = HashSet::new();
-        let mut current = fqn.to_string();
+        let info = self.class_info(fqn)?;
+        info.chain
+            .iter()
+            .map(|id| {
+                let class = self
+                    .declaration(*id)
+                    .and_then(ClassLike::from_declaration)
+                    .ok_or_else(|| unknown(Node::Declaration(*id)))?;
+                Ok((self.decl_fqn(*id)?.to_string(), class))
+            })
+            .collect()
+    }
 
+    /// The handle `getType(fqn)` finds (TS `BaseModelManager.getType`): the
+    /// exact-name lookup when it succeeds, which is always
+    /// [`ModelManager::get_type_declaration`]'s answer too (a
+    /// fully-qualified name is never a primitive or an import's local
+    /// name), otherwise `get_type_declaration` itself, for its errors.
+    fn type_declaration_impl(&self, fqn: &str) -> Result<DeclId> {
+        match self.declaration_id(fqn) {
+            Some(id) => Ok(id),
+            None => self.get_type_declaration(fqn),
+        }
+    }
+
+    /// The cached [`ClassInfo`] of the declaration `fqn` names, resolved
+    /// the way `getType` does ([`ModelManager::type_declaration`]).
+    fn class_info(&self, fqn: &str) -> Result<Arc<ClassInfo>> {
+        self.class_info_of(self.type_declaration_impl(fqn)?)
+    }
+
+    js_compat_pub! {
+        /// TS `BaseModelManager.getType(qualifiedName)`'s handle, found by
+        /// the exact-name lookup first (P5-13): the same handle and errors
+        /// as [`ModelManager::get_type_declaration`].
+        pub fn type_declaration(&self, fqn: &str) -> Result<DeclId> {
+            self.type_declaration_impl(fqn)
+        }
+    }
+
+    /// The cached [`ClassInfo`] of a declaration, computed on first use.
+    ///
+    /// TS walks the chain by recursion (`ClassDeclaration.getProperties`,
+    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so a
+    /// cyclic chain overflows V8's stack. This walk is a loop with a
+    /// visited set (PORTING.md 2.5 rule 1) and, when it meets a declaration
+    /// again, returns the `RangeError` V8 raises (rule 2), after the same
+    /// earlier checks: a missing or non-class super type still fails first.
+    fn class_info_of(&self, id: DeclId) -> Result<Arc<ClassInfo>> {
+        {
+            let cache = match self.class_cache.lock() {
+                Ok(cache) => cache,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(Some(info)) = cache.get(id.slot()) {
+                return Ok(Arc::clone(info));
+            }
+        }
+        let mut chain = Vec::new();
+        let mut properties = Vec::new();
+        let mut current = id;
         loop {
-            if !visited.insert(current.clone()) {
+            if chain.contains(&current) {
                 // DV-013: TS has no cycle check here and overflows the stack.
                 return Err(ContractError::new(
                     ErrorKind::RecursionLimit,
@@ -1915,60 +2166,84 @@ impl ModelManager {
                 )
                 .into());
             }
-
-            // TS resolves each step of the chain the same way `getType`
-            // does (`this.modelManager.getType(this.superType)`,
-            // `ClassDeclaration.getSuperTypeDeclaration`), so an
-            // unregistered super-type namespace raises `getType`'s own
-            // `TypeNotFoundException` ("Namespace is not defined for type
-            // ...") rather than the internal, non-catalogued lookup
-            // `get_declaration` uses for exact-FQN handle resolution
-            // elsewhere in this file.
-            let decl_id = self.get_type_declaration(&current)?;
+            let current_fqn = self.decl_fqn(current)?;
             let declaration = self
-                .declaration(decl_id)
-                .ok_or_else(|| unknown(Node::Declaration(decl_id)))?;
+                .declaration(current)
+                .ok_or_else(|| unknown(Node::Declaration(current)))?;
             let class = ClassLike::from_declaration(declaration)
-                .ok_or_else(|| not_a_class_like(&current))?;
+                .ok_or_else(|| not_a_class_like(current_fqn))?;
 
-            let next = self.super_type_fqn(&class, namespace_of(&current))?;
-            handles.push((current.clone(), decl_id));
-            chain.push((current, class));
+            let next = self.super_type_fqn(&class, namespace_of(current_fqn))?;
+            chain.push(current);
+            properties.extend(self.property_ids(current));
             match next {
-                Some(parent) => current = parent,
+                // TS resolves each step of the chain the same way `getType`
+                // does (`this.modelManager.getType(this.superType)`,
+                // `ClassDeclaration.getSuperTypeDeclaration`), so an
+                // unregistered super-type namespace raises `getType`'s own
+                // `TypeNotFoundException` ("Namespace is not defined for type
+                // ...").
+                Some(parent) => current = self.type_declaration_impl(&parent)?,
                 None => break,
             }
         }
-
-        let mut cache = match self.super_chain_cache.lock() {
+        let info = Arc::new(ClassInfo {
+            chain: chain.into_boxed_slice(),
+            properties: properties.into_boxed_slice(),
+        });
+        let mut cache = match self.class_cache.lock() {
             Ok(cache) => cache,
             Err(poisoned) => poisoned.into_inner(),
         };
-        cache.insert(fqn.to_string(), handles);
-        Ok(chain)
+        if cache.len() <= id.slot() {
+            cache.resize(id.slot() + 1, None);
+        }
+        cache[id.slot()] = Some(Arc::clone(&info));
+        Ok(info)
     }
 
-    /// A [`ModelManager::super_chain`] answer cached since the last change
-    /// to the registered files, rebuilt from its declaration handles.
-    fn cached_super_chain(&self, fqn: &str) -> Option<Vec<(String, ClassLike<'_>)>> {
-        let cache = match self.super_chain_cache.lock() {
-            Ok(cache) => cache,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let handles = cache.get(fqn)?;
-        handles
-            .iter()
-            .map(|(name, id)| {
-                let class = ClassLike::from_declaration(self.declaration(*id)?)?;
-                Some((name.clone(), class))
-            })
-            .collect()
+    js_compat_pub! {
+        /// A per-declaration fact of an instance layer (P5-13): `compute`'s
+        /// answer for declaration `id`, computed on first use and then cached
+        /// until the registered files change, as the inheritance facts are.
+        /// The fact is named by its type `T`. An error is returned, and not
+        /// cached. The JS layer (`concerto-core-js`) caches its converted
+        /// field defaults here.
+        pub fn cached_instance_facts<T: Send + Sync + 'static>(
+            &self,
+            id: DeclId,
+            compute: impl FnOnce() -> Result<T>,
+        ) -> Result<Arc<T>> {
+            let key = (TypeId::of::<T>(), id);
+            {
+                let cache = match self.instance_cache.lock() {
+                    Ok(cache) => cache,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if let Some(facts) = cache.get(&key)
+                    && let Ok(facts) = Arc::clone(facts).downcast::<T>()
+                {
+                    return Ok(facts);
+                }
+            }
+            let facts = Arc::new(compute()?);
+            let mut cache = match self.instance_cache.lock() {
+                Ok(cache) => cache,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            cache.insert(key, Arc::clone(&facts) as InstanceFacts);
+            Ok(facts)
+        }
     }
 
     /// Drops every answer cached from the registered files (P5-06); called
     /// by every change to them.
     fn invalidate_caches(&mut self) {
-        match self.super_chain_cache.get_mut() {
+        match self.class_cache.get_mut() {
+            Ok(cache) => cache.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        match self.instance_cache.get_mut() {
             Ok(cache) => cache.clear(),
             Err(poisoned) => poisoned.into_inner().clear(),
         }
@@ -2041,13 +2316,18 @@ impl ModelManager {
     ///
     /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts)
     fn declaration_fqn(&self, id: DeclId) -> Result<String> {
-        let (Some(file), Some(declaration)) = (
-            self.model_file_of(id).and_then(|file| self.file(file)),
-            self.declaration(id),
-        ) else {
-            return Err(unknown(Node::Declaration(id)));
-        };
-        Ok(qualify(file.namespace(), declaration.name()))
+        self.decl_fqn(id).map(str::to_string)
+    }
+
+    js_compat_pub! {
+        /// A declaration's fully-qualified name, borrowed from the arena,
+        /// where [`ModelManager::insert`] built it once (P5-13).
+        pub fn decl_fqn(&self, id: DeclId) -> Result<&str> {
+            self.declarations
+                .get(id.slot())
+                .map(|slot| &*slot.fqn)
+                .ok_or_else(|| unknown(Node::Declaration(id)))
+        }
     }
 
     /// The AST node an element was built from, as TS keeps it in `ast`;

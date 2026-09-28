@@ -44,8 +44,8 @@ pub fn set_property_value(
         };
         validate::validate_property_value(
             mm,
-            &owner_fqn,
-            &field,
+            owner_fqn,
+            field,
             &value.to_validator_value(),
             instance.fully_qualified_identifier(),
             &instance.validator_options,
@@ -108,8 +108,8 @@ pub fn add_array_value(
         new_array.push(value.clone());
         validate::validate_property_value(
             mm,
-            &owner_fqn,
-            &field,
+            owner_fqn,
+            field,
             &JsValue::Array(new_array).to_validator_value(),
             instance.fully_qualified_identifier(),
             &instance.validator_options,
@@ -140,9 +140,7 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if instance.kind == InstanceKind::Relationship {
         return Ok(());
     }
-    if let Some(field) = mm
-        .identifier_field(&instance.class_fqn)
-        .map(|f| f.map(str::to_string))?
+    if let Some(field) = mm.identifier_field(&instance.class_fqn)?
         && field != "$identifier"
     {
         let id = instance.get_identifier().clone();

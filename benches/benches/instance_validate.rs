@@ -36,6 +36,8 @@
 
 use concerto_core::ModelManager;
 use concerto_core::instance::validate::{ValidateOptions, validate_instance};
+use concerto_core::instance::{InstanceEnv, ValidationOptions};
+use concerto_core_js::{JsValue, Serializer};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::{Value, json};
 
@@ -119,6 +121,19 @@ fn build_workload() -> (ModelManager, Vec<Value>) {
     (mgr, instances)
 }
 
+/// A fixed identifier and clock (D7): the bench model is identified by its
+/// own field and is not timestamped, so neither is read.
+struct FixedEnv;
+
+impl InstanceEnv for FixedEnv {
+    fn new_id(&mut self) -> String {
+        "00000000-0000-4000-8000-000000000000".into()
+    }
+    fn now_ms(&mut self) -> f64 {
+        0.0
+    }
+}
+
 fn benches(c: &mut Criterion) {
     let (mgr, instances) = build_workload();
     let options = ValidateOptions::default();
@@ -139,6 +154,41 @@ fn benches(c: &mut Criterion) {
             b.iter(|| {
                 for value in instances {
                     validate_instance(&mgr, value, &options).expect("instance validates");
+                }
+            });
+        },
+    );
+
+    // Task P5-13 (accordproject/concerto-rust#297): the Rust counterparts of
+    // TS's `Serializer#fromJSON` (populate, then `resource.validate()`),
+    // which the P3-01b serializer port now has: the JS layer's
+    // `Serializer::from_json` (concerto-core-js, what the WASM binding's
+    // `serializerFromJson` runs), and the native plain-JSON route,
+    // `ModelManager::validate_instance` (P6-01).
+    let serializer = Serializer::new(true, true, None).expect("a serializer");
+    let js_instances: Vec<JsValue> = instances.iter().map(JsValue::from_json).collect();
+    group.bench_with_input(
+        BenchmarkId::new("from_json", js_instances.len()),
+        &js_instances,
+        |b, js_instances| {
+            b.iter(|| {
+                for json in js_instances {
+                    serializer
+                        .from_json(&mgr, json, None, &mut FixedEnv)
+                        .expect("instance populates and validates");
+                }
+            });
+        },
+    );
+    let native = ValidationOptions::default();
+    group.bench_with_input(
+        BenchmarkId::new("validate_instance_native", instances.len()),
+        &instances,
+        |b, instances| {
+            b.iter(|| {
+                for json in instances {
+                    mgr.validate_instance(json, &native)
+                        .expect("instance populates and validates");
                 }
             });
         },

@@ -118,19 +118,26 @@ impl Instance {
         id: JsValue,
         timestamp: JsValue,
     ) -> Self {
+        let identifier_field_name =
+            identifier_field_name.unwrap_or_else(|| "$identifier".to_string());
         let mut instance = Self {
             kind,
             class_fqn: class_fqn.into(),
-            props: IndexMap::new(),
+            // The system properties below, then a few fields (P5-13: sized
+            // up front rather than grown).
+            props: IndexMap::with_capacity(8),
             validator_options: ValidateOptions::default(),
         };
         instance.set("$namespace", JsValue::String(namespace.to_string()));
         instance.set("$type", JsValue::String(type_name.to_string()));
         instance.set(
             "$identifierFieldName",
-            JsValue::String(identifier_field_name.unwrap_or_else(|| "$identifier".to_string())),
+            JsValue::String(identifier_field_name.clone()),
         );
-        instance.set_identifier(id);
+        // `setIdentifier(id)`, whose `this.$identifierFieldName` is the
+        // name just set.
+        instance.set("$identifier", id.clone());
+        instance.set(&identifier_field_name, id);
         instance.set("$timestamp", timestamp);
         if kind == InstanceKind::Relationship {
             // `this.$class = 'Relationship'`
@@ -147,7 +154,12 @@ impl Instance {
     /// `this[key] = value`: a new key goes last, an existing one keeps its
     /// place.
     pub fn set(&mut self, key: &str, value: JsValue) {
-        self.props.insert(key.to_string(), value);
+        match self.props.get_mut(key) {
+            Some(slot) => *slot = value,
+            None => {
+                self.props.insert(key.to_string(), value);
+            }
+        }
     }
 
     /// `this.$namespace` (TS `getNamespace()`), as JS `ToString`.
@@ -162,13 +174,20 @@ impl Instance {
 
     /// `this.$identifierFieldName`, as JS `ToString`.
     pub fn identifier_field_name(&self) -> String {
-        self.get("$identifierFieldName").to_js_string()
+        self.identifier_field_name_ref().into_owned()
+    }
+
+    /// [`Instance::identifier_field_name`], borrowed when it is a string.
+    fn identifier_field_name_ref(&self) -> std::borrow::Cow<'_, str> {
+        match self.get("$identifierFieldName") {
+            JsValue::String(name) => std::borrow::Cow::Borrowed(name),
+            other => std::borrow::Cow::Owned(other.to_js_string()),
+        }
     }
 
     /// TS `Identifiable.getIdentifier`: `this[this.$identifierFieldName]`.
     pub fn get_identifier(&self) -> &JsValue {
-        let field = self.identifier_field_name();
-        self.get(&field)
+        self.get(&self.identifier_field_name_ref())
     }
 
     /// TS `Identifiable.setIdentifier`: `this.$identifier = id;
@@ -239,10 +258,10 @@ impl Instance {
             "$superTypes",
             "$id",
         ];
-        let mut wire = serde_json::Map::new();
+        let mut wire = serde_json::Map::with_capacity(self.props.len() + 1);
         wire.insert("$class".to_string(), Value::String(self.class_fqn.clone()));
         for (key, value) in &self.props {
-            if PRIVATE_ONLY_KEYS.contains(&key.as_str()) {
+            if key.starts_with('$') && PRIVATE_ONLY_KEYS.contains(&key.as_str()) {
                 continue;
             }
             wire.insert(key.clone(), value.to_validator_value());

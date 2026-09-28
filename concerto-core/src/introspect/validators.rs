@@ -603,10 +603,15 @@ impl CollectionSizeValidator {
 /// over the source pattern and flags only, which is everything TS's
 /// `RegExp.toString()` (and so `compatibleWith`, which compares `pattern` and
 /// `flags` directly) ever observes.
+///
+/// The pattern, flags and engine are shared (P5-13): a validator is rebuilt
+/// for every string field an instance check visits, and every rebuild of the
+/// same `(pattern, flags)` reuses the one cached compilation
+/// ([`compile_regex`]) without copying either string.
 #[derive(Debug, Clone)]
 struct CompiledRegex {
-    pattern: String,
-    flags: String,
+    pattern: std::sync::Arc<str>,
+    flags: std::sync::Arc<str>,
     regex: std::sync::Arc<regress::Regex>,
 }
 
@@ -624,35 +629,54 @@ impl fmt::Display for CompiledRegex {
 }
 
 thread_local! {
-    /// Compiled `StringValidator` regexes by `(pattern, flags)` (P5-06): a
-    /// validator is rebuilt for every string field an instance check visits,
-    /// and `regress` compilation dominated that. Only successful
-    /// compilations are kept, so an error is always produced (and worded)
-    /// by a fresh compile, exactly as without the cache.
-    static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<(String, String), std::sync::Arc<regress::Regex>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Compiled `StringValidator` regexes by flags, then pattern (P5-06;
+    /// nested in P5-13 so that a lookup borrows both strings): a validator
+    /// is rebuilt for every string field an instance check visits, and
+    /// `regress` compilation dominated that. Only successful compilations
+    /// are kept, so an error is always produced (and worded) by a fresh
+    /// compile, exactly as without the cache.
+    static REGEX_CACHE: std::cell::RefCell<RegexCache> =
+        std::cell::RefCell::new(RegexCache::default());
 }
+
+/// [`REGEX_CACHE`]'s map: flags, then pattern, to the compiled regex.
+type RegexCache = rustc_hash::FxHashMap<Box<str>, rustc_hash::FxHashMap<Box<str>, CompiledRegex>>;
 
 /// The cache is cleared when it reaches this many entries, so a process
 /// that sees an unbounded stream of distinct patterns stays bounded.
 const REGEX_CACHE_LIMIT: usize = 1024;
 
 /// `regress::Regex::with_flags(pattern, flags)`, memoised in [`REGEX_CACHE`].
-fn compile_regex(
-    pattern: &str,
-    flags: &str,
-) -> std::result::Result<std::sync::Arc<regress::Regex>, regress::Error> {
-    let key = (pattern.to_string(), flags.to_string());
-    if let Some(regex) = REGEX_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+fn compile_regex(pattern: &str, flags: &str) -> std::result::Result<CompiledRegex, regress::Error> {
+    let cached = REGEX_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(flags)
+            .and_then(|by_pattern| by_pattern.get(pattern))
+            .cloned()
+    });
+    if let Some(regex) = cached {
         return Ok(regex);
     }
-    let regex = std::sync::Arc::new(regress::Regex::with_flags(pattern, flags)?);
+    let regex = CompiledRegex {
+        pattern: pattern.into(),
+        flags: flags.into(),
+        regex: std::sync::Arc::new(regress::Regex::with_flags(pattern, flags)?),
+    };
     REGEX_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.len() >= REGEX_CACHE_LIMIT {
+        if cache
+            .values()
+            .map(|by_pattern| by_pattern.len())
+            .sum::<usize>()
+            >= REGEX_CACHE_LIMIT
+        {
             cache.clear();
         }
-        cache.insert(key, regex.clone());
+        cache
+            .entry(flags.into())
+            .or_default()
+            .insert(pattern.into(), regex.clone());
     });
     Ok(regex)
 }
@@ -700,13 +724,20 @@ fn v8_regex_reason(regress_reason: &str) -> &str {
 /// PORTING.md section 3.2 ("Flags"): "With any other flag, the JS constructor
 /// throws `Invalid flags supplied to RegExp constructor '<flags>'`."
 fn valid_js_regex_flags(flags: &str) -> bool {
-    let mut seen = std::collections::HashSet::new();
+    const FLAGS: &str = "dgimsuvy";
+    // `u` and `v`: bits 5 and 6 of `FLAGS`.
+    const UNICODE_MODES: u8 = (1 << 5) | (1 << 6);
+    let mut seen = 0u8;
     for c in flags.chars() {
-        if !"dgimsuvy".contains(c) || !seen.insert(c) {
+        let Some(bit) = FLAGS.find(c) else {
+            return false;
+        };
+        if seen & (1 << bit) != 0 {
             return false;
         }
+        seen |= 1 << bit;
     }
-    !(seen.contains(&'u') && seen.contains(&'v'))
+    seen & UNICODE_MODES != UNICODE_MODES
 }
 
 /// A validator that enforces a string's length and/or that it matches a
@@ -804,11 +835,7 @@ impl StringValidator {
                         ));
                     }
                     match compile_regex(v.pattern.as_str(), v.flags.as_str()) {
-                        Ok(regex) => Some(CompiledRegex {
-                            pattern: v.pattern.clone(),
-                            flags: v.flags.clone(),
-                            regex,
-                        }),
+                        Ok(regex) => Some(regex),
                         Err(error) => {
                             // OD-4: V8's wording for the reasons `regress` can
                             // map (P2-08c review: this was reached only by
@@ -965,10 +992,10 @@ impl StringValidator {
         // engine, so two validators with no regex at all (`undefined !==
         // undefined` is `false`) are equal on this count.
         fn pattern(v: &Option<CompiledRegex>) -> Option<&str> {
-            v.as_ref().map(|r| r.pattern.as_str())
+            v.as_ref().map(|r| &*r.pattern)
         }
         fn flags(v: &Option<CompiledRegex>) -> Option<&str> {
-            v.as_ref().map(|r| r.flags.as_str())
+            v.as_ref().map(|r| &*r.flags)
         }
         if pattern(&self.regex) != pattern(&other.regex)
             || flags(&self.regex) != flags(&other.regex)

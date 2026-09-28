@@ -113,25 +113,27 @@ impl Serializer {
         };
         let class_declaration = model::get_type(mm, class_name)?;
         let ns = class_declaration.namespace();
-        let name = class_declaration.name().to_string();
+        let name = class_declaration.name();
         let id = match class_declaration.identifier_field_name()? {
-            Some(field) => get_property(json_object, &field)?,
+            Some(field) => get_property(json_object, field)?,
             None => get_property(json_object, "null")?,
         };
-        let ns_value = JsValue::String(ns.clone());
-        let name_value = JsValue::String(name.clone());
         let resource = if class_declaration.is_transaction() {
+            let ns_value = JsValue::String(ns.to_string());
+            let name_value = JsValue::String(name.to_string());
             factory::new_transaction(mm, &ns_value, &name_value, id, false, env)?
         } else if class_declaration.is_event() {
+            let ns_value = JsValue::String(ns.to_string());
+            let name_value = JsValue::String(name.to_string());
             factory::new_event(mm, &ns_value, &name_value, id, false, env)?
-        } else if class_declaration.is_concept() {
-            factory::new_resource(mm, &ns, &name, id, false, env)?
         } else if class_declaration.is_map_declaration() {
             return Err(plain_error("serializer-fromjson-mapnotsupported"));
         } else if class_declaration.is_enum() {
             return Err(plain_error("serializer-fromjson-enumnotsupported"));
         } else {
-            factory::new_resource(mm, &ns, &name, id, false, env)?
+            // A concept, or any other class declaration:
+            // `this.factory.newResource(ns, name, id)`.
+            factory::new_resource_of(&class_declaration, id, false, env)?
         };
 
         let populator_options = populator_options(&options);

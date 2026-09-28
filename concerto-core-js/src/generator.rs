@@ -179,22 +179,23 @@ impl<'a> Generator<'a> {
         }
         result.insert(
             "$class".to_string(),
-            JsValue::String(class_declaration.fqn()),
+            JsValue::String(class_declaration.fqn().to_string()),
         );
         if self.options.deduplicate_resources
             && let Some(id) = id.filter(|id| !id.is_empty())
         {
             result.insert("$id".to_string(), JsValue::String(id));
         }
-        for (owner_fqn, property) in
-            class_declaration.properties("classDeclaration.getProperties")?
+        for (owner_fqn, property) in class_declaration
+            .properties("classDeclaration.getProperties")?
+            .iter()
         {
-            let name = concerto_core::Named::name(&property).to_string();
+            let name = concerto_core::Named::name(property).to_string();
             let value = resource.get(&name).clone();
             if value.is_nullish() {
                 continue;
             }
-            let field = model::field(self.mm, &owner_fqn, property)?;
+            let field = model::field(self.mm, owner_fqn, property)?;
             let converted = match &field.field_type {
                 FieldType::Relationship(_) => {
                     self.visit_relationship_declaration(&field, &value)?
@@ -235,7 +236,7 @@ impl<'a> Generator<'a> {
                     }
                     JsValue::Instance(i) => Some(i.class_fqn.clone()),
                     _ => self.mm.model_file_fully_qualified_type_name(
-                        &map_declaration.namespace(),
+                        map_declaration.namespace(),
                         map.value_type_name(),
                     ),
                 };
@@ -309,7 +310,7 @@ impl<'a> Generator<'a> {
     /// [`convert_primitive`], a free function the concerto-wasm binding
     /// (P4-10, jsongenerator.ts) calls directly per field.
     fn convert_to_json(&mut self, field: &Field, obj: &JsValue) -> Result<JsValue> {
-        convert_primitive(&field.type_name(), obj, self.options)
+        convert_primitive(field.type_name(), obj, self.options)
     }
 
     /// TS: JSONGenerator.visitRelationshipDeclaration.
@@ -340,7 +341,7 @@ impl<'a> Generator<'a> {
                 return self.get_relationship_text(relationship, item);
             }
             self.seen_resources.insert(fqi.clone());
-            let declaration = model::get_type(self.mm, &relationship.fully_qualified_type_name())?;
+            let declaration = model::get_type(self.mm, relationship.fully_qualified_type_name())?;
             let result = self.accept_declaration(&declaration, item)?;
             self.seen_resources.remove(&fqi);
             return Ok(result);
@@ -357,7 +358,7 @@ impl<'a> Generator<'a> {
             return Err(plain_error(
                 "jsongenerator-getrelationshiptext-norelationship",
                 vec![
-                    ("type", relationship.fully_qualified_type_name()),
+                    ("type", relationship.fully_qualified_type_name().to_string()),
                     ("obj", item.to_js_string()),
                 ],
             ));
