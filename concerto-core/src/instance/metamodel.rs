@@ -4,9 +4,10 @@
 //! `P3-04+P4-08`): checking a Concerto AST document against the metamodel
 //! itself, rebuilt on [`super::validate`] (P3-01, the instance validator
 //! that folded in `concerto-validate-rs`'s structural check, plan decision
-//! D3) and [`super::deserialize::STRICT_VALIDATE_OPTIONS`] (P3-02,
-//! accordproject/concerto#1273's strictness preset — the doc comment on
-//! [`super::deserialize`] names this module as its intended P3-04 caller).
+//! D3) and accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS` (P3-02,
+//! the strictness preset). P6-01 (step 5) runs it on [`super::from_json`],
+//! `Serializer.fromJSON` over plain JSON, so that it does not depend on the
+//! JS object model (docs/public-api.md F8).
 //!
 //! **Scope (this task only).** The issue's plan gave `concerto-validate-rs`
 //! (D3) as the exit condition — "validate-rs tests pass on the new core" —
@@ -23,8 +24,8 @@
 //! `this.metamodelModelFile` so `getType` resolves it — is `SEAM_LEDGER.tsv`'s
 //! other half of this row. Task P4-08b (accordproject/concerto-rust#174)
 //! added it as [`ModelManager::validate_ast`] (with
-//! [`ModelManager::set_metamodel_validation`]), built on this module's
-//! [`check_version`], [`metamodel_model_file`] and [`deserialize_ast`].
+//! `ModelManager::set_metamodel_validation`), built on this module's
+//! `check_version`, `metamodel_model_file` and `deserialize_ast`.
 //!
 //! accordproject/concerto-rust#265 adds the two `src/introspect/metamodel.ts`
 //! functions the ledger also places here, [`validate_meta_model_instance`]
@@ -35,13 +36,10 @@
 
 use serde_json::Value;
 
-use super::deserialize::STRICT_VALIDATE_OPTIONS;
-use super::factory::InstanceEnv;
+use super::from_json::{FixedEnv, FromJsonOptions, from_json};
 use super::model::not_a_function;
-use super::serializer::Serializer;
-use super::value::JsValue;
 use crate::ecma;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
@@ -57,23 +55,6 @@ pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 /// addMetamodel: true })` adds), so this module vendors no copy of its own.
 const METAMODEL_AST_JSON: &str = include_str!("../dcs/metamodel.json");
 
-/// A fixed identifier and clock. None of the metamodel's own declarations
-/// (`Model`, `ConceptDeclaration`, `StringProperty`, and so on) are
-/// system-identified or timestamped, so [`validate_metamodel`] never reads
-/// either; this exists only because [`Serializer::from_json`] takes an
-/// [`InstanceEnv`] (D7: identifiers and the clock come from the caller, not
-/// the model).
-struct FixedEnv;
-
-impl InstanceEnv for FixedEnv {
-    fn new_id(&mut self) -> String {
-        "00000000-0000-4000-8000-000000000000".into()
-    }
-    fn now_ms(&mut self) -> f64 {
-        0.0
-    }
-}
-
 /// A fresh [`ModelManager`] with the metamodel model itself loaded. Built
 /// new on every call, the same way TS's `validateAst` adds
 /// `this.metamodelModelFile` only for the duration of the check (and only
@@ -84,22 +65,24 @@ fn metamodel_model_manager() -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    mm.add_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
+    mm.load_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
     Ok(mm)
 }
 
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
-/// own, already-constructed message. For a [`ConcertoError::Contract`] that
-/// is [`ContractError::final_message`] (the same text the native oracle
-/// harness compares, per its own doc comment); the other two variants
-/// predate the contract shape and are given the same fallback text
-/// `concerto-wasm`'s `From<ConcertoError> for Error` uses for them.
-fn ts_message(err: &ConcertoError) -> String {
-    match err {
-        ConcertoError::Contract(err) => err.final_message(),
-        ConcertoError::IllegalModel { message, .. } => message.clone(),
-        ConcertoError::TypeNotFound { type_name } => format!("type not found: {type_name}"),
+/// own, already-constructed message. For a catalogue error that is
+/// `ContractError::final_message` (the same text the native oracle harness
+/// compares, per its own doc comment); the two pre-port shapes
+/// (`Error::type_not_found`, `Error::illegal_model`) are given the message
+/// they carry to the binding.
+fn ts_message(err: &Error) -> String {
+    if let Some(message) = err.unported_illegal_model() {
+        return message.to_string();
     }
+    if let Some(type_name) = err.unported_type_not_found() {
+        return format!("type not found: {type_name}");
+    }
+    err.contract().final_message()
 }
 
 /// `BaseModelManager.validateAst`'s structural check:
@@ -115,18 +98,19 @@ fn ts_message(err: &ConcertoError) -> String {
 /// `catch` block does.
 pub fn validate_metamodel(ast: &Value) -> Result<()> {
     let mm = metamodel_model_manager()?;
-    let serializer = Serializer::new(true, true, None)?;
-    let options = STRICT_VALIDATE_OPTIONS.serializer_options();
-    let mut env = FixedEnv;
-    serializer
-        .from_json(&mm, &JsValue::from_json(ast), Some(&options), &mut env)
+    let options = FromJsonOptions {
+        reject_unknown_keys: true,
+        reject_required_null: true,
+        ..FromJsonOptions::default()
+    };
+    from_json(&mm, ast, &options, &mut FixedEnv)
         .map(|_resource| ())
         .map_err(|err| wrapped(&err))
 }
 
 /// `throw new MetamodelException(error.message)`: `validateAst`'s `catch`
 /// block.
-fn wrapped(err: &ConcertoError) -> ConcertoError {
+fn wrapped(err: &Error) -> Error {
     ContractError::new(
         ErrorKind::Metamodel,
         "basemodelmanager-validateast-wrapped",
@@ -174,16 +158,13 @@ pub(crate) fn metamodel_model_file() -> Result<ModelFile> {
 /// only a manager option `validate: false` would, and no
 /// `ModelManager` in this port carries a serializer option bag.
 pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
-    let serializer = Serializer::new(true, true, None)?;
-    let mut env = FixedEnv;
-    serializer
-        .from_json(mm, &JsValue::from_json(ast), None, &mut env)
+    from_json(mm, ast, &FromJsonOptions::default(), &mut FixedEnv)
         .map(|_resource| ())
         .map_err(|err| wrapped(&err))
 }
 
 /// `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`):
-/// the version check ([`check_version`]), then the structural check
+/// the version check (`check_version`), then the structural check
 /// ([`validate_metamodel`]).
 ///
 /// Unlike the TS reference, this takes the AST directly rather than a
@@ -191,7 +172,7 @@ pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
 /// `concerto-validate-rs` provided (module doc), not the `ModelFile`/
 /// `ModelManager` view integration (task P4-08). A missing or non-string
 /// `$class` fails the version check exactly as it does in TS
-/// ([`check_version`]'s doc), before any structural check runs.
+/// (`check_version`'s doc), before any structural check runs.
 pub fn validate_ast(ast: &Value) -> Result<()> {
     check_version(ast)?;
     validate_metamodel(ast)
@@ -216,11 +197,7 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
 /// beyond an error message's wording (error parity compares the class).
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
     let mm = metamodel_model_manager()?;
-    let serializer = Serializer::new(true, true, None)?;
-    let mut env = FixedEnv;
-    serializer
-        .from_json(&mm, &JsValue::from_json(input), None, &mut env)
-        .map(|_resource| ())
+    from_json(&mm, input, &FromJsonOptions::default(), &mut FixedEnv).map(|_resource| ())
 }
 
 /// TS `modelManagerFromMetaModel(metaModel, validate = true)`
@@ -234,7 +211,7 @@ pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
 ///    model, null, null)` and a validating `addModelFile(mf, null, null)`:
 ///    a namespace already registered is the already-exists error, otherwise
 ///    the new file alone is validated against the manager as it stands
-///    ([`ModelManager::validate_detached_model_file`]) before it is
+///    (`ModelManager::validate_detached_model_file`) before it is
 ///    registered;
 /// 4. `validateModelFiles()` over the whole manager.
 ///
@@ -246,9 +223,9 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
         validate_meta_model_instance(meta_model)?;
     }
     let mut mm = ModelManager::new()?;
-    let read_properties = |value: &str, property: &str| -> ConcertoError {
+    let read_properties = |value: &str, property: &str| -> Error {
         ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", value.to_string()),
@@ -327,9 +304,9 @@ pub(crate) fn check_version(ast: &Value) -> Result<()> {
 
 /// `ModelUtil.parseNamespace(ns).version`.
 fn namespace_version(ns: &str) -> Result<Option<String>> {
-    let ParsedNamespace::Full { version, .. } = model_util::parse_namespace(Some(ns), false)?
+    let ParsedNamespace::Full { version, .. } = model_util::parse_namespace_with(Some(ns), false)?
     else {
-        unreachable!("parse_namespace(_, false) always returns ParsedNamespace::Full")
+        unreachable!("parse_namespace_with(_, false) always returns ParsedNamespace::Full")
     };
     Ok(version)
 }
@@ -533,9 +510,7 @@ mod tests {
         );
 
         let mm = metamodel_model_manager().expect("metamodel model manager");
-        let serializer = Serializer::new(true, true, None).expect("serializer");
-        let mut env = FixedEnv;
-        let default_result = serializer.from_json(&mm, &JsValue::from_json(&ast), None, &mut env);
+        let default_result = from_json(&mm, &ast, &FromJsonOptions::default(), &mut FixedEnv);
         assert!(
             default_result.is_ok(),
             "the same null unknown property should be ignored under the \
@@ -565,7 +540,7 @@ mod tests {
             "declarations": []
         });
         let err = validate_ast(&ast).expect_err("an unknown metamodel version should fail");
-        let ConcertoError::Contract(contract) = err else {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(contract.kind, ErrorKind::Metamodel);
@@ -606,7 +581,7 @@ mod tests {
         assert!(!mm.metamodel_validation());
         mm.set_metamodel_validation(true);
         assert!(mm.metamodel_validation());
-        mm.add_model(
+        mm.load_model(
             &json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -666,7 +641,7 @@ mod tests {
         let err = mm
             .validate_ast(&mf)
             .expect_err("an undeclared property is invalid");
-        let ConcertoError::Contract(contract) = err else {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(contract.kind, ErrorKind::Metamodel);
@@ -702,7 +677,7 @@ mod tests {
         let err = mm
             .validate_ast(&mf)
             .expect_err("an unknown metamodel version");
-        let ConcertoError::Contract(contract) = err else {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(
@@ -737,7 +712,7 @@ mod tests {
                 err
             },
         ] {
-            let ConcertoError::Contract(contract) = err else {
+            let Some(contract) = err.ported().cloned() else {
                 panic!("expected a Contract error, got {err:?}");
             };
             assert_eq!(contract.kind, kind);
@@ -747,11 +722,27 @@ mod tests {
 
     #[test]
     fn validate_ast_without_a_class_is_an_invalid_fqn() {
-        assert_bad_class(None, ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!(null)), ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!("")), ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!(0)), ErrorKind::Error, "FQN is invalid.");
-        assert_bad_class(Some(json!(false)), ErrorKind::Error, "FQN is invalid.");
+        assert_bad_class(None, ErrorKind::InvalidArgument, "FQN is invalid.");
+        assert_bad_class(
+            Some(json!(null)),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
+        assert_bad_class(
+            Some(json!("")),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
+        assert_bad_class(
+            Some(json!(0)),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
+        assert_bad_class(
+            Some(json!(false)),
+            ErrorKind::InvalidArgument,
+            "FQN is invalid.",
+        );
     }
 
     #[test]
@@ -759,18 +750,18 @@ mod tests {
         for class in [json!(5), json!(true), json!({})] {
             assert_bad_class(
                 Some(class),
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "fqn.lastIndexOf is not a function",
             );
         }
         assert_bad_class(
             Some(json!(["."])),
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "fqn.substr is not a function",
         );
         assert_bad_class(
             Some(json!(["concerto.metamodel@1.0.0.Model"])),
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "Namespace is null or undefined.",
         );
     }
@@ -787,11 +778,8 @@ mod tests {
     // ---- accordproject/concerto-rust#265: `addMetamodel`,
     //      `validateMetaModel` and `modelManagerFromMetaModel` ----
 
-    fn kind_of(err: &ConcertoError) -> Option<ErrorKind> {
-        match err {
-            ConcertoError::Contract(contract) => Some(contract.kind),
-            _ => None,
-        }
+    fn kind_of(err: &Error) -> Option<ErrorKind> {
+        err.ported().map(|contract| contract.kind)
     }
 
     fn person_models() -> Value {
@@ -904,11 +892,11 @@ mod tests {
     fn model_manager_from_meta_model_without_models_is_a_type_error() {
         for doc in [json!({}), json!({"models": null}), json!(null)] {
             let err = model_manager_from_meta_model(&doc, false).expect_err("no models array");
-            assert_eq!(kind_of(&err), Some(ErrorKind::JsTypeError), "{doc}");
+            assert_eq!(kind_of(&err), Some(ErrorKind::MalformedInput), "{doc}");
         }
         let err = model_manager_from_meta_model(&json!({"models": "x"}), false)
             .expect_err("models is not an array");
-        assert_eq!(kind_of(&err), Some(ErrorKind::JsTypeError));
+        assert_eq!(kind_of(&err), Some(ErrorKind::MalformedInput));
     }
 
     #[test]

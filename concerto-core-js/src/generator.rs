@@ -6,35 +6,45 @@
 //! section 5 row 6) and every check it runs is here, one function per TS
 //! method, in the same order. `parameters.stack` pushes and pops become
 //! arguments; `parameters.seenResources` and `dedupeResources` are
-//! [`Generator`]'s sets.
+//! `Generator`'s sets.
 
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
 
-use super::dayjs::UtcOffset;
-use super::model::{self, Field, FieldType, TypeRef};
 use super::populator::read_properties_error;
-use super::value::{Instance, InstanceKind, JsValue};
-use crate::ConcertoError;
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::introspect::Declaration;
-use crate::model_manager::ModelManager;
-use crate::model_util;
+use crate::value::{Instance, InstanceKind, JsValue};
+use concerto_core::Error;
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::dayjs::UtcOffset;
+use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
+use concerto_core::introspect::Declaration;
+use concerto_core::model_manager::ModelManager;
+use concerto_core::model_util;
 
 /// The `JSONGenerator` constructor's options.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneratorOptions {
+    /// `convertResourcesToRelationships`: accept a resource in a
+    /// relationship field and write it as a relationship (its URI, or its
+    /// id with `convert_resources_to_id`).
     pub convert_resources_to_relationships: bool,
+    /// `permitResourcesForRelationships`: write a resource held by a
+    /// relationship field in full, as a nested object; a resource already
+    /// being written further up is written as a relationship instead.
     pub permit_resources_for_relationships: bool,
+    /// `deduplicateResources`: write an identifiable resource seen before in
+    /// the same document as its URI string.
     pub deduplicate_resources: bool,
+    /// `convertResourcesToId`: write a relationship as its bare identifier
+    /// rather than its URI.
     pub convert_resources_to_id: bool,
     /// `utcOffset || 0`.
     pub utc_offset: JsValue,
 }
 
-fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, params).into()
+fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// TS: `JSONGenerator.convertToJSON`'s body (task P4-10,
@@ -98,7 +108,7 @@ fn for_in_values(obj: &JsValue) -> Result<Vec<JsValue>> {
         | JsValue::Map(_) => Vec::new(),
         JsValue::DateTime(_) | JsValue::Instance(_) => {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "for...in over an object with its own enumerable state".to_string(),
                 None,
             )
@@ -110,7 +120,7 @@ fn for_in_values(obj: &JsValue) -> Result<Vec<JsValue>> {
 /// `obj.<method>(...)` on a value that is not an instance: V8's
 /// `TypeError`, `Cannot read properties of null/undefined` or `<expression>
 /// is not a function`.
-fn method_error(obj: &JsValue, expression: &str, method: &str) -> ConcertoError {
+fn method_error(obj: &JsValue, expression: &str, method: &str) -> Error {
     if obj.is_nullish() {
         read_properties_error(obj, method)
     } else {
@@ -179,7 +189,7 @@ impl<'a> Generator<'a> {
         for (owner_fqn, property) in
             class_declaration.properties("classDeclaration.getProperties")?
         {
-            let name = crate::Named::name(&property).to_string();
+            let name = concerto_core::Named::name(&property).to_string();
             let value = resource.get(&name).clone();
             if value.is_nullish() {
                 continue;

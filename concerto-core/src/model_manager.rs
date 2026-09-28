@@ -15,7 +15,7 @@
 //! [`PropId`]. A handle keeps naming the same element for the life of the
 //! manager, across every later call and mutation: loading a model only
 //! appends, and a handle is never reused. Looking an element up by its handle
-//! is an index into the arena, never a string hash. [`ModelManager::generation`]
+//! is an index into the arena, never a string hash. `ModelManager::generation`
 //! counts the mutations, so that a binding caching a snapshot of an element
 //! knows when to drop it (spike input on #41; PORTING.md 1.5).
 //!
@@ -28,8 +28,8 @@
 //! handles of the elements that stay remain valid.
 //!
 //! A ported member reaches its collaborators through the
-//! [`ResolutionContext`] trait. The manager implements it over the arena, with
-//! [`Node`] as its handle; `concerto-wasm` implements it over JS objects, for
+//! `ResolutionContext` trait. The manager implements it over the arena, with
+//! `Node` as its handle; `concerto-wasm` implements it over JS objects, for
 //! views a white-box test builds over stubbed collaborators (PORTING.md 1.4).
 
 use std::collections::{HashMap, HashSet};
@@ -39,14 +39,13 @@ use serde_json::Value;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
-use crate::introspect::declaration::{ClassDeclaration, Declaration, EnumDeclaration};
+use crate::error::{ContractError, Error, ErrorKind, Result};
+use crate::introspect::declaration::{ClassDeclaration, ClassKind, Declaration, EnumDeclaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
-use crate::introspect::{DeclarationKind, FullyQualified, Named, Typed};
+use crate::introspect::{DeclarationKind, FullyQualified};
 use crate::model_util::{
-    self, PRIMITIVE_TYPES, get_fully_qualified_name, get_namespace, get_short_name,
-    is_primitive_type,
+    self, PRIMITIVE_TYPES, get_namespace, is_primitive_type, namespace_of, qualify, short_name,
 };
 use crate::rootmodel::{decorator_model_ast, root_model_ast};
 
@@ -61,135 +60,133 @@ use crate::rootmodel::{decorator_model_ast, root_model_ast};
 /// namespace list.
 pub(crate) const EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
 
-/// The namespace part of a fully-qualified name, `""` when there is none.
-fn namespace_of(fqn: &str) -> &str {
-    // An empty name has no namespace; the loader looks it up and fails.
-    get_namespace(Some(fqn)).unwrap_or_default()
+js_compat_pub! {
+    /// The collaborator calls a ported member makes (PORTING.md 1.4).
+    ///
+    /// In TS, some members call other model objects: a model file, the model
+    /// manager, a parent declaration. The Rust port makes each such call through
+    /// this trait, so that core never knows whether it is talking to the arena or
+    /// to JS objects. Each method mirrors the TS method it replaces, with the same
+    /// name in snake case and the same failure.
+    ///
+    /// There are two implementations:
+    ///
+    /// - [`ModelManager`], over its arena, with [`Node`] as the handle. This is
+    ///   the real one: the Rust engine owns the graph.
+    /// - The JS-callback context in `concerto-wasm`, with a `JsValue` as the
+    ///   handle, for the collaborator fallback: a view that a white-box test builds
+    ///   over a stubbed collaborator, with no Rust-backed parent, resolves its
+    ///   collaborator calls by calling that collaborator back.
+    ///
+    /// The methods are only those a port needs; a port that needs another adds
+    /// it, naming the TS call it replaces.
+    pub trait ResolutionContext {
+        /// A handle to a model element: a model file, a declaration or a property.
+        type Node;
+        /// What a collaborator call can raise. The JS-callback context carries the
+        /// JS exception through unchanged.
+        type Error: From<ContractError>;
+
+        /// TS: ModelFile.getType (src/introspect/modelfile.ts). `type_name` is
+        /// `None` when TS passes `null` or `undefined`; the result is `None` when
+        /// TS returns a nullish value.
+        fn get_type(
+            &self,
+            model_file: &Self::Node,
+            type_name: Option<&str>,
+        ) -> std::result::Result<Option<Self::Node>, Self::Error>;
+
+        /// TS: ClassDeclaration.getAllSuperTypeDeclarations (src/introspect/classdeclaration.ts)
+        fn get_all_super_type_declarations(
+            &self,
+            declaration: &Self::Node,
+        ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
+
+        /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts)
+        fn get_fully_qualified_name(
+            &self,
+            declaration: &Self::Node,
+        ) -> std::result::Result<String, Self::Error>;
+
+        /// TS: Property.getFullyQualifiedTypeName (src/introspect/property.ts)
+        fn get_fully_qualified_type_name(
+            &self,
+            property: &Self::Node,
+        ) -> std::result::Result<String, Self::Error>;
+
+        /// TS: Property.getParent (src/introspect/property.ts)
+        fn get_parent(&self, property: &Self::Node) -> std::result::Result<Self::Node, Self::Error>;
+
+        /// TS: Declaration.getModelFile (src/introspect/declaration.ts)
+        fn get_model_file(
+            &self,
+            declaration: &Self::Node,
+        ) -> std::result::Result<Self::Node, Self::Error>;
+
+        /// TS: Property.getType (src/introspect/property.ts). `None` is a nullish
+        /// type, as an enum value has.
+        fn get_type_name(
+            &self,
+            property: &Self::Node,
+        ) -> std::result::Result<Option<String>, Self::Error>;
+
+        /// TS: Declaration.isEnum (src/introspect/declaration.ts)
+        fn is_enum(&self, declaration: &Self::Node) -> std::result::Result<bool, Self::Error>;
+
+        /// TS: `declaration.isMapDeclaration?.()`; `None` when the method is
+        /// missing.
+        fn is_map_declaration(
+            &self,
+            declaration: &Self::Node,
+        ) -> std::result::Result<Option<bool>, Self::Error>;
+
+        /// TS: `declaration.isScalarDeclaration?.()`; `None` when the method is
+        /// missing.
+        fn is_scalar_declaration(
+            &self,
+            declaration: &Self::Node,
+        ) -> std::result::Result<Option<bool>, Self::Error>;
+
+        /// TS: `declaration.ast.$class`; `None` when it is not a string.
+        fn get_ast_class(
+            &self,
+            declaration: &Self::Node,
+        ) -> std::result::Result<Option<String>, Self::Error>;
+
+        /// TS: ModelFile.getAllDeclarations (src/introspect/modelfile.ts)
+        fn get_all_declarations(
+            &self,
+            model_file: &Self::Node,
+        ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
+    }
 }
 
-/// The collaborator calls a ported member makes (PORTING.md 1.4).
-///
-/// In TS, some members call other model objects: a model file, the model
-/// manager, a parent declaration. The Rust port makes each such call through
-/// this trait, so that core never knows whether it is talking to the arena or
-/// to JS objects. Each method mirrors the TS method it replaces, with the same
-/// name in snake case and the same failure.
-///
-/// There are two implementations:
-///
-/// - [`ModelManager`], over its arena, with [`Node`] as the handle. This is
-///   the real one: the Rust engine owns the graph.
-/// - The JS-callback context in `concerto-wasm`, with a `JsValue` as the
-///   handle, for the collaborator fallback: a view that a white-box test builds
-///   over a stubbed collaborator, with no Rust-backed parent, resolves its
-///   collaborator calls by calling that collaborator back.
-///
-/// The methods are only those a port needs; a port that needs another adds
-/// it, naming the TS call it replaces.
-pub trait ResolutionContext {
-    /// A handle to a model element: a model file, a declaration or a property.
-    type Node;
-    /// What a collaborator call can raise. The JS-callback context carries the
-    /// JS exception through unchanged.
-    type Error: From<ContractError>;
+js_compat_pub! {
+    /// The field or scalar declaration a validator is attached to, as a validator
+    /// reads it (TS: `Validator.field`, typed `Property | ScalarDeclaration`).
+    ///
+    /// This stays its own trait rather than [`ResolutionContext`] methods on a
+    /// node (OD-12, settled in P1-04): TS builds a validator while it is
+    /// constructing the element the validator is attached to
+    /// (`ScalarDeclaration.process` runs in the constructor), before that element
+    /// is in the arena and has a handle. The validator reads only that one
+    /// element (PORTING.md 1.1, rule 9).
+    ///
+    /// Its [`FullyQualified`] name is TS
+    /// `this.getFieldOrScalarDeclaration().getFullyQualifiedName()`, read only
+    /// when an error is reported; its `Error` is what reading the element can
+    /// raise.
+    pub trait ValidatedElement: FullyQualified {
+        /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
+        fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
 
-    /// TS: ModelFile.getType (src/introspect/modelfile.ts). `type_name` is
-    /// `None` when TS passes `null` or `undefined`; the result is `None` when
-    /// TS returns a nullish value.
-    fn get_type(
-        &self,
-        model_file: &Self::Node,
-        type_name: Option<&str>,
-    ) -> std::result::Result<Option<Self::Node>, Self::Error>;
-
-    /// TS: ClassDeclaration.getAllSuperTypeDeclarations (src/introspect/classdeclaration.ts)
-    fn get_all_super_type_declarations(
-        &self,
-        declaration: &Self::Node,
-    ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
-
-    /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts)
-    fn get_fully_qualified_name(
-        &self,
-        declaration: &Self::Node,
-    ) -> std::result::Result<String, Self::Error>;
-
-    /// TS: Property.getFullyQualifiedTypeName (src/introspect/property.ts)
-    fn get_fully_qualified_type_name(
-        &self,
-        property: &Self::Node,
-    ) -> std::result::Result<String, Self::Error>;
-
-    /// TS: Property.getParent (src/introspect/property.ts)
-    fn get_parent(&self, property: &Self::Node) -> std::result::Result<Self::Node, Self::Error>;
-
-    /// TS: Declaration.getModelFile (src/introspect/declaration.ts)
-    fn get_model_file(
-        &self,
-        declaration: &Self::Node,
-    ) -> std::result::Result<Self::Node, Self::Error>;
-
-    /// TS: Property.getType (src/introspect/property.ts). `None` is a nullish
-    /// type, as an enum value has.
-    fn get_type_name(
-        &self,
-        property: &Self::Node,
-    ) -> std::result::Result<Option<String>, Self::Error>;
-
-    /// TS: Declaration.isEnum (src/introspect/declaration.ts)
-    fn is_enum(&self, declaration: &Self::Node) -> std::result::Result<bool, Self::Error>;
-
-    /// TS: `declaration.isMapDeclaration?.()`; `None` when the method is
-    /// missing.
-    fn is_map_declaration(
-        &self,
-        declaration: &Self::Node,
-    ) -> std::result::Result<Option<bool>, Self::Error>;
-
-    /// TS: `declaration.isScalarDeclaration?.()`; `None` when the method is
-    /// missing.
-    fn is_scalar_declaration(
-        &self,
-        declaration: &Self::Node,
-    ) -> std::result::Result<Option<bool>, Self::Error>;
-
-    /// TS: `declaration.ast.$class`; `None` when it is not a string.
-    fn get_ast_class(
-        &self,
-        declaration: &Self::Node,
-    ) -> std::result::Result<Option<String>, Self::Error>;
-
-    /// TS: ModelFile.getAllDeclarations (src/introspect/modelfile.ts)
-    fn get_all_declarations(
-        &self,
-        model_file: &Self::Node,
-    ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
-}
-
-/// The field or scalar declaration a validator is attached to, as a validator
-/// reads it (TS: `Validator.field`, typed `Property | ScalarDeclaration`).
-///
-/// This stays its own trait rather than [`ResolutionContext`] methods on a
-/// node (OD-12, settled in P1-04): TS builds a validator while it is
-/// constructing the element the validator is attached to
-/// (`ScalarDeclaration.process` runs in the constructor), before that element
-/// is in the arena and has a handle. The validator reads only that one
-/// element (PORTING.md 1.1, rule 9).
-///
-/// Its [`FullyQualified`] name is TS
-/// `this.getFieldOrScalarDeclaration().getFullyQualifiedName()`, read only
-/// when an error is reported; its `Error` is what reading the element can
-/// raise.
-pub trait ValidatedElement: FullyQualified {
-    /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
-    fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
-
-    /// TS: `field.getName()`. `StringValidator` and `CollectionSizeValidator`
-    /// (unlike `NumberValidator`) pass this as the identifier of every error
-    /// their constructor reports, and `StringValidator` passes it again as
-    /// the identifier for the `defaultValue` check it runs at load time
-    /// (P2-02).
-    fn name(&self) -> std::result::Result<String, Self::Error>;
+        /// TS: `field.getName()`. `StringValidator` and `CollectionSizeValidator`
+        /// (unlike `NumberValidator`) pass this as the identifier of every error
+        /// their constructor reports, and `StringValidator` passes it again as
+        /// the identifier for the `defaultValue` check it runs at load time
+        /// (P2-02).
+        fn name(&self) -> std::result::Result<String, Self::Error>;
+    }
 }
 
 /// Declares a handle type: a dense `u32` index into one of the arena's
@@ -201,16 +198,20 @@ macro_rules! handle {
         pub struct $name(u32);
 
         impl $name {
-            /// The handle with this raw index, as a binding gets it back from
-            /// JS. An index the manager never handed out names nothing: every
-            /// lookup of it answers `None` or an error.
-            pub const fn from_index(index: u32) -> Self {
-                Self(index)
+            js_compat_pub! {
+                /// The handle with this raw index, as a binding gets it back from
+                /// JS. An index the manager never handed out names nothing: every
+                /// lookup of it answers `None` or an error.
+                pub const fn from_index(index: u32) -> Self {
+                    Self(index)
+                }
             }
 
-            /// The raw index, as a binding passes it to JS (a plain number).
-            pub const fn index(self) -> u32 {
-                self.0
+            js_compat_pub! {
+                /// The raw index, as a binding passes it to JS (a plain number).
+                pub const fn index(self) -> u32 {
+                    self.0
+                }
             }
 
             /// The position in the arena table this handle indexes.
@@ -236,23 +237,25 @@ handle! {
     /// A handle to a property of a class declaration, or a value of an enum
     /// declaration (P2-04), loaded into a [`ModelManager`]. Both are
     /// [`Property`] values, addressed the same way, through the unified
-    /// [`ClassLike::own_properties`].
+    /// `ClassLike::own_properties`.
     PropId
 }
 
-/// A node of the model graph, as the manager's [`ResolutionContext`] hands
-/// it out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Node {
-    /// A loaded model file.
-    ModelFile(ModelFileId),
-    /// A declaration.
-    Declaration(DeclId),
-    /// A property of a class declaration.
-    Property(PropId),
-    /// A primitive type name. `ModelFile.getType` answers a primitive type
-    /// with its name, a JS string, rather than a declaration.
-    Primitive(&'static str),
+js_compat_pub! {
+    /// A node of the model graph, as the manager's [`ResolutionContext`] hands
+    /// it out.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Node {
+        /// A loaded model file.
+        ModelFile(ModelFileId),
+        /// A declaration.
+        Declaration(DeclId),
+        /// A property of a class declaration.
+        Property(PropId),
+        /// A primitive type name. `ModelFile.getType` answers a primitive type
+        /// with its name, a JS string, rather than a declaration.
+        Primitive(&'static str),
+    }
 }
 
 /// A loaded model file, and the handles of its declarations.
@@ -279,17 +282,19 @@ struct PropSlot {
     index: usize,
 }
 
-/// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
-/// `FileLoader` returns it, before it becomes a [`ModelFile`] —
-/// [`ModelManager::update_external_models`]' input.
-#[derive(Debug, Clone)]
-pub struct ModelFileSource {
-    /// The model's metamodel AST.
-    pub ast: Value,
-    /// Its CTO source text, when it has one.
-    pub definitions: Option<String>,
-    /// Its file name (a downloaded file's starts with `@`).
-    pub file_name: Option<String>,
+js_compat_pub! {
+    /// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
+    /// `FileLoader` returns it, before it becomes a [`ModelFile`] —
+    /// [`ModelManager::update_external_models`]' input.
+    #[derive(Debug, Clone)]
+    pub struct ModelFileSource {
+        /// The model's metamodel AST.
+        pub ast: Value,
+        /// Its CTO source text, when it has one.
+        pub definitions: Option<String>,
+        /// Its file name (a downloaded file's starts with `@`).
+        pub file_name: Option<String>,
+    }
 }
 
 /// Owns a set of model files and resolves types across them.
@@ -327,28 +332,90 @@ pub struct ModelManager {
     super_chain_cache: std::sync::Mutex<HashMap<String, Vec<(String, DeclId)>>>,
 }
 
+/// Options for [`ModelManager::ast`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AstOptions {
+    /// Resolve every type name to its declaring namespace
+    /// ([`ModelManager::resolve_meta_model`]).
+    pub resolve: bool,
+    /// Include the system models (`concerto@1.0.0` and
+    /// `concerto.decorator@1.0.0`).
+    pub include_system_models: bool,
+}
+
+/// Builds a [`ModelManager`] with options ([`ModelManager::builder`]).
+///
+/// TS: the `ModelManagerOptions` of the `ModelManager` constructor.
+#[derive(Debug, Clone, Default)]
+pub struct ModelManagerBuilder {
+    decorator_validation: crate::introspect::decorator::DecoratorValidationOptions,
+    metamodel_validation: bool,
+    allow_reserved_system_type_names: bool,
+}
+
+impl ModelManagerBuilder {
+    /// How unknown decorators and their arguments are reported (TS
+    /// `decoratorValidation`). By default they are not checked.
+    pub fn decorator_validation(
+        mut self,
+        options: crate::introspect::decorator::DecoratorValidationOptions,
+    ) -> Self {
+        self.decorator_validation = options;
+        self
+    }
+
+    /// Whether a model is checked against the metamodel before its semantic
+    /// validation (TS `metamodelValidation`). Off by default.
+    pub fn metamodel_validation(mut self, on: bool) -> Self {
+        self.metamodel_validation = on;
+        self
+    }
+
+    /// Whether a user model may declare a name it also imports from the
+    /// system namespace, when that name is one of the five reserved system
+    /// declarations (TS `dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+    /// a transitional escape hatch). Off by default.
+    pub fn allow_reserved_system_type_names(mut self, on: bool) -> Self {
+        self.allow_reserved_system_type_names = on;
+        self
+    }
+
+    /// A manager with these options and the system models loaded, as
+    /// [`ModelManager::new`] gives.
+    pub fn build(self) -> Result<ModelManager> {
+        let mut manager = ModelManager::new()?;
+        manager.decorator_validation = self.decorator_validation;
+        manager.metamodel_validation = self.metamodel_validation;
+        manager.dangerously_allow_reserved_system_type_names_in_user_models =
+            self.allow_reserved_system_type_names;
+        Ok(manager)
+    }
+}
+
 /// The next handle of an arena table holding `len` entries.
 ///
 /// A full arena is a Rust-only failure (PORTING.md 2.3): TS keeps its model
 /// graph in unbounded JS arrays and objects, so no TS class, message or
-/// fixture corresponds to it. It keeps the nearest existing variant,
-/// `ConcertoError::IllegalModel` (the model cannot be loaded), with no
+/// fixture corresponds to it. It keeps the nearest existing kind, a pre-port
+/// `IllegalModel` (`Error::illegal_model`: the model cannot be loaded), with no
 /// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
 /// TS class matches. Four billion elements is not a model anyone loads, but
 /// the boundary path must not panic.
 fn next_index(len: usize) -> Result<u32> {
-    u32::try_from(len).map_err(|_| ConcertoError::IllegalModel {
-        message: "the model manager cannot address any more elements".into(),
-        file_name: None,
-        location: None,
+    u32::try_from(len).map_err(|_| {
+        Error::illegal_model(
+            "the model manager cannot address any more elements",
+            None,
+            None,
+        )
     })
 }
 
 /// V8's `TypeError` for calling a method the receiver does not have.
 /// `expression` is the one the JS-callback context names for the same call.
-fn not_a_function(expression: &str) -> ConcertoError {
+fn not_a_function(expression: &str) -> Error {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
         vec![("expression", expression.to_string())],
     )
@@ -361,14 +428,12 @@ fn not_a_function(expression: &str) -> ConcertoError {
 /// passes object references, which cannot dangle or belong to another
 /// manager, so no TS class, message or fixture corresponds to it, and it
 /// can only arise from a bug in a caller holding handles (the binding, a
-/// harness). It keeps the nearest existing variant,
-/// `ConcertoError::TypeNotFound` (the handle names no element), with no
+/// harness). It keeps the nearest existing kind, a pre-port
+/// `TypeNotFound` (`Error::type_not_found`: the handle names no element), with no
 /// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
 /// TS class matches.
-fn unknown(node: Node) -> ConcertoError {
-    ConcertoError::TypeNotFound {
-        type_name: format!("{node:?}"),
-    }
+fn unknown(node: Node) -> Error {
+    Error::type_not_found(format!("{node:?}"))
 }
 
 /// The fully qualified name a short name is imported as, if it is imported.
@@ -384,7 +449,7 @@ fn imported_type(model_file: &ModelFile, type_name: &str) -> Option<String> {
             .into_iter()
             .zip(import.imported_names())
             .rfind(|(local, _)| *local == type_name)
-            .map(|(_, imported)| get_fully_qualified_name(import.namespace(), imported))
+            .map(|(_, imported)| qualify(import.namespace(), imported))
     })
 }
 
@@ -449,12 +514,12 @@ impl<'a> ClassLike<'a> {
 /// shape at all (neither extends `ClassDeclaration`), so no fixture or TS
 /// class corresponds to it (PORTING.md 2.3), the same as [`unknown`] and
 /// [`not_a_function`] above.
-fn not_a_class_like(fqn: &str) -> ConcertoError {
-    ConcertoError::IllegalModel {
-        message: format!("{fqn} is not a concept-like or enum declaration"),
-        file_name: None,
-        location: None,
-    }
+fn not_a_class_like(fqn: &str) -> Error {
+    Error::illegal_model(
+        format!("{fqn} is not a concept-like or enum declaration"),
+        None,
+        None,
+    )
 }
 
 /// TS `BaseModelManager._throwAlreadyExists(modelFile)` (basemodelmanager.ts):
@@ -465,11 +530,7 @@ fn not_a_class_like(fqn: &str) -> ConcertoError {
 /// name, when TS's caller has one to pass (`addModelFile`'s `modelFile`
 /// always does; `add_models`/`insert_models`' own per-model `file_name`
 /// argument might not).
-fn already_exists(
-    namespace: &str,
-    new_file_name: Option<&str>,
-    existing: &ModelFile,
-) -> ConcertoError {
+fn already_exists(namespace: &str, new_file_name: Option<&str>, existing: &ModelFile) -> Error {
     fn named(name: Option<&str>) -> Option<&str> {
         name.filter(|n| !n.is_empty())
     }
@@ -480,7 +541,7 @@ fn already_exists(
         .map(|n| format!(" in file {n}"))
         .unwrap_or_default();
     ContractError::new(
-        ErrorKind::Error,
+        ErrorKind::InvalidArgument,
         "basemodelmanager-throwalreadyexists",
         vec![
             ("namespace", namespace.to_string()),
@@ -527,7 +588,7 @@ impl ModelManager {
     /// then `this.addRootModel()` (src/basemodelmanager.ts), each of which
     /// builds a `ModelFile` from the vendored AST and adds it with
     /// `addModelFile(m, cto, fileName, true)` - validation disabled. The
-    /// arena's [`Self::insert`] never validates on load (that is a separate,
+    /// arena's `Self::insert` never validates on load (that is a separate,
     /// opt-in pass, [`crate::validation`]), so it already behaves as TS's
     /// `disableValidation = true` does for both models.
     pub fn new() -> Result<Self> {
@@ -547,10 +608,20 @@ impl ModelManager {
 
     /// Loads a model from its JSON AST. Loading two models with the same
     /// namespace is an error.
-    // TODO: The corresponding method in TS implementation accepts a CTO string and parses it.
-    // since we don't have a parser in this implementation, this shoul dbe `add_model_file`,
-    // or `add_model_ast` together with `add_model_file` that accepts `ModelFile` instance.
+    ///
+    /// Deprecated: TS `addModel` takes CTO text, so the name is kept free for
+    /// the CTO follow-up (docs/public-api.md section 5.2).
+    #[deprecated(since = "0.1.0", note = "use `add_model_ast`")]
     pub fn add_model(
+        &mut self,
+        value: &serde_json::Value,
+        file_name: Option<String>,
+    ) -> Result<()> {
+        self.load_model(value, file_name)
+    }
+
+    /// [`ModelManager::add_model`]'s load, for the crate's own callers.
+    pub(crate) fn load_model(
         &mut self,
         value: &serde_json::Value,
         file_name: Option<String>,
@@ -558,53 +629,59 @@ impl ModelManager {
         self.add_model_with_definitions(value, None, file_name)
     }
 
-    /// [`ModelManager::add_model`], keeping `definitions` — the CTO source
-    /// text, when the caller has it — as TS's `ModelFile.getDefinitions()`
-    /// does. `add_model` is this with `definitions: None`, which is every
-    /// call site but the oracle harness's own `addCTOModel`/`addModel`
-    /// replay (P2-08b, `ModelManager::get_models`'s only consumer so far):
-    /// TS's own `ctoProcessFile` always sets `definitions` to the input CTO
-    /// text (coerced to a string when it was not already one), so a model
-    /// loaded any other way in this port — a hand-built AST, `fromAst`, the
-    /// decorator and root models — has none either, matching TS's
-    /// `AstModelManager`/`astProcessFile`, whose `definitions` stays
-    /// `undefined`.
-    pub fn add_model_with_definitions(
-        &mut self,
-        value: &serde_json::Value,
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> Result<()> {
-        let mf = ModelFile::from_json_with_definitions(value, definitions, file_name)?;
-        self.add_loaded_model_file(mf)
+    js_compat_pub! {
+        /// [`ModelManager::add_model`], keeping `definitions` — the CTO source
+        /// text, when the caller has it — as TS's `ModelFile.getDefinitions()`
+        /// does. `add_model` is this with `definitions: None`, which is every
+        /// call site but the oracle harness's own `addCTOModel`/`addModel`
+        /// replay (P2-08b, `ModelManager::get_models`'s only consumer so far):
+        /// TS's own `ctoProcessFile` always sets `definitions` to the input CTO
+        /// text (coerced to a string when it was not already one), so a model
+        /// loaded any other way in this port — a hand-built AST, `fromAst`, the
+        /// decorator and root models — has none either, matching TS's
+        /// `AstModelManager`/`astProcessFile`, whose `definitions` stays
+        /// `undefined`.
+        pub fn add_model_with_definitions(
+            &mut self,
+            value: &serde_json::Value,
+            definitions: Option<String>,
+            file_name: Option<String>,
+        ) -> Result<()> {
+            let mf = ModelFile::from_json_with_definitions(value, definitions, file_name)?;
+            self.add_loaded_model_file(mf).map(drop)
+        }
     }
 
-    /// [`ModelManager::add_model_with_definitions`], taking ownership of the
-    /// AST so it is kept without being copied
-    /// ([`ModelFile::from_owned_json_with_definitions`], P5-06). Same
-    /// result, same errors, in the same order.
-    pub fn add_owned_model_with_definitions(
-        &mut self,
-        value: serde_json::Value,
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> Result<()> {
-        let mf = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
-        self.add_loaded_model_file(mf)
+    js_compat_pub! {
+        /// [`ModelManager::add_model_with_definitions`], taking ownership of the
+        /// AST so it is kept without being copied
+        /// ([`ModelFile::from_owned_json_with_definitions`], P5-06). Same
+        /// result, same errors, in the same order.
+        pub fn add_owned_model_with_definitions(
+            &mut self,
+            value: serde_json::Value,
+            definitions: Option<String>,
+            file_name: Option<String>,
+        ) -> Result<()> {
+            let mf = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
+            self.add_loaded_model_file(mf).map(drop)
+        }
     }
 
-    /// Adds an already-built model file, such as one
-    /// [`ModelFile::from_json_text`] read (P5-06c): the duplicate-namespace
-    /// check and registration [`ModelManager::add_model_with_definitions`]
-    /// runs once it has built the file itself.
-    pub fn add_model_file(&mut self, mf: ModelFile) -> Result<()> {
-        self.add_loaded_model_file(mf)
+    js_compat_pub! {
+        /// Adds an already-built model file, such as one
+        /// [`ModelFile::from_json_text`] read (P5-06c): the duplicate-namespace
+        /// check and registration [`ModelManager::add_model_with_definitions`]
+        /// runs once it has built the file itself.
+        pub fn add_model_file(&mut self, mf: ModelFile) -> Result<()> {
+            self.add_loaded_model_file(mf).map(drop)
+        }
     }
 
     /// The duplicate-namespace check and registration
     /// [`ModelManager::add_model_with_definitions`] runs once the file is
     /// loaded.
-    fn add_loaded_model_file(&mut self, mf: ModelFile) -> Result<()> {
+    fn add_loaded_model_file(&mut self, mf: ModelFile) -> Result<ModelFileId> {
         if let Some(existing) = self
             .namespaces
             .get(mf.namespace())
@@ -612,8 +689,18 @@ impl ModelManager {
         {
             return Err(already_exists(mf.namespace(), mf.file_name(), existing));
         }
-        self.insert(mf)?;
-        Ok(())
+        self.insert(mf)
+    }
+
+    /// Loads a batch of models irrespective of import order between them,
+    /// then validates the whole manager once; on any failure the batch has
+    /// no effect ([`ModelManager::add_model_asts`]).
+    #[deprecated(since = "0.1.0", note = "use `add_model_asts`")]
+    pub fn add_models<'a>(
+        &mut self,
+        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
+    ) -> Result<Vec<ModelFileId>> {
+        self.load_models(models)
     }
 
     /// Loads a batch of models irrespective of import order between them
@@ -632,7 +719,7 @@ impl ModelManager {
     /// `addModelFiles` (`basemodelmanager.ts`).
     ///
     /// TS: `BaseModelManager.addModelFiles`.
-    pub fn add_models<'a>(
+    pub(crate) fn load_models<'a>(
         &mut self,
         models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
     ) -> Result<Vec<ModelFileId>> {
@@ -773,9 +860,99 @@ impl ModelManager {
         Ok(file_id)
     }
 
-    /// A counter that every mutation of the manager increases. A snapshot of
-    /// an element taken at one generation is current while the generation is
-    /// unchanged.
+    /// A builder for a manager with options: decorator validation,
+    /// metamodel validation, and reserved system type names.
+    pub fn builder() -> ModelManagerBuilder {
+        ModelManagerBuilder::default()
+    }
+
+    /// Loads a model from its JSON AST (a `concerto.metamodel@1.0.0.Model`
+    /// document), named `file_name`, and returns its handle. The model is
+    /// checked for structure only: run [`ModelManager::validate_models`] once
+    /// every model is loaded. Loading two models with the same namespace is
+    /// an error.
+    ///
+    /// TS: `ModelManager.addModel` with an AST (`AstModelManager`), without
+    /// the validation it runs.
+    pub fn add_model_ast(
+        &mut self,
+        ast: &serde_json::Value,
+        file_name: Option<&str>,
+    ) -> Result<ModelFileId> {
+        let mf = ModelFile::from_json_with_definitions(ast, None, file_name.map(str::to_string))?;
+        self.add_loaded_model_file(mf)
+    }
+
+    /// [`ModelManager::add_model_ast`] for an AST given as JSON text: the
+    /// same result, read without building a `serde_json::Value` first
+    /// (P5-06d, accordproject/concerto-rust#239). Text that is not JSON is
+    /// an `IllegalModel` error.
+    pub fn add_model_ast_text(
+        &mut self,
+        json: &str,
+        file_name: Option<&str>,
+    ) -> Result<ModelFileId> {
+        let mf = ModelFile::from_json_text(json, None, file_name.map(str::to_string)).map_err(
+            |err| {
+                Error::illegal_model(
+                    format!("invalid JSON: {err}"),
+                    file_name.map(str::to_string),
+                    None,
+                )
+            },
+        )??;
+        self.add_loaded_model_file(mf)
+    }
+
+    /// Loads a batch of models irrespective of import order between them,
+    /// then validates the whole manager once ([`ModelManager::validate_models`]).
+    /// If loading or validation fails, the batch has no effect: every model
+    /// this call added is discarded and the error is returned. The handles
+    /// come back in the order of `models`.
+    ///
+    /// TS: `BaseModelManager.addModelFiles`.
+    pub fn add_model_asts<'a>(
+        &mut self,
+        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<&'a str>)>,
+    ) -> Result<Vec<ModelFileId>> {
+        self.load_models(
+            models
+                .into_iter()
+                .map(|(ast, file_name)| (ast, file_name.map(str::to_string))),
+        )
+    }
+
+    /// Replaces the loaded model with the same namespace as `ast`, in place,
+    /// and returns the new model's handle. As with
+    /// [`ModelManager::add_model_ast`], only the structure is checked. Every
+    /// handle this manager handed out before the call is invalid after it.
+    /// It is an error when no model with that namespace is loaded; the
+    /// manager is then unchanged.
+    ///
+    /// TS: `BaseModelManager.updateModelFile`, without the validation it runs.
+    pub fn update_model_ast(
+        &mut self,
+        ast: &serde_json::Value,
+        file_name: Option<&str>,
+    ) -> Result<ModelFileId> {
+        let mf = ModelFile::from_json(ast, file_name.map(str::to_string))?;
+        let namespace = mf.namespace().to_string();
+        *self = self.update_model_file(mf, false)?;
+        self.model_file_id(&namespace)
+            .ok_or_else(|| Error::type_not_found(namespace))
+    }
+
+    /// Removes the loaded model for `namespace`, in place. Every handle this
+    /// manager handed out before the call is invalid after it. It is an
+    /// error when no model with that namespace is loaded; the manager is
+    /// then unchanged.
+    ///
+    /// TS: `BaseModelManager.deleteModelFile`.
+    pub fn remove_model(&mut self, namespace: &str) -> Result<()> {
+        *self = self.delete_model_file(namespace)?;
+        Ok(())
+    }
+
     /// TS: `BaseModelManager.getDecoratorValidation`.
     pub fn decorator_validation(
         &self,
@@ -783,29 +960,35 @@ impl ModelManager {
         &self.decorator_validation
     }
 
-    /// Sets the decorator validation options, matching the TS constructor's
-    /// `options.decoratorValidation` (there is no separate TS setter; the
-    /// port exposes one so a manager already built can still opt in, as this
-    /// crate's own tests do).
-    pub fn set_decorator_validation(
-        &mut self,
-        options: crate::introspect::decorator::DecoratorValidationOptions,
-    ) {
-        self.decorator_validation = options;
+    js_compat_pub! {
+        /// Sets the decorator validation options, matching the TS constructor's
+        /// `options.decoratorValidation` (there is no separate TS setter; the
+        /// port exposes one so a manager already built can still opt in, as this
+        /// crate's own tests do).
+        pub fn set_decorator_validation(
+            &mut self,
+            options: crate::introspect::decorator::DecoratorValidationOptions,
+        ) {
+            self.decorator_validation = options;
+        }
     }
 
-    /// TS: `modelFile.getModelManager()?.options?.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
-    /// coerced with `Boolean(...)` (`Declaration.validate`, declaration.ts).
-    pub fn dangerously_allow_reserved_system_type_names_in_user_models(&self) -> bool {
-        self.dangerously_allow_reserved_system_type_names_in_user_models
+    js_compat_pub! {
+        /// TS: `modelFile.getModelManager()?.options?.dangerouslyAllowReservedSystemTypeNamesInUserModels`,
+        /// coerced with `Boolean(...)` (`Declaration.validate`, declaration.ts).
+        pub fn dangerously_allow_reserved_system_type_names_in_user_models(&self) -> bool {
+            self.dangerously_allow_reserved_system_type_names_in_user_models
+        }
     }
 
-    /// Sets the escape hatch above, matching the TS constructor's
-    /// `options.dangerouslyAllowReservedSystemTypeNamesInUserModels` (there is
-    /// no separate TS setter; the port exposes one the same way
-    /// [`Self::set_decorator_validation`] does).
-    pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
-        self.dangerously_allow_reserved_system_type_names_in_user_models = allow;
+    js_compat_pub! {
+        /// Sets the escape hatch above, matching the TS constructor's
+        /// `options.dangerouslyAllowReservedSystemTypeNamesInUserModels` (there is
+        /// no separate TS setter; the port exposes one the same way
+        /// [`Self::set_decorator_validation`] does).
+        pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+            self.dangerously_allow_reserved_system_type_names_in_user_models = allow;
+        }
     }
 
     /// TS: `this.options?.metamodelValidation`, as `addModelFile` reads it
@@ -814,22 +997,24 @@ impl ModelManager {
         self.metamodel_validation
     }
 
-    /// Sets the option above, matching the TS constructor's
-    /// `options.metamodelValidation` (there is no separate TS setter; the
-    /// port exposes one the same way [`Self::set_decorator_validation`]
-    /// does). This port's `add_model` never validates (validation is an
-    /// explicit step), so a caller replaying TS's validating `addModelFile`
-    /// runs [`Self::validate_ast`] when this is set, then the new file's
-    /// semantic validation ([`Self::validate_detached_model_file`]).
-    pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
-        self.metamodel_validation = metamodel_validation;
+    js_compat_pub! {
+        /// Sets the option above, matching the TS constructor's
+        /// `options.metamodelValidation` (there is no separate TS setter; the
+        /// port exposes one the same way [`Self::set_decorator_validation`]
+        /// does). This port's `add_model` never validates (validation is an
+        /// explicit step), so a caller replaying TS's validating `addModelFile`
+        /// runs [`Self::validate_ast`] when this is set, then the new file's
+        /// semantic validation (`Self::validate_detached_model_file`).
+        pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+            self.metamodel_validation = metamodel_validation;
+        }
     }
 
     /// TS `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`,
     /// task P4-08b): checks `model_file`'s AST against the metamodel,
     /// resolved through *this* manager.
     ///
-    /// 1. The version check ([`crate::instance::metamodel::check_version`]):
+    /// 1. The version check (`crate::instance::metamodel::check_version`):
     ///    a `MetamodelException` when the AST's `$class` names another
     ///    metamodel version (or none: "version null"), and `getNamespace`'s
     ///    own `Error`/`TypeError` when `$class` is missing or not a string.
@@ -839,7 +1024,7 @@ impl ModelManager {
     ///    (`this.addModelFile(this.metamodelModelFile, undefined,
     ///    MetaModelNamespace, true)`), so its types resolve.
     /// 3. `this.getSerializer().fromJSON(modelFile.getAst())`
-    ///    ([`crate::instance::metamodel::deserialize_ast`]); any failure is a
+    ///    (`crate::instance::metamodel::deserialize_ast`); any failure is a
     ///    `MetamodelException` with the underlying message.
     /// 4. On success, the metamodel file added in step 2 is removed again
     ///    (`this.deleteModelFile(MetaModelNamespace)`).
@@ -891,7 +1076,7 @@ impl ModelManager {
     /// already-exists error (TS `_throwAlreadyExists`) without any
     /// validation; otherwise, when [`Self::metamodel_validation`] is set, the
     /// metamodel file itself is checked with [`Self::validate_ast`], then its
-    /// semantic validation runs ([`Self::validate_detached_model_file`]), and
+    /// semantic validation runs (`Self::validate_detached_model_file`), and
     /// only then is it registered.
     pub fn add_metamodel(&mut self) -> Result<()> {
         let model_file = crate::instance::metamodel::metamodel_model_file()?;
@@ -904,8 +1089,13 @@ impl ModelManager {
         self.add_model_file(model_file)
     }
 
-    pub fn generation(&self) -> u64 {
-        self.generation
+    js_compat_pub! {
+        /// A counter that every mutation of the manager increases. A snapshot of
+        /// an element taken at one generation is current while the generation is
+        /// unchanged.
+        pub fn generation(&self) -> u64 {
+            self.generation
+        }
     }
 
     /// The loaded model file for a namespace, if there is one.
@@ -922,7 +1112,7 @@ impl ModelManager {
     /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
     /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`.
     /// `getModelFiles()` called with no argument excludes the built-in
-    /// decorator and root models ([`EXCLUDE_NS`]), so this searches the
+    /// decorator and root models (`EXCLUDE_NS`), so this searches the
     /// same filtered set, not [`model_files`]: the first loaded,
     /// non-system model file (registration order) whose `getName()`
     /// equals `file_name`, or `None` (JS `undefined`) if none does —
@@ -958,7 +1148,7 @@ impl ModelManager {
     /// The handle of a declaration, by its fully-qualified name. The lookup is
     /// exact, as [`ModelManager::get_declaration`]'s is.
     pub fn declaration_id(&self, fqn: &str) -> Option<DeclId> {
-        self.local_type(self.model_file_id(namespace_of(fqn))?, get_short_name(fqn))
+        self.local_type(self.model_file_id(namespace_of(fqn))?, short_name(fqn))
     }
 
     /// The model file a handle names.
@@ -972,123 +1162,318 @@ impl ModelManager {
         self.file(slot.model_file)?.declarations().get(slot.index)
     }
 
-    /// The property a handle names. Resolves through [`ClassLike`] so that
-    /// an enum's own values (P2-04), addressed the same as a class
-    /// declaration's fields (`insert`'s doc comment), resolve here too.
-    pub fn property(&self, id: PropId) -> Option<&Property> {
-        let slot = self.properties.get(id.slot())?;
-        ClassLike::from_declaration(self.declaration(slot.declaration)?)?
-            .own_properties()
-            .get(slot.index)
-    }
-
-    /// The handles of a model file's declarations, in the order they appear
-    /// in the file. None for a handle the manager never handed out.
-    pub fn declaration_ids(&self, file: ModelFileId) -> impl Iterator<Item = DeclId> + use<> {
-        self.files
-            .get(file.slot())
-            .map_or(0..0, |slot| slot.declarations.clone())
-            .map(DeclId)
-    }
-
-    /// Every class-like or enum declaration across every loaded model file
-    /// whose namespace is not in [`EXCLUDE_NS`], in file order and then
-    /// declaration order — a map or scalar declaration is left out, as is
-    /// the decorator and root models' own declarations (P2-08 review: this
-    /// previously iterated every loaded file, `EXCLUDE_NS` included, which
-    /// put system declarations like `Concept` into the result).
-    ///
-    /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
-    /// `modelFile.getAllDeclarations().filter(d =>
-    /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
-    /// over `modelManager.getModelFiles()` — which, called with no argument,
-    /// already leaves the system and decorator models out by their
-    /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
-    /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
-    /// [`Self::all_class_like`], which [`Self::get_assignable_class_declarations`]
-    /// and [`Self::get_direct_subclasses`] already search this same way.
-    pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
-        self.all_class_like().map(|(_, id)| id)
-    }
-
-    /// The handles of a class declaration's own properties, in the order they
-    /// are declared. None for any other declaration, or for a handle the
-    /// manager never handed out.
-    pub fn property_ids(&self, declaration: DeclId) -> impl Iterator<Item = PropId> + use<> {
-        self.declarations
-            .get(declaration.slot())
-            .map_or(0..0, |slot| slot.properties.clone())
-            .map(PropId)
-    }
-
-    /// The model file a declaration belongs to.
-    ///
-    /// TS: Declaration.getModelFile (src/introspect/declaration.ts)
-    pub fn model_file_of(&self, declaration: DeclId) -> Option<ModelFileId> {
-        self.declarations
-            .get(declaration.slot())
-            .map(|slot| slot.model_file)
-    }
-
-    /// The declaration a property belongs to.
-    ///
-    /// TS: Property.getParent (src/introspect/property.ts)
-    pub fn parent_of(&self, property: PropId) -> Option<DeclId> {
-        self.properties
-            .get(property.slot())
-            .map(|slot| slot.declaration)
-    }
-
-    /// A property's own `defaultValue`, read straight off its raw AST (P2-04).
-    ///
-    /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
-    /// `this.ast.defaultValue` regardless of the property's kind, with
-    /// `Util.isNull` treating a JSON `null` the same as an absent key. The
-    /// generated `mm::DateTimeProperty` carries no `defaultValue` field at
-    /// all (the official metamodel does not declare one there, unlike the
-    /// other five field kinds), so a typed per-variant read would silently
-    /// lose a `DateTime` field's default; reading the raw AST instead, the
-    /// same as TS, keeps it. `None` for a handle the manager never handed
-    /// out, matching every other `PropId` lookup here.
-    pub fn property_default_value(&self, id: PropId) -> Option<&Value> {
-        let slot = self.properties.get(id.slot())?;
-        self.declaration_ast(slot.declaration)?
-            .get("properties")?
-            .get(slot.index)?
-            .get("defaultValue")
-            .filter(|v| !v.is_null())
-    }
-
-    /// TS `BaseModelManager.getType(qualifiedName)` (basemodelmanager.ts):
-    /// the model file registered under the name's namespace, then that
-    /// file's own `getType(qualifiedName)`, each failure its own
-    /// `TypeNotFoundException` — `Namespace is not defined for type "<fqn>".`
-    /// when no file holds the namespace, `Type "<short>" is not defined in
-    /// namespace "<ns>".` when the file has no such type (P2-08 review).
-    pub fn get_type_declaration(&self, qualified_name: &str) -> Result<DeclId> {
-        let namespace = get_namespace(Some(qualified_name))?;
-        let Some(file) = self.model_file_id(namespace) else {
-            return Err(ContractError::type_not_found(
-                "modelmanager-gettype-noregisteredns",
-                vec![("type", qualified_name.to_string())],
-                qualified_name.to_string(),
-                None,
-            )
-            .into());
-        };
-        match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(qualified_name))? {
-            Some(Node::Declaration(id)) => Ok(id),
-            _ => Err(ContractError::type_not_found(
-                "modelmanager-gettype-notypeinns",
-                vec![
-                    ("type", get_short_name(qualified_name).to_string()),
-                    ("namespace", namespace.to_string()),
-                ],
-                qualified_name.to_string(),
-                None,
-            )
-            .into()),
+    js_compat_pub! {
+        /// The property a handle names. Resolves through `ClassLike` so that
+        /// an enum's own values (P2-04), addressed the same as a class
+        /// declaration's fields (`insert`'s doc comment), resolve here too.
+        pub fn property_by_id(&self, id: PropId) -> Option<&Property> {
+            let slot = self.properties.get(id.slot())?;
+            ClassLike::from_declaration(self.declaration(slot.declaration)?)?
+                .own_properties()
+                .get(slot.index)
         }
+    }
+
+    js_compat_pub! {
+        /// The handles of a model file's declarations, in the order they appear
+        /// in the file. None for a handle the manager never handed out.
+        pub fn declaration_ids(&self, file: ModelFileId) -> impl Iterator<Item = DeclId> + use<> {
+            self.files
+                .get(file.slot())
+                .map_or(0..0, |slot| slot.declarations.clone())
+                .map(DeclId)
+        }
+    }
+
+    js_compat_pub! {
+        /// Every class-like or enum declaration across every loaded model file
+        /// whose namespace is not in `EXCLUDE_NS`, in file order and then
+        /// declaration order — a map or scalar declaration is left out, as is
+        /// the decorator and root models' own declarations (P2-08 review: this
+        /// previously iterated every loaded file, `EXCLUDE_NS` included, which
+        /// put system declarations like `Concept` into the result).
+        ///
+        /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
+        /// `modelFile.getAllDeclarations().filter(d =>
+        /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
+        /// over `modelManager.getModelFiles()` — which, called with no argument,
+        /// already leaves the system and decorator models out by their
+        /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
+        /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
+        /// `Self::all_class_like`, which [`Self::get_assignable_class_declarations`]
+        /// and [`Self::get_direct_subclasses`] already search this same way.
+        pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
+            self.all_class_like().map(|(_, id)| id)
+        }
+    }
+
+    js_compat_pub! {
+        /// The handles of a class declaration's own properties, in the order they
+        /// are declared. None for any other declaration, or for a handle the
+        /// manager never handed out.
+        pub fn property_ids(&self, declaration: DeclId) -> impl Iterator<Item = PropId> + use<> {
+            self.declarations
+                .get(declaration.slot())
+                .map_or(0..0, |slot| slot.properties.clone())
+                .map(PropId)
+        }
+    }
+
+    js_compat_pub! {
+        /// The model file a declaration belongs to.
+        ///
+        /// TS: Declaration.getModelFile (src/introspect/declaration.ts)
+        pub fn model_file_of(&self, declaration: DeclId) -> Option<ModelFileId> {
+            self.declarations
+                .get(declaration.slot())
+                .map(|slot| slot.model_file)
+        }
+    }
+
+    js_compat_pub! {
+        /// The declaration a property belongs to.
+        ///
+        /// TS: Property.getParent (src/introspect/property.ts)
+        pub fn parent_of(&self, property: PropId) -> Option<DeclId> {
+            self.properties
+                .get(property.slot())
+                .map(|slot| slot.declaration)
+        }
+    }
+
+    js_compat_pub! {
+        /// A property's own `defaultValue`, read straight off its raw AST (P2-04).
+        ///
+        /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
+        /// `this.ast.defaultValue` regardless of the property's kind, with
+        /// `Util.isNull` treating a JSON `null` the same as an absent key. The
+        /// generated `mm::DateTimeProperty` carries no `defaultValue` field at
+        /// all (the official metamodel does not declare one there, unlike the
+        /// other five field kinds), so a typed per-variant read would silently
+        /// lose a `DateTime` field's default; reading the raw AST instead, the
+        /// same as TS, keeps it. `None` for a handle the manager never handed
+        /// out, matching every other `PropId` lookup here.
+        pub fn property_default_value(&self, id: PropId) -> Option<&Value> {
+            let slot = self.properties.get(id.slot())?;
+            self.declaration_ast(slot.declaration)?
+                .get("properties")?
+                .get(slot.index)?
+                .get("defaultValue")
+                .filter(|v| !v.is_null())
+        }
+    }
+
+    js_compat_pub! {
+        /// TS `BaseModelManager.getType(qualifiedName)` (basemodelmanager.ts):
+        /// the model file registered under the name's namespace, then that
+        /// file's own `getType(qualifiedName)`, each failure its own
+        /// `TypeNotFoundException` — `Namespace is not defined for type "<fqn>".`
+        /// when no file holds the namespace, `Type "<short>" is not defined in
+        /// namespace "<ns>".` when the file has no such type (P2-08 review).
+        pub fn get_type_declaration(&self, qualified_name: &str) -> Result<DeclId> {
+            let namespace = get_namespace(Some(qualified_name))?;
+            let Some(file) = self.model_file_id(namespace) else {
+                return Err(ContractError::type_not_found(
+                    "modelmanager-gettype-noregisteredns",
+                    vec![("type", qualified_name.to_string())],
+                    qualified_name.to_string(),
+                    None,
+                )
+                .into());
+            };
+            match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(qualified_name))? {
+                Some(Node::Declaration(id)) => Ok(id),
+                _ => Err(ContractError::type_not_found(
+                    "modelmanager-gettype-notypeinns",
+                    vec![
+                        ("type", short_name(qualified_name).to_string()),
+                        ("namespace", namespace.to_string()),
+                    ],
+                    qualified_name.to_string(),
+                    None,
+                )
+                .into()),
+            }
+        }
+    }
+
+    /// Every declaration of every loaded model file, the system models
+    /// included, with its fully-qualified name: files in load order, then
+    /// declarations in AST order.
+    pub fn declarations(&self) -> impl Iterator<Item = (String, &Declaration)> {
+        self.model_files().flat_map(|mf| {
+            mf.declarations()
+                .iter()
+                .map(move |declaration| (qualify(mf.namespace(), declaration.name()), declaration))
+        })
+    }
+
+    /// The class declarations of one kind, with their fully-qualified names,
+    /// across the user models (the system models left out), in load order.
+    /// The kind is matched exactly, not through inheritance.
+    ///
+    /// TS: `BaseModelManager.getAssetDeclarations`, `getConceptDeclarations`
+    /// and the other `get<Kind>Declarations`.
+    pub fn class_declarations_of_kind(
+        &self,
+        kind: ClassKind,
+    ) -> impl Iterator<Item = (String, &ClassDeclaration)> {
+        self.user_model_files().flat_map(move |mf| {
+            mf.declarations().iter().filter_map(move |declaration| {
+                let class = declaration.as_class()?;
+                (class.kind() == kind).then(|| (qualify(mf.namespace(), class.name()), class))
+            })
+        })
+    }
+
+    /// The enum declarations of the user models (the system models left
+    /// out), with their fully-qualified names, in load order.
+    ///
+    /// TS: `BaseModelManager.getEnumDeclarations`.
+    pub fn enum_declarations(&self) -> impl Iterator<Item = (String, &EnumDeclaration)> {
+        self.user_model_files().flat_map(|mf| {
+            mf.declarations()
+                .iter()
+                .filter_map(move |declaration| match declaration {
+                    Declaration::Enum(e) => Some((qualify(mf.namespace(), e.name()), e)),
+                    Declaration::Class(_) | Declaration::Scalar(_) | Declaration::Map(_) => None,
+                })
+        })
+    }
+
+    /// The loaded model files outside `EXCLUDE_NS`, in load order: what TS's
+    /// `getModelFiles()` returns.
+    fn user_model_files(&self) -> impl Iterator<Item = &ModelFile> {
+        self.model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+    }
+
+    /// The direct super type of the concept-like or enum type `fqn`, with its
+    /// fully-qualified name, or `None` when it has none (only the system
+    /// `Concept`).
+    ///
+    /// TS: `ClassDeclaration.getSuperTypeDeclaration`.
+    pub fn super_type(&self, fqn: &str) -> Result<Option<(String, &Declaration)>> {
+        let Some(super_fqn) = self.super_type_name(fqn)? else {
+            return Ok(None);
+        };
+        let declaration = self.get_declaration(&super_fqn)?;
+        Ok(Some((super_fqn, declaration)))
+    }
+
+    /// Every super type of `fqn`, from its direct super type up to the root,
+    /// with their fully-qualified names. A cyclic chain is a
+    /// `RecursionLimit` error.
+    ///
+    /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`.
+    pub fn super_types(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>> {
+        self.with_declarations(self.super_type_names(fqn)?)
+    }
+
+    /// The declarations that directly extend `fqn`, with their
+    /// fully-qualified names, in load order.
+    ///
+    /// TS: `ClassDeclaration.getDirectSubclasses`.
+    pub fn subclasses(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>> {
+        self.with_declarations(self.direct_subclass_names(fqn)?)
+    }
+
+    /// `fqn` itself and every declaration that transitively extends it, with
+    /// their fully-qualified names: what a value of type `fqn` can be.
+    ///
+    /// TS: `ClassDeclaration.getAssignableClassDeclarations`.
+    pub fn assignable_types(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>> {
+        self.with_declarations(self.assignable_type_names(fqn)?)
+    }
+
+    /// Each name, with its declaration.
+    fn with_declarations(&self, names: Vec<String>) -> Result<Vec<(String, &Declaration)>> {
+        names
+            .into_iter()
+            .map(|name| {
+                let declaration = self.get_declaration(&name)?;
+                Ok((name, declaration))
+            })
+            .collect()
+    }
+
+    /// The properties declared directly on the concept-like or enum type
+    /// `fqn` (for an enum, its values), not those it inherits.
+    ///
+    /// TS: `ClassDeclaration.getOwnProperties`.
+    pub fn own_properties(&self, fqn: &str) -> Result<&[Property]> {
+        let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
+            .ok_or_else(|| not_a_class_like(fqn))?;
+        Ok(class.own_properties())
+    }
+
+    /// Every property of `fqn`, own and inherited, with the fully-qualified
+    /// name of the declaration that declares each: the type's own first,
+    /// then each super type's up to the root. It is an error when `fqn` is
+    /// not a concept-like or enum type, a super type cannot be resolved, or
+    /// the chain is cyclic (`RecursionLimit`).
+    ///
+    /// TS: `ClassDeclaration.getProperties`, with `Property.getParent()`.
+    pub fn properties(&self, fqn: &str) -> Result<Vec<(String, &Property)>> {
+        Ok(self
+            .super_chain(fqn)?
+            .into_iter()
+            .flat_map(|(owner, class)| {
+                class
+                    .own_properties()
+                    .iter()
+                    .map(move |property| (owner.clone(), property))
+            })
+            .collect())
+    }
+
+    /// The property called `name`, own or inherited, with the
+    /// fully-qualified name of the declaration that declares it, or `None`.
+    ///
+    /// TS: `ClassDeclaration.getProperty`.
+    pub fn property(&self, fqn: &str, name: &str) -> Result<Option<(String, &Property)>> {
+        for (owner, class) in self.super_chain(fqn)? {
+            if let Some(property) = class.own_properties().iter().find(|p| p.name() == name) {
+                return Ok(Some((owner, property)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The property at a dotted `path` (`a.b.c`), following the declared type
+    /// of each property but the last, with the fully-qualified name of the
+    /// declaration that declares it.
+    ///
+    /// TS: `ClassDeclaration.getNestedProperty`.
+    pub fn property_path(&self, fqn: &str, path: &str) -> Result<(String, &Property)> {
+        let (owner, found) = self.nested_property(fqn, path)?;
+        let property = self
+            .own_properties(&owner)?
+            .iter()
+            .find(|p| p.name() == found.name())
+            .ok_or_else(|| Error::type_not_found(qualify(&owner, found.name())))?;
+        Ok((owner, property))
+    }
+
+    /// The name of the field that identifies instances of `fqn`: its own
+    /// (an `identified by` field, or `$identifier` for `identified`), or its
+    /// nearest super type's. `None` when nothing in the chain declares one.
+    ///
+    /// TS: `ClassDeclaration.getIdentifierFieldName`.
+    pub fn identifier_field(&self, fqn: &str) -> Result<Option<&str>> {
+        Ok(self
+            .super_chain(fqn)?
+            .into_iter()
+            .find_map(|(_, class)| class.own_identifier_field_name()))
+    }
+
+    /// Every loaded model's AST, in load order, in the metamodel's `Models`
+    /// envelope. [`AstOptions`] chooses whether the system models are
+    /// included and whether type names are resolved to their namespaces.
+    ///
+    /// TS: `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`.
+    pub fn ast(&self, options: AstOptions) -> Result<Value> {
+        self.models_ast(options.resolve, options.include_system_models)
     }
 
     /// Looks up a declaration by its fully-qualified name.
@@ -1099,9 +1484,7 @@ impl ModelManager {
     pub fn get_declaration(&self, fqn: &str) -> Result<&Declaration> {
         self.declaration_id(fqn)
             .and_then(|id| self.declaration(id))
-            .ok_or_else(|| ConcertoError::TypeNotFound {
-                type_name: fqn.to_string(),
-            })
+            .ok_or_else(|| Error::type_not_found(fqn.to_string()))
     }
 
     /// TS: ModelFile.getFullyQualifiedTypeName (src/introspect/modelfile.ts):
@@ -1129,33 +1512,39 @@ impl ModelManager {
     /// Resolves a short name, as written inside `in_namespace`, to its
     /// fully-qualified name, using the primitives, local declarations and named
     /// imports the model file can see.
-    ///
-    /// `location` is the AST node's `location`, copied verbatim into the
-    /// error this raises when the namespace is not registered (PORTING.md
-    /// section 2.1); pass `None` where the caller has no AST node in scope.
-    pub fn resolve_type_name(
-        &self,
-        in_namespace: &str,
-        short: &str,
-        location: Option<serde_json::Value>,
-    ) -> Result<String> {
-        let mf = self.model_file(in_namespace).ok_or_else(|| {
-            // TS: BaseModelManager.getType's unregistered-namespace path
-            // (src/basemodelmanager.ts), reused for the equivalent check
-            // here (error/catalogue.rs doc comment on the entry).
-            let fqn = get_fully_qualified_name(in_namespace, short);
-            ContractError::type_not_found(
-                "modelmanager-gettype-noregisteredns",
-                vec![("type", fqn.clone())],
-                fqn,
-                location,
-            )
-        })?;
+    pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String> {
+        self.resolve_type_name_at(in_namespace, short, None)
+    }
 
-        mf.resolve_local_type(short)
-            .ok_or_else(|| ConcertoError::TypeNotFound {
-                type_name: get_fully_qualified_name(in_namespace, short),
-            })
+    js_compat_pub! {
+        /// [`ModelManager::resolve_type_name`], with the location of the AST node
+        /// the name was read from.
+        ///
+        /// `location` is the AST node's `location`, copied verbatim into the
+        /// error this raises when the namespace is not registered (PORTING.md
+        /// section 2.1); pass `None` where the caller has no AST node in scope.
+        pub fn resolve_type_name_at(
+            &self,
+            in_namespace: &str,
+            short: &str,
+            location: Option<serde_json::Value>,
+        ) -> Result<String> {
+            let mf = self.model_file(in_namespace).ok_or_else(|| {
+                // TS: BaseModelManager.getType's unregistered-namespace path
+                // (src/basemodelmanager.ts), reused for the equivalent check
+                // here (error/catalogue.rs doc comment on the entry).
+                let fqn = qualify(in_namespace, short);
+                ContractError::type_not_found(
+                    "modelmanager-gettype-noregisteredns",
+                    vec![("type", fqn.clone())],
+                    fqn,
+                    location,
+                )
+            })?;
+
+            mf.resolve_local_type(short)
+                .ok_or_else(|| Error::type_not_found(qualify(in_namespace, short)))
+        }
     }
     /// The name of the field that gives `fqn` its identity: its own, if it
     /// declares one (explicit `identified by field`, giving that field's
@@ -1172,12 +1561,9 @@ impl ModelManager {
     /// [`ClassDeclaration::identifier_field_name`] and
     /// [`ClassDeclaration::is_identified`], which read only `fqn`'s own AST,
     /// the same as TS's own (non-inherited) `idField`.
+    #[deprecated(since = "0.1.0", note = "use `identifier_field`")]
     pub fn identifier_field_name(&self, fqn: &str) -> Result<Option<String>> {
-        Ok(self
-            .super_chain(fqn)?
-            .into_iter()
-            .find_map(|(_, class)| class.own_identifier_field_name())
-            .map(str::to_string))
+        Ok(self.identifier_field(fqn)?.map(str::to_string))
     }
 
     /// [`ModelManager::identifier_field_name`], as a boolean.
@@ -1185,7 +1571,7 @@ impl ModelManager {
     /// TS: `ClassDeclaration.isIdentified` (src/introspect/classdeclaration.ts):
     /// `!!this.getIdentifierFieldName()`, inherited unchanged by `EnumDeclaration`.
     pub fn is_identified(&self, fqn: &str) -> Result<bool> {
-        Ok(self.identifier_field_name(fqn)?.is_some())
+        Ok(self.identifier_field(fqn)?.is_some())
     }
 
     /// [`ModelManager::identifier_field_name`], `true` only for the system
@@ -1194,31 +1580,21 @@ impl ModelManager {
     /// TS: `ClassDeclaration.isSystemIdentified`: `this.getIdentifierFieldName()
     /// === '$identifier'`, inherited unchanged by `EnumDeclaration`.
     pub fn is_system_identified(&self, fqn: &str) -> Result<bool> {
-        Ok(self.identifier_field_name(fqn)?.as_deref() == Some("$identifier"))
+        Ok(self.identifier_field(fqn)? == Some("$identifier"))
     }
 
-    /// Every property of a type, gathered by walking from the type up through
-    /// all of its super types, each alongside the fully-qualified name of the
-    /// declaration that actually declares it (TS: `Property.getParent()
-    /// .getFullyQualifiedName()`) — an inherited property's is its super
-    /// type's, not `fqn`'s own. Returns an error if the name is not a
-    /// concept-like or enum type, a super type cannot be resolved, or the
-    /// inheritance chain is circular (V8's `RangeError`, DV-013).
+    /// Every property of a type, own and inherited: the type's own first,
+    /// then each super type's up to the root ([`ModelManager::properties`]
+    /// gives each with the name of the declaration that declares it). It is
+    /// an error when `fqn` is not a concept-like or enum type, a super type
+    /// cannot be resolved, or the chain is cyclic (`RecursionLimit`).
     ///
-    /// TS: `ClassDeclaration.getProperties` (src/introspect/classdeclaration.ts),
-    /// inherited unchanged by `EnumDeclaration`.
-    pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<(String, Property)>> {
+    /// TS: `ClassDeclaration.getProperties`.
+    pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<&Property>> {
         Ok(self
             .super_chain(fqn)?
             .into_iter()
-            .flat_map(|(owner_fqn, class)| {
-                class
-                    .own_properties()
-                    .iter()
-                    .cloned()
-                    .map(move |p| (owner_fqn.clone(), p))
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|(_, class)| class.own_properties().iter())
             .collect())
     }
 
@@ -1227,25 +1603,19 @@ impl ModelManager {
     /// [`ModelManager::get_all_properties`]).
     ///
     /// TS: `ClassDeclaration.getProperty`, inherited unchanged by `EnumDeclaration`.
+    #[deprecated(since = "0.1.0", note = "use `property`")]
     pub fn get_property(&self, fqn: &str, name: &str) -> Result<Option<(String, Property)>> {
-        // The first match in `get_all_properties`' order, without cloning
-        // every other property along the way (P5-06). The whole super chain
-        // is still resolved first, so its errors are unchanged.
-        for (owner_fqn, class) in self.super_chain(fqn)? {
-            if let Some(property) = class.own_properties().iter().find(|p| p.name() == name) {
-                return Ok(Some((owner_fqn, property.clone())));
-            }
-        }
-        Ok(None)
+        Ok(self
+            .property(fqn, name)?
+            .map(|(owner, property)| (owner, property.clone())))
     }
 
     /// The properties declared directly on `fqn`, not those it inherits.
     ///
     /// TS: `ClassDeclaration.getOwnProperties`, inherited unchanged by `EnumDeclaration`.
+    #[deprecated(since = "0.1.0", note = "use `own_properties`")]
     pub fn get_own_properties(&self, fqn: &str) -> Result<Vec<Property>> {
-        let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
-            .ok_or_else(|| not_a_class_like(fqn))?;
-        Ok(class.own_properties().to_vec())
+        Ok(self.own_properties(fqn)?.to_vec())
     }
 
     /// A nested property, following a dotted path (`a.b.c`) through the
@@ -1253,16 +1623,29 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getNestedProperty` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
+    #[deprecated(since = "0.1.0", note = "use `property_path`")]
     pub fn get_nested_property(
         &self,
         fqn: &str,
         property_path: &str,
     ) -> Result<(String, Property)> {
+        self.nested_property(fqn, property_path)
+    }
+
+    /// A nested property, following a dotted path (`a.b.c`) through the
+    /// declared types of each element but the last.
+    ///
+    /// TS: `ClassDeclaration.getNestedProperty` (src/introspect/classdeclaration.ts),
+    /// inherited unchanged by `EnumDeclaration`.
+    fn nested_property(&self, fqn: &str, property_path: &str) -> Result<(String, Property)> {
         let names: Vec<&str> = property_path.split('.').collect();
         let mut search_root = fqn.to_string();
         let mut result = None;
         for (n, name) in names.iter().enumerate() {
-            let Some((declaring_fqn, property)) = self.get_property(&search_root, name)? else {
+            let Some((declaring_fqn, property)) = self
+                .property(&search_root, name)?
+                .map(|(owner, property)| (owner, property.clone()))
+            else {
                 return Err(ContractError::new(
                     ErrorKind::IllegalModel,
                     "classdeclaration-getnestedproperty-doesnotexist",
@@ -1294,7 +1677,7 @@ impl ModelManager {
                 };
                 if property.is_primitive() || is_enum {
                     return Err(ContractError::new(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         "classdeclaration-getnestedproperty-primitiveorenum",
                         vec![
                             ("propertyName", (*name).to_string()),
@@ -1328,7 +1711,7 @@ impl ModelManager {
         };
         Ok(self
             .property_ids(owner)
-            .find(|id| self.property(*id).is_some_and(|p| p.name() == name)))
+            .find(|id| self.property_by_id(*id).is_some_and(|p| p.name() == name)))
     }
 
     /// The FQN of `fqn`'s direct super type, or `None` when it has none (only
@@ -1336,22 +1719,34 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getSuperType` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
+    #[deprecated(since = "0.1.0", note = "use `super_type`")]
     pub fn get_super_type(&self, fqn: &str) -> Result<Option<String>> {
+        self.super_type_name(fqn)
+    }
+
+    /// The FQN of `fqn`'s direct super type, or `None` when it has none (only
+    /// the system model's own `Concept`).
+    ///
+    /// TS: `ClassDeclaration.getSuperType` (src/introspect/classdeclaration.ts),
+    /// inherited unchanged by `EnumDeclaration`.
+    fn super_type_name(&self, fqn: &str) -> Result<Option<String>> {
         let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
             .ok_or_else(|| not_a_class_like(fqn))?;
         self.super_type_fqn(&class, namespace_of(fqn))
     }
 
-    /// The [`DeclId`] of `fqn`'s direct super type, or `None` when it has
-    /// none.
-    ///
-    /// TS: `ClassDeclaration.getSuperTypeDeclaration`, inherited unchanged by
-    /// `EnumDeclaration`.
-    pub fn get_super_type_declaration(&self, fqn: &str) -> Result<Option<DeclId>> {
-        let Some(super_fqn) = self.get_super_type(fqn)? else {
-            return Ok(None);
-        };
-        Ok(self.declaration_id(&super_fqn))
+    js_compat_pub! {
+        /// The [`DeclId`] of `fqn`'s direct super type, or `None` when it has
+        /// none.
+        ///
+        /// TS: `ClassDeclaration.getSuperTypeDeclaration`, inherited unchanged by
+        /// `EnumDeclaration`.
+        pub fn get_super_type_declaration(&self, fqn: &str) -> Result<Option<DeclId>> {
+            let Some(super_fqn) = self.super_type_name(fqn)? else {
+                return Ok(None);
+            };
+            Ok(self.declaration_id(&super_fqn))
+        }
     }
 
     /// Every super type of `fqn`, from its direct super type up to the root,
@@ -1359,11 +1754,25 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
     /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `super_chain`, so it returns the same `ErrorKind::JsRangeError`
+    /// `super_chain`, so it returns the same `ErrorKind::RecursionLimit`
     /// DV-013 documents for `getProperties`/`getProperty`/
     /// `getIdentifierFieldName` — unobserved by any fixture, accepted on
     /// accordproject/concerto-rust#151.
+    #[deprecated(since = "0.1.0", note = "use `super_types`")]
     pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
+        self.super_type_names(fqn)
+    }
+
+    /// Every super type of `fqn`, from its direct super type up to the root,
+    /// as fully-qualified names.
+    ///
+    /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
+    /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
+    /// `super_chain`, so it returns the same `ErrorKind::RecursionLimit`
+    /// DV-013 documents for `getProperties`/`getProperty`/
+    /// `getIdentifierFieldName` — unobserved by any fixture, accepted on
+    /// accordproject/concerto-rust#151.
+    fn super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         Ok(self
             .super_chain(fqn)?
             .into_iter()
@@ -1399,7 +1808,16 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAssignableClassDeclarations`, inherited
     /// unchanged by `EnumDeclaration`.
+    #[deprecated(since = "0.1.0", note = "use `assignable_types`")]
     pub fn get_assignable_class_declarations(&self, fqn: &str) -> Result<Vec<String>> {
+        self.assignable_type_names(fqn)
+    }
+
+    /// `fqn` itself, plus every declaration that (transitively) extends it.
+    ///
+    /// TS: `ClassDeclaration.getAssignableClassDeclarations`, inherited
+    /// unchanged by `EnumDeclaration`.
+    fn assignable_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         // Builds the same `subclassMap` TS does: every loaded class-like
         // declaration's direct super type FQN to the declarations that name
         // it, in the order they were first seen walking the population.
@@ -1435,7 +1853,17 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getDirectSubclasses`, inherited unchanged by
     /// `EnumDeclaration`.
+    #[deprecated(since = "0.1.0", note = "use `subclasses`")]
     pub fn get_direct_subclasses(&self, fqn: &str) -> Result<Vec<String>> {
+        self.direct_subclass_names(fqn)
+    }
+
+    /// Just the declarations that directly extend `fqn`, excluding `fqn`
+    /// itself.
+    ///
+    /// TS: `ClassDeclaration.getDirectSubclasses`, inherited unchanged by
+    /// `EnumDeclaration`.
+    fn direct_subclass_names(&self, fqn: &str) -> Result<Vec<String>> {
         let mut results = Vec::new();
         for (child_fqn, id) in self.all_class_like() {
             let class =
@@ -1456,7 +1884,7 @@ impl ModelManager {
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
     ///
     /// On a cyclic inheritance chain this walks `super_chain`, so it returns
-    /// the same `ErrorKind::JsRangeError` DV-013 documents for
+    /// the same `ErrorKind::RecursionLimit` DV-013 documents for
     /// `getProperties`/`getProperty`/`getIdentifierFieldName` — unobserved by
     /// any fixture, accepted on accordproject/concerto-rust#151.
     pub fn is_assignable_to(&self, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
@@ -1494,7 +1922,7 @@ impl ModelManager {
             if !visited.insert(current.clone()) {
                 // DV-013: TS has no cycle check here and overflows the stack.
                 return Err(ContractError::new(
-                    ErrorKind::JsRangeError,
+                    ErrorKind::RecursionLimit,
                     "engine-rangeerror-maxcallstack",
                     Vec::new(),
                 )
@@ -1585,7 +2013,7 @@ impl ModelManager {
         // here, so its `location` is passed on, re-serialised from the typed
         // `mm::Range` by `location_value` (PORTING.md 2.1).
         let location = class.location().and_then(crate::error::location_value);
-        match self.resolve_type_name(in_namespace, &ti.name, location.clone()) {
+        match self.resolve_type_name_at(in_namespace, &ti.name, location.clone()) {
             Ok(fqn) => Ok(Some(fqn)),
             // TS: `_resolveSuperType`'s own hardcoded `IllegalModelException`
             // (src/introspect/classdeclaration.ts) — `resolve_type_name`'s
@@ -1593,7 +2021,7 @@ impl ModelManager {
             // a different TS throw site), so it is remapped here, the same
             // way `validation.rs`'s `check_super_type` already raises this
             // exact message (`failed`) for the same TS call.
-            Err(ConcertoError::TypeNotFound { .. }) => Err(ContractError::pre_port(
+            Err(err) if err.is_unported_type_not_found() => Err(ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Could not find super type {}", ti.name),
                 location,
@@ -1632,15 +2060,12 @@ impl ModelManager {
         ) else {
             return Err(unknown(Node::Declaration(id)));
         };
-        Ok(get_fully_qualified_name(
-            file.namespace(),
-            declaration.name(),
-        ))
+        Ok(qualify(file.namespace(), declaration.name()))
     }
 
     /// The AST node an element was built from, as TS keeps it in `ast`;
     /// `None` for a primitive type name, whose `ast` is `undefined`.
-    fn ast(&self, node: Node) -> Result<Option<&Value>> {
+    fn node_ast(&self, node: Node) -> Result<Option<&Value>> {
         let found = match node {
             Node::ModelFile(id) => self.file(id).map(ModelFile::ast),
             Node::Declaration(id) => self.declaration_ast(id),
@@ -1703,61 +2128,65 @@ impl ModelManager {
 
     /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)` (basemodelmanager.ts):
     /// `fqt1` must resolve (`this.getType(fqt1)`, propagated verbatim —
-    /// [`ModelManager::get_type_declaration`] is the same lookup `getType`
+    /// `ModelManager::get_type_declaration` is the same lookup `getType`
     /// dispatches to); then true when `fqt1` and `fqt2` are the same type, or
     /// `fqt1` transitively extends it. [`ModelManager::is_assignable_to`]
     /// already walks exactly this chain (including the implicit `Concept`
     /// super type, P2-03), so this reuses it once `fqt1`'s own resolution is
     /// confirmed with `getType`'s error surface — `is_assignable_to`'s own
-    /// lookup raises a different one ([`ConcertoError::TypeNotFound`], not
+    /// lookup raises a different one (the pre-port `TypeNotFound` of `Error::type_not_found`, not
     /// the catalogued `IllegalModelException` `getType` raises).
     pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> Result<bool> {
         self.get_type_declaration(fqt1)?;
         self.is_assignable_to(fqt1, fqt2)
     }
 
-    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`
-    /// (basemodelmanager.ts). This is a different method from
-    /// [`ModelManager::is_assignable_to`] — TS itself gives `ModelManager`
-    /// two unrelated `isAssignableTo`s, `ModelUtil`'s own static
-    /// ([`crate::model_util::is_assignable_to`]) and this one: `fqn` must
-    /// resolve to a *concrete* (non-abstract) type before
-    /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
-    /// `false` even against itself — and a lookup failure is caught, not
-    /// propagated.
-    pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
-        let Ok(id) = self.get_type_declaration(fqn) else {
-            return false;
-        };
-        if self
-            .declaration(id)
-            .and_then(Declaration::as_class)
-            .is_some_and(|class| class.is_abstract())
-        {
-            return false;
+    js_compat_pub! {
+        /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`
+        /// (basemodelmanager.ts). This is a different method from
+        /// [`ModelManager::is_assignable_to`] — TS itself gives `ModelManager`
+        /// two unrelated `isAssignableTo`s, `ModelUtil`'s own static
+        /// (`crate::model_util::is_assignable_to`) and this one: `fqn` must
+        /// resolve to a *concrete* (non-abstract) type before
+        /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
+        /// `false` even against itself — and a lookup failure is caught, not
+        /// propagated.
+        pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
+            let Ok(id) = self.get_type_declaration(fqn) else {
+                return false;
+            };
+            if self
+                .declaration(id)
+                .and_then(Declaration::as_class)
+                .is_some_and(|class| class.is_abstract())
+            {
+                return false;
+            }
+            self.derives_from(fqn, base_fqn).unwrap_or(false)
         }
-        self.derives_from(fqn, base_fqn).unwrap_or(false)
     }
 
-    /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`
-    /// (basemodelmanager.ts): every concrete (non-abstract) declaration
-    /// assignable to `baseFqn`, `baseFqn` itself included when it is
-    /// concrete; empty when `baseFqn` is not in the model (TS catches
-    /// `getType`'s error and returns `[]`).
-    pub fn get_assignable_concrete_types(&self, base_fqn: &str) -> Vec<DeclId> {
-        let Ok(names) = self.get_assignable_class_declarations(base_fqn) else {
-            return Vec::new();
-        };
-        names
-            .into_iter()
-            .filter_map(|fqn| self.declaration_id(&fqn))
-            .filter(|id| {
-                !self
-                    .declaration(*id)
-                    .and_then(Declaration::as_class)
-                    .is_some_and(|class| class.is_abstract())
-            })
-            .collect()
+    js_compat_pub! {
+        /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`
+        /// (basemodelmanager.ts): every concrete (non-abstract) declaration
+        /// assignable to `baseFqn`, `baseFqn` itself included when it is
+        /// concrete; empty when `baseFqn` is not in the model (TS catches
+        /// `getType`'s error and returns `[]`).
+        pub fn get_assignable_concrete_types(&self, base_fqn: &str) -> Vec<DeclId> {
+            let Ok(names) = self.assignable_type_names(base_fqn) else {
+                return Vec::new();
+            };
+            names
+                .into_iter()
+                .filter_map(|fqn| self.declaration_id(&fqn))
+                .filter(|id| {
+                    !self
+                        .declaration(*id)
+                        .and_then(Declaration::as_class)
+                        .is_some_and(|class| class.is_abstract())
+                })
+                .collect()
+        }
     }
 
     /// TS `getFileNameFromIdentifier` (basemodelmanager.ts, module-private):
@@ -1773,36 +2202,55 @@ impl ModelManager {
             .unwrap_or_else(|| file_identifier.to_string())
     }
 
-    /// TS `BaseModelManager.getModels(options)` (basemodelmanager.ts): every
-    /// registered model file but the root and decorator models
-    /// (`this.getModelFiles()`'s default excludes [`EXCLUDE_NS`]), as a
-    /// `(name, content)` pair — `content` is `None` exactly where TS's
-    /// `file.definitions` is `undefined`. `include_external_models` is TS's
-    /// `options.includeExternalModels` (`true` by default there; the oracle
-    /// harness always passes it explicitly).
-    pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
-        self.model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
-            .filter(|mf| include_external_models || !mf.is_external())
-            .map(|mf| {
-                let name = match mf.file_name() {
-                    None | Some("UNKNOWN") | Some("") => format!("{}.cto", mf.namespace()),
-                    Some(identifier) => Self::file_name_from_identifier(identifier),
-                };
-                (name, mf.definitions().map(str::to_string))
-            })
-            .collect()
+    js_compat_pub! {
+        /// TS `BaseModelManager.getModels(options)` (basemodelmanager.ts): every
+        /// registered model file but the root and decorator models
+        /// (`this.getModelFiles()`'s default excludes `EXCLUDE_NS`), as a
+        /// `(name, content)` pair — `content` is `None` exactly where TS's
+        /// `file.definitions` is `undefined`. `include_external_models` is TS's
+        /// `options.includeExternalModels` (`true` by default there; the oracle
+        /// harness always passes it explicitly).
+        pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
+            self.model_files()
+                .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+                .filter(|mf| include_external_models || !mf.is_external())
+                .map(|mf| {
+                    let name = match mf.file_name() {
+                        None | Some("UNKNOWN") | Some("") => format!("{}.cto", mf.namespace()),
+                        Some(identifier) => Self::file_name_from_identifier(identifier),
+                    };
+                    (name, mf.definitions().map(str::to_string))
+                })
+                .collect()
+        }
     }
 
     /// TS `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`
     /// (basemodelmanager.ts): every registered model file's own AST
     /// ([`ModelFile::ast`]), in [`ModelManager::model_files`] order, wrapped
     /// in the metamodel's `Models` envelope; a system namespace
-    /// ([`EXCLUDE_NS`]) is left out unless `include_concerto_namespaces`.
+    /// (`EXCLUDE_NS`) is left out unless `include_concerto_namespaces`.
     /// `resolve` runs each model through [`ModelManager::resolve_meta_model`]
     /// first — the only way this can fail, the same as TS's uncaught throw
     /// from `resolveMetaModel`.
+    #[deprecated(since = "0.1.0", note = "use `ast`")]
     pub fn get_ast(&self, resolve: bool, include_concerto_namespaces: bool) -> Result<Value> {
+        self.models_ast(resolve, include_concerto_namespaces)
+    }
+
+    /// TS `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`
+    /// (basemodelmanager.ts): every registered model file's own AST
+    /// ([`ModelFile::ast`]), in [`ModelManager::model_files`] order, wrapped
+    /// in the metamodel's `Models` envelope; a system namespace
+    /// (`EXCLUDE_NS`) is left out unless `include_concerto_namespaces`.
+    /// `resolve` runs each model through [`ModelManager::resolve_meta_model`]
+    /// first — the only way this can fail, the same as TS's uncaught throw
+    /// from `resolveMetaModel`.
+    pub(crate) fn models_ast(
+        &self,
+        resolve: bool,
+        include_concerto_namespaces: bool,
+    ) -> Result<Value> {
         let mut models = Vec::new();
         for mf in self.model_files() {
             if !include_concerto_namespaces && EXCLUDE_NS.contains(&mf.namespace()) {
@@ -1829,7 +2277,7 @@ impl ModelManager {
     /// (`metamodel_util`, below this `impl` block), the only consumer this
     /// manager has for it.
     pub fn resolve_meta_model(&self, meta_model: &Value) -> Result<Value> {
-        let prior_models = self.get_ast(false, true)?;
+        let prior_models = self.models_ast(false, true)?;
         metamodel_util::resolve_local_names(&prior_models, meta_model)
     }
 
@@ -1859,56 +2307,90 @@ impl ModelManager {
             .collect()
     }
 
-    /// TS `BaseModelManager.getAssetDeclarations()`.
-    pub fn get_asset_declarations(&self) -> Vec<DeclId> {
-        self.declarations_by_ctor("AssetDeclaration")
+    js_compat_pub! {
+        /// TS `BaseModelManager.getAssetDeclarations()`.
+        pub fn get_asset_declarations(&self) -> Vec<DeclId> {
+            self.declarations_by_ctor("AssetDeclaration")
+        }
     }
 
-    /// TS `BaseModelManager.getTransactionDeclarations()`.
-    pub fn get_transaction_declarations(&self) -> Vec<DeclId> {
-        self.declarations_by_ctor("TransactionDeclaration")
+    js_compat_pub! {
+        /// TS `BaseModelManager.getTransactionDeclarations()`.
+        pub fn get_transaction_declarations(&self) -> Vec<DeclId> {
+            self.declarations_by_ctor("TransactionDeclaration")
+        }
     }
 
-    /// TS `BaseModelManager.getEventDeclarations()`.
-    pub fn get_event_declarations(&self) -> Vec<DeclId> {
-        self.declarations_by_ctor("EventDeclaration")
+    js_compat_pub! {
+        /// TS `BaseModelManager.getEventDeclarations()`.
+        pub fn get_event_declarations(&self) -> Vec<DeclId> {
+            self.declarations_by_ctor("EventDeclaration")
+        }
     }
 
-    /// TS `BaseModelManager.getParticipantDeclarations()`.
-    pub fn get_participant_declarations(&self) -> Vec<DeclId> {
-        self.declarations_by_ctor("ParticipantDeclaration")
+    js_compat_pub! {
+        /// TS `BaseModelManager.getParticipantDeclarations()`.
+        pub fn get_participant_declarations(&self) -> Vec<DeclId> {
+            self.declarations_by_ctor("ParticipantDeclaration")
+        }
     }
 
-    /// TS `BaseModelManager.getConceptDeclarations()`.
-    pub fn get_concept_declarations(&self) -> Vec<DeclId> {
-        self.declarations_by_ctor("ConceptDeclaration")
+    js_compat_pub! {
+        /// TS `BaseModelManager.getConceptDeclarations()`.
+        pub fn get_concept_declarations(&self) -> Vec<DeclId> {
+            self.declarations_by_ctor("ConceptDeclaration")
+        }
     }
 
-    /// TS `BaseModelManager.getEnumDeclarations()`.
-    pub fn get_enum_declarations(&self) -> Vec<DeclId> {
-        self.declarations_by_ctor("EnumDeclaration")
+    js_compat_pub! {
+        /// TS `BaseModelManager.getEnumDeclarations()`.
+        pub fn get_enum_declarations(&self) -> Vec<DeclId> {
+            self.declarations_by_ctor("EnumDeclaration")
+        }
     }
 
-    /// TS `BaseModelManager.filter(predicate, options)` (basemodelmanager.ts):
-    /// a scratch manager holding every registered model file's declarations
-    /// for which `keep_fqn` is true, filtering each file's own imports the
-    /// same way ([`crate::introspect::model_file::ModelFile::filter`]'s
-    /// module doc); a file with nothing left is dropped. `predicate` is a
-    /// `Declaration -> bool` in TS, keyed here by fully-qualified name
-    /// instead, since that is all the oracle's own `predicate` encoding
-    /// carries (`tests/oracle/ops.rs`). The root model is skipped exactly as
-    /// TS's `modelFile.isSystemModelFile()` check does — the decorator model
-    /// is *not* skipped, because TS does not skip it either, so it is
-    /// filtered like any other file (which in practice always empties it,
-    /// since `keep_fqn` never names one of its own declarations in the
-    /// corpus). The result always starts from a fresh `BaseModelManager`
-    /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
-    /// never the receiver's own kind. `disable_validation` is TS's
-    /// `options?.disableValidation`; unless set, the filtered files are
-    /// validated once, together (TS: `modelManager.addModelFiles(...)`).
-    pub fn filter(
+    js_compat_pub! {
+        /// TS `BaseModelManager.filter(predicate, options)` (basemodelmanager.ts):
+        /// a scratch manager holding every registered model file's declarations
+        /// for which `keep_fqn` is true, filtering each file's own imports the
+        /// same way ([`crate::introspect::model_file::ModelFile::filter`]'s
+        /// module doc); a file with nothing left is dropped. `predicate` is a
+        /// `Declaration -> bool` in TS, keyed here by fully-qualified name
+        /// instead, since that is all the oracle's own `predicate` encoding
+        /// carries (`tests/oracle/ops.rs`). The root model is skipped exactly as
+        /// TS's `modelFile.isSystemModelFile()` check does — the decorator model
+        /// is *not* skipped, because TS does not skip it either, so it is
+        /// filtered like any other file (which in practice always empties it,
+        /// since `keep_fqn` never names one of its own declarations in the
+        /// corpus). The result always starts from a fresh `BaseModelManager`
+        /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
+        /// never the receiver's own kind. `disable_validation` is TS's
+        /// `options?.disableValidation`; unless set, the filtered files are
+        /// validated once, together (TS: `modelManager.addModelFiles(...)`).
+        pub fn filter_by_fqn(
+            &self,
+            keep_fqn: impl Fn(&str) -> bool,
+            disable_validation: bool,
+        ) -> Result<Self> {
+            self.filter_declarations(|fqn, _| keep_fqn(fqn), disable_validation)
+        }
+    }
+
+    /// A new manager with only the declarations `keep` accepts, given each
+    /// declaration's fully-qualified name and the declaration itself. A model
+    /// file left with no declaration is dropped, and each file's imports are
+    /// filtered the same way. The system root model is kept whole. The new
+    /// manager has this one's options, and its files are validated together.
+    ///
+    /// TS: `BaseModelManager.filter(predicate)`.
+    pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<Self> {
+        self.filter_declarations(keep, false)
+    }
+
+    /// [`ModelManager::filter_by_fqn`] over a predicate on the declaration too.
+    fn filter_declarations(
         &self,
-        keep_fqn: impl Fn(&str) -> bool,
+        keep: impl Fn(&str, &Declaration) -> bool,
         disable_validation: bool,
     ) -> Result<Self> {
         let mut result = Self::new()?;
@@ -1930,13 +2412,13 @@ impl ModelManager {
         // below), so a declaration kept by an earlier file is still
         // recognised when it is reached again through another file's
         // imports.
-        let keep_fqn = &keep_fqn;
+        let keep = &keep;
         let kept: std::collections::HashSet<*const Declaration> = self
             .model_files()
             .flat_map(|mf| {
                 let namespace = mf.namespace();
                 mf.declarations().iter().filter_map(move |decl| {
-                    keep_fqn(&get_fully_qualified_name(namespace, decl.name()))
+                    keep(&qualify(namespace, decl.name()), decl)
                         .then_some(decl as *const Declaration)
                 })
             })
@@ -1957,109 +2439,115 @@ impl ModelManager {
         Ok(result)
     }
 
-    /// TS `updateModelFile(modelFile, fileName, disableValidation)`'s
-    /// registration step, for an already-parsed `model_file` (the oracle
-    /// harness's own CTO -> AST step handles the string overload; CTO
-    /// parsing stays out of Rust's scope, plan §1.1). TS requires the
-    /// namespace to already be registered, a plain `Error`
-    /// (`basemodelmanager-updatemodelfile-notfound`); everything past that
-    /// matches [`ModelManager::with_model_file_registered`], which already
-    /// builds exactly the scratch copy TS's own registration
-    /// (`this.modelFiles[ns] = modelFile`) produces. Never mutates `self`:
-    /// on any error the caller simply does not adopt the result, the same
-    /// way TS's own catch leaves `this` unchanged.
-    pub fn update_model_file(&self, model_file: ModelFile, validate: bool) -> Result<Self> {
-        let namespace = model_file.namespace().to_string();
-        if self.model_file(&namespace).is_none() {
-            return Err(ContractError::new(
-                ErrorKind::Error,
-                "basemodelmanager-updatemodelfile-notfound",
-                vec![("namespace", namespace)],
-            )
-            .into());
-        }
-        let updated = self.with_model_file_registered(&model_file)?;
-        if validate {
-            let mf = updated
-                .model_file(&namespace)
-                .expect("with_model_file_registered registers the file under its namespace");
-            updated.validate_model_file(mf)?;
-        }
-        Ok(updated)
-    }
-
-    /// TS `deleteModelFile(namespace)` (basemodelmanager.ts): the manager
-    /// with every registered model file but `namespace`'s, or a plain
-    /// `Error` (`basemodelmanager-deletemodelfile-notfound`) when it holds
-    /// none. `deleteModelFile` has no arena-level tombstone yet (module doc,
-    /// "any future removal ... is a different shape"), so this rebuilds a
-    /// fresh manager from the survivors, the same way
-    /// [`ModelManager::with_model_file_registered`]'s own scratch copy does.
-    pub fn delete_model_file(&self, namespace: &str) -> Result<Self> {
-        if self.model_file(namespace).is_none() {
-            return Err(ContractError::new(
-                ErrorKind::Error,
-                "basemodelmanager-deletemodelfile-notfound",
-                Vec::new(),
-            )
-            .into());
-        }
-        let mut scratch = Self {
-            decorator_validation: self.decorator_validation.clone(),
-            dangerously_allow_reserved_system_type_names_in_user_models: self
-                .dangerously_allow_reserved_system_type_names_in_user_models,
-            metamodel_validation: self.metamodel_validation,
-            ..Self::default()
-        };
-        for existing in self.model_files() {
-            if existing.namespace() != namespace {
-                scratch.insert(existing.clone())?;
+    js_compat_pub! {
+        /// TS `updateModelFile(modelFile, fileName, disableValidation)`'s
+        /// registration step, for an already-parsed `model_file` (the oracle
+        /// harness's own CTO -> AST step handles the string overload; CTO
+        /// parsing stays out of Rust's scope, plan §1.1). TS requires the
+        /// namespace to already be registered, a plain `Error`
+        /// (`basemodelmanager-updatemodelfile-notfound`); everything past that
+        /// matches `ModelManager::with_model_file_registered`, which already
+        /// builds exactly the scratch copy TS's own registration
+        /// (`this.modelFiles[ns] = modelFile`) produces. Never mutates `self`:
+        /// on any error the caller simply does not adopt the result, the same
+        /// way TS's own catch leaves `this` unchanged.
+        pub fn update_model_file(&self, model_file: ModelFile, validate: bool) -> Result<Self> {
+            let namespace = model_file.namespace().to_string();
+            if self.model_file(&namespace).is_none() {
+                return Err(ContractError::new(
+                    ErrorKind::InvalidArgument,
+                    "basemodelmanager-updatemodelfile-notfound",
+                    vec![("namespace", namespace)],
+                )
+                .into());
             }
+            let updated = self.with_model_file_registered(&model_file)?;
+            if validate {
+                let mf = updated
+                    .model_file(&namespace)
+                    .expect("with_model_file_registered registers the file under its namespace");
+                updated.validate_model_file(mf)?;
+            }
+            Ok(updated)
         }
-        Ok(scratch)
     }
 
-    /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
-    /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
-    /// stays in JS). `external_models` is what
-    /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
-    /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
-    /// then registered without validation — `updateModelFile(mf, name,
-    /// true)` when its namespace is already registered (by `self` or an
-    /// earlier download in the same batch), `addModelFile(mf, null, name,
-    /// true)` otherwise — and finally every registered model file is
-    /// validated (`validateModelFiles`). The model files are returned in the
-    /// same order, as TS's `externalModelFiles`.
-    ///
-    /// Any error leaves `self` exactly as it was, as TS's `catch` restores
-    /// `this.modelFiles` before rethrowing.
-    pub fn update_external_models(
-        &mut self,
-        external_models: impl IntoIterator<Item = ModelFileSource>,
-    ) -> Result<Vec<ModelFile>> {
-        let mut updated: Option<Self> = None;
-        let mut registered = Vec::new();
-        for source in external_models {
-            let current = updated.as_ref().unwrap_or(self);
-            let mf = ModelFile::from_json_with_definitions(
-                &source.ast,
-                source.definitions,
-                source.file_name,
-            )?;
-            let next = if current.model_file(mf.namespace()).is_some() {
-                current.update_model_file(mf.clone(), false)?
-            } else {
-                // `addModelFile`'s already-exists check cannot fire here.
-                current.with_model_file_registered(&mf)?
+    js_compat_pub! {
+        /// TS `deleteModelFile(namespace)` (basemodelmanager.ts): the manager
+        /// with every registered model file but `namespace`'s, or a plain
+        /// `Error` (`basemodelmanager-deletemodelfile-notfound`) when it holds
+        /// none. `deleteModelFile` has no arena-level tombstone yet (module doc,
+        /// "any future removal ... is a different shape"), so this rebuilds a
+        /// fresh manager from the survivors, the same way
+        /// `ModelManager::with_model_file_registered`'s own scratch copy does.
+        pub fn delete_model_file(&self, namespace: &str) -> Result<Self> {
+            if self.model_file(namespace).is_none() {
+                return Err(ContractError::new(
+                    ErrorKind::InvalidArgument,
+                    "basemodelmanager-deletemodelfile-notfound",
+                    Vec::new(),
+                )
+                .into());
+            }
+            let mut scratch = Self {
+                decorator_validation: self.decorator_validation.clone(),
+                dangerously_allow_reserved_system_type_names_in_user_models: self
+                    .dangerously_allow_reserved_system_type_names_in_user_models,
+                metamodel_validation: self.metamodel_validation,
+                ..Self::default()
             };
-            updated = Some(next);
-            registered.push(mf);
+            for existing in self.model_files() {
+                if existing.namespace() != namespace {
+                    scratch.insert(existing.clone())?;
+                }
+            }
+            Ok(scratch)
         }
-        updated.as_ref().unwrap_or(self).validate_models()?;
-        if let Some(updated) = updated {
-            *self = updated;
+    }
+
+    js_compat_pub! {
+        /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
+        /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
+        /// stays in JS). `external_models` is what
+        /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
+        /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
+        /// then registered without validation — `updateModelFile(mf, name,
+        /// true)` when its namespace is already registered (by `self` or an
+        /// earlier download in the same batch), `addModelFile(mf, null, name,
+        /// true)` otherwise — and finally every registered model file is
+        /// validated (`validateModelFiles`). The model files are returned in the
+        /// same order, as TS's `externalModelFiles`.
+        ///
+        /// Any error leaves `self` exactly as it was, as TS's `catch` restores
+        /// `this.modelFiles` before rethrowing.
+        pub fn update_external_models(
+            &mut self,
+            external_models: impl IntoIterator<Item = ModelFileSource>,
+        ) -> Result<Vec<ModelFile>> {
+            let mut updated: Option<Self> = None;
+            let mut registered = Vec::new();
+            for source in external_models {
+                let current = updated.as_ref().unwrap_or(self);
+                let mf = ModelFile::from_json_with_definitions(
+                    &source.ast,
+                    source.definitions,
+                    source.file_name,
+                )?;
+                let next = if current.model_file(mf.namespace()).is_some() {
+                    current.update_model_file(mf.clone(), false)?
+                } else {
+                    // `addModelFile`'s already-exists check cannot fire here.
+                    current.with_model_file_registered(&mf)?
+                };
+                updated = Some(next);
+                registered.push(mf);
+            }
+            updated.as_ref().unwrap_or(self).validate_models()?;
+            if let Some(updated) = updated {
+                *self = updated;
+            }
+            Ok(registered)
         }
-        Ok(registered)
     }
 
     /// The rollback core of [`ModelManager::add_models`] and
@@ -2126,7 +2614,7 @@ impl ModelManager {
 /// `Concept` super type (P2-03).
 impl ResolutionContext for ModelManager {
     type Node = Node;
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn get_type(&self, model_file: &Node, type_name: Option<&str>) -> Result<Option<Node>> {
         let Node::ModelFile(file) = *model_file else {
@@ -2166,7 +2654,7 @@ impl ResolutionContext for ModelManager {
                 .map(|(fqn, _)| {
                     self.declaration_id(&fqn)
                         .map(Node::Declaration)
-                        .ok_or(ConcertoError::TypeNotFound { type_name: fqn })
+                        .ok_or(Error::type_not_found(fqn))
                 })
                 .collect(),
             Declaration::Scalar(_) | Declaration::Map(_) => Err(not_a_function()),
@@ -2178,7 +2666,8 @@ impl ResolutionContext for ModelManager {
             Node::Declaration(id) => self.declaration_fqn(id),
             // TS: Property.getFullyQualifiedName (src/introspect/property.ts)
             Node::Property(id) => {
-                let (Some(parent), Some(property)) = (self.parent_of(id), self.property(id)) else {
+                let (Some(parent), Some(property)) = (self.parent_of(id), self.property_by_id(id))
+                else {
                     return Err(unknown(*declaration));
                 };
                 Ok(format!(
@@ -2198,7 +2687,7 @@ impl ResolutionContext for ModelManager {
             return Err(not_a_function("property.getFullyQualifiedTypeName"));
         };
         let (Some(field), Some(file)) = (
-            self.property(id),
+            self.property_by_id(id),
             self.parent_of(id)
                 .and_then(|parent| self.model_file_of(parent)),
         ) else {
@@ -2223,7 +2712,7 @@ impl ResolutionContext for ModelManager {
             },
         };
         // TS: Property.getFullyQualifiedTypeName (src/introspect/property.ts:218)
-        // throws a plain `Error` (`ErrorKind::Error`, not
+        // throws a plain `Error` (`ErrorKind::InvalidArgument`, not
         // `IllegalModelException`) with its own inline template
         // (`property-getfullyqualifiedtypename-notfound`) when
         // `ModelFile.getFullyQualifiedTypeName` returns `null` — which it
@@ -2232,9 +2721,9 @@ impl ResolutionContext for ModelManager {
         // renders as the literal string `null`, matching `+ this.type`'s
         // own string coercion.
         resolved.ok_or_else(|| {
-            let field = self.property(id).expect("checked above");
+            let field = self.property_by_id(id).expect("checked above");
             ContractError::new(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 "property-getfullyqualifiedtypename-notfound",
                 vec![
                     ("name", field.name().to_string()),
@@ -2267,7 +2756,7 @@ impl ResolutionContext for ModelManager {
         let Node::Property(id) = *property else {
             return Err(not_a_function("field.getType"));
         };
-        let field = self.property(id).ok_or_else(|| unknown(*property))?;
+        let field = self.property_by_id(id).ok_or_else(|| unknown(*property))?;
         Ok(field.type_name().map(str::to_string))
     }
 
@@ -2304,9 +2793,9 @@ impl ResolutionContext for ModelManager {
     }
 
     fn get_ast_class(&self, declaration: &Node) -> Result<Option<String>> {
-        let Some(ast) = self.ast(*declaration)? else {
+        let Some(ast) = self.node_ast(*declaration)? else {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-readproperties",
                 vec![
                     ("value", "undefined".to_string()),
@@ -2345,7 +2834,7 @@ mod metamodel_util {
 
     use serde_json::Value;
 
-    use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+    use crate::error::{ContractError, Error, ErrorKind, Result};
 
     /// The metamodel's own namespace, short for the five reserved
     /// declarations `createNameTable` seeds the table with.
@@ -2386,9 +2875,9 @@ mod metamodel_util {
     }
 
     /// TS: `Declaration ${imp.name} in namespace ${namespace} not found`.
-    fn declaration_not_found(name: &str, namespace: &str) -> ConcertoError {
+    fn declaration_not_found(name: &str, namespace: &str) -> Error {
         ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "metamodelutil-createnametable-declarationnotfound",
             vec![
                 ("name", name.to_string()),
@@ -2399,9 +2888,9 @@ mod metamodel_util {
     }
 
     /// TS: `Name ${name} not found`.
-    fn name_not_found(name: &str) -> ConcertoError {
+    fn name_not_found(name: &str) -> Error {
         ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "metamodelutil-resolvename-notfound",
             vec![("name", name.to_string())],
         )
@@ -2409,9 +2898,9 @@ mod metamodel_util {
     }
 
     /// TS: `Unrecognized $class ${String(metaModel.$class)}`.
-    fn unrecognized_class(rendered: String) -> ConcertoError {
+    fn unrecognized_class(rendered: String) -> Error {
         ContractError::new(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             "metamodelutil-resolvetypenames-unrecognizedclass",
             vec![("class", rendered)],
         )
@@ -2422,9 +2911,9 @@ mod metamodel_util {
     /// `findNamespace` returns `undefined` for an import whose namespace is
     /// not (yet) registered, and every `createNameTable` branch reads
     /// straight off that result without an existence check.
-    fn undefined_declarations() -> ConcertoError {
+    fn undefined_declarations() -> Error {
         ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", "undefined".to_string()),
@@ -2746,7 +3235,7 @@ mod tests {
     /// `org.example@1.0.0` with Person ← Employee ← Manager and an enum.
     fn manager() -> ModelManager {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -2790,7 +3279,7 @@ mod tests {
     #[test]
     fn property_default_value_reads_the_raw_ast_including_datetime() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -2840,6 +3329,7 @@ mod tests {
     /// every namespace in `EXCLUDE_NS` (src/basemodelmanager.ts). A fresh
     /// manager has only those, so nothing directly extends the system root.
     #[test]
+    #[allow(deprecated)]
     fn direct_subclasses_of_a_fresh_manager_leave_out_the_system_models() {
         let mgr = ModelManager::new().unwrap();
         assert!(
@@ -2859,6 +3349,7 @@ mod tests {
     /// `Asset`, `Participant`, `Transaction`, `Event` and the decorator
     /// model's own declarations are not in the population.
     #[test]
+    #[allow(deprecated)]
     fn direct_subclasses_are_only_user_declarations() {
         let mgr = manager();
         assert_eq!(
@@ -2875,6 +3366,7 @@ mod tests {
     /// TS `collectSubclasses([this])` always adds the receiver itself, so a
     /// fresh manager's `Concept` is assignable only from itself.
     #[test]
+    #[allow(deprecated)]
     fn assignable_class_declarations_of_a_fresh_manager_leave_out_the_system_models() {
         let mgr = ModelManager::new().unwrap();
         assert_eq!(
@@ -2885,6 +3377,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn assignable_class_declarations_are_the_receiver_and_user_declarations() {
         let mgr = manager();
         assert_eq!(
@@ -2903,9 +3396,10 @@ mod tests {
     /// A user asset that implicitly extends the system `Asset` is found; the
     /// system root declarations themselves are not.
     #[test]
+    #[allow(deprecated)]
     fn a_user_asset_is_the_only_direct_subclass_of_asset() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -2952,9 +3446,10 @@ mod tests {
     /// literally named `$identifier`, which an explicit `identified by`
     /// field never is).
     #[test]
+    #[allow(deprecated)]
     fn an_asset_with_no_extends_implicitly_extends_asset_itself() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme.defaults@1.0.0",
@@ -2977,7 +3472,7 @@ mod tests {
             Some("concerto@1.0.0.Asset")
         );
         let props = mgr
-            .get_all_properties("org.acme.defaults@1.0.0.DefaultAsset")
+            .properties("org.acme.defaults@1.0.0.DefaultAsset")
             .unwrap();
         let names: Vec<(&str, &str)> = props
             .iter()
@@ -3026,7 +3521,7 @@ mod tests {
     #[test]
     fn user_model_extending_decorator_loads_and_validates() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
@@ -3066,8 +3561,8 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.x@1.0.0", "declarations": []
         });
-        mgr.add_model(&model, None).unwrap();
-        assert!(mgr.add_model(&model, None).is_err());
+        mgr.load_model(&model, None).unwrap();
+        assert!(mgr.load_model(&model, None).is_err());
     }
 
     /// TS `_throwAlreadyExists`: a plain `Error`, never the `IllegalModel`
@@ -3080,8 +3575,8 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.x@1.0.0", "declarations": []
         });
-        mgr.add_model(&model, Some("old.cto".into())).unwrap();
-        let err = mgr.add_model(&model, Some("new.cto".into())).unwrap_err();
+        mgr.load_model(&model, Some("old.cto".into())).unwrap();
+        let err = mgr.load_model(&model, Some("new.cto".into())).unwrap_err();
         assert_eq!(
             err.to_string(),
             "Namespace org.x@1.0.0 specified in file new.cto is already declared in file old.cto"
@@ -3096,8 +3591,8 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.x@1.0.0", "declarations": []
         });
-        mgr.add_model(&model, None).unwrap();
-        let err = mgr.add_model(&model, None).unwrap_err();
+        mgr.load_model(&model, None).unwrap();
+        let err = mgr.load_model(&model, None).unwrap_err();
         assert_eq!(err.to_string(), "Namespace org.x@1.0.0 is already declared");
     }
 
@@ -3109,9 +3604,9 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.x@1.0.0", "declarations": []
         });
-        mgr.add_model(&model, Some("old.cto".into())).unwrap();
+        mgr.load_model(&model, Some("old.cto".into())).unwrap();
         let err = mgr
-            .add_models([(&model, Some("new.cto".to_string()))])
+            .load_models([(&model, Some("new.cto".to_string()))])
             .unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -3131,7 +3626,7 @@ mod tests {
     #[test]
     fn collects_inherited_properties_in_order() {
         let mgr = manager();
-        let props = mgr.get_all_properties("org.example@1.0.0.Manager").unwrap();
+        let props = mgr.properties("org.example@1.0.0.Manager").unwrap();
         let names: Vec<&str> = props.iter().map(|(_, p)| p.name()).collect();
         // Manager's own first, then Employee, then Person up the chain.
         assert_eq!(names, ["title", "salary", "name"]);
@@ -3157,7 +3652,7 @@ mod tests {
     #[test]
     fn unresolved_super_type_is_hard_error() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.broken@1.0.0",
@@ -3170,7 +3665,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(mgr.get_all_properties("org.broken@1.0.0.Orphan").is_err());
+        assert!(mgr.properties("org.broken@1.0.0.Orphan").is_err());
     }
 
     /// TS: `EnumDeclaration extends ClassDeclaration` inherits
@@ -3181,7 +3676,7 @@ mod tests {
     #[test]
     fn get_all_properties_on_enum_gives_its_values() {
         let mgr = manager();
-        let properties = mgr.get_all_properties("org.example@1.0.0.Color").unwrap();
+        let properties = mgr.properties("org.example@1.0.0.Color").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["RED"]);
         assert_eq!(properties[0].0, "org.example@1.0.0.Color");
@@ -3192,7 +3687,7 @@ mod tests {
     /// namespace that is not loaded) and declares a concept and a scalar.
     fn manager_with_imports() -> ModelManager {
         let mut mgr = manager();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.other@1.0.0",
@@ -3223,7 +3718,7 @@ mod tests {
     #[test]
     fn get_ast_unresolved_leaves_type_names_bare() {
         let mgr = manager_with_imports();
-        let ast = mgr.get_ast(false, false).unwrap();
+        let ast = mgr.models_ast(false, false).unwrap();
         let models = ast.get("models").and_then(Value::as_array).unwrap();
         assert_eq!(models.len(), 2, "the system namespaces are excluded");
         let other = models
@@ -3241,7 +3736,7 @@ mod tests {
     #[test]
     fn get_ast_resolved_adds_the_declaring_namespace() {
         let mgr = manager_with_clean_import();
-        let ast = mgr.get_ast(true, false).unwrap();
+        let ast = mgr.models_ast(true, false).unwrap();
         let models = ast.get("models").and_then(Value::as_array).unwrap();
         let clean = models
             .iter()
@@ -3375,8 +3870,8 @@ mod tests {
             .resolve_meta_model(&model(serde_json::json!(["Thing"])))
             .unwrap_err();
         assert!(matches!(
-            err,
-            ConcertoError::Contract(ref c) if c.kind == ErrorKind::JsTypeError
+            err.ported(),
+            Some(c) if c.kind == ErrorKind::MalformedInput
         ));
     }
 
@@ -3387,7 +3882,7 @@ mod tests {
     /// walks every import, not just the ones a lookup happens to reach).
     fn manager_with_clean_import() -> ModelManager {
         let mut mgr = manager();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.clean@1.0.0",
@@ -3423,7 +3918,7 @@ mod tests {
     fn prop(mgr: &ModelManager, fqn: &str, name: &str) -> Node {
         let id = mgr
             .property_ids(mgr.declaration_id(fqn).unwrap())
-            .find(|&id| mgr.property(id).unwrap().name() == name)
+            .find(|&id| mgr.property_by_id(id).unwrap().name() == name)
             .unwrap();
         Node::Property(id)
     }
@@ -3435,7 +3930,7 @@ mod tests {
         let file = mgr.model_file_id("org.example@1.0.0").unwrap();
         let generation = mgr.generation();
 
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.later@1.0.0",
@@ -3464,7 +3959,7 @@ mod tests {
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0", "declarations": []
         });
-        assert!(mgr.add_model(&model, None).is_err());
+        assert!(mgr.load_model(&model, None).is_err());
         assert_eq!(mgr.generation(), generation);
         // The two system models (P1-07b) plus `org.example@1.0.0` from `manager()`.
         assert_eq!(mgr.model_files().count(), 3);
@@ -3489,7 +3984,7 @@ mod tests {
     fn model_manager_add_model_does_not_crash_on_a_non_string_identifier_shaped_name() {
         let mut mgr = ModelManager::new().unwrap();
         let err = mgr
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.acme@1.0.0",
@@ -3535,7 +4030,7 @@ mod tests {
      {
         let mut mgr = ModelManager::new().unwrap();
         let err = mgr
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3575,7 +4070,7 @@ mod tests {
         let employee = mgr.declaration_id("org.example@1.0.0.Employee").unwrap();
         let props: Vec<PropId> = mgr.property_ids(employee).collect();
         assert_eq!(props.len(), 1);
-        assert_eq!(mgr.property(props[0]).unwrap().name(), "salary");
+        assert_eq!(mgr.property_by_id(props[0]).unwrap().name(), "salary");
         assert_eq!(mgr.parent_of(props[0]), Some(employee));
 
         // An enum's own values get `PropId`s too (P2-04), addressed the same
@@ -3583,8 +4078,8 @@ mod tests {
         let color = mgr.declaration_id("org.example@1.0.0.Color").unwrap();
         let color_props: Vec<PropId> = mgr.property_ids(color).collect();
         assert_eq!(color_props.len(), 1);
-        assert_eq!(mgr.property(color_props[0]).unwrap().name(), "RED");
-        assert!(mgr.property(color_props[0]).unwrap().is_enum_value());
+        assert_eq!(mgr.property_by_id(color_props[0]).unwrap().name(), "RED");
+        assert!(mgr.property_by_id(color_props[0]).unwrap().is_enum_value());
         assert_eq!(mgr.parent_of(color_props[0]), Some(color));
         // Model files are listed in load order: the decorator model, then the
         // root model (P1-07b, matching TS's `addDecoratorModel(); addRootModel();`).
@@ -3627,7 +4122,7 @@ mod tests {
     #[test]
     fn class_declarations_exclude_maps_and_scalars() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.mapscalar@1.0.0",
@@ -3663,7 +4158,7 @@ mod tests {
     /// type reference, the only things `resolveMetaModel` would add).
     fn aliasing_manager() -> ModelManager {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "child@1.0.0",
@@ -3677,7 +4172,7 @@ mod tests {
             None,
         )
         .unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "parent@1.0.0",
@@ -3711,9 +4206,9 @@ mod tests {
         let child = mgr.declaration_id("parent@1.0.0.Child").unwrap();
         let kid = mgr
             .property_ids(child)
-            .find(|id| mgr.property(*id).unwrap().name() == "kid")
+            .find(|id| mgr.property_by_id(*id).unwrap().name() == "kid")
             .unwrap();
-        assert_eq!(mgr.property(kid).unwrap().type_name(), Some("Kid"));
+        assert_eq!(mgr.property_by_id(kid).unwrap().type_name(), Some("Kid"));
     }
 
     /// TS: `property.getFullyQualifiedTypeName().should.equal('child@1.0.0.Child')`
@@ -3724,7 +4219,7 @@ mod tests {
         let child = mgr.declaration_id("parent@1.0.0.Child").unwrap();
         let kid = mgr
             .property_ids(child)
-            .find(|id| mgr.property(*id).unwrap().name() == "kid")
+            .find(|id| mgr.property_by_id(*id).unwrap().name() == "kid")
             .unwrap();
         assert_eq!(
             mgr.get_fully_qualified_type_name(&Node::Property(kid))
@@ -3740,7 +4235,7 @@ mod tests {
         let child = mgr.declaration_id("parent@1.0.0.Child").unwrap();
         let kid = mgr
             .property_ids(child)
-            .find(|id| mgr.property(*id).unwrap().name() == "kid")
+            .find(|id| mgr.property_by_id(*id).unwrap().name() == "kid")
             .unwrap();
         assert_eq!(
             mgr.get_fully_qualified_name(&Node::Property(kid)).unwrap(),
@@ -3755,7 +4250,7 @@ mod tests {
         assert!(mgr.declaration(stale).is_none());
         assert!(mgr.model_file_of(stale).is_none());
         assert_eq!(mgr.property_ids(stale).count(), 0);
-        assert!(mgr.property(PropId::from_index(u32::MAX)).is_none());
+        assert!(mgr.property_by_id(PropId::from_index(u32::MAX)).is_none());
         assert_eq!(
             mgr.declaration_ids(ModelFileId::from_index(u32::MAX))
                 .count(),
@@ -3931,10 +4426,10 @@ mod tests {
             "end": {"line": 3, "column": 9, "offset": 28}
         });
         let err = mgr
-            .resolve_type_name("org.does.not.exist@1.0.0", "Foo", Some(location.clone()))
+            .resolve_type_name_at("org.does.not.exist@1.0.0", "Foo", Some(location.clone()))
             .unwrap_err();
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, Some(location)),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -3943,10 +4438,10 @@ mod tests {
     fn resolve_type_name_with_no_location_carries_none() {
         let mgr = ModelManager::new().unwrap();
         let err = mgr
-            .resolve_type_name("org.does.not.exist@1.0.0", "Foo", None)
+            .resolve_type_name_at("org.does.not.exist@1.0.0", "Foo", None)
             .unwrap_err();
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, None),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, None),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -3993,7 +4488,9 @@ mod tests {
         // first and validates once, so the order they are listed in does not
         // matter.
         let mut mgr = ModelManager::new().unwrap();
-        let ids = mgr.add_models([(&dependent, None), (&base, None)]).unwrap();
+        let ids = mgr
+            .load_models([(&dependent, None), (&base, None)])
+            .unwrap();
         assert_eq!(ids.len(), 2);
         assert!(mgr.validate_models().is_ok());
         assert!(
@@ -4003,7 +4500,7 @@ mod tests {
 
         // The reverse order validates just as cleanly.
         let mut mgr2 = ModelManager::new().unwrap();
-        mgr2.add_models([(&base, None), (&dependent, None)])
+        mgr2.load_models([(&base, None), (&dependent, None)])
             .unwrap();
         assert!(mgr2.validate_models().is_ok());
     }
@@ -4022,7 +4519,7 @@ mod tests {
         // is otherwise well formed, so only the missing super type is at
         // fault.
         let dependent = dependent_model();
-        let err = mgr.add_models([(&dependent, None)]).unwrap_err();
+        let err = mgr.load_models([(&dependent, None)]).unwrap_err();
         assert!(err.to_string().contains("Base"), "{err}");
 
         // Nothing from the failed batch survives: not the new namespace, not
@@ -4042,7 +4539,7 @@ mod tests {
         let generation = mgr.generation();
         let base = base_model();
 
-        assert!(mgr.add_models([(&base, None), (&base, None)]).is_err());
+        assert!(mgr.load_models([(&base, None), (&base, None)]).is_err());
 
         assert_eq!(mgr.generation(), generation);
         assert_eq!(mgr.model_file_id("org.base@1.0.0"), None);
@@ -4061,7 +4558,7 @@ mod tests {
         let other = base_model();
         // The clash is listed second, so the first model in the batch does
         // get inserted before the failure — and must be undone too.
-        assert!(mgr.add_models([(&other, None), (&clash, None)]).is_err());
+        assert!(mgr.load_models([(&other, None), (&clash, None)]).is_err());
 
         assert_eq!(mgr.generation(), generation);
         assert_eq!(mgr.model_files().count(), count_before);
@@ -4073,7 +4570,8 @@ mod tests {
         let mut mgr = manager();
         let base = base_model();
         let dependent = dependent_model();
-        mgr.add_models([(&dependent, None), (&base, None)]).unwrap();
+        mgr.load_models([(&dependent, None), (&base, None)])
+            .unwrap();
         // The pre-existing models (from `manager()`) are still there and
         // still validate, alongside the two the batch added.
         assert!(mgr.get_declaration("org.example@1.0.0.Manager").is_ok());
@@ -4174,7 +4672,7 @@ mod tests {
         // Person has no explicit `isAbstract`; make an abstract type to
         // exercise the "false even against itself" branch TS's own test
         // covers (`isAssignableTo should return false when fqn is abstract`).
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.abs@1.0.0",
@@ -4202,7 +4700,7 @@ mod tests {
     #[test]
     fn get_assignable_concrete_types_leaves_out_the_abstract_base_and_absent_types() {
         let mut mgr = manager();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.abs2@1.0.0",
@@ -4239,7 +4737,7 @@ mod tests {
     #[test]
     fn get_models_names_a_file_from_its_file_name() {
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.named@1.0.0", "declarations": []
@@ -4347,7 +4845,7 @@ mod tests {
     fn filter_keeps_only_matching_declarations_and_the_system_models() {
         let mgr = manager();
         let kept = mgr
-            .filter(|fqn| fqn == "org.example@1.0.0.Person", false)
+            .filter_by_fqn(|fqn| fqn == "org.example@1.0.0.Person", false)
             .unwrap();
         assert!(kept.model_file("org.example@1.0.0").is_some());
         assert!(kept.get_declaration("org.example@1.0.0.Person").is_ok());
@@ -4359,7 +4857,7 @@ mod tests {
     #[test]
     fn filter_drops_a_file_left_with_no_declarations() {
         let mgr = manager();
-        let kept = mgr.filter(|_| false, true).unwrap();
+        let kept = mgr.filter_by_fqn(|_| false, true).unwrap();
         assert!(kept.model_file("org.example@1.0.0").is_none());
     }
 
@@ -4459,7 +4957,7 @@ mod tests {
     fn update_external_models_with_nothing_downloaded_still_validates() {
         let mut mgr = manager();
         assert!(mgr.update_external_models([]).unwrap().is_empty());
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.bad@1.0.0",
@@ -4502,7 +5000,7 @@ mod tests {
                 "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup } })
         };
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.cycle@1.0.0",
@@ -4512,19 +5010,20 @@ mod tests {
         )
         .unwrap();
         for err in [
-            mgr.get_all_properties("org.cycle@1.0.0.A").unwrap_err(),
+            mgr.properties("org.cycle@1.0.0.A").unwrap_err(),
             mgr.validate_models().unwrap_err(),
         ] {
-            let ConcertoError::Contract(c) = err else {
+            let Some(c) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
-            assert_eq!(c.kind, ErrorKind::JsRangeError);
+            assert_eq!(c.kind, ErrorKind::RecursionLimit);
             assert_eq!(c.message(), "Maximum call stack size exceeded");
             assert_eq!(c.location, None);
         }
     }
 
     #[test]
+    #[allow(deprecated)]
     fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
         // TS `ClassDeclaration._resolveSuperType`, for an *imported* super
         // type, resolves it through
@@ -4540,7 +5039,7 @@ mod tests {
         // `unit/ClassDeclaration.getIdentifierFieldName/557a5087518a8343fade9b97`)
         // reuses the same catalogue entry `BaseModelManager.getType` does.
         let mut mgr = ModelManager::new().unwrap();
-        mgr.add_model(
+        mgr.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme.l2@1.0.0",
@@ -4561,10 +5060,9 @@ mod tests {
         for err in [
             mgr.identifier_field_name("org.acme.l2@1.0.0.Vehicle")
                 .unwrap_err(),
-            mgr.get_all_properties("org.acme.l2@1.0.0.Vehicle")
-                .unwrap_err(),
+            mgr.properties("org.acme.l2@1.0.0.Vehicle").unwrap_err(),
         ] {
-            let ConcertoError::Contract(c) = err else {
+            let Some(c) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
             assert_eq!(c.kind, ErrorKind::TypeNotFound);

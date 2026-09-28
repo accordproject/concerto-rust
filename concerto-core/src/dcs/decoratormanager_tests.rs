@@ -42,7 +42,7 @@ fn model_manager_with(ast_json: &str, file_name: &str) -> ModelManager {
     let ast: Value = serde_json::from_str(ast_json).expect("test AST is JSON");
     let mut model_manager = ModelManager::new().unwrap();
     model_manager
-        .add_models([(&ast, Some(file_name.to_string()))])
+        .load_models([(&ast, Some(file_name.to_string()))])
         .unwrap();
     model_manager
 }
@@ -108,11 +108,7 @@ fn has_element_decorator(map: &Value, element: &str, name: &str) -> bool {
 fn decorates_the_specified_map_declaration() {
     let decorated = decorate_test_cto(MAP_DECLARATION_DCS, validate_and_validate_commands());
     let dictionary = decorated.get_declaration("test@1.0.0.Dictionary").unwrap();
-    assert!(
-        dictionary
-            .get_decorator("MapDeclarationDecorator")
-            .is_some()
-    );
+    assert!(dictionary.decorator("MapDeclarationDecorator").is_some());
 }
 
 // "should decorate the specified element on the specified Map Declaration (Map Key)"
@@ -207,11 +203,7 @@ fn decorates_the_specified_type_on_the_specified_map_declaration_map_value() {
 fn decorates_declaration_key_and_value_elements_on_the_specified_map_declaration() {
     let decorated = decorate_test_cto(MAP_DECLARATION_DCS, validate_and_validate_commands());
     let dictionary = decorated.get_declaration("test@1.0.0.Dictionary").unwrap();
-    assert!(
-        dictionary
-            .get_decorator("MapDeclarationDecorator")
-            .is_some()
-    );
+    assert!(dictionary.decorator("MapDeclarationDecorator").is_some());
     let dictionary = map_declaration_ast(&decorated, "Dictionary");
     assert!(has_element_decorator(dictionary, "key", "Baz"));
     assert!(has_element_decorator(dictionary, "value", "Baz"));
@@ -465,7 +457,7 @@ fn preserves_type_reference_arguments_when_extracting_decorators() {
     )
     .unwrap();
     let person = decorated.get_declaration("test@1.0.0.Person").unwrap();
-    let form = person.get_decorator("Form").unwrap();
+    let form = person.decorator("Form").unwrap();
     assert!(matches!(
         form.arguments().first(),
         Some(crate::introspect::DecoratorArgument::TypeReference(t)) if t.name == "Address"

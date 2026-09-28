@@ -56,12 +56,9 @@ use std::collections::HashSet;
 
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
+use concerto_core::instance::InstanceEnv;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::resource_id::ResourceId;
-use concerto_core::instance::{
-    Instance, InstanceEnv, InstanceKind, JsValue as CoreValue, Serializer, SerializerOptions,
-};
-use concerto_core::instance::{generator, populator};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{
     self, Decorator, DecoratorArgument, DecoratorValidationOptions,
@@ -76,7 +73,9 @@ use concerto_core::introspect::validators::{
 use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
-use concerto_core::{ConcertoError, ModelFile, ModelManager, Named};
+use concerto_core::{Error as CoreError, ModelFile, ModelManager};
+use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
+use concerto_core_js::{Serializer, SerializerOptions, generator, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
@@ -123,27 +122,14 @@ impl From<ContractError> for Error {
     }
 }
 
-impl From<ConcertoError> for Error {
-    fn from(err: ConcertoError) -> Self {
-        match err {
-            ConcertoError::Contract(err) => Self::Contract(err),
-            // The loader's errors that no unit has ported yet (the manager's
-            // duplicate namespace, its circular-inheritance and handle
-            // checks): they leave through the error factory like every other
-            // core error, with the `pre-port` code and their message verbatim
-            // (error/mod.rs, `ContractError::pre_port`), so the shim still
-            // picks the TS class from `kind`.
-            ConcertoError::IllegalModel {
-                message, location, ..
-            } => ContractError::pre_port(ErrorKind::IllegalModel, message, location).into(),
-            ConcertoError::TypeNotFound { type_name } => {
-                let message = format!("type not found: {type_name}");
-                let mut err = ContractError::pre_port(ErrorKind::TypeNotFound, message, None);
-                // `TypeNotFound` payloads carry `typeName` (table 2.3).
-                err.params.push(("typeName", type_name));
-                err.into()
-            }
-        }
+impl From<CoreError> for Error {
+    fn from(err: CoreError) -> Self {
+        // A check that no unit has ported yet (the manager's duplicate
+        // namespace, its circular-inheritance and handle checks) carries the
+        // `pre-port` code and its message verbatim (error/mod.rs,
+        // `ContractError::pre_port`), so the shim still picks the TS class
+        // from `kind`, like every other core error.
+        Self::Contract(Box::new(err.into_contract()))
     }
 }
 
@@ -155,10 +141,13 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::TypeNotFound => "TypeNotFound",
         ErrorKind::Validator => "Validator",
         ErrorKind::Validation => "Validation",
-        ErrorKind::Error => "Error",
-        ErrorKind::JsTypeError => "JsTypeError",
-        ErrorKind::JsRangeError => "JsRangeError",
+        ErrorKind::InvalidArgument => "Error",
+        ErrorKind::MalformedInput => "JsTypeError",
+        ErrorKind::RecursionLimit => "JsRangeError",
         ErrorKind::Metamodel => "Metamodel",
+        // `ErrorKind` is `#[non_exhaustive]`; a new kind is a plain `Error`
+        // until the shim learns it.
+        _ => "Error",
     }
 }
 
@@ -254,12 +243,12 @@ fn run<T>(body: impl FnOnce() -> Result<T>) -> std::result::Result<T, JsValue> {
 
 /// A V8 `TypeError`, built through the catalogue.
 fn type_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(ErrorKind::JsTypeError, code, params).into()
+    ContractError::new(ErrorKind::MalformedInput, code, params).into()
 }
 
 /// A catalogue `Error`, built the same way `type_error` builds a `TypeError`.
 fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(ErrorKind::Error, code, params).into()
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// JS `String(value)`.
@@ -575,7 +564,7 @@ impl ResolutionContext for JsContext {
 /// TS: ModelUtil.getShortName
 #[wasm_bindgen(js_name = modelUtilGetShortName)]
 pub fn model_util_get_short_name(fqn: JsValue) -> std::result::Result<String, JsValue> {
-    run(|| Ok(mu::get_short_name(&receiver(&fqn, "fqn", "lastIndexOf")?).to_string()))
+    run(|| Ok(mu::short_name(&receiver(&fqn, "fqn", "lastIndexOf")?).to_string()))
 }
 
 /// TS: ModelUtil.getNamespace. `!fqn` covers every falsy value.
@@ -601,9 +590,9 @@ pub fn model_util_parse_namespace(
         let disable = !nullish(&options) && get(&options, "disableVersionParsing")?.is_truthy();
         let parsed = if ns.is_truthy() {
             let ns = receiver(&ns, "ns", "split")?;
-            mu::parse_namespace(Some(&ns), disable)?
+            mu::parse_namespace_with(Some(&ns), disable)?
         } else {
-            mu::parse_namespace(None, disable)?
+            mu::parse_namespace_with(None, disable)?
         };
         let out = Object::new();
         match parsed {
@@ -723,7 +712,7 @@ pub fn model_util_get_fully_qualified_name(
         if !namespace.is_truthy() {
             return Ok(type_name);
         }
-        let joined = mu::get_fully_qualified_name(&js_string(&namespace)?, &js_string(&type_name)?);
+        let joined = mu::qualify(&js_string(&namespace)?, &js_string(&type_name)?);
         Ok(JsValue::from_str(&joined))
     })
 }
@@ -1728,6 +1717,9 @@ fn decorators_view_snapshot(decorators: Option<&Value>) -> Option<Value> {
                     Some(array) => json!({ "type": "Identifier", "name": t.name, "array": array }),
                     None => json!({ "type": "Identifier", "name": t.name }),
                 },
+                // `DecoratorArgument` is `#[non_exhaustive]`: a kind the
+                // fast path does not know falls back to the view.
+                _ => return None,
             });
         }
         let mut entry = serde_json::Map::new();
@@ -1940,7 +1932,7 @@ fn declaration_view_entry(declaration: &ViewDeclaration, namespace: &str) -> Opt
     if namespace.is_empty() || !mu::is_valid_identifier(name) {
         return None;
     }
-    let fqn = mu::get_fully_qualified_name(namespace, name);
+    let fqn = mu::qualify(namespace, name);
 
     // `ModelFile.fromAst`'s default super type for four declaration kinds.
     let class = declaration.class.as_ref().and_then(Value::as_str);
@@ -3711,6 +3703,9 @@ fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
             set(&out, "array", &array);
             out.into()
         }
+        // `DecoratorArgument` is `#[non_exhaustive]`; no other kind exists
+        // today.
+        _ => JsValue::UNDEFINED,
     }
 }
 
@@ -4154,10 +4149,7 @@ fn check_type_reference_argument(
 /// A handle that names nothing in this manager, as the arena reports one
 /// (`model_manager.rs`, `unknown`): a `TypeNotFound` naming the node.
 fn unknown(node: Node) -> Error {
-    ConcertoError::TypeNotFound {
-        type_name: format!("{node:?}"),
-    }
-    .into()
+    CoreError::type_not_found(format!("{node:?}")).into()
 }
 
 /// A snapshot as the JSON text that crosses the boundary: one string per
@@ -4203,7 +4195,7 @@ const WIRE_TAG: &str = "@@oracle";
 /// way as any other not-yet-ported call site (PORTING.md 7.2), rather than
 /// through the message catalogue.
 fn wire_error(reason: String) -> Error {
-    ContractError::pre_port(ErrorKind::Error, reason, None).into()
+    ContractError::pre_port(ErrorKind::InvalidArgument, reason, None).into()
 }
 
 /// A JS number that is not finite, or `-0`, in [`WIRE_TAG`]'s `"number"`
@@ -4576,12 +4568,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace.to_string(),
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace.to_string()).into())
         })
     }
 
@@ -4796,7 +4783,7 @@ impl ModelManagerHandle {
             let ast = self.declaration_ast(id)?;
             snapshot(&json!({
                 "name": found.name(),
-                "fullyQualifiedName": mu::get_fully_qualified_name(file.namespace(), found.name()),
+                "fullyQualifiedName": mu::qualify(file.namespace(), found.name()),
                 "modelFile": file_id.index(),
                 "ast": ast,
             }))
@@ -4811,7 +4798,7 @@ impl ModelManagerHandle {
         run(|| {
             let id = PropId::from_index(property);
             let missing = || unknown(Node::Property(id));
-            let found = self.manager.property(id).ok_or_else(missing)?;
+            let found = self.manager.property_by_id(id).ok_or_else(missing)?;
             let parent = self.manager.parent_of(id).ok_or_else(missing)?;
             let index = self
                 .manager
@@ -4921,12 +4908,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace,
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
         })
     }
 
@@ -4974,12 +4956,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(|id| Some(ModelFileId::index(id)))
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace,
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
         })
     }
 
@@ -5065,12 +5042,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace,
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
         })
     }
 
@@ -5140,7 +5112,7 @@ impl ModelManagerHandle {
         run(|| {
             Ok(self
                 .require_file(model_file)?
-                .get_imports()
+                .imported_type_names()
                 .iter()
                 .map(|n| JsValue::from_str(n))
                 .collect())
@@ -5158,7 +5130,7 @@ impl ModelManagerHandle {
         run(|| {
             let file = self.require_file(model_file)?;
             let out = Object::new();
-            for (fqn, uri) in file.get_external_imports() {
+            for (fqn, uri) in file.external_imports() {
                 Reflect::set(&out, &JsValue::from_str(&fqn), &JsValue::from_str(&uri))
                     .map_err(Error::Js)?;
             }
@@ -5264,7 +5236,7 @@ impl ModelManagerHandle {
                     mf.declarations().iter().map(move |decl| {
                         (
                             decl as *const concerto_core::introspect::Declaration,
-                            mu::get_fully_qualified_name(namespace, decl.name()),
+                            mu::qualify(namespace, decl.name()),
                         )
                     })
                 })
@@ -5279,9 +5251,7 @@ impl ModelManagerHandle {
                     let fqn = fqn_by_decl
                         .get(&(decl as *const concerto_core::introspect::Declaration))
                         .cloned()
-                        .unwrap_or_else(|| {
-                            mu::get_fully_qualified_name(&file_namespace, decl.name())
-                        });
+                        .unwrap_or_else(|| mu::qualify(&file_namespace, decl.name()));
                     match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
                         Ok(v) => v.is_truthy(),
                         Err(e) => {
@@ -5301,18 +5271,15 @@ impl ModelManagerHandle {
             let ast = filtered.ast().clone();
             let ns = filtered.namespace().to_string();
             let new_file_name = filtered.file_name().map(str::to_string);
-            target.manager.add_model(&ast, new_file_name)?;
+            target
+                .manager
+                .add_model_with_definitions(&ast, None, new_file_name)?;
             target
                 .manager
                 .model_file_id(&ns)
                 .map(ModelFileId::index)
                 .map(Some)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: ns.clone(),
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(ns.clone()).into())
         })
     }
 }
@@ -5373,7 +5340,7 @@ pub fn model_file_from_ast(
             "fileName": file.file_name(),
             "ast": file.ast(),
             "isSystemModelFile": file.is_system_namespace(),
-            "imports": file.get_imports(),
+            "imports": file.imported_type_names(),
         }))
     })
 }
@@ -5513,7 +5480,7 @@ impl ModelManagerHandle {
 fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     for model in models {
-        mm.add_model(model, None)?;
+        mm.add_model_with_definitions(model, None, None)?;
     }
     Ok(mm)
 }
@@ -5530,7 +5497,7 @@ fn model_manager_from_asts_with_user_ns(
     let mut mm = ModelManager::new()?;
     let mut user_ns = HashSet::new();
     for model in models {
-        mm.add_model(model, None)?;
+        mm.add_model_with_definitions(model, None, None)?;
         if let Some(ns) = model.get("namespace").and_then(Value::as_str) {
             user_ns.insert(ns.to_string());
         }

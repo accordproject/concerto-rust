@@ -570,7 +570,7 @@ For each `throw` in the member you port:
    `Cannot read properties of undefined (reading 'decorator')`, or a RegExp
    `SyntaxError`) is still part of the behaviour when an oracle fixture or a
    unit test observes it. The corpus holds 92 such `TypeError` fixtures. Port
-   it as `ErrorKind::JsTypeError` (or the matching engine kind), using the
+   it as `ErrorKind::MalformedInput` (or the matching engine kind), using the
    exact V8 message text as the template, and record it in `DIVERGENCES.md`
    as `ts-bug` (section 7.3). Stack overflow is one such case, with its own
    rule (2.5).
@@ -622,9 +622,9 @@ difference is reported for information, not judged (section 2).
 | `Validation` | `ValidationException(message)` | `@accordproject/concerto-util` | the BaseException default component |
 | `Metamodel` | `MetamodelException(message)` | `@accordproject/concerto-util` | |
 | `Validator` | concerto-util `BaseException(message, undefined, errorType)` | `@accordproject/concerto-util` | the message is `Validator error for field \`<id>\`. <fqn>: <msg>` (`Validator.reportError`), rendered whole in Rust (catalogue `validator-reporterror`); `code` is the inner message's key. `errorType` is `DefaultValidatorException` or `RegexValidatorException`. |
-| `Error` | `Error(message)` | `null` | 638 fixtures |
-| `JsTypeError` | `TypeError(message)` | `null` | reproduced engine errors (2.2 step 3); 92 fixtures |
-| `JsRangeError` | `RangeError(message)` | `null` | stack overflow at a TS recursion point, message `Maximum call stack size exceeded`, location `None` (2.5); 4 fixtures |
+| `InvalidArgument` | `Error(message)` | `null` | 638 fixtures |
+| `MalformedInput` | `TypeError(message)` | `null` | reproduced engine errors (2.2 step 3); 92 fixtures |
+| `RecursionLimit` | `RangeError(message)` | `null` | stack overflow at a TS recursion point, message `Maximum call stack size exceeded`, location `None` (2.5); 4 fixtures |
 
 Error classes in the corpus, for the census a P1-05 or P1-07 check can repeat
 (`grep -rhoE '"error": ?\{"class": ?"[A-Za-z]+"' fixtures | sort | uniq -c`):
@@ -636,7 +636,7 @@ except `ParseException` has a kind above.
 `ParseException` (225 fixtures) always comes from concerto-cto in JS, and Rust
 never produces it. `SecurityException` has no throw site. The trial (P0-04b)
 added `ErrorKind` with the four kinds its units raise (`IllegalModel`,
-`Validator`, `Error`, `JsTypeError`) and the `ConcertoError::Contract` variant
+`Validator`, `InvalidArgument`, `MalformedInput`) and the `ConcertoError::Contract` variant
 that carries a `ContractError` (2.1). The rest of `ConcertoError`
 (`concerto-core/src/error.rs`) is pre-port; its variants `ConcertoError::NamespaceNotFound`
 (raised in `model_manager.rs`) and `ConcertoError::ValidationFailed` (raised
@@ -705,7 +705,7 @@ Rules:
    an explicit visited set or depth counter.
 2. **When the walk meets the condition under which TS recurses forever** (a
    cycle: a declaration seen again on the same walk), return
-   `ErrorKind::JsRangeError` with the V8 text `Maximum call stack size exceeded`
+   `ErrorKind::RecursionLimit` with the V8 text `Maximum call stack size exceeded`
    verbatim (catalogue key `engine-rangeerror-maxcallstack`, no params,
    location `None`). Return it at the TS recursion point, in the same phase,
    and after exactly the checks TS runs before it gets there (2.4). Every
@@ -1052,9 +1052,19 @@ concerto-wasm/      wasm-bindgen binding (P4-01): the ModelManagerHandle handle 
     `concerto-wasm`.
   - `DeclId` and `PropId` are ordinary core types, because the arena uses them
     natively. Their JS wrappers belong in `concerto-wasm`.
+  - The JS object model (`JsValue`, `Instance`, the `Serializer`,
+    `Factory`, `JSONPopulator` and `JSONGenerator`) lives in the
+    `concerto-core-js` crate, which concerto-wasm depends on (P6-01 step 5,
+    `docs/public-api.md` section 4.6). The seam it is built on (the `$$` tag
+    encoding, `Dayjs`, `ResourceId`, the TS exception-class mapping and the
+    collaborator traits) is public only with core's `js-compat` feature,
+    which concerto-core-js and concerto-wasm enable.
   - Check: `cargo tree -p accordproject-concerto-core -e normal | grep -E 'wasm-bindgen|js-sys|web-sys'`
-    prints nothing, and `grep -rn 'wasm_bindgen\|JsValue' concerto-core/src`
-    prints nothing.
+    prints nothing, no `#[wasm_bindgen]` appears in `concerto-core/src`,
+    `grep -rn 'JsValue' concerto-core/src` finds no type of that name, and
+    rustdoc for core with default features (`cargo doc -p
+    accordproject-concerto-core --no-deps`) has no page for `Dayjs`,
+    `SerializerOptions`, a `$$` tag constant or `ts_class`.
 - Core's public API is idiomatic Rust (`&str`, `Option`, `Result<_, ConcertoError>`,
   iterators). TS-shaped conveniences that exist only for a view belong in
   `concerto-wasm`.
@@ -1601,7 +1611,7 @@ any item fails, and cite the item number.
      paths (3.7).
 6. Every TS quirk found is ported, tested, and has a `DV-` row. Nothing is
    silently fixed. A TS recursion over model data is a loop in Rust, and an
-   unbounded one returns `JsRangeError` at the TS recursion point, never a
+   unbounded one returns `RecursionLimit` at the TS recursion point, never a
    native stack overflow and never a new cycle error (2.5).
 
 **Structure**

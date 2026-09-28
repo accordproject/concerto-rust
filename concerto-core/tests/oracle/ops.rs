@@ -95,15 +95,13 @@
 //!   (accordproject/concerto-rust#265).
 
 use concerto_core::dcs;
-use concerto_core::error::{ConcertoError, ErrorKind};
+use concerto_core::error::{Error, ErrorKind};
 use concerto_core::introspect::declaration::ClassDeclaration;
 use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
-use concerto_core::introspect::{
-    Declaration, DeclarationKind, MapDeclaration, Named, Typed, Validate,
-};
+use concerto_core::introspect::{Declaration, DeclarationKind, MapDeclaration, Validate};
 use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use concerto_core::validation;
@@ -115,7 +113,7 @@ use super::fixture::Inputs;
 use super::recipe::{self, Arg, Fault, Faulty, M, Replayed, Session};
 
 /// An error outcome in the oracle's `outcome.error` shape (README "Fixture
-/// schema"), built from a [`ConcertoError`] the same way the TS reference's
+/// schema"), built from a [`Error`] the same way the TS reference's
 /// exception constructors would (PORTING.md section 2).
 #[derive(Debug, Clone)]
 pub struct OracleError {
@@ -241,7 +239,7 @@ fn ran(outcome: recipe::Outcome) -> Dispatch {
     })
 }
 
-fn from_engine<T>(result: Result<T, ConcertoError>, encode: impl FnOnce(T) -> Value) -> Dispatch {
+fn from_engine<T>(result: Result<T, Error>, encode: impl FnOnce(T) -> Value) -> Dispatch {
     ran(result.map(encode).map_err(|e| to_oracle_error(&e)))
 }
 
@@ -305,13 +303,13 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         };
     }
 
-    let outcome: Result<Value, ConcertoError> = match op {
+    let outcome: Result<Value, Error> = match op {
         "ModelUtil.getShortName" => {
             let arg0 = decode::arg(&args, 0);
             let Ok(fqn) = decode::as_str(&arg0) else {
                 bad_args!()
             };
-            Ok(Value::String(model_util::get_short_name(fqn).to_string()))
+            Ok(Value::String(model_util::short_name(fqn).to_string()))
         }
         "ModelUtil.getNamespace" => {
             let arg0 = decode::arg(&args, 0);
@@ -328,7 +326,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
             let Ok(disable) = decode::disable_version_parsing(args.get(1)) else {
                 bad_args!()
             };
-            model_util::parse_namespace(ns, disable).map(encode_parsed_namespace)
+            model_util::parse_namespace_with(ns, disable).map(encode_parsed_namespace)
         }
         "ModelUtil.importFullyQualifiedNames" => {
             let arg0 = decode::arg(&args, 0);
@@ -400,9 +398,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
                 let Ok(type_name) = decode::as_str(&arg1) else {
                     bad_args!()
                 };
-                Ok(Value::String(model_util::get_fully_qualified_name(
-                    ns, type_name,
-                )))
+                Ok(Value::String(model_util::qualify(ns, type_name)))
             }
         }
         "ModelUtil.removeNamespaceVersionFromFullyQualifiedName" => {
@@ -935,8 +931,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                             ))
                         },
                     ),
-                    "getType" => ran(Ok(scalar
-                        .scalar_type()
+                    "getType" => ran(Ok(concerto_core::Typed::type_name(scalar)
                         .map_or(Value::Null, |t| Value::String(t.to_string())))),
                     "getDefaultValue" => {
                         ran(Ok(scalar.default_value().cloned().unwrap_or(Value::Null)))
@@ -1291,9 +1286,10 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 let name = declaration.name();
                 Ok(match member {
                     "getName" => ran(Ok(Value::String(name.to_string()))),
-                    "getFullyQualifiedName" => ran(Ok(Value::String(
-                        model_util::get_fully_qualified_name(file.namespace(), name),
-                    ))),
+                    "getFullyQualifiedName" => ran(Ok(Value::String(model_util::qualify(
+                        file.namespace(),
+                        name,
+                    )))),
                     _ => unsupported(format!(
                         "Declaration.{member} on a declaration of a model file never registered"
                     )),
@@ -1344,7 +1340,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 ));
             };
             let r = &session.pool[index];
-            let Some(property) = r.mm.property(id) else {
+            let Some(property) = r.mm.property_by_id(id) else {
                 return Err(Fault::Divergence(
                     "state divergence: the property handle does not resolve".into(),
                 ));
@@ -1368,7 +1364,7 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
                 ));
             };
             let r = &session.pool[index];
-            let Some(property) = r.mm.property(id) else {
+            let Some(property) = r.mm.property_by_id(id) else {
                 return Err(Fault::Divergence(
                     "state divergence: the property handle does not resolve".into(),
                 ));
@@ -1482,19 +1478,19 @@ struct PropertyElement {
 }
 
 impl concerto_core::introspect::FullyQualified for PropertyElement {
-    type Error = ConcertoError;
+    type Error = Error;
 
-    fn fully_qualified_name(&self) -> Result<String, ConcertoError> {
+    fn fully_qualified_name(&self) -> Result<String, Error> {
         Ok(self.fqn.clone())
     }
 }
 
 impl concerto_core::model_manager::ValidatedElement for PropertyElement {
-    fn default_value(&self) -> Result<Option<Value>, ConcertoError> {
+    fn default_value(&self) -> Result<Option<Value>, Error> {
         Ok(self.default_value.clone())
     }
 
-    fn name(&self) -> Result<String, ConcertoError> {
+    fn name(&self) -> Result<String, Error> {
         Ok(self.name.clone())
     }
 }
@@ -1556,8 +1552,6 @@ fn scalar_declaration_validator(
     decl_id: DeclId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
-    use concerto_core::introspect::Named;
-
     if part != "validator" {
         return Err(Fault::Unsupported(format!(
             "a scalar declaration's validatorref part {part:?} with no Rust counterpart"
@@ -1626,13 +1620,12 @@ fn build_property_validator(
     prop_id: concerto_core::model_manager::PropId,
     part: &str,
 ) -> Faulty<(Validator, PropertyElement)> {
-    use concerto_core::introspect::Named;
     use concerto_core::introspect::Property;
 
     let r = session.pool.get(mm_idx).ok_or_else(|| {
         Fault::Divergence("state divergence: dangling model manager index in a validatorref".into())
     })?;
-    let prop = r.mm.property(prop_id).ok_or_else(|| {
+    let prop = r.mm.property_by_id(prop_id).ok_or_else(|| {
         Fault::Divergence("state divergence: the validatorref's property was not found".into())
     })?;
     let fqn =
@@ -1797,6 +1790,11 @@ fn property_summary(owner_fqn: &str, p: &Property) -> Value {
 /// `get_assignable_class_declarations`/`get_direct_subclasses`) gives, each
 /// resolved back to its declaration and encoded the outcome-only way
 /// (`declaration_summary`).
+/// The fully-qualified names of `found`, in order.
+fn names_of(found: Vec<(String, &Declaration)>) -> Vec<String> {
+    found.into_iter().map(|(name, _)| name).collect()
+}
+
 fn declaration_summaries(r: &Replayed, fqns: &[String]) -> Value {
     Value::Array(
         fqns.iter()
@@ -1850,13 +1848,13 @@ fn class_declaration_op(
             };
             ran(Ok(Value::Bool(value)))
         }
-        "getIdentifierFieldName" => from_engine(r.mm.identifier_field_name(fqn), |name| {
-            name.map_or(Value::Null, Value::String)
+        "getIdentifierFieldName" => from_engine(r.mm.identifier_field(fqn), |name| {
+            name.map_or(Value::Null, |name| Value::String(name.to_string()))
         }),
-        "getOwnProperties" => from_engine(r.mm.get_own_properties(fqn), |props| {
+        "getOwnProperties" => from_engine(r.mm.own_properties(fqn), |props| {
             Value::Array(props.iter().map(|p| property_summary(fqn, p)).collect())
         }),
-        "getProperties" => from_engine(r.mm.get_all_properties(fqn), |props| {
+        "getProperties" => from_engine(r.mm.properties(fqn), |props| {
             Value::Array(
                 props
                     .iter()
@@ -1868,35 +1866,33 @@ fn class_declaration_op(
             let Some(name) = arg_str(0) else {
                 return unsupported("getProperty with a name that is not a string");
             };
-            from_engine(r.mm.get_property(fqn, name), |found| {
-                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, &p))
+            from_engine(r.mm.property(fqn, name), |found| {
+                found.map_or(Value::Null, |(owner, p)| property_summary(&owner, p))
             })
         }
-        "getSuperType" => from_engine(r.mm.get_super_type(fqn), |name| {
-            name.map_or(Value::Null, Value::String)
+        "getSuperType" => from_engine(r.mm.super_type(fqn), |found| {
+            found.map_or(Value::Null, |(name, _)| Value::String(name))
         }),
         "getSuperTypeDeclaration" => from_engine(r.mm.get_super_type_declaration(fqn), |found| {
             found
                 .and_then(|id| r.declaration_summary(id))
                 .unwrap_or(Value::Null)
         }),
-        "getAllSuperTypeDeclarations" => from_engine(r.mm.get_all_super_type_names(fqn), |names| {
-            declaration_summaries(r, &names)
+        "getAllSuperTypeDeclarations" => from_engine(r.mm.super_types(fqn), |found| {
+            declaration_summaries(r, &names_of(found))
         }),
-        "getAssignableClassDeclarations" => {
-            from_engine(r.mm.get_assignable_class_declarations(fqn), |names| {
-                declaration_summaries(r, &names)
-            })
-        }
-        "getDirectSubclasses" => from_engine(r.mm.get_direct_subclasses(fqn), |names| {
-            declaration_summaries(r, &names)
+        "getAssignableClassDeclarations" => from_engine(r.mm.assignable_types(fqn), |found| {
+            declaration_summaries(r, &names_of(found))
+        }),
+        "getDirectSubclasses" => from_engine(r.mm.subclasses(fqn), |found| {
+            declaration_summaries(r, &names_of(found))
         }),
         "getNestedProperty" => {
             let Some(path) = arg_str(0) else {
                 return unsupported("getNestedProperty with a path that is not a string");
             };
-            from_engine(r.mm.get_nested_property(fqn, path), |(owner, p)| {
-                property_summary(&owner, &p)
+            from_engine(r.mm.property_path(fqn, path), |(owner, p)| {
+                property_summary(&owner, p)
             })
         }
         "isEnum" => ran(Ok(Value::Bool(declaration.is_enum_declaration()))),
@@ -1959,6 +1955,9 @@ fn declaration_kind_op(r: &Replayed, id: DeclId) -> Dispatch {
             // TS `ScalarDeclaration` has no `declarationKind` at all.
             return unsupported("declarationKind on a ScalarDeclaration receiver");
         }
+        // `Declaration` is `#[non_exhaustive]`: a kind this harness does not
+        // know yet.
+        _ => return unsupported("declarationKind on an unknown declaration kind"),
     };
     ran(Ok(Value::String(kind.to_string())))
 }
@@ -2072,6 +2071,7 @@ fn declaration_value(namespace: &str, declaration: &Declaration) -> Value {
         Declaration::Enum(_) => "EnumDeclaration",
         Declaration::Scalar(_) => "ScalarDeclaration",
         Declaration::Map(_) => "MapDeclaration",
+        other => other.declaration_kind(),
     };
     json!({
         M: "Declaration",
@@ -2183,38 +2183,41 @@ fn model_file_op(
         "isModelFile" => ran(Ok(Value::Bool(true))),
         "isSystemModelFile" => ran(Ok(Value::Bool(mf.is_system_namespace()))),
         "getAllDeclarations" => ran(Ok(decls(mf.declarations().iter().collect()))),
-        "getClassDeclarations" => ran(Ok(decls(mf.get_class_declarations()))),
-        "getEnumDeclarations" => ran(Ok(decls(mf.get_enum_declarations()))),
-        "getScalarDeclarations" => ran(Ok(decls(mf.get_scalar_declarations()))),
-        "getAssetDeclarations" => ran(Ok(decls(mf.get_asset_declarations()))),
-        "getTransactionDeclarations" => ran(Ok(decls(mf.get_transaction_declarations()))),
-        "getEventDeclarations" => ran(Ok(decls(mf.get_event_declarations()))),
-        "getAssetDeclaration" => ran(Ok(decl(mf.get_asset_declaration(str_arg!(0))))),
-        "getTransactionDeclaration" => ran(Ok(decl(mf.get_transaction_declaration(str_arg!(0))))),
-        "getEventDeclaration" => ran(Ok(decl(mf.get_event_declaration(str_arg!(0))))),
-        "getParticipantDeclaration" => ran(Ok(decl(mf.get_participant_declaration(str_arg!(0))))),
+        "getClassDeclarations" => ran(Ok(decls(mf.class_declarations().collect()))),
+        "getEnumDeclarations" => ran(Ok(decls(mf.enum_declarations().collect()))),
+        "getScalarDeclarations" => ran(Ok(decls(mf.scalar_declarations().collect()))),
+        "getAssetDeclarations" => ran(Ok(decls(mf.asset_declarations().collect()))),
+        "getTransactionDeclarations" => ran(Ok(decls(mf.transaction_declarations().collect()))),
+        "getEventDeclarations" => ran(Ok(decls(mf.event_declarations().collect()))),
+        "getAssetDeclaration" => ran(Ok(decl(mf.asset_declaration(str_arg!(0))))),
+        "getTransactionDeclaration" => ran(Ok(decl(mf.transaction_declaration(str_arg!(0))))),
+        "getEventDeclaration" => ran(Ok(decl(mf.event_declaration(str_arg!(0))))),
+        "getParticipantDeclaration" => ran(Ok(decl(mf.participant_declaration(str_arg!(0))))),
         "getImports" => ran(Ok(Value::Array(
-            mf.get_imports().into_iter().map(Value::String).collect(),
+            mf.imported_type_names()
+                .into_iter()
+                .map(Value::String)
+                .collect(),
         ))),
         // TS `getExternalImports()` returns `this.importUriMap` directly:
         // an object keyed by each import's fully-qualified name, valued by
         // its URI (P2-11b-U4).
         "getExternalImports" => ran(Ok(Value::Object(
-            mf.get_external_imports()
+            mf.external_imports()
                 .into_iter()
                 .map(|(fqn, uri)| (fqn, Value::String(uri)))
                 .collect(),
         ))),
         "getImportURI" => ran(Ok(mf
-            .get_import_uri(str_arg!(0))
+            .import_uri(str_arg!(0))
             .map_or(Value::Null, |u| Value::String(u.to_string())))),
         "isImportedType" => ran(Ok(Value::Bool(mf.is_imported_type(str_arg!(0))))),
         "isLocalType" => ran(Ok(Value::Bool(mf.is_local_type(str_arg!(0))))),
         "isDefined" => ran(Ok(Value::Bool(mf.is_defined(str_arg!(0))))),
         "resolveImport" => from_engine(mf.resolve_import(str_arg!(0)), Value::String),
-        "getImportedType" => from_engine(mf.get_imported_type(str_arg!(0)), Value::String),
+        "getImportedType" => from_engine(mf.imported_type(str_arg!(0)), Value::String),
         "getFullyQualifiedTypeName" => ran(Ok(mf
-            .get_fully_qualified_type_name(str_arg!(0))
+            .fully_qualified_type_name(str_arg!(0))
             .map_or(Value::Null, Value::String))),
         "getModelManager" => match registered_file(session, file) {
             Ok(r) => ran(Ok(r.summary())),
@@ -2545,7 +2548,7 @@ fn unregistered_class_declaration() -> Dispatch {
 /// own `$classDeclaration`, or any declaration up its
 /// `getSuperTypeDeclaration()` chain, has the fully qualified name `fqt`
 /// (compared with `===`, so only a string can match).
-fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoError> {
+fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, Error> {
     let fqt = fqt.as_str();
     let mut current = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
     if fqt == Some(current.as_str()) {
@@ -2563,7 +2566,7 @@ fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoEr
 
 /// TS `Relationship.fromURI(modelManager, uriAsString, defaultNamespace?,
 /// defaultType?)` (src/model/relationship.ts), over
-/// [`concerto_core::instance::factory::relationship_from_uri`] (which looks
+/// [`concerto_core_js::factory::relationship_from_uri`] (which looks
 /// the type up with `BaseModelManager.getType`,
 /// [`ModelManager::get_type_declaration`]), written as the oracle encodes a
 /// `Typed` value ([`super::instances::encode_instance`]).
@@ -2584,7 +2587,7 @@ fn relationship_from_uri(session: &Session, args: &[Arg]) -> Dispatch {
     };
     let r = &session.pool[*index];
     from_engine(
-        concerto_core::instance::factory::relationship_from_uri(
+        concerto_core_js::factory::relationship_from_uri(
             &r.mm,
             uri,
             default_namespace,
@@ -2610,7 +2613,7 @@ fn fully_qualified_identifier(inst: &recipe::DecodedInstance) -> String {
 /// [`concerto_core::instance::resource_id::ResourceId::new`] does.
 fn instance_resource_id(
     inst: &recipe::DecodedInstance,
-) -> Result<concerto_core::instance::resource_id::ResourceId, ConcertoError> {
+) -> Result<concerto_core::instance::resource_id::ResourceId, Error> {
     concerto_core::instance::resource_id::ResourceId::new(
         inst.namespace.clone(),
         inst.type_name.clone(),
@@ -2619,17 +2622,14 @@ fn instance_resource_id(
 }
 
 /// TS `Resource.isConcept`: `this.getClassDeclaration().isConcept()`.
-fn instance_is_concept(
-    r: &Replayed,
-    inst: &recipe::DecodedInstance,
-) -> Result<bool, ConcertoError> {
+fn instance_is_concept(r: &Replayed, inst: &recipe::DecodedInstance) -> Result<bool, Error> {
     let decl = r.mm.get_declaration(&inst.fqn)?;
     Ok(decl.as_class().is_some_and(ClassDeclaration::is_concept))
 }
 
 /// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
 /// ? false : this.getParent().getModelFile().getType(this.getType()).isEnum()`.
-fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, Error> {
     if property.is_primitive() {
         return Ok(false);
     }
@@ -2641,7 +2641,7 @@ fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, C
 /// false : (…resolveType…, type.isScalarDeclaration?.())`. The `resolveType`
 /// call only re-checks what `getType` below already needs to resolve to
 /// answer, so it is not replayed separately (PORTING.md 6.2).
-fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool, Error> {
     if property.is_primitive() {
         return Ok(false);
     }
@@ -2653,23 +2653,13 @@ fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool,
 /// `isTypeEnum` and `isTypeScalar` (and `getScalarField`) build on: a
 /// non-primitive property's declared type, resolved in its parent
 /// declaration's own model file.
-fn resolve_property_type(
-    r: &Replayed,
-    id: PropId,
-    property: &Property,
-) -> Result<Node, ConcertoError> {
-    let unknown_parent = || ConcertoError::IllegalModel {
-        message: "property has no resolvable parent".into(),
-        file_name: None,
-        location: None,
-    };
+fn resolve_property_type(r: &Replayed, id: PropId, property: &Property) -> Result<Node, Error> {
+    let unknown_parent = || Error::illegal_model("property has no resolvable parent", None, None);
     let parent = r.mm.parent_of(id).ok_or_else(unknown_parent)?;
     let file = r.mm.model_file_of(parent).ok_or_else(unknown_parent)?;
     let type_name = property.type_name();
     r.mm.get_type(&Node::ModelFile(file), type_name)?
-        .ok_or_else(|| ConcertoError::TypeNotFound {
-            type_name: type_name.unwrap_or("null").to_string(),
-        })
+        .ok_or_else(|| Error::type_not_found(type_name.unwrap_or("null").to_string()))
 }
 
 /// TS: `Field.getValidator` (src/introspect/field.ts): a `NumberValidator` for
@@ -2751,7 +2741,7 @@ fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
     // TS's `Field.getScalarField` recognises; each maps to its `*Property`
     // metamodel class by name, the same correspondence the metamodel itself
     // draws between e.g. `StringScalar` and `StringProperty`.
-    let property_class = match scalar.scalar_type() {
+    let property_class = match concerto_core::Typed::type_name(scalar) {
         Some(primitive) => format!("concerto.metamodel@1.0.0.{primitive}Property"),
         None => {
             return Dispatch::Fault(Fault::Divergence(format!(
@@ -3125,7 +3115,7 @@ pub fn derive_model_manager(
             "a model manager derived from {op} at an unexpected path {path:?}"
         )));
     }
-    let failed = |e: ConcertoError| {
+    let failed = |e: Error| {
         Fault::Divergence(format!(
             "state divergence: {op}, which returned this model manager in TS, failed: {}",
             to_oracle_error(&e).message
@@ -3252,7 +3242,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
         .iter()
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
-    let err = |e: ConcertoError| to_oracle_error(&e);
+    let err = |e: Error| to_oracle_error(&e);
 
     match member {
         "decorateModels" => {
@@ -3430,7 +3420,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
 }
 
 /// The namespace a decorated element's model file was loaded under, needed
-/// only to build [`concerto_core::error::ConcertoError`] messages that name
+/// only to build [`concerto_core::error::Error`] messages that name
 /// where a decorator's own name failed to resolve — never exercised by a
 /// fixture in this scope, since every one of them runs with the manager's
 /// default (disabled) `decoratorValidation` (module doc on the `"Decorator"`
@@ -3493,6 +3483,9 @@ fn encode_decorator_argument(arg: &concerto_core::DecoratorArgument) -> Value {
                 None => recipe::undefined(),
             },
         }),
+        // `DecoratorArgument` is `#[non_exhaustive]`: an argument kind this
+        // harness does not know yet.
+        _ => recipe::undefined(),
     }
 }
 
@@ -3538,7 +3531,13 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
             if !resolve {
                 return ran(Ok(r.ast(include)));
             }
-            from_engine(r.mm.get_ast(true, include), |v| v)
+            from_engine(
+                r.mm.ast(concerto_core::model_manager::AstOptions {
+                    resolve: true,
+                    include_system_models: include,
+                }),
+                |v| v,
+            )
         }
         "resolveMetaModel" => {
             let Some(Arg::Plain(meta_model)) = args.first() else {
@@ -3728,7 +3727,7 @@ fn model_manager_filter_op(r: &Replayed, args: &[Arg]) -> Dispatch {
     };
     match r
         .mm
-        .filter(|fqn| names.iter().any(|n| n == fqn), disable_validation)
+        .filter_by_fqn(|fqn| names.iter().any(|n| n == fqn), disable_validation)
     {
         Ok(mm) => ran(Ok(recipe::summary_of(recipe::Kind::BaseModelManager, &mm))),
         Err(e) => ran(Err(to_oracle_error(&e))),
@@ -3859,7 +3858,7 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
     }
 }
 
-/// Builds the oracle's `outcome.error` shape from a [`ConcertoError`], the
+/// Builds the oracle's `outcome.error` shape from a [`Error`], the
 /// same fields `ContractError` carries (PORTING.md section 2.1):
 /// `kind.ts_class()` for `class`, [`concerto_core::error::ContractError::final_message`]
 /// for `message` (its doc comment: "Used by the native oracle harness
@@ -3867,27 +3866,28 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
 /// variants (`TypeNotFound`, `IllegalModel`) carry no catalogue key; they
 /// map to their TS class with their own text, so a fixture that reaches one
 /// fails on its message until the owning task ports the throw site.
-pub fn to_oracle_error(err: &ConcertoError) -> OracleError {
-    match err {
-        ConcertoError::Contract(ce) => OracleError {
-            class: ce.kind.ts_class().to_string(),
-            message: ce.final_message(),
-            location: ce.location.clone(),
-            component: ce.component().map(str::to_string),
-        },
-        ConcertoError::TypeNotFound { type_name } => OracleError {
+pub fn to_oracle_error(err: &Error) -> OracleError {
+    if let Some(type_name) = err.unported_type_not_found() {
+        return OracleError {
             class: ErrorKind::TypeNotFound.ts_class().to_string(),
             message: format!("Type \"{type_name}\" not found."),
             location: None,
             component: Some("@accordproject/concerto-core".into()),
-        },
-        ConcertoError::IllegalModel {
-            message, location, ..
-        } => OracleError {
+        };
+    }
+    if let Some(message) = err.unported_illegal_model() {
+        return OracleError {
             class: ErrorKind::IllegalModel.ts_class().to_string(),
-            message: message.clone(),
-            location: location.clone(),
+            message: message.to_string(),
+            location: err.contract().location.clone(),
             component: Some("@accordproject/concerto-core".into()),
-        },
+        };
+    }
+    let ce = err.contract();
+    OracleError {
+        class: ce.kind.ts_class().to_string(),
+        message: ce.final_message(),
+        location: ce.location.clone(),
+        component: ce.component().map(str::to_string),
     }
 }

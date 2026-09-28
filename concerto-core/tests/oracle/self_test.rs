@@ -1402,7 +1402,7 @@ fn a_dcs_resource_validation_error_is_no_longer_attributed_to_the_stand_in() {
     // resulting mismatch — its own `Error` class and text, not TS's
     // `ValidationException` — as belonging to P3-01b
     // (accordproject/concerto-rust#124). `from_json_against` now runs the
-    // real, ported `Serializer::from_json` (src/instance/serializer.rs)
+    // real, ported `Serializer.fromJSON` (`concerto-core/src/instance/from_json.rs`)
     // instead, so the class and component already match TS; only the exact
     // wording of a hand-crafted fixture message can still differ, which is
     // not itself a P3-01b gap, so nothing is attributed any more. Since

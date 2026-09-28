@@ -3,7 +3,7 @@
 //! `newRelationship`/`newTransaction`/`newEvent`, and the members that
 //! change or serialize a `Resource` (`Resource.setPropertyValue`,
 //! `addArrayValue`, `toJSON`, `Identifiable.setIdentifier`), replayed over
-//! `concerto_core::instance`.
+//! the JS object model (`concerto_core_js`, P6-01 step 5).
 //!
 //! It also holds the oracle's encoding of instances in both directions:
 //! [`decode_instance`] reads an input `"typed"` node (`codec.js`
@@ -24,12 +24,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use concerto_core::error::ConcertoError;
-use concerto_core::instance::dayjs::Dayjs;
-use concerto_core::instance::{
-    Instance, InstanceEnv, InstanceKind, JsValue, Serializer, SerializerOptions, ValidateOptions,
-    factory, resource,
-};
+use concerto_core::Error;
+use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
+use concerto_core::instance::from_json::{FromJsonOptions, from_json};
+use concerto_core::instance::{InstanceEnv, ValidateOptions};
+use concerto_core_js::value::{Instance, InstanceKind, JsValue};
+use concerto_core_js::{Serializer, SerializerOptions, factory, resource};
 use serde_json::{Map, Value, json};
 
 use super::Harness;
@@ -365,7 +365,7 @@ pub fn encode_instance(i: &Instance) -> Value {
 // Dispatch
 // ---------------------------------------------------------------------
 
-fn outcome(result: Result<Value, ConcertoError>) -> Value {
+fn outcome(result: Result<Value, Error>) -> Value {
     match result {
         Ok(value) => json!({ "ok": value }),
         Err(e) => json!({ "error": to_oracle_error(&e).to_value() }),
@@ -448,11 +448,11 @@ fn serializer_op(session: &mut Session, member: &str, inputs: &Inputs) -> Faulty
     let options = options_object(&nth(&args, 1))?;
     let mm = &session.pool[mm_index].mm;
     Ok(Dispatch::Ran(match member {
-        "fromJSON" => outcome(
-            serializer
-                .from_json(mm, &value, options.as_ref(), &mut HarnessEnv)
-                .map(|i| encode_instance(&i)),
-        ),
+        "fromJSON" => {
+            let result = serializer.from_json(mm, &value, options.as_ref(), &mut HarnessEnv);
+            native_from_json_agrees(mm, &serializer, &value, options.as_ref())?;
+            outcome(result.map(|i| encode_instance(&i)))
+        }
         "toJSON" => outcome(
             serializer
                 .to_json(mm, &value, options.as_ref())
@@ -460,6 +460,129 @@ fn serializer_op(session: &mut Session, member: &str, inputs: &Inputs) -> Faulty
         ),
         _ => unreachable!("handles lists every Serializer member"),
     }))
+}
+
+// ---------------------------------------------------------------------
+// The native route of `Serializer.fromJSON` (P6-01 step 5)
+// ---------------------------------------------------------------------
+
+/// A deterministic clock and identifier source, so that both routes of
+/// [`native_from_json_agrees`] see the same identifiers.
+struct SameEnv(u64);
+
+impl InstanceEnv for SameEnv {
+    fn new_id(&mut self) -> String {
+        self.0 += 1;
+        format!("00000000-0000-4000-8000-{:012x}", self.0)
+    }
+
+    fn now_ms(&mut self) -> f64 {
+        1_700_000_000_000.0
+    }
+}
+
+/// The plain JSON a [`JsValue`] is, when JSON can carry it.
+fn plain_json(value: &JsValue) -> Option<Value> {
+    Some(match value {
+        JsValue::Null => Value::Null,
+        JsValue::Bool(b) => Value::Bool(*b),
+        JsValue::Number(n) if n.is_finite() => json!(*n),
+        JsValue::String(s) => Value::String(s.clone()),
+        JsValue::Array(items) => Value::Array(items.iter().map(plain_json).collect::<Option<_>>()?),
+        JsValue::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| Some((k.clone(), plain_json(v)?)))
+                .collect::<Option<_>>()?,
+        ),
+        _ => return None,
+    })
+}
+
+/// The native route's options for a serializer's merged options, as the
+/// populator reads them (`populator_options`).
+fn native_options(serializer: &Serializer, options: Option<&SerializerOptions>) -> FromJsonOptions {
+    let mut merged = serializer.default_options.clone();
+    for (k, v) in options.into_iter().flatten() {
+        merged.insert(k.clone(), v.clone());
+    }
+    let get = |key: &str| merged.get(key).cloned().unwrap_or(JsValue::Undefined);
+    let truthy = |key: &str| get(key).is_truthy();
+    let utc_offset = match get("utcOffset") {
+        v if !v.is_truthy() => UtcOffset::Number(0.0),
+        JsValue::String(s) => UtcOffset::String(s),
+        JsValue::Number(n) => UtcOffset::Number(n),
+        JsValue::Bool(b) => UtcOffset::Number(f64::from(u8::from(b))),
+        _ => UtcOffset::Number(f64::NAN),
+    };
+    FromJsonOptions {
+        validate: truthy("validate"),
+        utc_offset,
+        strict_qualified_date_times: get("strictQualifiedDateTimes") == JsValue::Bool(true),
+        accept_resources_for_relationships: get("acceptResourcesForRelationships")
+            == JsValue::Bool(true),
+        reject_unknown_keys: truthy("rejectUnknownKeys"),
+        reject_required_null: truthy("rejectRequiredNull"),
+        validator: ValidateOptions::default(),
+    }
+}
+
+/// `Serializer.fromJSON` over plain JSON has two routes: the JS layer's
+/// serializer, which the fixture is judged on, and the native route the
+/// stable API uses (`concerto_core::instance::from_json`). For every
+/// recorded call whose document is plain JSON, both must give the same
+/// outcome: the same error (kind, catalogue code, parameters and #1273
+/// details), or success. On success, the two populated instances must be
+/// the same too, compared before validation: validation writes each
+/// resource's identifier back into the JS layer's instance, which the
+/// native route, returning only the verdict, does not. A disagreement is a
+/// harness error, which fails the run.
+fn native_from_json_agrees(
+    mm: &concerto_core::ModelManager,
+    serializer: &Serializer,
+    value: &JsValue,
+    options: Option<&SerializerOptions>,
+) -> Faulty<()> {
+    let Some(plain) = plain_json(value) else {
+        return Ok(());
+    };
+    let run = |options: Option<&SerializerOptions>| {
+        let js = serializer
+            .from_json(mm, &JsValue::from_json(&plain), options, &mut SameEnv(0))
+            .map(|instance| instance.to_validator_value());
+        let native = from_json(
+            mm,
+            &plain,
+            &native_options(serializer, options),
+            &mut SameEnv(0),
+        );
+        (js, native)
+    };
+    let (js, native) = run(options);
+    let mut agree = match (&js, &native) {
+        (Ok(_), Ok(_)) => true,
+        (Err(a), Err(b)) => {
+            a.kind() == b.kind()
+                && a.code() == b.code()
+                && a.params() == b.params()
+                && a.details() == b.details()
+        }
+        _ => false,
+    };
+    let (mut js_populated, mut native_populated) = (js, native);
+    if agree && js_populated.is_ok() {
+        let mut unvalidated = options.cloned().unwrap_or_default();
+        unvalidated.insert("validate".to_string(), JsValue::Bool(false));
+        (js_populated, native_populated) = run(Some(&unvalidated));
+        agree = matches!((&js_populated, &native_populated), (Ok(a), Ok(b)) if a == b);
+    }
+    if agree {
+        Ok(())
+    } else {
+        Err(Fault::Harness(format!(
+            "the native Serializer.fromJSON route disagrees with the JS layer's: \
+             {js_populated:?} (JS layer) vs {native_populated:?} (native)"
+        )))
+    }
 }
 
 /// A `Factory` argument that must be a string (a namespace or a type name).
@@ -553,7 +676,7 @@ fn instance_op(
     let args = decode_args(session, inputs)?;
     let r = &session.pool[mm_index];
     let mm = &r.mm;
-    let with_effects = |result: Result<Value, ConcertoError>, receiver: &Instance| {
+    let with_effects = |result: Result<Value, Error>, receiver: &Instance| {
         let mut outcome = outcome(result);
         outcome["effects"] = json!({ "target": encode_instance(receiver) });
         Dispatch::Ran(outcome)

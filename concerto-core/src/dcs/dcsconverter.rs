@@ -20,15 +20,15 @@
 //! `test/data/decoratorcommands/possible-decorator-command-targets.{json,yaml}`
 //! and the inline fixtures of `test/dcsconverter.js`.
 //!
-//! [`render_scalar_failsafe`]'s quoting decision (plain vs. `JSON.stringify`
+//! `render_scalar_failsafe`'s quoting decision (plain vs. `JSON.stringify`
 //! double-quoted) matches the reference for every value these two functions
 //! ever build or accept: DCS identifiers, namespaces, decorator argument
-//! text stringified with [`js_value_to_string`]. It diverges, documented,
+//! text stringified with `js_value_to_string`. It diverges, documented,
 //! from `yaml.stringify`'s own choice of *style* — a single-quoted
 //! rendering when a value has more `"` than `'`, or a block-literal (`|-`)
 //! rendering for an embedded newline or a document-marker-like value
 //! (`"---"`, `"..."`) — none of which the DCS data this converter round-trips
-//! is expected to contain; see [`yaml_quote::needs_quoting_failsafe`].
+//! is expected to contain; see `yaml_quote::needs_quoting_failsafe`.
 use serde_json::{Map, Number, Value};
 
 use crate::error::{ContractError, ErrorKind, Result};
@@ -48,7 +48,7 @@ enum Yaml {
 }
 
 fn pre_port(message: impl Into<String>) -> ContractError {
-    ContractError::pre_port(ErrorKind::Error, message.into(), None)
+    ContractError::pre_port(ErrorKind::InvalidArgument, message.into(), None)
 }
 
 // ---------------------------------------------------------------------
@@ -196,7 +196,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     // `$class` is its "FQN is invalid." error.
     if dcs_json.is_null() {
         return Err(ContractError::new(
-            ErrorKind::JsTypeError,
+            ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![
                 ("value", "null".to_string()),
@@ -209,7 +209,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     let dcs_namespace = model_util::get_namespace(class.filter(|c| !c.is_empty()))?;
     // `ModelUtil.parseNamespace(dcsNamespace).version`, `undefined` for an
     // unversioned namespace.
-    let version = match model_util::parse_namespace(Some(dcs_namespace), false)? {
+    let version = match model_util::parse_namespace_with(Some(dcs_namespace), false)? {
         ParsedNamespace::Full { version, .. } => version,
         ParsedNamespace::NameOnly { .. } => None,
     };
@@ -218,7 +218,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
         Some(Value::Array(commands)) => commands,
         None | Some(Value::Null) => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-readproperties",
                 vec![
                     (
@@ -237,7 +237,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
         }
         Some(_) => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-notafunction",
                 vec![("expression", "dcsJson.commands.map".to_string())],
             )
@@ -565,10 +565,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         let mut type_obj = Map::new();
         type_obj.insert(
             "$class".to_string(),
-            Value::String(model_util::get_fully_qualified_name(
-                META_MODEL_NAMESPACE,
-                "TypeIdentifier",
-            )),
+            Value::String(model_util::qualify(META_MODEL_NAMESPACE, "TypeIdentifier")),
         );
         type_obj.insert("name".to_string(), Value::String(yaml_scalar(tr, "name")?));
         if let Some(Yaml::Scalar(ns)) = yaml_get(tr, "namespace") {
@@ -581,7 +578,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         let mut out = Map::new();
         out.insert(
             "$class".to_string(),
-            Value::String(model_util::get_fully_qualified_name(
+            Value::String(model_util::qualify(
                 META_MODEL_NAMESPACE,
                 "DecoratorTypeReference",
             )),
@@ -649,10 +646,7 @@ fn restore_decorator(decorator: &Yaml) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            META_MODEL_NAMESPACE,
-            "Decorator",
-        )),
+        Value::String(model_util::qualify(META_MODEL_NAMESPACE, "Decorator")),
     );
     out.insert("name".to_string(), Value::String(name));
     out.insert("arguments".to_string(), Value::Array(arguments));
@@ -668,10 +662,7 @@ fn restore_command(dcs_namespace: &str, command: &Yaml) -> Result<Value> {
     let mut target_obj = Map::new();
     target_obj.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            dcs_namespace,
-            "CommandTarget",
-        )),
+        Value::String(model_util::qualify(dcs_namespace, "CommandTarget")),
     );
     if let Some(Yaml::Map(target_entries)) = yaml_get(entries, "target") {
         for (key, value) in target_entries {
@@ -685,10 +676,7 @@ fn restore_command(dcs_namespace: &str, command: &Yaml) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            dcs_namespace,
-            "Command",
-        )),
+        Value::String(model_util::qualify(dcs_namespace, "Command")),
     );
     out.insert("type".to_string(), Value::String(action));
     out.insert("target".to_string(), Value::Object(target_obj));
@@ -739,7 +727,7 @@ pub fn yaml_to_json(yaml_string: &str) -> Result<Value> {
             .collect::<Result<Vec<_>>>()?,
         None => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-readproperties",
                 vec![
                     ("value", "undefined".to_string()),
@@ -754,10 +742,7 @@ pub fn yaml_to_json(yaml_string: &str) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::get_fully_qualified_name(
-            &dcs_namespace,
-            "DecoratorCommandSet",
-        )),
+        Value::String(model_util::qualify(&dcs_namespace, "DecoratorCommandSet")),
     );
     // `name: parsedJson.name`, `version: parsedJson.version`: a key left
     // `undefined` in TS is left out here.

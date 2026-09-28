@@ -7,19 +7,22 @@
 //! is this module's. Each function here is one TS method, in the same
 //! order, so that the first error thrown is the same one (2.4). The TS
 //! `jsonStack`/`resourceStack` pushes and pops become arguments and return
-//! values; `parameters.path` is [`Populator::path`].
+//! values; `parameters.path` is `Populator::path`.
 
 use indexmap::IndexMap;
 
-use super::dayjs::{Dayjs, UtcOffset};
-use super::deserialize::DeserializeOptions;
 use super::factory::{self, InstanceEnv};
-use super::model::{self, Field, FieldType, TypeRef};
-use super::value::{Instance, JsValue};
-use crate::error::{ContractError, DetailCode, ErrorKind, Result, ValidationDetail};
-use crate::introspect::Declaration;
-use crate::model_manager::ModelManager;
-use crate::{ConcertoError, model_util};
+use crate::deserialize::DeserializeOptions;
+use crate::value::{Instance, JsValue};
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
+use concerto_core::instance::from_json::{
+    required_null_error, strict_qualified_date_time, unknown_keys_error,
+};
+use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
+use concerto_core::introspect::Declaration;
+use concerto_core::model_manager::ModelManager;
+use concerto_core::{Error, model_util};
 
 /// The `JSONPopulator` constructor's options.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,12 +46,12 @@ pub(crate) struct Populator<'a> {
     pub path: Vec<String>,
 }
 
-fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
+fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::Validation, code, params).into()
 }
 
-fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, params).into()
+fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
 /// TS: `JSONPopulator.convertToObject`'s primitive-type switch alone (task
@@ -140,9 +143,9 @@ pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
 }
 
 /// V8's `TypeError: Cannot read properties of <value> (reading '<property>')`.
-pub(crate) fn read_properties_error(value: &JsValue, property: &str) -> ConcertoError {
+pub(crate) fn read_properties_error(value: &JsValue, property: &str) -> Error {
     ContractError::new(
-        ErrorKind::JsTypeError,
+        ErrorKind::MalformedInput,
         "engine-typeerror-readproperties",
         vec![
             ("value", value.to_js_string()),
@@ -184,7 +187,7 @@ pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
     Ok(match value {
         JsValue::Undefined | JsValue::Null => {
             return Err(ContractError::new(
-                ErrorKind::JsTypeError,
+                ErrorKind::MalformedInput,
                 "engine-typeerror-convertnulltoobject",
                 Vec::new(),
             )
@@ -220,7 +223,7 @@ pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
             for key in instance.props.keys() {
                 keys.push(key.clone());
                 if key == "$timestamp"
-                    && instance.kind == super::value::InstanceKind::ValidatedResource
+                    && instance.kind == crate::value::InstanceKind::ValidatedResource
                 {
                     keys.push("$validator".to_string());
                 }
@@ -279,7 +282,7 @@ fn validate_properties(properties: &[String], class_declaration: &TypeRef) -> Re
     let expected: Vec<String> = class_declaration
         .properties("classDeclaration.getProperties")?
         .iter()
-        .map(|(_, p)| crate::Named::name(p).to_string())
+        .map(|(_, p)| concerto_core::Named::name(p).to_string())
         .collect();
     let invalid: Vec<&str> = properties
         .iter()
@@ -330,8 +333,8 @@ impl<'a> Populator<'a> {
             let resource = resource.ok_or_else(|| {
                 // `parameters.resourceStack.pop()` on an empty stack: not
                 // reached, since every caller pushes a resource first.
-                ConcertoError::from(ContractError::pre_port(
-                    ErrorKind::Error,
+                Error::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
                     "Stack is empty!".to_string(),
                     None,
                 ))
@@ -390,7 +393,7 @@ impl<'a> Populator<'a> {
         let expected: Vec<String> = class_declaration
             .properties("classDeclaration.getProperties")?
             .iter()
-            .map(|(_, p)| crate::Named::name(p).to_string())
+            .map(|(_, p)| concerto_core::Named::name(p).to_string())
             .collect();
         let unknown: Vec<String> = object_keys(json)?
             .into_iter()
@@ -399,25 +402,11 @@ impl<'a> Populator<'a> {
         if unknown.is_empty() {
             return Ok(());
         }
-        let path = self.path_text();
-        let mut error = ContractError::new(
-            ErrorKind::Validation,
-            "jsonpopulator-rejectunknownkeys-unknownproperties",
-            vec![
-                ("fqn", class_declaration.fqn()),
-                ("properties", unknown.join(", ")),
-            ],
-        );
-        error.details = unknown
-            .iter()
-            .map(|property| ValidationDetail {
-                path: format!("{path}.{property}"),
-                code: DetailCode::UnknownProperty,
-                expected: None,
-                actual: None,
-            })
-            .collect();
-        Err(error.into())
+        Err(unknown_keys_error(
+            &class_declaration.fqn(),
+            &self.path_text(),
+            &unknown,
+        ))
     }
 
     /// `rejectRequiredNull` (accordproject/concerto#1273): the first
@@ -435,25 +424,7 @@ impl<'a> Populator<'a> {
             if property.is_optional() {
                 continue;
             }
-            let path = format!("{}.{key}", self.path_text());
-            let mut type_name = crate::introspect::Typed::type_name(&property)
-                .unwrap_or_default()
-                .to_string();
-            if property.is_array() {
-                type_name.push_str("[]");
-            }
-            let mut error = ContractError::new(
-                ErrorKind::Validation,
-                "jsonpopulator-rejectrequirednull-requirednull",
-                vec![("path", path.clone()), ("type", type_name.clone())],
-            );
-            error.details = vec![ValidationDetail {
-                path,
-                code: DetailCode::TypeViolation,
-                expected: Some(type_name),
-                actual: Some("null".to_string()),
-            }];
-            return Err(error.into());
+            return Err(required_null_error(&self.path_text(), &key, &property));
         }
         Ok(())
     }
@@ -594,7 +565,7 @@ impl<'a> Populator<'a> {
         // DV-015: see instance/serializer.rs from_json.
         let Some(type_name) = type_name.as_str() else {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "a $class that is not a string: {}",
                     type_name.to_js_string()
@@ -652,7 +623,7 @@ impl<'a> Populator<'a> {
             default_namespace =
                 model_util::get_namespace(Some(&relationship.owner_fqn))?.to_string();
         }
-        let default_type = model_util::get_short_name(&type_fqn).to_string();
+        let default_type = model_util::short_name(&type_fqn).to_string();
 
         if relationship.is_array() {
             let JsValue::Array(items) = json else {
@@ -735,7 +706,7 @@ impl<'a> Populator<'a> {
         // DV-015: see instance/serializer.rs from_json.
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
-                ErrorKind::Error,
+                ErrorKind::InvalidArgument,
                 format!(
                     "a $class that is not a string: {}",
                     class_name.to_js_string()
@@ -779,15 +750,6 @@ fn utc_offset_input(value: &JsValue) -> UtcOffset {
         JsValue::Null => UtcOffset::Number(0.0),
         _ => UtcOffset::Number(f64::NAN),
     }
-}
-
-/// `json.match(/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/)`.
-fn strict_qualified_date_time(s: &str) -> bool {
-    let re = regress::Regex::new(
-        r"^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$",
-    )
-    .expect("static pattern");
-    re.find(s).is_some()
 }
 
 /// The populator's options from the serializer's merged options. `pub`

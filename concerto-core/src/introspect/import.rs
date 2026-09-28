@@ -12,9 +12,9 @@
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
-use crate::error::{ConcertoError, Result};
+use crate::error::{Error, Result};
 use crate::introspect::{declared_class, qualified_class};
-use crate::model_util::{get_fully_qualified_name, get_short_name};
+use crate::model_util::{qualify, short_name};
 
 /// A single import statement in a model file. Wildcard imports (`import ns.*`)
 /// are rejected while parsing, mirroring strict mode in Concerto v4.
@@ -85,9 +85,7 @@ impl Import {
     /// resolved.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
-            Self::Type(t) if t.name == short => {
-                Some(get_fully_qualified_name(&t.namespace, &t.name))
-            }
+            Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
             Self::Type(_) => None,
             Self::Types(t) => {
                 let aliased = aliases(t);
@@ -96,7 +94,7 @@ impl Import {
                         .iter()
                         .find(|a| &a.name == name)
                         .map_or(name.as_str(), |a| a.aliased_name.as_str());
-                    (local_name == short).then(|| get_fully_qualified_name(&t.namespace, name))
+                    (local_name == short).then(|| qualify(&t.namespace, name))
                 })
             }
         }
@@ -121,26 +119,24 @@ impl Import {
 }
 
 impl TryFrom<&serde_json::Value> for Import {
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
         let class = declared_class(value);
         if class.is_empty() {
-            return Err(ConcertoError::IllegalModel {
-                message: "import node is missing its $class".into(),
-                file_name: None,
-                location: None,
-            });
+            return Err(Error::illegal_model(
+                "import node is missing its $class",
+                None,
+                None,
+            ));
         }
-        let kind = get_short_name(class);
+        let kind = short_name(class);
 
         let namespace = value
             .get("namespace")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ConcertoError::IllegalModel {
-                message: format!("import ({kind}) missing 'namespace'"),
-                file_name: None,
-                location: None,
+            .ok_or_else(|| {
+                Error::illegal_model(format!("import ({kind}) missing 'namespace'"), None, None)
             })?
             .to_string();
         let uri = value
@@ -158,7 +154,7 @@ impl TryFrom<&serde_json::Value> for Import {
             // does not name the namespace.
             "ImportAll" => {
                 return Err(crate::error::ContractError::pre_port(
-                    crate::error::ErrorKind::Error,
+                    crate::error::ErrorKind::InvalidArgument,
                     "Wildcard Imports are not permitted.".to_string(),
                     None,
                 )
@@ -168,11 +164,7 @@ impl TryFrom<&serde_json::Value> for Import {
                 let name = value
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ConcertoError::IllegalModel {
-                        message: "ImportType missing 'name'".into(),
-                        file_name: None,
-                        location: None,
-                    })?
+                    .ok_or_else(|| Error::illegal_model("ImportType missing 'name'", None, None))?
                     .to_string();
                 Self::Type(mm::ImportType {
                     namespace,
@@ -204,11 +196,11 @@ impl TryFrom<&serde_json::Value> for Import {
                 })
             }
             other => {
-                return Err(ConcertoError::IllegalModel {
-                    message: format!("unknown import type: {other}"),
-                    file_name: None,
-                    location: None,
-                });
+                return Err(Error::illegal_model(
+                    format!("unknown import type: {other}"),
+                    None,
+                    None,
+                ));
             }
         })
     }

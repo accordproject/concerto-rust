@@ -12,24 +12,24 @@
 //! Validation stops at the first problem. TS raises every one of these as
 //! `IllegalModelException` (`ClassDeclaration.validate` and its callees;
 //! PORTING.md section 2.3), so every error here carries
-//! `ConcertoError::Contract` with `ErrorKind::IllegalModel` — built through
-//! [`ContractError::pre_port`] (`failed`, below) until a P2 task ports the
+//! a contract error with `ErrorKind::IllegalModel` — built through
+//! `ContractError::pre_port` (`failed`, below) until a P2 task ports the
 //! check's exact TS wording. A model whose inheritance is circular surfaces
-//! the `RangeError` TS's recursion overflows with (`ErrorKind::JsRangeError`,
+//! the `RangeError` TS's recursion overflows with (`ErrorKind::RecursionLimit`,
 //! PORTING.md section 2.5, DV-013), raised by the model manager's
 //! super-type walk. A model that validates cleanly returns `Ok(())`.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
-use crate::introspect::{DeclarationKind, Decorated, Named, Typed, Validate};
+use crate::introspect::{DeclarationKind, Decorated, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{
-    self, ParsedNamespace, get_fully_qualified_name, get_namespace, get_short_name,
-    is_primitive_type, parse_namespace,
+    self, ParsedNamespace, get_namespace, is_primitive_type, parse_namespace_with, qualify,
+    short_name,
 };
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
@@ -106,15 +106,15 @@ impl ModelManager {
     ///
     /// In order: (1) `super.validate()` — the file's own decorators
     /// (`Decorated.validate`); (2) the `getImports()` loop; (3) the
-    /// duplicate-class-name scan ([`check_unique_declaration_names`]):
+    /// duplicate-class-name scan (`check_unique_declaration_names`):
     /// `ModelFile::from_json` accepts a second declaration of one name, as
     /// TS's constructor does, so this is where it is rejected; (4) each
     /// declaration, in file order — including, first thing, the
     /// import-clash check every declaration kind reaches through its own
-    /// `super.validate()` chain ([`check_import_clash`]'s doc comment).
+    /// `super.validate()` chain (`check_import_clash`'s doc comment).
     ///
     /// Every error but step (3)'s names `model_file` as TS's does
-    /// ([`attach_model_file`]); step (3)'s `IllegalModelException` is
+    /// (`attach_model_file`); step (3)'s `IllegalModelException` is
     /// constructed with no model file at all in TS, so it has no `File
     /// '<name>'` suffix.
     pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
@@ -153,93 +153,101 @@ impl ModelManager {
         Ok(())
     }
 
-    /// TS `modelFile.validate()` for a `ModelFile` whose `getModelManager()`
-    /// is `self` but which `self` may never have registered — `new
-    /// ModelFile(modelManager, ast)` followed directly by `validate()`, or
-    /// `addModelFile`'s validate-before-register. When `self` already holds
-    /// exactly this file (same AST, same file name) under its namespace,
-    /// this is [`ModelManager::validate_model_file`] on that file. Otherwise
-    /// it validates against a scratch copy of `self` with `model_file`
-    /// registered in place of whatever `self` holds under its namespace
-    /// ([`ModelManager::with_model_file_registered`]), so that the file's own
-    /// local types resolve to itself, as TS's `this.getLocalType` does,
-    /// while every import still resolves through the same files `self`
-    /// holds. `self` itself is never changed (P2-08).
-    ///
-    /// The scratch branch's `check_imports` step is the one exception
-    /// (P2-08d, accordproject/concerto-rust#151): it runs against `self`, not the scratch, because
-    /// `model_file` is never genuinely registered under its own namespace
-    /// at the point TS calls `.validate()` here — a self-import (an
-    /// `import` statement naming `model_file`'s own namespace) must fail
-    /// "namespace is not defined" the same way any other not-yet-loaded
-    /// namespace does, not resolve to `model_file` itself.
-    ///
-    /// One divergence remains, and no oracle fixture reaches it: a file
-    /// *another* file's declarations reach back into during this pass (an
-    /// imported super type whose own super type lives in `model_file`'s
-    /// namespace) sees `model_file` here, where TS would see the file `self`
-    /// actually holds under that namespace.
-    pub fn validate_detached_model_file(&self, model_file: &ModelFile) -> Result<()> {
-        let registered = self.model_file(model_file.namespace());
-        if let Some(registered) = registered
-            && registered.same_ast(model_file)
-            && registered.file_name() == model_file.file_name()
-        {
-            return self.validate_model_file(registered);
+    js_compat_pub! {
+        /// TS `modelFile.validate()` for a `ModelFile` whose `getModelManager()`
+        /// is `self` but which `self` may never have registered — `new
+        /// ModelFile(modelManager, ast)` followed directly by `validate()`, or
+        /// `addModelFile`'s validate-before-register. When `self` already holds
+        /// exactly this file (same AST, same file name) under its namespace,
+        /// this is [`ModelManager::validate_model_file`] on that file. Otherwise
+        /// it validates against a scratch copy of `self` with `model_file`
+        /// registered in place of whatever `self` holds under its namespace
+        /// (`ModelManager::with_model_file_registered`), so that the file's own
+        /// local types resolve to itself, as TS's `this.getLocalType` does,
+        /// while every import still resolves through the same files `self`
+        /// holds. `self` itself is never changed (P2-08).
+        ///
+        /// The scratch branch's `check_imports` step is the one exception
+        /// (P2-08d, accordproject/concerto-rust#151): it runs against `self`, not the scratch, because
+        /// `model_file` is never genuinely registered under its own namespace
+        /// at the point TS calls `.validate()` here — a self-import (an
+        /// `import` statement naming `model_file`'s own namespace) must fail
+        /// "namespace is not defined" the same way any other not-yet-loaded
+        /// namespace does, not resolve to `model_file` itself.
+        ///
+        /// One divergence remains, and no oracle fixture reaches it: a file
+        /// *another* file's declarations reach back into during this pass (an
+        /// imported super type whose own super type lives in `model_file`'s
+        /// namespace) sees `model_file` here, where TS would see the file `self`
+        /// actually holds under that namespace.
+        pub fn validate_detached_model_file(&self, model_file: &ModelFile) -> Result<()> {
+            let registered = self.model_file(model_file.namespace());
+            if let Some(registered) = registered
+                && registered.same_ast(model_file)
+                && registered.file_name() == model_file.file_name()
+            {
+                return self.validate_model_file(registered);
+            }
+            let scratch = self.with_model_file_registered(model_file)?;
+            let registered = scratch
+                .model_file(model_file.namespace())
+                .expect("with_model_file_registered registers the file under its namespace");
+            // P2-08d (#151): `import_scope: self`, not `scratch` — see the doc comment
+            // above and on `validate_model_file_with_import_scope`.
+            scratch.validate_model_file_with_import_scope(registered, self)
         }
-        let scratch = self.with_model_file_registered(model_file)?;
-        let registered = scratch
-            .model_file(model_file.namespace())
-            .expect("with_model_file_registered registers the file under its namespace");
-        // P2-08d (#151): `import_scope: self`, not `scratch` — see the doc comment
-        // above and on `validate_model_file_with_import_scope`.
-        scratch.validate_model_file_with_import_scope(registered, self)
     }
 
-    /// TS `declaration.validate()` called directly on one declaration of a
-    /// `ModelFile` built with `new ModelFile(modelManager, ast)` and never
-    /// registered — `MapDeclaration.validate`'s oracle fixtures do exactly
-    /// this (the fixture's `declref` targets an `mfnew` model file, P2-06b).
-    /// Reuses [`ModelManager::validate_detached_model_file`]'s
-    /// scratch-registration resolution, but for the one declaration at
-    /// `index` in [`ModelFile::declarations`] rather than the whole file, so
-    /// this is never charged for a sibling declaration's own errors, or for
-    /// `ModelFile.validate`'s own import and duplicate-name checks — neither
-    /// of which the recorded op ever runs.
-    ///
-    /// `Err(ConcertoError::IllegalModel)` with no catalogue entry (no TS
-    /// class corresponds to it) if `model_file` has no declaration at
-    /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
-    /// `next_index` documents.
-    pub fn validate_detached_declaration(
-        &self,
-        model_file: &ModelFile,
-        index: usize,
-    ) -> Result<()> {
-        let (scratch, namespace) = self.detached_scratch(model_file)?;
-        let declaration = scratch
-            .model_file(&namespace)
-            .expect("with_model_file_registered registers the file under its namespace")
-            .declarations()
-            .get(index)
-            .cloned()
-            .ok_or_else(|| no_such_detached_declaration(model_file, index))?;
-        declaration.validate(&scratch, &namespace)
+    js_compat_pub! {
+        /// TS `declaration.validate()` called directly on one declaration of a
+        /// `ModelFile` built with `new ModelFile(modelManager, ast)` and never
+        /// registered — `MapDeclaration.validate`'s oracle fixtures do exactly
+        /// this (the fixture's `declref` targets an `mfnew` model file, P2-06b).
+        /// Reuses [`ModelManager::validate_detached_model_file`]'s
+        /// scratch-registration resolution, but for the one declaration at
+        /// `index` in [`ModelFile::declarations`] rather than the whole file, so
+        /// this is never charged for a sibling declaration's own errors, or for
+        /// `ModelFile.validate`'s own import and duplicate-name checks — neither
+        /// of which the recorded op ever runs.
+        ///
+        /// A pre-port `IllegalModel` error (`Error::illegal_model`, no TS
+        /// class corresponds to it) if `model_file` has no declaration at
+        /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
+        /// `next_index` documents.
+        pub fn validate_detached_declaration(
+            &self,
+            model_file: &ModelFile,
+            index: usize,
+        ) -> Result<()> {
+            let (scratch, namespace) = self.detached_scratch(model_file)?;
+            let declaration = scratch
+                .model_file(&namespace)
+                .expect("with_model_file_registered registers the file under its namespace")
+                .declarations()
+                .get(index)
+                .cloned()
+                .ok_or_else(|| no_such_detached_declaration(model_file, index))?;
+            declaration.validate(&scratch, &namespace)
+        }
     }
 
-    /// [`ModelManager::validate_detached_declaration`], but for just the key
-    /// half of the map declaration at `index` (TS `MapKeyType.validate`,
-    /// called directly rather than through `MapDeclaration.validate`).
-    pub fn validate_detached_map_key(&self, model_file: &ModelFile, index: usize) -> Result<()> {
-        let (scratch, map) = self.detached_map(model_file, index)?;
-        validate_map_key(&scratch, model_file.namespace(), &map)
+    js_compat_pub! {
+        /// [`ModelManager::validate_detached_declaration`], but for just the key
+        /// half of the map declaration at `index` (TS `MapKeyType.validate`,
+        /// called directly rather than through `MapDeclaration.validate`).
+        pub fn validate_detached_map_key(&self, model_file: &ModelFile, index: usize) -> Result<()> {
+            let (scratch, map) = self.detached_map(model_file, index)?;
+            validate_map_key(&scratch, model_file.namespace(), &map)
+        }
     }
 
-    /// [`ModelManager::validate_detached_map_key`], for the value half (TS
-    /// `MapValueType.validate`).
-    pub fn validate_detached_map_value(&self, model_file: &ModelFile, index: usize) -> Result<()> {
-        let (scratch, map) = self.detached_map(model_file, index)?;
-        validate_map_value(&scratch, model_file.namespace(), &map)
+    js_compat_pub! {
+        /// [`ModelManager::validate_detached_map_key`], for the value half (TS
+        /// `MapValueType.validate`).
+        pub fn validate_detached_map_value(&self, model_file: &ModelFile, index: usize) -> Result<()> {
+            let (scratch, map) = self.detached_map(model_file, index)?;
+            validate_map_value(&scratch, model_file.namespace(), &map)
+        }
     }
 
     /// The scratch-registered copy of `self`
@@ -276,12 +284,12 @@ impl ModelManager {
 /// [`ModelManager::detached_map`], not one that loaded as a
 /// `MapDeclaration`). No TS class corresponds to this, the same convention
 /// `model_manager.rs`'s `next_index` documents.
-fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> ConcertoError {
-    ConcertoError::IllegalModel {
-        message: format!("no MapDeclaration at index {index}"),
-        file_name: model_file.file_name().map(str::to_string),
-        location: None,
-    }
+fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> Error {
+    Error::illegal_model(
+        format!("no MapDeclaration at index {index}"),
+        model_file.file_name().map(str::to_string),
+        None,
+    )
 }
 
 /// TS: `ModelFile.validate()`'s "Check if names of the declarations are
@@ -297,7 +305,7 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
             return Err(failed(
                 format!(
                     "Duplicate class name {}",
-                    get_fully_qualified_name(model_file.namespace(), declaration.name())
+                    qualify(model_file.namespace(), declaration.name())
                 ),
                 None,
             ));
@@ -319,20 +327,17 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
 /// '<name>': ` whenever that file has one (illegalmodelexception.ts) — part
 /// of `ModelFile.getName()`'s contract (P2-08). [`undeclared_type_error`]
 /// already attaches its own file name; this backstops every other check in
-/// this module, which builds a bare [`ConcertoError`] through
+/// this module, which builds a bare [`Error`] through
 /// [`failed`]/[`catalogue_error`] with no file in scope. A `model_file`
 /// already set (as `undeclared_type_error` sets its own) is left alone, and
 /// only `IllegalModel`-kind contract errors are touched.
-pub(crate) fn attach_model_file(err: ConcertoError, model_file: &ModelFile) -> ConcertoError {
-    match err {
-        ConcertoError::Contract(mut contract)
-            if contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel =>
-        {
-            contract.model_file = Some(model_file.file_name().map(str::to_string));
-            ConcertoError::Contract(contract)
-        }
-        other => other,
+pub(crate) fn attach_model_file(mut err: Error, model_file: &ModelFile) -> Error {
+    if err.ported().is_some_and(|contract| {
+        contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel
+    }) {
+        err.contract_mut().model_file = Some(model_file.file_name().map(str::to_string));
     }
+    err
 }
 
 /// A declaration may not take the name of a type its file imports (including
@@ -409,7 +414,7 @@ impl Validate for Declaration {
             Declaration::Class(class) => class.validate(manager, namespace),
             Declaration::Map(map) => map.validate(manager, namespace),
             Declaration::Enum(enm) => {
-                let fqn = get_fully_qualified_name(namespace, enm.name());
+                let fqn = qualify(namespace, enm.name());
                 // TS: `EnumDeclaration` inherits `ClassDeclaration.validate`
                 // unchanged, whose own `super.validate()` reaches
                 // `Declaration.validate`'s decorator and import-clash checks
@@ -439,7 +444,7 @@ impl Validate for Declaration {
                 Ok(())
             }
             Declaration::Scalar(scalar) => {
-                let fqn = get_fully_qualified_name(namespace, scalar.name());
+                let fqn = qualify(namespace, scalar.name());
                 // TS: `ScalarDeclaration.validate`'s `super.validate()` goes
                 // straight to `Declaration.validate` (it extends
                 // `Declaration`, not `ClassDeclaration`): decorators, then
@@ -462,7 +467,7 @@ impl Validate for Declaration {
 
 impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        let fqn = get_fully_qualified_name(namespace, self.name());
+        let fqn = qualify(namespace, self.name());
         // TS: `ClassDeclaration.validate`'s `super.validate()`
         // (classdeclaration.ts) reaches `Declaration.validate`'s
         // `super.validate()` first — `Decorated.validate`'s decorator checks
@@ -493,8 +498,8 @@ impl Validate for ClassDeclaration {
         // chain), each validated in this class's own pass (P2-08 review:
         // this used to loop over `own_properties()` only, so a file
         // validated on its own never checked what it inherits).
-        for (owner_fqn, property) in manager.get_all_properties(&fqn)? {
-            validate_property(manager, namespace, self, &owner_fqn, &property)?;
+        for (owner_fqn, property) in manager.properties(&fqn)? {
+            validate_property(manager, namespace, self, &owner_fqn, property)?;
         }
         Ok(())
     }
@@ -521,12 +526,12 @@ fn validate_property(
     property: &Property,
 ) -> Result<()> {
     let owner_ns = get_namespace(Some(owner_fqn))?;
-    let owner_name = get_short_name(owner_fqn);
+    let owner_name = short_name(owner_fqn);
     let property_fqn = format!("{owner_fqn}.{}", property.name());
     // `field.getModelFile()`: the declaring file, for an inherited
     // property's own `Decorated.validate` errors.
     let owner_file = manager.model_file(owner_ns);
-    let in_owner_file = |e: ConcertoError| match owner_file {
+    let in_owner_file = |e: Error| match owner_file {
         Some(file) if owner_ns != namespace => attach_model_file(e, file),
         _ => e,
     };
@@ -552,7 +557,7 @@ fn validate_property(
     let type_name = type_name.unwrap_or_default();
     let Some(type_fqn) = resolve(manager, owner_ns, type_name) else {
         return Err(ContractError::pre_port(
-            ErrorKind::Error,
+            ErrorKind::InvalidArgument,
             format!(
                 "Failed to find fully qualified type name for property {} with type {type_name}",
                 property.name()
@@ -585,7 +590,7 @@ fn validate_decorators(
     if !manager.decorator_validation().is_enabled() {
         return Ok(());
     }
-    for decorator in element.get_decorators() {
+    for decorator in element.decorators() {
         decorator.validate(manager, namespace, context)?;
     }
     Ok(())
@@ -597,7 +602,7 @@ fn check_unique_decorators(
     location: Option<serde_json::Value>,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for decorator in element.get_decorators() {
+    for decorator in element.decorators() {
         // TS keys its `Set` on `getName()` and interpolates it into the
         // message as is, so a decorator with no `name` at all is its own
         // entry and reads `undefined` (accordproject/concerto-rust#218).
@@ -700,7 +705,7 @@ fn check_unique_field_names(
     fqn: &str,
 ) -> Result<()> {
     let mut seen = HashSet::new();
-    for (_, property) in manager.get_all_properties(fqn)? {
+    for (_, property) in manager.properties(fqn)? {
         if !seen.insert(property.name().to_string()) {
             return Err(catalogue_error(
                 "classdeclaration-validate-duplicatefieldname",
@@ -729,9 +734,9 @@ fn check_identifier(
     let Some(field_name) = class.identifier_field_name() else {
         return Ok(());
     };
-    let fqn = get_fully_qualified_name(namespace, class.name());
+    let fqn = qualify(namespace, class.name());
     let (owner, field) = manager
-        .get_all_properties(&fqn)?
+        .properties(&fqn)?
         .into_iter()
         .find(|(_, property)| property.name() == field_name)
         .ok_or_else(|| {
@@ -751,7 +756,7 @@ fn check_identifier(
     // resolves the field's type in the file that *declares* the field, which
     // for an inherited identifier is the super type's, not this class's.
     let owner_namespace = get_namespace(Some(&owner))?;
-    if !is_string_typed(manager, owner_namespace, &field) {
+    if !is_string_typed(manager, owner_namespace, field) {
         return Err(catalogue_error(
             "classdeclaration-validate-identifiernotstring",
             vec![
@@ -803,7 +808,7 @@ fn check_property_type(
     class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
-    let owner_fqn = get_fully_qualified_name(owner_ns, owner);
+    let owner_fqn = qualify(owner_ns, owner);
     let Some(type_identifier) = property.type_identifier() else {
         // A primitive field: TS's `resolveType` of a primitive always
         // succeeds, so the size-validator check is all that is left.
@@ -959,8 +964,11 @@ fn check_property_type(
         // src/introspect/relationshipdeclaration.ts) — inherited, so a
         // target that has no identity of its own but extends one that does
         // (every `Asset`/`Participant`, for one) still counts.
-        let identifiable =
-            target.is_class_declaration() && manager.identifier_field_name(&target_fqn)?.is_some();
+        let identifiable = target.is_class_declaration()
+            && manager
+                .identifier_field(&target_fqn)
+                .map(|f| f.map(str::to_string))?
+                .is_some();
         if !identifiable {
             // TS: `'Relationship ' + this.getName() + ' must be to a class
             // that has an identifier, but this is to ' +
@@ -1029,7 +1037,7 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
     // mean "does not resolve" and build their own message (`failed`,
     // below), so the location `resolve_type_name` would attach to its own
     // error never surfaces. Passing `None` here is exact, not a shortcut.
-    manager.resolve_type_name(namespace, name, None).ok()
+    manager.resolve_type_name_at(namespace, name, None).ok()
 }
 
 /// TS `ModelFile.validate`'s single loop over `this.getImports()`
@@ -1055,13 +1063,13 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
 /// namespace-import mismatch off #219).
 fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
     let mut seen_versions: HashMap<String, Option<String>> = HashMap::new();
-    for import_fqn in model_file.get_imports() {
+    for import_fqn in model_file.imported_type_names() {
         let import_namespace = get_namespace(Some(&import_fqn))?;
-        let import_short_name = get_short_name(&import_fqn);
+        let import_short_name = short_name(&import_fqn);
 
         let found = manager.model_file(import_namespace);
         let ParsedNamespace::Full { name, version, .. } =
-            parse_namespace(Some(import_namespace), false)?
+            parse_namespace_with(Some(import_namespace), false)?
         else {
             unreachable!("disable_version_parsing is false")
         };
@@ -1135,7 +1143,10 @@ fn check_identity_matches_super(
     // TS: `superType.isIdentified()` — inherited, so a direct super type
     // with no identity of its own but an identified ancestor still gates
     // this check.
-    let Some(super_id_field) = manager.identifier_field_name(&super_fqn)? else {
+    let Some(super_id_field) = manager
+        .identifier_field(&super_fqn)
+        .map(|f| f.map(str::to_string))?
+    else {
         return Ok(());
     };
     // TS: within `if (this.idField)`, `this.isSystemIdentified()` reduces to
@@ -1176,10 +1187,10 @@ impl Validate for MapDeclaration {
     /// value checks first, and never ran the import-clash check at all). The
     /// oracle op `MapDeclaration.validate` exercises this whole sequence,
     /// while `MapKeyType.validate` and `MapValueType.validate` exercise
-    /// [`validate_map_key`] and [`validate_map_value`] in isolation (see
+    /// `validate_map_key` and `validate_map_value` in isolation (see
     /// `tests/oracle/ops.rs`).
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
-        let fqn = get_fully_qualified_name(namespace, self.name());
+        let fqn = qualify(namespace, self.name());
         validate_decorators(manager, namespace, self, Some(&fqn))?;
         check_unique_decorators(self, None)?;
         check_import_clash(manager, namespace, self.name(), None)?;
@@ -1188,190 +1199,194 @@ impl Validate for MapDeclaration {
     }
 }
 
-/// `MapKeyType.validate` (src/introspect/mapkeytype.ts), plus the key-kind
-/// membership check TS makes at `MapDeclaration` construction time
-/// (`ModelUtil.isValidMapKey`, src/introspect/mapdeclaration.ts): this
-/// engine's `MapDeclaration` always constructs (`introspect::declaration`'s
-/// doc comment on `MapDeclaration::Untyped`), deferring an unsupported kind
-/// to this semantic-validation pass instead.
-///
-/// Every error passes `location: None`: `MapDeclaration`'s own doc comment
-/// records that its `location` (and its key's and value's) is deliberately
-/// not read, so there is no AST node to copy from, not a gap left for later.
-pub fn validate_map_key(
-    manager: &ModelManager,
-    namespace: &str,
-    map: &MapDeclaration,
-) -> Result<()> {
-    if !model_util::MAP_KEY_KINDS.contains(&map.key_kind()) {
-        return Err(failed(
-            format!(
-                "The key of map {} must be a String or DateTime, or a scalar over one of them",
-                map.name()
-            ),
-            None,
-        ));
-    }
-
-    // An object key names a scalar, which has to be over a String or DateTime.
-    //
-    // TS: `MapKeyType.validate` (src/introspect/mapkeytype.ts) — this is a
-    // different check, with a different message, than the kind-membership
-    // one above (which ports `MapDeclaration`'s own construction-time
-    // `ModelUtil.isValidMapKey`, this function's own doc comment): this one
-    // runs once the key's kind is already known to be `ObjectMapKeyType`,
-    // over the scalar it names.
-    if let Some(key) = map.key_type() {
-        let scalar = resolve(manager, namespace, &key.name)
-            .and_then(|fqn| manager.get_declaration(&fqn).ok())
-            .and_then(Typed::type_name);
-        if !matches!(scalar, Some("String") | Some("DateTime")) {
-            // TS: `MapKeyType.validate` throws `new
-            // IllegalModelException(message)` with no `modelFile` argument
-            // (mapkeytype.ts) — unlike a construction-time check, this
-            // message never gets a `File '<name>': ` suffix. [`failed`]'s
-            // default `model_file: None` would let
-            // [`ModelManager::validate_model_file`]'s generic
-            // [`attach_model_file`] stamp one on anyway, so it is marked
-            // `Some(None)` ("no file, and already decided") here instead.
-            let mut err = ContractError::pre_port(
-                ErrorKind::IllegalModel,
-                format!(
-                    "Scalar must be one of StringScalar, DateTimeScalar in context of \
-                     MapKeyType. Invalid Scalar: {}, for MapDeclaration {}",
-                    key.name,
-                    map.name()
-                ),
-                None,
-            );
-            err.model_file = Some(None);
-            return Err(err.into());
-        }
-    }
-    Ok(())
-}
-
-/// `MapValueType.validate` (src/introspect/mapvaluetype.ts), plus the
-/// value-kind membership check TS makes at `MapDeclaration` construction
-/// time (`ModelUtil.isValidMapValue`), deferred here for the same reason as
-/// [`validate_map_key`].
-pub fn validate_map_value(
-    manager: &ModelManager,
-    namespace: &str,
-    map: &MapDeclaration,
-) -> Result<()> {
-    if !model_util::MAP_VALUE_KINDS.contains(&map.value_kind()) {
-        return Err(failed(
-            format!(
-                "The value of map {} may not be a {}",
-                map.name(),
-                map.value_kind()
-            ),
-            None,
-        ));
-    }
-
-    // TS: `MapValueType.processType` (src/introspect/mapvaluetype.ts), for
-    // `ObjectMapValueType`/`RelationshipMapValueType`: the node must carry a
-    // `type` property, that `type` must have both a `$class` and a `name`,
-    // and its `$class` must be `TypeIdentifier`. This engine's loader folds
-    // "no `type`" and "`type` has no `name`" into the same `None`
-    // ([`MapVariant::Untyped`]'s doc comment), so one message covers both,
-    // as neither TS test on these paths asserts on message text, only that
-    // an `IllegalModelException` is thrown.
-    if matches!(
-        map.value_kind(),
-        "ObjectMapValueType" | "RelationshipMapValueType"
-    ) {
-        match map.value_type() {
-            // Reachable (P5-06, validation.rs test
-            // `validate_detached_map_key_and_value_in_isolation`'s
-            // `ValueTypeNameIsNotAString` case): `MapDeclaration::from_json`
-            // only checks that `type.name` is *present*, not that it is a
-            // string, so a malformed `name` field leaves `value_type()`
-            // `None` despite construction succeeding.
-            None => {
-                return Err(failed(
-                    format!(
-                        "{} must contain property 'type' with a 'name', for MapDeclaration named {}",
-                        map.value_kind(),
-                        map.name()
-                    ),
-                    None,
-                ));
-            }
-            // Provably unreachable through any constructed `MapDeclaration`
-            // (P5-06: cargo-mutants found this arm's mutants survived, and
-            // review correctly rejected the earlier "likely unreachable, no
-            // proof" claim — this is the proof, not a repeat of the
-            // assertion). `MapDeclaration::from_json`
-            // (introspect/declaration.rs) already rejects, at construction,
-            // any `ObjectMapValueType`/`RelationshipMapValueType` node whose
-            // `type.$class` is not the literal string
-            // `"concerto.metamodel@1.0.0.TypeIdentifier"` (its own
-            // `class_field.and_then(|c| c.as_str()) != Some(...)` check) —
-            // the exact same string [`crate::introspect::qualified_class`]
-            // builds here (`METAMODEL_NAMESPACE` + `".TypeIdentifier"`).
-            // `t._class` above is read off the *same* JSON node by
-            // `type_reference`'s `serde_json::from_value::<mm::TypeIdentifier>`
-            // (declaration.rs), a field-for-field deserialize with no
-            // normalisation, so `t._class` cannot come out different from
-            // the exact string construction already checked. The only way
-            // `type_reference` disagrees with that raw check at all is by
-            // *failing* to deserialize (a malformed `name`, the `None` arm
-            // just above) — it can fail to produce a match, never produce a
-            // different one.
-            Some(t) if t._class != crate::introspect::qualified_class("TypeIdentifier") => {
-                return Err(failed(
-                    format!(
-                        "{} type $class must be of TypeIdentifier for MapDeclaration named {}",
-                        map.value_kind(),
-                        map.name()
-                    ),
-                    None,
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    // TS: `MapValueType.validate` allows any declaration as a map value except
-    // another MapDeclaration ("All declarations, with the exception of
-    // MapDeclarations, are valid Values."); it does not itself check that the
-    // referenced type is declared.
-    if let Some(value) = map.value_type() {
-        let declared = resolve(manager, namespace, &value.name)
-            .and_then(|fqn| manager.get_declaration(&fqn).ok());
-        let Some(declared) = declared else {
-            // TS: `MapValueType.validate` reads `this.modelFile.getType(...)`
-            // (which returns `null` for an undeclared type, `ModelFile.getType`,
-            // modelfile.ts) straight into `decl.isMapDeclaration?.()`: the
-            // `?.` guards only the *call*, not the `.isMapDeclaration`
-            // property read on `decl` itself, so V8 throws `TypeError: Cannot
-            // read properties of null (reading 'isMapDeclaration')` rather
-            // than the graceful "undeclared type" message this port used to
-            // raise. Ported as TS has it (a `ts-bug` divergence).
-            return Err(ContractError::new(
-                ErrorKind::JsTypeError,
-                "engine-typeerror-readproperties",
-                vec![
-                    ("value", "null".to_string()),
-                    ("property", "isMapDeclaration".to_string()),
-                ],
-            )
-            .into());
-        };
-        if declared.is_map_declaration() {
+js_compat_pub! {
+    /// `MapKeyType.validate` (src/introspect/mapkeytype.ts), plus the key-kind
+    /// membership check TS makes at `MapDeclaration` construction time
+    /// (`ModelUtil.isValidMapKey`, src/introspect/mapdeclaration.ts): this
+    /// engine's `MapDeclaration` always constructs (`introspect::declaration`'s
+    /// doc comment on `MapDeclaration::Untyped`), deferring an unsupported kind
+    /// to this semantic-validation pass instead.
+    ///
+    /// Every error passes `location: None`: `MapDeclaration`'s own doc comment
+    /// records that its `location` (and its key's and value's) is deliberately
+    /// not read, so there is no AST node to copy from, not a gap left for later.
+    pub fn validate_map_key(
+        manager: &ModelManager,
+        namespace: &str,
+        map: &MapDeclaration,
+    ) -> Result<()> {
+        if !model_util::MAP_KEY_KINDS.contains(&map.key_kind()) {
             return Err(failed(
                 format!(
-                    "MapDeclaration as Map Type Value is not supported: {}",
-                    value.name
+                    "The key of map {} must be a String or DateTime, or a scalar over one of them",
+                    map.name()
                 ),
                 None,
             ));
         }
+
+        // An object key names a scalar, which has to be over a String or DateTime.
+        //
+        // TS: `MapKeyType.validate` (src/introspect/mapkeytype.ts) — this is a
+        // different check, with a different message, than the kind-membership
+        // one above (which ports `MapDeclaration`'s own construction-time
+        // `ModelUtil.isValidMapKey`, this function's own doc comment): this one
+        // runs once the key's kind is already known to be `ObjectMapKeyType`,
+        // over the scalar it names.
+        if let Some(key) = map.key_type() {
+            let scalar = resolve(manager, namespace, &key.name)
+                .and_then(|fqn| manager.get_declaration(&fqn).ok())
+                .and_then(Typed::type_name);
+            if !matches!(scalar, Some("String") | Some("DateTime")) {
+                // TS: `MapKeyType.validate` throws `new
+                // IllegalModelException(message)` with no `modelFile` argument
+                // (mapkeytype.ts) — unlike a construction-time check, this
+                // message never gets a `File '<name>': ` suffix. [`failed`]'s
+                // default `model_file: None` would let
+                // [`ModelManager::validate_model_file`]'s generic
+                // [`attach_model_file`] stamp one on anyway, so it is marked
+                // `Some(None)` ("no file, and already decided") here instead.
+                let mut err = ContractError::pre_port(
+                    ErrorKind::IllegalModel,
+                    format!(
+                        "Scalar must be one of StringScalar, DateTimeScalar in context of \
+                         MapKeyType. Invalid Scalar: {}, for MapDeclaration {}",
+                        key.name,
+                        map.name()
+                    ),
+                    None,
+                );
+                err.model_file = Some(None);
+                return Err(err.into());
+            }
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+js_compat_pub! {
+    /// `MapValueType.validate` (src/introspect/mapvaluetype.ts), plus the
+    /// value-kind membership check TS makes at `MapDeclaration` construction
+    /// time (`ModelUtil.isValidMapValue`), deferred here for the same reason as
+    /// [`validate_map_key`].
+    pub fn validate_map_value(
+        manager: &ModelManager,
+        namespace: &str,
+        map: &MapDeclaration,
+    ) -> Result<()> {
+        if !model_util::MAP_VALUE_KINDS.contains(&map.value_kind()) {
+            return Err(failed(
+                format!(
+                    "The value of map {} may not be a {}",
+                    map.name(),
+                    map.value_kind()
+                ),
+                None,
+            ));
+        }
+
+        // TS: `MapValueType.processType` (src/introspect/mapvaluetype.ts), for
+        // `ObjectMapValueType`/`RelationshipMapValueType`: the node must carry a
+        // `type` property, that `type` must have both a `$class` and a `name`,
+        // and its `$class` must be `TypeIdentifier`. This engine's loader folds
+        // "no `type`" and "`type` has no `name`" into the same `None`
+        // ([`MapVariant::Untyped`]'s doc comment), so one message covers both,
+        // as neither TS test on these paths asserts on message text, only that
+        // an `IllegalModelException` is thrown.
+        if matches!(
+            map.value_kind(),
+            "ObjectMapValueType" | "RelationshipMapValueType"
+        ) {
+            match map.value_type() {
+                // Reachable (P5-06, validation.rs test
+                // `validate_detached_map_key_and_value_in_isolation`'s
+                // `ValueTypeNameIsNotAString` case): `MapDeclaration::from_json`
+                // only checks that `type.name` is *present*, not that it is a
+                // string, so a malformed `name` field leaves `value_type()`
+                // `None` despite construction succeeding.
+                None => {
+                    return Err(failed(
+                        format!(
+                            "{} must contain property 'type' with a 'name', for MapDeclaration named {}",
+                            map.value_kind(),
+                            map.name()
+                        ),
+                        None,
+                    ));
+                }
+                // Provably unreachable through any constructed `MapDeclaration`
+                // (P5-06: cargo-mutants found this arm's mutants survived, and
+                // review correctly rejected the earlier "likely unreachable, no
+                // proof" claim — this is the proof, not a repeat of the
+                // assertion). `MapDeclaration::from_json`
+                // (introspect/declaration.rs) already rejects, at construction,
+                // any `ObjectMapValueType`/`RelationshipMapValueType` node whose
+                // `type.$class` is not the literal string
+                // `"concerto.metamodel@1.0.0.TypeIdentifier"` (its own
+                // `class_field.and_then(|c| c.as_str()) != Some(...)` check) —
+                // the exact same string [`crate::introspect::qualified_class`]
+                // builds here (`METAMODEL_NAMESPACE` + `".TypeIdentifier"`).
+                // `t._class` above is read off the *same* JSON node by
+                // `type_reference`'s `serde_json::from_value::<mm::TypeIdentifier>`
+                // (declaration.rs), a field-for-field deserialize with no
+                // normalisation, so `t._class` cannot come out different from
+                // the exact string construction already checked. The only way
+                // `type_reference` disagrees with that raw check at all is by
+                // *failing* to deserialize (a malformed `name`, the `None` arm
+                // just above) — it can fail to produce a match, never produce a
+                // different one.
+                Some(t) if t._class != crate::introspect::qualified_class("TypeIdentifier") => {
+                    return Err(failed(
+                        format!(
+                            "{} type $class must be of TypeIdentifier for MapDeclaration named {}",
+                            map.value_kind(),
+                            map.name()
+                        ),
+                        None,
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        // TS: `MapValueType.validate` allows any declaration as a map value except
+        // another MapDeclaration ("All declarations, with the exception of
+        // MapDeclarations, are valid Values."); it does not itself check that the
+        // referenced type is declared.
+        if let Some(value) = map.value_type() {
+            let declared = resolve(manager, namespace, &value.name)
+                .and_then(|fqn| manager.get_declaration(&fqn).ok());
+            let Some(declared) = declared else {
+                // TS: `MapValueType.validate` reads `this.modelFile.getType(...)`
+                // (which returns `null` for an undeclared type, `ModelFile.getType`,
+                // modelfile.ts) straight into `decl.isMapDeclaration?.()`: the
+                // `?.` guards only the *call*, not the `.isMapDeclaration`
+                // property read on `decl` itself, so V8 throws `TypeError: Cannot
+                // read properties of null (reading 'isMapDeclaration')` rather
+                // than the graceful "undeclared type" message this port used to
+                // raise. Ported as TS has it (a `ts-bug` divergence).
+                return Err(ContractError::new(
+                    ErrorKind::MalformedInput,
+                    "engine-typeerror-readproperties",
+                    vec![
+                        ("value", "null".to_string()),
+                        ("property", "isMapDeclaration".to_string()),
+                    ],
+                )
+                .into());
+            };
+            if declared.is_map_declaration() {
+                return Err(failed(
+                    format!(
+                        "MapDeclaration as Map Type Value is not supported: {}",
+                        value.name
+                    ),
+                    None,
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Builds a semantic-validation error from a hand-written message.
@@ -1390,7 +1405,7 @@ pub fn validate_map_value(
 /// `None` exactly where TS passes none does not yet apply to every check
 /// here, since the check itself is still pre-port; `None` is a placeholder
 /// there too, not a claim that TS passes none).
-fn failed(message: String, location: Option<serde_json::Value>) -> ConcertoError {
+fn failed(message: String, location: Option<serde_json::Value>) -> Error {
     ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
 }
 
@@ -1403,7 +1418,7 @@ fn catalogue_error(
     code: &'static str,
     params: Vec<(&'static str, String)>,
     location: Option<serde_json::Value>,
-) -> ConcertoError {
+) -> Error {
     let mut err = ContractError::new(ErrorKind::IllegalModel, code, params);
     err.location = location;
     err.into()
@@ -1427,7 +1442,7 @@ fn undeclared_type_error(
     namespace: &str,
     type_name: &str,
     context: String,
-) -> ConcertoError {
+) -> Error {
     let mut err = ContractError::new(
         ErrorKind::IllegalModel,
         "modelfile-resolvetype-undecltype",
@@ -1444,8 +1459,7 @@ fn undeclared_type_error(
 
 #[cfg(test)]
 mod tests {
-    use crate::error::{ConcertoError, ContractError, ErrorKind};
-    use crate::introspect::Named;
+    use crate::error::{ContractError, Error, ErrorKind};
     use crate::introspect::model_file::ModelFile;
     use crate::model_manager::ModelManager;
     use crate::validation::{attach_model_file, validate_map_key, validate_map_value};
@@ -1459,7 +1473,7 @@ mod tests {
         // same as TS — before `validate_models` below ever runs — so this
         // no longer `.unwrap()`s: a caller whose declarations are malformed
         // that way sees the `add_model` error itself, not a panic.
-        manager.add_model(
+        manager.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -1614,8 +1628,8 @@ mod tests {
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" }
         }))]))
         .unwrap_err();
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, Some(location)),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -1641,8 +1655,8 @@ mod tests {
             ]
         }))]))
         .unwrap_err();
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, Some(location)),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -1676,8 +1690,8 @@ mod tests {
             err.to_string(),
             "Type 'Address' clashes with an imported type with the same name."
         );
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, Some(location)),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -1702,13 +1716,13 @@ mod tests {
         .unwrap();
 
         // A file-less IllegalModel error is stamped.
-        let illegal = ConcertoError::from(ContractError::new(
+        let illegal = Error::from(ContractError::new(
             ErrorKind::IllegalModel,
             "pre-port",
             vec![],
         ));
-        match attach_model_file(illegal, &mf) {
-            ConcertoError::Contract(c) => {
+        match attach_model_file(illegal, &mf).into_ported() {
+            Some(c) => {
                 assert_eq!(c.model_file, Some(Some("attach.cto".to_string())))
             }
             other => panic!("expected a Contract error, got {other:?}"),
@@ -1718,8 +1732,8 @@ mod tests {
         // overwritten by a hard-coded `true` guard).
         let mut already_attached = ContractError::new(ErrorKind::IllegalModel, "pre-port", vec![]);
         already_attached.model_file = Some(Some("other.cto".to_string()));
-        match attach_model_file(ConcertoError::from(already_attached), &mf) {
-            ConcertoError::Contract(c) => {
+        match attach_model_file(Error::from(already_attached), &mf).into_ported() {
+            Some(c) => {
                 assert_eq!(c.model_file, Some(Some("other.cto".to_string())))
             }
             other => panic!("expected a Contract error, got {other:?}"),
@@ -1727,10 +1741,9 @@ mod tests {
 
         // A non-IllegalModel error is left alone (would be stamped by an
         // `&&` → `||` swap, since it has no file yet).
-        let validator =
-            ConcertoError::from(ContractError::new(ErrorKind::Validator, "pre-port", vec![]));
-        match attach_model_file(validator, &mf) {
-            ConcertoError::Contract(c) => assert_eq!(c.model_file, None),
+        let validator = Error::from(ContractError::new(ErrorKind::Validator, "pre-port", vec![]));
+        match attach_model_file(validator, &mf).into_ported() {
+            Some(c) => assert_eq!(c.model_file, None),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -1921,7 +1934,7 @@ mod tests {
     fn string_decorators_on_a_model_are_duplicate_undefined_decorators() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": [],
@@ -1946,7 +1959,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": "\u{1F4A5}emoji",
@@ -1970,7 +1983,7 @@ mod tests {
             )
             .unwrap();
         let err = manager.validate_models().unwrap_err();
-        let ConcertoError::Contract(contract) = &err else {
+        let Some(contract) = err.ported() else {
             panic!("expected an IllegalModelException, got {err:?}");
         };
         assert_eq!(contract.kind, ErrorKind::IllegalModel);
@@ -2006,7 +2019,7 @@ mod tests {
             }
             let mut manager = ModelManager::new().unwrap();
             let err = manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "decorators": [],
@@ -2033,7 +2046,7 @@ mod tests {
                     file_name.map(String::from),
                 )
                 .unwrap_err();
-            let ConcertoError::Contract(contract) = &err else {
+            let Some(contract) = err.ported() else {
                 panic!("expected an IllegalModelException, got {err:?}");
             };
             assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ty:?}");
@@ -2087,7 +2100,7 @@ mod tests {
         });
         ModelManager::new()
             .unwrap()
-            .add_model(&model, Some("test.cto".into()))
+            .load_model(&model, Some("test.cto".into()))
             .expect("the unmutated model loads");
         let sites: [&[&str]; 8] = [
             &["decorators"],
@@ -2110,9 +2123,9 @@ mod tests {
             for file_name in [Some("test.cto"), None] {
                 let err = ModelManager::new()
                     .unwrap()
-                    .add_model(&model, file_name.map(String::from))
+                    .load_model(&model, file_name.map(String::from))
                     .unwrap_err();
-                let ConcertoError::Contract(contract) = &err else {
+                let Some(contract) = err.ported() else {
                     panic!("{pointer}: expected an IllegalModelException, got {err:?}");
                 };
                 assert_eq!(contract.kind, ErrorKind::IllegalModel, "{pointer}");
@@ -2152,7 +2165,7 @@ mod tests {
         let load = |declarations: serde_json::Value| {
             ModelManager::new()
                 .unwrap()
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.example@1.0.0",
@@ -2199,7 +2212,7 @@ mod tests {
             serde_json::json!("x"),
             serde_json::json!(true),
         ] {
-            let result = ModelManager::new().unwrap().add_model(
+            let result = ModelManager::new().unwrap().load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": [element],
@@ -2209,7 +2222,7 @@ mod tests {
                 }),
                 None,
             );
-            if let Err(ConcertoError::Contract(contract)) = &result {
+            if let Some(contract) = result.as_ref().err().and_then(Error::ported) {
                 assert_ne!(contract.code, "decorator-process-notobject", "{element}");
             }
         }
@@ -2225,7 +2238,7 @@ mod tests {
     fn an_empty_super_type_name_is_not_found() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "decorators": [],
@@ -2248,7 +2261,7 @@ mod tests {
             )
             .unwrap();
         let err = manager.validate_models().unwrap_err();
-        let ConcertoError::Contract(contract) = &err else {
+        let Some(contract) = err.ported() else {
             panic!("expected an IllegalModelException, got {err:?}");
         };
         assert_eq!(contract.kind, ErrorKind::IllegalModel);
@@ -2261,7 +2274,7 @@ mod tests {
     fn single_code_unit_string_decorators_are_accepted() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2278,7 +2291,7 @@ mod tests {
     /// `decorators`, and validates it.
     fn validate_model_decorators(decorators: serde_json::Value) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
-        manager.add_model(
+        manager.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -2312,7 +2325,7 @@ mod tests {
             ]),
         ] {
             let err = validate_model_decorators(decorators).unwrap_err();
-            let ConcertoError::Contract(contract) = &err else {
+            let Some(contract) = err.ported() else {
                 panic!("expected an IllegalModelException, got {err:?}");
             };
             assert_eq!(contract.message(), "Duplicate decorator undefined");
@@ -2328,7 +2341,7 @@ mod tests {
         let empty = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "", "arguments": [] });
         assert!(validate_model_decorators(serde_json::json!([nameless, empty])).is_ok());
         let err = validate_model_decorators(serde_json::json!([empty, empty])).unwrap_err();
-        let ConcertoError::Contract(contract) = &err else {
+        let Some(contract) = err.ported() else {
             panic!("expected an IllegalModelException, got {err:?}");
         };
         assert_eq!(contract.message(), "Duplicate decorator ");
@@ -2520,7 +2533,7 @@ mod tests {
     fn duplicate_decorator_on_a_namespace_is_rejected() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2562,7 +2575,7 @@ mod tests {
     ) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.common@1.0.0",
@@ -2572,7 +2585,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2592,7 +2605,7 @@ mod tests {
     fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::error::Result<()> {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -2619,7 +2632,7 @@ mod tests {
         }))];
         declarations.extend(extra.as_array().unwrap().iter().cloned());
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.b@1.0.0",
@@ -2697,7 +2710,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "A@1.0.0",
@@ -2727,7 +2740,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "A@1.0.0",
@@ -2743,7 +2756,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "B@1.0.0",
@@ -2779,7 +2792,7 @@ mod tests {
         // A self-import makes the local declaration clash with itself.
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -2864,7 +2877,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         for (namespace, declared) in [("org.a@1.0.0", "X"), ("org.a@2.0.0", "Y")] {
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": namespace,
@@ -2875,7 +2888,7 @@ mod tests {
                 .unwrap();
         }
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.t@1.0.0",
@@ -2936,10 +2949,10 @@ mod tests {
     fn an_import_name_that_makes_the_synthesised_namespace_fail_parse_first() {
         let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X../../etc")]))
             .unwrap_err();
-        let ConcertoError::Contract(c) = err else {
+        let Some(c) = err.ported().cloned() else {
             panic!("expected a contract error, got {err:?}");
         };
-        assert_eq!(c.kind, ErrorKind::Error);
+        assert_eq!(c.kind, ErrorKind::InvalidArgument);
         assert_eq!(c.message(), "Invalid namespace org.a@1.0.0.X../.");
     }
 
@@ -3220,7 +3233,7 @@ mod tests {
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3262,7 +3275,7 @@ mod tests {
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "test@1.0.0",
@@ -3289,7 +3302,7 @@ mod tests {
         // suffix at *construction*, so it shows up in the fully-decorated
         // message (`final_message`, what the oracle compares), not in the
         // raw `Display`/`message()` this crate's other call sites use.
-        let ConcertoError::Contract(contract) = &err else {
+        let Some(contract) = err.ported() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(
@@ -3306,10 +3319,11 @@ mod tests {
     /// subtype declares its own identity, and
     /// [`ModelManager::identifier_field_name`] inherits it.
     #[test]
+    #[allow(deprecated)]
     fn an_asset_inherits_the_system_identifier_field() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3330,9 +3344,7 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let properties = manager
-            .get_all_properties("org.example@1.0.0.Order")
-            .unwrap();
+        let properties = manager.properties("org.example@1.0.0.Order").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["price", "$identifier"]);
         assert_eq!(
@@ -3351,10 +3363,11 @@ mod tests {
     /// identified", `ClassDeclaration.getProperties`), even though its own
     /// identity is `sku`.
     #[test]
+    #[allow(deprecated)]
     fn an_explicitly_identified_asset_still_inherits_the_system_identifier_field() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3378,9 +3391,7 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let properties = manager
-            .get_all_properties("org.example@1.0.0.Order")
-            .unwrap();
+        let properties = manager.properties("org.example@1.0.0.Order").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["sku", "price", "$identifier"]);
         assert_eq!(
@@ -3399,7 +3410,7 @@ mod tests {
     fn a_transaction_inherits_the_system_timestamp_field() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -3420,9 +3431,7 @@ mod tests {
             .unwrap();
         manager.validate_models().unwrap();
 
-        let properties = manager
-            .get_all_properties("org.example@1.0.0.Payment")
-            .unwrap();
+        let properties = manager.properties("org.example@1.0.0.Payment").unwrap();
         let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
         assert_eq!(names, ["amount", "$timestamp"]);
     }
@@ -3543,8 +3552,8 @@ mod tests {
             object_type("Missing", "ObjectMapValueType"),
         ));
         assert!(matches!(
-            err.unwrap_err(),
-            ConcertoError::Contract(c) if c.kind == ErrorKind::JsTypeError
+            err.unwrap_err().ported(),
+            Some(c) if c.kind == ErrorKind::MalformedInput
         ));
 
         assert!(validate(map_with(key, object_type("Item", "ObjectMapValueType"))).is_ok());
@@ -3662,7 +3671,7 @@ mod tests {
     fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "maps@1.0.0",
@@ -3676,7 +3685,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "t@1.0.0",
@@ -3794,7 +3803,7 @@ mod tests {
     fn reserved_field_name_is_rejected_at_load() {
         // A `$`-prefixed field name is rejected while loading, before validation.
         let mut manager = ModelManager::new().unwrap();
-        let result = manager.add_model(
+        let result = manager.load_model(
             &serde_json::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
@@ -3835,8 +3844,8 @@ mod tests {
     /// Asserts `err` is TS `ModelFile.validate()`'s duplicate-name
     /// `IllegalModelException`: its exact message, and neither a model file
     /// nor a location (TS passes neither), even when the file has a name.
-    fn assert_duplicate_class_name(err: ConcertoError, fqn: &str) {
-        let ConcertoError::Contract(contract) = &err else {
+    fn assert_duplicate_class_name(err: Error, fqn: &str) {
+        let Some(contract) = err.ported() else {
             panic!("expected a contract error, got {err:?}");
         };
         assert_eq!(contract.kind, crate::error::ErrorKind::IllegalModel);
@@ -3857,7 +3866,7 @@ mod tests {
     fn duplicate_declaration_is_accepted_on_load_and_rejected_by_validation() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(&duplicate_model("org.dup@1.0.0"), Some("dup.cto".into()))
+            .load_model(&duplicate_model("org.dup@1.0.0"), Some("dup.cto".into()))
             .expect("loading without validation accepts a duplicate name");
         let file = manager.model_file("org.dup@1.0.0").unwrap();
         assert_eq!(file.declarations().len(), 2);
@@ -3875,7 +3884,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         let model = duplicate_model("org.dup@1.0.0");
         let err = manager
-            .add_models([(&model, Some("dup.cto".to_string()))])
+            .load_models([(&model, Some("dup.cto".to_string()))])
             .unwrap_err();
         assert_duplicate_class_name(err, "org.dup@1.0.0.A");
         assert!(manager.model_file("org.dup@1.0.0").is_none());
@@ -3891,7 +3900,7 @@ mod tests {
         model["declarations"][0]["superType"] = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing"
         });
-        manager.add_model(&model, None).unwrap();
+        manager.load_model(&model, None).unwrap();
         assert_duplicate_class_name(manager.validate_models().unwrap_err(), "org.dup@1.0.0.A");
 
         let mut manager = ModelManager::new().unwrap();
@@ -3900,7 +3909,7 @@ mod tests {
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.missing@1.0.0", "name": "X" }
         ]);
-        manager.add_model(&model, None).unwrap();
+        manager.load_model(&model, None).unwrap();
         let message = manager.validate_models().unwrap_err().to_string();
         assert!(!message.contains("Duplicate class name"), "{message}");
     }
@@ -3925,7 +3934,7 @@ mod tests {
             "declarations": [concept(serde_json::json!({ "name": "Widget" }))]
         });
         manager
-            .add_model(&valid, Some("namesake.cto".into()))
+            .load_model(&valid, Some("namesake.cto".into()))
             .unwrap();
 
         let mut invalid = valid;
@@ -3975,8 +3984,12 @@ mod tests {
             .unwrap();
 
         let renamed = ModelFile::from_json(&ast, Some("renamed.cto".into())).unwrap();
-        match manager.validate_detached_model_file(&renamed).unwrap_err() {
-            ConcertoError::Contract(c) => {
+        match manager
+            .validate_detached_model_file(&renamed)
+            .unwrap_err()
+            .into_ported()
+        {
+            Some(c) => {
                 assert!(c.final_message().contains("Duplicate decorator"));
                 assert_eq!(c.model_file, Some(Some("renamed.cto".to_string())));
             }
@@ -3993,7 +4006,7 @@ mod tests {
         use crate::introspect::model_file::ModelFile;
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.common@1.0.0",
@@ -4300,7 +4313,7 @@ mod tests {
     fn a_map_key_imported_from_another_namespace_and_not_string_or_datetime_is_rejected() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.base@1.0.0",
@@ -4310,7 +4323,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -4344,7 +4357,7 @@ mod tests {
     fn a_map_key_imported_from_another_namespace_and_is_a_string_scalar_validates() {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.base@1.0.0",
@@ -4356,7 +4369,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
@@ -4522,7 +4535,7 @@ mod tests {
         ] {
             let mut manager = ModelManager::new().unwrap();
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.base@1.0.0",
@@ -4532,7 +4545,7 @@ mod tests {
                 )
                 .unwrap();
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.example@1.0.0",
@@ -4569,7 +4582,7 @@ mod tests {
     fn aliased_map_manager() -> ModelManager {
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "child@1.0.0",
@@ -4582,7 +4595,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "parent@1.0.0",
@@ -4641,8 +4654,8 @@ mod tests {
     /// Asserts `result` is the `IllegalModelException` TS throws: the only
     /// thing the TS tests below assert about their errors.
     fn assert_illegal_model(result: crate::error::Result<()>) {
-        match result {
-            Err(ConcertoError::Contract(err)) => {
+        match result.map_err(Error::into_ported) {
+            Err(Some(err)) => {
                 assert_eq!(err.kind, crate::error::ErrorKind::IllegalModel, "{err:?}");
             }
             other => panic!("expected an IllegalModelException, got {other:?}"),
@@ -4773,12 +4786,11 @@ mod tests {
     // `Declaration.getFullyQualifiedName` port.
     #[test]
     fn a_loaded_map_declaration_introspects_as_ts_does() {
-        use crate::introspect::DeclarationKind;
         use crate::model_manager::{Node, ResolutionContext};
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "com.acme@1.0.0",
@@ -4820,7 +4832,7 @@ mod tests {
             .extend(s_extra.as_object().unwrap().clone());
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -4860,8 +4872,8 @@ mod tests {
         }));
         let expected = "size validator can only be applied to array or map properties: \
                         org.a@1.0.0.X.s File 'b.cto': ";
-        let final_message = |e: ConcertoError| match e {
-            ConcertoError::Contract(c) => c.final_message(),
+        let final_message = |e: Error| match e.into_ported() {
+            Some(c) => c.final_message(),
             other => panic!("expected a contract error, got {other:?}"),
         };
 
@@ -4873,7 +4885,7 @@ mod tests {
         );
 
         // `addModelFile(B)` with validation: B alone is validated.
-        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        manager.load_model(&b, Some("b.cto".into())).unwrap();
         let registered = manager.model_file("org.b@1.0.0").unwrap();
         assert_eq!(
             final_message(manager.validate_model_file(registered).unwrap_err()),
@@ -4909,8 +4921,12 @@ mod tests {
             ]
         }));
         let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
-        match manager.validate_detached_model_file(&detached).unwrap_err() {
-            ConcertoError::Contract(c) => {
+        match manager
+            .validate_detached_model_file(&detached)
+            .unwrap_err()
+            .into_ported()
+        {
+            Some(c) => {
                 assert!(c.final_message().contains("Duplicate decorator"));
                 assert_eq!(c.model_file, Some(Some("a.cto".to_string())));
             }
@@ -4952,8 +4968,12 @@ mod tests {
             Some("owned.cto".into()),
         )
         .unwrap();
-        match manager.validate_detached_declaration(&mf, 0).unwrap_err() {
-            ConcertoError::Contract(c) => {
+        match manager
+            .validate_detached_declaration(&mf, 0)
+            .unwrap_err()
+            .into_ported()
+        {
+            Some(c) => {
                 assert!(c.final_message().contains("Duplicate decorator"));
                 assert_eq!(c.model_file, None);
             }
@@ -4968,12 +4988,12 @@ mod tests {
     #[test]
     fn a_valid_inherited_property_passes_the_subclass_pass() {
         let (mut manager, b) = inherited_property_files(serde_json::json!({}));
-        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        manager.load_model(&b, Some("b.cto".into())).unwrap();
         assert!(manager.validate_models().is_ok());
 
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -4991,7 +5011,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        manager.add_model(&b, Some("b.cto".into())).unwrap();
+        manager.load_model(&b, Some("b.cto".into())).unwrap();
         let registered = manager.model_file("org.b@1.0.0").unwrap();
         assert!(manager.validate_model_file(registered).is_ok());
         assert!(manager.validate_models().is_ok());
@@ -5007,7 +5027,7 @@ mod tests {
             let mut manager = ModelManager::new().unwrap();
             if load_c {
                 manager
-                    .add_model(
+                    .load_model(
                         &serde_json::json!({
                             "$class": "concerto.metamodel@1.0.0.Model",
                             "namespace": "org.c@1.0.0",
@@ -5018,7 +5038,7 @@ mod tests {
                     .unwrap();
             }
             manager
-                .add_model(
+                .load_model(
                     &serde_json::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.a@1.0.0",
@@ -5038,10 +5058,10 @@ mod tests {
                 )
                 .unwrap();
             let (_, b) = inherited_property_files(serde_json::json!({}));
-            manager.add_model(&b, Some("b.cto".into())).unwrap();
+            manager.load_model(&b, Some("b.cto".into())).unwrap();
             let file = manager.model_file("org.b@1.0.0").unwrap();
             let err = manager.validate_model_file(file).unwrap_err();
-            let ConcertoError::Contract(err) = err else {
+            let Some(err) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
             assert_eq!(err.kind, crate::error::ErrorKind::TypeNotFound);
@@ -5072,7 +5092,7 @@ mod tests {
         use crate::introspect::model_file::ModelFile;
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.c@1.0.0",
@@ -5082,7 +5102,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -5114,8 +5134,12 @@ mod tests {
             }))]
         });
         let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
-        match manager.validate_detached_model_file(&detached).unwrap_err() {
-            ConcertoError::Contract(c) => {
+        match manager
+            .validate_detached_model_file(&detached)
+            .unwrap_err()
+            .into_ported()
+        {
+            Some(c) => {
                 assert!(
                     c.final_message()
                         .contains("must be to a class that has an identifier")
@@ -5147,7 +5171,7 @@ mod tests {
         use crate::introspect::model_file::ModelFile;
         let mut manager = ModelManager::new().unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
@@ -5186,8 +5210,9 @@ mod tests {
         match manager
             .validate_detached_declaration(&detached, 1)
             .unwrap_err()
+            .into_ported()
         {
-            ConcertoError::Contract(c) => {
+            Some(c) => {
                 assert!(
                     c.final_message()
                         .contains("must be to a class that has an identifier")
@@ -5413,7 +5438,7 @@ mod tests {
         let mut manager = ModelManager::new().unwrap();
         manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.x@1.0.0",
@@ -5432,7 +5457,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.a@1.0.0",
@@ -5453,7 +5478,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .add_model(
+            .load_model(
                 &serde_json::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.b@1.0.0",

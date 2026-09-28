@@ -16,7 +16,10 @@ publish = false
 autobenches = false
 
 [dependencies]
-accordproject-concerto-core = { path = "../concerto-core" }
+# `js-compat` (P6-01, docs/public-api.md section 4.6): `instance_validate`
+# times the `ResourceValidator` walk alone (`instance::validate`), which is
+# part of the JS-compatibility seam, not the default API.
+accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
 # Not `{ workspace = true }`: this crate is intentionally not a workspace
 # member (see the root Cargo.toml), so workspace dependency inheritance
 # isn't available; this is a literal copy of the root's

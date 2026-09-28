@@ -142,9 +142,9 @@ impl DecoratorExtractor {
             return Ok(());
         }
         let ParsedNamespace::Full { name, version, .. } =
-            model_util::parse_namespace(Some(namespace), false)?
+            model_util::parse_namespace_with(Some(namespace), false)?
         else {
-            unreachable!("parse_namespace(_, false) always returns Full")
+            unreachable!("parse_namespace_with(_, false) always returns Full")
         };
         let mut m = Map::new();
         m.insert(
@@ -374,7 +374,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if matches!(extension_key, "namespace" | "locale" | "declarations") {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: {extension_key}. The key should not be one of the reserved keys: namespace, locale, declarations"),
                         None,
                     )
@@ -405,7 +405,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if extension_key == vocab_target.property {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: \"{extension_key}\". The key should not be the name of the current property."),
                         None,
                     )
@@ -425,7 +425,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if extension_key == vocab_target.map_element {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: \"{extension_key}\". The key should not be the name of the current property."),
                         None,
                     )
@@ -443,7 +443,7 @@ impl DecoratorExtractor {
                 let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
                 if extension_key == "properties" || extension_key == vocab_target.declaration {
                     return Err(ContractError::pre_port(
-                        ErrorKind::Error,
+                        ErrorKind::InvalidArgument,
                         format!("Invalid vocabulary key: \"{extension_key}\". The key cannot be a reserved word such as \"properties\" or the name of the current declaration."),
                         None,
                     )
@@ -700,7 +700,7 @@ impl DecoratorExtractor {
                 .and_then(Value::as_str)
                 .is_some_and(|ns| crate::model_manager::EXCLUDE_NS.contains(&ns))
         }) {
-            model_manager.add_model(model, None)?;
+            model_manager.load_model(model, None)?;
         }
         model_manager.validate_models()?;
 

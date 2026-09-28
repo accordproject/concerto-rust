@@ -14,26 +14,15 @@
 //! generator) stays in TS (ledger: "Factory generate path (D7)"); these
 //! functions build the instance as TS does when `options.generate` is falsy.
 
-use serde_json::Value;
+use crate::value::{Instance, InstanceKind, JsValue};
+use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::dayjs::Dayjs;
+use concerto_core::instance::from_json::{self, FieldDefault, IdentifierArg};
+use concerto_core::instance::model::{self, TypeRef};
+use concerto_core::model_manager::ModelManager;
+use concerto_core::{Error, model_util};
 
-use super::dayjs::Dayjs;
-use super::model::{self, FieldType, TypeRef};
-use super::value::{Instance, InstanceKind, JsValue};
-use crate::error::{ContractError, ErrorKind, Result};
-use crate::introspect::scalar::ScalarValidator;
-use crate::introspect::validators::StringValidator;
-use crate::introspect::{FullyQualified, Property};
-use crate::model_manager::{ModelManager, Node, ResolutionContext, ValidatedElement};
-use crate::{ConcertoError, ecma, model_util};
-
-/// What the TS `Factory` gets from its environment rather than from the
-/// model (D7): a new identifier and the current time.
-pub trait InstanceEnv {
-    /// TS: `Factory.newId()`, `uuid.v4()`.
-    fn new_id(&mut self) -> String;
-    /// TS: the time `dayjs.utc()` reads, in ms since the epoch.
-    fn now_ms(&mut self) -> f64;
-}
+pub use concerto_core::instance::from_json::InstanceEnv;
 
 /// What [`check_new_resource`] settles: everything `newResource` needs
 /// from the model before it builds the object.
@@ -51,15 +40,13 @@ pub struct NewResourceCheck {
 }
 
 /// A `Factory.newResource` error: a plain `Error` from the catalogue.
-fn error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
-    ContractError::new(ErrorKind::Error, code, params).into()
+fn error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
+    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
-/// The model checks of `Factory.newResource`, in TS order (#32 point 4):
-/// the type lookup, the abstract type, the identifier's type, the empty
-/// identifier and the identifier regex, plus the non-identifiable type
-/// given an identifier. `new_id` is `Factory.newId`, called only for a
-/// system-identified type given a nullish id.
+/// The model checks of `Factory.newResource`, in TS order (#32 point 4),
+/// for an identifier that is any JS value: the checks are the native
+/// route's ([`from_json::check_new_resource`]).
 ///
 /// TS: Factory.newResource (src/factory.ts), up to the construction.
 pub fn check_new_resource(
@@ -69,164 +56,20 @@ pub fn check_new_resource(
     id: JsValue,
     new_id: &mut dyn FnMut() -> String,
 ) -> Result<NewResourceCheck> {
-    let qualified_name = model_util::get_fully_qualified_name(ns, type_name);
-    let class_decl = model::get_type(mm, &qualified_name)?;
-
-    if class_decl.is_abstract("classDecl.isAbstract")? {
-        return Err(error(
-            "factory-newinstance-abstracttype",
-            vec![
-                ("namespace", ns.to_string()),
-                ("type", type_name.to_string()),
-            ],
-        ));
-    }
-
-    let id_field = class_decl.identifier_field_name()?;
-    let mut id = id;
-    if class_decl.is_system_identified()? && id.is_nullish() {
-        id = JsValue::String(new_id());
-    }
-    if let Some(id_field) = &id_field {
-        let JsValue::String(id_text) = &id else {
-            return Err(error(
-                "factory-newinstance-invalididentifier",
-                vec![
-                    ("namespace", ns.to_string()),
-                    ("type", type_name.to_string()),
-                ],
-            ));
-        };
-        if ecma::js_trim(id_text).is_empty() {
-            return Err(error(
-                "factory-newinstance-missingidentifier",
-                vec![
-                    ("namespace", ns.to_string()),
-                    ("type", type_name.to_string()),
-                ],
-            ));
-        }
-        // `if (id)`: a non-empty string here.
-        if let Some(regex) = identifier_regex(&class_decl, id_field)?
-            && !regex.matches_regex(id_text)
-        {
-            return Err(error(
-                "factory-newresource-idregexmismatch",
-                vec![("regex", regex.regex().unwrap_or_default())],
-            ));
-        }
-    } else if id.is_truthy() {
-        return Err(error(
-            "factory-newresource-notidentifiable",
-            vec![("fqn", class_decl.fqn())],
-        ));
-    }
-
+    let arg = match &id {
+        JsValue::Undefined | JsValue::Null => IdentifierArg::Nullish,
+        JsValue::String(s) => IdentifierArg::String(s),
+        other => IdentifierArg::Other {
+            truthy: other.is_truthy(),
+        },
+    };
+    let check = from_json::check_new_resource(mm, ns, type_name, arg, new_id)?;
     Ok(NewResourceCheck {
-        class_fqn: class_decl.fqn(),
-        identifier_field_name: id_field,
-        id,
-        timestamped: class_decl.is_transaction() || class_decl.is_event(),
+        class_fqn: check.class_fqn,
+        identifier_field_name: check.identifier_field_name,
+        id: check.generated_id.map_or(id, JsValue::String),
+        timestamped: check.timestamped,
     })
-}
-
-/// The element a string validator is attached to, for building one: its
-/// name and fully-qualified name only (the default value was checked when
-/// the model loaded).
-struct IdElement {
-    name: String,
-    fqn: String,
-}
-
-impl FullyQualified for IdElement {
-    type Error = ConcertoError;
-
-    fn fully_qualified_name(&self) -> Result<String> {
-        Ok(self.fqn.clone())
-    }
-}
-
-impl ValidatedElement for IdElement {
-    fn default_value(&self) -> Result<Option<Value>> {
-        Ok(None)
-    }
-
-    fn name(&self) -> Result<String> {
-        Ok(self.name.clone())
-    }
-}
-
-/// `idFullField?.validator` when it has a `regex`: the identifying
-/// property (unboxed with `getScalarField()` when its type is a scalar) and
-/// its string validator.
-fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<StringValidator>> {
-    let Some((owner_fqn, property)) = class_decl.property(id_field)? else {
-        return Ok(None);
-    };
-    let element = IdElement {
-        name: id_field.to_string(),
-        fqn: format!("{owner_fqn}.{id_field}"),
-    };
-    let field = model::field(class_decl.mm, &owner_fqn, property)?;
-    let validator = match (&field.field_type, &field.property) {
-        (FieldType::Primitive("String"), Property::String(sp)) if sp.validator.is_some() => {
-            StringValidator::new(
-                &element,
-                sp.validator.as_ref(),
-                sp.length_validator.as_ref(),
-                None,
-            )?
-        }
-        (
-            FieldType::Scalar {
-                primitive: Some("String"),
-                validator: Some(scalar_validator),
-                ..
-            },
-            _,
-        ) => {
-            let ScalarValidator::String {
-                validator: Some(regex),
-                length_validator,
-            } = scalar_validator.as_ref()
-            else {
-                return Ok(None);
-            };
-            let bad = |e: serde_json::Error| {
-                ConcertoError::from(ContractError::pre_port(
-                    ErrorKind::Error,
-                    format!("invalid string validator: {e}"),
-                    None,
-                ))
-            };
-            let regex = serde_json::from_value(regex.clone()).map_err(bad)?;
-            let length = length_validator
-                .as_ref()
-                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
-                .transpose()?;
-            StringValidator::new(&element, Some(&regex), length.as_ref(), None)?
-        }
-        _ => return Ok(None),
-    };
-    Ok(validator.regex().is_some().then_some(validator))
-}
-
-/// The `$identifierFieldName` the `Identifiable` constructor caches:
-/// `modelManager.getModelFile(ns)?.getType(fqt)?.getIdentifierFieldName()
-/// || '$identifier'`, with `fqt` the class declaration's name.
-fn identifiable_field_name(mm: &ModelManager, ns: &str, class_fqn: &str) -> Result<Option<String>> {
-    let Some(file) = mm.model_file_id(ns) else {
-        return Ok(None);
-    };
-    let Some(Node::Declaration(id)) = mm.get_type(&Node::ModelFile(file), Some(class_fqn))? else {
-        return Ok(None);
-    };
-    let decl = TypeRef {
-        mm,
-        id,
-        decl: mm.declaration(id).expect("a live handle"),
-    };
-    Ok(decl.identifier_field_name()?.filter(|f| !f.is_empty()))
 }
 
 /// Builds a `Resource` or `ValidatedResource` the way `Factory.newResource`
@@ -253,7 +96,7 @@ pub fn build_resource(
     } else {
         InstanceKind::ValidatedResource
     };
-    let identifier_field_name = identifiable_field_name(mm, ns, &check.class_fqn)?;
+    let identifier_field_name = from_json::identifiable_field_name(mm, ns, &check.class_fqn)?;
     let mut instance = Instance::new(
         kind,
         check.class_fqn.clone(),
@@ -291,7 +134,7 @@ pub fn new_relationship(
     type_name: &str,
     id: JsValue,
 ) -> Result<Instance> {
-    let fqn = model_util::get_fully_qualified_name(ns, type_name);
+    let fqn = model_util::qualify(ns, type_name);
     let class_decl = model::get_type(mm, &fqn)?;
     if !class_decl.is_identified()? {
         return Err(error(
@@ -311,7 +154,7 @@ pub(crate) fn relationship(
     id: JsValue,
 ) -> Result<Instance> {
     let class_fqn = class_decl.fqn();
-    let identifier_field_name = identifiable_field_name(mm, ns, &class_fqn)?;
+    let identifier_field_name = from_json::identifiable_field_name(mm, ns, &class_fqn)?;
     Ok(Instance::new(
         InstanceKind::Relationship,
         class_fqn,
@@ -331,9 +174,12 @@ pub fn relationship_from_uri(
     default_namespace: Option<&str>,
     default_type: Option<&str>,
 ) -> Result<Instance> {
-    let resource_id =
-        super::resource_id::ResourceId::from_uri(uri, default_namespace, default_type)?;
-    let fqt = model_util::get_fully_qualified_name(&resource_id.namespace, &resource_id.type_name);
+    let resource_id = concerto_core::instance::resource_id::ResourceId::from_uri(
+        uri,
+        default_namespace,
+        default_type,
+    )?;
+    let fqt = model_util::qualify(&resource_id.namespace, &resource_id.type_name);
     let class_decl = model::get_type(mm, &fqt)?;
     relationship(
         mm,
@@ -404,60 +250,21 @@ pub fn new_event(
     Ok(event)
 }
 
-/// The raw AST `defaultValue` of a property of `owner_fqn`
-/// (`Field.getDefaultValue()`, `null` when nullish), read off the AST as TS
-/// does: the typed `DateTimeProperty` carries none.
-fn raw_default_value(mm: &ModelManager, owner_fqn: &str, name: &str) -> Option<Value> {
-    let decl = mm.declaration_id(owner_fqn)?;
-    let prop = mm.property_ids(decl).find(|id| {
-        mm.property(*id)
-            .is_some_and(|p| crate::Named::name(p) == name)
-    })?;
-    mm.property_default_value(prop).cloned()
-}
-
 /// TS: `Typed.assignFieldDefaults` (src/model/typed.ts): each field with a
-/// non-null default gets it, converted by the field's type, through
-/// `this.setPropertyValue` (which validates it on a `ValidatedResource`).
+/// non-null default gets it, converted by the field's type
+/// ([`from_json::assign_field_defaults`]), through `this.setPropertyValue`
+/// (which validates it on a `ValidatedResource`).
 pub fn assign_field_defaults(mm: &ModelManager, instance: &mut Instance) -> Result<()> {
-    let class_decl = model::get_type(mm, &instance.class_fqn)?;
-    for (owner_fqn, property) in class_decl.properties("classDeclaration.getProperties")? {
-        // `isField?.()`: relationships are not `Field`s.
-        if property.is_relationship() || property.is_enum_value() {
-            continue;
-        }
-        let name = crate::Named::name(&property).to_string();
-        let field = model::field(mm, &owner_fqn, property)?;
-        let (default_value, type_name) = match &field.field_type {
-            FieldType::Scalar {
-                default_value,
-                primitive,
-                ..
-            } => (
-                default_value.clone(),
-                primitive.map(str::to_string).unwrap_or_default(),
-            ),
-            _ => (raw_default_value(mm, &owner_fqn, &name), field.type_name()),
+    let class_fqn = instance.class_fqn.clone();
+    from_json::assign_field_defaults(mm, &class_fqn, &mut |name, value| {
+        let value = match value {
+            FieldDefault::Number(n) => JsValue::Number(n),
+            FieldDefault::Bool(b) => JsValue::Bool(b),
+            FieldDefault::DateTime(d) => JsValue::DateTime(d),
+            FieldDefault::Json(v) => JsValue::from_json(&v),
         };
-        let Some(default_value) = default_value.filter(|v| !v.is_null()) else {
-            continue;
-        };
-        let js = JsValue::from_json(&default_value);
-        let value = match type_name.as_str() {
-            "Integer" | "Long" => JsValue::Number(ecma::parse_int(&js.to_js_string())),
-            "Double" => JsValue::Number(ecma::parse_float(&js.to_js_string())),
-            "Boolean" => JsValue::Bool(js == JsValue::Bool(true)),
-            "DateTime" => JsValue::DateTime(match &js {
-                JsValue::String(s) => Dayjs::utc_parse(s),
-                JsValue::Number(n) => Dayjs::utc_from_number(*n),
-                _ => Dayjs::utc_invalid(),
-            }),
-            // String, and "if we get this far the field should be an enum".
-            _ => js,
-        };
-        super::resource::set_property_value(mm, instance, &name, value)?;
-    }
-    Ok(())
+        super::resource::set_property_value(mm, instance, name, value)
+    })
 }
 
 /// Keys of `props`, for tests.
@@ -483,7 +290,7 @@ mod tests {
 
     fn manager(cto_ast: serde_json::Value) -> ModelManager {
         let mut mm = ModelManager::new().expect("a model manager");
-        mm.add_model(&cto_ast, Some("test.cto".into()))
+        mm.add_model_with_definitions(&cto_ast, None, Some("test.cto".into()))
             .expect("the model loads");
         mm
     }
@@ -555,8 +362,8 @@ mod tests {
     #[test]
     fn new_resource_checks_in_ts_order() {
         let mm = model();
-        let message = |r: Result<Instance>| match r {
-            Err(ConcertoError::Contract(e)) => e.message(),
+        let message = |r: Result<Instance>| match r.map_err(Error::into_ported) {
+            Err(Some(e)) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         };
         assert_eq!(
@@ -636,8 +443,10 @@ mod tests {
             JsValue::Undefined,
             false,
             &mut Env,
-        ) {
-            Err(ConcertoError::Contract(e)) => e.message(),
+        )
+        .map_err(Error::into_ported)
+        {
+            Err(Some(e)) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         };
         assert_eq!(message, "ns not specified");
