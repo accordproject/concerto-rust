@@ -362,3 +362,66 @@ fn the_metamodel_check_is_reachable_without_the_instance_module() {
     .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Metamodel);
 }
+
+#[test]
+fn validates_a_plain_json_instance_first_error_or_collect_all() {
+    use concerto_core::error::DetailCode;
+    use concerto_core::instance::{DiagnosticCode, ValidationOptions};
+
+    let manager = loaded();
+    let options = ValidationOptions::default();
+    let person = json!({
+        "$class": "org.acme@1.0.0.Person",
+        "email": "a@example.com",
+        "address": { "$class": "org.acme@1.0.0.Address", "city": "Paris" }
+    });
+    manager.validate_instance(&person, &options).unwrap();
+    assert!(manager.check_instance(&person, &options).is_valid());
+
+    // A nested object with no `$class` is read as its declared type.
+    let employee = json!({ "email": "b@example.com", "address": { "city": "Rome" } });
+    manager
+        .validate_instance_as("org.acme@1.0.0.Employee", &employee, &options)
+        .unwrap();
+    assert!(
+        manager
+            .check_instance_as("org.acme@1.0.0.Person", &person, &options)
+            .into_result()
+            .is_ok()
+    );
+
+    // First error, as `Serializer.fromJSON` throws it.
+    let missing = json!({ "$class": "org.acme@1.0.0.Person", "email": "c@example.com" });
+    let err = manager.validate_instance(&missing, &options).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Validation);
+    let report = manager.check_instance(&missing, &options);
+    assert_eq!(report.diagnostics().len(), 1);
+    assert_eq!(
+        report.diagnostics()[0].code,
+        DiagnosticCode::MissingRequiredProperty
+    );
+    assert_eq!(report.diagnostics()[0].pointer, "/address");
+
+    // The #1273 options, with their details.
+    let unknown = json!({
+        "$class": "org.acme@1.0.0.Person",
+        "email": "d@example.com",
+        "address": { "$class": "org.acme@1.0.0.Address", "city": "Oslo", "zip": null }
+    });
+    manager.validate_instance(&unknown, &options).unwrap();
+    let err = manager
+        .validate_instance(&unknown, &ValidationOptions::STRICT)
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Validation);
+    assert_eq!(err.details()[0].code, DetailCode::UnknownProperty);
+    assert_eq!(err.details()[0].path, "$.address.zip");
+    let report = manager.check_instance(&unknown, &ValidationOptions::STRICT);
+    let diagnostics: Vec<_> = report.into_iter().collect();
+    assert_eq!(diagnostics[0].code, DiagnosticCode::UndeclaredField);
+    assert_eq!(diagnostics[0].pointer, "/address/zip");
+
+    // An instance of a type that is not assignable to the named one.
+    let car = json!({ "$class": "org.acme@1.0.0.Car" });
+    let report = manager.check_instance_as("org.acme@1.0.0.Person", &car, &options);
+    assert_eq!(report.diagnostics()[0].code, DiagnosticCode::NotAssignable);
+}

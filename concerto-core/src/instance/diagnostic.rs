@@ -1,41 +1,38 @@
-//! `Diagnostic`/`ValidationResult` (task P3-03, accordproject/concerto-rust#58,
-//! plan §4 Phase 3, accordproject/concerto#1239): the Rust-only foundation
-//! this issue asks for, ahead of any TS-facing API decision (module doc on
-//! [`super::validate`]).
+//! Instance validation with diagnostics (docs/public-api.md section 5.7):
+//! [`ValidationReport`] and the [`ModelManager`] entry points, over
+//! [`ValidationOptions`]. Task P3-03 (accordproject/concerto-rust#58,
+//! accordproject/concerto#1239) built the collect-all walk; P6-01
+//! (accordproject/concerto-rust#83, step 5) gave it its stable names.
 //!
-//! [`validate_instance`](super::validate::validate_instance) (task P3-01,
-//! `ResourceValidator.validate`) is a faithful port of TS's own first-error
-//! behaviour: the walk stops and returns as soon as one violation is found,
-//! because that is what the ported TS member itself does. #1239 asks for a
-//! second, Rust-only mode alongside it: **collect-all**, which walks the
-//! whole instance and gathers every violation it finds in one pass, each one
-//! a [`Diagnostic`] carrying a JSON Pointer (RFC 6901) to the offending
-//! location, a stable [`DiagnosticCode`] and a [`Severity`]. The two modes
-//! share the same underlying checks (this module's collector calls the
-//! P3-01/P3-02 leaf checks directly wherever a TS-faithful single verdict is
-//! enough, and only re-walks the recursive, class-shaped part of the tree
-//! itself so it can keep going past one nested object's own first error);
-//! the walk that gathers diagnostics is `super::validate::collect_diagnostics`.
+//! There are two modes, picked by the method called:
 //!
-//! [`ClassDeclaration::validate_instance`]/[`validate_instance_or_throw`] and
-//! [`ModelManager::validate_instance`]/[`validate_instance_or_throw`] are the
-//! entry points #1239 asks for: the plain name returns a [`ValidationResult`]
-//! (collect-all, never fails), and the `_or_throw` name returns
-//! `crate::error::Result<()>` (first-error, exactly
-//! [`validate_instance`](super::validate::validate_instance)), so a caller
-//! picks collect-all or first-error by the method it calls, the way
-//! `validate_instance`/`validate_instance_or_throw` reads.
+//! - **First error:** [`ModelManager::validate_instance`] returns
+//!   `Result<()>`, with the error TS `Serializer.fromJSON` (with
+//!   `validate: true`) would throw for the same document.
+//! - **Collect-all (#1239):** [`ModelManager::check_instance`] walks the
+//!   whole instance and returns a [`ValidationReport`] of every
+//!   [`Diagnostic`] found, each with a JSON Pointer (RFC 6901) to the
+//!   offending location, a stable [`DiagnosticCode`] and a [`Severity`].
 //!
-//! [`ClassDeclaration::validate_instance`]: crate::introspect::declaration::ClassDeclaration::validate_instance
-//! [`validate_instance_or_throw`]: crate::introspect::declaration::ClassDeclaration::validate_instance_or_throw
+//! The input is plain JSON, as `Serializer.toJSON` writes it: a `DateTime` is
+//! its ISO string, and a relationship is its URI. Both modes first read it
+//! the way `Serializer.fromJSON` does (`super::from_json`), with the #1273
+//! options ([`ValidationOptions::reject_unknown_keys`] and
+//! [`ValidationOptions::reject_required_null`]) applied as the document is
+//! read, then run the `ResourceValidator` walk. A document that cannot be
+//! read (a malformed `DateTime`, an unknown `$class`, a #1273 rejection)
+//! fails there: `check_instance` reports that failure as its diagnostics.
+//! The `_as` forms check against a named type rather than the instance's
+//! own `$class`.
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::introspect::declaration::ClassDeclaration;
+use crate::error::{DetailCode, Error, Result};
 use crate::model_manager::ModelManager;
 
-use super::validate::{self, ValidateOptions};
+use super::from_json::{self, FixedEnv};
+use super::options::ValidationOptions;
+use super::validate;
 
 /// How serious a [`Diagnostic`] is.
 ///
@@ -129,8 +126,8 @@ pub struct Diagnostic {
     /// How serious it is.
     pub severity: Severity,
     /// A human-readable description, reusing the same message catalogue and
-    /// rendering [`validate_instance`](super::validate::validate_instance)'s
-    /// first-error walk uses for the same underlying check, where the
+    /// rendering [`ModelManager::validate_instance`]'s first-error walk
+    /// uses for the same underlying check, where the
     /// diagnostic is raised by that shared check (module doc); a violation
     /// only the collect-all walk itself detects (an unresolvable `$class`, a
     /// value that is not `Resource`-shaped) gets its own short description
@@ -152,15 +149,18 @@ impl Diagnostic {
     }
 }
 
-/// Zero or more [`Diagnostic`]s: the collect-all counterpart of
-/// [`validate_instance`](super::validate::validate_instance)'s
-/// `Result<()>`. An empty result means the instance is valid.
+/// Zero or more [`Diagnostic`]s: what [`ModelManager::check_instance`]
+/// found. An empty report means the instance is valid.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ValidationResult {
+pub struct ValidationReport {
     diagnostics: Vec<Diagnostic>,
 }
 
-impl ValidationResult {
+/// The name of [`ValidationReport`] before P6-01.
+#[deprecated(since = "0.1.0", note = "renamed to `ValidationReport`")]
+pub type ValidationResult = ValidationReport;
+
+impl ValidationReport {
     pub(crate) fn new(diagnostics: Vec<Diagnostic>) -> Self {
         Self { diagnostics }
     }
@@ -182,69 +182,209 @@ impl ValidationResult {
         &self.diagnostics
     }
 
-    /// Consumes the result, returning its diagnostics.
+    /// Consumes the report, returning its diagnostics.
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         self.diagnostics
     }
+
+    /// `Ok(())` when the report [is valid](Self::is_valid), and the report
+    /// itself otherwise.
+    pub fn into_result(self) -> std::result::Result<(), Self> {
+        if self.is_valid() { Ok(()) } else { Err(self) }
+    }
 }
 
-impl ClassDeclaration {
-    /// Validates `value` against this declaration, collecting every
-    /// diagnostic found (task P3-03) instead of stopping at the first one.
-    ///
-    /// `fqn` is this declaration's own fully qualified name as registered in
-    /// `mm` (the name passed to [`ModelManager::get_declaration`] to obtain
-    /// `self`); the walk resolves everything else — properties, super
-    /// types, nested declarations — through `mm`, the same way
-    /// [`validate_instance`](super::validate::validate_instance) does.
-    pub fn validate_instance(
-        &self,
-        mm: &ModelManager,
-        fqn: &str,
-        value: &Value,
-        options: &ValidateOptions,
-    ) -> ValidationResult {
-        let _ = self;
-        validate::collect_diagnostics(mm, fqn, value, options)
-    }
+impl IntoIterator for ValidationReport {
+    type Item = Diagnostic;
+    type IntoIter = std::vec::IntoIter<Diagnostic>;
 
-    /// [`ClassDeclaration::validate_instance`], but first-error: returns as
-    /// soon as one violation is found, raising it as a
-    /// [`Error`](crate::error::Error) instead of collecting
-    /// it — exactly [`validate_instance`](super::validate::validate_instance)
-    /// (TS `Resource.validate`), called with `fqn` as the declared type.
-    pub fn validate_instance_or_throw(
-        &self,
-        mm: &ModelManager,
-        fqn: &str,
-        value: &Value,
-        options: &ValidateOptions,
-    ) -> Result<()> {
-        let _ = self;
-        validate::validate_instance_against(mm, fqn, value, options)
+    fn into_iter(self) -> Self::IntoIter {
+        self.diagnostics.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ValidationReport {
+    type Item = &'a Diagnostic;
+    type IntoIter = std::slice::Iter<'a, Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.diagnostics.iter()
     }
 }
 
 impl ModelManager {
-    /// Validates `value` against the model loaded here, collecting every
-    /// diagnostic found (task P3-03) instead of stopping at the first one.
-    /// The declared type is `value`'s own `$class`, the way
-    /// [`validate_instance`](super::validate::validate_instance) resolves it
-    /// for a root call (TS `Resource.validate`, which always validates a
-    /// resource against its own type).
-    pub fn validate_instance(&self, value: &Value, options: &ValidateOptions) -> ValidationResult {
-        validate::collect_diagnostics_from_value(self, value, options)
+    /// Validates `instance`, a plain JSON document, against the models
+    /// loaded here, and returns the first error, as TS
+    /// `serializer.fromJSON(instance, {validate: true, ...options})` throws
+    /// it. The type is the instance's own `$class`.
+    ///
+    /// # Errors
+    ///
+    /// The first violation, with the [`ErrorKind`](crate::ErrorKind) of the
+    /// TS exception class: [`Validation`](crate::ErrorKind::Validation) for
+    /// most, [`TypeNotFound`](crate::ErrorKind::TypeNotFound) for an unknown
+    /// type, [`InvalidArgument`](crate::ErrorKind::InvalidArgument) for a
+    /// missing `$class` or a bad identifier. A #1273 rejection lists its
+    /// violations in [`Error::details`].
+    pub fn validate_instance(&self, instance: &Value, options: &ValidationOptions) -> Result<()> {
+        from_json::from_json(
+            self,
+            instance,
+            &options.populate_options(true),
+            &mut FixedEnv,
+        )
+        .map(|_| ())
     }
 
-    /// [`ModelManager::validate_instance`], but first-error: exactly
-    /// [`validate_instance`](super::validate::validate_instance).
-    pub fn validate_instance_or_throw(
+    /// [`validate_instance`](Self::validate_instance) against the type
+    /// `fqn` rather than the instance's own `$class`. An instance with a
+    /// `$class` must be of a type assignable to `fqn`, and is then checked
+    /// as its own type; one with none is checked as `fqn`.
+    ///
+    /// # Errors
+    ///
+    /// As [`validate_instance`](Self::validate_instance), and a
+    /// [`Validation`](crate::ErrorKind::Validation) error when the
+    /// instance's type is not assignable to `fqn`.
+    pub fn validate_instance_as(
         &self,
-        value: &Value,
-        options: &ValidateOptions,
+        fqn: &str,
+        instance: &Value,
+        options: &ValidationOptions,
     ) -> Result<()> {
-        validate::validate_instance(self, value, options)
+        validate::check_assignable_to_declaration(self, fqn, instance)?;
+        self.populate(Some(fqn), instance, options.populate_options(true))
+            .map(|_| ())
     }
+
+    /// Checks `instance`, a plain JSON document, against the models loaded
+    /// here, and reports every violation found (accordproject/concerto#1239)
+    /// instead of stopping at the first. The type is the instance's own
+    /// `$class`. A document that cannot be read as an instance of its type
+    /// (module doc) is reported by that failure alone.
+    pub fn check_instance(
+        &self,
+        instance: &Value,
+        options: &ValidationOptions,
+    ) -> ValidationReport {
+        match self.populate(None, instance, options.populate_options(false)) {
+            Ok(populated) => {
+                let fqn = populated
+                    .get("$class")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                validate::collect_diagnostics(self, &fqn, &populated, &options.validate_options())
+            }
+            Err(err) => report_of_error(&err),
+        }
+    }
+
+    /// [`check_instance`](Self::check_instance) against the type `fqn`
+    /// rather than the instance's own `$class`, as
+    /// [`validate_instance_as`](Self::validate_instance_as) reads it.
+    pub fn check_instance_as(
+        &self,
+        fqn: &str,
+        instance: &Value,
+        options: &ValidationOptions,
+    ) -> ValidationReport {
+        if let Some(report) = validate::assignability_diagnostic(self, fqn, instance) {
+            return report;
+        }
+        match self.populate(Some(fqn), instance, options.populate_options(false)) {
+            Ok(populated) => {
+                validate::collect_diagnostics(self, fqn, &populated, &options.validate_options())
+            }
+            Err(err) => report_of_error(&err),
+        }
+    }
+
+    /// Reads `instance` as `Serializer.fromJSON` does: as its own `$class`
+    /// when it has one, or else as `fqn`.
+    fn populate(
+        &self,
+        fqn: Option<&str>,
+        instance: &Value,
+        options: from_json::FromJsonOptions,
+    ) -> Result<Value> {
+        let own_class = instance.get("$class").filter(|c| crate::ecma::is_truthy(c));
+        match (own_class, fqn) {
+            (None, Some(fqn)) => {
+                from_json::from_json_as(self, instance, fqn, &options, &mut FixedEnv)
+            }
+            _ => from_json::from_json(self, instance, &options, &mut FixedEnv),
+        }
+    }
+}
+
+/// The diagnostics of a document that could not be read as an instance: one
+/// per #1273 detail, or one for the error.
+fn report_of_error(err: &Error) -> ValidationReport {
+    if !err.details().is_empty() {
+        return ValidationReport::new(
+            err.details()
+                .iter()
+                .map(|detail| {
+                    let code = match detail.code {
+                        DetailCode::UnknownProperty => DiagnosticCode::UndeclaredField,
+                        _ => DiagnosticCode::TypeViolation,
+                    };
+                    Diagnostic::error(pointer_of_path(&detail.path), code, err.to_string())
+                })
+                .collect(),
+        );
+    }
+    let (code, message) = match err.code() {
+        "serializer-fromjson-noclass"
+        | "serializer-fromjson-mapnotsupported"
+        | "serializer-fromjson-enumnotsupported" => (DiagnosticCode::NotResource, err.to_string()),
+        "factory-newinstance-missingidentifier" => {
+            (DiagnosticCode::EmptyIdentifier, err.to_string())
+        }
+        "factory-newinstance-abstracttype" => (DiagnosticCode::AbstractClass, err.to_string()),
+        "factory-newresource-idregexmismatch" => {
+            (DiagnosticCode::ValidatorFailure, err.to_string())
+        }
+        "jsonpopulator-validateproperties-unexpectedproperties" => {
+            (DiagnosticCode::UndeclaredField, err.to_string())
+        }
+        "jsonpopulator-visitrelationshipdeclaration-notstringorobject"
+        | "jsonpopulator-visitrelationshipdeclaration-notastring"
+        | "jsonpopulator-visitrelationshipdeclaration-noclass" => {
+            (DiagnosticCode::NotRelationship, err.to_string())
+        }
+        _ => validate::classify_error(err),
+    };
+    let pointer = err
+        .params()
+        .iter()
+        .find(|(name, _)| *name == "path")
+        .map(|(_, path)| pointer_of_path(path))
+        .unwrap_or_default();
+    ValidationReport::new(vec![Diagnostic::error(pointer, code, message)])
+}
+
+/// The JSON Pointer (RFC 6901) of a populator path (`$.tags[0].name`).
+fn pointer_of_path(path: &str) -> String {
+    let mut pointer = String::new();
+    let mut rest = path.strip_prefix('$').unwrap_or(path);
+    while !rest.is_empty() {
+        let (segment, tail) = if let Some(after) = rest.strip_prefix('[') {
+            match after.split_once(']') {
+                Some((index, tail)) => (index, tail),
+                None => (after, ""),
+            }
+        } else {
+            let after = rest.strip_prefix('.').unwrap_or(rest);
+            let end = after.find(['.', '[']).unwrap_or(after.len());
+            (&after[..end], &after[end..])
+        };
+        pointer.push('/');
+        pointer.push_str(&segment.replace('~', "~0").replace('/', "~1"));
+        rest = tail;
+    }
+    pointer
 }
 
 #[cfg(test)]
@@ -253,14 +393,14 @@ mod tests {
 
     #[test]
     fn an_empty_result_is_valid() {
-        let result = ValidationResult::new(Vec::new());
+        let result = ValidationReport::new(Vec::new());
         assert!(result.is_valid());
         assert!(result.diagnostics().is_empty());
     }
 
     #[test]
     fn a_result_with_an_error_diagnostic_is_not_valid() {
-        let result = ValidationResult::new(vec![Diagnostic::error(
+        let result = ValidationReport::new(vec![Diagnostic::error(
             "/name".to_string(),
             DiagnosticCode::TypeViolation,
             "bad".to_string(),
@@ -289,5 +429,27 @@ mod tests {
             assert_eq!(code.as_str(), code.to_string());
             assert_eq!(code.as_str(), code.as_str().to_uppercase());
         }
+    }
+
+    #[test]
+    fn a_populator_path_becomes_a_json_pointer() {
+        assert_eq!(pointer_of_path("$"), "");
+        assert_eq!(pointer_of_path("$.vin"), "/vin");
+        assert_eq!(pointer_of_path("$.tags[0].name"), "/tags/0/name");
+        assert_eq!(pointer_of_path("$.a/b.c~d"), "/a~1b/c~0d");
+    }
+
+    #[test]
+    fn a_report_converts_to_a_result_and_iterates() {
+        let empty = ValidationReport::new(Vec::new());
+        assert!(empty.into_result().is_ok());
+        let report = ValidationReport::new(vec![Diagnostic::error(
+            "/name".to_string(),
+            DiagnosticCode::TypeViolation,
+            "bad".to_string(),
+        )]);
+        assert_eq!((&report).into_iter().count(), 1);
+        let report = report.into_result().unwrap_err();
+        assert_eq!(report.into_iter().next().unwrap().pointer, "/name");
     }
 }

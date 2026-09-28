@@ -123,6 +123,13 @@ impl Dayjs {
         date_parse(s)
     }
 
+    /// This date in the instance validator's value shape: a
+    /// `DAYJS_TAG`-tagged object holding its ISO string (`null` when
+    /// invalid).
+    pub fn validator_value(&self) -> serde_json::Value {
+        serde_json::json!({ super::validate::DAYJS_TAG: self.to_iso_string() })
+    }
+
     /// `isValid()`: `!(this.$d.toString() === 'Invalid Date')`.
     pub fn is_valid(&self) -> bool {
         !self.time.is_nan()

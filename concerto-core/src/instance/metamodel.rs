@@ -4,7 +4,7 @@
 //! `P3-04+P4-08`): checking a Concerto AST document against the metamodel
 //! itself, rebuilt on [`super::validate`] (P3-01, the instance validator
 //! that folded in `concerto-validate-rs`'s structural check, plan decision
-//! D3) and [`super::deserialize::STRICT_VALIDATE_OPTIONS`] (P3-02,
+//! D3) and accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS` (P3-02,
 //! accordproject/concerto#1273's strictness preset — the doc comment on
 //! [`super::deserialize`] names this module as its intended P3-04 caller).
 //!
@@ -35,11 +35,8 @@
 
 use serde_json::Value;
 
-use super::deserialize::STRICT_VALIDATE_OPTIONS;
-use super::factory::InstanceEnv;
+use super::from_json::{FixedEnv, FromJsonOptions, from_json};
 use super::model::not_a_function;
-use super::serializer::Serializer;
-use super::value::JsValue;
 use crate::ecma;
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::model_file::ModelFile;
@@ -56,23 +53,6 @@ pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 /// — `MetaModelUtil.metaModelAst`, the document `new ModelManager({
 /// addMetamodel: true })` adds), so this module vendors no copy of its own.
 const METAMODEL_AST_JSON: &str = include_str!("../dcs/metamodel.json");
-
-/// A fixed identifier and clock. None of the metamodel's own declarations
-/// (`Model`, `ConceptDeclaration`, `StringProperty`, and so on) are
-/// system-identified or timestamped, so [`validate_metamodel`] never reads
-/// either; this exists only because [`Serializer::from_json`] takes an
-/// [`InstanceEnv`] (D7: identifiers and the clock come from the caller, not
-/// the model).
-struct FixedEnv;
-
-impl InstanceEnv for FixedEnv {
-    fn new_id(&mut self) -> String {
-        "00000000-0000-4000-8000-000000000000".into()
-    }
-    fn now_ms(&mut self) -> f64 {
-        0.0
-    }
-}
 
 /// A fresh [`ModelManager`] with the metamodel model itself loaded. Built
 /// new on every call, the same way TS's `validateAst` adds
@@ -117,11 +97,12 @@ fn ts_message(err: &Error) -> String {
 /// `catch` block does.
 pub fn validate_metamodel(ast: &Value) -> Result<()> {
     let mm = metamodel_model_manager()?;
-    let serializer = Serializer::new(true, true, None)?;
-    let options = STRICT_VALIDATE_OPTIONS.serializer_options();
-    let mut env = FixedEnv;
-    serializer
-        .from_json(&mm, &JsValue::from_json(ast), Some(&options), &mut env)
+    let options = FromJsonOptions {
+        reject_unknown_keys: true,
+        reject_required_null: true,
+        ..FromJsonOptions::default()
+    };
+    from_json(&mm, ast, &options, &mut FixedEnv)
         .map(|_resource| ())
         .map_err(|err| wrapped(&err))
 }
@@ -176,10 +157,7 @@ pub(crate) fn metamodel_model_file() -> Result<ModelFile> {
 /// only a manager option `validate: false` would, and no
 /// `ModelManager` in this port carries a serializer option bag.
 pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
-    let serializer = Serializer::new(true, true, None)?;
-    let mut env = FixedEnv;
-    serializer
-        .from_json(mm, &JsValue::from_json(ast), None, &mut env)
+    from_json(mm, ast, &FromJsonOptions::default(), &mut FixedEnv)
         .map(|_resource| ())
         .map_err(|err| wrapped(&err))
 }
@@ -218,11 +196,7 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
 /// beyond an error message's wording (error parity compares the class).
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
     let mm = metamodel_model_manager()?;
-    let serializer = Serializer::new(true, true, None)?;
-    let mut env = FixedEnv;
-    serializer
-        .from_json(&mm, &JsValue::from_json(input), None, &mut env)
-        .map(|_resource| ())
+    from_json(&mm, input, &FromJsonOptions::default(), &mut FixedEnv).map(|_resource| ())
 }
 
 /// TS `modelManagerFromMetaModel(metaModel, validate = true)`
@@ -535,9 +509,7 @@ mod tests {
         );
 
         let mm = metamodel_model_manager().expect("metamodel model manager");
-        let serializer = Serializer::new(true, true, None).expect("serializer");
-        let mut env = FixedEnv;
-        let default_result = serializer.from_json(&mm, &JsValue::from_json(&ast), None, &mut env);
+        let default_result = from_json(&mm, &ast, &FromJsonOptions::default(), &mut FixedEnv);
         assert!(
             default_result.is_ok(),
             "the same null unknown property should be ignored under the \

@@ -1095,10 +1095,10 @@ fn add_dcs_model(model_manager: &mut ModelManager, file_name: &str) -> Result<()
 /// building and validating a decorator command set instance
 /// ([`from_json_against`]). Neither is reachable in practice: no
 /// declaration in `DCS_MODEL` is system-identified or timestamped, so this
-/// exists only to satisfy [`crate::instance::factory::InstanceEnv`].
+/// exists only to satisfy [`crate::instance::from_json::InstanceEnv`].
 struct DcsInstanceEnv;
 
-impl crate::instance::factory::InstanceEnv for DcsInstanceEnv {
+impl crate::instance::from_json::InstanceEnv for DcsInstanceEnv {
     fn new_id(&mut self) -> String {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1124,8 +1124,8 @@ impl crate::instance::factory::InstanceEnv for DcsInstanceEnv {
 /// unknown type fails as TS fails ([`get_type`], TS's own `getType` call).
 /// The rest, populating and validating a resource from the JSON, now runs
 /// as the rest of `Serializer.fromJSON` does: its `JSONPopulator` walk and
-/// `ResourceValidator` pass, ported in full by P3-01b
-/// (`src/instance/serializer.rs`). [`validate_dcs_structure`] used to stand
+/// `ResourceValidator` pass, ported in full by P3-01b, over plain JSON
+/// (`crate::instance::from_json`, P6-01). [`validate_dcs_structure`] used to stand
 /// in for that; it is kept only for its own unit tests below, and is no
 /// longer reachable from here.
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
@@ -1151,12 +1151,8 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
     };
     get_type(model_manager, class)?;
-    let serializer = crate::instance::serializer::Serializer::new(true, true, None)
-        .expect("Serializer::new with a truthy factory and model manager cannot fail");
-    let json_instance = crate::instance::value::JsValue::from_json(instance);
-    let mut env = DcsInstanceEnv;
-    serializer
-        .from_json(model_manager, &json_instance, None, &mut env)
+    let options = crate::instance::from_json::FromJsonOptions::default();
+    crate::instance::from_json::from_json(model_manager, instance, &options, &mut DcsInstanceEnv)
         .map(|_| ())
 }
 

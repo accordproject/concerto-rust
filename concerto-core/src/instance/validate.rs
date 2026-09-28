@@ -903,6 +903,22 @@ fn map_entries(value: &Value) -> Option<Vec<(&Value, &Value)>> {
 }
 
 js_compat_pub! {
+    /// A JS number in the validator's value shape: an integral one as a JSON
+    /// integer, so that the messages that print it (`JSON.stringify`,
+    /// `String`) read `1`, not `1.0`; a non-finite one as
+    /// [`js_special_number`].
+    pub fn js_number(n: f64) -> Value {
+        if !n.is_finite() {
+            return js_special_number(&ecma::number_to_string(n));
+        }
+        if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
+            return Value::Number(serde_json::Number::from(n as i64));
+        }
+        serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
+    }
+}
+
+js_compat_pub! {
     /// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
     pub fn js_undefined() -> Value {
         serde_json::json!({ UNDEFINED_TAG: true })
@@ -1931,24 +1947,20 @@ fn remap_type_not_found(err: Error, fqn: &str, _hint: &str) -> Error {
 // here directly, so that sibling properties and sibling array elements each
 // get their own chance to report.
 
-use crate::instance::diagnostic::{Diagnostic, DiagnosticCode, ValidationResult};
+use crate::instance::diagnostic::{Diagnostic, DiagnosticCode, ValidationReport};
 
 /// Checks that `value`'s own `$class` (when present) is assignable to
 /// `declared_fqn`. [`visit_class_declaration`]/[`collect_class`] both walk
 /// by `value`'s own `$class`, regardless of what `declared_fqn` says (module
 /// doc): the right behaviour for `Resource.validate`, which always validates
 /// a resource against its own type, but not for
-/// [`ClassDeclaration::validate_instance`]/`validate_instance_or_throw`
-/// (crate::introspect::declaration::ClassDeclaration), whose whole point is
-/// to validate against the declaration they were called on. Returns `Ok(())`
+/// [`ModelManager::validate_instance_as`], whose whole point is to validate
+/// against the type it names. Returns `Ok(())`
 /// when `value` carries no `$class` (or isn't shaped like a Resource at
 /// all): the ordinary walk that follows already reports that case
 /// correctly, so there's nothing extra to check here; likewise `Ok(())` when
-/// `declared_fqn` itself is `value`'s own `$class`, so a
-/// [`ModelManager::validate_instance_or_throw`](crate::model_manager::ModelManager::validate_instance_or_throw)
-/// call (which always passes `value`'s own `$class` as `declared_fqn`) never
-/// pays for this check.
-fn check_assignable_to_declaration(
+/// `declared_fqn` itself is `value`'s own `$class`.
+pub(crate) fn check_assignable_to_declaration(
     mm: &ModelManager,
     declared_fqn: &str,
     value: &Value,
@@ -1981,27 +1993,6 @@ fn check_assignable_to_declaration(
     }
 }
 
-/// [`validate_instance_from`], but validated against `declared_fqn` instead
-/// of `value`'s own `$class` — what [`ClassDeclaration::validate_instance_or_throw`]
-/// (crate::introspect::declaration::ClassDeclaration::validate_instance_or_throw)
-/// needs to validate `value` against a specific declaration it already holds,
-/// rather than whatever `value` claims to be.
-pub(crate) fn validate_instance_against(
-    mm: &ModelManager,
-    declared_fqn: &str,
-    value: &Value,
-    options: &ValidateOptions,
-) -> Result<()> {
-    check_assignable_to_declaration(mm, declared_fqn, value)?;
-    let mut params = Params {
-        mm,
-        options,
-        root_resource_identifier: String::new(),
-        current_identifier: None,
-    };
-    visit_class_declaration(&mut params, declared_fqn, value)
-}
-
 /// State threaded through the collect-all walk: the pieces
 /// [`Params`] threads through the first-error walk, minus the
 /// TS-message-only `root_resource_identifier`/`current_identifier` fields
@@ -2032,7 +2023,7 @@ impl Collector<'_> {
 /// future check this table has not been updated for) falls back to
 /// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
 /// diagnostic is always produced rather than silently dropped.
-fn classify_error(err: &Error) -> (DiagnosticCode, String) {
+pub(crate) fn classify_error(err: &Error) -> (DiagnosticCode, String) {
     if let Some(type_name) = err.unported_type_not_found() {
         return (
             DiagnosticCode::TypeNotFound,
@@ -2069,6 +2060,35 @@ fn push_pointer(base: &str, segment: &str) -> String {
     format!("{base}/{}", segment.replace('~', "~0").replace('/', "~1"))
 }
 
+/// The diagnostic of an instance whose own `$class` is not assignable to
+/// `declared_fqn` (or does not resolve): the collect-all counterpart of
+/// [`check_assignable_to_declaration`]. `None` when there is nothing to
+/// report.
+pub(crate) fn assignability_diagnostic(
+    mm: &ModelManager,
+    declared_fqn: &str,
+    value: &Value,
+) -> Option<ValidationReport> {
+    let own_fqn = value
+        .as_object()
+        .and_then(|o| o.get("$class"))
+        .and_then(Value::as_str)
+        .filter(|own| *own != declared_fqn)?;
+    match mm.is_assignable_to(own_fqn, declared_fqn) {
+        Ok(true) => None,
+        Ok(false) => Some(ValidationReport::new(vec![Diagnostic::error(
+            String::new(),
+            DiagnosticCode::NotAssignable,
+            format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
+        )])),
+        Err(_) => Some(ValidationReport::new(vec![Diagnostic::error(
+            String::new(),
+            DiagnosticCode::TypeNotFound,
+            format!("type not found: {own_fqn}"),
+        )])),
+    }
+}
+
 /// Collect-all instance validation (task P3-03, accordproject/concerto-rust#58):
 /// walks `value` against `declared_fqn` in `mm`, gathering every
 /// [`Diagnostic`] found instead of stopping at the first one (contrast
@@ -2078,39 +2098,14 @@ pub(crate) fn collect_diagnostics(
     declared_fqn: &str,
     value: &Value,
     options: &ValidateOptions,
-) -> ValidationResult {
-    // Same declared-vs-own-`$class` check [`check_assignable_to_declaration`]
-    // makes for the first-error walk: [`collect_class`] otherwise walks by
-    // `value`'s own `$class` regardless of `declared_fqn` (its own doc
-    // comment), so a `ClassDeclaration::validate_instance` call would
-    // silently validate a mismatched type as if it matched. Built inline
-    // (rather than through [`classify_error`]) so the diagnostic keeps the
-    // same [`DiagnosticCode`] [`collect_class_property_item`]'s own
-    // assignability check uses for the same kind of mismatch, one level
-    // down the tree.
-    if let Some(own_fqn) = value
-        .as_object()
-        .and_then(|o| o.get("$class"))
-        .and_then(Value::as_str)
-        && own_fqn != declared_fqn
-    {
-        match mm.is_assignable_to(own_fqn, declared_fqn) {
-            Ok(true) => {}
-            Ok(false) => {
-                return ValidationResult::new(vec![Diagnostic::error(
-                    String::new(),
-                    DiagnosticCode::NotAssignable,
-                    format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
-                )]);
-            }
-            Err(_) => {
-                return ValidationResult::new(vec![Diagnostic::error(
-                    String::new(),
-                    DiagnosticCode::TypeNotFound,
-                    format!("type not found: {own_fqn}"),
-                )]);
-            }
-        }
+) -> ValidationReport {
+    // [`collect_class`] walks by `value`'s own `$class` regardless of
+    // `declared_fqn` (its own doc comment), so a mismatched type is reported
+    // first, with the same [`DiagnosticCode`]
+    // [`collect_class_property_item`]'s own assignability check uses for the
+    // same kind of mismatch, one level down the tree.
+    if let Some(report) = assignability_diagnostic(mm, declared_fqn, value) {
+        return report;
     }
     let mut collector = Collector {
         mm,
@@ -2118,24 +2113,7 @@ pub(crate) fn collect_diagnostics(
         diagnostics: Vec::new(),
     };
     collect_class(&mut collector, declared_fqn, value, "");
-    ValidationResult::new(collector.diagnostics)
-}
-
-/// [`collect_diagnostics`], resolving the declared type from `value`'s own
-/// `$class`, the way [`validate_instance`] does for a root call.
-pub(crate) fn collect_diagnostics_from_value(
-    mm: &ModelManager,
-    value: &Value,
-    options: &ValidateOptions,
-) -> ValidationResult {
-    let Some(fqn) = value.get("$class").and_then(Value::as_str) else {
-        return ValidationResult::new(vec![Diagnostic::error(
-            String::new(),
-            DiagnosticCode::NotResource,
-            "cannot validate an instance with no $class".to_string(),
-        )]);
-    };
-    collect_diagnostics(mm, fqn, value, options)
+    ValidationReport::new(collector.diagnostics)
 }
 
 /// The collect-all counterpart of [`visit_class_declaration`]: same shape
@@ -3550,7 +3528,7 @@ mod tests {
     // that collect-all really does gather more than one diagnostic in a
     // single pass, which is the point of the mode.
 
-    fn diag_of(result: ValidationResult) -> Diagnostic {
+    fn diag_of(result: ValidationReport) -> Diagnostic {
         let mut diagnostics = result.into_diagnostics();
         assert_eq!(
             diagnostics.len(),
@@ -3803,47 +3781,42 @@ mod tests {
         let _ = err;
     }
 
-    /// [`ModelManager::validate_instance`] resolves the declared type from
-    /// the value's own `$class`, and [`ModelManager::validate_instance_or_throw`]
-    /// is exactly the first-error [`validate_instance`] free function.
+    /// [`ModelManager::check_instance`] resolves the declared type from the
+    /// value's own `$class`, and [`ModelManager::validate_instance`] reports
+    /// the first error, as the free [`validate_instance`] does.
     #[test]
     fn model_manager_entry_points_agree_with_the_free_functions() {
         let mgr = fixture();
         let leaf = json!({ "$class": "org.acme@1.0.0.Leaf", "b": "2", "c": "3" });
+        let options = crate::instance::ValidationOptions::default();
 
-        let result = mgr.validate_instance(&leaf, &ValidateOptions::default());
+        let result = mgr.check_instance(&leaf, &options);
         assert_eq!(
             diag_of(result).code,
             DiagnosticCode::MissingRequiredProperty
         );
 
-        let err = err_of(mgr.validate_instance_or_throw(&leaf, &ValidateOptions::default()));
+        let err = err_of(mgr.validate_instance(&leaf, &options));
         assert!(err.to_string().contains("\"a\""), "{err}");
+        let free = err_of(validate_instance(&mgr, &leaf, &ValidateOptions::default()));
+        assert_eq!(err.kind(), free.kind());
+        assert_eq!(err.code(), free.code());
     }
 
-    /// [`ClassDeclaration::validate_instance`]/`validate_instance_or_throw`
-    /// validate against the declaration's own `fqn`, not the value's `$class`.
+    /// The `_as` entry points check against the named type: an empty
+    /// identifier is the `Factory` error `Serializer.fromJSON` raises.
     #[test]
-    fn class_declaration_entry_points_validate_against_their_own_fqn() {
+    fn the_as_entry_points_validate_against_the_named_type() {
         let mgr = fixture();
         let fqn = "org.acme@1.0.0.Vehicle";
-        let class = mgr
-            .get_declaration(fqn)
-            .expect("Vehicle is in the fixture")
-            .as_class()
-            .expect("Vehicle is a class-like declaration");
-        let vehicle = json!({ "$class": fqn, "vin": "", "mileage": 1 });
+        let vehicle = json!({ "vin": "", "mileage": 1 });
+        let options = crate::instance::ValidationOptions::default();
 
-        let result = class.validate_instance(&mgr, fqn, &vehicle, &ValidateOptions::default());
+        let result = mgr.check_instance_as(fqn, &vehicle, &options);
         assert_eq!(diag_of(result).code, DiagnosticCode::EmptyIdentifier);
 
-        let err = err_of(class.validate_instance_or_throw(
-            &mgr,
-            fqn,
-            &vehicle,
-            &ValidateOptions::default(),
-        ));
-        assert!(err.to_string().contains("identifier"), "{err}");
+        let err = err_of(mgr.validate_instance_as(fqn, &vehicle, &options));
+        assert_eq!(err.code(), "factory-newinstance-missingidentifier");
     }
 
     /// Review finding (P3-03): `collect_property`'s class-typed-array branch
@@ -3886,38 +3859,24 @@ mod tests {
         );
     }
 
-    /// Review finding (P3-03): `ClassDeclaration::validate_instance`/
-    /// `validate_instance_or_throw` must check the value's own `$class`
-    /// against the declaration's own `fqn`, not silently validate whatever
+    /// Review finding (P3-03): the `_as` entry points must check the value's
+    /// own `$class` against the named type, not silently validate whatever
     /// `value` claims to be (which is what `collect_class`/
-    /// `visit_class_declaration` do on their own, module doc). Unlike
-    /// `class_declaration_entry_points_validate_against_their_own_fqn`
-    /// above, this uses a value whose own `$class` differs from `fqn`, so it
-    /// can actually distinguish the two behaviours.
+    /// `visit_class_declaration` do on their own, module doc).
     #[test]
-    fn class_declaration_entry_points_reject_a_value_not_assignable_to_their_fqn() {
+    fn the_as_entry_points_reject_a_value_not_assignable_to_the_named_type() {
         let mgr = fixture();
         let dog_fqn = "org.acme@1.0.0.Dog";
-        let dog_decl = mgr
-            .get_declaration(dog_fqn)
-            .expect("Dog is in the fixture")
-            .as_class()
-            .expect("Dog is a class-like declaration");
         // A `Base` instance (unrelated to `Dog`/`Animal`), passed against
         // `Dog`'s own fqn.
         let base_instance = json!({ "$class": "org.acme@1.0.0.Base", "a": "x" });
+        let options = crate::instance::ValidationOptions::default();
 
-        let result =
-            dog_decl.validate_instance(&mgr, dog_fqn, &base_instance, &ValidateOptions::default());
+        let result = mgr.check_instance_as(dog_fqn, &base_instance, &options);
         assert!(!result.is_valid(), "{result:?}");
         assert_eq!(diag_of(result).code, DiagnosticCode::NotAssignable);
 
-        let err = err_of(dog_decl.validate_instance_or_throw(
-            &mgr,
-            dog_fqn,
-            &base_instance,
-            &ValidateOptions::default(),
-        ));
+        let err = err_of(mgr.validate_instance_as(dog_fqn, &base_instance, &options));
         assert!(err.to_string().contains("not assignable"), "{err}");
     }
 }

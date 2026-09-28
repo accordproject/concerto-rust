@@ -7,10 +7,15 @@
 //! `JSONGenerator` (`modelManager.getType(...)`, then `classDecl.isX()`),
 //! kept in one place so that each port reads the same way as its TS.
 
+use serde_json::Value;
+
+use crate::Error;
 use crate::error::{ContractError, ErrorKind, Result};
+use crate::introspect::FullyQualified;
 use crate::introspect::scalar::ScalarValidator;
+use crate::introspect::validators::StringValidator;
 use crate::introspect::{ClassKind, Declaration, Property};
-use crate::model_manager::{DeclId, ModelManager};
+use crate::model_manager::{DeclId, ModelManager, ValidatedElement};
 use crate::model_util;
 
 /// A declaration found by [`get_type`]: what TS holds after
@@ -303,4 +308,88 @@ pub(crate) fn field(mm: &ModelManager, owner_fqn: &str, property: Property) -> R
         property,
         field_type,
     })
+}
+
+/// The element a string validator is attached to, for building one: its
+/// name and fully-qualified name only (the default value was checked when
+/// the model loaded).
+struct IdElement {
+    name: String,
+    fqn: String,
+}
+
+impl FullyQualified for IdElement {
+    type Error = Error;
+
+    fn fully_qualified_name(&self) -> Result<String> {
+        Ok(self.fqn.clone())
+    }
+}
+
+impl ValidatedElement for IdElement {
+    fn default_value(&self) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    fn name(&self) -> Result<String> {
+        Ok(self.name.clone())
+    }
+}
+
+/// `idFullField?.validator` when it has a `regex`: the identifying
+/// property (unboxed with `getScalarField()` when its type is a scalar) and
+/// its string validator.
+pub(crate) fn identifier_regex(
+    class_decl: &TypeRef,
+    id_field: &str,
+) -> Result<Option<StringValidator>> {
+    let Some((owner_fqn, property)) = class_decl.property(id_field)? else {
+        return Ok(None);
+    };
+    let element = IdElement {
+        name: id_field.to_string(),
+        fqn: format!("{owner_fqn}.{id_field}"),
+    };
+    let field = field(class_decl.mm, &owner_fqn, property)?;
+    let validator = match (&field.field_type, &field.property) {
+        (FieldType::Primitive("String"), Property::String(sp)) if sp.validator.is_some() => {
+            StringValidator::new(
+                &element,
+                sp.validator.as_ref(),
+                sp.length_validator.as_ref(),
+                None,
+            )?
+        }
+        (
+            FieldType::Scalar {
+                primitive: Some("String"),
+                validator: Some(scalar_validator),
+                ..
+            },
+            _,
+        ) => {
+            let ScalarValidator::String {
+                validator: Some(regex),
+                length_validator,
+            } = scalar_validator.as_ref()
+            else {
+                return Ok(None);
+            };
+            let bad = |e: serde_json::Error| {
+                Error::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("invalid string validator: {e}"),
+                    None,
+                ))
+            };
+            let regex = serde_json::from_value(regex.clone()).map_err(bad)?;
+            let length = length_validator
+                .as_ref()
+                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
+                .transpose()?;
+            StringValidator::new(&element, Some(&regex), length.as_ref(), None)?
+        }
+        _ => return Ok(None),
+    };
+    Ok(validator.regex().is_some().then_some(validator))
 }

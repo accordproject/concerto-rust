@@ -21,13 +21,12 @@
 //! reports, which `ResourceValidator` walks (first undeclared field wins).
 
 use indexmap::IndexMap;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::dayjs::Dayjs;
 use super::resource_id::ResourceId;
 use super::validate::{
-    DAYJS_TAG, RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_special_number,
-    js_undefined,
+    RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_number, js_undefined,
 };
 use crate::ecma;
 use crate::error::Result;
@@ -338,17 +337,17 @@ impl JsValue {
     }
 
     /// This value in the shape [`super::validate::validate_instance`] reads
-    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`]-tagged object,
+    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`](super::validate::DAYJS_TAG)-tagged object,
     /// `undefined` as [`js_undefined`], a `Map` as the list of its
     /// entries ([`js_map`]), an instance through
     /// [`Instance::to_validator_value`], and a non-finite number as
-    /// [`js_special_number`].
+    /// [`js_special_number`](super::validate::js_special_number).
     pub fn to_validator_value(&self) -> Value {
         match self {
             Self::Undefined => js_undefined(),
             Self::Null => Value::Null,
             Self::Bool(b) => Value::Bool(*b),
-            Self::Number(n) => validator_number(*n),
+            Self::Number(n) => js_number(*n),
             Self::String(s) => Value::String(s.clone()),
             Self::Array(items) => {
                 Value::Array(items.iter().map(Self::to_validator_value).collect())
@@ -364,22 +363,9 @@ impl JsValue {
                     .map(|(k, v)| (k.to_validator_value(), v.to_validator_value()))
                     .collect(),
             ),
-            Self::DateTime(d) => json!({ DAYJS_TAG: d.to_iso_string() }),
+            Self::DateTime(d) => d.validator_value(),
             Self::Instance(i) => i.to_validator_value(),
             Self::BigInt(s) => js_bigint(s),
         }
     }
-}
-
-/// A JS number as a JSON number: an integral one as an integer, so that the
-/// messages that print it (`JSON.stringify`, `String`) read `1`, not `1.0`;
-/// a non-finite one as [`js_special_number`].
-fn validator_number(n: f64) -> Value {
-    if !n.is_finite() {
-        return js_special_number(&ecma::number_to_string(n));
-    }
-    if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
-        return Value::Number(serde_json::Number::from(n as i64));
-    }
-    serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
 }
