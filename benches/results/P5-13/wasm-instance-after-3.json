@@ -1,0 +1,55 @@
+{
+  "label": "after",
+  "concerto_rust_commit": "db09431780e3747895086a16ce84327bd9233b51",
+  "machine": {
+    "platform": "darwin",
+    "arch": "x64",
+    "cpus": "Intel(R) Core(TM) i7-7820HQ CPU @ 2.90GHz",
+    "cpu_count": 8,
+    "node": "v24.21.0"
+  },
+  "timestamp": "2026-09-28T15:20:26.421Z",
+  "warmup": 5,
+  "loadavg_start": [
+    2.080078125,
+    2.328125,
+    3.23828125
+  ],
+  "workloads": {
+    "validate_only": {
+      "samples": 30,
+      "n": 500,
+      "median_us": 1.379497,
+      "mean_us": 1.4151676666666673,
+      "stddev_us": 0.1480782745648124,
+      "min_us": 1.289268,
+      "max_us": 1.894954,
+      "cv": 0.1046365586585234
+    },
+    "from_json": {
+      "samples": 30,
+      "n": 500,
+      "median_us": 6.959872,
+      "mean_us": 7.023250799999999,
+      "stddev_us": 0.2607640556495204,
+      "min_us": 6.622736,
+      "max_us": 7.718952,
+      "cv": 0.03712868343666731
+    },
+    "validate_instance_native": {
+      "samples": 30,
+      "n": 500,
+      "median_us": 5.329737,
+      "mean_us": 5.4050064,
+      "stddev_us": 0.2298369285885253,
+      "min_us": 5.221782,
+      "max_us": 6.409986,
+      "cv": 0.04252297066447975
+    }
+  },
+  "loadavg_end": [
+    2.080078125,
+    2.328125,
+    3.23828125
+  ]
+}
