@@ -13,13 +13,13 @@ use indexmap::IndexMap;
 
 use super::factory::{self, InstanceEnv};
 use crate::deserialize::DeserializeOptions;
+use crate::value::{Instance, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{
     required_null_error, strict_qualified_date_time, unknown_keys_error,
 };
 use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
-use concerto_core::instance::value::{Instance, JsValue};
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::{Error, model_util};
@@ -223,8 +223,7 @@ pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
             for key in instance.props.keys() {
                 keys.push(key.clone());
                 if key == "$timestamp"
-                    && instance.kind
-                        == concerto_core::instance::value::InstanceKind::ValidatedResource
+                    && instance.kind == crate::value::InstanceKind::ValidatedResource
                 {
                     keys.push("$validator".to_string());
                 }

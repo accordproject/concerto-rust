@@ -14,11 +14,11 @@
 //! generator) stays in TS (ledger: "Factory generate path (D7)"); these
 //! functions build the instance as TS does when `options.generate` is falsy.
 
+use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::Dayjs;
 use concerto_core::instance::from_json::{self, FieldDefault, IdentifierArg};
 use concerto_core::instance::model::{self, TypeRef};
-use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
 use concerto_core::model_manager::ModelManager;
 use concerto_core::{Error, model_util};
 

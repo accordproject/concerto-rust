@@ -17,7 +17,7 @@
 //! `rejectUnknownKeys` and `rejectRequiredNull`; they apply while the
 //! document is populated, so they hold with `validate: false` too.
 
-use concerto_core::instance::value::JsValue;
+use crate::value::JsValue;
 
 use crate::serializer::SerializerOptions;
 

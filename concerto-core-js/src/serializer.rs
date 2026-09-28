@@ -9,11 +9,11 @@ use super::resource;
 use crate::factory::{self, InstanceEnv};
 use crate::generator::{Generator, generator_options};
 use crate::populator::{Populator, get_property, populator_options};
+use crate::value::{Instance, JsValue};
 use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::model;
 use concerto_core::instance::validate::{ValidateOptions, validate_instance_from};
-use concerto_core::instance::value::{Instance, JsValue};
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 
@@ -209,9 +209,9 @@ mod tests {
 
     use super::*;
     use crate::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
+    use crate::value::InstanceKind;
     use concerto_core::error::{Detail, DetailCode};
     use concerto_core::instance::dayjs::Dayjs;
-    use concerto_core::instance::value::InstanceKind;
 
     struct Env;
 

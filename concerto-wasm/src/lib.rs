@@ -56,9 +56,9 @@ use std::collections::HashSet;
 
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
+use concerto_core::instance::InstanceEnv;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::resource_id::ResourceId;
-use concerto_core::instance::{Instance, InstanceEnv, InstanceKind, JsValue as CoreValue};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{
     self, Decorator, DecoratorArgument, DecoratorValidationOptions,
@@ -74,6 +74,7 @@ use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
+use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
 use concerto_core_js::{Serializer, SerializerOptions, generator, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};

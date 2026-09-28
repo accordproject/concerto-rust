@@ -58,7 +58,6 @@ js_compat_mod!(model);
 mod options;
 js_compat_mod!(resource_id);
 js_compat_mod!(validate);
-js_compat_mod!(value);
 
 #[allow(deprecated)]
 pub use diagnostic::ValidationResult;
@@ -74,5 +73,3 @@ pub use metamodel::{
 };
 #[cfg(feature = "js-compat")]
 pub use validate::{ValidateOptions, validate_instance};
-#[cfg(feature = "js-compat")]
-pub use value::{Instance, InstanceKind, JsValue};

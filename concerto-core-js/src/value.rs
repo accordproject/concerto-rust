@@ -8,9 +8,9 @@
 //! call (the Serializer fast path, PORTING.md section 5 row 6). This module
 //! is that state, as the populator (`concerto_core_js::populator`) produces it and
 //! the generator (`concerto_core_js::generator`) and the validator
-//! ([`super::validate`]) consume it. It holds no model data: an instance
+//! ([`concerto_core::instance::validate`]) consume it. It holds no model data: an instance
 //! names its declaration by fully-qualified name, and every operation that
-//! needs the model takes the [`ModelManager`](crate::ModelManager).
+//! needs the model takes the [`ModelManager`](concerto_core::ModelManager).
 //!
 //! An [`Instance`] keeps every own property of the TS object in insertion
 //! order (`$namespace`, `$type`, `$identifierFieldName`, `$identifier`, the
@@ -23,13 +23,13 @@
 use indexmap::IndexMap;
 use serde_json::Value;
 
-use super::dayjs::Dayjs;
-use super::resource_id::ResourceId;
-use super::validate::{
-    RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_number, js_undefined,
+use concerto_core::error::Result;
+use concerto_core::instance::dayjs::Dayjs;
+use concerto_core::instance::resource_id::ResourceId;
+use concerto_core::instance::validate::{
+    RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_number, js_number_to_string,
+    js_undefined,
 };
-use crate::ecma;
-use crate::error::Result;
 
 /// A JS value held by an instance field or passed to the serializer.
 #[derive(Debug, Clone, PartialEq)]
@@ -212,7 +212,7 @@ impl Instance {
         Ok(ResourceId::new(self.namespace(), self.type_name(), id)?.to_uri())
     }
 
-    /// This instance in the value shape [`super::validate::validate_instance`]
+    /// This instance in the value shape [`concerto_core::instance::validate::validate_instance`]
     /// reads (its module doc, "Scope"): a `Relationship` as a
     /// [`RELATIONSHIP_TAG`]-tagged `{$class, <identifying field>}` object,
     /// anything else as a `$class`-tagged object with every own property
@@ -299,7 +299,7 @@ impl JsValue {
             Self::Undefined => "undefined".to_string(),
             Self::Null => "null".to_string(),
             Self::Bool(b) => b.to_string(),
-            Self::Number(n) => ecma::number_to_string(*n),
+            Self::Number(n) => js_number_to_string(*n),
             Self::String(s) => s.clone(),
             Self::Array(items) => items
                 .iter()
@@ -336,12 +336,12 @@ impl JsValue {
         }
     }
 
-    /// This value in the shape [`super::validate::validate_instance`] reads
-    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`](super::validate::DAYJS_TAG)-tagged object,
+    /// This value in the shape [`concerto_core::instance::validate::validate_instance`] reads
+    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`](concerto_core::instance::validate::DAYJS_TAG)-tagged object,
     /// `undefined` as [`js_undefined`], a `Map` as the list of its
     /// entries ([`js_map`]), an instance through
     /// [`Instance::to_validator_value`], and a non-finite number as
-    /// [`js_special_number`](super::validate::js_special_number).
+    /// [`js_special_number`](concerto_core::instance::validate::js_special_number).
     pub fn to_validator_value(&self) -> Value {
         match self {
             Self::Undefined => js_undefined(),

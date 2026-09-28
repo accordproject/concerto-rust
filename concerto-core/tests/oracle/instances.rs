@@ -27,8 +27,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use concerto_core::Error;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{FromJsonOptions, from_json};
-use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
 use concerto_core::instance::{InstanceEnv, ValidateOptions};
+use concerto_core_js::value::{Instance, InstanceKind, JsValue};
 use concerto_core_js::{Serializer, SerializerOptions, factory, resource};
 use serde_json::{Map, Value, json};
 

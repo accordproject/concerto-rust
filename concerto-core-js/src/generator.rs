@@ -13,11 +13,11 @@ use std::collections::HashSet;
 use indexmap::IndexMap;
 
 use super::populator::read_properties_error;
+use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::UtcOffset;
 use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
-use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::model_util;

@@ -9,10 +9,10 @@
 //! functions are the glue the Rust serializer needs to build and validate
 //! an instance the way TS does.
 
+use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::model;
 use concerto_core::instance::validate::{self, validate_instance_from};
-use concerto_core::instance::value::{Instance, InstanceKind, JsValue};
 use concerto_core::model_manager::ModelManager;
 
 /// `'The instance with id ' + this.getIdentifier() + ' trying to set field

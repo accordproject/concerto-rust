@@ -903,6 +903,14 @@ fn map_entries(value: &Value) -> Option<Vec<(&Value, &Value)>> {
 }
 
 js_compat_pub! {
+    /// ECMAScript `Number::toString` (radix 10): `1` not `1.0`, `1e+21`,
+    /// `NaN`, `Infinity`, and `-0` gives `"0"`.
+    pub fn js_number_to_string(n: f64) -> String {
+        ecma::number_to_string(n)
+    }
+}
+
+js_compat_pub! {
     /// A JS number in the validator's value shape: an integral one as a JSON
     /// integer, so that the messages that print it (`JSON.stringify`,
     /// `String`) read `1`, not `1.0`; a non-finite one as

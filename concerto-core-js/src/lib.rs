@@ -16,6 +16,7 @@
 
 pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
 pub use serializer::{Serializer, SerializerOptions};
+pub use value::{Instance, InstanceKind, JsValue};
 
 pub mod deserialize;
 pub mod factory;
@@ -23,3 +24,4 @@ pub mod generator;
 pub mod populator;
 pub mod resource;
 pub mod serializer;
+pub mod value;
