@@ -36,7 +36,10 @@ validating instances with diagnostics. See
 for the runnable example it is built from
 (`cargo run --example standalone -p accordproject-concerto-core`). The
 design behind the public surface this guide covers is
-[`docs/public-api.md`](./docs/public-api.md).
+[`docs/public-api.md`](./docs/public-api.md). For how fast that public
+surface is, native, against the TS reference and against the same Rust
+engine through the TS public API, see
+[`docs/bench-public-api.md`](./docs/bench-public-api.md).
 
 ## Contributing
 

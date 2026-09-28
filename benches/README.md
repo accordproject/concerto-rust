@@ -5,8 +5,11 @@ every later phase of the migration can show its speed-up against a
 committed baseline. Started under task **P5-04a** (issue
 accordproject/concerto-rust#92); extended under task **P5-04** (issue
 accordproject/concerto-rust#75) with the instance-validation workload,
-now that `concerto_core::instance::validate` (task P3-01) exists - both
-under the migration plan accordproject/concerto-rust#29.
+now that `concerto_core::instance::validate` (task P3-01) exists; extended
+again under task **P6-04** (issue accordproject/concerto-rust#273) with a
+fourth workload that goes through the **P6-01 public API**
+(`docs/public-api.md`, accordproject/concerto-rust#83) alone, informational
+and non-gating - all under the migration plan accordproject/concerto-rust#29.
 
 This is the Rust half. The TS half lives in `accordproject/concerto`'s
 `migration/bench/`, which also generates the fixtures both harnesses load
@@ -24,6 +27,12 @@ This is the Rust half. The TS half lives in `accordproject/concerto`'s
 - `benches/load_validate.rs` - workload 1.
 - `benches/validate_metamodel.rs` - workload 2.
 - `benches/instance_validate.rs` - workload 3 (task P5-04).
+- `benches/public_api.rs` - workload 4 (task P6-04): the same three
+  workloads (load, validate, validateAst, instance populate-and-validate),
+  but only through `concerto-core`'s default-feature, `js-compat`-free
+  public API (`docs/public-api.md`) - see that file's module docs for
+  exactly how it differs from workloads 1-3, which also time internal or
+  `js-compat`/`concerto-core-js` entry points for comparison.
 - `extract-results.sh` - pulls a small JSON summary out of criterion's
   `target/criterion/**/estimates.json` output (see "Baseline" below).
 - `results/` - the committed output of `extract-results.sh` (one file per
@@ -139,6 +148,20 @@ comparison with `critcmp` or criterion's own baseline diffing.
    the TS harness's `instance_validate` builds. Counterpart to TS's
    standalone `resource.validate()`, not to `Serializer#fromJSON`'s
    combined populate-and-validate figure (no Rust `JSONPopulator` yet).
+   Also benchmarks the P6-01 public `ModelManager::validate_instance`
+   (`validate_instance_native`) and the P5-13 `concerto-core-js`
+   `Serializer::from_json` (`from_json`), both of which *are* the combined
+   populate-and-validate figure.
+4. **`public_api`** (task P6-04, informational, no CI gate) - the same
+   load/validate/validateAst/instance workloads as 1-3, but exclusively
+   through the P6-01 public API (`docs/public-api.md`), with no
+   `js-compat`-gated or `concerto-core-js` call in the file: `add_model_ast`
+   and the batch `add_model_asts` (load), `validate_models` (validate),
+   `metamodel::validate_ast` (validateAst), and `validate_instance` /
+   `check_instance` (instance populate-and-validate, first-error and
+   collect-all). Serialisation (`Serializer`, `Factory`, `Resource`) is out
+   of D11's scope and not benchmarked here - see `public_api.rs`'s module
+   docs.
 
 ### On "where Rust has the capability"
 
