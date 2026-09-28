@@ -70,7 +70,7 @@ use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
-use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
+use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
@@ -230,6 +230,22 @@ fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
             .unwrap_or_else(|thrown| thrown),
         None => js_sys::Error::new(&err.message()).into(),
     })
+}
+
+/// [`throw`] for an error found in the model file registered under
+/// `namespace`, whose JS `ModelFile` is `model_files[namespace]` (P5-11,
+/// accordproject/concerto-rust#287): that file is attached exactly when
+/// concerto-core names a file for the error (`needsModelFile`), as
+/// `ModelFile.validate()` re-wraps the error of its own Rust call with
+/// `this` (modelfile.ts).
+fn throw_naming_file(err: Error, model_files: &JsValue, namespace: &str) -> JsValue {
+    let names_file = matches!(&err, Error::Contract(c) if matches!(c.model_file, Some(Some(_))));
+    let model_file = if names_file && model_files.is_object() {
+        Reflect::get(model_files, &JsValue::from_str(namespace)).ok()
+    } else {
+        None
+    };
+    throw(err, model_file.as_ref().filter(|mf| !nullish(mf)))
 }
 
 /// Runs a binding body and maps its error.
@@ -579,6 +595,17 @@ pub fn model_util_get_namespace(fqn: JsValue) -> std::result::Result<String, JsV
     })
 }
 
+/// TS `ModelUtil.parseNamespace(ns, {disableVersionParsing})` of a JS value:
+/// `!ns` fails for every falsy value; a truthy non-string has no `split`.
+fn parse_namespace_js(ns: &JsValue, disable: bool) -> Result<mu::ParsedNamespace> {
+    if ns.is_truthy() {
+        let ns = receiver(ns, "ns", "split")?;
+        Ok(mu::parse_namespace_with(Some(&ns), disable)?)
+    } else {
+        Ok(mu::parse_namespace_with(None, disable)?)
+    }
+}
+
 /// TS: ModelUtil.parseNamespace. `versionParsed` is built by the registered
 /// `semver.parse`, since the result must be a real `SemVer`.
 #[wasm_bindgen(js_name = modelUtilParseNamespace)]
@@ -588,12 +615,7 @@ pub fn model_util_parse_namespace(
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
         let disable = !nullish(&options) && get(&options, "disableVersionParsing")?.is_truthy();
-        let parsed = if ns.is_truthy() {
-            let ns = receiver(&ns, "ns", "split")?;
-            mu::parse_namespace_with(Some(&ns), disable)?
-        } else {
-            mu::parse_namespace_with(None, disable)?
-        };
+        let parsed = parse_namespace_js(&ns, disable)?;
         let out = Object::new();
         match parsed {
             mu::ParsedNamespace::NameOnly { name } => set(&out, "name", &JsValue::from_str(&name)),
@@ -2829,6 +2851,122 @@ fn resolve_named_type(declaration: &JsValue, type_name: &JsValue) -> Result<JsVa
             "this.getModelFile().getType",
         )
     }
+}
+
+/// The system declaration kinds a user model may reuse the name of when
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels` is set: TS
+/// `Declaration.isReservedSystemTypeImport`'s `isConcept() || isAsset() ||
+/// isTransaction() || isParticipant() || isEvent()` (declaration.ts), in
+/// that order.
+const RESERVED_SYSTEM_TYPE_KINDS: [&str; 5] = [
+    "isConcept",
+    "isAsset",
+    "isTransaction",
+    "isParticipant",
+    "isEvent",
+];
+
+/// TS: `Declaration.validate`'s own check (P5-11,
+/// accordproject/concerto-rust#287), after `super.validate()` (the view's
+/// `Decorated.validate`): a declaration may not take the name of a type its
+/// model file imports (#648), unless the model manager's
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels` option is set and
+/// `this.isReservedSystemTypeImport(modelFile, name)` says the name
+/// resolves to a reserved system type. The same rule as concerto-core's
+/// `check_import_clash` (validation.rs), run over the view's collaborators,
+/// since a direct call may be on a view of a stubbed model file. Throws
+/// the `IllegalModelException` TS throws, naming `this.modelFile` and at
+/// `this.ast.location`; a collaborator's own error propagates unchanged.
+#[wasm_bindgen(js_name = declarationValidate)]
+pub fn declaration_validate(declaration: JsValue) -> std::result::Result<(), JsValue> {
+    let body = || -> Result<()> {
+        let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
+        let name = call(&declaration, "getName", &[], "this.getName")?;
+        let imported = call(
+            &model_file,
+            "isImportedType",
+            std::slice::from_ref(&name),
+            "modelFile.isImportedType",
+        )?;
+        if !imported.is_truthy() {
+            return Ok(());
+        }
+        // `Boolean(modelFile.getModelManager()?.options?.dangerously…)`.
+        let manager = call(
+            &model_file,
+            "getModelManager",
+            &[],
+            "modelFile.getModelManager",
+        )?;
+        let allow = !nullish(&manager) && {
+            let options = get(&manager, "options")?;
+            !nullish(&options)
+                && get(
+                    &options,
+                    "dangerouslyAllowReservedSystemTypeNamesInUserModels",
+                )?
+                .is_truthy()
+        };
+        if allow {
+            let name = call(&declaration, "getName", &[], "this.getName")?;
+            let reserved = call(
+                &declaration,
+                "isReservedSystemTypeImport",
+                &[model_file, name],
+                "this.isReservedSystemTypeImport",
+            )?;
+            if reserved.is_truthy() {
+                return Ok(());
+            }
+        }
+        let name = js_string(&call(&declaration, "getName", &[], "this.getName")?)?;
+        Err(illegal_model_error(
+            format!("Type '{name}' clashes with an imported type with the same name."),
+            ast_location(&declaration)?,
+        ))
+    };
+    body().map_err(|e| {
+        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
+        throw(e, Some(&model_file))
+    })
+}
+
+/// TS: `Declaration.isReservedSystemTypeImport(modelFile, typeName)`
+/// (P5-11, accordproject/concerto-rust#287): whether `typeName` resolves,
+/// through `modelFile.getType`, to a declaration of a system model file
+/// that is one of the reserved kinds ([`RESERVED_SYSTEM_TYPE_KINDS`]). The
+/// same rule as concerto-core's `is_reserved_system_type_import`
+/// (validation.rs), run over the view's collaborators; their own errors
+/// propagate unchanged.
+#[wasm_bindgen(js_name = declarationIsReservedSystemTypeImport)]
+pub fn declaration_is_reserved_system_type_import(
+    model_file: JsValue,
+    type_name: JsValue,
+) -> std::result::Result<bool, JsValue> {
+    run(|| {
+        let imported = call(&model_file, "getType", &[type_name], "modelFile.getType")?;
+        if !imported.is_truthy() || imported.is_string() {
+            return Ok(false);
+        }
+        let imported_file = call(&imported, "getModelFile", &[], "importedType.getModelFile")?;
+        if !imported_file.is_truthy()
+            || !call(
+                &imported_file,
+                "isSystemModelFile",
+                &[],
+                "importedModelFile.isSystemModelFile",
+            )?
+            .is_truthy()
+        {
+            return Ok(false);
+        }
+        for kind in RESERVED_SYSTEM_TYPE_KINDS {
+            if call(&imported, kind, &[], kind)?.is_truthy() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
 }
 
 /// TS: `ClassDeclaration._resolveSuperType`. Resolves `this.superType`
@@ -5167,6 +5305,158 @@ impl ModelManagerHandle {
         run(|| Ok(self.require_file(model_file)?.is_local_type(type_name)))
     }
 
+    /// TS: `ModelFile.getType(type)` (P5-11, accordproject/concerto-rust#287),
+    /// answered by name ([`ModelManager::model_file_type_name`]): a
+    /// primitive's own name, the fully-qualified name of the declaration the
+    /// type resolves to, or `undefined` for TS `null`. The view maps a
+    /// fully-qualified name (the only answer with a dot) to its own
+    /// declaration view. Additive.
+    #[wasm_bindgen(js_name = modelFileGetTypeName)]
+    pub fn model_file_get_type_name(
+        &self,
+        model_file: u32,
+        type_name: &str,
+    ) -> std::result::Result<Option<String>, JsValue> {
+        run(|| {
+            self.require_file(model_file)?;
+            Ok(self
+                .manager
+                .model_file_type_name(ModelFileId::from_index(model_file), type_name)?)
+        })
+    }
+
+    /// TS: `ModelFile.getFullyQualifiedTypeName(type)` (P5-11,
+    /// accordproject/concerto-rust#287): `ModelFile::fully_qualified_type_name`,
+    /// `undefined` for TS `null`. Additive.
+    #[wasm_bindgen(js_name = modelFileGetFullyQualifiedTypeName)]
+    pub fn model_file_get_fully_qualified_type_name(
+        &self,
+        model_file: u32,
+        type_name: &str,
+    ) -> std::result::Result<Option<String>, JsValue> {
+        run(|| {
+            Ok(self
+                .require_file(model_file)?
+                .fully_qualified_type_name(type_name))
+        })
+    }
+
+    /// TS: `ModelFile.resolveType(context, type, fileLocation)` (P5-11,
+    /// accordproject/concerto-rust#287): [`ModelManager::model_file_resolve_type`].
+    /// `file_location` is TS's optional `fileLocation`, and `view` the JS
+    /// `ModelFile` (`this`), which the undeclared-type
+    /// `IllegalModelException` names, as TS's does. Additive.
+    #[wasm_bindgen(js_name = modelFileResolveType)]
+    pub fn model_file_resolve_type(
+        &self,
+        model_file: u32,
+        context: &str,
+        type_name: &str,
+        file_location: JsValue,
+        view: JsValue,
+    ) -> std::result::Result<(), JsValue> {
+        let body = || -> Result<()> {
+            self.require_file(model_file)?;
+            let location = to_json(&file_location)?;
+            Ok(self.manager.model_file_resolve_type(
+                ModelFileId::from_index(model_file),
+                context,
+                type_name,
+                location,
+            )?)
+        };
+        body().map_err(|e| throw(e, Some(&view)))
+    }
+
+    /// TS: `BaseModelManager.getType(qualifiedName)` (P5-11,
+    /// accordproject/concerto-rust#287), answered by name
+    /// ([`ModelManager::type_declaration_name`]): the fully-qualified name
+    /// of the declaration found, or the `TypeNotFoundException` TS throws.
+    /// The view maps the name to its own declaration view. Additive.
+    #[wasm_bindgen(js_name = getTypeName)]
+    pub fn get_type_name(&self, qualified_name: &str) -> std::result::Result<String, JsValue> {
+        run(|| Ok(self.manager.type_declaration_name(qualified_name)?))
+    }
+
+    /// TS: `BaseModelManager.validateModelFiles()` (P5-11,
+    /// accordproject/concerto-rust#287): every model file validated in one
+    /// call ([`ModelManager::validate_models_naming_file`]). `model_files`
+    /// is the view's `this.modelFiles`: the first problem found is thrown
+    /// naming the JS `ModelFile` it was found in, as that file's own
+    /// `validate()` does. Additive.
+    #[wasm_bindgen(js_name = validateModelFiles)]
+    pub fn validate_model_files(&self, model_files: &JsValue) -> std::result::Result<(), JsValue> {
+        self.manager
+            .validate_models_naming_file()
+            .map_err(|(namespace, err)| throw_naming_file(err.into(), model_files, &namespace))
+    }
+
+    /// TS: `BaseModelManager._throwAlreadyExists(modelFile)` (P5-11,
+    /// accordproject/concerto-rust#287): throws the plain `Error` naming
+    /// `namespace`, the incoming file's name (`file_name`) and the name of
+    /// the model file already registered under `namespace`
+    /// ([`ModelManager::check_namespace_available`]). Returns normally only
+    /// when nothing is registered under `namespace`. Additive.
+    #[wasm_bindgen(js_name = throwAlreadyExists)]
+    pub fn throw_already_exists(
+        &self,
+        namespace: &str,
+        file_name: Option<String>,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            Ok(self
+                .manager
+                .check_namespace_available(namespace, file_name.as_deref())?)
+        })
+    }
+
+    /// TS: the apply, validate and rollback part of
+    /// `BaseModelManager.updateExternalModels(options, fileDownloader)`
+    /// (P5-11, accordproject/concerto-rust#287;
+    /// [`ModelManager::update_external_models_naming_file`]); the download
+    /// stays in JS. `sources` is JSON text: the downloaded files, in order,
+    /// each `{ast, definitions, fileName}`. Each is added, or replaces the
+    /// file under its namespace, without validation; then every model file
+    /// is validated, and any failure leaves this handle as it was.
+    /// `model_files` is the view's model files as they would be once
+    /// applied (namespace to JS `ModelFile`): a validation failure is thrown
+    /// naming the JS `ModelFile` it was found in. Additive.
+    #[wasm_bindgen(js_name = updateExternalModels)]
+    pub fn update_external_models(
+        &mut self,
+        sources: &str,
+        model_files: &JsValue,
+    ) -> std::result::Result<(), JsValue> {
+        self.epoch += 1;
+        let parsed = (|| -> Result<Vec<ModelFileSource>> {
+            let value: Value = serde_json::from_str(sources)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let text = |source: &Value, key: &str| {
+                source.get(key).and_then(Value::as_str).map(str::to_string)
+            };
+            Ok(value
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .map(|source| ModelFileSource {
+                            ast: source.get("ast").cloned().unwrap_or(Value::Null),
+                            definitions: text(source, "definitions"),
+                            file_name: text(source, "fileName"),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default())
+        })()
+        .map_err(|e| throw(e, None))?;
+        self.manager
+            .update_external_models_naming_file(parsed)
+            .map(|_| ())
+            .map_err(|(namespace, err)| match namespace {
+                Some(namespace) => throw_naming_file(err.into(), model_files, &namespace),
+                None => throw(err.into(), None),
+            })
+    }
+
     /// TS: `ModelFile.validate()`, for a model file this manager already
     /// holds under its own namespace — the common case for a view whose
     /// `getModelManager()` is this handle (`ModelManager::validate_model_file`).
@@ -5312,6 +5602,249 @@ impl ModelManagerHandle {
             .file(id)
             .ok_or_else(|| unknown(Node::ModelFile(id)))
     }
+}
+
+/// The metamodel namespace, TS `MetaModelNamespace` (concerto-metamodel).
+const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
+
+/// TS: `ModelFile.enforceImportVersioning(imp)` (P5-11,
+/// accordproject/concerto-rust#287): `ModelUtil.parseNamespace(imp.namespace)`
+/// must give a version, or the plain `Error` TS throws is raised; a
+/// namespace `parseNamespace` rejects raises its own error first.
+fn enforce_import_versioning(imp: &JsValue) -> Result<()> {
+    let namespace = get(imp, "namespace")?;
+    let versioned = matches!(
+        parse_namespace_js(&namespace, false)?,
+        mu::ParsedNamespace::Full { version: Some(ref v), .. } if !v.is_empty()
+    );
+    if versioned {
+        return Ok(());
+    }
+    Err(ContractError::pre_port(
+        ErrorKind::InvalidArgument,
+        format!(
+            "Cannot use an unversioned import {}.",
+            js_string(&namespace)?
+        ),
+        None,
+    )
+    .into())
+}
+
+/// TS: `ModelFile.enforceImportVersioning(imp)` (P5-11,
+/// accordproject/concerto-rust#287), [`enforce_import_versioning`]. Additive.
+#[wasm_bindgen(js_name = modelFileEnforceImportVersioning)]
+pub fn model_file_enforce_import_versioning(imp: JsValue) -> std::result::Result<(), JsValue> {
+    run(|| enforce_import_versioning(&imp))
+}
+
+/// TS: `ModelFile.isCompatibleVersion()` (P5-11,
+/// accordproject/concerto-rust#287), on the JS `ModelFile` `view`: when
+/// `view.ast.concertoVersion` is truthy it must be a range this runtime
+/// supports ([`concerto_core::introspect::model_file::compatible_concerto_version`]),
+/// which is then stored as `view.concertoVersion`; otherwise the plain
+/// `Error` TS throws is raised. A truthy non-string is never a range
+/// node-semver can parse (`satisfies` and `minSatisfying` both give up on
+/// it), so it is always that `Error`. Additive.
+#[wasm_bindgen(js_name = modelFileIsCompatibleVersion)]
+pub fn model_file_is_compatible_version(view: JsValue) -> std::result::Result<(), JsValue> {
+    use concerto_core::introspect::model_file::{
+        compatible_concerto_version, incompatible_concerto_version,
+    };
+    run(|| {
+        let range = get(&get(&view, "ast")?, "concertoVersion")?;
+        if !range.is_truthy() {
+            return Ok(());
+        }
+        let Some(text) = range.as_string() else {
+            return Err(incompatible_concerto_version(&js_string(&range)?).into());
+        };
+        let accepted = compatible_concerto_version(&text)?;
+        set_property(&view, "concertoVersion", &JsValue::from_str(&accepted))
+    })
+}
+
+/// TS: `ModelFile._fromAstHeader(ast)`, the part of `ModelFile.fromAst`
+/// before the declarations (P5-11, accordproject/concerto-rust#287), on the
+/// JS `ModelFile` `view`: parses and checks `ast.namespace` (every part a
+/// valid identifier, and a version unless `view.isSystemModelFile()`),
+/// then sets `view.namespace`, `view.version` and `view.imports` (a copy
+/// of `ast.imports`, plus the implicit import of the system types for a
+/// non-system file), and fills `view.importShortNames` (local name, alias
+/// included, to fully-qualified name) and `view.importUriMap` from the
+/// imports, rejecting an unversioned import, a wildcard import and an
+/// alias to a primitive type (the first through `view.enforceImportVersioning`,
+/// as TS calls it). Each error has TS's class, and the JS errors
+/// TS's own property reads and calls raise on a malformed AST keep theirs,
+/// since this runs over the same JS values in the same order. Additive.
+#[wasm_bindgen(js_name = modelFileFromAstHeader)]
+pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::Result<(), JsValue> {
+    let body = || -> Result<()> {
+        let namespace = get(&ast, "namespace")?;
+        let (name, version) = match parse_namespace_js(&namespace, false)? {
+            mu::ParsedNamespace::Full { name, version, .. } => (
+                name,
+                version.map_or(JsValue::NULL, |v| JsValue::from_str(&v)),
+            ),
+            mu::ParsedNamespace::NameOnly { name } => (name, JsValue::UNDEFINED),
+        };
+        for part in name.split('.') {
+            if !mu::is_valid_identifier(part) {
+                return Err(illegal_model_error(
+                    format!("Invalid namespace part '{part}'"),
+                    to_json(&get(&get(&view, "ast")?, "location")?)?,
+                ));
+            }
+        }
+        set_property(&view, "namespace", &namespace)?;
+        set_property(&view, "version", &version)?;
+        let is_system = || -> Result<bool> {
+            Ok(call(&view, "isSystemModelFile", &[], "this.isSystemModelFile")?.is_truthy())
+        };
+        if !version.is_truthy() && !is_system()? {
+            return Err(ContractError::pre_port(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "Cannot create a ModelFile with an unversioned namespace: {}. All models \
+                     must specify a version (e.g., @1.0.0).",
+                    js_string(&namespace)?
+                ),
+                None,
+            )
+            .into());
+        }
+
+        // A copy, since the implicit import is added to it.
+        let ast_imports = get(&ast, "imports")?;
+        let imports = if ast_imports.is_truthy() {
+            call(
+                &ast_imports,
+                "concat",
+                &[Array::new().into()],
+                "ast.imports.concat",
+            )?
+        } else {
+            Array::new().into()
+        };
+        if !is_system()? {
+            let implicit = to_js(&json!({
+                "$class": format!("{METAMODEL_NAMESPACE}.ImportTypes"),
+                "namespace": "concerto@1.0.0",
+                "types": ["Concept", "Asset", "Transaction", "Participant", "Event"],
+            }));
+            call(&imports, "push", &[implicit], "imports.push")?;
+        }
+        set_property(&view, "imports", &imports)?;
+
+        let short_names = get(&view, "importShortNames")?;
+        let uri_map = get(&view, "importUriMap")?;
+        let set_short_name = |key: &JsValue, value: &JsValue| -> Result<()> {
+            call(
+                &short_names,
+                "set",
+                &[key.clone(), value.clone()],
+                "this.importShortNames.set",
+            )
+            .map(|_| ())
+        };
+        let import_types = format!("{METAMODEL_NAMESPACE}.ImportTypes");
+        let import_all = format!("{METAMODEL_NAMESPACE}.ImportAll");
+        for imp in each(&imports, "this.imports.forEach")? {
+            // `this.enforceImportVersioning(imp)`, as TS calls it
+            // ([`model_file_enforce_import_versioning`]).
+            call(
+                &view,
+                "enforceImportVersioning",
+                std::slice::from_ref(&imp),
+                "this.enforceImportVersioning",
+            )?;
+            let class = get(&imp, "$class")?.as_string();
+            if class.as_deref() == Some(import_all.as_str()) {
+                return Err(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    "Wildcard Imports are not permitted.".to_string(),
+                    None,
+                )
+                .into());
+            }
+            if class.as_deref() == Some(import_types.as_str()) {
+                let ns = js_string(&get(&imp, "namespace")?)?;
+                let aliased = get(&imp, "aliasedTypes")?;
+                let has_aliases = aliased.is_truthy() && js_length(&aliased)?.gt(&JsValue::from(0));
+                let aliases = js_sys::Map::new();
+                if has_aliases {
+                    for entry in each(&aliased, "imp.aliasedTypes.forEach")? {
+                        let alias_name = get(&entry, "name")?;
+                        let aliased_name = get(&entry, "aliasedName")?;
+                        if aliased_name
+                            .as_string()
+                            .is_some_and(|n| mu::is_primitive_type(&n))
+                        {
+                            return Err(ContractError::pre_port(
+                                ErrorKind::InvalidArgument,
+                                "Types cannot be aliased to primitive type".to_string(),
+                                None,
+                            )
+                            .into());
+                        }
+                        aliases.set(&alias_name, &aliased_name);
+                    }
+                }
+                for type_name in each(&get(&imp, "types")?, "imp.types.forEach")? {
+                    let fqn = JsValue::from_str(&format!("{ns}.{}", js_string(&type_name)?));
+                    let alias = aliases.get(&type_name);
+                    let key = if has_aliases && !nullish(&alias) {
+                        alias
+                    } else {
+                        type_name
+                    };
+                    set_short_name(&key, &fqn)?;
+                }
+            } else {
+                let first = import_fully_qualified_name(&imp)?;
+                set_short_name(&get(&imp, "name")?, &first)?;
+            }
+            let uri = get(&imp, "uri")?;
+            if uri.is_truthy() {
+                let first = import_fully_qualified_name(&imp)?;
+                Reflect::set(&uri_map, &first, &uri).map_err(Error::Js)?;
+            }
+        }
+        Ok(())
+    };
+    body().map_err(|e| throw(e, Some(&view)))
+}
+
+/// `value.length`: a string primitive's own length (UTF-16 code units),
+/// which [`get`] does not read.
+fn js_length(value: &JsValue) -> Result<JsValue> {
+    match value.as_string() {
+        Some(text) => Ok(JsValue::from(text.encode_utf16().count() as f64)),
+        None => get(value, "length"),
+    }
+}
+
+/// `ModelUtil.importFullyQualifiedNames(imp)[0]`: `undefined` when there is
+/// none.
+fn import_fully_qualified_name(imp: &JsValue) -> Result<JsValue> {
+    let names = mu::import_fully_qualified_names(to_json(imp)?.as_ref())?;
+    Ok(names
+        .first()
+        .map_or(JsValue::UNDEFINED, |n| JsValue::from_str(n)))
+}
+
+/// The elements `value.forEach` visits, for a JS array; `expression` names
+/// the callee in the `TypeError` any other value raises (a nullish one
+/// fails reading `forEach` itself, as in TS).
+fn each(value: &JsValue, expression: &str) -> Result<Vec<JsValue>> {
+    if Array::is_array(value) {
+        return Ok(Array::from(value).iter().collect());
+    }
+    get(value, "forEach")?;
+    Err(type_error(
+        "engine-typeerror-notafunction",
+        vec![("expression", expression.to_string())],
+    ))
 }
 
 /// TS: `new ModelFile(modelManager, ast, definitions, fileName)`, before it

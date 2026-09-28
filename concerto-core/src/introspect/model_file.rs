@@ -975,14 +975,33 @@ fn check_compatible_version(value: &serde_json::Value) -> Result<Option<String>>
     else {
         return Ok(None);
     };
-    if crate::semver_range::satisfies(CONCERTO_CORE_VERSION, range, true)
-        || crate::semver_range::satisfies("3.0.0", range, false)
-    {
-        return Ok(Some(range.to_string()));
+    compatible_concerto_version(range).map(Some)
+}
+
+js_compat_pub! {
+    /// TS `ModelFile.isCompatibleVersion` for a non-empty `concertoVersion`
+    /// range (P5-11, accordproject/concerto-rust#287): the range, when this
+    /// runtime's version satisfies it (prereleases included) or it admits
+    /// a v3 model, otherwise the plain `Error` TS throws.
+    pub fn compatible_concerto_version(range: &str) -> Result<String> {
+        if crate::semver_range::satisfies(CONCERTO_CORE_VERSION, range, true)
+            || crate::semver_range::satisfies("3.0.0", range, false)
+        {
+            return Ok(range.to_string());
+        }
+        Err(incompatible_concerto_version(range))
     }
-    Err(plain_error(format!(
-        "This version of Concerto supports a language version of v3.0.0 or greater, but this model is for {range}"
-    )))
+}
+
+js_compat_pub! {
+    /// The plain `Error` `ModelFile.isCompatibleVersion` throws for a
+    /// `concertoVersion` range this runtime does not support; `range` is the
+    /// range as JS `String()` renders it.
+    pub fn incompatible_concerto_version(range: &str) -> Error {
+        plain_error(format!(
+            "This version of Concerto supports a language version of v3.0.0 or greater, but this model is for {range}"
+        ))
+    }
 }
 
 /// TS `packageJson.version`: the frozen TS 5.0.0 reference's own version

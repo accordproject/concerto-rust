@@ -72,14 +72,26 @@ impl ModelManager {
     /// when two files are both invalid the order decides which error comes
     /// first; P2-08 review: this used to sort by namespace instead.
     pub fn validate_models(&self) -> Result<()> {
-        let model_files = self
-            .model_files()
-            .filter(|model_file| !model_file.is_system_namespace());
+        self.validate_models_naming_file().map_err(|(_, err)| err)
+    }
 
-        for model_file in model_files {
-            self.validate_model_file(model_file)?;
+    js_compat_pub! {
+        /// [`ModelManager::validate_models`], with the namespace of the model
+        /// file the first problem was found in (P5-11,
+        /// accordproject/concerto-rust#287): TS `validateModelFiles` throws
+        /// that file's own `validate()` error, which names the file, so a
+        /// binding needs to know which one failed.
+        pub fn validate_models_naming_file(&self) -> std::result::Result<(), (String, Error)> {
+            let model_files = self
+                .model_files()
+                .filter(|model_file| !model_file.is_system_namespace());
+
+            for model_file in model_files {
+                self.validate_model_file(model_file)
+                    .map_err(|err| (model_file.namespace().to_string(), err))?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     /// TS `ModelFile.validate()` (modelfile.ts), checked against `self` as
