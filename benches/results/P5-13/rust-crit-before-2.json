@@ -1,0 +1,79 @@
+{
+  "harness": "cargo bench --manifest-path benches/Cargo.toml",
+  "recorded_at": "2026-09-28T12:03:40Z",
+  "concerto_rust_commit": "98e0412776f37d33303354f9aa9b6412c575d034",
+  "entries": [
+    {
+      "id": "instance_validate/from_json",
+      "n": 500,
+      "median_ns_per_batch": 22691491.333333336,
+      "median_ns_per_op": 45382.98266666667,
+      "mean_ns_per_batch": 22819056.193333335,
+      "stddev_ns_per_batch": 732714.2385342689,
+      "cv": 0.03210975214427728
+    },
+    {
+      "id": "instance_validate/validate_instance_native",
+      "n": 500,
+      "median_ns_per_batch": 19968065.5,
+      "median_ns_per_op": 39936.131,
+      "mean_ns_per_batch": 19959958.653333325,
+      "stddev_ns_per_batch": 980014.1072016957,
+      "cv": 0.049099004873841896
+    },
+    {
+      "id": "instance_validate/validate_only",
+      "n": 500,
+      "median_ns_per_batch": 2326775.6136363638,
+      "median_ns_per_op": 4653.551227272727,
+      "mean_ns_per_batch": 2350203.071363636,
+      "stddev_ns_per_batch": 93612.52980215145,
+      "cv": 0.039831677076243265
+    },
+    {
+      "id": "validate_metamodel_concerto-core-test-data/concerto-core_from_json",
+      "n": 35,
+      "median_ns_per_batch": 4487473.291666667,
+      "median_ns_per_op": 128213.52261904762,
+      "mean_ns_per_batch": 4570925.576666667,
+      "stddev_ns_per_batch": 280688.12175903923,
+      "cv": 0.06140728328456622
+    },
+    {
+      "id": "validate_metamodel_concerto-core-test-data/concerto-core_validate_ast",
+      "n": 34,
+      "median_ns_per_batch": 63046014.5,
+      "median_ns_per_op": 1854294.544117647,
+      "mean_ns_per_batch": 63537013.27,
+      "stddev_ns_per_batch": 1978253.9921037955,
+      "cv": 0.031135457748025105
+    },
+    {
+      "id": "validate_metamodel_conformance/concerto-core_from_json",
+      "n": 41,
+      "median_ns_per_batch": 2098917.3958333335,
+      "median_ns_per_op": 51193.107215447155,
+      "mean_ns_per_batch": 2119783.152083334,
+      "stddev_ns_per_batch": 68872.98884082743,
+      "cv": 0.032490582243348186
+    },
+    {
+      "id": "validate_metamodel_conformance/concerto-core_validate_ast",
+      "n": 41,
+      "median_ns_per_batch": 39655993.25,
+      "median_ns_per_op": 967219.3475609756,
+      "mean_ns_per_batch": 39955072.025,
+      "stddev_ns_per_batch": 1104865.9967727596,
+      "cv": 0.027652709425262503
+    },
+    {
+      "id": "validate_metamodel_synthetic-large/concerto-core_from_json",
+      "n": 1,
+      "median_ns_per_batch": 9400283.833333332,
+      "median_ns_per_op": 9400283.833333332,
+      "mean_ns_per_batch": 9431534.291666664,
+      "stddev_ns_per_batch": 422794.1705850675,
+      "cv": 0.04482771917169743
+    }
+  ]
+}
