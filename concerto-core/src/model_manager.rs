@@ -396,8 +396,8 @@ impl ModelManagerBuilder {
 ///
 /// A full arena is a Rust-only failure (PORTING.md 2.3): TS keeps its model
 /// graph in unbounded JS arrays and objects, so no TS class, message or
-/// fixture corresponds to it. It keeps the nearest existing variant,
-/// `ConcertoError::IllegalModel` (the model cannot be loaded), with no
+/// fixture corresponds to it. It keeps the nearest existing kind, a pre-port
+/// `IllegalModel` (`Error::illegal_model`: the model cannot be loaded), with no
 /// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
 /// TS class matches. Four billion elements is not a model anyone loads, but
 /// the boundary path must not panic.
@@ -428,8 +428,8 @@ fn not_a_function(expression: &str) -> Error {
 /// passes object references, which cannot dangle or belong to another
 /// manager, so no TS class, message or fixture corresponds to it, and it
 /// can only arise from a bug in a caller holding handles (the binding, a
-/// harness). It keeps the nearest existing variant,
-/// `ConcertoError::TypeNotFound` (the handle names no element), with no
+/// harness). It keeps the nearest existing kind, a pre-port
+/// `TypeNotFound` (`Error::type_not_found`: the handle names no element), with no
 /// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
 /// TS class matches.
 fn unknown(node: Node) -> Error {

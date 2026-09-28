@@ -1009,8 +1009,8 @@ fn parse_namespace_version(
     };
     for part in name.split('.') {
         if !is_valid_identifier(part) {
-            // `ContractError` (not the bare `ConcertoError::IllegalModel`
-            // pre-port variant), so the oracle harness's `final_message`
+            // `ContractError` (not the pre-port `Error::illegal_model`
+            // shape), so the oracle harness's `final_message`
             // decorates it exactly as `IllegalModelException`'s constructor
             // does (`to_oracle_error`'s doc comment): a trailing space always,
             // and `File '<name>': ` when TS's `this` (passed here, unlike

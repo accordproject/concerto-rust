@@ -89,11 +89,11 @@ fn metamodel_model_manager() -> Result<ModelManager> {
 }
 
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
-/// own, already-constructed message. For a [`ConcertoError::Contract`] that
-/// is [`ContractError::final_message`] (the same text the native oracle
-/// harness compares, per its own doc comment); the other two variants
-/// predate the contract shape and are given the same fallback text
-/// `concerto-wasm`'s `From<Error> for Error` uses for them.
+/// own, already-constructed message. For a catalogue error that is
+/// `ContractError::final_message` (the same text the native oracle harness
+/// compares, per its own doc comment); the two pre-port shapes
+/// (`Error::type_not_found`, `Error::illegal_model`) are given the message
+/// they carry to the binding.
 fn ts_message(err: &Error) -> String {
     if let Some(message) = err.unported_illegal_model() {
         return message.to_string();

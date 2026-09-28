@@ -12,7 +12,7 @@
 //! Validation stops at the first problem. TS raises every one of these as
 //! `IllegalModelException` (`ClassDeclaration.validate` and its callees;
 //! PORTING.md section 2.3), so every error here carries
-//! `ConcertoError::Contract` with `ErrorKind::IllegalModel` — built through
+//! a contract error with `ErrorKind::IllegalModel` — built through
 //! `ContractError::pre_port` (`failed`, below) until a P2 task ports the
 //! check's exact TS wording. A model whose inheritance is circular surfaces
 //! the `RangeError` TS's recursion overflows with (`ErrorKind::RecursionLimit`,
@@ -210,7 +210,7 @@ impl ModelManager {
         /// `ModelFile.validate`'s own import and duplicate-name checks — neither
         /// of which the recorded op ever runs.
         ///
-        /// `Err(ConcertoError::IllegalModel)` with no catalogue entry (no TS
+        /// A pre-port `IllegalModel` error (`Error::illegal_model`, no TS
         /// class corresponds to it) if `model_file` has no declaration at
         /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
         /// `next_index` documents.
