@@ -71,3 +71,7 @@ harness = false
 [[bench]]
 name = "instance_validate"
 harness = false
+
+[[bench]]
+name = "p515_sweep"
+harness = false
