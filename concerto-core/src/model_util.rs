@@ -17,7 +17,7 @@ use std::sync::LazyLock;
 use serde_json::Value;
 
 use crate::ecma;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::model_manager::ResolutionContext;
 
 /// `ID_REGEX` from `src/modelutil.ts`, character for character
@@ -55,11 +55,7 @@ const PRIVATE_RESERVED_PROPERTIES: &[&str] = &[
 const ASSIGNABLE_RESERVED_PROPERTIES: &[&str] = &["$identifier", "$timestamp"];
 
 /// A [`ContractError`] as the crate's error type.
-fn error(
-    kind: ErrorKind,
-    code: &'static str,
-    params: Vec<(&'static str, String)>,
-) -> ConcertoError {
+fn error(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(kind, code, params).into()
 }
 

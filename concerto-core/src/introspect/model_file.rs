@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
 use crate::introspect::import::Import;
@@ -151,10 +151,8 @@ impl ModelFile {
         let namespace = value
             .get("namespace")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ConcertoError::IllegalModel {
-                message: "model missing 'namespace'".into(),
-                file_name: file_name.clone(),
-                location: None,
+            .ok_or_else(|| {
+                Error::illegal_model("model missing 'namespace'", file_name.clone(), None)
             })?
             .to_string();
 
@@ -174,11 +172,11 @@ impl ModelFile {
                 .map(Import::try_from)
                 .collect::<Result<Vec<_>>>()?,
             Some(_) => {
-                return Err(ConcertoError::IllegalModel {
-                    message: "model 'imports' must be an array".into(),
-                    file_name: file_name.clone(),
-                    location: None,
-                });
+                return Err(Error::illegal_model(
+                    "model 'imports' must be an array",
+                    file_name.clone(),
+                    None,
+                ));
             }
         };
 
@@ -250,11 +248,11 @@ impl ModelFile {
                     }
                 }
                 Some(_) => {
-                    return Err(ConcertoError::IllegalModel {
-                        message: "model 'declarations' must be an array".into(),
-                        file_name: file_name.clone(),
-                        location: None,
-                    });
+                    return Err(Error::illegal_model(
+                        "model 'declarations' must be an array",
+                        file_name.clone(),
+                        None,
+                    ));
                 }
             }
         }
@@ -882,7 +880,7 @@ const CONCERTO_CORE_VERSION: &str = "5.0.0";
 /// A plain JS `Error(message)` (`ErrorKind::InvalidArgument`), for the several
 /// hardcoded, non-catalogue messages `ModelFile.fromAst`/`isCompatibleVersion`
 /// throw this way rather than as an `IllegalModelException`.
-fn plain_error(message: String) -> ConcertoError {
+fn plain_error(message: String) -> Error {
     ContractError::pre_port(ErrorKind::InvalidArgument, message, None).into()
 }
 
@@ -934,16 +932,12 @@ fn parse_namespace_version(
 
 /// Stamps this file's name onto an `IllegalModel` error that came up while
 /// parsing one of its declarations, so the message points somewhere useful.
-fn annotate(err: ConcertoError, file_name: &Option<String>) -> ConcertoError {
-    match err {
-        ConcertoError::IllegalModel {
-            message, location, ..
-        } => ConcertoError::IllegalModel {
-            message,
-            file_name: file_name.clone(),
-            location,
-        },
-        other => other,
+fn annotate(err: Error, file_name: &Option<String>) -> Error {
+    match err.unported_illegal_model() {
+        Some(message) => {
+            Error::illegal_model(message, file_name.clone(), err.contract().location.clone())
+        }
+        None => err,
     }
 }
 
@@ -1004,8 +998,8 @@ mod tests {
     #[test]
     fn constructor_arguments_are_checked_in_ts_order() {
         use serde_json::json;
-        let message = |r: Result<()>| match r.unwrap_err() {
-            ConcertoError::Contract(c) => {
+        let message = |r: Result<()>| match r.unwrap_err().into_ported() {
+            Some(c) => {
                 assert_eq!(c.kind, ErrorKind::InvalidArgument);
                 c.message()
             }
@@ -1088,7 +1082,7 @@ mod tests {
             Some("c.cto".into()),
         )
         .unwrap_err();
-        let ConcertoError::Contract(err) = err else {
+        let Some(err) = err.ported().cloned() else {
             panic!("expected a contract error, got {err:?}");
         };
         assert_eq!(err.location, Some(location));
@@ -1241,7 +1235,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let ConcertoError::Contract(err) = mf.resolve_import("Coin").unwrap_err() else {
+        let Some(err) = mf.resolve_import("Coin").unwrap_err().into_ported() else {
             panic!("expected a contract error");
         };
         assert_eq!(

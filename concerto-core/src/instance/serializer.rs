@@ -12,7 +12,7 @@ use super::populator::{Populator, get_property, populator_options};
 use super::resource;
 use super::validate::{ValidateOptions, validate_instance_from};
 use super::value::{Instance, JsValue};
-use crate::ConcertoError;
+use crate::Error;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::introspect::Declaration;
 use crate::model_manager::ModelManager;
@@ -29,7 +29,7 @@ pub struct Serializer {
     pub default_options: SerializerOptions,
 }
 
-fn plain_error(code: &'static str) -> ConcertoError {
+fn plain_error(code: &'static str) -> Error {
     ContractError::new(ErrorKind::InvalidArgument, code, Vec::new()).into()
 }
 
@@ -208,7 +208,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::error::{DetailCode, ValidationDetail};
+    use crate::error::{Detail, DetailCode};
     use crate::instance::dayjs::Dayjs;
     use crate::instance::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
     use crate::instance::value::InstanceKind;
@@ -291,8 +291,8 @@ mod tests {
     }
 
     fn message(result: Result<impl std::fmt::Debug>) -> String {
-        match result {
-            Err(ConcertoError::Contract(e)) => e.message(),
+        match result.map_err(Error::into_ported) {
+            Err(Some(e)) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         }
     }
@@ -549,7 +549,7 @@ mod tests {
 
     fn contract_error(result: Result<Instance>) -> crate::error::ContractError {
         match result {
-            Err(ConcertoError::Contract(e)) => *e,
+            Err(e) => e.into_contract(),
             other => panic!("expected an error, got {other:?}"),
         }
     }
@@ -583,8 +583,8 @@ mod tests {
         reject_required_null: true,
     };
 
-    fn unknown_property(path: &str) -> ValidationDetail {
-        ValidationDetail {
+    fn unknown_property(path: &str) -> Detail {
+        Detail {
             path: path.to_string(),
             code: DetailCode::UnknownProperty,
             expected: None,
@@ -686,7 +686,7 @@ mod tests {
                 );
                 assert_eq!(
                     error.details,
-                    vec![ValidationDetail {
+                    vec![Detail {
                         path: "$.address.city".to_string(),
                         code: DetailCode::TypeViolation,
                         expected: Some("String".to_string()),

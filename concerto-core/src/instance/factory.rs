@@ -24,7 +24,7 @@ use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::StringValidator;
 use crate::introspect::{FullyQualified, Property};
 use crate::model_manager::{ModelManager, Node, ResolutionContext, ValidatedElement};
-use crate::{ConcertoError, ecma, model_util};
+use crate::{Error, ecma, model_util};
 
 /// What the TS `Factory` gets from its environment rather than from the
 /// model (D7): a new identifier and the current time.
@@ -51,7 +51,7 @@ pub struct NewResourceCheck {
 }
 
 /// A `Factory.newResource` error: a plain `Error` from the catalogue.
-fn error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
+fn error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
@@ -139,7 +139,7 @@ struct IdElement {
 }
 
 impl FullyQualified for IdElement {
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn fully_qualified_name(&self) -> Result<String> {
         Ok(self.fqn.clone())
@@ -193,7 +193,7 @@ fn identifier_regex(class_decl: &TypeRef, id_field: &str) -> Result<Option<Strin
                 return Ok(None);
             };
             let bad = |e: serde_json::Error| {
-                ConcertoError::from(ContractError::pre_port(
+                Error::from(ContractError::pre_port(
                     ErrorKind::InvalidArgument,
                     format!("invalid string validator: {e}"),
                     None,
@@ -555,8 +555,8 @@ mod tests {
     #[test]
     fn new_resource_checks_in_ts_order() {
         let mm = model();
-        let message = |r: Result<Instance>| match r {
-            Err(ConcertoError::Contract(e)) => e.message(),
+        let message = |r: Result<Instance>| match r.map_err(Error::into_ported) {
+            Err(Some(e)) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         };
         assert_eq!(
@@ -636,8 +636,10 @@ mod tests {
             JsValue::Undefined,
             false,
             &mut Env,
-        ) {
-            Err(ConcertoError::Contract(e)) => e.message(),
+        )
+        .map_err(Error::into_ported)
+        {
+            Err(Some(e)) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         };
         assert_eq!(message, "ns not specified");

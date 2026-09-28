@@ -32,7 +32,7 @@ pub(crate) fn get_type<'a>(mm: &'a ModelManager, qualified_name: &str) -> Result
 }
 
 /// V8's `TypeError: <expression> is not a function`.
-pub(crate) fn not_a_function(expression: &str) -> crate::ConcertoError {
+pub(crate) fn not_a_function(expression: &str) -> crate::Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
@@ -43,7 +43,7 @@ pub(crate) fn not_a_function(expression: &str) -> crate::ConcertoError {
 
 /// `'Unrecognised ' + JSON.stringify(thing)` for an introspection object:
 /// `JSON.stringify` throws V8's circular-structure `TypeError` first. DV-010
-pub(crate) fn unrecognised() -> crate::ConcertoError {
+pub(crate) fn unrecognised() -> crate::Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-circularjson",

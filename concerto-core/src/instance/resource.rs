@@ -17,7 +17,7 @@ use crate::model_manager::ModelManager;
 
 /// `'The instance with id ' + this.getIdentifier() + ' trying to set field
 /// ' + propName + ' which is not declared in the model.'`
-fn undeclared(instance: &Instance, prop_name: &str) -> crate::ConcertoError {
+fn undeclared(instance: &Instance, prop_name: &str) -> crate::Error {
     ContractError::new(
         ErrorKind::InvalidArgument,
         "validatedresource-setpropertyvalue-undeclaredfield",

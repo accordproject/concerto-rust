@@ -24,7 +24,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use concerto_core::error::ConcertoError;
+use concerto_core::Error;
 use concerto_core::instance::dayjs::Dayjs;
 use concerto_core::instance::{
     Instance, InstanceEnv, InstanceKind, JsValue, Serializer, SerializerOptions, ValidateOptions,
@@ -365,7 +365,7 @@ pub fn encode_instance(i: &Instance) -> Value {
 // Dispatch
 // ---------------------------------------------------------------------
 
-fn outcome(result: Result<Value, ConcertoError>) -> Value {
+fn outcome(result: Result<Value, Error>) -> Value {
     match result {
         Ok(value) => json!({ "ok": value }),
         Err(e) => json!({ "error": to_oracle_error(&e).to_value() }),
@@ -553,7 +553,7 @@ fn instance_op(
     let args = decode_args(session, inputs)?;
     let r = &session.pool[mm_index];
     let mm = &r.mm;
-    let with_effects = |result: Result<Value, ConcertoError>, receiver: &Instance| {
+    let with_effects = |result: Result<Value, Error>, receiver: &Instance| {
         let mut outcome = outcome(result);
         outcome["effects"] = json!({ "target": encode_instance(receiver) });
         Dispatch::Ran(outcome)

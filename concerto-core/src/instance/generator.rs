@@ -16,7 +16,7 @@ use super::dayjs::UtcOffset;
 use super::model::{self, Field, FieldType, TypeRef};
 use super::populator::read_properties_error;
 use super::value::{Instance, InstanceKind, JsValue};
-use crate::ConcertoError;
+use crate::Error;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::introspect::Declaration;
 use crate::model_manager::ModelManager;
@@ -43,7 +43,7 @@ pub struct GeneratorOptions {
     pub utc_offset: JsValue,
 }
 
-fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
+fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
@@ -120,7 +120,7 @@ fn for_in_values(obj: &JsValue) -> Result<Vec<JsValue>> {
 /// `obj.<method>(...)` on a value that is not an instance: V8's
 /// `TypeError`, `Cannot read properties of null/undefined` or `<expression>
 /// is not a function`.
-fn method_error(obj: &JsValue, expression: &str, method: &str) -> ConcertoError {
+fn method_error(obj: &JsValue, expression: &str, method: &str) -> Error {
     if obj.is_nullish() {
         read_properties_error(obj, method)
     } else {

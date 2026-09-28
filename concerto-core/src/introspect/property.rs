@@ -14,7 +14,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::Value;
 
 use crate::derive::Named;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::decorator::{
     Decorated, Decorator, WithDecorators, null_decorator, parse_decorators,
 };
@@ -397,7 +397,7 @@ pub(crate) fn property_kind(class: &str) -> Option<&str> {
 /// `thing.$class`. `this.modelFile`/`this.ast.location` there are the
 /// *class's*, which [`Property::try_from`] has no way to reach (the module
 /// doc on [`BoundElement`]), so this carries neither.
-fn unrecognised_property(class: &str) -> ConcertoError {
+fn unrecognised_property(class: &str) -> Error {
     ContractError::new(
         ErrorKind::IllegalModel,
         "classdeclaration-process-unrecmodelelem",
@@ -454,7 +454,7 @@ impl Property {
 }
 
 impl TryFrom<&serde_json::Value> for Property {
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn try_from(value: &serde_json::Value) -> Result<Self> {
         // Concerto keeps a set of property names for itself, so a model may
@@ -464,19 +464,19 @@ impl TryFrom<&serde_json::Value> for Property {
         if let Some(name) = value.get("name").and_then(|n| n.as_str())
             && is_system_property(name)
         {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("Invalid field name '{name}'"),
-                file_name: None,
-                location: None,
-            });
+            return Err(Error::illegal_model(
+                format!("Invalid field name '{name}'"),
+                None,
+                None,
+            ));
         }
         let class = declared_class(value);
         if class.is_empty() {
-            return Err(ConcertoError::IllegalModel {
-                message: "property node is missing its $class".into(),
-                file_name: None,
-                location: None,
-            });
+            return Err(Error::illegal_model(
+                "property node is missing its $class",
+                None,
+                None,
+            ));
         }
         // TS: `ClassDeclaration.process`'s loop matches the full `$class`
         // (`===`) before it constructs the property, so an unrecognised one
@@ -531,11 +531,8 @@ impl TryFrom<&serde_json::Value> for Property {
 
         // Parse into whatever struct the `$class` says this is. If serde
         // chokes, the JSON is malformed for the kind it claims to be.
-        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-            message: format!("invalid {kind}: {e}"),
-            file_name: None,
-            location: None,
-        };
+        let bad =
+            |e: serde_json::Error| Error::illegal_model(format!("invalid {kind}: {e}"), None, None);
 
         // TS `Property.process`'s `ObjectProperty` arm (property.ts):
         // `this.type = this.ast.type ? this.ast.type.name : null` — a
@@ -647,7 +644,7 @@ struct BoundElement<'a> {
 }
 
 impl FullyQualified for BoundElement<'_> {
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn fully_qualified_name(&self) -> Result<String> {
         Ok(self.fqn.to_string())
@@ -789,7 +786,7 @@ mod tests {
 
     #[test]
     fn process_derives_type_array_and_optional() {
-        let processed = process::<ConcertoError>(&serde_json::json!({
+        let processed = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": "email",
             "isArray": true,
@@ -805,7 +802,7 @@ mod tests {
 
     #[test]
     fn process_object_property_type_is_the_referenced_name() {
-        let processed = process::<ConcertoError>(&serde_json::json!({
+        let processed = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ObjectProperty",
             "name": "address",
             "isArray": false,
@@ -818,7 +815,7 @@ mod tests {
 
     #[test]
     fn process_enum_property_leaves_type_unset() {
-        let processed = process::<ConcertoError>(&serde_json::json!({
+        let processed = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.EnumProperty",
             "name": "RED"
         }))
@@ -831,7 +828,7 @@ mod tests {
 
     #[test]
     fn process_rejects_an_invalid_identifier() {
-        let err = process::<ConcertoError>(&serde_json::json!({
+        let err = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": "1bad",
             "isArray": false,
@@ -847,7 +844,7 @@ mod tests {
     // absent/empty name.
     #[test]
     fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
-        let err = process::<ConcertoError>(&serde_json::json!({
+        let err = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": 1e308,
             "isArray": false,
@@ -925,7 +922,7 @@ mod tests {
             "isArray": false,
             "isOptional": false
         });
-        let err = process::<ConcertoError>(&ast).unwrap_err();
+        let err = process::<Error>(&ast).unwrap_err();
         assert!(
             err.to_string().contains("No name for type"),
             "unexpected error: {err}"
@@ -942,7 +939,7 @@ mod tests {
     // stage2/triage-clusters.json).
     #[test]
     fn process_accepts_a_boolean_name_like_ts_string_coercion() {
-        let processed = process::<ConcertoError>(&serde_json::json!({
+        let processed = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": true,
             "isArray": false,
@@ -966,7 +963,7 @@ mod tests {
     // and #219's overlapping work on this function).
     #[test]
     fn process_rejects_a_missing_name_that_stringifies_to_a_valid_identifier() {
-        let err = process::<ConcertoError>(&serde_json::json!({
+        let err = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "isArray": false,
             "isOptional": false
@@ -980,7 +977,7 @@ mod tests {
 
     #[test]
     fn process_rejects_a_null_name_that_stringifies_to_a_valid_identifier() {
-        let err = process::<ConcertoError>(&serde_json::json!({
+        let err = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": null,
             "isArray": false,
@@ -1013,9 +1010,9 @@ mod tests {
         node
     }
 
-    fn contract(err: ConcertoError) -> ContractError {
-        match err {
-            ConcertoError::Contract(contract) => *contract,
+    fn contract(err: Error) -> ContractError {
+        match err.into_ported() {
+            Some(contract) => contract,
             other => panic!("expected a contract error, got {other:?}"),
         }
     }
@@ -1030,7 +1027,7 @@ mod tests {
     fn process_rejects_a_relationship_with_a_missing_or_null_type() {
         for ty in [None, Some(Value::Null)] {
             let ast = relationship("managerId", ty.clone());
-            let err = contract(process::<ConcertoError>(&ast).unwrap_err());
+            let err = contract(process::<Error>(&ast).unwrap_err());
             assert_eq!(err.kind, ErrorKind::IllegalModel, "{ty:?}");
             assert_eq!(err.code, "property-process-relationshipnotype");
             assert_eq!(err.message(), "Relationship managerId must have a type");
@@ -1054,11 +1051,11 @@ mod tests {
             serde_json::json!("x"),
             serde_json::json!(0),
         ] {
-            let processed = process::<ConcertoError>(&relationship("home", Some(ty))).unwrap();
+            let processed = process::<Error>(&relationship("home", Some(ty))).unwrap();
             assert_eq!(processed.property_type, None);
             assert!(processed.type_set);
         }
-        let processed = process::<ConcertoError>(&serde_json::json!({
+        let processed = process::<Error>(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ObjectProperty",
             "name": "address",
             "type": null
@@ -1071,7 +1068,7 @@ mod tests {
     /// still what a typeless relationship reports first.
     #[test]
     fn process_reports_an_invalid_name_before_a_missing_relationship_type() {
-        let err = contract(process::<ConcertoError>(&relationship("1bad", None)).unwrap_err());
+        let err = contract(process::<Error>(&relationship("1bad", None)).unwrap_err());
         assert_eq!(err.code, "property-process-invalidname");
     }
 
@@ -1612,8 +1609,8 @@ mod tests {
                 "{class}"
             );
             assert!(matches!(
-                &err,
-                ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+                err.ported(),
+                Some(c) if c.kind == ErrorKind::IllegalModel
             ));
         }
         for kind in PROPERTY_KINDS {

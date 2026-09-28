@@ -76,7 +76,7 @@ use concerto_core::introspect::validators::{
 use concerto_core::model_manager::{DeclId, ModelFileId, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
-use concerto_core::{ConcertoError, ModelFile, ModelManager};
+use concerto_core::{Error as CoreError, ModelFile, ModelManager};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
@@ -123,27 +123,14 @@ impl From<ContractError> for Error {
     }
 }
 
-impl From<ConcertoError> for Error {
-    fn from(err: ConcertoError) -> Self {
-        match err {
-            ConcertoError::Contract(err) => Self::Contract(err),
-            // The loader's errors that no unit has ported yet (the manager's
-            // duplicate namespace, its circular-inheritance and handle
-            // checks): they leave through the error factory like every other
-            // core error, with the `pre-port` code and their message verbatim
-            // (error/mod.rs, `ContractError::pre_port`), so the shim still
-            // picks the TS class from `kind`.
-            ConcertoError::IllegalModel {
-                message, location, ..
-            } => ContractError::pre_port(ErrorKind::IllegalModel, message, location).into(),
-            ConcertoError::TypeNotFound { type_name } => {
-                let message = format!("type not found: {type_name}");
-                let mut err = ContractError::pre_port(ErrorKind::TypeNotFound, message, None);
-                // `TypeNotFound` payloads carry `typeName` (table 2.3).
-                err.params.push(("typeName", type_name));
-                err.into()
-            }
-        }
+impl From<CoreError> for Error {
+    fn from(err: CoreError) -> Self {
+        // A check that no unit has ported yet (the manager's duplicate
+        // namespace, its circular-inheritance and handle checks) carries the
+        // `pre-port` code and its message verbatim (error/mod.rs,
+        // `ContractError::pre_port`), so the shim still picks the TS class
+        // from `kind`, like every other core error.
+        Self::Contract(Box::new(err.into_contract()))
     }
 }
 
@@ -159,6 +146,9 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::MalformedInput => "JsTypeError",
         ErrorKind::RecursionLimit => "JsRangeError",
         ErrorKind::Metamodel => "Metamodel",
+        // `ErrorKind` is `#[non_exhaustive]`; a new kind is a plain `Error`
+        // until the shim learns it.
+        _ => "Error",
     }
 }
 
@@ -4154,10 +4144,7 @@ fn check_type_reference_argument(
 /// A handle that names nothing in this manager, as the arena reports one
 /// (`model_manager.rs`, `unknown`): a `TypeNotFound` naming the node.
 fn unknown(node: Node) -> Error {
-    ConcertoError::TypeNotFound {
-        type_name: format!("{node:?}"),
-    }
-    .into()
+    CoreError::type_not_found(format!("{node:?}")).into()
 }
 
 /// A snapshot as the JSON text that crosses the boundary: one string per
@@ -4576,12 +4563,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace.to_string(),
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace.to_string()).into())
         })
     }
 
@@ -4914,12 +4896,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace,
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
         })
     }
 
@@ -4967,12 +4944,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(|id| Some(ModelFileId::index(id)))
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace,
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
         })
     }
 
@@ -5058,12 +5030,7 @@ impl ModelManagerHandle {
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: namespace,
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
         })
     }
 
@@ -5300,12 +5267,7 @@ impl ModelManagerHandle {
                 .model_file_id(&ns)
                 .map(ModelFileId::index)
                 .map(Some)
-                .ok_or_else(|| {
-                    ConcertoError::TypeNotFound {
-                        type_name: ns.clone(),
-                    }
-                    .into()
-                })
+                .ok_or_else(|| CoreError::type_not_found(ns.clone()).into())
         })
     }
 }

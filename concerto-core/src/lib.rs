@@ -71,13 +71,15 @@ pub mod validation;
 /// methods as inherent methods (`name`, `type_name`, `decorators`,
 /// `declaration_kind`), so a caller that is not generic needs no import.
 pub mod prelude {
-    pub use crate::introspect::{DeclarationKind, Decorated, FullyQualified, Named, Typed};
+    pub use crate::introspect::{DeclarationKind, Decorated, Named, Typed};
 }
 
-pub use error::{ConcertoError, Result};
+pub use error::{Error, Result};
 pub use introspect::{
     ClassDeclaration, ClassKind, Declaration, DeclarationKind, Decorated, Decorator,
-    DecoratorArgument, DecoratorValidationOptions, FullyQualified, HasValidators, Import,
-    ModelFile, Named, Property, ScalarDeclaration, TypeReferenceArgument, Typed, Validate,
+    DecoratorArgument, DecoratorValidationOptions, Import, ModelFile, Named, Property,
+    ScalarDeclaration, TypeReferenceArgument, Typed,
 };
+#[cfg(feature = "js-compat")]
+pub use introspect::{FullyQualified, HasValidators, Validate};
 pub use model_manager::ModelManager;

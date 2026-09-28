@@ -16,10 +16,10 @@ use super::deserialize::DeserializeOptions;
 use super::factory::{self, InstanceEnv};
 use super::model::{self, Field, FieldType, TypeRef};
 use super::value::{Instance, JsValue};
-use crate::error::{ContractError, DetailCode, ErrorKind, Result, ValidationDetail};
+use crate::error::{ContractError, Detail, DetailCode, ErrorKind, Result};
 use crate::introspect::Declaration;
 use crate::model_manager::ModelManager;
-use crate::{ConcertoError, model_util};
+use crate::{Error, model_util};
 
 /// The `JSONPopulator` constructor's options.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,11 +43,11 @@ pub(crate) struct Populator<'a> {
     pub path: Vec<String>,
 }
 
-fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
+fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::Validation, code, params).into()
 }
 
-fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> ConcertoError {
+fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
@@ -140,7 +140,7 @@ pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
 }
 
 /// V8's `TypeError: Cannot read properties of <value> (reading '<property>')`.
-pub(crate) fn read_properties_error(value: &JsValue, property: &str) -> ConcertoError {
+pub(crate) fn read_properties_error(value: &JsValue, property: &str) -> Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-readproperties",
@@ -330,7 +330,7 @@ impl<'a> Populator<'a> {
             let resource = resource.ok_or_else(|| {
                 // `parameters.resourceStack.pop()` on an empty stack: not
                 // reached, since every caller pushes a resource first.
-                ConcertoError::from(ContractError::pre_port(
+                Error::from(ContractError::pre_port(
                     ErrorKind::InvalidArgument,
                     "Stack is empty!".to_string(),
                     None,
@@ -410,7 +410,7 @@ impl<'a> Populator<'a> {
         );
         error.details = unknown
             .iter()
-            .map(|property| ValidationDetail {
+            .map(|property| Detail {
                 path: format!("{path}.{property}"),
                 code: DetailCode::UnknownProperty,
                 expected: None,
@@ -447,7 +447,7 @@ impl<'a> Populator<'a> {
                 "jsonpopulator-rejectrequirednull-requirednull",
                 vec![("path", path.clone()), ("type", type_name.clone())],
             );
-            error.details = vec![ValidationDetail {
+            error.details = vec![Detail {
                 path,
                 code: DetailCode::TypeViolation,
                 expected: Some(type_name),

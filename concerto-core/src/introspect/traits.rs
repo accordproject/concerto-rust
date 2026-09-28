@@ -23,30 +23,34 @@ pub trait Named {
     fn name(&self) -> &str;
 }
 
-/// An element with a fully qualified name: the namespace of its model file,
-/// then its own name.
-///
-/// In TS the name is read through the element's collaborators (its model
-/// file, or its parent), so computing it may fail with whatever those calls
-/// raise.
-///
-/// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts),
-/// Property.getFullyQualifiedName (src/introspect/property.ts)
-pub trait FullyQualified {
-    /// What computing the name can raise.
-    type Error: From<ContractError>;
+js_compat_pub! {
+    /// An element with a fully qualified name: the namespace of its model file,
+    /// then its own name.
+    ///
+    /// In TS the name is read through the element's collaborators (its model
+    /// file, or its parent), so computing it may fail with whatever those calls
+    /// raise.
+    ///
+    /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts),
+    /// Property.getFullyQualifiedName (src/introspect/property.ts)
+    pub trait FullyQualified {
+        /// What computing the name can raise.
+        type Error: From<ContractError>;
 
-    /// The fully qualified name.
-    fn fully_qualified_name(&self) -> std::result::Result<String, Self::Error>;
+        /// The fully qualified name.
+        fn fully_qualified_name(&self) -> std::result::Result<String, Self::Error>;
+    }
 }
 
-/// An element whose AST can carry validators: a property, or a scalar
-/// declaration.
-pub trait HasValidators {
-    /// Checks the validators the element declares, as they are when the
-    /// element is loaded: a regular expression must compile, and the bounds of
-    /// a range, a string length or a collection size must make sense.
-    fn check_validators(&self) -> Result<()>;
+js_compat_pub! {
+    /// An element whose AST can carry validators: a property, or a scalar
+    /// declaration.
+    pub trait HasValidators {
+        /// Checks the validators the element declares, as they are when the
+        /// element is loaded: a regular expression must compile, and the bounds of
+        /// a range, a string length or a collection size must make sense.
+        fn check_validators(&self) -> Result<()>;
+    }
 }
 
 /// An element with a type.
@@ -60,15 +64,17 @@ pub trait Typed {
     fn type_name(&self) -> Option<&str>;
 }
 
-/// An element with semantic checks that need the other loaded models in view.
-///
-/// These are the checks [`ModelManager::validate_models`] runs once every
-/// model is loaded.
-pub trait Validate {
-    /// Validates the element, which is declared in the model file for
-    /// `namespace`, against the models loaded in `manager`. Returns the first
-    /// problem found.
-    fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()>;
+js_compat_pub! {
+    /// An element with semantic checks that need the other loaded models in view.
+    ///
+    /// These are the checks [`ModelManager::validate_models`] runs once every
+    /// model is loaded.
+    pub trait Validate {
+        /// Validates the element, which is declared in the model file for
+        /// `namespace`, against the models loaded in `manager`. Returns the first
+        /// problem found.
+        fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()>;
+    }
 }
 
 /// An element that knows which metamodel declaration it is.

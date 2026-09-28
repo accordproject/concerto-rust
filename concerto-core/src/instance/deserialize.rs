@@ -12,7 +12,7 @@
 //! | Optional field = `null` | skipped | skipped | skipped |
 //!
 //! A rejection is a `ValidationException` whose
-//! [`details`](crate::error::ContractError::details) lists each violation.
+//! [`details`](crate::Error::details) lists each violation.
 //! On the serializer's option bag the flags are the keys
 //! `rejectUnknownKeys` and `rejectRequiredNull`; they apply while the
 //! document is populated, so they hold with `validate: false` too.

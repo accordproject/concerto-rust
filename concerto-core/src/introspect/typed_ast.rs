@@ -877,8 +877,8 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    use crate::ModelFile;
     use crate::introspect::Decorated;
-    use crate::{ConcertoError, ModelFile};
 
     /// Everything a [`ModelFile`] holds, in a stable order (its own `Debug`
     /// prints a `HashMap` whose order varies between instances).
@@ -1133,9 +1133,7 @@ mod tests {
             assert!(!check(&text));
             assert!(matches!(
                 ModelFile::from_json_text(&text, None, None),
-                Ok(Err(
-                    ConcertoError::Contract(_) | ConcertoError::IllegalModel { .. }
-                ))
+                Ok(Err(e)) if !e.is_unported_type_not_found()
             ));
         }
         assert!(!check("{\"namespace\": }"));

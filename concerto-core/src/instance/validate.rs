@@ -19,7 +19,7 @@
 //!   with `ClassDeclaration::is_abstract`);
 //! - Long, DateTime, relationships, enums, maps and scalars had no support
 //!   (all six are implemented below);
-//! - errors were stringly typed (fixed: every error is a [`ContractError`]
+//! - errors were stringly typed (fixed: every error is a `ContractError`
 //!   with the P1-05 `{kind, code, params, location}` shape, structured, not
 //!   a `String`).
 //!
@@ -100,7 +100,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::Value;
 
 use crate::ecma;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::{CollectionSizeValidator, NumberValidator, StringValidator};
 use crate::introspect::{Declaration, FullyQualified, Property};
@@ -1069,7 +1069,7 @@ fn check_scalar_item(
             length_validator,
         }) => {
             let bad = |e: serde_json::Error| {
-                ConcertoError::from(ContractError::pre_port(
+                Error::from(ContractError::pre_port(
                     ErrorKind::InvalidArgument,
                     format!("invalid string validator: {e}"),
                     None,
@@ -1149,12 +1149,12 @@ fn owner_fqn_for_object(_property: &Property, declared_class_fqn: &str) -> Strin
 /// (module doc: "recurse") stays clear against `checkItem`'s TS body, which
 /// has no separate remapping of its own either.
 fn retarget_not_resource(
-    e: ConcertoError,
+    e: Error,
     _p: &Params,
     _owner_fqn: &str,
     _property: &Property,
     _value: &Value,
-) -> ConcertoError {
+) -> Error {
     e
 }
 
@@ -1508,7 +1508,7 @@ impl<'a> FieldElement<'a> {
 }
 
 impl FullyQualified for FieldElement<'_> {
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn fully_qualified_name(&self) -> Result<String> {
         Ok(format!("{}.{}", self.owner_fqn, self.property.name()))
@@ -1633,12 +1633,7 @@ fn field_value_param(value: &Value) -> String {
 }
 
 /// TS: `ResourceValidator.reportFieldTypeViolation` (resourcevalidator.ts:520).
-fn field_type_violation(
-    p: &Params,
-    owner_fqn: &str,
-    property: &Property,
-    value: &Value,
-) -> ConcertoError {
+fn field_type_violation(p: &Params, owner_fqn: &str, property: &Property, value: &Value) -> Error {
     let is_array = if property.is_array() { "[]" } else { "" };
     let _ = owner_fqn;
     // `if(value instanceof Identifiable) { typeOfValue =
@@ -1672,7 +1667,7 @@ fn field_type_violation(
 /// TS: `ResourceValidator.reportNotResouceViolation` (resourcevalidator.ts:560).
 /// `value.toString()` is a V8 `TypeError` for a `null` or `undefined` value
 /// (DV-008), and `'Relationship {id=...}'` for a `Relationship`.
-fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> ConcertoError {
+fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> Error {
     not_resource_violation_with(p, class_fqn, value, true)
 }
 
@@ -1690,7 +1685,7 @@ fn not_resource_violation_with(
     class_fqn: &str,
     value: &Value,
     try_identifiable: bool,
-) -> ConcertoError {
+) -> Error {
     if is_js_null(value) {
         // DV-008
         return js_method_receiver_error(value, "value.toString", "toString");
@@ -1716,7 +1711,7 @@ fn not_resource_violation_with(
 /// when `value` has no such method (PORTING.md 2.2 step 3): `Cannot read
 /// properties of null (reading 'method')` when `value` is `null` or
 /// `undefined`, and `expression is not a function` otherwise.
-fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> ConcertoError {
+fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Error {
     if is_js_null(value) {
         let receiver = if is_js_undefined(value) {
             "undefined"
@@ -1747,7 +1742,7 @@ fn not_relationship_violation(
     owner_fqn: &str,
     property: &Property,
     value: &Value,
-) -> ConcertoError {
+) -> Error {
     if is_js_null(value) {
         // DV-008: `value.toString()` on `null`/`undefined`.
         return js_method_receiver_error(value, "value.toString", "toString");
@@ -1776,7 +1771,7 @@ fn not_relationship_violation(
 }
 
 /// TS: `ResourceValidator.reportMissingRequiredProperty` (resourcevalidator.ts:591).
-fn missing_required_property(resource_id: &str, property: &Property) -> ConcertoError {
+fn missing_required_property(resource_id: &str, property: &Property) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-missingrequiredproperty",
@@ -1789,7 +1784,7 @@ fn missing_required_property(resource_id: &str, property: &Property) -> Concerto
 }
 
 /// TS: `ResourceValidator.reportEmptyIdentifier` (resourcevalidator.ts:605).
-fn empty_identifier(resource_id: &str) -> ConcertoError {
+fn empty_identifier(resource_id: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-emptyidentifier",
@@ -1803,7 +1798,7 @@ fn empty_identifier(resource_id: &str) -> ConcertoError {
 /// declaration's name ([`visit_enum_declaration`]).
 /// `value` is the JS `String(obj)` of the value, which for a `Resource`
 /// or a `Relationship` is its own `toString()`.
-fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> ConcertoError {
+fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-invalidenumvalue",
@@ -1817,7 +1812,7 @@ fn invalid_enum_value(resource_id: &str, field_name: &str, value: &str) -> Conce
 }
 
 /// TS: `ResourceValidator.reportAbstractClass` (resourcevalidator.ts:634).
-fn abstract_class(class_fqn: &str) -> ConcertoError {
+fn abstract_class(class_fqn: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-abstractclass",
@@ -1827,7 +1822,7 @@ fn abstract_class(class_fqn: &str) -> ConcertoError {
 }
 
 /// TS: `ResourceValidator.reportUndeclaredField` (resourcevalidator.ts:649).
-fn undeclared_field(resource_id: &str, property_name: &str, fqn: &str) -> ConcertoError {
+fn undeclared_field(resource_id: &str, property_name: &str, fqn: &str) -> Error {
     ContractError::new(
         ErrorKind::Validation,
         "resourcevalidator-undeclaredfield",
@@ -1846,7 +1841,7 @@ fn invalid_field_assignment(
     owner_fqn: &str,
     property: &Property,
     object_type: &str,
-) -> ConcertoError {
+) -> Error {
     let type_name = property.type_name().unwrap_or_default();
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
     let mut field_type = model_util::get_fully_qualified_name(namespace, type_name);
@@ -1880,7 +1875,7 @@ fn invalid_field_assignment_shape(
     owner_fqn: &str,
     property: &Property,
     value: &Value,
-) -> ConcertoError {
+) -> Error {
     match identifiable_parts(p, value) {
         Some((object_type, _)) => invalid_field_assignment(p, owner_fqn, property, &object_type),
         // DV-008
@@ -1890,23 +1885,23 @@ fn invalid_field_assignment_shape(
     }
 }
 
-/// Remaps the generic [`ConcertoError::TypeNotFound`]
+/// Remaps the generic pre-port `TypeNotFound`
 /// [`ModelManager::get_declaration`] raises into the catalogue's
 /// `TypeNotFoundException` shape (table 2.3's default message), the same
 /// way `model_manager.rs`'s own collaborator calls already do at their call
 /// sites (`super_type_fqn`), since `get_declaration` itself is pre-port
 /// (module doc on `error/mod.rs`, section 2.3).
-fn remap_type_not_found(err: ConcertoError, fqn: &str, _hint: &str) -> ConcertoError {
-    match err {
-        ConcertoError::TypeNotFound { .. } => ContractError::type_not_found(
+fn remap_type_not_found(err: Error, fqn: &str, _hint: &str) -> Error {
+    if err.is_unported_type_not_found() {
+        return ContractError::type_not_found(
             "typenotfounderror-defaultmessage",
             Vec::new(),
             fqn.to_string(),
             None,
         )
-        .into(),
-        other => other,
+        .into();
     }
+    err
 }
 
 // ---------------------------------------------------------------------
@@ -1922,7 +1917,7 @@ fn remap_type_not_found(err: ConcertoError, fqn: &str, _hint: &str) -> ConcertoE
 // pass. Where a leaf check already gives a single, TS-faithful verdict
 // (a primitive/scalar/enum/relationship/map value, or a whole array of
 // them), the walk reuses [`validate_property_value`] as-is rather than
-// re-deriving its many branches, and turns its one [`ConcertoError`], if
+// re-deriving its many branches, and turns its one [`Error`], if
 // any, into one [`Diagnostic`] ([`classify_error`]); only the recursive,
 // class-shaped part of the tree — where TS-faithful first-error would stop
 // the *whole* walk at the first nested object's first problem — is walked
@@ -2018,52 +2013,47 @@ impl Collector<'_> {
             .push(Diagnostic::error(pointer, code, message));
     }
 
-    fn push_error(&mut self, pointer: String, err: ConcertoError) {
+    fn push_error(&mut self, pointer: String, err: Error) {
         let (code, message) = classify_error(&err);
         self.push(pointer, code, message);
     }
 }
 
-/// Maps a [`ConcertoError`] a leaf check raised to the [`DiagnosticCode`] it
+/// Maps a [`Error`] a leaf check raised to the [`DiagnosticCode`] it
 /// reports as, keeping the check's own rendered message. A code this table
 /// does not recognise (a JS-engine-shaped error, PORTING.md 2.2 step 3, or a
 /// future check this table has not been updated for) falls back to
 /// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
 /// diagnostic is always produced rather than silently dropped.
-fn classify_error(err: &ConcertoError) -> (DiagnosticCode, String) {
-    match err {
-        ConcertoError::TypeNotFound { type_name } => (
+fn classify_error(err: &Error) -> (DiagnosticCode, String) {
+    if let Some(type_name) = err.unported_type_not_found() {
+        return (
             DiagnosticCode::TypeNotFound,
             format!("type not found: {type_name}"),
-        ),
-        ConcertoError::IllegalModel { message, .. } => {
-            (DiagnosticCode::TypeViolation, message.clone())
-        }
-        ConcertoError::Contract(ce) => {
-            let message = ce.message();
-            if ce.validator.is_some() {
-                return (DiagnosticCode::ValidatorFailure, message);
-            }
-            let code = match ce.code {
-                "resourcevalidator-missingrequiredproperty" => {
-                    DiagnosticCode::MissingRequiredProperty
-                }
-                "resourcevalidator-undeclaredfield" => DiagnosticCode::UndeclaredField,
-                "resourcevalidator-emptyidentifier" => DiagnosticCode::EmptyIdentifier,
-                "resourcevalidator-invalidenumvalue" => DiagnosticCode::InvalidEnumValue,
-                "resourcevalidator-abstractclass" => DiagnosticCode::AbstractClass,
-                "resourcevalidator-invalidfieldassignment" => DiagnosticCode::NotAssignable,
-                "resourcevalidator-notresourceorconcept" => DiagnosticCode::NotResource,
-                "resourcevalidator-notrelationship"
-                | "resourcevalidator-checkrelationship-notidentifiable" => {
-                    DiagnosticCode::NotRelationship
-                }
-                "typenotfounderror-defaultmessage" => DiagnosticCode::TypeNotFound,
-                _ => DiagnosticCode::TypeViolation,
-            };
-            (code, message)
-        }
+        );
     }
+    if let Some(message) = err.unported_illegal_model() {
+        return (DiagnosticCode::TypeViolation, message.to_string());
+    }
+    let ce = err.contract();
+    let message = ce.message();
+    if ce.validator.is_some() {
+        return (DiagnosticCode::ValidatorFailure, message);
+    }
+    let code = match ce.code {
+        "resourcevalidator-missingrequiredproperty" => DiagnosticCode::MissingRequiredProperty,
+        "resourcevalidator-undeclaredfield" => DiagnosticCode::UndeclaredField,
+        "resourcevalidator-emptyidentifier" => DiagnosticCode::EmptyIdentifier,
+        "resourcevalidator-invalidenumvalue" => DiagnosticCode::InvalidEnumValue,
+        "resourcevalidator-abstractclass" => DiagnosticCode::AbstractClass,
+        "resourcevalidator-invalidfieldassignment" => DiagnosticCode::NotAssignable,
+        "resourcevalidator-notresourceorconcept" => DiagnosticCode::NotResource,
+        "resourcevalidator-notrelationship"
+        | "resourcevalidator-checkrelationship-notidentifiable" => DiagnosticCode::NotRelationship,
+        "typenotfounderror-defaultmessage" => DiagnosticCode::TypeNotFound,
+        _ => DiagnosticCode::TypeViolation,
+    };
+    (code, message)
 }
 
 /// A JSON Pointer (RFC 6901) one segment deeper than `base`, escaping `~`
@@ -2553,7 +2543,7 @@ mod tests {
         mgr
     }
 
-    fn err_of(result: Result<()>) -> ConcertoError {
+    fn err_of(result: Result<()>) -> Error {
         result.expect_err("expected a validation failure")
     }
 
@@ -3085,7 +3075,7 @@ mod tests {
             json!({ "$class": "org.acme@1.0.0.Missing", "name": "x" }),
         )]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ItemMap", &map));
-        assert!(matches!(&err, ConcertoError::Contract(e) if e.kind == ErrorKind::Validation));
+        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
         let message = err.to_string();
         assert!(
             message.contains("Expected a \"Resource\" or a \"Concept\""),
@@ -3401,8 +3391,8 @@ mod tests {
     }
 
     /// The TS class and message of a failure, as the oracle records them.
-    fn class_and_message(err: &ConcertoError) -> (&'static str, String) {
-        let ConcertoError::Contract(contract) = err else {
+    fn class_and_message(err: &Error) -> (&'static str, String) {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a contract error, got {err:?}");
         };
         (contract.kind.ts_class(), err.to_string())

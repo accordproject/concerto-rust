@@ -39,7 +39,7 @@ use serde_json::Value;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, EnumDeclaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
@@ -341,16 +341,18 @@ pub struct ModelManager {
 /// TS class matches. Four billion elements is not a model anyone loads, but
 /// the boundary path must not panic.
 fn next_index(len: usize) -> Result<u32> {
-    u32::try_from(len).map_err(|_| ConcertoError::IllegalModel {
-        message: "the model manager cannot address any more elements".into(),
-        file_name: None,
-        location: None,
+    u32::try_from(len).map_err(|_| {
+        Error::illegal_model(
+            "the model manager cannot address any more elements",
+            None,
+            None,
+        )
     })
 }
 
 /// V8's `TypeError` for calling a method the receiver does not have.
 /// `expression` is the one the JS-callback context names for the same call.
-fn not_a_function(expression: &str) -> ConcertoError {
+fn not_a_function(expression: &str) -> Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-notafunction",
@@ -369,10 +371,8 @@ fn not_a_function(expression: &str) -> ConcertoError {
 /// `ConcertoError::TypeNotFound` (the handle names no element), with no
 /// catalogue entry, rather than a new `ErrorKind`, which 2.3 forbids when no
 /// TS class matches.
-fn unknown(node: Node) -> ConcertoError {
-    ConcertoError::TypeNotFound {
-        type_name: format!("{node:?}"),
-    }
+fn unknown(node: Node) -> Error {
+    Error::type_not_found(format!("{node:?}"))
 }
 
 /// The fully qualified name a short name is imported as, if it is imported.
@@ -453,12 +453,12 @@ impl<'a> ClassLike<'a> {
 /// shape at all (neither extends `ClassDeclaration`), so no fixture or TS
 /// class corresponds to it (PORTING.md 2.3), the same as [`unknown`] and
 /// [`not_a_function`] above.
-fn not_a_class_like(fqn: &str) -> ConcertoError {
-    ConcertoError::IllegalModel {
-        message: format!("{fqn} is not a concept-like or enum declaration"),
-        file_name: None,
-        location: None,
-    }
+fn not_a_class_like(fqn: &str) -> Error {
+    Error::illegal_model(
+        format!("{fqn} is not a concept-like or enum declaration"),
+        None,
+        None,
+    )
 }
 
 /// TS `BaseModelManager._throwAlreadyExists(modelFile)` (basemodelmanager.ts):
@@ -469,11 +469,7 @@ fn not_a_class_like(fqn: &str) -> ConcertoError {
 /// name, when TS's caller has one to pass (`addModelFile`'s `modelFile`
 /// always does; `add_models`/`insert_models`' own per-model `file_name`
 /// argument might not).
-fn already_exists(
-    namespace: &str,
-    new_file_name: Option<&str>,
-    existing: &ModelFile,
-) -> ConcertoError {
+fn already_exists(namespace: &str, new_file_name: Option<&str>, existing: &ModelFile) -> Error {
     fn named(name: Option<&str>) -> Option<&str> {
         name.filter(|n| !n.is_empty())
     }
@@ -1092,9 +1088,7 @@ impl ModelManager {
     pub fn get_declaration(&self, fqn: &str) -> Result<&Declaration> {
         self.declaration_id(fqn)
             .and_then(|id| self.declaration(id))
-            .ok_or_else(|| ConcertoError::TypeNotFound {
-                type_name: fqn.to_string(),
-            })
+            .ok_or_else(|| Error::type_not_found(fqn.to_string()))
     }
 
     /// TS: ModelFile.getFullyQualifiedTypeName (src/introspect/modelfile.ts):
@@ -1146,9 +1140,7 @@ impl ModelManager {
         })?;
 
         mf.resolve_local_type(short)
-            .ok_or_else(|| ConcertoError::TypeNotFound {
-                type_name: get_fully_qualified_name(in_namespace, short),
-            })
+            .ok_or_else(|| Error::type_not_found(get_fully_qualified_name(in_namespace, short)))
     }
     /// The name of the field that gives `fqn` its identity: its own, if it
     /// declares one (explicit `identified by field`, giving that field's
@@ -1586,7 +1578,7 @@ impl ModelManager {
             // a different TS throw site), so it is remapped here, the same
             // way `validation.rs`'s `check_super_type` already raises this
             // exact message (`failed`) for the same TS call.
-            Err(ConcertoError::TypeNotFound { .. }) => Err(ContractError::pre_port(
+            Err(err) if err.is_unported_type_not_found() => Err(ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Could not find super type {}", ti.name),
                 location,
@@ -1702,7 +1694,7 @@ impl ModelManager {
     /// already walks exactly this chain (including the implicit `Concept`
     /// super type, P2-03), so this reuses it once `fqt1`'s own resolution is
     /// confirmed with `getType`'s error surface — `is_assignable_to`'s own
-    /// lookup raises a different one ([`ConcertoError::TypeNotFound`], not
+    /// lookup raises a different one (the pre-port `TypeNotFound` of `Error::type_not_found`, not
     /// the catalogued `IllegalModelException` `getType` raises).
     pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> Result<bool> {
         self.get_type_declaration(fqt1)?;
@@ -2119,7 +2111,7 @@ impl ModelManager {
 /// `Concept` super type (P2-03).
 impl ResolutionContext for ModelManager {
     type Node = Node;
-    type Error = ConcertoError;
+    type Error = Error;
 
     fn get_type(&self, model_file: &Node, type_name: Option<&str>) -> Result<Option<Node>> {
         let Node::ModelFile(file) = *model_file else {
@@ -2159,7 +2151,7 @@ impl ResolutionContext for ModelManager {
                 .map(|(fqn, _)| {
                     self.declaration_id(&fqn)
                         .map(Node::Declaration)
-                        .ok_or(ConcertoError::TypeNotFound { type_name: fqn })
+                        .ok_or(Error::type_not_found(fqn))
                 })
                 .collect(),
             Declaration::Scalar(_) | Declaration::Map(_) => Err(not_a_function()),
@@ -2338,7 +2330,7 @@ mod metamodel_util {
 
     use serde_json::Value;
 
-    use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+    use crate::error::{ContractError, Error, ErrorKind, Result};
 
     /// The metamodel's own namespace, short for the five reserved
     /// declarations `createNameTable` seeds the table with.
@@ -2379,7 +2371,7 @@ mod metamodel_util {
     }
 
     /// TS: `Declaration ${imp.name} in namespace ${namespace} not found`.
-    fn declaration_not_found(name: &str, namespace: &str) -> ConcertoError {
+    fn declaration_not_found(name: &str, namespace: &str) -> Error {
         ContractError::new(
             ErrorKind::InvalidArgument,
             "metamodelutil-createnametable-declarationnotfound",
@@ -2392,7 +2384,7 @@ mod metamodel_util {
     }
 
     /// TS: `Name ${name} not found`.
-    fn name_not_found(name: &str) -> ConcertoError {
+    fn name_not_found(name: &str) -> Error {
         ContractError::new(
             ErrorKind::InvalidArgument,
             "metamodelutil-resolvename-notfound",
@@ -2402,7 +2394,7 @@ mod metamodel_util {
     }
 
     /// TS: `Unrecognized $class ${String(metaModel.$class)}`.
-    fn unrecognized_class(rendered: String) -> ConcertoError {
+    fn unrecognized_class(rendered: String) -> Error {
         ContractError::new(
             ErrorKind::InvalidArgument,
             "metamodelutil-resolvetypenames-unrecognizedclass",
@@ -2415,7 +2407,7 @@ mod metamodel_util {
     /// `findNamespace` returns `undefined` for an import whose namespace is
     /// not (yet) registered, and every `createNameTable` branch reads
     /// straight off that result without an existence check.
-    fn undefined_declarations() -> ConcertoError {
+    fn undefined_declarations() -> Error {
         ContractError::new(
             ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
@@ -3368,8 +3360,8 @@ mod tests {
             .resolve_meta_model(&model(serde_json::json!(["Thing"])))
             .unwrap_err();
         assert!(matches!(
-            err,
-            ConcertoError::Contract(ref c) if c.kind == ErrorKind::MalformedInput
+            err.ported(),
+            Some(c) if c.kind == ErrorKind::MalformedInput
         ));
     }
 
@@ -3926,8 +3918,8 @@ mod tests {
         let err = mgr
             .resolve_type_name("org.does.not.exist@1.0.0", "Foo", Some(location.clone()))
             .unwrap_err();
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, Some(location)),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, Some(location)),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -3938,8 +3930,8 @@ mod tests {
         let err = mgr
             .resolve_type_name("org.does.not.exist@1.0.0", "Foo", None)
             .unwrap_err();
-        match err {
-            ConcertoError::Contract(contract) => assert_eq!(contract.location, None),
+        match err.into_ported() {
+            Some(contract) => assert_eq!(contract.location, None),
             other => panic!("expected a Contract error, got {other:?}"),
         }
     }
@@ -4474,7 +4466,7 @@ mod tests {
             mgr.get_all_properties("org.cycle@1.0.0.A").unwrap_err(),
             mgr.validate_models().unwrap_err(),
         ] {
-            let ConcertoError::Contract(c) = err else {
+            let Some(c) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
             assert_eq!(c.kind, ErrorKind::RecursionLimit);
@@ -4523,7 +4515,7 @@ mod tests {
             mgr.get_all_properties("org.acme.l2@1.0.0.Vehicle")
                 .unwrap_err(),
         ] {
-            let ConcertoError::Contract(c) = err else {
+            let Some(c) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
             assert_eq!(c.kind, ErrorKind::TypeNotFound);

@@ -47,7 +47,11 @@ pub use import::Import;
 pub use model_file::ModelFile;
 pub use property::Property;
 pub use scalar::ScalarDeclaration;
-pub use traits::{DeclarationKind, FullyQualified, HasValidators, Named, Typed, Validate};
+pub use traits::{DeclarationKind, Named, Typed};
+#[cfg(feature = "js-compat")]
+pub use traits::{FullyQualified, HasValidators, Validate};
+#[cfg(not(feature = "js-compat"))]
+pub(crate) use traits::{FullyQualified, HasValidators, Validate};
 
 /// Returns the `$class` discriminator of an AST node, or `""` if it is absent.
 /// The sum types in this module select their variant from this value.

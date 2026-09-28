@@ -12,7 +12,7 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::derive::{DeclarationKind, Named};
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::decorator::{
     Decorator, WithDecorators, null_decorator, parse_decorator_list, parse_decorators,
 };
@@ -527,10 +527,12 @@ impl ClassDeclaration {
             object.insert("properties".into(), serde_json::Value::Array(Vec::new()));
             explicit_null_super_type = normalize_class_fields(object);
         }
-        let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-            message: format!("invalid {}: {e}", kind.declaration_kind()),
-            file_name: None,
-            location: None,
+        let bad = |e: serde_json::Error| {
+            Error::illegal_model(
+                format!("invalid {}: {e}", kind.declaration_kind()),
+                None,
+                None,
+            )
         };
         let node = match kind {
             ClassKind::Concept => ClassNode::Concept(serde_json::from_value(fields).map_err(bad)?),
@@ -894,11 +896,8 @@ fn load_scalar(
     namespace: &str,
     file_name: Option<&str>,
 ) -> Result<ScalarDeclaration> {
-    let bad = |e: serde_json::Error| ConcertoError::IllegalModel {
-        message: format!("invalid {short}: {e}"),
-        file_name: None,
-        location: None,
-    };
+    let bad =
+        |e: serde_json::Error| Error::illegal_model(format!("invalid {short}: {e}"), None, None);
     let v = value;
     let node = match short {
         "BooleanScalar" => {
@@ -920,19 +919,18 @@ fn load_scalar(
             mm::ScalarDeclaration::DateTimeScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
         }
         other => {
-            return Err(ConcertoError::IllegalModel {
-                message: format!("unknown scalar type: {other}"),
-                file_name: None,
-                location: None,
-            });
+            return Err(Error::illegal_model(
+                format!("unknown scalar type: {other}"),
+                None,
+                None,
+            ));
         }
     };
     // The name was already checked by `Declaration::from_model_json`
     // (`check_declaration_name`), TS `Declaration.process`.
     let name = scalar::node_name(&node);
     let fqn = get_fully_qualified_name(namespace, name);
-    let processed =
-        ScalarDeclaration::process(value, file_name, &|| Ok::<_, ConcertoError>(fqn.clone()))?;
+    let processed = ScalarDeclaration::process(value, file_name, &|| Ok::<_, Error>(fqn.clone()))?;
     let scalar = ScalarDeclaration::new(node, processed, parse_decorators(value));
     scalar.check_validators()?;
     Ok(scalar)
@@ -1028,11 +1026,7 @@ impl EnumDeclaration {
         Ok(Self {
             inner: WithDecorators::new(
                 serde::Deserialize::deserialize(value).map_err(|e: serde_json::Error| {
-                    ConcertoError::IllegalModel {
-                        message: format!("invalid EnumDeclaration: {e}"),
-                        file_name: None,
-                        location: None,
-                    }
+                    Error::illegal_model(format!("invalid EnumDeclaration: {e}"), None, None)
                 })?,
                 parse_decorators(value),
             ),
@@ -1338,7 +1332,7 @@ impl MapDeclaration {
         // `" " + suffix` (PORTING.md 2.1) — empty here (no file, no
         // location), but still present, exactly as every TS
         // `IllegalModelException` message ends in a space.
-        let illegal_model = |message: String| -> ConcertoError {
+        let illegal_model = |message: String| -> Error {
             ContractError::pre_port(ErrorKind::IllegalModel, message, None).into()
         };
         // TS: `if (!this.ast.key || !this.ast.value)` — plain JS truthiness
@@ -1671,7 +1665,7 @@ fn parse_properties(value: &serde_json::Value) -> Result<Vec<Property>> {
 }
 
 impl TryFrom<&serde_json::Value> for Declaration {
-    type Error = ConcertoError;
+    type Error = Error;
 
     /// Loads a declaration outside any namespace or file.
     fn try_from(value: &serde_json::Value) -> Result<Self> {
@@ -1775,11 +1769,7 @@ impl Declaration {
                 .is_some_and(|items| items.iter().any(serde_json::Value::is_null))
                 || !is_valid_identifier(name)
         };
-        let rejection = || ConcertoError::IllegalModel {
-            message: "typed AST path: rejected declaration".into(),
-            file_name: None,
-            location: None,
-        };
+        let rejection = || Error::illegal_model("typed AST path: rejected declaration", None, None);
         match declaration {
             TypedDeclaration::Ast(value) => Self::from_model_json(&value, namespace, file_name),
             TypedDeclaration::Class {
@@ -1826,16 +1816,13 @@ impl Declaration {
 /// `IllegalModelException` it throws, so an `IllegalModel` contract error
 /// raised while a class-like or enum declaration is built names the file
 /// being loaded (`file_name`) unless it already names one.
-fn with_model_file(err: ConcertoError, file_name: Option<&str>) -> ConcertoError {
-    match err {
-        ConcertoError::Contract(mut contract)
-            if contract.kind == ErrorKind::IllegalModel && contract.model_file.is_none() =>
-        {
-            contract.model_file = Some(file_name.map(str::to_string));
-            ConcertoError::Contract(contract)
-        }
-        other => other,
+fn with_model_file(mut err: Error, file_name: Option<&str>) -> Error {
+    if err.ported().is_some_and(|contract| {
+        contract.kind == ErrorKind::IllegalModel && contract.model_file.is_none()
+    }) {
+        err.contract_mut().model_file = Some(file_name.map(str::to_string));
     }
+    err
 }
 
 /// The `$class` short names TS `ModelFile.fromAst` recognises, once the
@@ -2255,7 +2242,7 @@ mod tests {
                     Some("x.cto"),
                 )
                 .unwrap_err();
-                let ConcertoError::Contract(err) = err else {
+                let Some(err) = err.ported().cloned() else {
                     panic!("expected a contract error, got {err:?}");
                 };
                 assert_eq!(err.kind, ErrorKind::IllegalModel);
@@ -2294,7 +2281,7 @@ mod tests {
             Some("x.cto"),
         )
         .unwrap_err();
-        let ConcertoError::Contract(err) = err else {
+        let Some(err) = err.ported().cloned() else {
             panic!("expected a contract error, got {err:?}");
         };
         assert_eq!(
@@ -2421,7 +2408,7 @@ mod tests {
                 Some("x.cto"),
             )
             .unwrap_err();
-            let ConcertoError::Contract(err) = err else {
+            let Some(err) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
             assert_eq!(err.kind, ErrorKind::IllegalModel);
@@ -2648,8 +2635,8 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(
-            &err,
-            ConcertoError::Contract(c) if c.kind == ErrorKind::MalformedInput
+            err.ported(),
+            Some(c) if c.kind == ErrorKind::MalformedInput
         ));
         assert_eq!(
             err.to_string(),
@@ -2682,8 +2669,8 @@ mod tests {
             }))
             .unwrap_err();
             assert!(matches!(
-                &err,
-                ConcertoError::Contract(c) if c.kind == ErrorKind::MalformedInput
+                err.ported(),
+                Some(c) if c.kind == ErrorKind::MalformedInput
             ));
             assert_eq!(
                 err.to_string(),
@@ -2709,8 +2696,8 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(
-            &err,
-            ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+            err.ported(),
+            Some(c) if c.kind == ErrorKind::IllegalModel
         ));
         assert!(err.to_string().contains(
             "ObjectMapValueType type must contain property '$class' and property 'name', for MapDeclaration named M"
@@ -2741,8 +2728,8 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(
-            &err,
-            ConcertoError::Contract(c) if c.kind == ErrorKind::IllegalModel
+            err.ported(),
+            Some(c) if c.kind == ErrorKind::IllegalModel
         ));
         assert!(err.to_string().contains(
             "ObjectMapValueType type $class must be of TypeIdentifier for MapDeclaration named M"

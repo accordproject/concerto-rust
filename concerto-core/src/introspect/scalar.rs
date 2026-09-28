@@ -273,7 +273,7 @@ impl ScalarDeclaration {
             // `StringValidator` eagerly, exactly as it already did for
             // `NumberValidator`, so there is nothing left to check here.
             let processed =
-                Self::process::<crate::error::ConcertoError>(ast, file_name, &|| Ok(fqn.clone()))?;
+                Self::process::<crate::error::Error>(ast, file_name, &|| Ok(fqn.clone()))?;
             Ok((fqn, processed))
         }
     }
@@ -444,7 +444,7 @@ impl HasValidators for ScalarDeclaration {
 /// `Field.getScalarField`/`isTypeScalar` (ledger: `Field`, P2-04):
 /// `not ported (Field)`, nothing in that file is this unit's own member.
 #[cfg(test)]
-#[allow(clippy::result_large_err)] // ContractError is fine as a by-value test Err; production code always boxes it as ConcertoError::Contract.
+#[allow(clippy::result_large_err)] // ContractError is fine as a by-value test Err; production code always boxes it in an `Error`.
 mod tests {
     use super::*;
     use serde_json::json;

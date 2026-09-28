@@ -19,18 +19,14 @@
 //! `ModelManager.getType`, which is `Relationship`'s own job and stays out
 //! of scope here).
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::model_util;
 
 /// `RESOURCE_SCHEME` in `src/model/resourceid.ts`.
 const RESOURCE_SCHEME: &str = "resource";
 
 /// A [`ContractError`] as the crate's error type.
-fn error(
-    kind: ErrorKind,
-    code: &'static str,
-    params: Vec<(&'static str, String)>,
-) -> ConcertoError {
+fn error(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(kind, code, params).into()
 }
 
@@ -189,7 +185,7 @@ fn encode_uri(input: &str) -> String {
 /// coupled test exercises, and no ported member's message catalogue entry
 /// claims it. [`ContractError::pre_port`] carries the real V8 text without
 /// overclaiming a verbatim catalogue port (PORTING.md section 7.2).
-fn malformed_uri_error() -> ConcertoError {
+fn malformed_uri_error() -> Error {
     ContractError::pre_port(
         ErrorKind::InvalidArgument,
         "URI malformed".to_string(),

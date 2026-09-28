@@ -207,7 +207,7 @@ impl ClassDeclaration {
 
     /// [`ClassDeclaration::validate_instance`], but first-error: returns as
     /// soon as one violation is found, raising it as a
-    /// [`ConcertoError`](crate::error::ConcertoError) instead of collecting
+    /// [`Error`](crate::error::Error) instead of collecting
     /// it — exactly [`validate_instance`](super::validate::validate_instance)
     /// (TS `Resource.validate`), called with `fqn` as the declared type.
     pub fn validate_instance_or_throw(

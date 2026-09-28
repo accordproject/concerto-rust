@@ -95,7 +95,7 @@
 //!   (accordproject/concerto-rust#265).
 
 use concerto_core::dcs;
-use concerto_core::error::{ConcertoError, ErrorKind};
+use concerto_core::error::{Error, ErrorKind};
 use concerto_core::introspect::declaration::ClassDeclaration;
 use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
@@ -113,7 +113,7 @@ use super::fixture::Inputs;
 use super::recipe::{self, Arg, Fault, Faulty, M, Replayed, Session};
 
 /// An error outcome in the oracle's `outcome.error` shape (README "Fixture
-/// schema"), built from a [`ConcertoError`] the same way the TS reference's
+/// schema"), built from a [`Error`] the same way the TS reference's
 /// exception constructors would (PORTING.md section 2).
 #[derive(Debug, Clone)]
 pub struct OracleError {
@@ -239,7 +239,7 @@ fn ran(outcome: recipe::Outcome) -> Dispatch {
     })
 }
 
-fn from_engine<T>(result: Result<T, ConcertoError>, encode: impl FnOnce(T) -> Value) -> Dispatch {
+fn from_engine<T>(result: Result<T, Error>, encode: impl FnOnce(T) -> Value) -> Dispatch {
     ran(result.map(encode).map_err(|e| to_oracle_error(&e)))
 }
 
@@ -303,7 +303,7 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         };
     }
 
-    let outcome: Result<Value, ConcertoError> = match op {
+    let outcome: Result<Value, Error> = match op {
         "ModelUtil.getShortName" => {
             let arg0 = decode::arg(&args, 0);
             let Ok(fqn) = decode::as_str(&arg0) else {
@@ -1479,19 +1479,19 @@ struct PropertyElement {
 }
 
 impl concerto_core::introspect::FullyQualified for PropertyElement {
-    type Error = ConcertoError;
+    type Error = Error;
 
-    fn fully_qualified_name(&self) -> Result<String, ConcertoError> {
+    fn fully_qualified_name(&self) -> Result<String, Error> {
         Ok(self.fqn.clone())
     }
 }
 
 impl concerto_core::model_manager::ValidatedElement for PropertyElement {
-    fn default_value(&self) -> Result<Option<Value>, ConcertoError> {
+    fn default_value(&self) -> Result<Option<Value>, Error> {
         Ok(self.default_value.clone())
     }
 
-    fn name(&self) -> Result<String, ConcertoError> {
+    fn name(&self) -> Result<String, Error> {
         Ok(self.name.clone())
     }
 }
@@ -2539,7 +2539,7 @@ fn unregistered_class_declaration() -> Dispatch {
 /// own `$classDeclaration`, or any declaration up its
 /// `getSuperTypeDeclaration()` chain, has the fully qualified name `fqt`
 /// (compared with `===`, so only a string can match).
-fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, ConcertoError> {
+fn instance_of(r: &Replayed, id: DeclId, fqt: &Value) -> Result<bool, Error> {
     let fqt = fqt.as_str();
     let mut current = r.mm.get_fully_qualified_name(&Node::Declaration(id))?;
     if fqt == Some(current.as_str()) {
@@ -2604,7 +2604,7 @@ fn fully_qualified_identifier(inst: &recipe::DecodedInstance) -> String {
 /// [`concerto_core::instance::resource_id::ResourceId::new`] does.
 fn instance_resource_id(
     inst: &recipe::DecodedInstance,
-) -> Result<concerto_core::instance::resource_id::ResourceId, ConcertoError> {
+) -> Result<concerto_core::instance::resource_id::ResourceId, Error> {
     concerto_core::instance::resource_id::ResourceId::new(
         inst.namespace.clone(),
         inst.type_name.clone(),
@@ -2613,17 +2613,14 @@ fn instance_resource_id(
 }
 
 /// TS `Resource.isConcept`: `this.getClassDeclaration().isConcept()`.
-fn instance_is_concept(
-    r: &Replayed,
-    inst: &recipe::DecodedInstance,
-) -> Result<bool, ConcertoError> {
+fn instance_is_concept(r: &Replayed, inst: &recipe::DecodedInstance) -> Result<bool, Error> {
     let decl = r.mm.get_declaration(&inst.fqn)?;
     Ok(decl.as_class().is_some_and(ClassDeclaration::is_concept))
 }
 
 /// TS: `Property.isTypeEnum` (src/introspect/property.ts): `this.isPrimitive()
 /// ? false : this.getParent().getModelFile().getType(this.getType()).isEnum()`.
-fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, Error> {
     if property.is_primitive() {
         return Ok(false);
     }
@@ -2635,7 +2632,7 @@ fn is_type_enum(r: &Replayed, id: PropId, property: &Property) -> Result<bool, C
 /// false : (…resolveType…, type.isScalarDeclaration?.())`. The `resolveType`
 /// call only re-checks what `getType` below already needs to resolve to
 /// answer, so it is not replayed separately (PORTING.md 6.2).
-fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool, ConcertoError> {
+fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool, Error> {
     if property.is_primitive() {
         return Ok(false);
     }
@@ -2647,23 +2644,13 @@ fn is_type_scalar(r: &Replayed, id: PropId, property: &Property) -> Result<bool,
 /// `isTypeEnum` and `isTypeScalar` (and `getScalarField`) build on: a
 /// non-primitive property's declared type, resolved in its parent
 /// declaration's own model file.
-fn resolve_property_type(
-    r: &Replayed,
-    id: PropId,
-    property: &Property,
-) -> Result<Node, ConcertoError> {
-    let unknown_parent = || ConcertoError::IllegalModel {
-        message: "property has no resolvable parent".into(),
-        file_name: None,
-        location: None,
-    };
+fn resolve_property_type(r: &Replayed, id: PropId, property: &Property) -> Result<Node, Error> {
+    let unknown_parent = || Error::illegal_model("property has no resolvable parent", None, None);
     let parent = r.mm.parent_of(id).ok_or_else(unknown_parent)?;
     let file = r.mm.model_file_of(parent).ok_or_else(unknown_parent)?;
     let type_name = property.type_name();
     r.mm.get_type(&Node::ModelFile(file), type_name)?
-        .ok_or_else(|| ConcertoError::TypeNotFound {
-            type_name: type_name.unwrap_or("null").to_string(),
-        })
+        .ok_or_else(|| Error::type_not_found(type_name.unwrap_or("null").to_string()))
 }
 
 /// TS: `Field.getValidator` (src/introspect/field.ts): a `NumberValidator` for
@@ -3119,7 +3106,7 @@ pub fn derive_model_manager(
             "a model manager derived from {op} at an unexpected path {path:?}"
         )));
     }
-    let failed = |e: ConcertoError| {
+    let failed = |e: Error| {
         Fault::Divergence(format!(
             "state divergence: {op}, which returned this model manager in TS, failed: {}",
             to_oracle_error(&e).message
@@ -3246,7 +3233,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
         .iter()
         .map(|a| session.decode(a, None))
         .collect::<Faulty<Vec<_>>>()?;
-    let err = |e: ConcertoError| to_oracle_error(&e);
+    let err = |e: Error| to_oracle_error(&e);
 
     match member {
         "decorateModels" => {
@@ -3424,7 +3411,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
 }
 
 /// The namespace a decorated element's model file was loaded under, needed
-/// only to build [`concerto_core::error::ConcertoError`] messages that name
+/// only to build [`concerto_core::error::Error`] messages that name
 /// where a decorator's own name failed to resolve — never exercised by a
 /// fixture in this scope, since every one of them runs with the manager's
 /// default (disabled) `decoratorValidation` (module doc on the `"Decorator"`
@@ -3849,7 +3836,7 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
     }
 }
 
-/// Builds the oracle's `outcome.error` shape from a [`ConcertoError`], the
+/// Builds the oracle's `outcome.error` shape from a [`Error`], the
 /// same fields `ContractError` carries (PORTING.md section 2.1):
 /// `kind.ts_class()` for `class`, [`concerto_core::error::ContractError::final_message`]
 /// for `message` (its doc comment: "Used by the native oracle harness
@@ -3857,27 +3844,28 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
 /// variants (`TypeNotFound`, `IllegalModel`) carry no catalogue key; they
 /// map to their TS class with their own text, so a fixture that reaches one
 /// fails on its message until the owning task ports the throw site.
-pub fn to_oracle_error(err: &ConcertoError) -> OracleError {
-    match err {
-        ConcertoError::Contract(ce) => OracleError {
-            class: ce.kind.ts_class().to_string(),
-            message: ce.final_message(),
-            location: ce.location.clone(),
-            component: ce.component().map(str::to_string),
-        },
-        ConcertoError::TypeNotFound { type_name } => OracleError {
+pub fn to_oracle_error(err: &Error) -> OracleError {
+    if let Some(type_name) = err.unported_type_not_found() {
+        return OracleError {
             class: ErrorKind::TypeNotFound.ts_class().to_string(),
             message: format!("Type \"{type_name}\" not found."),
             location: None,
             component: Some("@accordproject/concerto-core".into()),
-        },
-        ConcertoError::IllegalModel {
-            message, location, ..
-        } => OracleError {
+        };
+    }
+    if let Some(message) = err.unported_illegal_model() {
+        return OracleError {
             class: ErrorKind::IllegalModel.ts_class().to_string(),
-            message: message.clone(),
-            location: location.clone(),
+            message: message.to_string(),
+            location: err.contract().location.clone(),
             component: Some("@accordproject/concerto-core".into()),
-        },
+        };
+    }
+    let ce = err.contract();
+    OracleError {
+        class: ce.kind.ts_class().to_string(),
+        message: ce.final_message(),
+        location: ce.location.clone(),
+        component: ce.component().map(str::to_string),
     }
 }

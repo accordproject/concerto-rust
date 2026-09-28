@@ -1021,7 +1021,7 @@ mod tests {
     //! the first place, which is the property those cases check for.
 
     use super::*;
-    use crate::error::{ConcertoError, Result};
+    use crate::error::{Error, Result};
     use crate::introspect::FullyQualified;
 
     /// A minimal `ValidatedElement`, standing in for `sinon.createStubInstance(Field)`.
@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     impl FullyQualified for TestField {
-        type Error = ConcertoError;
+        type Error = Error;
 
         fn fully_qualified_name(&self) -> Result<String> {
             Ok(self.fqn.to_string())

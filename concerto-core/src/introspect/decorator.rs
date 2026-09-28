@@ -28,7 +28,7 @@
 use serde_json::Value;
 
 use crate::ecma::number_to_string;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::ClassDeclaration;
 use crate::introspect::property::Property;
 use crate::introspect::qualified_class;
@@ -205,7 +205,7 @@ impl Decorator {
         namespace: &str,
         context: Option<&str>,
         options: &DecoratorValidationOptions,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         // TS: `mf.resolveType(decoratedName, this.getName(), this.ast.location)`.
         let fqn = self.resolve_own_name(manager, namespace, context)?;
         // TS: `mf.getType(this.getName())`.
@@ -281,14 +281,14 @@ impl Decorator {
         manager: &ModelManager,
         namespace: &str,
         context: Option<&str>,
-    ) -> std::result::Result<String, ConcertoError> {
+    ) -> std::result::Result<String, Error> {
         if is_primitive_type(&self.name) {
             return Ok(self.name.clone());
         }
         manager
             .resolve_type_name(namespace, &self.name, self.location.clone())
             .map_err(|_| {
-                let err: ConcertoError = ContractError::new(
+                let err: Error = ContractError::new(
                     ErrorKind::IllegalModel,
                     "modelfile-resolvetype-undecltype",
                     vec![
@@ -314,12 +314,7 @@ impl Decorator {
     /// [`Self::rethrow`] re-reports it, matching TS's `this`/`this.getParent().
     /// getModelFile()`, which is resolved synchronously at each throw site
     /// (DV-016).
-    fn attach_file(
-        &self,
-        manager: &ModelManager,
-        namespace: &str,
-        err: ConcertoError,
-    ) -> ConcertoError {
+    fn attach_file(&self, manager: &ModelManager, namespace: &str, err: Error) -> Error {
         match manager.model_file(namespace) {
             Some(model_file) => crate::validation::attach_model_file(err, model_file),
             None => err,
@@ -336,7 +331,7 @@ impl Decorator {
         property: &Property,
         arg: &DecoratorArgument,
         options: &DecoratorValidationOptions,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         match property.type_name() {
             Some("Integer") | Some("Double") | Some("Long") => {
                 if !matches!(arg, DecoratorArgument::Number(_)) {
@@ -391,7 +386,7 @@ impl Decorator {
         property: &Property,
         arg: &DecoratorArgument,
         options: &DecoratorValidationOptions,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         let Some(type_reference) = (match arg {
             DecoratorArgument::TypeReference(t) => Some(t),
             _ => None,
@@ -455,7 +450,7 @@ impl Decorator {
         namespace: &str,
         options: &DecoratorValidationOptions,
         message: String,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         self.handle(
             manager,
             namespace,
@@ -478,7 +473,7 @@ impl Decorator {
         namespace: &str,
         level: Option<&str>,
         message: String,
-    ) -> std::result::Result<(), ConcertoError> {
+    ) -> std::result::Result<(), Error> {
         if level == Some("error") {
             let err = illegal_model(message, self.location.clone());
             return Err(self.attach_file(manager, namespace, err));
@@ -505,7 +500,7 @@ impl Decorator {
         manager: &ModelManager,
         namespace: &str,
         level: Option<&str>,
-        problem: ConcertoError,
+        problem: Error,
     ) -> Result<()> {
         if level == Some("error") {
             let (class, message) = js_class_and_message(&problem);
@@ -519,25 +514,26 @@ impl Decorator {
 /// `new IllegalModelException(message, mf, location)`, built the way every
 /// pre-port throw site in this crate is (`ContractError::pre_port`): this is
 /// not a catalogue template, since the message was already assembled inline.
-fn illegal_model(message: String, location: Option<Value>) -> ConcertoError {
+fn illegal_model(message: String, location: Option<Value>) -> Error {
     ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
 }
 
 /// The TS class name and message an already-thrown error would report, the
-/// same two fields `ops.rs`'s oracle harness reads off a [`ConcertoError`]
+/// same two fields `ops.rs`'s oracle harness reads off a [`Error`]
 /// (`to_oracle_error`), needed here to reproduce [`Decorator::rethrow`]'s
 /// string coercion of a caught exception.
-fn js_class_and_message(err: &ConcertoError) -> (&'static str, String) {
-    match err {
-        ConcertoError::Contract(ce) => (ce.kind.ts_class(), ce.final_message()),
-        ConcertoError::TypeNotFound { type_name } => (
+fn js_class_and_message(err: &Error) -> (&'static str, String) {
+    if let Some(type_name) = err.unported_type_not_found() {
+        return (
             ErrorKind::TypeNotFound.ts_class(),
             format!("Type \"{type_name}\" not found."),
-        ),
-        ConcertoError::IllegalModel { message, .. } => {
-            (ErrorKind::IllegalModel.ts_class(), message.clone())
-        }
+        );
     }
+    if let Some(message) = err.unported_illegal_model() {
+        return (ErrorKind::IllegalModel.ts_class(), message.to_string());
+    }
+    let ce = err.contract();
+    (ce.kind.ts_class(), ce.final_message())
 }
 
 /// JS `typeof` of a decoded argument, as `Decorator.validate` reports it.
@@ -659,15 +655,17 @@ pub(crate) fn null_decorator(ast: &Value) -> Option<ContractError> {
         .then(|| not_an_object("null"))
 }
 
-/// The DV-018 error for a decorator node that is `value` (`null`, or
-/// `undefined` through the WASM boundary), with no location and no model
-/// file yet (module doc on `null_decorator`).
-pub fn not_an_object(value: &str) -> ContractError {
-    ContractError::new(
-        ErrorKind::IllegalModel,
-        "decorator-process-notobject",
-        vec![("value", value.to_string())],
-    )
+js_compat_pub! {
+    /// The DV-018 error for a decorator node that is `value` (`null`, or
+    /// `undefined` through the WASM boundary), with no location and no model
+    /// file yet (module doc on `null_decorator`).
+    pub fn not_an_object(value: &str) -> ContractError {
+        ContractError::new(
+            ErrorKind::IllegalModel,
+            "decorator-process-notobject",
+            vec![("value", value.to_string())],
+        )
+    }
 }
 
 /// Wraps a generated metamodel node together with its processed decorators

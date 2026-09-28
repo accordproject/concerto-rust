@@ -41,7 +41,7 @@ use super::model::not_a_function;
 use super::serializer::Serializer;
 use super::value::JsValue;
 use crate::ecma;
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
@@ -93,13 +93,15 @@ fn metamodel_model_manager() -> Result<ModelManager> {
 /// is [`ContractError::final_message`] (the same text the native oracle
 /// harness compares, per its own doc comment); the other two variants
 /// predate the contract shape and are given the same fallback text
-/// `concerto-wasm`'s `From<ConcertoError> for Error` uses for them.
-fn ts_message(err: &ConcertoError) -> String {
-    match err {
-        ConcertoError::Contract(err) => err.final_message(),
-        ConcertoError::IllegalModel { message, .. } => message.clone(),
-        ConcertoError::TypeNotFound { type_name } => format!("type not found: {type_name}"),
+/// `concerto-wasm`'s `From<Error> for Error` uses for them.
+fn ts_message(err: &Error) -> String {
+    if let Some(message) = err.unported_illegal_model() {
+        return message.to_string();
     }
+    if let Some(type_name) = err.unported_type_not_found() {
+        return format!("type not found: {type_name}");
+    }
+    err.contract().final_message()
 }
 
 /// `BaseModelManager.validateAst`'s structural check:
@@ -126,7 +128,7 @@ pub fn validate_metamodel(ast: &Value) -> Result<()> {
 
 /// `throw new MetamodelException(error.message)`: `validateAst`'s `catch`
 /// block.
-fn wrapped(err: &ConcertoError) -> ConcertoError {
+fn wrapped(err: &Error) -> Error {
     ContractError::new(
         ErrorKind::Metamodel,
         "basemodelmanager-validateast-wrapped",
@@ -246,7 +248,7 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
         validate_meta_model_instance(meta_model)?;
     }
     let mut mm = ModelManager::new()?;
-    let read_properties = |value: &str, property: &str| -> ConcertoError {
+    let read_properties = |value: &str, property: &str| -> Error {
         ContractError::new(
             ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
@@ -565,7 +567,7 @@ mod tests {
             "declarations": []
         });
         let err = validate_ast(&ast).expect_err("an unknown metamodel version should fail");
-        let ConcertoError::Contract(contract) = err else {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(contract.kind, ErrorKind::Metamodel);
@@ -666,7 +668,7 @@ mod tests {
         let err = mm
             .validate_ast(&mf)
             .expect_err("an undeclared property is invalid");
-        let ConcertoError::Contract(contract) = err else {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(contract.kind, ErrorKind::Metamodel);
@@ -702,7 +704,7 @@ mod tests {
         let err = mm
             .validate_ast(&mf)
             .expect_err("an unknown metamodel version");
-        let ConcertoError::Contract(contract) = err else {
+        let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
         assert_eq!(
@@ -737,7 +739,7 @@ mod tests {
                 err
             },
         ] {
-            let ConcertoError::Contract(contract) = err else {
+            let Some(contract) = err.ported().cloned() else {
                 panic!("expected a Contract error, got {err:?}");
             };
             assert_eq!(contract.kind, kind);
@@ -803,11 +805,8 @@ mod tests {
     // ---- accordproject/concerto-rust#265: `addMetamodel`,
     //      `validateMetaModel` and `modelManagerFromMetaModel` ----
 
-    fn kind_of(err: &ConcertoError) -> Option<ErrorKind> {
-        match err {
-            ConcertoError::Contract(contract) => Some(contract.kind),
-            _ => None,
-        }
+    fn kind_of(err: &Error) -> Option<ErrorKind> {
+        err.ported().map(|contract| contract.kind)
     }
 
     fn person_models() -> Value {

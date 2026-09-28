@@ -59,7 +59,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
-use crate::error::{ConcertoError, ContractError, ErrorKind, Result};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
@@ -316,7 +316,7 @@ fn parse_version(version: &str) -> Option<model_util::SemVer> {
 /// node-semver's `new SemVer(undefined)` (`classes/semver.js`), which
 /// `semver.major`/`semver.minor` raise for a `$class` namespace that has no
 /// version.
-fn semver_not_a_string() -> ConcertoError {
+fn semver_not_a_string() -> Error {
     ContractError::pre_port(
         ErrorKind::MalformedInput,
         "Invalid version. Must be a string. Got type \"undefined\".".to_string(),
@@ -327,7 +327,7 @@ fn semver_not_a_string() -> ConcertoError {
 
 /// A JS `TypeError` for reading `property` of `undefined` (`is_null` false)
 /// or `null` (`is_null` true).
-fn read_properties_error(is_null: bool, property: &str) -> ConcertoError {
+fn read_properties_error(is_null: bool, property: &str) -> Error {
     ContractError::new(
         ErrorKind::MalformedInput,
         "engine-typeerror-readproperties",
