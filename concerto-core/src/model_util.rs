@@ -182,39 +182,152 @@ pub struct SemVer {
 }
 
 /// node-semver's `safeRe[t.FULL]` (non-loose), as node-semver 7.6.3 builds it.
+/// [`scan_full`] is a hand-written scanner for exactly this pattern; the
+/// tests keep the pattern to check the scanner against it.
+#[cfg(test)]
 const SEMVER_FULL: &str = r"^v?(0|[1-9]\d{0,256})\.(0|[1-9]\d{0,256})\.(0|[1-9]\d{0,256})(?:-((?:0|[1-9]\d{0,256}|\d{0,256}[a-zA-Z-][a-zA-Z0-9-]{0,250})(?:\.(?:0|[1-9]\d{0,256}|\d{0,256}[a-zA-Z-][a-zA-Z0-9-]{0,250}))*))?(?:\+([a-zA-Z0-9-]{1,250}(?:\.[a-zA-Z0-9-]{1,250})*))?$";
 
-static SEMVER_FULL_REGEX: LazyLock<regress::Regex> = LazyLock::new(|| {
-    // A constant pattern; `semver_full_compiles` tests that it compiles.
-    regress::Regex::new(SEMVER_FULL).expect("FULL is a valid ECMAScript pattern")
-});
+/// node-semver's `MAX_LENGTH`.
+const SEMVER_MAX_LENGTH: usize = 256;
 
 /// `Number.MAX_SAFE_INTEGER`.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
+/// The capture groups of a `SEMVER_FULL` match, as byte ranges of the
+/// scanned string: `major`, `minor`, `patch`, then the prerelease and build
+/// groups when they took part in the match.
+#[derive(Debug, Clone, PartialEq)]
+struct FullMatch {
+    major: std::ops::Range<usize>,
+    minor: std::ops::Range<usize>,
+    patch: std::ops::Range<usize>,
+    prerelease: Option<std::ops::Range<usize>>,
+    build: Option<std::ops::Range<usize>>,
+}
+
+/// `[a-zA-Z0-9-]`, node-semver's `LETTERDASHNUMBER`.
+fn is_letter_dash_number(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-'
+}
+
+/// Scans `0|[1-9]\d*` at `*i`. Taking every digit is what the pattern does:
+/// a digit can never follow a numeric component in a match.
+fn scan_numeric(s: &[u8], i: &mut usize) -> Option<std::ops::Range<usize>> {
+    let start = *i;
+    match s.get(start) {
+        Some(b'0') => *i += 1,
+        Some(b'1'..=b'9') => {
+            *i += 1;
+            while s.get(*i).is_some_and(u8::is_ascii_digit) {
+                *i += 1;
+            }
+        }
+        _ => return None,
+    }
+    Some(start..*i)
+}
+
+/// Scans a run of `LETTERDASHNUMBER` at `*i`, at least one long. A run always
+/// ends at a `.`, a `+`, the end, or a byte that fails the whole match, so
+/// taking the whole run is what the pattern does.
+fn scan_identifier(s: &[u8], i: &mut usize) -> Option<std::ops::Range<usize>> {
+    let start = *i;
+    while s.get(*i).copied().is_some_and(is_letter_dash_number) {
+        *i += 1;
+    }
+    (*i > start).then_some(start..*i)
+}
+
+/// Matches `s` against `SEMVER_FULL` without a regex engine (P5-20, F4).
+///
+/// The pattern is `v?` then three numeric components, then an optional
+/// `-prerelease` and an optional `+build`, each a `.`-separated list of
+/// identifiers:
+/// - a numeric component is `0` or has no leading zero;
+/// - a prerelease identifier is `0|[1-9]\d*` or `\d*[a-zA-Z-][a-zA-Z0-9-]*`:
+///   any non-empty `LETTERDASHNUMBER` run, except an all-digit run with a
+///   leading zero;
+/// - a build identifier is any non-empty `LETTERDASHNUMBER` run.
+///
+/// The pattern's repetition limits (`{0,256}`, `{0,250}`, `{1,250}`) never
+/// bind here: [`semver_parse`] only scans strings of at most `MAX_LENGTH`
+/// (256) UTF-16 units, and after the shortest possible `0.0.0-` or `0.0.0+`
+/// no identifier can be longer than 250 characters, so no run after its
+/// first character is longer than 249 (`long_components_agree_with_the_regex`
+/// checks the edges).
+fn scan_full(s: &str) -> Option<FullMatch> {
+    let s = s.as_bytes();
+    let mut i = usize::from(s.first() == Some(&b'v'));
+    let major = scan_numeric(s, &mut i)?;
+    (s.get(i) == Some(&b'.')).then_some(())?;
+    i += 1;
+    let minor = scan_numeric(s, &mut i)?;
+    (s.get(i) == Some(&b'.')).then_some(())?;
+    i += 1;
+    let patch = scan_numeric(s, &mut i)?;
+    let mut prerelease = None;
+    if s.get(i) == Some(&b'-') {
+        i += 1;
+        let start = i;
+        loop {
+            let id = scan_identifier(s, &mut i)?;
+            let bytes = &s[id];
+            if bytes.len() > 1 && bytes[0] == b'0' && bytes.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            if s.get(i) != Some(&b'.') {
+                break;
+            }
+            i += 1;
+        }
+        prerelease = Some(start..i);
+    }
+    let mut build = None;
+    if s.get(i) == Some(&b'+') {
+        i += 1;
+        let start = i;
+        loop {
+            scan_identifier(s, &mut i)?;
+            if s.get(i) != Some(&b'.') {
+                break;
+            }
+            i += 1;
+        }
+        build = Some(start..i);
+    }
+    (i == s.len()).then_some(FullMatch {
+        major,
+        minor,
+        patch,
+        prerelease,
+        build,
+    })
+}
+
 /// A port of node-semver 7.6.3 `parse(version)` (`new SemVer(version)` with
 /// default options, `null` on any error). `semver.valid(v)` is
 /// `parse(v)?.version`, which is never empty, so it is truthy exactly when this
-/// returns `Some`.
+/// returns `Some`. The `safeRe[t.FULL]` match is [`scan_full`] (P5-20).
 ///
 /// `pub(crate)` so [`crate::semver_range`] can parse the concrete version a
 /// range is tested against, the same way `parseNamespace` does here.
 pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
-    // MAX_LENGTH is checked on the untrimmed string, in UTF-16 units.
-    if version.encode_utf16().count() > 256 {
+    // MAX_LENGTH is checked on the untrimmed string, in UTF-16 units. A
+    // string has no more UTF-16 units than UTF-8 bytes.
+    if version.len() > SEMVER_MAX_LENGTH && version.encode_utf16().count() > SEMVER_MAX_LENGTH {
         return None;
     }
     let trimmed = ecma::js_trim(version);
-    let m = SEMVER_FULL_REGEX.find(trimmed)?;
-    let group = |i: usize| m.group(i).map(|range| &trimmed[range]);
+    let m = scan_full(trimmed)?;
+    let version_span = m.major.start..m.prerelease.as_ref().map_or(m.patch.end, |r| r.end);
     // `+m[i]`: the groups are ASCII digits, which Rust parses to the same
     // double as JS.
-    let number = |i: usize| group(i).and_then(|s| s.parse::<f64>().ok());
-    let (major, minor, patch) = (number(1)?, number(2)?, number(3)?);
+    let number = |range: std::ops::Range<usize>| trimmed[range].parse::<f64>().ok();
+    let (major, minor, patch) = (number(m.major)?, number(m.minor)?, number(m.patch)?);
     if major > MAX_SAFE_INTEGER || minor > MAX_SAFE_INTEGER || patch > MAX_SAFE_INTEGER {
         return None;
     }
-    let prerelease: Vec<PrereleaseIdentifier> = match group(4) {
+    let prerelease: Vec<PrereleaseIdentifier> = match m.prerelease.map(|r| &trimmed[r]) {
         None | Some("") => Vec::new(),
         Some(ids) => ids
             .split('.')
@@ -229,26 +342,16 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
             })
             .collect(),
     };
-    let build = match group(5) {
+    let build = match m.build.map(|r| &trimmed[r]) {
         None | Some("") => Vec::new(),
         Some(ids) => ids.split('.').map(str::to_string).collect(),
     };
-    let mut formatted = format!(
-        "{}.{}.{}",
-        ecma::number_to_string(major),
-        ecma::number_to_string(minor),
-        ecma::number_to_string(patch)
-    );
-    if !prerelease.is_empty() {
-        let ids: Vec<String> = prerelease
-            .iter()
-            .map(|id| match id {
-                PrereleaseIdentifier::Number(n) => ecma::number_to_string(*n),
-                PrereleaseIdentifier::String(s) => s.clone(),
-            })
-            .collect();
-        formatted = format!("{formatted}-{}", ids.join("."));
-    }
+    // `format()`: `major.minor.patch`, plus `-` and the prerelease
+    // identifiers joined with `.`. That is the matched text itself, from
+    // `major` to the end of the prerelease: every component has no leading
+    // zero and is at most MAX_SAFE_INTEGER, and every prerelease identifier
+    // that became a number is below it, so `String(n)` gives back its digits.
+    let formatted = trimmed[version_span].to_string();
     Some(SemVer {
         raw: version.to_string(),
         major,
@@ -785,6 +888,157 @@ mod tests {
     #[test]
     fn semver_full_compiles() {
         assert!(regress::Regex::new(SEMVER_FULL).is_ok());
+    }
+
+    /// `scan_full`'s groups, or the regex's, as byte ranges of `s`.
+    type Groups = [Option<std::ops::Range<usize>>; 5];
+
+    fn regex_groups(s: &str) -> Option<Groups> {
+        static FULL: LazyLock<regress::Regex> =
+            LazyLock::new(|| regress::Regex::new(SEMVER_FULL).unwrap_or_else(|_| unreachable!()));
+        let m = FULL.find(s)?;
+        Some([m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)])
+    }
+
+    fn scanner_groups(s: &str) -> Option<Groups> {
+        let m = scan_full(s)?;
+        Some([
+            Some(m.major),
+            Some(m.minor),
+            Some(m.patch),
+            m.prerelease,
+            m.build,
+        ])
+    }
+
+    #[test]
+    fn scan_full_agrees_with_the_regex_on_every_short_string() {
+        // P5-20: every string of up to 7 characters over an alphabet that
+        // reaches each branch of the pattern gets the regex's match and
+        // groups.
+        let alphabet = ['0', '1', '9', '.', '-', '+', 'a', 'v', ' '];
+        let mut strings = vec![String::new()];
+        let mut checked = 0usize;
+        for _ in 0..7 {
+            let mut next = Vec::with_capacity(strings.len() * alphabet.len());
+            for s in &strings {
+                for c in alphabet {
+                    let t = format!("{s}{c}");
+                    assert_eq!(scanner_groups(&t), regex_groups(&t), "{t:?}");
+                    checked += 1;
+                    // Only extend strings that can still become a match, or
+                    // the set grows to 9^7; a prefix that is already dead
+                    // (does not start with `v`/digit) stays dead.
+                    if t.starts_with(['v', '0', '1', '9']) {
+                        next.push(t);
+                    }
+                }
+            }
+            strings = next;
+        }
+        assert!(checked > 1_000_000, "{checked}");
+    }
+
+    #[test]
+    fn long_components_agree_with_the_regex() {
+        // P5-20: the pattern's `{0,256}`, `{0,250}` and `{1,250}` limits never
+        // bind below MAX_LENGTH, so the scanner, which has no limits, agrees
+        // with the regex on every string `semver_parse` scans; past
+        // MAX_LENGTH, `semver_parse` never scans.
+        for len in [1, 248, 249, 250, 251, 256, 257] {
+            for s in [
+                format!("1.0.0-{}", "a".repeat(len)),
+                format!("1.0.0-a{}", "a".repeat(len)),
+                format!("1.0.0-{}a", "1".repeat(len)),
+                format!("1.0.0-1{}", "1".repeat(len)),
+                format!("1.0.0+{}", "b".repeat(len)),
+                format!("1{}.0.0", "1".repeat(len)),
+                format!("1.0.1{}", "0".repeat(len)),
+            ] {
+                if s.len() <= SEMVER_MAX_LENGTH {
+                    assert_eq!(scanner_groups(&s), regex_groups(&s), "{s:?}");
+                } else {
+                    assert!(semver_parse(&s).is_none(), "{s:?}");
+                }
+            }
+        }
+    }
+
+    /// The recording `tests/semver/record.mjs` made of node-semver 7.6.3's
+    /// `parse`: `{semver, full, cases: [{input, parsed}]}`.
+    fn node_semver_recording() -> Value {
+        serde_json::from_str(include_str!("../tests/semver/node-semver-7.6.3.json"))
+            .unwrap_or_else(|e| panic!("node-semver-7.6.3.json: {e}"))
+    }
+
+    #[test]
+    fn semver_full_is_node_semvers_own_pattern() {
+        let recording = node_semver_recording();
+        assert_eq!(recording["semver"], "7.6.3");
+        assert_eq!(recording["full"], SEMVER_FULL);
+    }
+
+    #[test]
+    fn semver_parse_matches_node_semver() {
+        // P5-20: the differential test against node-semver's own `parse`,
+        // over prerelease and build metadata, leading zeros, whitespace, `v`
+        // prefixes, numeric limits, very long input and random
+        // near-versions (tests/semver/record.mjs).
+        let recording = node_semver_recording();
+        let cases = recording["cases"]
+            .as_array()
+            .unwrap_or_else(|| unreachable!());
+        assert!(cases.len() > 3_000, "{}", cases.len());
+        let mut accepted = 0usize;
+        for case in cases {
+            let input = case["input"].as_str().unwrap_or_else(|| unreachable!());
+            let actual = semver_parse(input).map(|v| {
+                let prerelease: Vec<Value> = v
+                    .prerelease
+                    .iter()
+                    .map(|id| match id {
+                        PrereleaseIdentifier::Number(n) => serde_json::json!(n),
+                        PrereleaseIdentifier::String(s) => serde_json::json!(s),
+                    })
+                    .collect();
+                serde_json::json!({
+                    "raw": v.raw,
+                    "major": v.major,
+                    "minor": v.minor,
+                    "patch": v.patch,
+                    "prerelease": prerelease,
+                    "build": v.build,
+                    "version": v.version,
+                })
+            });
+            let expected = match &case["parsed"] {
+                Value::Null => None,
+                parsed => {
+                    accepted += 1;
+                    // JSON has one number type: compare the numbers as f64.
+                    let mut parsed = parsed.clone();
+                    for key in ["major", "minor", "patch"] {
+                        parsed[key] = serde_json::json!(parsed[key].as_f64());
+                    }
+                    if let Some(ids) = parsed["prerelease"].as_array_mut() {
+                        for id in ids.iter_mut() {
+                            if let Some(n) = id.as_f64() {
+                                *id = serde_json::json!(n);
+                            }
+                        }
+                    }
+                    Some(parsed)
+                }
+            };
+            assert_eq!(actual, expected, "{input:?}");
+            // `scan_full` alone agrees with the regex on every recorded input
+            // that `semver_parse` scans (at most MAX_LENGTH UTF-16 units).
+            if input.encode_utf16().count() <= SEMVER_MAX_LENGTH {
+                let trimmed = ecma::js_trim(input);
+                assert_eq!(scanner_groups(trimmed), regex_groups(trimmed), "{input:?}");
+            }
+        }
+        assert!(accepted > 1_000, "{accepted}");
     }
 
     #[test]

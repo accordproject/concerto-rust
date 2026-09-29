@@ -652,6 +652,46 @@ pub fn model_util_parse_namespace(
     })
 }
 
+/// TS: ModelUtil.parseNamespace, with the version checked in Rust only
+/// (P5-20, F4): no `semver.parse` callback, and the result comes back as
+/// one string rather than an object built property by property across the
+/// boundary. It throws what `modelUtilParseNamespace` throws. Otherwise the
+/// first character says which result it is, and the rest holds its parts
+/// separated by `@` (no part can contain one: the namespace has at most
+/// one, and `name` and `version` are the text either side of it):
+/// - `N<name>`: `{ name }` (`disableVersionParsing`);
+/// - `U<name>@<escapedNamespace>`: no version, so `version` and
+///   `versionParsed` are `null`;
+/// - `V<name>@<escapedNamespace>@<version>`: the shim builds
+///   `versionParsed` itself with `semver.parse`, in JS, where it costs far
+///   less than a callback across the boundary. The Rust check accepts
+///   exactly what `semver.parse` does (`model_util::semver_parse`, tested
+///   against node-semver 7.6.3), so that `SemVer` always exists.
+#[wasm_bindgen(js_name = modelUtilParseNamespaceChecked)]
+pub fn model_util_parse_namespace_checked(
+    ns: JsValue,
+    options: JsValue,
+) -> std::result::Result<String, JsValue> {
+    run(|| {
+        let disable = !nullish(&options) && get(&options, "disableVersionParsing")?.is_truthy();
+        Ok(match parse_namespace_js(&ns, disable)? {
+            mu::ParsedNamespace::NameOnly { name } => format!("N{name}"),
+            mu::ParsedNamespace::Full {
+                name,
+                escaped_namespace,
+                version: None,
+                ..
+            } => format!("U{name}@{escaped_namespace}"),
+            mu::ParsedNamespace::Full {
+                name,
+                escaped_namespace,
+                version: Some(version),
+                ..
+            } => format!("V{name}@{escaped_namespace}@{version}"),
+        })
+    })
+}
+
 /// TS: ModelUtil.importFullyQualifiedNames
 #[wasm_bindgen(js_name = modelUtilImportFullyQualifiedNames)]
 pub fn model_util_import_fully_qualified_names(
