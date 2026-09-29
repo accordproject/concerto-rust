@@ -109,8 +109,9 @@ pub fn convert_primitive(
             JsValue::DateTime(result)
         }
         "Integer" | "Long" => match json {
-            // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
-            JsValue::Number(n) if n.trunc() == *n => json.clone(),
+            // P5-51 (BC-10, R1; DV-012): an integral, finite number.
+            // `Math.trunc(num) !== num` alone passed `±Infinity`.
+            JsValue::Number(n) if n.is_finite() && n.trunc() == *n => json.clone(),
             _ => return Err(wrong_type()),
         },
         "Double" => match json {
@@ -999,5 +1000,41 @@ mod tests {
             panic!("strict should accept a strict string");
         };
         assert!(d.is_utc());
+    }
+
+    /// P5-51 (BC-10, R1; DV-012): `±Infinity` is not an Integer or a
+    /// Long, whatever the options; the same `ValidationException` as a
+    /// fractional number. `NaN` was already rejected.
+    #[test]
+    fn non_finite_integers_and_longs_are_rejected() {
+        let options = PopulatorOptions {
+            accept_resources_for_relationships: false,
+            utc_offset: JsValue::Number(0.0),
+            strict_qualified_date_times: false,
+            deserialize: DeserializeOptions::default(),
+        };
+        for type_name in ["Integer", "Long"] {
+            for n in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 1.5] {
+                let err = convert_primitive(type_name, &JsValue::Number(n), &options, "$.i")
+                    .expect_err(&format!("{type_name} {n}"));
+                assert_eq!(err.kind().ts_class(), "ValidationException", "{n}: {err}");
+                assert_eq!(
+                    err.to_string(),
+                    format!("Expected value at path `$.i` to be of type `{type_name}`")
+                );
+            }
+            for n in [0.0, -3.0, 9_007_199_254_740_993.0, 1e300] {
+                assert_eq!(
+                    convert_primitive(type_name, &JsValue::Number(n), &options, "$.i").ok(),
+                    Some(JsValue::Number(n)),
+                    "{type_name} {n}"
+                );
+            }
+        }
+        // A Double keeps them: BC-10 is about Integer and Long only.
+        assert_eq!(
+            convert_primitive("Double", &JsValue::Number(f64::INFINITY), &options, "$.d").ok(),
+            Some(JsValue::Number(f64::INFINITY))
+        );
     }
 }

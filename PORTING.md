@@ -779,8 +779,7 @@ Rules:
   point outside the BMP comes back unchanged.
 - **JS `trim` is not Rust `trim`.** JS removes WhiteSpace and LineTerminator,
   which includes U+FEFF and excludes U+0085; Rust's `char::is_whitespace` is
-  the other way round. Use `ecma::js_trim` (node-semver trims the version it
-  parses).
+  the other way round. Use `ecma::js_trim`.
 - **`String.prototype.replace` with a string pattern replaces the first
   occurrence only** (`ns.replace('@', '_')` is `replacen('@', "_", 1)`).
 - **Comparisons on AST values keep JS semantics.** TS compares whatever the
@@ -956,12 +955,14 @@ Rules:
   expression as the port spells it); say so in the binding's doc comment.
 - **Results that are instances of a JS library class** (a `SemVer` from
   `semver.parse`, a dayjs object) are built in JS. Rust ports the check that
-  decides the result (node-semver 7.6.3's `valid`: the length limit, `trim`,
-  the `FULL` pattern and the `MAX_SAFE_INTEGER` bounds; since P5-25 the
-  `semver` crate behind a four-rule node-compat wrapper), and the binding calls
-  the library through a **host function the shim registers at load**
-  (`setHost(errorFactory, semverParse)`), so the view stays one line. Pin the
-  library version the port follows, and name it in the doc comment.
+  decides the result (for a namespace version, strict SemVer 2.0.0 through
+  the `semver` crate since BC-41, P5-38, with no `SemVer` beyond
+  node-semver's own limits, where `semver.parse` gives `null`; before it,
+  node-semver 7.6.3's `valid` through a four-rule node-compat wrapper), and
+  the binding calls the library through a **host function the shim
+  registers at load** (`setHost(errorFactory, semverParse)`), so the view
+  stays one line. Pin the library version the port follows, and name it in
+  the doc comment.
 
 ### 3.6 D6: match TS where it differs from Concerto v4
 

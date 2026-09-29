@@ -302,12 +302,11 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
     Ok(())
 }
 
-/// The [`model_util::SemVer`] for a bare version string (`"0.4.0"`):
-/// node-semver's `parse`, as `parseNamespace` uses it
-/// (`model_util::semver_parse`, the `semver` crate plus the node-compat
-/// wrapper; P5-25).
-fn parse_version(version: &str) -> Option<model_util::SemVer> {
-    model_util::semver_parse(version)
+/// A bare version string (`"0.4.0"`) as strict SemVer 2.0.0, the grammar
+/// `parseNamespace` uses (BC-41, P5-38): `semver::Version` itself, so that
+/// components above 2^53 compare exactly.
+fn parse_version(version: &str) -> Option<semver::Version> {
+    semver::Version::parse(version).ok()
 }
 
 /// node-semver's `new SemVer(undefined)` (`classes/semver.js`), which
@@ -1858,6 +1857,28 @@ mod tests {
         let other_major =
             json!({ "$class": "org.accordproject.decoratorcommands@1.0.0.DecoratorCommandSet" });
         assert!(!can_migrate(&other_major, DCS_VERSION).unwrap());
+    }
+
+    #[test]
+    fn can_migrate_takes_strict_semver_only() {
+        // BC-41 (P5-38): no leading `v` and no surrounding whitespace, with
+        // the error `parseNamespace` throws for any invalid version.
+        for class in [
+            "org.accordproject.decoratorcommands@v0.3.0.DecoratorCommandSet",
+            "org.accordproject.decoratorcommands@ 0.3.0.DecoratorCommandSet",
+        ] {
+            let err = can_migrate(&json!({ "$class": class }), DCS_VERSION)
+                .err()
+                .unwrap_or_else(|| panic!("{class} was accepted"));
+            assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
+        }
+        // Components above 2^53 are compared exactly: 2^53 + 1 and 2^53
+        // are the same `f64`, but different majors.
+        let big = json!({
+            "$class": "org.accordproject.decoratorcommands@9007199254740993.0.0.DecoratorCommandSet"
+        });
+        assert!(!can_migrate(&big, "9007199254740992.1.0").unwrap());
+        assert!(can_migrate(&big, "9007199254740993.1.0").unwrap());
     }
 
     #[test]
