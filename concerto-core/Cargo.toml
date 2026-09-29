@@ -38,8 +38,8 @@ indexmap = "2"
 regress = "0.12"
 ryu-js = "1.0"
 # P5-25 (accordproject/concerto-rust#329): namespace and import versions
-# (`model_util::semver_parse`) are parsed by the `semver` crate, behind a
-# node-semver 7.6.3 compatibility wrapper (P5-23, S1).
+# (`model_util::semver_parse`) are parsed by the `semver` crate: strict
+# SemVer 2.0.0 since BC-41 (P5-38, accordproject/concerto-rust#348).
 semver = "1"
 # P5-13 (accordproject/concerto-rust#297): FxHash, a fast non-cryptographic
 # hasher, for the manager's and model files' internal lookup maps (namespace

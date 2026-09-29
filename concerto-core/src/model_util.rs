@@ -161,11 +161,12 @@ pub enum PrereleaseIdentifier {
     String(String),
 }
 
-/// What `semver.parse` (node-semver 7.6.3, the version concerto-core 5.0.0
-/// resolves) returns for a valid version.
+/// A parsed namespace version, in the shape `semver.parse` (node-semver
+/// 7.6.3, the version concerto-core 5.0.0 resolves) returns: see
+/// [`semver_parse`] for the strict SemVer 2.0.0 grammar (BC-41).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemVer {
-    /// The version as given (`raw`), before trimming.
+    /// The version as given (`raw`).
     pub raw: String,
     /// `major`.
     pub major: f64,
@@ -181,51 +182,29 @@ pub struct SemVer {
     pub version: String,
 }
 
-/// node-semver's `MAX_LENGTH`.
-const SEMVER_MAX_LENGTH: usize = 256;
-
-/// `Number.MAX_SAFE_INTEGER`.
+/// `Number.MAX_SAFE_INTEGER`, the largest prerelease identifier that
+/// becomes a [`PrereleaseIdentifier::Number`].
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
-/// `Number.MAX_SAFE_INTEGER`, for the `semver` crate's `u64` components.
-const MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
-
-/// node-semver 7.6.3 `parse(version)` (`new SemVer(version)` with default
-/// options, `null` on any error). `semver.valid(v)` is `parse(v)?.version`,
-/// which is never empty, so it is truthy exactly when this returns `Some`.
+/// Parses a namespace or import version as strict SemVer 2.0.0 (BC-41, R1;
+/// P5-38): the `semver` crate's `semver::Version::parse`, with no
+/// node-compat leniency. Surrounding whitespace and a leading `v` are
+/// rejected, as the CTO grammar already rejects them, and major, minor and
+/// patch go up to `u64::MAX` (2^64-1) rather than `Number.MAX_SAFE_INTEGER`.
+/// Until P5-38 the P5-25 wrapper followed node-semver 7.6.3's `parse`
+/// instead (trimming, one optional `v`, `MAX_SAFE_INTEGER` components and a
+/// 256-unit `MAX_LENGTH`); `tests/semver/node-semver-7.6.3.json` now checks
+/// that this is node-semver's `parse` restricted to strict SemVer 2.0.0.
 ///
-/// The grammar is the `semver` crate's strict SemVer 2.0.0 parser (P5-25,
-/// replacing P5-20's hand-written scanner), wrapped in the four rules where
-/// node-semver's `safeRe[t.FULL]` differs from it (P5-23, S1):
-/// 1. more than `MAX_LENGTH` (256) UTF-16 units, before trimming, is
-///    rejected;
-/// 2. surrounding JS whitespace is trimmed ([`ecma::js_trim`], not
-///    `str::trim`: U+0085 and U+FEFF differ);
-/// 3. one leading `v` is skipped;
-/// 4. a component above `Number.MAX_SAFE_INTEGER` is rejected.
-///
-/// `tests/semver/node-semver-7.6.3.json` is the differential test against
-/// node-semver's own `parse`. BC-41 (R3) drops the wrapper.
+/// The result keeps node-semver's `SemVer` shape for [`crate::semver_range`]:
+/// a component above 2^53 is not exact as an `f64`, but `version` is, and
+/// [`crate::dcs`] compares components with `semver::Version` itself.
 ///
 /// `pub(crate)` so [`crate::semver_range`] and [`crate::dcs`] can parse a
 /// concrete version the same way `parseNamespace` does here.
 pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
-    // MAX_LENGTH is checked on the untrimmed string, in UTF-16 units. A
-    // string has no more UTF-16 units than UTF-8 bytes.
-    if version.len() > SEMVER_MAX_LENGTH && version.encode_utf16().count() > SEMVER_MAX_LENGTH {
-        return None;
-    }
-    let trimmed = ecma::js_trim(version);
-    let unprefixed = trimmed.strip_prefix('v').unwrap_or(trimmed);
-    let parsed = semver::Version::parse(unprefixed).ok()?;
-    if parsed.major > MAX_SAFE_INTEGER_U64
-        || parsed.minor > MAX_SAFE_INTEGER_U64
-        || parsed.patch > MAX_SAFE_INTEGER_U64
-    {
-        return None;
-    }
-    // `+m[i]`: every component is at most MAX_SAFE_INTEGER, so the `u64` is
-    // exactly the JS number.
+    let parsed = semver::Version::parse(version).ok()?;
+    // Exact up to 2^53; above it, the nearest `f64` (see the doc comment).
     #[allow(clippy::cast_precision_loss)]
     let (major, minor, patch) = (
         parsed.major as f64,
@@ -261,9 +240,7 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
             .collect()
     };
     // `format()`: `major.minor.patch`, plus `-` and the prerelease
-    // identifiers joined with `.`. Every component has no leading zero and
-    // is at most MAX_SAFE_INTEGER, and every prerelease identifier that
-    // became a number is below it, so `String(n)` gives back its digits.
+    // identifiers joined with `.`, from the exact `u64` components.
     let mut formatted = format!("{}.{}.{}", parsed.major, parsed.minor, parsed.patch);
     if !parsed.pre.is_empty() {
         formatted.push('-');
@@ -815,18 +792,37 @@ mod tests {
         assert_eq!(recording["semver"], "7.6.3");
     }
 
+    /// Whether node-semver 7.6.3's `parse` rejects a strict SemVer 2.0.0
+    /// version only for one of its own limits (BC-41): more than
+    /// `MAX_LENGTH` (256) UTF-16 units, a component above
+    /// `Number.MAX_SAFE_INTEGER`, or an identifier longer than its
+    /// regex's `{0,256}`/`{0,250}` bounds.
+    fn beyond_node_semver_limits(input: &str) -> bool {
+        let Ok(v) = semver::Version::parse(input) else {
+            return false;
+        };
+        input.encode_utf16().count() > 256
+            || [v.major, v.minor, v.patch]
+                .iter()
+                .any(|n| *n > 9_007_199_254_740_991)
+            || input.split(['.', '-', '+']).any(|id| id.len() > 250)
+    }
+
     #[test]
     fn semver_parse_matches_node_semver() {
         // P5-20: the differential test against node-semver's own `parse`,
         // over prerelease and build metadata, leading zeros, whitespace, `v`
         // prefixes, numeric limits, very long input and random
-        // near-versions (tests/semver/record.mjs).
+        // near-versions (tests/semver/record.mjs). Since BC-41 (P5-38) the
+        // parse is strict SemVer 2.0.0: node-semver's result for an input
+        // with no surrounding whitespace and no leading `v`, and nothing
+        // else, except where only node-semver's own limits reject it.
         let recording = node_semver_recording();
         let cases = recording["cases"]
             .as_array()
             .unwrap_or_else(|| unreachable!());
         assert!(cases.len() > 3_000, "{}", cases.len());
-        let mut accepted = 0usize;
+        let (mut accepted, mut lenient, mut beyond) = (0usize, 0usize, 0usize);
         for case in cases {
             let input = case["input"].as_str().unwrap_or_else(|| unreachable!());
             let actual = semver_parse(input).map(|v| {
@@ -850,6 +846,11 @@ mod tests {
             });
             let expected = match &case["parsed"] {
                 Value::Null => None,
+                _ if ecma::js_trim(input) != input || input.starts_with('v') => {
+                    // node-semver's trimming and `v` prefix: rejected now.
+                    lenient += 1;
+                    None
+                }
                 parsed => {
                     accepted += 1;
                     // JSON has one number type: compare the numbers as f64.
@@ -867,9 +868,27 @@ mod tests {
                     Some(parsed)
                 }
             };
+            if expected.is_none() && actual.is_some() {
+                assert!(beyond_node_semver_limits(input), "{input:?}");
+                assert_eq!(
+                    actual.as_ref().map(|v| v["version"].clone()),
+                    Some(serde_json::json!(
+                        semver::Version {
+                            build: semver::BuildMetadata::EMPTY,
+                            ..semver::Version::parse(input).unwrap_or_else(|_| unreachable!())
+                        }
+                        .to_string()
+                    )),
+                    "{input:?}"
+                );
+                beyond += 1;
+                continue;
+            }
             assert_eq!(actual, expected, "{input:?}");
         }
         assert!(accepted > 1_000, "{accepted}");
+        assert!(lenient > 10, "{lenient}");
+        assert!(beyond > 0, "{beyond}");
     }
 
     #[test]
@@ -887,13 +906,27 @@ mod tests {
     }
 
     #[test]
-    fn semver_parse_follows_node_semver() {
+    fn semver_parse_is_strict_semver_2_0_0() {
+        // BC-41 (P5-38): strict SemVer 2.0.0, no node-compat leniency.
         assert!(semver_parse("1.0.0").is_some());
-        assert!(semver_parse(" v1.2.3-alpha.1+build.5 ").is_some());
+        assert!(semver_parse("1.2.3-alpha.1+build.5").is_some());
+        assert!(semver_parse(" v1.2.3-alpha.1+build.5 ").is_none());
+        assert!(semver_parse("v1.0.0").is_none());
+        assert!(semver_parse(" 1.0.0").is_none());
+        assert!(semver_parse("1.0.0 ").is_none());
         assert!(semver_parse("1.1.2+.123").is_none());
         assert!(semver_parse("1.0").is_none());
         assert!(semver_parse("01.0.0").is_none());
-        assert!(semver_parse("9007199254740992.0.0").is_none());
+        // Components go up to 2^64-1, not Number.MAX_SAFE_INTEGER.
+        let big = semver_parse("9007199254740992.0.0").unwrap_or_else(|| unreachable!());
+        assert_eq!(big.version, "9007199254740992.0.0");
+        let max = semver_parse("18446744073709551615.18446744073709551615.18446744073709551615")
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(
+            max.version,
+            "18446744073709551615.18446744073709551615.18446744073709551615"
+        );
+        assert!(semver_parse("18446744073709551616.0.0").is_none());
         let v = semver_parse("1.2.3-rc.10").unwrap_or_else(|| unreachable!());
         assert_eq!(v.version, "1.2.3-rc.10");
         assert_eq!(
@@ -903,9 +936,9 @@ mod tests {
                 PrereleaseIdentifier::Number(10.0)
             ]
         );
-        // U+0085 is not JS whitespace, so it is not trimmed.
+        // No whitespace of any kind is trimmed.
         assert!(semver_parse("\u{0085}1.0.0").is_none());
-        assert!(semver_parse("\u{FEFF}1.0.0").is_some());
+        assert!(semver_parse("\u{FEFF}1.0.0").is_none());
     }
 
     #[test]
