@@ -29,7 +29,7 @@ use std::fmt::Write as _;
 use serde_json::{Map, Value};
 
 use super::dayjs::{Dayjs, UtcOffset};
-use super::model::{self, Field, FieldType, TypeRef};
+use super::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
 use super::resource_id::ResourceId;
 use super::validate::{self, ValidateOptions, js_map, js_number, js_undefined};
 use crate::error::{ContractError, Detail, DetailCode, ErrorKind, Result};
@@ -1026,6 +1026,11 @@ impl Populator<'_> {
         };
         let key_type = map.key_type_name().to_string();
         let value_type = map.value_type_name().to_string();
+        // P5-58 (BC-05, R1; DV-007): a relationship-typed value is read as
+        // a relationship property is, not as an embedded concept. Its
+        // target type is resolved at the first value, as TS resolves it.
+        let is_relationship = model::is_relationship_map(map_declaration);
+        let mut relationship: Option<(String, String, String)> = None;
         let mut result: Vec<(Value, Value)> = Vec::new();
         // `new Map(Object.entries(jsonObj))`
         for key in object_keys(json)? {
@@ -1044,7 +1049,19 @@ impl Populator<'_> {
             } else {
                 self.process_map_type(map_declaration, Some(&key_json), &key_type)?
             };
-            let value = if model_util::is_primitive_type(&value_type) {
+            let value = if is_relationship {
+                if relationship.is_none() {
+                    let target = model::map_relationship_target(map_declaration)?
+                        .expect("is_relationship_map was checked");
+                    let slot = model::map_relationship_slot(map_declaration, &target);
+                    let (default_namespace, default_type) = relationship_defaults(&slot)?;
+                    relationship = Some((target, default_namespace, default_type));
+                }
+                let (target, default_namespace, default_type) =
+                    relationship.as_ref().expect("just set");
+                let slot = model::map_relationship_slot(map_declaration, target);
+                self.convert_relationship(&slot, default_namespace, default_type, value.as_deref())?
+            } else if model_util::is_primitive_type(&value_type) {
                 plain(value.as_deref())
             } else {
                 self.process_map_type(map_declaration, value.as_deref(), &value_type)?
@@ -1184,9 +1201,10 @@ impl Populator<'_> {
                 result.validator_value()
             }
             "Integer" | "Long" => match json {
-                // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
+                // P5-51 (BC-10, R1; DV-012): an integral, finite number.
+                // A serde_json number is always finite; the check says so.
                 Some(Value::Number(n))
-                    if n.as_f64().is_some_and(|n| n.trunc() == n) =>
+                    if n.as_f64().is_some_and(|n| n.is_finite() && n.trunc() == n) =>
                 {
                     plain(json)
                 }
@@ -1215,15 +1233,12 @@ impl Populator<'_> {
         relationship: &Field,
         json: Option<&Value>,
     ) -> Result<Value> {
-        let type_fqn = relationship.fully_qualified_type_name();
-        let mut default_namespace = model_util::get_namespace(Some(type_fqn))?.to_string();
-        if default_namespace.is_empty() {
-            default_namespace =
-                model_util::get_namespace(Some(relationship.owner_fqn))?.to_string();
-        }
-        let default_type = model_util::short_name(type_fqn).to_string();
+        let slot = relationship
+            .relationship_slot()
+            .expect("visit_relationship_declaration is only reached for a relationship");
+        let (default_namespace, default_type) = relationship_defaults(&slot)?;
 
-        if relationship.is_array() {
+        if slot.is_array {
             let Some(Value::Array(items)) = json else {
                 return Err(validation(
                     "jsonpopulator-visitfield-notarray",
@@ -1243,26 +1258,38 @@ impl Populator<'_> {
                         &default_type,
                     )?);
                 } else {
-                    result.push(self.relationship_resource(relationship, json, Some(item))?);
+                    result.push(self.relationship_resource(&slot, json, Some(item))?);
                 }
             }
             Ok(Value::Array(result))
         } else {
-            match json {
-                Some(Value::String(uri)) => {
-                    relationship_from_uri(self.mm, uri, &default_namespace, &default_type)
-                }
-                Some(Value::Object(_) | Value::Array(_)) => {
-                    self.relationship_resource(relationship, json, json)
-                }
-                _ => Err(plain_error(
-                    "jsonpopulator-visitrelationshipdeclaration-notstringorobject",
-                    vec![
-                        ("value", js_string(json)),
-                        ("relationship", relationship.relationship_to_string()),
-                    ],
-                )),
+            self.convert_relationship(&slot, &default_namespace, &default_type, json)
+        }
+    }
+
+    /// One relationship value, `visitRelationshipDeclaration`'s non-array
+    /// branch: a URI string becomes a relationship, and an object an
+    /// embedded resource when `acceptResourcesForRelationships` allows it.
+    /// A relationship-typed map value goes through here too (P5-58, BC-05).
+    fn convert_relationship(
+        &mut self,
+        slot: &RelationshipSlot,
+        default_namespace: &str,
+        default_type: &str,
+        json: Option<&Value>,
+    ) -> Result<Value> {
+        match json {
+            Some(Value::String(uri)) => {
+                relationship_from_uri(self.mm, uri, default_namespace, default_type)
             }
+            Some(Value::Object(_) | Value::Array(_)) => self.relationship_resource(slot, json, json),
+            _ => Err(plain_error(
+                "jsonpopulator-visitrelationshipdeclaration-notstringorobject",
+                vec![
+                    ("value", js_string(json)),
+                    ("relationship", slot.relationship_to_string()),
+                ],
+            )),
         }
     }
 
@@ -1271,7 +1298,7 @@ impl Populator<'_> {
     /// being populated.
     fn relationship_resource(
         &mut self,
-        relationship: &Field,
+        slot: &RelationshipSlot,
         json: Option<&Value>,
         item: Option<&Value>,
     ) -> Result<Value> {
@@ -1280,7 +1307,7 @@ impl Populator<'_> {
                 "jsonpopulator-visitrelationshipdeclaration-notastring",
                 vec![
                     ("value", js_string(json)),
-                    ("relationship", relationship.relationship_to_string()),
+                    ("relationship", slot.relationship_to_string()),
                 ],
             ));
         }
@@ -1290,7 +1317,7 @@ impl Populator<'_> {
                 "jsonpopulator-visitrelationshipdeclaration-noclass",
                 vec![
                     ("value", js_string(item)),
-                    ("relationship", relationship.relationship_to_string()),
+                    ("relationship", slot.relationship_to_string()),
                 ],
             ));
         }
@@ -1306,6 +1333,18 @@ impl Populator<'_> {
         let sub_resource = self.new_resource_of(&class_declaration, id)?;
         self.accept_declaration(&class_declaration, item, Some(sub_resource))
     }
+}
+
+/// `visitRelationshipDeclaration`'s `defaultNamespace` and `defaultType`:
+/// the target type's namespace (else the owner's) and short name, which a
+/// URI without them takes.
+fn relationship_defaults(slot: &RelationshipSlot) -> Result<(String, String)> {
+    let type_fqn = slot.target_fqn;
+    let mut default_namespace = model_util::get_namespace(Some(type_fqn))?.to_string();
+    if default_namespace.is_empty() {
+        default_namespace = model_util::get_namespace(Some(slot.owner_fqn))?.to_string();
+    }
+    Ok((default_namespace, model_util::short_name(type_fqn).to_string()))
 }
 
 js_compat_pub! {
@@ -1526,8 +1565,24 @@ mod tests {
                                 "isArray": false,
                                 "isOptional": true,
                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Car" }
+                            },
+                            {
+                                "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+                                "name": "fleet",
+                                "isArray": false,
+                                "isOptional": true,
+                                "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "CarMap" }
                             }
                         ]
+                    },
+                    {
+                        "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                        "name": "CarMap",
+                        "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                        "value": {
+                            "$class": "concerto.metamodel@1.0.0.RelationshipMapValueType",
+                            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Car" }
+                        }
                     }
                 ]
             }),
@@ -1556,6 +1611,57 @@ mod tests {
         assert_eq!(value["built"][validate::DAYJS_TAG], "2024-01-02T03:04:05.000Z");
         assert_eq!(value["owner"][validate::RELATIONSHIP_TAG], true);
         assert_eq!(value["owner"]["vin"], "V2");
+    }
+
+    /// P5-58 (BC-05, R1; DV-007): a relationship-typed map value is read as
+    /// a relationship property is: a URI or bare identifier becomes a
+    /// relationship; an embedded resource needs
+    /// `acceptResourcesForRelationships`, and then fails validation unless
+    /// the validator's own options permit it.
+    #[test]
+    fn a_relationship_map_value_is_read_as_a_relationship_property() {
+        let value = check(json!({
+            "$class": "org.acme@1.0.0.Car",
+            "vin": "V1",
+            "fleet": { "a": "resource:org.acme@1.0.0.Car#V2", "b": "V3" }
+        }))
+        .unwrap();
+        let entries = value["fleet"][validate::MAP_TAG].as_array().unwrap();
+        for (entry, vin) in entries.iter().zip(["V2", "V3"]) {
+            assert_eq!(entry[1][validate::RELATIONSHIP_TAG], true, "{entry}");
+            assert_eq!(entry[1]["$class"], "org.acme@1.0.0.Car");
+            assert_eq!(entry[1]["vin"], vin);
+        }
+
+        let embedded = json!({
+            "$class": "org.acme@1.0.0.Car",
+            "vin": "V1",
+            "fleet": { "a": { "$class": "org.acme@1.0.0.Car", "vin": "V4" } }
+        });
+        let err = check(embedded.clone()).unwrap_err();
+        assert_eq!(err.code(), "jsonpopulator-visitrelationshipdeclaration-notastring");
+        let accept = FromJsonOptions {
+            accept_resources_for_relationships: true,
+            ..FromJsonOptions::default()
+        };
+        let err = from_json(&manager(), &embedded, &accept, &mut FixedEnv).unwrap_err();
+        assert_eq!(err.code(), "resourcevalidator-notrelationship");
+        let permitted = FromJsonOptions {
+            validator: ValidateOptions {
+                permit_resources_for_relationships: true,
+                ..ValidateOptions::default()
+            },
+            ..accept.clone()
+        };
+        let value = from_json(&manager(), &embedded, &permitted, &mut FixedEnv).unwrap();
+        let entry = &value["fleet"][validate::MAP_TAG][0][1];
+        assert_eq!(entry["$class"], "org.acme@1.0.0.Car");
+        assert!(entry.get(validate::RELATIONSHIP_TAG).is_none(), "{entry}");
+        let unvalidated = FromJsonOptions {
+            validate: false,
+            ..accept
+        };
+        from_json(&manager(), &embedded, &unvalidated, &mut FixedEnv).unwrap();
     }
 
     /// A model with a `DateTime` default on a property and on a scalar.

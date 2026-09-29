@@ -15,7 +15,7 @@ use crate::value::{Instance, InstanceKind, JsObject, JsValue};
 use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::UtcOffset;
-use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
+use concerto_core::instance::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::model_util;
@@ -218,6 +218,11 @@ impl<'a> Generator<'a> {
         let Declaration::Map(map) = map_declaration.decl else {
             unreachable!("visit_map_declaration is only reached for a map");
         };
+        // P5-58 (BC-05, R1; DV-007): a relationship-typed value is written
+        // as a relationship property is, not as an embedded concept. Its
+        // target type is resolved at the first value, as TS resolves it.
+        let is_relationship = model::is_relationship_map(map_declaration);
+        let mut relationship_target: Option<String> = None;
         let mut result: Vec<(String, JsValue)> = Vec::new();
         for (key, value) in entries {
             let key = key.to_js_string();
@@ -227,7 +232,16 @@ impl<'a> Generator<'a> {
                 continue;
             }
             let mut value = value.clone();
-            if value.type_of() == "object" {
+            if is_relationship {
+                if relationship_target.is_none() {
+                    relationship_target = model::map_relationship_target(map_declaration)?;
+                }
+                let target = relationship_target
+                    .as_deref()
+                    .expect("is_relationship_map was checked");
+                let slot = model::map_relationship_slot(map_declaration, target);
+                value = self.relationship_item(&slot, &value)?;
+            } else if value.type_of() == "object" {
                 let value_type = match &value {
                     JsValue::Null => {
                         return Err(read_properties_error(&value, "getFullyQualifiedType"));
@@ -317,20 +331,28 @@ impl<'a> Generator<'a> {
         relationship: &Field,
         obj: &JsValue,
     ) -> Result<JsValue> {
-        if relationship.is_array() {
+        let slot = relationship
+            .relationship_slot()
+            .expect("visit_relationship_declaration is only reached for a relationship");
+        if slot.is_array {
             let mut array = Vec::new();
             for item in for_in_values(obj)? {
-                array.push(self.relationship_item(relationship, &item)?);
+                array.push(self.relationship_item(&slot, &item)?);
             }
             return Ok(JsValue::Array(array));
         }
-        self.relationship_item(relationship, obj)
+        self.relationship_item(&slot, obj)
     }
 
     /// One relationship value: a resource written in full when
     /// `permitResourcesForRelationships` allows it and it is not already
-    /// being written, otherwise its relationship text.
-    fn relationship_item(&mut self, relationship: &Field, item: &JsValue) -> Result<JsValue> {
+    /// being written, otherwise its relationship text. A relationship-typed
+    /// map value goes through here too (P5-58, BC-05).
+    fn relationship_item(
+        &mut self,
+        relationship: &RelationshipSlot,
+        item: &JsValue,
+    ) -> Result<JsValue> {
         if self.options.permit_resources_for_relationships
             && let Some(resource) = as_resource(item)
         {
@@ -339,7 +361,7 @@ impl<'a> Generator<'a> {
                 return self.get_relationship_text(relationship, item);
             }
             self.seen_resources.insert(fqi.clone());
-            let declaration = model::get_type(self.mm, relationship.fully_qualified_type_name())?;
+            let declaration = model::get_type(self.mm, relationship.target_fqn)?;
             let result = self.accept_declaration(&declaration, item)?;
             self.seen_resources.remove(&fqi);
             return Ok(result);
@@ -348,7 +370,11 @@ impl<'a> Generator<'a> {
     }
 
     /// TS: JSONGenerator.getRelationshipText.
-    fn get_relationship_text(&mut self, relationship: &Field, item: &JsValue) -> Result<JsValue> {
+    fn get_relationship_text(
+        &mut self,
+        relationship: &RelationshipSlot,
+        item: &JsValue,
+    ) -> Result<JsValue> {
         if as_resource(item).is_some()
             && !(self.options.convert_resources_to_relationships
                 || self.options.permit_resources_for_relationships)
@@ -356,7 +382,7 @@ impl<'a> Generator<'a> {
             return Err(plain_error(
                 "jsongenerator-getrelationshiptext-norelationship",
                 vec![
-                    ("type", relationship.fully_qualified_type_name().to_string()),
+                    ("type", relationship.target_fqn.to_string()),
                     ("obj", item.to_js_string()),
                 ],
             ));
