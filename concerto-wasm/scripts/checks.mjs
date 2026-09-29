@@ -1271,6 +1271,88 @@ export function runChecks(engine) {
     assert(badDict.m === undefined, 'a map whose value type processing throws has no entry');
   });
 
+  // P5-27 (F6): the resident DCS manager stages its result into another
+  // handle, with each model's header as modelFileFromAstHeader sets it.
+  check('DcsManagerHandle stages its results with their headers', () => {
+    const other = {
+      $class: `${MM}.Model`,
+      namespace: 'org.other@2.0.0',
+      imports: [
+        {
+          $class: `${MM}.ImportTypes`, namespace: 'org.example@1.0.0', types: ['Person', 'Color'],
+          aliasedTypes: [{ $class: `${MM}.AliasedType`, name: 'Color', aliasedName: 'Colour' }],
+          uri: 'https://example.com/example.cto',
+        },
+        { $class: `${MM}.ImportType`, namespace: 'org.example@1.0.0', name: 'Employee' },
+      ],
+      declarations: [
+        {
+          $class: `${MM}.ConceptDeclaration`, name: 'Team', isAbstract: false,
+          properties: [
+            { $class: `${MM}.ObjectProperty`, name: 'lead', isArray: false, isOptional: false,
+              type: { $class: `${MM}.TypeIdentifier`, name: 'Person' } },
+          ],
+        },
+      ],
+    };
+    const dcs = new engine.DcsManagerHandle([MODEL, other]);
+    const target = new engine.ModelManagerHandle();
+    const commandSet = {
+      $class: 'org.accordproject.decoratorcommands@0.3.0.DecoratorCommandSet',
+      name: 'smoke', version: '1.0.0',
+      commands: [{
+        $class: 'org.accordproject.decoratorcommands@0.3.0.Command', type: 'UPSERT',
+        target: { $class: 'org.accordproject.decoratorcommands@0.3.0.CommandTarget', namespace: 'org.other@2.0.0', declaration: 'Team' },
+        decorator: { $class: `${MM}.Decorator`, name: 'Smoke', arguments: [] },
+      }],
+    };
+    const result = dcs.decorateModels(target, [commandSet], {});
+    assert(result.validated === true, 'validated');
+    const models = result.ast.models;
+    assert(models.length === result.staged.length, 'one staged entry per model');
+    const user = models.map((m, i) => [m, result.staged[i]]).filter(([m]) => m.namespace.startsWith('org.'));
+    assert(user.length === 2 && user.every(([, s]) => Array.isArray(s)), `staged ${JSON.stringify(result.staged)}`);
+    const team = user[1][0].declarations[0];
+    assert(team.decorators?.[0]?.name === 'Smoke', 'decorated');
+    for (const [model, [stage, header]] of user) {
+      // What modelFileFromAstHeader sets on a stand-in ModelFile.
+      const view = { ast: model, importShortNames: new Map(), importUriMap: {}, isSystemModelFile: () => false, enforceImportVersioning: (imp) => engine.modelFileEnforceImportVersioning(imp) };
+      engine.modelFileFromAstHeader(view, model);
+      assert(header[0] === view.version, `version ${header[0]}`);
+      assert(JSON.stringify(header[1]) === JSON.stringify([...view.importShortNames].flat()), `short names ${JSON.stringify(header[1])}`);
+      assert(JSON.stringify(header[2]) === JSON.stringify(Object.entries(view.importUriMap).flat()), `uris ${JSON.stringify(header[2])}`);
+      assert(typeof target.commitStagedModelFile(stage) === 'number', 'the stage commits');
+    }
+    target.validateModelFiles({});
+    assert(target.modelFileId('org.other@2.0.0') !== undefined, 'committed');
+    const extracted = dcs.extractDecorators(target, { removeDecoratorsFromModel: true, locale: 'en' });
+    assert(extracted.validated === true && extracted.modelManager.models.length === extracted.staged.length, 'extract staged');
+    dcs.free();
+    target.free();
+  });
+
+  // P5-27 (F6): DecoratorManager.validate's check against the handle's own
+  // manager throws what the per-call decoratorManagerValidate throws.
+  check('dcsValidate checks against the resident manager', () => {
+    const h = new engine.ModelManagerHandle();
+    h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, undefined, false);
+    const epoch = h.epoch();
+    h.dcsValidate({ $class: 'org.example@1.0.0.Person', name: 'Ann' });
+    assert(h.epoch() === epoch, 'dcsValidate leaves the manager unchanged');
+    for (const bad of [
+      { name: 'no class' },
+      { $class: 'org.nope@1.0.0.Missing' },
+      { $class: 'org.example@1.0.0.Missing' },
+      { $class: 'org.example@1.0.0.Person', name: 1 },
+    ]) {
+      const viaHandle = thrown(() => h.dcsValidate(bad));
+      const perCall = thrown(() => engine.decoratorManagerValidate(bad, [MODEL]));
+      assert(viaHandle.constructor.name === perCall.constructor.name && viaHandle.message === perCall.message,
+        `${viaHandle.constructor.name}: ${viaHandle.message} vs ${perCall.constructor.name}: ${perCall.message}`);
+    }
+    h.free();
+  });
+
   mm.free();
   return rows;
 }
