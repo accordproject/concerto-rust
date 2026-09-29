@@ -3150,6 +3150,174 @@ pub fn class_declaration_get_identifier_field_name(
     })
 }
 
+/// `value[name]` when it is exactly `original` (`Object.is`), else `None`.
+/// The walk below inlines a collaborator call only when the receiver's
+/// method is the unmodified one it stands for, so a stubbed or overridden
+/// method is still called.
+fn is_original(value: &JsValue, name: &str, original: &JsValue) -> Result<bool> {
+    Ok(Object::is(&get(value, name)?, original))
+}
+
+/// P5-19 (accordproject/concerto-rust#317): TS `ClassDeclaration
+/// .getIdentifierFieldName`, including its super type walk, in one binding.
+///
+/// `originals` holds the unmodified `ClassDeclaration.prototype` methods the
+/// TS body reaches, captured when classdeclaration.ts loads:
+/// `[getIdentifierFieldName, getSuperType, getSuperTypeDeclaration,
+/// getModelFile, getFullyQualifiedName]`. Each level of the walk does what
+/// [`class_declaration_get_identifier_field_name`] does, but a call whose
+/// receiver's method is the original is run here instead of crossing back
+/// into JS: `this.getSuperType()` (through `getSuperTypeDeclaration()`, the
+/// field reads of [`class_declaration_get_super_type_declaration`], and
+/// `getFullyQualifiedName()`, a read of `fqn`), `this.getModelFile()` (a
+/// read of `modelFile`) and, the walk itself, `classDecl
+/// .getIdentifierFieldName()`. `_resolveSuperType`, `getLocalType`,
+/// `getModelManager` and `getType` are still called, as TS calls them, so
+/// every error is raised by the same collaborator as before.
+///
+/// A super type seen earlier in the walk (a cycle) is not inlined: its
+/// method is called, and recurses as TS does.
+///
+/// Returns `[answer, cacheable, ...chain]`: `chain` is every declaration the
+/// walk read, from `declaration` on, and `cacheable` is false when any call
+/// on the way was not inlined (a stubbed, overridden or cyclic one), so its
+/// answer depends on more than the chain's fields (engine/views.ts keeps
+/// the answer only when it is true).
+#[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldNameWalk)]
+pub fn class_declaration_get_identifier_field_name_walk(
+    declaration: JsValue,
+    originals: Array,
+) -> std::result::Result<Array, JsValue> {
+    run(|| {
+        let get_identifier_field_name = originals.get(0);
+        let get_super_type = originals.get(1);
+        let get_super_type_declaration = originals.get(2);
+        let get_model_file = originals.get(3);
+        let get_fully_qualified_name = originals.get(4);
+
+        let mut cacheable = true;
+        let mut chain: Vec<JsValue> = vec![declaration.clone()];
+        let mut current = declaration;
+        let answer = loop {
+            let id_field = get(&current, "idField")?;
+            if id_field.is_truthy() {
+                break id_field;
+            }
+
+            // `const superType = this.getSuperType();`
+            let super_type = if is_original(&current, "getSuperType", &get_super_type)? {
+                // `this.getSuperTypeDeclaration()`
+                let super_type_decl = if is_original(
+                    &current,
+                    "getSuperTypeDeclaration",
+                    &get_super_type_declaration,
+                )? {
+                    if !get(&current, "superType")?.is_truthy() {
+                        JsValue::NULL
+                    } else {
+                        let cached = get(&current, "superTypeDeclaration")?;
+                        if cached.is_truthy() {
+                            cached
+                        } else {
+                            call(&current, "_resolveSuperType", &[], "this._resolveSuperType")?
+                        }
+                    }
+                } else {
+                    cacheable = false;
+                    call(
+                        &current,
+                        "getSuperTypeDeclaration",
+                        &[],
+                        "this.getSuperTypeDeclaration",
+                    )?
+                };
+                if !super_type_decl.is_truthy() {
+                    JsValue::NULL
+                } else if is_original(
+                    &super_type_decl,
+                    "getFullyQualifiedName",
+                    &get_fully_qualified_name,
+                )? {
+                    get(&super_type_decl, "fqn")?
+                } else {
+                    cacheable = false;
+                    call(
+                        &super_type_decl,
+                        "getFullyQualifiedName",
+                        &[],
+                        "superTypeDeclaration.getFullyQualifiedName",
+                    )?
+                }
+            } else {
+                cacheable = false;
+                call(&current, "getSuperType", &[], "this.getSuperType")?
+            };
+            if !super_type.is_truthy() {
+                break JsValue::NULL;
+            }
+
+            let model_file = if is_original(&current, "getModelFile", &get_model_file)? {
+                get(&current, "modelFile")?
+            } else {
+                cacheable = false;
+                call(&current, "getModelFile", &[], "this.getModelFile")?
+            };
+            let mut class_decl = call(
+                &model_file,
+                "getLocalType",
+                std::slice::from_ref(&super_type),
+                "this.getModelFile().getLocalType",
+            )?;
+            if !class_decl.is_truthy() {
+                let own_model_file = get(&current, "modelFile")?;
+                let manager = call(
+                    &own_model_file,
+                    "getModelManager",
+                    &[],
+                    "this.modelFile.getModelManager",
+                )?;
+                class_decl = call(
+                    &manager,
+                    "getType",
+                    &[super_type],
+                    "this.modelFile.getModelManager().getType",
+                )?;
+            }
+
+            // `return classDecl.getIdentifierFieldName();` -- a nullish
+            // `classDecl` raises the same TypeError through `call`.
+            let seen = chain.iter().any(|d| Object::is(d, &class_decl));
+            if !nullish(&class_decl)
+                && !seen
+                && is_original(
+                    &class_decl,
+                    "getIdentifierFieldName",
+                    &get_identifier_field_name,
+                )?
+            {
+                chain.push(class_decl.clone());
+                current = class_decl;
+                continue;
+            }
+            cacheable = false;
+            break call(
+                &class_decl,
+                "getIdentifierFieldName",
+                &[],
+                "classDecl.getIdentifierFieldName",
+            )?;
+        };
+
+        let result = Array::new();
+        result.push(&answer);
+        result.push(&JsValue::from_bool(cacheable));
+        for declaration in &chain {
+            result.push(declaration);
+        }
+        Ok(result)
+    })
+}
+
 /// TS: `ClassDeclaration.getProperty`: the receiver's own property if it has
 /// one, otherwise the super type's answer (through [`resolve_named_type`]).
 /// A `null` super type resolution reaches the same unguarded
