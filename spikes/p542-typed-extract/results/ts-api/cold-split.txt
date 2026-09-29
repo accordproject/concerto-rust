@@ -1,0 +1,9 @@
+# node --expose-gc scripts/cold.js <concerto-core dist> <p530 data set>, gc() before each timed step,
+# median of 15 samples (after 3 warm-up); Rust engine built by build.sh WITHOUT wasm-opt (not installed here).
+synthetic-large 1.09 0.85 0.46 {"getAst_resolve_1st":4.07,"getAst_resolve_2nd":3.52,"getAst_noresolve":0.1,"DcsManagerHandle_new":34.24,"extract_cold":102.54,"extract_warm":51.11}
+conformance 1.08 0.85 0.47 {"getAst_resolve_1st":1.31,"getAst_resolve_2nd":1.13,"getAst_noresolve":0.03,"DcsManagerHandle_new":3.37,"extract_cold":12.89,"extract_warm":9.18}
+concerto-core-test-data 1.08 0.85 0.47 {"getAst_resolve_1st":2.46,"getAst_resolve_2nd":2.4,"getAst_noresolve":0.04,"DcsManagerHandle_new":12.7,"extract_cold":57.85,"extract_warm":37.1}
+# without gc():
+synthetic-large 0.96 0.81 0.44 {"getAst_resolve_1st":2.71,"getAst_resolve_2nd":2.8,"getAst_noresolve":0.05,"DcsManagerHandle_new":25.67,"extract_cold":94.16,"extract_warm":48.07}
+conformance 0.96 0.81 0.44 {"getAst_resolve_1st":0.9,"getAst_resolve_2nd":0.74,"getAst_noresolve":0,"DcsManagerHandle_new":3.43,"extract_cold":13.78,"extract_warm":8.9}
+concerto-core-test-data 1.29 0.88 0.47 {"getAst_resolve_1st":2.15,"getAst_resolve_2nd":1.8,"getAst_noresolve":0.04,"DcsManagerHandle_new":14.04,"extract_cold":62.39,"extract_warm":35.56}
