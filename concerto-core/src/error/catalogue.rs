@@ -67,7 +67,10 @@
 //! category `maintainer-accepted` in `DIVERGENCES.md`): such an entry cites
 //! its DV row in `sources` in place of a TS throw site
 //! (`property-process-relationshipnotype`, DV-017;
-//! `decorator-process-notobject`, DV-018).
+//! `decorator-process-notobject`, DV-018). Nor is a check TS does not make
+//! at all, added as an intended breaking change: such an entry cites its
+//! BREAKING-CHANGES-PLAN.md row (`modelfile-validate-datetimedefault`,
+//! BC-45).
 
 use super::{CatalogueEntry, Renderer};
 
@@ -1053,6 +1056,18 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         template: "{message}",
         renderer: Renderer::Inline,
         sources: &["src/basemodelmanager.ts:296"],
+    },
+    // ---- P5-24 addition: not a TS template. BC-45 (R1,
+    //      accordproject/concerto-rust#328): TS does not check a `DateTime`
+    //      default value at all; Rust rejects one that is not a strict
+    //      `DateTime` string when the model is validated. ----
+    CatalogueEntry {
+        code: "modelfile-validate-datetimedefault",
+        template: "Invalid default value `{value}` for DateTime `{fqn}`: expected an ISO 8601 date-time with an offset, YYYY-MM-DDTHH:mm:ss[.SSS](Z|+HH:mm|-HH:mm), naming a real instant",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-24 / BC-45: no TS throw site (Typed.assignFieldDefaults builds dayjs.utc(default) unchecked, src/model/typed.ts)",
+        ],
     },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {

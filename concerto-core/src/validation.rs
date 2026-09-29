@@ -123,7 +123,10 @@ impl ModelManager {
     /// TS's constructor does, so this is where it is rejected; (4) each
     /// declaration, in file order — including, first thing, the
     /// import-clash check every declaration kind reaches through its own
-    /// `super.validate()` chain (`check_import_clash`'s doc comment).
+    /// `super.validate()` chain (`check_import_clash`'s doc comment); (5)
+    /// the `DateTime` default values (`check_date_time_defaults`, P5-24),
+    /// which TS does not check, last so that every error TS raises still
+    /// comes first.
     ///
     /// Every error but step (3)'s names `model_file` as TS's does
     /// (`attach_model_file`); step (3)'s `IllegalModelException` is
@@ -162,7 +165,7 @@ impl ModelManager {
                 .validate(self, model_file.namespace())
                 .map_err(attach)?;
         }
-        Ok(())
+        check_date_time_defaults(model_file).map_err(attach)
     }
 
     js_compat_pub! {
@@ -1436,6 +1439,74 @@ fn catalogue_error(
     err.into()
 }
 
+/// P5-24 (BC-45, R1; accordproject/concerto-rust#328): the default value of
+/// every `DateTime` property and `DateTime` scalar in `model_file` must be a
+/// strict `DateTime` string, the same rule a `DateTime` field value follows
+/// (`Dayjs::utc_parse`: the `strictQualifiedDateTimes` format, naming a real
+/// instant). TS checks nothing here: `Typed.assignFieldDefaults` builds
+/// `dayjs.utc(default)` when an instance is created, whatever the string
+/// (an invalid one becomes an invalid date). Rejecting the model at load
+/// keeps every default an instance can get strict, on the TS side too.
+///
+/// Read off the raw AST, in file order: the official metamodel declares no
+/// `defaultValue` on `DateTimeProperty`, so the typed property does not
+/// carry it (`ModelManager::property_default_value`). An absent or `null`
+/// default is no default. `IllegalModelException`, with the property's (or
+/// the scalar's) AST `location`.
+fn check_date_time_defaults(model_file: &ModelFile) -> Result<()> {
+    let Some(declarations) = model_file
+        .ast()
+        .get("declarations")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    let is = |node: &serde_json::Value, kind: &str| {
+        node.get("$class")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|c| c.rsplit('.').next() == Some(kind))
+    };
+    let name = |node: &serde_json::Value| {
+        node.get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let check = |node: &serde_json::Value, fqn: String| -> Result<()> {
+        let Some(default) = node.get("defaultValue").filter(|v| !v.is_null()) else {
+            return Ok(());
+        };
+        let strict = default
+            .as_str()
+            .is_some_and(|s| crate::instance::dayjs::Dayjs::utc_parse(s).is_valid());
+        if strict {
+            return Ok(());
+        }
+        Err(catalogue_error(
+            "modelfile-validate-datetimedefault",
+            vec![("value", crate::ecma::to_js_string(default)), ("fqn", fqn)],
+            node.get("location").cloned(),
+        ))
+    };
+    let namespace = model_file.namespace();
+    for declaration in declarations {
+        let declaration_fqn = qualify(namespace, &name(declaration));
+        if is(declaration, "DateTimeScalar") {
+            check(declaration, declaration_fqn)?;
+            continue;
+        }
+        let properties = declaration
+            .get("properties")
+            .and_then(serde_json::Value::as_array);
+        for property in properties.into_iter().flatten() {
+            if is(property, "DateTimeProperty") {
+                check(property, format!("{declaration_fqn}.{}", name(property)))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `modelfile-resolvetype-undecltype`: TS's `ModelFile.resolveType` (module
 /// doc on [`resolve`]) — a type name that resolves through neither the
 /// primitive list, an import, nor a local declaration. `context` is TS's own
@@ -1494,6 +1565,69 @@ mod tests {
             None,
         )?;
         manager.validate_models()
+    }
+
+    /// P5-24 (BC-45, R1): a `DateTime` default, on a property or a scalar,
+    /// must be a strict `DateTime` string; an absent or `null` one is no
+    /// default. The error is an `IllegalModelException` naming the field.
+    #[test]
+    fn a_date_time_default_must_be_strict() {
+        let property = |default: serde_json::Value| {
+            let mut p = serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.DateTimeProperty",
+                "name": "at", "isArray": false, "isOptional": false
+            });
+            p["defaultValue"] = default;
+            concept(serde_json::json!({ "name": "C", "properties": [p] }))
+        };
+        let scalar = |default: serde_json::Value| {
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.DateTimeScalar",
+                "name": "When", "defaultValue": default
+            })
+        };
+        for ok in [
+            serde_json::json!("2022-11-18T00:00:00Z"),
+            serde_json::json!("2022-11-18T01:02:03.5+01:00"),
+            serde_json::Value::Null,
+        ] {
+            validate(serde_json::json!([property(ok.clone())])).expect("strict property default");
+            validate(serde_json::json!([scalar(ok)])).expect("strict scalar default");
+        }
+        for (bad, shown) in [
+            (serde_json::json!("2022-11-18"), "2022-11-18"),
+            (
+                serde_json::json!("2008-09-15T15:53:00"),
+                "2008-09-15T15:53:00",
+            ),
+            (serde_json::json!(""), ""),
+            (serde_json::json!("FOO"), "FOO"),
+            (
+                serde_json::json!("2024-02-30T00:00:00Z"),
+                "2024-02-30T00:00:00Z",
+            ),
+            (serde_json::json!(1), "1"),
+        ] {
+            let err = validate(serde_json::json!([property(bad.clone())])).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::IllegalModel, "{err}");
+            assert!(
+                err.to_string()
+                    .contains(&format!("`{shown}` for DateTime `org.example@1.0.0.C.at`")),
+                "{err}"
+            );
+            // (A non-string scalar default already fails to load: the
+            // typed `DateTimeScalar` holds a string.)
+            let not_a_string = !bad.is_string();
+            let err = validate(serde_json::json!([scalar(bad)])).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::IllegalModel, "{err}");
+            assert!(
+                not_a_string
+                    || err
+                        .to_string()
+                        .contains(&format!("`{shown}` for DateTime `org.example@1.0.0.When`")),
+                "{err}"
+            );
+        }
     }
 
     fn concept(body: serde_json::Value) -> serde_json::Value {
