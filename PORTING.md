@@ -874,14 +874,16 @@ Rules:
   oracle was recorded under it. Rust must never consult the system time zone
   (no `chrono::Local`). Wherever TS interprets a string as "local time", Rust
   interprets it as UTC.
-- **Parsing a string must reproduce `dayjs.utc(s)`**:
-  - (a) strings that do not end in `Z` go through dayjs's own `REGEX_PARSE`
-    path;
-  - (b) otherwise, or when that regex fails, ECMAScript `Date.parse` applies.
-  - Precision is milliseconds, and extra fraction digits are truncated.
-    Validity is `isValid()`.
-  - The strict path first checks the exact `strictQualifiedDateTimes` regex
-    from `convertToObject`. Port it verbatim through `regress`.
+- **Parsing a string is strict only** (P5-24, accordproject/concerto-rust#328;
+  BREAKING-CHANGES-PLAN.md BC-07, BC-42, BC-43; DIVERGENCES.md DV-009,
+  DV-020). It no longer reproduces `dayjs.utc(s)`:
+  - the string must match the `strictQualifiedDateTimes` regex from
+    `convertToObject` (ported verbatim through `regress`, compiled once),
+    whatever the option says;
+  - chrono's RFC 3339 parser then checks the calendar: a real date, no
+    `24:00`, no leap second, offsets up to ±23:59;
+  - precision is milliseconds, and extra fraction digits are truncated.
+  The same rule applies to fields, map values and model default values.
 - **Formatting** follows `JSONGenerator.convertToJSON`:
   `YYYY-MM-DDTHH:mm:ss.SSS` followed by `Z` when the offset is 0, or `±HH:mm`
   otherwise.
