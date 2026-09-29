@@ -950,11 +950,13 @@ Rules:
 - **Results that are instances of a JS library class** (a `SemVer` from
   `semver.parse`, a dayjs object) are built in JS. Rust ports the check that
   decides the result (for a namespace version, strict SemVer 2.0.0 through
-  the `semver` crate since BC-41, P5-38; before it, node-semver 7.6.3's
-  `valid` through a four-rule node-compat wrapper), and the binding calls
-  the library through a **host function the shim registers at load**
-  (`setHost(errorFactory, semverParse)`), so the view stays one line. Pin the
-  library version the port follows, and name it in the doc comment.
+  the `semver` crate since BC-41, P5-38, with no `SemVer` beyond
+  node-semver's own limits, where `semver.parse` gives `null`; before it,
+  node-semver 7.6.3's `valid` through a four-rule node-compat wrapper), and
+  the binding calls the library through a **host function the shim
+  registers at load** (`setHost(errorFactory, semverParse)`), so the view
+  stays one line. Pin the library version the port follows, and name it in
+  the doc comment.
 
 ### 3.6 D6: match TS where it differs from Concerto v4
 

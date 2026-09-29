@@ -606,8 +606,12 @@ fn parse_namespace_js(ns: &JsValue, disable: bool) -> Result<mu::ParsedNamespace
     }
 }
 
-/// TS: ModelUtil.parseNamespace. `versionParsed` is built by the registered
-/// `semver.parse`, since the result must be a real `SemVer`.
+/// TS: ModelUtil.parseNamespace. When the engine gives a `versionParsed`
+/// (a strict SemVer 2.0.0 version within node-semver's limits), the JS
+/// value is built by the registered `semver.parse`, so that it is a real
+/// node-semver `SemVer`; otherwise it is `null`, including for a version
+/// beyond node-semver's limits (BC-41, P5-38), where `semver.parse` gives
+/// `null` too.
 #[wasm_bindgen(js_name = modelUtilParseNamespace)]
 pub fn model_util_parse_namespace(
     ns: JsValue,
@@ -665,10 +669,11 @@ pub fn model_util_parse_namespace(
 /// - `V<name>@<escapedNamespace>@<version>`: the shim builds
 ///   `versionParsed` itself with `semver.parse`, in JS, where it costs far
 ///   less than a callback across the boundary. The Rust check is strict
-///   SemVer 2.0.0 (`model_util::semver_parse`, BC-41), which `semver.parse`
-///   accepts too, except where node-semver's own limits reject it (a
-///   component above `Number.MAX_SAFE_INTEGER`, or more than 256
-///   characters): `semver.parse` then returns `null`.
+///   SemVer 2.0.0 (BC-41), which `semver.parse` accepts too, except where
+///   node-semver's own limits reject it (a component above
+///   `Number.MAX_SAFE_INTEGER`, or more than 256 UTF-16 units): there
+///   `semver.parse` returns `null`, as the engine's own `versionParsed` is
+///   `None` (`model_util::semver_parse`).
 #[wasm_bindgen(js_name = modelUtilParseNamespaceChecked)]
 pub fn model_util_parse_namespace_checked(
     ns: JsValue,
