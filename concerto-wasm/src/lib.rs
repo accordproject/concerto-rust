@@ -5838,7 +5838,8 @@ impl ModelManagerHandle {
             let (file, imports) =
                 ModelFile::from_json_text_with_imports(ast, definitions, file_name)
                     .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            let header = staged_header(file.namespace(), imports.as_ref()).unwrap_or(Value::Null);
+            let header =
+                staged_header_from_parts(file.namespace(), imports.as_ref()).unwrap_or(Value::Null);
             let id = self.staged.insert(file);
             snapshot(&json!({ "id": id, "header": header }))
         })
@@ -6588,7 +6589,7 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
 /// `types` or `aliasedTypes`, a URI on an import with no first name, an
 /// unrecognised import class). The caller then runs that binding over the
 /// JS values, as before, so every error and every oddity keeps its path.
-fn staged_header(namespace: &str, imports: Option<&Value>) -> Option<Value> {
+fn staged_header_from_parts(namespace: &str, imports: Option<&Value>) -> Option<Value> {
     let version = match mu::parse_namespace_with(Some(namespace), false).ok()? {
         mu::ParsedNamespace::Full { name, version, .. } => {
             if !name.split('.').all(mu::is_valid_identifier) {
@@ -7528,7 +7529,7 @@ mod tests {
              "aliasedTypes": [{"$class": "concerto.metamodel@1.0.0.AliasedType", "name": "C", "aliasedName": "D"}],
              "uri": "https://b"},
         ]);
-        let header = staged_header("org.x@1.0.0", Some(&imports)).unwrap();
+        let header = staged_header_from_parts("org.x@1.0.0", Some(&imports)).unwrap();
         assert_eq!(
             header,
             json!({
@@ -7554,12 +7555,12 @@ mod tests {
     /// system namespace gives a `null` version; no `imports` node is none.
     #[test]
     fn staged_header_reads_a_system_file() {
-        let header = staged_header("concerto", None).unwrap();
+        let header = staged_header_from_parts("concerto", None).unwrap();
         assert_eq!(
             header,
             json!({"namespace": "concerto", "version": null, "system": true, "shortNames": [], "uriMap": []})
         );
-        let header = staged_header("concerto@1.0.0", Some(&Value::Null)).unwrap();
+        let header = staged_header_from_parts("concerto@1.0.0", Some(&Value::Null)).unwrap();
         assert_eq!(header["version"], json!("1.0.0"));
         assert_eq!(header["shortNames"], json!([]));
     }
@@ -7569,17 +7570,17 @@ mod tests {
     /// view calls that binding over the JS values as before.
     #[test]
     fn staged_header_declines_what_the_binding_would_not_simply_set() {
-        let one = |imp: Value| staged_header("org.x@1.0.0", Some(&json!([imp])));
+        let one = |imp: Value| staged_header_from_parts("org.x@1.0.0", Some(&json!([imp])));
         assert!(
-            staged_header("org.x", None).is_none(),
+            staged_header_from_parts("org.x", None).is_none(),
             "unversioned namespace"
         );
         assert!(
-            staged_header("org.1x@1.0.0", None).is_none(),
+            staged_header_from_parts("org.1x@1.0.0", None).is_none(),
             "invalid namespace part"
         );
         assert!(
-            staged_header("org.x@1.0.0", Some(&json!({}))).is_none(),
+            staged_header_from_parts("org.x@1.0.0", Some(&json!({}))).is_none(),
             "non-array imports"
         );
         assert!(
