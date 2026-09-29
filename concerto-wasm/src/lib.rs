@@ -7453,15 +7453,27 @@ impl DcsManagerHandle {
     /// validated}`: `ast` is what that binding returns, `staged` is
     /// [`stage_result`]'s entries for `ast.models`, and `validated` is
     /// whether the result manager was validated (every model but the system
-    /// ones, under the default options a fresh handle has).
+    /// ones).
+    ///
+    /// P5-54 (accordproject/concerto-rust#375): the result is validated
+    /// with `target`'s `decoratorValidation`, as TS validates it in
+    /// `new ModelManager({decoratorValidation: modelManager
+    /// .getDecoratorValidation()}).fromAst(…)`: the view builds `target`
+    /// with the source manager's option, and [`dcs::decorate_models`] gives
+    /// its result the input manager's, so the resident manager takes
+    /// `target`'s before it runs. A fresh resident manager has the default
+    /// (disabled) option, so without this the view, which trusts
+    /// `validated`, skipped the decorator checks.
     #[wasm_bindgen(js_name = decorateModels)]
     pub fn decorate_models(
-        &self,
+        &mut self,
         target: &mut ModelManagerHandle,
         decorator_command_sets: JsValue,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
         run(|| {
+            self.manager
+                .set_decorator_validation(target.manager.decorator_validation().clone());
             let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
             let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
 
