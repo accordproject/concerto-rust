@@ -263,22 +263,28 @@ js_compat_pub! {
 }
 
 /// A loaded model file, and the handles of its declarations.
-#[derive(Debug)]
+///
+/// The model file is shared (`Arc`, P5-18): a model file never changes once
+/// registered, so a scratch copy of the arena
+/// ([`ModelManager::with_model_file_registered`]) shares every file it
+/// keeps instead of deep-cloning it.
+#[derive(Debug, Clone)]
 struct FileSlot {
-    model_file: ModelFile,
+    model_file: Arc<ModelFile>,
     declarations: Range<u32>,
 }
 
 /// Where a declaration is: its model file, its position in
 /// [`ModelFile::declarations`], the handles of its properties, and its
 /// fully-qualified name (TS keeps it on the declaration, P5-13), built once
-/// when the file is registered.
-#[derive(Debug)]
+/// when the file is registered. The name is shared (`Arc<str>`, P5-18), so
+/// copying the arena copies no string.
+#[derive(Debug, Clone)]
 struct DeclSlot {
     model_file: ModelFileId,
     index: usize,
     properties: Range<u32>,
-    fqn: Box<str>,
+    fqn: Arc<str>,
 }
 
 /// The inheritance facts of one class-like or enum declaration, from its
@@ -333,7 +339,7 @@ impl<'a> ClassProperties<'a> {
 
 /// Where a property is: its declaration, and its position in
 /// [`ClassDeclaration::own_properties`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PropSlot {
     declaration: DeclId,
     index: usize,
@@ -857,7 +863,22 @@ impl ModelManager {
     /// the manager*, so the file under validation must be the one registered
     /// under its own namespace for its local types to resolve to itself, as
     /// TS's `this.isLocalType`/`this.getLocalType` always do (P2-08).
+    ///
+    /// P5-18 (accordproject/concerto-rust#316): the copy shares this
+    /// manager's model files (`Arc`) rather than deep-cloning them; only
+    /// `model_file` itself is copied in. When this manager holds nothing
+    /// under `model_file`'s namespace (`addModelFile`'s validate-before-
+    /// register, the common case), the copy is this manager's arena as it
+    /// stands, with `model_file` appended: re-registering the same files in
+    /// the same order would rebuild exactly those tables, since every handle
+    /// is its slot's position. Otherwise `model_file` takes the old file's
+    /// place in the order, so the tables after it are rebuilt, as before.
+    /// Either way the copy starts with empty caches and ends at the same
+    /// generation as a copy built file by file.
     pub(crate) fn with_model_file_registered(&self, model_file: &ModelFile) -> Result<Self> {
+        let namespace = model_file.namespace();
+        let appended =
+            !self.namespaces.contains_key(namespace) && self.namespaces.len() == self.files.len();
         let mut scratch = Self {
             decorator_validation: self.decorator_validation.clone(),
             dangerously_allow_reserved_system_type_names_in_user_models: self
@@ -865,14 +886,23 @@ impl ModelManager {
             metamodel_validation: self.metamodel_validation,
             ..Self::default()
         };
-        let namespace = model_file.namespace();
+        if appended {
+            scratch.files = self.files.clone();
+            scratch.namespaces = self.namespaces.clone();
+            scratch.declarations = self.declarations.clone();
+            scratch.properties = self.properties.clone();
+            // One `insert` per file, as a copy built file by file counts.
+            scratch.generation = u64::try_from(self.files.len()).unwrap_or(u64::MAX);
+            scratch.insert(model_file.clone())?;
+            return Ok(scratch);
+        }
         let mut placed = false;
-        for existing in self.model_files() {
-            if existing.namespace() == namespace {
+        for existing in &self.files {
+            if existing.model_file.namespace() == namespace {
                 scratch.insert(model_file.clone())?;
                 placed = true;
             } else {
-                scratch.insert(existing.clone())?;
+                scratch.insert_shared(Arc::clone(&existing.model_file))?;
             }
         }
         if !placed {
@@ -885,6 +915,13 @@ impl ModelManager {
     /// arena, and counts the mutation. Nothing is changed if a handle cannot
     /// be allocated.
     fn insert(&mut self, model_file: ModelFile) -> Result<ModelFileId> {
+        self.insert_shared(Arc::new(model_file))
+    }
+
+    /// [`ModelManager::insert`] for a model file that may already be
+    /// registered in another manager: the file itself is shared, not
+    /// copied (P5-18).
+    fn insert_shared(&mut self, model_file: Arc<ModelFile>) -> Result<ModelFileId> {
         self.invalidate_caches();
         let file_id = ModelFileId(next_index(self.files.len())?);
         let mut declarations = Vec::new();
@@ -909,7 +946,7 @@ impl ModelManager {
                 model_file: file_id,
                 index,
                 properties: first..end,
-                fqn: qualify(model_file.namespace(), declaration.name()).into_boxed_str(),
+                fqn: Arc::from(qualify(model_file.namespace(), declaration.name())),
             });
         }
         let first = next_index(self.declarations.len())?;
@@ -1266,7 +1303,7 @@ impl ModelManager {
     /// Every loaded model file, including the built-in decorator and root
     /// models, in the order they were loaded.
     pub fn model_files(&self) -> impl Iterator<Item = &ModelFile> {
-        self.files.iter().map(|slot| &slot.model_file)
+        self.files.iter().map(|slot| &*slot.model_file)
     }
 
     /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
@@ -1318,7 +1355,7 @@ impl ModelManager {
 
     /// The model file a handle names.
     pub fn file(&self, id: ModelFileId) -> Option<&ModelFile> {
-        self.files.get(id.slot()).map(|slot| &slot.model_file)
+        self.files.get(id.slot()).map(|slot| &*slot.model_file)
     }
 
     /// The declaration a handle names.
@@ -1611,7 +1648,7 @@ impl ModelManager {
     fn property_with_owner(&self, id: PropId) -> Option<(&str, &Property)> {
         let slot = self.properties.get(id.slot())?;
         let owner = self.declarations.get(slot.declaration.slot())?;
-        Some((&owner.fqn, self.property_by_id(id)?))
+        Some((&*owner.fqn, self.property_by_id(id)?))
     }
 
     /// The property called `name`, own or inherited, with the
@@ -5305,6 +5342,121 @@ mod tests {
         assert!(updated.get_declaration("org.example@1.0.0.Person").is_err());
         // `mgr` itself is untouched.
         assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
+    }
+
+    /// P5-18 (accordproject/concerto-rust#316): the scratch copy that
+    /// validates a file whose namespace is not registered is this manager's
+    /// arena with the file appended. It must be exactly the manager a
+    /// file-by-file rebuild (the pre-P5-18 copy) produces: the same files in
+    /// the same order, the same handles and names, the same generation, and
+    /// empty caches. The files it keeps are shared, not deep-cloned.
+    #[test]
+    fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
+        let mgr = manager();
+        // Warm the source's caches: the copy must not inherit them.
+        assert!(mgr.properties("org.example@1.0.0.Person").is_ok());
+        let fresh = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.new@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "A", "isAbstract": false, "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": false, "isOptional": false }
+                    ] },
+                    { "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "E", "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ONE" }
+                    ] }
+                ]
+            }),
+            Some("new.cto".into()),
+        )
+        .unwrap();
+        let scratch = mgr.with_model_file_registered(&fresh).unwrap();
+
+        let mut rebuilt = ModelManager::default();
+        for existing in mgr.model_files() {
+            rebuilt.insert(existing.clone()).unwrap();
+        }
+        rebuilt.insert(fresh.clone()).unwrap();
+
+        let files = |m: &ModelManager| {
+            m.files
+                .iter()
+                .map(|f| (f.model_file.namespace().to_string(), f.declarations.clone()))
+                .collect::<Vec<_>>()
+        };
+        let decls = |m: &ModelManager| {
+            m.declarations
+                .iter()
+                .map(|d| {
+                    (
+                        d.model_file,
+                        d.index,
+                        d.properties.clone(),
+                        d.fqn.to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let props = |m: &ModelManager| {
+            m.properties
+                .iter()
+                .map(|p| (p.declaration, p.index))
+                .collect::<Vec<_>>()
+        };
+        let namespaces = |m: &ModelManager| {
+            let mut v: Vec<_> = m.namespaces.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(files(&scratch), files(&rebuilt));
+        assert_eq!(decls(&scratch), decls(&rebuilt));
+        assert_eq!(props(&scratch), props(&rebuilt));
+        assert_eq!(namespaces(&scratch), namespaces(&rebuilt));
+        assert_eq!(scratch.generation, rebuilt.generation);
+        assert!(scratch.class_cache.lock().unwrap().is_empty());
+        assert!(scratch.instance_cache.lock().unwrap().is_empty());
+        for (mine, theirs) in mgr.files.iter().zip(&scratch.files) {
+            assert!(Arc::ptr_eq(&mine.model_file, &theirs.model_file));
+        }
+        assert!(
+            scratch
+                .model_file("org.new@1.0.0")
+                .unwrap()
+                .same_ast(&fresh)
+        );
+        // The source is untouched.
+        assert!(mgr.model_file("org.new@1.0.0").is_none());
+    }
+
+    /// P5-18: a file whose namespace *is* registered still takes the old
+    /// file's place in the order, as the pre-P5-18 copy did.
+    #[test]
+    fn with_model_file_registered_replaces_in_place() {
+        let mgr = manager();
+        let replacement = ModelFile::from_json(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": []
+            }),
+            None,
+        )
+        .unwrap();
+        let scratch = mgr.with_model_file_registered(&replacement).unwrap();
+        let order = |m: &ModelManager| {
+            m.model_files()
+                .map(|f| f.namespace().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&scratch), order(&mgr));
+        assert!(
+            scratch
+                .model_file("org.example@1.0.0")
+                .unwrap()
+                .same_ast(&replacement)
+        );
+        assert_eq!(scratch.generation, u64::try_from(mgr.files.len()).unwrap());
     }
 
     #[test]
