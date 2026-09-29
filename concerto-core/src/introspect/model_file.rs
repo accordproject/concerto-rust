@@ -110,6 +110,23 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> std::result::Result<Result<Self>, serde_json::Error> {
+        Ok(
+            Self::from_json_text_with_imports(text, definitions, file_name)?
+                .map(|(model_file, _)| model_file),
+        )
+    }
+
+    /// [`ModelFile::from_json_text`], also returning the AST's own
+    /// `imports` node exactly as the text holds it (`None` when the AST has
+    /// no `imports` key), so a caller that needs it has no second decode of
+    /// the text (P5-28, accordproject/concerto-rust#333: the WASM binding's
+    /// `stageModelFileWithHeader` reads the TS `ModelFile` header from it).
+    /// Same result, same errors in the same order.
+    pub fn from_json_text_with_imports(
+        text: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
         if let Some(model) = crate::introspect::typed_ast::parse(text)
             && let Ok(mut model_file) = Self::load(
                 &model.header,
@@ -119,14 +136,18 @@ impl ModelFile {
             )
         {
             model_file.ast = Ast::from_text(text);
-            return Ok(Ok(model_file));
+            let imports = match model.header {
+                serde_json::Value::Object(mut header) => header.remove("imports"),
+                _ => None,
+            };
+            return Ok(Ok((model_file, imports)));
         }
         let value: serde_json::Value = serde_json::from_str(text)?;
-        Ok(Self::from_owned_json_with_definitions(
-            value,
-            definitions,
-            file_name,
-        ))
+        let imports = value.get("imports").cloned();
+        Ok(
+            Self::from_owned_json_with_definitions(value, definitions, file_name)
+                .map(|model_file| (model_file, imports)),
+        )
     }
 
     /// The body of [`ModelFile::from_json_with_definitions`], leaving
@@ -1421,6 +1442,35 @@ mod tests {
         );
         assert!(mf.is_imported_type("Location"));
         assert!(!mf.is_imported_type("Address"));
+    }
+
+    /// P5-28: `from_json_text_with_imports` loads the same file as
+    /// `from_json_text` and returns the AST's own `imports` node verbatim,
+    /// or `None` when the AST has none.
+    #[test]
+    fn from_json_text_with_imports_returns_the_imports_node() {
+        let imports = serde_json::json!([
+            { "$class": "concerto.metamodel@1.0.0.ImportType",
+              "namespace": "org.common@1.0.0", "name": "Address", "uri": "u" }
+        ]);
+        let text = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.uri@1.0.0",
+            "imports": imports,
+            "declarations": []
+        })
+        .to_string();
+        let (mf, node) = ModelFile::from_json_text_with_imports(&text, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mf.namespace(), "org.uri@1.0.0");
+        assert_eq!(node, Some(imports));
+        let text = r#"{"$class":"concerto.metamodel@1.0.0.Model","namespace":"org.x@1.0.0"}"#;
+        let (_, node) = ModelFile::from_json_text_with_imports(text, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(node, None);
+        assert!(ModelFile::from_json_text_with_imports("{", None, None).is_err());
     }
 
     #[test]

@@ -5817,6 +5817,33 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-28 (accordproject/concerto-rust#333): [`Self::stage_model_file`]
+    /// and the header [`model_file_from_ast_header`] would set, in one
+    /// engine call, from one decode of the AST text. Stages the file exactly
+    /// as [`Self::stage_model_file`] does (the same load, the same errors),
+    /// and returns JSON text `{"id": <stage id>, "header": <header>}`, where
+    /// `header` is [`staged_header`]'s reading of the loaded file's
+    /// namespace and `imports` node, or `null` when it cannot vouch that
+    /// [`model_file_from_ast_header`] would set exactly that (the caller then
+    /// runs that binding, as before). Does not change the manager or its
+    /// epoch. Additive.
+    #[wasm_bindgen(js_name = stageModelFileWithHeader)]
+    pub fn stage_model_file_with_header(
+        &mut self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let (file, imports) =
+                ModelFile::from_json_text_with_imports(ast, definitions, file_name)
+                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
+            let header = staged_header(file.namespace(), imports.as_ref()).unwrap_or(Value::Null);
+            let id = self.staged.insert(file);
+            snapshot(&json!({ "id": id, "header": header }))
+        })
+    }
+
     /// P5-06a: registers a staged model file, as
     /// [`Self::add_model_with_definitions`] with `validate: false` would
     /// register the AST it was staged from (the same duplicate-namespace
@@ -6542,6 +6569,126 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
     body().map_err(|e| throw(e, Some(&view)))
 }
 
+/// P5-28 (accordproject/concerto-rust#333): what [`model_file_from_ast_header`]
+/// sets on a JS `ModelFile` being constructed, read from a staged file's
+/// namespace and its AST's `imports` node instead of from the JS values, so
+/// [`ModelManagerHandle::stage_model_file_with_header`] can return it with
+/// the stage. `{namespace, version, system, shortNames, uriMap}`: `version`
+/// is the namespace's version or `null` (TS `this.version`), `system`
+/// whether `isSystemModelFile()` holds during construction (TS: the
+/// namespace is `concerto` or starts with `concerto@`, since the file is not
+/// registered yet), `shortNames` the `importShortNames.set(key, fqn)` calls
+/// in order, and `uriMap` the `importUriMap[key] = uri` assignments in
+/// order. `this.imports` itself (a copy of `ast.imports` plus the implicit
+/// import) is left to the caller, which keeps the AST's own import objects.
+///
+/// `None` whenever that binding would not simply set these values: any
+/// error it would raise, and any AST shape outside the canonical one (a
+/// non-string `$class`, namespace, name, type or alias, a non-array
+/// `types` or `aliasedTypes`, a URI on an import with no first name, an
+/// unrecognised import class). The caller then runs that binding over the
+/// JS values, as before, so every error and every oddity keeps its path.
+fn staged_header(namespace: &str, imports: Option<&Value>) -> Option<Value> {
+    let version = match mu::parse_namespace_with(Some(namespace), false).ok()? {
+        mu::ParsedNamespace::Full { name, version, .. } => {
+            if !name.split('.').all(mu::is_valid_identifier) {
+                return None;
+            }
+            version
+        }
+        mu::ParsedNamespace::NameOnly { .. } => return None,
+    };
+    let system = namespace.starts_with("concerto@") || namespace == "concerto";
+    if version.as_deref().is_none_or(str::is_empty) && !system {
+        return None;
+    }
+    let ast_imports: &[Value] = match imports {
+        None | Some(Value::Null) => &[],
+        Some(Value::Array(items)) => items,
+        Some(_) => return None,
+    };
+    let implicit = (!system).then(|| {
+        json!({
+            "$class": format!("{METAMODEL_NAMESPACE}.ImportTypes"),
+            "namespace": "concerto@1.0.0",
+            "types": ["Concept", "Asset", "Transaction", "Participant", "Event"],
+        })
+    });
+    let import_types = format!("{METAMODEL_NAMESPACE}.ImportTypes");
+    let import_type = format!("{METAMODEL_NAMESPACE}.ImportType");
+    let mut short_names: Vec<Value> = Vec::new();
+    let mut uri_map: Vec<Value> = Vec::new();
+    for imp in ast_imports.iter().chain(implicit.as_ref()) {
+        let imp = imp.as_object()?;
+        let class = imp.get("$class")?.as_str()?;
+        let ns = imp.get("namespace")?.as_str()?;
+        // `this.enforceImportVersioning(imp)`.
+        match mu::parse_namespace_with(Some(ns), false).ok()? {
+            mu::ParsedNamespace::Full {
+                version: Some(ref v),
+                ..
+            } if !v.is_empty() => {}
+            _ => return None,
+        }
+        let first = if class == import_types {
+            let mut aliases: Vec<(&str, &str)> = Vec::new();
+            match imp.get("aliasedTypes") {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(entries)) => {
+                    for entry in entries {
+                        let entry = entry.as_object()?;
+                        let name = entry.get("name")?.as_str()?;
+                        let aliased_name = entry.get("aliasedName")?.as_str()?;
+                        if mu::is_primitive_type(aliased_name) {
+                            return None;
+                        }
+                        // `Map.set`: a later entry for the same name wins.
+                        match aliases.iter_mut().find(|(n, _)| *n == name) {
+                            Some(slot) => slot.1 = aliased_name,
+                            None => aliases.push((name, aliased_name)),
+                        }
+                    }
+                }
+                Some(_) => return None,
+            }
+            let types = imp.get("types")?.as_array()?;
+            let mut first = None;
+            for type_name in types {
+                let type_name = type_name.as_str()?;
+                let fqn = format!("{ns}.{type_name}");
+                let key = aliases
+                    .iter()
+                    .find(|(n, _)| *n == type_name)
+                    .map_or(type_name, |(_, alias)| alias);
+                short_names.push(json!([key, fqn]));
+                first.get_or_insert(fqn);
+            }
+            first
+        } else if class == import_type {
+            let name = imp.get("name")?.as_str()?;
+            let fqn = format!("{ns}.{name}");
+            short_names.push(json!([name, fqn]));
+            Some(fqn)
+        } else {
+            return None;
+        };
+        match imp.get("uri") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(uri)) if uri.is_empty() => {}
+            Some(Value::String(uri)) => uri_map.push(json!([first?, uri])),
+            Some(Value::Bool(false)) => {}
+            Some(_) => return None,
+        }
+    }
+    Some(json!({
+        "namespace": namespace,
+        "version": version,
+        "system": system,
+        "shortNames": short_names,
+        "uriMap": uri_map,
+    }))
+}
+
 /// `value.length`: a string primitive's own length (UTF-16 code units),
 /// which [`get`] does not read.
 fn js_length(value: &JsValue) -> Result<JsValue> {
@@ -7055,6 +7202,91 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// P5-28: [`staged_header`] of a canonical file gives what
+    /// `modelFileFromAstHeader` sets: the version, the short names in
+    /// order (an alias in place of its type's name, the implicit system
+    /// import last) and the URI map keyed by each import's first name.
+    #[test]
+    fn staged_header_reads_a_canonical_file() {
+        let imports = json!([
+            {"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.a@1.0.0", "name": "A", "uri": "https://a"},
+            {"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.b@2.0.0", "types": ["B", "C"],
+             "aliasedTypes": [{"$class": "concerto.metamodel@1.0.0.AliasedType", "name": "C", "aliasedName": "D"}],
+             "uri": "https://b"},
+        ]);
+        let header = staged_header("org.x@1.0.0", Some(&imports)).unwrap();
+        assert_eq!(
+            header,
+            json!({
+                "namespace": "org.x@1.0.0",
+                "version": "1.0.0",
+                "system": false,
+                "shortNames": [
+                    ["A", "org.a@1.0.0.A"],
+                    ["B", "org.b@2.0.0.B"],
+                    ["D", "org.b@2.0.0.C"],
+                    ["Concept", "concerto@1.0.0.Concept"],
+                    ["Asset", "concerto@1.0.0.Asset"],
+                    ["Transaction", "concerto@1.0.0.Transaction"],
+                    ["Participant", "concerto@1.0.0.Participant"],
+                    ["Event", "concerto@1.0.0.Event"],
+                ],
+                "uriMap": [["org.a@1.0.0.A", "https://a"], ["org.b@2.0.0.B", "https://b"]],
+            })
+        );
+    }
+
+    /// P5-28: a system file has no implicit import, and an unversioned
+    /// system namespace gives a `null` version; no `imports` node is none.
+    #[test]
+    fn staged_header_reads_a_system_file() {
+        let header = staged_header("concerto", None).unwrap();
+        assert_eq!(
+            header,
+            json!({"namespace": "concerto", "version": null, "system": true, "shortNames": [], "uriMap": []})
+        );
+        let header = staged_header("concerto@1.0.0", Some(&Value::Null)).unwrap();
+        assert_eq!(header["version"], json!("1.0.0"));
+        assert_eq!(header["shortNames"], json!([]));
+    }
+
+    /// P5-28: anything `modelFileFromAstHeader` would throw for, or read
+    /// from a shape other than the canonical one, gives no header, so the
+    /// view calls that binding over the JS values as before.
+    #[test]
+    fn staged_header_declines_what_the_binding_would_not_simply_set() {
+        let one = |imp: Value| staged_header("org.x@1.0.0", Some(&json!([imp])));
+        assert!(
+            staged_header("org.x", None).is_none(),
+            "unversioned namespace"
+        );
+        assert!(
+            staged_header("org.1x@1.0.0", None).is_none(),
+            "invalid namespace part"
+        );
+        assert!(
+            staged_header("org.x@1.0.0", Some(&json!({}))).is_none(),
+            "non-array imports"
+        );
+        assert!(
+            one(
+                json!({"$class": "concerto.metamodel@1.0.0.ImportAll", "namespace": "org.a@1.0.0"})
+            )
+            .is_none()
+        );
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.a", "name": "A"})).is_none());
+        assert!(
+            one(json!({"$class": "ImportType", "namespace": "org.a@1.0.0", "name": "A"})).is_none()
+        );
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.a@1.0.0", "types": ["A", 1]})).is_none());
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.a@1.0.0"})).is_none());
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.a@1.0.0", "types": [], "uri": "u"})).is_none());
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.a@1.0.0", "types": ["A"],
+            "aliasedTypes": [{"name": "A", "aliasedName": "String"}]})).is_none());
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.a@1.0.0", "name": "A", "uri": 1})).is_none());
+        assert!(one(json!({"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.a@1.0.0", "name": "A", "uri": ""})).is_some());
+    }
 
     /// `decode_wire`, which must succeed (`Error` has no `Debug`).
     fn decoded(value: &Value) -> CoreValue {
