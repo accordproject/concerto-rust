@@ -860,7 +860,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     // constructed `ModelFile` does not itself need it for these arguments —
     // only `getModelManager`/`getType` do, later, through `file.mm_index`.
     if class == "ModelFile" && member == "new" {
-        return Ok(model_file_new(&args));
+        // BC-19 (R1): the manager's strict AST shape check.
+        let strict_ast = match args.first() {
+            Some(Arg::Mm(index)) => session.pool[*index].strict_ast(),
+            _ => true,
+        };
+        return Ok(model_file_new(&args, strict_ast));
     }
 
     if member == "new" {
@@ -2007,7 +2012,7 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
 /// TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08),
 /// for a receiver never added to a manager via `addModelFile` (that is
 /// `ModelManager.addModelFile`, already dispatched).
-fn model_file_new(args: &[Arg]) -> Dispatch {
+fn model_file_new(args: &[Arg], strict_ast: bool) -> Dispatch {
     // Each constructor argument as plain data, `None` for JS `undefined`.
     let mut plain = [None, None, None];
     for (slot, (index, what)) in
@@ -2032,6 +2037,10 @@ fn model_file_new(args: &[Arg]) -> Dispatch {
         return ran(Err(to_oracle_error(&e)));
     }
     let ast = ast.expect("check_constructor_arguments rejects a missing ast");
+    // BC-19 (R1, P5-49): then the strict AST shape check.
+    if let Some(e) = recipe::shape_error(strict_ast, ast) {
+        return ran(Err(e));
+    }
     // A falsy non-string `definitions` passed those checks; TS keeps it as
     // given, but nothing the oracle compares reads it back (the harness's
     // `getDefinitions` answers only for a string).

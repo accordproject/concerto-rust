@@ -248,7 +248,9 @@ pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
 /// 1. when `validate` is set, [`validate_meta_model_instance`] first;
 /// 2. a fresh [`ModelManager`] (`new ModelManager()`, no options);
 /// 3. for each entry of `metaModel.models`, in order, `new ModelFile(mm,
-///    model, null, null)` and a validating `addModelFile(mf, null, null)`:
+///    model, null, null)` (which, since BC-19 in R1, runs
+///    [`check_ast_shape`] on an object model) and a validating
+///    `addModelFile(mf, null, null)`:
 ///    a namespace already registered is the already-exists error, otherwise
 ///    the new file alone is validated against the manager as it stands
 ///    (`ModelManager::validate_detached_model_file`) before it is
@@ -284,6 +286,13 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
         Some(_) => return Err(not_a_function("mm.models.forEach")),
     };
     for model in models {
+        // BC-19 (R1): `new ModelFile(modelManager, mm, null, null)` on a
+        // `new ModelManager()`, whose default is the strict shape check. The
+        // constructor's own `typeof ast !== 'object'` check comes first, so
+        // a model that is not a JS object keeps that error (below).
+        if model.is_object() || model.is_array() {
+            check_ast_shape(model)?;
+        }
         let model_file = ModelFile::from_json_with_definitions(model, None, None)?;
         if mm.model_file(model_file.namespace()).is_none() {
             mm.validate_detached_model_file(&model_file)?;
@@ -292,6 +301,137 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
     }
     mm.validate_models()?;
     Ok(mm)
+}
+
+/// The strict AST shape check at model load (BREAKING-CHANGES-PLAN.md BC-19,
+/// with BC-17 and BC-20; release R1, task P5-49,
+/// accordproject/concerto-rust#370): TS `new ModelFile(modelManager, ast)`
+/// runs it, after its own argument checks, unless the manager was built
+/// with `metamodelValidation: false`. So every load path that builds a
+/// `ModelFile` (`fromAst`, `addModel`, `addCTOModel`, `addModelFiles`,
+/// `updateModelFile`, and the file `addModelFile` is given) rejects an AST
+/// that does not have the metamodel's shape, with an
+/// `IllegalModelException`, before any part of the AST is walked. TS 5.0.0
+/// loads many such ASTs, or crashes on them with a V8 `TypeError` (BC-18).
+///
+/// In order, and stopping at the first problem:
+///
+/// 1. BC-17 and BC-20, over every node of the AST in document order: a
+///    `decorators` that is present, not `null` and not an array
+///    (`modelfile-load-decoratorsnotarray`); a super type (`superType`)
+///    whose `name` is not a non-empty string
+///    (`modelfile-load-supertypename`); any other `name` that is not a
+///    string (`modelfile-load-namenotstring`).
+/// 2. `validateAst`'s strict check ([`validate_ast`]): the version check,
+///    then the structure against the metamodel with the strict preset
+///    ([`validate_metamodel`]). Its error, whatever its class, is
+///    re-thrown as an `IllegalModelException` whose message is the check's
+///    own, after a fixed prefix (`modelfile-load-astshape`).
+///
+/// **One tolerance.** The reference CTO parser (concerto-cto 5.0.0) writes a
+/// string `defaultValue` on a `DateTimeProperty` (`o DateTime d
+/// default="..."`), which `concerto.metamodel@1.0.0` does not declare, so
+/// `validateAst` rejects every such model ("Unexpected properties for type
+/// concerto.metamodel@1.0.0.DateTimeProperty: defaultValue"). Every other
+/// AST the reference parser writes for the oracle corpus passes the check
+/// (P5-49 ran it over all 611 CTO-cache ASTs). So that a model written in
+/// CTO still loads, a string `defaultValue` on a `DateTimeProperty` node is
+/// left out of step 2; any other `defaultValue` there is checked as before.
+///
+/// The check reads nothing but `ast`, and runs on the resident metamodel
+/// manager ([`validate_metamodel`]'s), so it does not depend on, or change,
+/// any caller's manager.
+pub fn check_ast_shape(ast: &Value) -> Result<()> {
+    let mut parser_extras = false;
+    check_node_shapes(ast, false, &mut parser_extras)?;
+    let result = if parser_extras {
+        let mut stripped = ast.clone();
+        strip_parser_extras(&mut stripped);
+        validate_ast(&stripped)
+    } else {
+        validate_ast(ast)
+    };
+    result.map_err(|err| {
+        ContractError::new(
+            ErrorKind::IllegalModel,
+            "modelfile-load-astshape",
+            vec![("message", ts_message(&err))],
+        )
+        .into()
+    })
+}
+
+/// The `$class` of the metamodel node that may carry a parser-written
+/// `defaultValue` ([`check_ast_shape`]'s tolerance).
+const DATE_TIME_PROPERTY: &str = "concerto.metamodel@1.0.0.DateTimeProperty";
+
+/// Whether `map` is a `DateTimeProperty` node with a string `defaultValue`,
+/// which [`check_ast_shape`] leaves out of the metamodel check.
+fn has_parser_default(map: &serde_json::Map<String, Value>) -> bool {
+    map.get("$class").and_then(Value::as_str) == Some(DATE_TIME_PROPERTY)
+        && map.get("defaultValue").is_some_and(Value::is_string)
+}
+
+/// Removes every value [`has_parser_default`] matches from `node`.
+fn strip_parser_extras(node: &mut Value) {
+    match node {
+        Value::Object(map) => {
+            if has_parser_default(map) {
+                map.remove("defaultValue");
+            }
+            map.values_mut().for_each(strip_parser_extras);
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_parser_extras),
+        _ => {}
+    }
+}
+
+/// [`check_ast_shape`]'s first step, for `node` and everything under it.
+/// `super_type` is true for the node under a `superType` key;
+/// `parser_extras` is set when a node matches [`has_parser_default`].
+fn check_node_shapes(node: &Value, super_type: bool, parser_extras: &mut bool) -> Result<()> {
+    match node {
+        Value::Object(map) => {
+            *parser_extras |= has_parser_default(map);
+            if let Some(decorators) = map.get("decorators")
+                && !decorators.is_array()
+                && !decorators.is_null()
+            {
+                return Err(shape_error("modelfile-load-decoratorsnotarray", decorators));
+            }
+            if super_type {
+                match map.get("name") {
+                    Some(Value::String(name)) if !name.is_empty() => {}
+                    Some(name) => return Err(shape_error("modelfile-load-supertypename", name)),
+                    // A missing name is the metamodel check's error.
+                    None => {}
+                }
+            } else if let Some(name) = map.get("name")
+                && !name.is_string()
+            {
+                return Err(shape_error("modelfile-load-namenotstring", name));
+            }
+            for (key, value) in map {
+                check_node_shapes(value, key == "superType" && value.is_object(), parser_extras)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => items
+            .iter()
+            .try_for_each(|item| check_node_shapes(item, false, parser_extras)),
+        _ => Ok(()),
+    }
+}
+
+/// An `IllegalModelException` from [`check_node_shapes`], rendering the
+/// offending value as JSON text.
+fn shape_error(code: &'static str, value: &Value) -> Error {
+    ContractError::new(
+        ErrorKind::IllegalModel,
+        code,
+        vec![("value", value.to_string())],
+    )
+    .into()
 }
 
 /// `validateAst`'s version check:
@@ -1066,13 +1206,183 @@ mod tests {
     }
 
     #[test]
-    fn model_manager_from_meta_model_validates_only_when_asked() {
-        // Structurally invalid (an undeclared property), semantically fine:
-        // only the metamodel check rejects it.
+    fn model_manager_from_meta_model_checks_the_shape_even_without_validate() {
+        // Structurally invalid (an undeclared property), semantically fine.
+        // `validate` runs `validateMetaModel` over the whole document first;
+        // without it, BC-19 (R1) still rejects the model when its
+        // `ModelFile` is built, with an `IllegalModelException`.
         let mut doc = person_models();
         doc["models"][0]["undeclared"] = json!(true);
-        assert!(model_manager_from_meta_model(&doc, true).is_err());
-        assert!(model_manager_from_meta_model(&doc, false).is_ok());
+        let err = model_manager_from_meta_model(&doc, true).expect_err("validateMetaModel");
+        assert_ne!(kind_of(&err), Some(ErrorKind::IllegalModel));
+        let err = model_manager_from_meta_model(&doc, false).expect_err("the load check");
+        assert_eq!(kind_of(&err), Some(ErrorKind::IllegalModel));
+        assert_eq!(
+            err.contract().message(),
+            "Model AST does not conform to the metamodel: Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
+        );
+    }
+
+    // ---- P5-49 (BC-19 with BC-17 and BC-20, R1): `check_ast_shape` ----
+
+    fn person_model() -> Value {
+        person_models()["models"][0].clone()
+    }
+
+    fn shape_code(ast: &Value) -> Option<&'static str> {
+        check_ast_shape(ast).err().map(|err| {
+            let contract = err.ported().expect("a catalogue error");
+            assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ast}");
+            contract.code
+        })
+    }
+
+    #[test]
+    fn check_ast_shape_accepts_well_formed_models() {
+        assert_eq!(shape_code(&person_model()), None);
+        let metamodel: Value = serde_json::from_str(METAMODEL_AST_JSON).unwrap();
+        assert_eq!(shape_code(&metamodel), None);
+        let mut with_super = person_model();
+        with_super["declarations"][0]["superType"] =
+            json!({"$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base"});
+        with_super["declarations"][0]["decorators"] = json!([]);
+        assert_eq!(shape_code(&with_super), None);
+    }
+
+    #[test]
+    fn check_ast_shape_rejects_a_non_array_decorators_value() {
+        // BC-17: TS iterates a string by code unit and ignores a number.
+        for decorators in [json!("💥emoji"), json!("x"), json!(""), json!(5), json!(true), json!({})] {
+            let mut model = person_model();
+            model["declarations"][0]["properties"][0]["decorators"] = decorators.clone();
+            assert_eq!(
+                shape_code(&model),
+                Some("modelfile-load-decoratorsnotarray"),
+                "{decorators}"
+            );
+        }
+        let mut model = person_model();
+        model["decorators"] = json!("x");
+        let err = check_ast_shape(&model).unwrap_err();
+        assert_eq!(
+            err.contract().message(),
+            "Invalid decorators. Expected array. Found \"x\""
+        );
+    }
+
+    #[test]
+    fn check_ast_shape_tolerates_the_parsers_date_time_default() {
+        // concerto-cto 5.0.0 writes `defaultValue` on a `DateTimeProperty`,
+        // which the metamodel does not declare.
+        let date_time = |default: Value| {
+            let mut model = person_model();
+            model["declarations"][0]["properties"][0] = json!({
+                "$class": "concerto.metamodel@1.0.0.DateTimeProperty",
+                "name": "born",
+                "isArray": false,
+                "isOptional": false,
+                "defaultValue": default
+            });
+            model
+        };
+        let parsed = date_time(json!("2020-01-01T00:00:00Z"));
+        assert_eq!(shape_code(&parsed), None);
+        assert!(validate_ast(&parsed).is_err(), "validateAst itself rejects it");
+        assert_eq!(shape_code(&date_time(json!(5))), Some("modelfile-load-astshape"));
+        // Only on a `DateTimeProperty`.
+        let mut enum_value = person_model();
+        enum_value["declarations"][0]["properties"][0]["$class"] =
+            json!("concerto.metamodel@1.0.0.EnumProperty");
+        enum_value["declarations"][0]["properties"][0]["defaultValue"] = json!("x");
+        assert_eq!(shape_code(&enum_value), Some("modelfile-load-astshape"));
+    }
+
+    #[test]
+    fn check_ast_shape_rejects_non_string_names() {
+        // BC-20: TS coerces a name with `String()`.
+        for name in [json!(1e308), json!(0), json!(false), json!(null), json!({})] {
+            let mut model = person_model();
+            model["declarations"][0]["name"] = name.clone();
+            assert_eq!(shape_code(&model), Some("modelfile-load-namenotstring"), "{name}");
+        }
+    }
+
+    #[test]
+    fn check_ast_shape_rejects_an_empty_or_non_string_super_type_name() {
+        // BC-20: `superType.name` of `""`, `0` or `false` gives TS's
+        // "Could not find super type 0".
+        for name in [json!(""), json!(0), json!(false), json!(null)] {
+            let mut model = person_model();
+            model["declarations"][0]["superType"] =
+                json!({"$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name});
+            assert_eq!(shape_code(&model), Some("modelfile-load-supertypename"), "{name}");
+        }
+        // `superType: {}` has no name: the metamodel check's error.
+        let mut model = person_model();
+        model["declarations"][0]["superType"] = json!({});
+        assert_eq!(shape_code(&model), Some("modelfile-load-astshape"));
+    }
+
+    #[test]
+    fn check_ast_shape_rejects_what_the_metamodel_rejects() {
+        // BC-19: an unknown property, a wrong-typed field, a malformed
+        // `identified` and another metamodel version.
+        let mut unknown = person_model();
+        unknown["undeclared"] = json!([]);
+        let mut bounds = person_model();
+        bounds["declarations"][0]["properties"][0] = json!({
+            "$class": "concerto.metamodel@1.0.0.IntegerProperty",
+            "name": "age",
+            "isArray": false,
+            "isOptional": false,
+            "validator": {"$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": "0"}
+        });
+        let mut identified = person_model();
+        identified["declarations"][0]["identified"] = json!("yes");
+        let mut version = person_model();
+        version["$class"] = json!("concerto.metamodel@99.0.0.Model");
+        // DV-017's typeless relationship and DV-018's `null` decorator: the
+        // metamodel check rejects both first, so those rows' own errors are
+        // raised only with the check off.
+        let mut relationship = person_model();
+        relationship["declarations"][0]["properties"][0] = json!({
+            "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
+            "name": "home",
+            "isArray": false,
+            "isOptional": false
+        });
+        let mut null_decorator = person_model();
+        null_decorator["declarations"][0]["decorators"] = json!([null]);
+        for ast in [unknown, bounds, identified, version, relationship, null_decorator] {
+            assert_eq!(shape_code(&ast), Some("modelfile-load-astshape"), "{ast}");
+        }
+        let mut version = person_model();
+        version["$class"] = json!("concerto.metamodel@99.0.0.Model");
+        assert_eq!(
+            check_ast_shape(&version).unwrap_err().contract().message(),
+            "Model AST does not conform to the metamodel: Model file version 99.0.0 does not match metamodel version 1.0.0"
+        );
+    }
+
+    #[test]
+    fn check_ast_shape_reports_the_first_problem_in_document_order() {
+        let mut model = person_model();
+        model["declarations"][0]["name"] = json!(7);
+        model["declarations"][0]["properties"][0]["decorators"] = json!("x");
+        assert_eq!(shape_code(&model), Some("modelfile-load-namenotstring"));
+        // Steps 1 (BC-17, BC-20) before step 2 (the metamodel check).
+        let mut model = person_model();
+        model["undeclared"] = json!(true);
+        model["declarations"][0]["decorators"] = json!(1);
+        assert_eq!(shape_code(&model), Some("modelfile-load-decoratorsnotarray"));
+    }
+
+    #[test]
+    fn model_manager_from_meta_model_keeps_the_error_for_a_non_object_model() {
+        // `new ModelFile(mm, null)`: the constructor's own check, not BC-19.
+        let doc = json!({"models": [null]});
+        let err = model_manager_from_meta_model(&doc, false).expect_err("a null model");
+        assert_ne!(kind_of(&err), Some(ErrorKind::IllegalModel));
     }
 
     #[test]

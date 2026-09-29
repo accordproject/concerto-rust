@@ -72,8 +72,8 @@ pub use options::ValidationOptions;
 pub use from_json::InstanceEnv;
 #[cfg(feature = "js-compat")]
 pub use metamodel::{
-    METAMODEL_NAMESPACE, model_manager_from_meta_model, validate_ast, validate_meta_model_instance,
-    validate_metamodel,
+    METAMODEL_NAMESPACE, check_ast_shape, model_manager_from_meta_model, validate_ast,
+    validate_meta_model_instance, validate_metamodel,
 };
 #[cfg(feature = "js-compat")]
 pub use validate::{ValidateOptions, validate_instance};

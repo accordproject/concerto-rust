@@ -1070,6 +1070,43 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust P5-24 / BC-45: no TS throw site (Typed.assignFieldDefaults builds dayjs.utc(default) unchecked, src/model/typed.ts)",
         ],
     },
+    // ---- P5-49 additions: not TS templates. BC-19, with BC-17 and BC-20
+    //      (R1, accordproject/concerto-rust#370): the strict AST shape check
+    //      `new ModelFile` runs at model load (`instance::metamodel::
+    //      check_ast_shape`). TS 5.0.0 loads these ASTs, or throws a V8
+    //      `TypeError` (BC-18). ----
+    CatalogueEntry {
+        code: "modelfile-load-decoratorsnotarray",
+        template: "Invalid decorators. Expected array. Found {value}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-49 / BC-17: no TS throw site (Decorated.process iterates a non-array decorators value, src/introspect/decorated.ts)",
+        ],
+    },
+    CatalogueEntry {
+        code: "modelfile-load-namenotstring",
+        template: "Invalid name. Expected a string. Found {value}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-49 / BC-20: no TS throw site (names are coerced with String(), src/introspect/*.ts)",
+        ],
+    },
+    CatalogueEntry {
+        code: "modelfile-load-supertypename",
+        template: "Invalid super type name. Expected a non-empty string. Found {value}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-49 / BC-20: no TS throw site (ClassDeclaration._resolveSuperType tests the name's truthiness, src/introspect/classdeclaration.ts)",
+        ],
+    },
+    CatalogueEntry {
+        code: "modelfile-load-astshape",
+        template: "Model AST does not conform to the metamodel: {message}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-49 / BC-19: no TS throw site (validateAst's check, src/basemodelmanager.ts:296, run at model load and re-thrown as an IllegalModelException)",
+        ],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",

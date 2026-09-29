@@ -1061,6 +1061,27 @@ export function runChecks(engine) {
     assert(err.message === 'Invalid decorator. Expected object. Found null', `message ${err.message}`);
   });
 
+  // P5-49 (BC-19 with BC-17 and BC-20, R1): the strict AST shape check the
+  // TS ModelFile constructor runs at load.
+  check('checkAstShape accepts a well-formed model and rejects a malformed one (BC-19)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    h.checkAstShape(JSON.stringify(MODEL));
+    assert(h.epoch() === epoch, 'the check does not move the epoch');
+    const cases = [
+      [{ ...MODEL, decorators: 'x' }, 'modelfile-load-decoratorsnotarray'],
+      [{ ...MODEL, undeclared: [] }, 'modelfile-load-astshape'],
+      [{ ...MODEL, declarations: [{ ...MODEL.declarations[0], name: 7 }] }, 'modelfile-load-namenotstring'],
+    ];
+    for (const [ast, code] of cases) {
+      const err = thrown(() => h.checkAstShape(JSON.stringify(ast)));
+      assert(err instanceof EngineError, `${code}: threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `${code}: kind ${err.payload.kind}`);
+      assert(err.payload.code === code, `${code}: code ${err.payload.code}`);
+    }
+    assert(thrown(() => h.checkAstShape('{')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
+  });
+
   // P5-06a lazy-views spike: the staging bindings load an AST once, then
   // validate and register the loaded file without it crossing again.
   check('a staged model file validates and commits like addModelWithDefinitions', () => {

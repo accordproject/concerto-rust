@@ -76,6 +76,10 @@ pub mod validation;
 pub mod metamodel {
     /// The metamodel's namespace, `concerto.metamodel@1.0.0`.
     pub use crate::instance::metamodel::METAMODEL_NAMESPACE as NAMESPACE;
+    /// The strict AST shape check TS runs when it builds a `ModelFile`
+    /// (BC-19, with BC-17 and BC-20, R1): an `IllegalModelException` for an
+    /// AST that does not have the metamodel's shape.
+    pub use crate::instance::metamodel::check_ast_shape;
     /// The version check and the structural check, as TS
     /// `BaseModelManager.validateAst` runs them.
     pub use crate::instance::metamodel::validate_ast;

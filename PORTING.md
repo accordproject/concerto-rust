@@ -594,6 +594,12 @@ Catalogue rules the trial added:
   `engine-typeerror-notafunction` (`{expression} is not a function`). The
   first is exact for any nullish receiver. The second needs the source
   expression, which the port writes as TS spells it (`imp.types.forEach`).
+  **Since BC-19 (R1, P5-49)** a model load checks the AST's shape first
+  (`instance::metamodel::check_ast_shape`, on unless a manager opts out with
+  `metamodelValidation: false`), so an AST-walk site reaches one of these
+  entries only on the opt-out path, which keeps TS 5.0.0's behaviour for this
+  major. None is retired: each is still reachable there, or from instance
+  data (the serializer, DCS commands).
 
 **Rendering is a faithful port of `globalize.ts` `messageFormatter`.** Params
 are replaced in insertion order. Each `{name}` is replaced *globally*, and
