@@ -1,0 +1,322 @@
+{
+ "file": "/home/user/wt/P5-30/data/timed/prof/engine/CPU.20260929.104655.28137.0.001.cpuprofile",
+ "kind": "cpuprof",
+ "total": 19981425,
+ "causes": {
+  "alloc": 21.9,
+  "hash + map probe (SipHash, Fx, indexmap, hashbrown)": 13.5,
+  "other": 12.9,
+  "std other": 11.2,
+  "drop": 10.5,
+  "json encode (serde_json::ser)": 8.3,
+  "concerto-core": 5.9,
+  "Value clone": 5,
+  "serde_json::Value other": 3.2,
+  "formatting (core::fmt)": 2.4,
+  "memcpy/memset/memcmp": 2.4,
+  "json parse (serde_json::de)": 1.8,
+  "regex (regress)": 1.1
+ },
+ "top": [
+  [
+   9.3,
+   "alloc",
+   "dlmalloc::dlmalloc::Dlmalloc<A>::free::ha98daa4c6dd8ad86"
+  ],
+  [
+   7.5,
+   "alloc",
+   "dlmalloc::dlmalloc::Dlmalloc<A>::malloc::he97e96981fab807e"
+  ],
+  [
+   7.3,
+   "other",
+   "(anon) [js concerto_wasm.js]"
+  ],
+  [
+   6,
+   "std other",
+   "<[T] as alloc::slice::SpecCloneIntoVec<T,A>>::clone_into::hdc3138f029098f14"
+  ],
+  [
+   4.3,
+   "hash + map probe (SipHash, Fx, indexmap, hashbrown)",
+   "indexmap::map::IndexMap<K,V,S>::get_index_of::h18dd6bffe9371a6d"
+  ],
+  [
+   3.8,
+   "json encode (serde_json::ser)",
+   "serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize::h6ca03b96ba63e894"
+  ],
+  [
+   3.7,
+   "drop",
+   "core::ptr::drop_in_place<indexmap::Bucket<alloc::string::String,serde_json::value::Value>>::hf79f8582fdb67dd3"
+  ],
+  [
+   2.9,
+   "drop",
+   "core::ptr::drop_in_place<indexmap::Bucket<alloc::string::String,serde_json::value::Value>>::h19f3753ce71ff7c5"
+  ],
+  [
+   2.5,
+   "alloc",
+   "dlmalloc::dlmalloc::Dlmalloc<A>::unlink_chunk::h16ef10954c05020c"
+  ],
+  [
+   2.4,
+   "Value clone",
+   "<serde_json::value::Value as core::clone::Clone>::clone::hbfd400c7db54a9cd.1009"
+  ],
+  [
+   2.4,
+   "memcpy/memset/memcmp",
+   "memcmp"
+  ],
+  [
+   2.4,
+   "hash + map probe (SipHash, Fx, indexmap, hashbrown)",
+   "indexmap::map::IndexMap<K,V,S>::insert_full::hbc13c91bf8455df7"
+  ],
+  [
+   2.3,
+   "other",
+   "passStringToWasm0 [js concerto_wasm.js]"
+  ],
+  [
+   2.1,
+   "hash + map probe (SipHash, Fx, indexmap, hashbrown)",
+   "<core::hash::sip::Hasher<S> as core::hash::Hasher>::write::h1510c8349ac00289"
+  ],
+  [
+   2.1,
+   "hash + map probe (SipHash, Fx, indexmap, hashbrown)",
+   "core::hash::BuildHasher::hash_one::h02748a3b3248fb7a"
+  ],
+  [
+   1.9,
+   "serde_json::Value other",
+   "serde_json::value::de::<impl serde_core::de::Deserialize for serde_json::value::Value>::deserialize::h80ff9244d80334ce"
+  ],
+  [
+   1.9,
+   "std other",
+   "<core::iter::adapters::GenericShunt<I,R> as core::iter::traits::iterator::Iterator>::next::ha6a4d016cd724091"
+  ],
+  [
+   1.8,
+   "hash + map probe (SipHash, Fx, indexmap, hashbrown)",
+   "<hashbrown::raw::RawTable<T,A> as core::clone::Clone>::clone_from::h21e3f0f14b1bdd11"
+  ],
+  [
+   1.7,
+   "json encode (serde_json::ser)",
+   "<&mut serde_json::ser::Serializer<W,F> as serde_core::ser::Serializer>::serialize_str::heb20178339e740d9"
+  ],
+  [
+   1.7,
+   "std other",
+   "<[T] as alloc::slice::SpecCloneIntoVec<T,A>>::clone_into::hdbdcc6290a6d929f"
+  ],
+  [
+   1.6,
+   "json encode (serde_json::ser)",
+   "serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize::hd553507c5b9464ba"
+  ],
+  [
+   1.5,
+   "drop",
+   "<alloc::vec::Vec<T,A> as core::ops::drop::Drop>::drop::h4c2b7248ceeebe0b"
+  ],
+  [
+   1.2,
+   "json encode (serde_json::ser)",
+   "serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize::h15c8e52afbe4b167"
+  ],
+  [
+   1.1,
+   "serde_json::Value other",
+   "<serde_json::value::ser::SerializeMap as serde_core::ser::SerializeMap>::serialize_value::he9679d4402abe04b"
+  ],
+  [
+   1,
+   "concerto-core",
+   "concerto_core::dcs::extractor::DecoratorExtractor::extract::h25acd4908b2551dc"
+  ],
+  [
+   1,
+   "drop",
+   "<alloc::vec::Vec<T,A> as core::ops::drop::Drop>::drop::h24e12596580fcbdb"
+  ],
+  [
+   1,
+   "formatting (core::fmt)",
+   "<alloc::string::String as core::fmt::Write>::write_str::he0f136bfd437b8d6.978"
+  ],
+  [
+   1,
+   "other",
+   "decode [js encoding]"
+  ],
+  [
+   0.9,
+   "Value clone",
+   "<T as alloc::slice::<impl [T]>::to_vec_in::ConvertVec>::to_vec::hdb7053f26ec44448"
+  ],
+  [
+   0.8,
+   "other",
+   "indexmap::inner::Core<K,V>::push_entry::h1d6d0ee9b755b824"
+  ],
+  [
+   0.8,
+   "regex (regress)",
+   "regress::classicalbacktrack::MatchAttempter<Input>::try_at_pos::h3ae781e0d50db5f2"
+  ],
+  [
+   0.8,
+   "alloc",
+   "__rustc[16f1505adc47261a]::__rust_realloc"
+  ],
+  [
+   0.7,
+   "concerto-core",
+   "concerto_core::introspect::declaration::Declaration::from_model_json::h4d26d08c6a4edb4f"
+  ],
+  [
+   0.7,
+   "alloc",
+   "hashbrown::raw::RawTable<T,A>::reserve_rehash::h1a263edd1a51475d"
+  ],
+  [
+   0.6,
+   "Value clone",
+   "<alloc::vec::Vec<T,A> as core::clone::Clone>::clone::h8cd3b41fde5b46fc"
+  ],
+  [
+   0.6,
+   "formatting (core::fmt)",
+   "core::fmt::write::h31474238f266a14a"
+  ],
+  [
+   0.5,
+   "Value clone",
+   "<indexmap::map::IndexMap<K,V,S> as core::clone::Clone>::clone::hf26378ca10496096"
+  ],
+  [
+   0.5,
+   "other",
+   "(js gc)"
+  ],
+  [
+   0.5,
+   "Value clone",
+   "<serde_json::value::Value as core::clone::Clone>::clone::hbfd400c7db54a9cd"
+  ],
+  [
+   0.4,
+   "formatting (core::fmt)",
+   "alloc::fmt::format::format_inner::h17065fade03a5f8e"
+  ],
+  [
+   0.4,
+   "alloc",
+   "alloc::raw_vec::RawVecInner<A>::finish_grow::ha88e379b052207d9"
+  ],
+  [
+   0.4,
+   "json parse (serde_json::de)",
+   "serde_json::read::SliceRead::skip_to_escape::hd518796e32ae8d58"
+  ],
+  [
+   0.3,
+   "concerto-core",
+   "concerto_core::introspect::declaration::parse_properties::h30d6b27ed046a468"
+  ],
+  [
+   0.3,
+   "json parse (serde_json::de)",
+   "<serde_json::de::MapAccess<R> as serde_core::de::MapAccess>::next_key_seed::hba9b2609972619ab"
+  ],
+  [
+   0.3,
+   "std other",
+   "<core::marker::PhantomData<T> as serde_core::de::DeserializeSeed>::deserialize::hd2107eb0302bdbeb"
+  ],
+  [
+   0.3,
+   "concerto-core",
+   "concerto_core::validation::<impl concerto_core::model_manager::ModelManager>::validate_model_file_with_import_scope::h703c7d851b012474"
+  ],
+  [
+   0.3,
+   "hash + map probe (SipHash, Fx, indexmap, hashbrown)",
+   "indexmap::map::IndexMap<K,V,S>::get_index_of::h569a4e92288568ce"
+  ],
+  [
+   0.3,
+   "std other",
+   "<core::marker::PhantomData<T> as serde_core::de::DeserializeSeed>::deserialize::hef1e20419e2350f0"
+  ],
+  [
+   0.3,
+   "json parse (serde_json::de)",
+   "<serde_json::read::StrRead as serde_json::read::Read>::parse_str::he430fe1b8126e1f4"
+  ],
+  [
+   0.3,
+   "other",
+   "indexmap::map::IndexMap<K,V>::with_capacity::h0123e883ec0115d8"
+  ],
+  [
+   0.3,
+   "drop",
+   "core::ptr::drop_in_place<serde_json::value::Value>::h155b33387f2b4050"
+  ],
+  [
+   0.3,
+   "alloc",
+   "alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle::h4a4baaf90ee85523"
+  ],
+  [
+   0.3,
+   "concerto-core",
+   "concerto_core::introspect::property::Property::check_bound_validators::h1dcebb07dc50ede4"
+  ],
+  [
+   0.3,
+   "formatting (core::fmt)",
+   "core::fmt::Formatter::pad::h950d3375a7ef2727"
+  ],
+  [
+   0.3,
+   "concerto-core",
+   "concerto_core::validation::check_unique_field_names::h5c288f1c8458c152"
+  ],
+  [
+   0.2,
+   "concerto-core",
+   "concerto_core::model_manager::ModelManager::properties::h11beab653bf770b9"
+  ],
+  [
+   0.2,
+   "concerto-core",
+   "concerto_core::model_manager::ModelManager::model_file_id::h23120c17355a2d56"
+  ],
+  [
+   0.2,
+   "regex (regress)",
+   "regress::api::Regex::find::hfbb9abdd7d9f3783"
+  ],
+  [
+   0.2,
+   "concerto-core",
+   "concerto_core::model_manager::metamodel_util::resolve_type_names::hfd00527e076f0778"
+  ],
+  [
+   0.2,
+   "json parse (serde_json::de)",
+   "serde_json::de::Deserializer<R>::parse_object_colon::h6d98a5b9ebd577d5"
+  ]
+ ]
+}
