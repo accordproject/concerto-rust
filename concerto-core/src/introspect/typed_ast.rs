@@ -262,8 +262,10 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     let mut explicit_null_super_type = false;
     // `ClassDeclaration::from_json` decodes the struct from these three
     // fields as `normalize_class_fields` leaves them.
-    let mut normalize = |taken: &Map<String, Value>| {
-        let mut fields = taken.clone();
+    // P5-48: the taken fields are moved, not copied: nothing reads them
+    // after this.
+    let mut normalize = |taken: &mut Map<String, Value>| {
+        let mut fields = std::mem::take(taken);
         explicit_null_super_type = normalize_class_fields(&mut fields);
         fields.into_iter().collect()
     };
@@ -383,7 +385,7 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     let mut taken = Map::new();
     // `Property::try_from` gives an `ObjectProperty` with no (or a `null`)
     // `type` a placeholder one.
-    let mut object_type = |taken: &Map<String, Value>| match taken.get("type") {
+    let mut object_type = |taken: &mut Map<String, Value>| match taken.get("type") {
         Some(value) if !value.is_null() => vec![("type".to_string(), value.clone())],
         _ => vec![("type".to_string(), object_type_placeholder())],
     };
@@ -478,7 +480,7 @@ enum Pending {
 }
 
 /// Makes the entries handed back to the struct from the taken ones.
-type PutBack<'a> = dyn FnMut(&Map<String, Value>) -> Vec<(String, Value)> + 'a;
+type PutBack<'a> = dyn FnMut(&mut Map<String, Value>) -> Vec<(String, Value)> + 'a;
 
 /// The entries of a node after its `$class`, handed to a generated struct,
 /// with some keys taken out on the way:

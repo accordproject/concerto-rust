@@ -5738,7 +5738,14 @@ impl ModelManagerHandle {
             let model_file = model_file_from_text(ast, definitions, file_name)?;
             let namespace = model_file.namespace().to_string();
             if validate && self.manager.model_file(&namespace).is_none() {
-                self.manager.validate_detached_model_file(&model_file)?;
+                // P5-48: validated and registered in one step, without a
+                // scratch copy of the manager (the same checks and errors
+                // as `validate_detached_model_file` then `add_model_file`).
+                return self
+                    .manager
+                    .validate_and_add_model_file(model_file)
+                    .map(ModelFileId::index)
+                    .map_err(|(err, _)| err.into());
             }
             self.manager.add_model_file(model_file)?;
             self.manager
@@ -5840,14 +5847,29 @@ impl ModelManagerHandle {
         &mut self,
         stage: u32,
     ) -> std::result::Result<Option<u32>, JsValue> {
-        let Some(file) = self.staged.files.get(&stage) else {
+        let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
-        run(|| {
-            self.manager.validate_detached_model_file(file)?;
-            Ok(())
-        })?;
-        self.commit_staged_model_file(stage)
+        // P5-48 (accordproject/concerto-rust#369): validated and registered
+        // in one step (`ModelManager::validate_and_add_model_file`), without
+        // a scratch copy of the manager and of the file. A validation error
+        // hands the file back, and it stays staged under the same id, as
+        // before; the epoch moves once validation has passed, as
+        // `commit_staged_model_file` moves it.
+        match self.manager.validate_and_add_model_file(file) {
+            Ok(id) => {
+                self.epoch += 1;
+                Ok(Some(ModelFileId::index(id)))
+            }
+            Err((err, Some(file))) => {
+                self.staged.files.insert(stage, *file);
+                run(|| Err(err.into()))
+            }
+            Err((err, None)) => {
+                self.epoch += 1;
+                run(|| Err(err.into()))
+            }
+        }
     }
 
     /// P5-06a: [`Self::model_file_validate_detached`] for a staged model
@@ -7453,15 +7475,27 @@ impl DcsManagerHandle {
     /// validated}`: `ast` is what that binding returns, `staged` is
     /// [`stage_result`]'s entries for `ast.models`, and `validated` is
     /// whether the result manager was validated (every model but the system
-    /// ones, under the default options a fresh handle has).
+    /// ones).
+    ///
+    /// P5-54 (accordproject/concerto-rust#375): the result is validated
+    /// with `target`'s `decoratorValidation`, as TS validates it in
+    /// `new ModelManager({decoratorValidation: modelManager
+    /// .getDecoratorValidation()}).fromAst(…)`: the view builds `target`
+    /// with the source manager's option, and [`dcs::decorate_models`] gives
+    /// its result the input manager's, so the resident manager takes
+    /// `target`'s before it runs. A fresh resident manager has the default
+    /// (disabled) option, so without this the view, which trusts
+    /// `validated`, skipped the decorator checks.
     #[wasm_bindgen(js_name = decorateModels)]
     pub fn decorate_models(
-        &self,
+        &mut self,
         target: &mut ModelManagerHandle,
         decorator_command_sets: JsValue,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
         run(|| {
+            self.manager
+                .set_decorator_validation(target.manager.decorator_validation().clone());
             let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
             let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
 

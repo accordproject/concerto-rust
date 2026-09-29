@@ -222,7 +222,7 @@ impl ModelFile {
         // that use them (P0-04b).
         let is_system = is_system_namespace;
         if !is_system {
-            imports.push(Import::try_from(&built_in_import())?);
+            imports.push(built_in_import_typed()?);
         }
 
         // TS: `ModelFile.fromAst`'s `imports.forEach` loop (modelfile.ts)
@@ -240,13 +240,8 @@ impl ModelFile {
                     ));
                 }
             }
-            let versioned = matches!(
-                model_util::parse_namespace_with(Some(imp.namespace()), false)?,
-                model_util::ParsedNamespace::Full {
-                    version: Some(_),
-                    ..
-                }
-            );
+            // P5-48: `parseNamespace`'s checks, without its owned result.
+            let versioned = model_util::split_namespace(imp.namespace())?.1.is_some();
             if !versioned {
                 return Err(plain_error(format!(
                     "Cannot use an unversioned import {}.",
@@ -968,6 +963,21 @@ fn built_in_import() -> serde_json::Value {
         "namespace": "concerto@1.0.0",
         "types": ["Concept", "Asset", "Transaction", "Participant", "Event"]
     })
+}
+
+thread_local! {
+    /// [`built_in_import`], read once per thread (P5-48: every non-system
+    /// model load appends it).
+    static BUILT_IN_IMPORT: Option<Import> = Import::try_from(&built_in_import()).ok();
+}
+
+/// [`built_in_import`] as an [`Import`]: the cached copy, or, if it could
+/// not be read (it always can), the error reading it gives.
+fn built_in_import_typed() -> Result<Import> {
+    match BUILT_IN_IMPORT.with(Clone::clone) {
+        Some(import) => Ok(import),
+        None => Import::try_from(&built_in_import()),
+    }
 }
 
 impl ModelFile {
