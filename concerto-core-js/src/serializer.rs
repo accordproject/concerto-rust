@@ -152,11 +152,11 @@ impl Serializer {
         let resource = if class_declaration.is_transaction() {
             let ns_value = JsValue::String(ns.to_string());
             let name_value = JsValue::String(name.to_string());
-            factory::new_transaction(mm, &ns_value, &name_value, id, false, env)?
+            factory::new_transaction_to_populate(mm, &ns_value, &name_value, id, false, env)?
         } else if class_declaration.is_event() {
             let ns_value = JsValue::String(ns.to_string());
             let name_value = JsValue::String(name.to_string());
-            factory::new_event(mm, &ns_value, &name_value, id, false, env)?
+            factory::new_event_to_populate(mm, &ns_value, &name_value, id, false, env)?
         } else if class_declaration.is_map_declaration() {
             return Err(plain_error("serializer-fromjson-mapnotsupported"));
         } else if class_declaration.is_enum() {
@@ -397,6 +397,76 @@ mod tests {
             map.get("built"),
             Some(&JsValue::String("2021-01-01T11:00:00.000+01:00".into()))
         );
+    }
+
+    /// P5-24 (BC-45, R1): population applies a non-strict `DateTime`
+    /// default only when the document gives the field no value (absent or
+    /// `null`), and then throws a `ValidationException`; a value of its own
+    /// replaces the default, at the root, in a nested concept and in a
+    /// transaction alike.
+    #[test]
+    fn from_json_applies_a_non_strict_date_time_default_only_when_it_stays() {
+        let at = |default: &str| {
+            json!({
+                "$class": "concerto.metamodel@1.0.0.DateTimeProperty",
+                "name": "at", "isArray": false, "isOptional": true, "defaultValue": default
+            })
+        };
+        let mut mm = ModelManager::new().expect("a model manager");
+        mm.add_model_with_definitions(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.dates@1.0.0",
+                "imports": [],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Inner",
+                      "isAbstract": false, "properties": [ at("2008-09-15T15:53:00") ] },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Outer",
+                      "isAbstract": false, "properties": [
+                          at("2008-09-15T15:53:00"),
+                          property("ObjectProperty", "inner", json!({
+                              "isOptional": true,
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Inner" }
+                          }))
+                      ] },
+                    { "$class": "concerto.metamodel@1.0.0.TransactionDeclaration", "name": "Tx",
+                      "isAbstract": false, "properties": [ at("2022-11-18") ] },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Good",
+                      "isAbstract": false, "properties": [ at("2008-09-15T15:53:00Z") ] }
+                ]
+            }),
+            None,
+            Some("dates.cto".into()),
+        )
+        .expect("a lenient DateTime default does not fail model load");
+        let from = |v: serde_json::Value| {
+            serializer().from_json(&mm, &JsValue::from_json(&v), None, &mut Env)
+        };
+        let code = |r: Result<Instance>| {
+            let err = r.unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::Validation, "{err}");
+            err.code().to_string()
+        };
+        let given = "2020-01-01T00:00:00Z";
+        for bad in [
+            json!({ "$class": "org.dates@1.0.0.Outer" }),
+            json!({ "$class": "org.dates@1.0.0.Outer", "at": null }),
+            json!({ "$class": "org.dates@1.0.0.Outer", "at": given,
+                    "inner": { "$class": "org.dates@1.0.0.Inner" } }),
+            json!({ "$class": "org.dates@1.0.0.Tx" }),
+        ] {
+            assert_eq!(code(from(bad)), "typed-assignfielddefaults-datetime");
+        }
+        for ok in [
+            json!({ "$class": "org.dates@1.0.0.Outer", "at": given }),
+            json!({ "$class": "org.dates@1.0.0.Outer", "at": given,
+                    "inner": { "$class": "org.dates@1.0.0.Inner", "at": given } }),
+            json!({ "$class": "org.dates@1.0.0.Tx", "at": given }),
+            json!({ "$class": "org.dates@1.0.0.Good" }),
+        ] {
+            let instance = from(ok).expect("no non-strict default stays");
+            assert!(matches!(instance.get("at"), JsValue::DateTime(d) if d.is_valid()));
+        }
     }
 
     #[test]

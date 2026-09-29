@@ -90,6 +90,27 @@ pub fn build_resource(
     disable_validation: bool,
     env: &mut dyn InstanceEnv,
 ) -> Result<Instance> {
+    build_resource_with(
+        mm,
+        ns,
+        type_name,
+        check,
+        disable_validation,
+        env,
+        Defaults::Create,
+    )
+}
+
+/// [`build_resource`], with the defaults applied as `mode` says.
+fn build_resource_with(
+    mm: &ModelManager,
+    ns: &str,
+    type_name: &str,
+    check: NewResourceCheck,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+    mode: Defaults,
+) -> Result<Instance> {
     let timestamp = if check.timestamped {
         JsValue::DateTime(Dayjs::utc_now(env.now_ms()))
     } else {
@@ -110,7 +131,8 @@ pub fn build_resource(
         check.id.clone(),
         timestamp,
     );
-    assign_field_defaults(mm, &mut instance)?;
+    let class_decl = model::get_type(mm, &instance.class_fqn)?;
+    assign_field_defaults_of(&class_decl, &mut instance, mode)?;
     if let Some(id_field) = &check.identifier_field_name {
         instance.set(id_field, check.id);
     }
@@ -127,14 +149,37 @@ pub fn new_resource(
     disable_validation: bool,
     env: &mut dyn InstanceEnv,
 ) -> Result<Instance> {
+    new_resource_with(
+        mm,
+        ns,
+        type_name,
+        id,
+        disable_validation,
+        env,
+        Defaults::Create,
+    )
+}
+
+/// [`new_resource`], with the defaults applied as `mode` says.
+fn new_resource_with(
+    mm: &ModelManager,
+    ns: &str,
+    type_name: &str,
+    id: JsValue,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+    mode: Defaults,
+) -> Result<Instance> {
     let check = check_new_resource(mm, ns, type_name, id, &mut || env.new_id())?;
-    build_resource(mm, ns, type_name, check, disable_validation, env)
+    build_resource_with(mm, ns, type_name, check, disable_validation, env, mode)
 }
 
 /// [`new_resource`] for a declaration already found (P5-13): what
 /// `newResource(decl.getNamespace(), decl.getName(), id)` does, whose own
 /// type lookup finds `decl` again. The identifiable field name and the
-/// field defaults are read off `decl` itself.
+/// field defaults are read off `decl` itself. Only population calls this,
+/// so the defaults are applied as population applies them
+/// ([`Defaults::Populate`]).
 pub(crate) fn new_resource_of(
     decl: &TypeRef,
     id: JsValue,
@@ -171,7 +216,7 @@ pub(crate) fn new_resource_of(
         id.clone(),
         timestamp,
     );
-    assign_field_defaults_of(decl, &mut instance)?;
+    assign_field_defaults_of(decl, &mut instance, Defaults::Populate)?;
     if let Some(id_field) = &check.identifier_field_name {
         instance.set(id_field, id);
     }
@@ -265,9 +310,50 @@ pub fn new_transaction(
     disable_validation: bool,
     env: &mut dyn InstanceEnv,
 ) -> Result<Instance> {
+    new_transaction_with(
+        mm,
+        ns,
+        type_name,
+        id,
+        disable_validation,
+        env,
+        Defaults::Create,
+    )
+}
+
+/// [`new_transaction`] for population ([`Defaults::Populate`]).
+pub(crate) fn new_transaction_to_populate(
+    mm: &ModelManager,
+    ns: &JsValue,
+    type_name: &JsValue,
+    id: JsValue,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+) -> Result<Instance> {
+    new_transaction_with(
+        mm,
+        ns,
+        type_name,
+        id,
+        disable_validation,
+        env,
+        Defaults::Populate,
+    )
+}
+
+/// [`new_transaction`], with the defaults applied as `mode` says.
+fn new_transaction_with(
+    mm: &ModelManager,
+    ns: &JsValue,
+    type_name: &JsValue,
+    id: JsValue,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+    mode: Defaults,
+) -> Result<Instance> {
     check_ns_and_type(ns, type_name)?;
     let (ns, type_name) = (ns.to_js_string(), type_name.to_js_string());
-    let transaction = new_resource(mm, &ns, &type_name, id, disable_validation, env)?;
+    let transaction = new_resource_with(mm, &ns, &type_name, id, disable_validation, env, mode)?;
     let decl = model::get_type(mm, &transaction.class_fqn)?;
     if !decl.is_transaction() {
         return Err(error(
@@ -288,9 +374,50 @@ pub fn new_event(
     disable_validation: bool,
     env: &mut dyn InstanceEnv,
 ) -> Result<Instance> {
+    new_event_with(
+        mm,
+        ns,
+        type_name,
+        id,
+        disable_validation,
+        env,
+        Defaults::Create,
+    )
+}
+
+/// [`new_event`] for population ([`Defaults::Populate`]).
+pub(crate) fn new_event_to_populate(
+    mm: &ModelManager,
+    ns: &JsValue,
+    type_name: &JsValue,
+    id: JsValue,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+) -> Result<Instance> {
+    new_event_with(
+        mm,
+        ns,
+        type_name,
+        id,
+        disable_validation,
+        env,
+        Defaults::Populate,
+    )
+}
+
+/// [`new_event`], with the defaults applied as `mode` says.
+fn new_event_with(
+    mm: &ModelManager,
+    ns: &JsValue,
+    type_name: &JsValue,
+    id: JsValue,
+    disable_validation: bool,
+    env: &mut dyn InstanceEnv,
+    mode: Defaults,
+) -> Result<Instance> {
     check_ns_and_type(ns, type_name)?;
     let (ns, type_name) = (ns.to_js_string(), type_name.to_js_string());
-    let event = new_resource(mm, &ns, &type_name, id, disable_validation, env)?;
+    let event = new_resource_with(mm, &ns, &type_name, id, disable_validation, env, mode)?;
     let decl = model::get_type(mm, &event.class_fqn)?;
     if !decl.is_event() {
         return Err(error(
@@ -307,21 +434,58 @@ pub fn new_event(
 /// (which validates it on a `ValidatedResource`).
 pub fn assign_field_defaults(mm: &ModelManager, instance: &mut Instance) -> Result<()> {
     let class_decl = model::get_type(mm, &instance.class_fqn)?;
-    assign_field_defaults_of(&class_decl, instance)
+    assign_field_defaults_of(&class_decl, instance, Defaults::Create)
+}
+
+/// Who applies the field defaults (P5-24, BC-45): a `DateTime` default
+/// that is not strict throws when it is applied.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Defaults {
+    /// Instance creation (`Factory.newResource`): every default is applied,
+    /// so a non-strict `DateTime` one throws at once, after the defaults
+    /// before it were set.
+    Create,
+    /// Population (`JSONPopulator`): the document may still replace the
+    /// default, so it is set as an invalid date, TS's `dayjs.utc(default)`,
+    /// and [`crate::populator::JSONPopulator::visit_class_declaration`]
+    /// throws only if it is still there once the fields are populated.
+    Populate,
 }
 
 /// [`assign_field_defaults`] for the declaration of `instance`.
-fn assign_field_defaults_of(class_decl: &TypeRef, instance: &mut Instance) -> Result<()> {
+fn assign_field_defaults_of(
+    class_decl: &TypeRef,
+    instance: &mut Instance,
+    mode: Defaults,
+) -> Result<()> {
     let mm = class_decl.mm;
     from_json::assign_field_defaults_of(class_decl, &mut |name, value| {
         let value = match value {
             FieldDefault::Number(n) => JsValue::Number(n),
             FieldDefault::Bool(b) => JsValue::Bool(b),
             FieldDefault::DateTime(d) => JsValue::DateTime(d),
+            FieldDefault::InvalidDateTime(err) if mode == Defaults::Create => return Err(err),
+            FieldDefault::InvalidDateTime(_) => JsValue::DateTime(Dayjs::utc_invalid()),
             FieldDefault::Json(v) => JsValue::from_json(&v),
         };
         super::resource::set_property_value(mm, instance, name, value)
     })
+}
+
+/// P5-24 (BC-45, R1): the error of the first field of `instance` (of
+/// `class_decl`) whose non-strict `DateTime` default population left in
+/// place ([`Defaults::Populate`]): an invalid date, which no populated value
+/// can be.
+pub(crate) fn check_populated_date_time_defaults(
+    class_decl: &TypeRef,
+    instance: &Instance,
+) -> Result<()> {
+    for (name, err) in from_json::invalid_date_time_defaults_of(class_decl) {
+        if matches!(instance.props.get(&name), Some(JsValue::DateTime(d)) if !d.is_valid()) {
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 /// Keys of `props`, for tests.
@@ -414,6 +578,52 @@ mod tests {
         );
         assert_eq!(car.get("wheels"), &JsValue::Number(4.0));
         assert_eq!(car.get("$timestamp"), &JsValue::Null);
+    }
+
+    /// P5-24 (BC-45, R1): instance creation applies every default, so a
+    /// `DateTime` default that is not strict throws a `ValidationException`
+    /// there; the model itself loads, and a strict default is set.
+    #[test]
+    fn new_resource_rejects_a_non_strict_date_time_default() {
+        let model_with = |default: &str| {
+            manager(serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.dates@1.0.0",
+                "imports": [],
+                "declarations": [{
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "C",
+                    "isAbstract": false,
+                    "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.DateTimeProperty", "name": "at",
+                          "isArray": false, "isOptional": true, "defaultValue": default }
+                    ]
+                }]
+            }))
+        };
+        let create = |mm: &ModelManager| {
+            new_resource(
+                mm,
+                "org.dates@1.0.0",
+                "C",
+                JsValue::Undefined,
+                false,
+                &mut Env,
+            )
+        };
+        let ok = create(&model_with("2008-09-15T15:53:00Z")).expect("a strict default");
+        assert!(matches!(ok.get("at"), JsValue::DateTime(d) if d.is_valid()));
+        for bad in [
+            "2008-09-15T15:53:00",
+            "2022-11-18",
+            "",
+            "FOO",
+            "2024-02-30T00:00:00Z",
+        ] {
+            let err = create(&model_with(bad)).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::Validation, "{err}");
+            assert_eq!(err.code(), "typed-assignfielddefaults-datetime", "{bad}");
+        }
     }
 
     #[test]

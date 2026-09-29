@@ -527,6 +527,9 @@ impl<'a> Populator<'a> {
                 self.pop_path();
             }
         }
+        // P5-24 (BC-45, R1): a non-strict `DateTime` default the document
+        // did not replace is applied, so it throws.
+        factory::check_populated_date_time_defaults(class_declaration, &resource)?;
         Ok(resource)
     }
 

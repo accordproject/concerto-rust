@@ -883,7 +883,8 @@ Rules:
   - chrono's RFC 3339 parser then checks the calendar: a real date, no
     `24:00`, no leap second, offsets up to ±23:59;
   - precision is milliseconds, and extra fraction digits are truncated.
-  The same rule applies to fields, map values and model default values.
+  The same rule applies to fields, map values and model default values
+  (a default when it is applied, not at model load: BC-45).
 - **Formatting** follows `JSONGenerator.convertToJSON`:
   `YYYY-MM-DDTHH:mm:ss.SSS` followed by `Z` when the offset is 0, or `±HH:mm`
   otherwise.

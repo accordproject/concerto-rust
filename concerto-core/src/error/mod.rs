@@ -1701,16 +1701,16 @@ mod tests {
     }
 
     // Not a TS template: BC-45 (P5-24, accordproject/concerto-rust#328),
-    // Rust's check of a `DateTime` default value at model load.
+    // Rust's check of a `DateTime` default value when it is applied.
     #[test]
-    fn golden_modelfile_validate_datetimedefault() {
+    fn golden_typed_assignfielddefaults_datetime() {
         assert_eq!(
             contract(
-                "modelfile-validate-datetimedefault",
+                "typed-assignfielddefaults-datetime",
                 &[("value", "2022-11-18"), ("fqn", "org.acme@1.0.0.Foo.bar")]
             )
             .message(),
-            "Invalid default value `2022-11-18` for DateTime `org.acme@1.0.0.Foo.bar`: expected an ISO 8601 date-time with an offset, YYYY-MM-DDTHH:mm:ss[.SSS](Z|+HH:mm|-HH:mm), naming a real instant"
+            "Invalid default value `2022-11-18` for the DateTime field `org.acme@1.0.0.Foo.bar`: expected an ISO 8601 date-time with an offset, YYYY-MM-DDTHH:mm:ss[.SSS](Z|+HH:mm|-HH:mm), naming a real instant"
         );
     }
 

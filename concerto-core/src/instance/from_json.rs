@@ -529,8 +529,17 @@ js_compat_pub! {
         Number(f64),
         /// A `Boolean` default: `default === true`.
         Bool(bool),
-        /// A `DateTime` default: `dayjs.utc(default)`.
+        /// A `DateTime` default: `dayjs.utc(default)`, of a strict
+        /// `DateTime` string (BC-45).
         DateTime(Dayjs),
+        /// P5-24 (BC-45, R1; accordproject/concerto-rust#328): a `DateTime`
+        /// default that is not a strict `DateTime` string. It is not
+        /// rejected at model load but when it is applied: the error to
+        /// throw then, a `ValidationException`
+        /// (`typed-assignfielddefaults-datetime`). Instance creation
+        /// (`Factory.newResource`) always applies it; population
+        /// (`fromJSON`) only when the document gives the field no value.
+        InvalidDateTime(Error),
         /// A `String` or enum default, as it is in the AST.
         Json(Value),
     }
@@ -580,6 +589,31 @@ js_compat_pub! {
     }
 }
 
+js_compat_pub! {
+    /// P5-24 (BC-45, R1): the fields of `class_decl` whose `DateTime`
+    /// default is not a strict `DateTime` string
+    /// ([`FieldDefault::InvalidDateTime`]), each with the error applying it
+    /// throws, in `getProperties()` order: read off the cached defaults, and
+    /// empty for almost every declaration (and when a field's type does not
+    /// resolve, which fails the instance's creation first).
+    pub fn invalid_date_time_defaults_of(class_decl: &TypeRef) -> Vec<(String, Error)> {
+        let Ok(defaults) = class_decl
+            .mm
+            .cached_instance_facts(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())))
+        else {
+            return Vec::new();
+        };
+        defaults
+            .0
+            .iter()
+            .filter_map(|(name, value)| match value {
+                FieldDefault::InvalidDateTime(err) => Some((name.clone(), err.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 /// The defaults [`assign_field_defaults_of`] caches for one declaration.
 struct FieldDefaults(Vec<(String, FieldDefault)>);
 
@@ -618,11 +652,12 @@ fn field_defaults(
             }
             "Double" => FieldDefault::Number(ecma::parse_float(&ecma::to_js_string(default_value))),
             "Boolean" => FieldDefault::Bool(*default_value == Value::Bool(true)),
-            "DateTime" => FieldDefault::DateTime(match default_value {
-                Value::String(s) => Dayjs::utc_parse(s),
-                Value::Number(n) => Dayjs::utc_from_number(n.as_f64().unwrap_or(f64::NAN)),
-                _ => Dayjs::utc_invalid(),
-            }),
+            // P5-24 (BC-45, R1; accordproject/concerto-rust#328): the
+            // default must be a strict `DateTime` string, the rule a field
+            // value follows, checked when it is applied (instance creation
+            // or population), not at model load. TS builds
+            // `dayjs.utc(default)` whatever it is.
+            "DateTime" => strict_date_time_default(default_value, owner_fqn, name),
             // String, and "if we get this far the field should be an enum".
             _ => FieldDefault::Json(default_value.clone()),
         };
@@ -630,6 +665,31 @@ fn field_defaults(
         defaults.push((name.to_string(), value));
     }
     Ok(FieldDefaults(defaults))
+}
+
+/// A `DateTime` default read with the strict rule (BC-45): a string that
+/// [`Dayjs::utc_parse`] reads as a valid instant, or else
+/// [`FieldDefault::InvalidDateTime`] with a `ValidationException` (the class
+/// a strict `DateTime` field value's rejection has) naming the field. A
+/// number, which `dayjs.utc(n)` used to read, is not a `DateTime` string
+/// either.
+fn strict_date_time_default(default_value: &Value, owner_fqn: &str, name: &str) -> FieldDefault {
+    if let Some(parsed) = default_value
+        .as_str()
+        .map(Dayjs::utc_parse)
+        .filter(Dayjs::is_valid)
+    {
+        return FieldDefault::DateTime(parsed);
+    }
+    FieldDefault::InvalidDateTime(ContractError::new(
+        ErrorKind::Validation,
+        "typed-assignfielddefaults-datetime",
+        vec![
+            ("value", ecma::to_js_string(default_value)),
+            ("fqn", format!("{owner_fqn}.{name}")),
+        ],
+    )
+    .into())
 }
 
 /// The raw AST `defaultValue` of a property of `owner_fqn`
@@ -658,6 +718,11 @@ struct Resource {
     /// `this.$identifierFieldName`.
     identifier_key: String,
     props: Map<String, Value>,
+    /// P5-24 (BC-45): each property whose `DateTime` default is not strict,
+    /// with the error applying it throws. Population throws it only when
+    /// the document gives the property no value, so the default stays
+    /// ([`Populator::visit_class_declaration`]).
+    invalid_defaults: Vec<(String, Error)>,
 }
 
 impl Resource {
@@ -789,6 +854,7 @@ impl Populator<'_> {
             class_fqn: check.class_fqn,
             identifier_key,
             props,
+            invalid_defaults: Vec::new(),
         };
         let mm = self.mm;
         assign_field_defaults_of(class_decl, &mut |name, value| {
@@ -796,6 +862,14 @@ impl Populator<'_> {
                 FieldDefault::Number(n) => js_number(n),
                 FieldDefault::Bool(b) => Value::Bool(b),
                 FieldDefault::DateTime(d) => d.validator_value(),
+                // BC-45: held until the document's own value is known. The
+                // property keeps its place with an invalid date, what TS's
+                // `dayjs.utc(default)` gave, so a value the document gives
+                // later lands where TS puts it.
+                FieldDefault::InvalidDateTime(err) => {
+                    resource.invalid_defaults.push((name.to_string(), err));
+                    Dayjs::utc_invalid().validator_value()
+                }
                 FieldDefault::Json(v) => plain(Some(&v)),
             };
             set_property_value(mm, &mut resource, name, value)
@@ -864,9 +938,17 @@ impl Populator<'_> {
                     .expect("validateProperties found every property");
                 let field = model::field(self.mm, owner_fqn, class_property)?;
                 let populated = self.visit_property(&field, value.as_deref())?;
+                resource
+                    .invalid_defaults
+                    .retain(|(name, _)| *name != *property);
                 resource.props.insert(property.into_owned(), populated);
                 self.pop_path();
             }
+        }
+        // BC-45: a non-strict `DateTime` default the document did not
+        // replace is applied, so it throws.
+        if let Some((_, err)) = resource.invalid_defaults.drain(..).next() {
+            return Err(err);
         }
         Ok(resource)
     }
@@ -1474,6 +1556,130 @@ mod tests {
         assert_eq!(value["built"][validate::DAYJS_TAG], "2024-01-02T03:04:05.000Z");
         assert_eq!(value["owner"][validate::RELATIONSHIP_TAG], true);
         assert_eq!(value["owner"]["vin"], "V2");
+    }
+
+    /// A model with a `DateTime` default on a property and on a scalar.
+    fn date_time_default_manager(property: Value, scalar: Value) -> ModelManager {
+        let mut mm = ModelManager::new().unwrap();
+        mm.load_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.dates@1.0.0",
+                "imports": [],
+                "declarations": [
+                    {
+                        "$class": "concerto.metamodel@1.0.0.DateTimeScalar",
+                        "name": "When",
+                        "defaultValue": scalar
+                    },
+                    {
+                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                        "name": "P",
+                        "isAbstract": false,
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "n", "isArray": false, "isOptional": false, "defaultValue": 1 },
+                            { "$class": "concerto.metamodel@1.0.0.DateTimeProperty", "name": "at", "isArray": false, "isOptional": true, "defaultValue": property }
+                        ]
+                    },
+                    {
+                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                        "name": "S",
+                        "isAbstract": false,
+                        "properties": [
+                            {
+                                "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+                                "name": "when",
+                                "isArray": false,
+                                "isOptional": true,
+                                "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "When" }
+                            }
+                        ]
+                    }
+                ]
+            }),
+            None,
+        )
+        .expect("a lenient DateTime default does not fail model load (BC-45 is lazy)");
+        mm
+    }
+
+    /// P5-24 (BC-45, R1): a `DateTime` default, on a property or a scalar,
+    /// must be a strict `DateTime` string. The model loads whatever the
+    /// default is; a bad one throws a `ValidationException` when population
+    /// applies it (the document gives the field no value, or `null`), and
+    /// not when the document gives the field its own value.
+    #[test]
+    fn a_date_time_default_is_checked_when_it_is_applied() {
+        let populate = |mm: &ModelManager, class: &str| {
+            from_json(
+                mm,
+                &json!({ "$class": format!("org.dates@1.0.0.{class}") }),
+                &FromJsonOptions::default(),
+                &mut FixedEnv,
+            )
+        };
+        for ok in [json!("2022-11-18T00:00:00Z"), json!("2022-11-18T01:02:03.5+01:00")] {
+            let mm = date_time_default_manager(ok.clone(), ok);
+            let p = populate(&mm, "P").expect("a strict property default");
+            assert!(p["at"][validate::DAYJS_TAG].is_string(), "{p}");
+            populate(&mm, "S").expect("a strict scalar default");
+        }
+        for (bad, shown) in [
+            (json!("2022-11-18"), "2022-11-18"),
+            (json!("2008-09-15T15:53:00"), "2008-09-15T15:53:00"),
+            (json!(""), ""),
+            (json!("FOO"), "FOO"),
+            (json!("2024-02-30T00:00:00Z"), "2024-02-30T00:00:00Z"),
+            (json!("2024-01-02T24:00:00Z"), "2024-01-02T24:00:00Z"),
+            (json!(1), "1"),
+        ] {
+            // A non-string scalar default does not load at all: the typed
+            // `DateTimeScalar` holds a string. Keep the scalar strict then.
+            let scalar = if bad.is_string() {
+                bad.clone()
+            } else {
+                json!("2022-11-18T00:00:00Z")
+            };
+            let mm = date_time_default_manager(bad.clone(), scalar);
+            let err = populate(&mm, "P").unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::Validation, "{err}");
+            assert_eq!(err.code(), "typed-assignfielddefaults-datetime");
+            assert!(
+                err.to_string()
+                    .contains(&format!("`{shown}` for the DateTime field `org.dates@1.0.0.P.at`")),
+                "{err}"
+            );
+            let err = from_json(
+                &mm,
+                &json!({ "$class": "org.dates@1.0.0.P", "at": null }),
+                &FromJsonOptions::default(),
+                &mut FixedEnv,
+            )
+            .unwrap_err();
+            assert_eq!(err.code(), "typed-assignfielddefaults-datetime");
+            let given = from_json(
+                &mm,
+                &json!({ "$class": "org.dates@1.0.0.P", "at": "2020-01-01T00:00:00Z" }),
+                &FromJsonOptions::default(),
+                &mut FixedEnv,
+            )
+            .expect("the document's own value replaces the default");
+            assert_eq!(
+                given.as_object().unwrap().keys().collect::<Vec<_>>(),
+                ["$class", "$identifier", "$timestamp", "n", "at"],
+                "the given value keeps the default's place"
+            );
+            assert_eq!(given["at"][validate::DAYJS_TAG], "2020-01-01T00:00:00.000Z");
+            if bad.is_string() {
+                let err = populate(&mm, "S").unwrap_err();
+                assert_eq!(err.kind(), ErrorKind::Validation, "{err}");
+                assert!(
+                    err.to_string()
+                        .contains(&format!("`{shown}` for the DateTime field `org.dates@1.0.0.S.when`")),
+                    "{err}"
+                );
+            }
+        }
     }
 
     #[test]
