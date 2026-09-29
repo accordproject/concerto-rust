@@ -319,6 +319,7 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
     }
     let trimmed = ecma::js_trim(version);
     let m = scan_full(trimmed)?;
+    let version_span = m.major.start..m.prerelease.as_ref().map_or(m.patch.end, |r| r.end);
     // `+m[i]`: the groups are ASCII digits, which Rust parses to the same
     // double as JS.
     let number = |range: std::ops::Range<usize>| trimmed[range].parse::<f64>().ok();
@@ -345,22 +346,12 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
         None | Some("") => Vec::new(),
         Some(ids) => ids.split('.').map(str::to_string).collect(),
     };
-    let mut formatted = format!(
-        "{}.{}.{}",
-        ecma::number_to_string(major),
-        ecma::number_to_string(minor),
-        ecma::number_to_string(patch)
-    );
-    if !prerelease.is_empty() {
-        let ids: Vec<String> = prerelease
-            .iter()
-            .map(|id| match id {
-                PrereleaseIdentifier::Number(n) => ecma::number_to_string(*n),
-                PrereleaseIdentifier::String(s) => s.clone(),
-            })
-            .collect();
-        formatted = format!("{formatted}-{}", ids.join("."));
-    }
+    // `format()`: `major.minor.patch`, plus `-` and the prerelease
+    // identifiers joined with `.`. That is the matched text itself, from
+    // `major` to the end of the prerelease: every component has no leading
+    // zero and is at most MAX_SAFE_INTEGER, and every prerelease identifier
+    // that became a number is below it, so `String(n)` gives back its digits.
+    let formatted = trimmed[version_span].to_string();
     Some(SemVer {
         raw: version.to_string(),
         major,
