@@ -12,11 +12,9 @@
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
-use indexmap::IndexMap;
-
 use super::factory::{self, InstanceEnv};
 use crate::deserialize::DeserializeOptions;
-use crate::value::{Instance, JsValue};
+use crate::value::{Instance, JsObject, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{
@@ -24,7 +22,7 @@ use concerto_core::instance::from_json::{
 };
 use concerto_core::instance::model::{self, Field, FieldType, TypeRef};
 use concerto_core::introspect::Declaration;
-use concerto_core::model_manager::{ClassProperties, ModelManager};
+use concerto_core::model_manager::ModelManager;
 use concerto_core::{Error, model_util};
 
 /// The `JSONPopulator` constructor's options.
@@ -276,11 +274,73 @@ fn get_assignable_properties<'j>(
     resource_data: &'j JsValue,
     declaration: &TypeRef,
 ) -> Result<Vec<Cow<'j, str>>> {
-    let properties = object_keys_ref(resource_data)?;
+    Ok(get_assignable_entries(resource_data, declaration)?
+        .into_iter()
+        .map(|(property, _)| property)
+        .collect())
+}
+
+/// [`object_keys_ref`] of a plain object, with each key's value (P5-16):
+/// the same keys in the same order, read in one pass over the map rather
+/// than one lookup per key.
+fn object_entries_ref(map: &crate::value::JsObject) -> Vec<(Cow<'_, str>, &JsValue)> {
+    // Integer-like keys come first, in ascending order.
+    let mut indices: Vec<(u32, &String, &JsValue)> = map
+        .iter()
+        .filter_map(|(k, v)| {
+            k.parse::<u32>()
+                .ok()
+                .filter(|i| *i != u32::MAX && k == &i.to_string())
+                .map(|i| (i, k, v))
+        })
+        .collect();
+    if indices.is_empty() {
+        return map
+            .iter()
+            .map(|(k, v)| (Cow::Borrowed(k.as_str()), v))
+            .collect();
+    }
+    indices.sort_by_key(|(i, _, _)| *i);
+    let mut entries: Vec<(Cow<'_, str>, &JsValue)> = indices
+        .into_iter()
+        .map(|(_, k, v)| (Cow::Borrowed(k.as_str()), v))
+        .collect();
+    let leading = entries.len();
+    let rest: Vec<_> = map
+        .iter()
+        .filter(|(k, _)| {
+            !entries[..leading]
+                .iter()
+                .any(|(seen, _)| seen == k.as_str())
+        })
+        .map(|(k, v)| (Cow::Borrowed(k.as_str()), v))
+        .collect();
+    entries.extend(rest);
+    entries
+}
+
+/// [`get_assignable_properties`], with each property's value
+/// (`resourceData[property]`), which the caller reads again in TS: the
+/// same value, since nothing changes the document in between (P5-16).
+fn get_assignable_entries<'j>(
+    resource_data: &'j JsValue,
+    declaration: &TypeRef,
+) -> Result<Vec<(Cow<'j, str>, Cow<'j, JsValue>)>> {
+    let entries: Vec<(Cow<'j, str>, Option<&'j JsValue>)> = match resource_data {
+        JsValue::Object(map) => object_entries_ref(map)
+            .into_iter()
+            .map(|(k, v)| (k, Some(v)))
+            .collect(),
+        _ => object_keys_ref(resource_data)?
+            .into_iter()
+            .map(|k| (k, None))
+            .collect(),
+    };
+    let properties: Vec<&Cow<'j, str>> = entries.iter().map(|(k, _)| k).collect();
     let private: Vec<&str> = properties
         .iter()
         .filter(|p| model_util::is_private_system_property(p))
-        .map(|p| &**p)
+        .map(|p| &***p)
         .collect();
     if !private.is_empty() {
         return Err(validation(
@@ -291,7 +351,7 @@ fn get_assignable_properties<'j>(
             ],
         ));
     }
-    if properties.iter().any(|p| p == "$timestamp")
+    if properties.iter().any(|p| *p == "$timestamp")
         && !(declaration.is_transaction() || declaration.is_event())
     {
         return Err(validation(
@@ -299,30 +359,34 @@ fn get_assignable_properties<'j>(
             vec![("fqn", declaration.fqn().to_string())],
         ));
     }
-    let mut assignable = Vec::with_capacity(properties.len());
-    for property in properties {
+    let mut assignable = Vec::with_capacity(entries.len());
+    for (property, value) in entries {
         if model_util::is_system_property(&property) {
             continue;
         }
-        if get_property_ref(resource_data, &property)?.is_nullish() {
+        let value = match value {
+            Some(value) => Cow::Borrowed(value),
+            None => get_property_ref(resource_data, &property)?,
+        };
+        if value.is_nullish() {
             continue;
         }
-        assignable.push(property);
+        assignable.push((property, value));
     }
     Ok(assignable)
 }
 
 /// TS `validateProperties(properties, classDeclaration)`, against the
 /// declaration's `getProperties()`.
-fn validate_properties(
-    properties: &[Cow<'_, str>],
+fn validate_properties<'p>(
+    properties: impl Iterator<Item = (&'p str, bool)>,
     class_declaration: &TypeRef,
-    expected: &ClassProperties,
 ) -> Result<()> {
+    // Each property with whether the declaration has it (P5-16: looked up
+    // once by the caller, which reuses the lookup).
     let invalid: Vec<&str> = properties
-        .iter()
-        .filter(|p| !expected.contains(p))
-        .map(|p| &**p)
+        .filter(|(_, declared)| !declared)
+        .map(|(p, _)| p)
         .collect();
     if !invalid.is_empty() {
         return Err(validation(
@@ -361,6 +425,14 @@ impl<'a> Populator<'a> {
         self.path_marks.push(self.path.len());
         // Writing to a `String` cannot fail.
         let _ = self.path.write_fmt(segment);
+    }
+
+    /// `parameters.path.push('.' + property)`: [`Self::push_path`] without
+    /// the formatting machinery, for the per-property push (P5-16).
+    fn push_path_property(&mut self, property: &str) {
+        self.path_marks.push(self.path.len());
+        self.path.push('.');
+        self.path.push_str(property);
     }
 
     /// `parameters.path.pop()`.
@@ -411,7 +483,7 @@ impl<'a> Populator<'a> {
         json: &JsValue,
         mut resource: Instance,
     ) -> Result<Instance> {
-        let properties = get_assignable_properties(json, class_declaration)?;
+        let entries = get_assignable_entries(json, class_declaration)?;
         let options = self.options.deserialize;
         if options.reject_unknown_keys {
             self.reject_unknown_keys(json, class_declaration)?;
@@ -420,19 +492,29 @@ impl<'a> Populator<'a> {
         // `validateProperties` and each `getProperty` below (the same
         // answer every time: the model does not change mid-walk).
         let class_properties = class_declaration.properties("classDeclaration.getProperties")?;
-        validate_properties(&properties, class_declaration, &class_properties)?;
+        // `validateProperties`, then each `getProperty` below: one lookup
+        // per property serves both (P5-16).
+        let declared: Vec<_> = entries
+            .iter()
+            .map(|(p, _)| class_properties.find(p))
+            .collect();
+        validate_properties(
+            entries
+                .iter()
+                .zip(&declared)
+                .map(|((p, _), found)| (&**p, found.is_some())),
+            class_declaration,
+        )?;
         if options.reject_required_null {
             self.reject_required_null(json, class_declaration)?;
         }
-        for property in &properties {
-            let value = get_property_ref(json, property)?;
-            if *value != JsValue::Null {
-                self.push_path(format_args!(".{property}"));
-                let (owner_fqn, class_property) = class_properties
-                    .find(property)
-                    .expect("validateProperties found every property");
+        for ((property, value), found) in entries.iter().zip(declared) {
+            if **value != JsValue::Null {
+                self.push_path_property(property);
+                let (owner_fqn, class_property) =
+                    found.expect("validateProperties found every property");
                 let field = model::field(self.mm, owner_fqn, class_property)?;
-                let populated = self.visit_property(&field, &value)?;
+                let populated = self.visit_property(&field, value)?;
                 resource.set(property, populated);
                 self.pop_path();
             }
@@ -795,7 +877,7 @@ fn utc_offset_input(value: &JsValue) -> UtcOffset {
 /// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
 /// `PopulatorOptions` for [`convert_primitive`] from the options object the
 /// TS visitor shell already has.
-pub fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOptions {
+pub fn populator_options(options: &JsObject) -> PopulatorOptions {
     let get = |key: &str| options.get(key).cloned().unwrap_or(JsValue::Undefined);
     let utc_offset = get("utcOffset");
     PopulatorOptions {
@@ -814,6 +896,31 @@ pub fn populator_options(options: &IndexMap<String, JsValue>) -> PopulatorOption
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P5-16: `object_entries_ref` gives `object_keys_ref`'s keys, in its
+    /// order (integer-like keys first, ascending), each with its value.
+    #[test]
+    fn object_entries_ref_matches_object_keys_ref() {
+        for keys in [
+            vec!["b", "a", "c"],
+            vec!["b", "10", "a", "2", "01", "4294967295", "0"],
+            vec![],
+        ] {
+            let mut map = crate::value::JsObject::default();
+            for (i, key) in keys.iter().enumerate() {
+                map.insert((*key).to_string(), JsValue::Number(i as f64));
+            }
+            let entries = object_entries_ref(&map);
+            let object = JsValue::Object(map.clone());
+            let expected = object_keys_ref(&object).unwrap_or_default();
+            let got: Vec<&str> = entries.iter().map(|(k, _)| &**k).collect();
+            let want: Vec<&str> = expected.iter().map(|k| &**k).collect();
+            assert_eq!(got, want);
+            for (key, value) in &entries {
+                assert_eq!(Some(*value), map.get(&**key));
+            }
+        }
+    }
 
     /// `ResourceValidator.checkItem`'s switch has no `default:` arm and
     /// starts from `invalid = false`, so a type name it does not list is

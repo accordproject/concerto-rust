@@ -114,6 +114,7 @@ name = "concerto-core-js"
 version = "0.0.0"
 dependencies = [
  "accordproject-concerto-core",
+ "foldhash",
  "indexmap",
  "serde_json",
 ]

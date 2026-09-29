@@ -15,8 +15,8 @@
 #![warn(missing_docs)]
 
 pub use deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
-pub use serializer::{Serializer, SerializerOptions};
-pub use value::{Instance, InstanceKind, JsValue};
+pub use serializer::{FromJsonOptions, Serializer, SerializerOptions};
+pub use value::{Instance, InstanceKind, JsObject, JsValue};
 
 pub mod deserialize;
 pub mod factory;
