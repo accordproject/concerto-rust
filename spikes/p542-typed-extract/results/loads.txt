@@ -1,0 +1,9 @@
+r1 synthetic-large 0.36 0.36 0.21 1/104 1984
+r1 conformance 0.36 0.36 0.21 1/104 1986
+r1 concerto-core-test-data 0.41 0.37 0.21 1/101 1988
+r2 synthetic-large 0.41 0.37 0.21 1/104 1993
+r2 conformance 0.46 0.38 0.22 1/104 1995
+r2 concerto-core-test-data 0.46 0.38 0.22 1/104 1997
+r3 synthetic-large 0.50 0.39 0.22 1/104 1999
+r3 conformance 0.50 0.39 0.22 1/104 2001
+r3 concerto-core-test-data 0.54 0.40 0.23 1/104 2003
