@@ -78,3 +78,8 @@ harness = false
 # module docs for how it differs from the three benches above.
 name = "public_api"
 harness = false
+
+[[bench]]
+# P5-15 (accordproject/concerto-rust#309) sweep, re-run by P5-22 (#326).
+name = "p515_sweep"
+harness = false
