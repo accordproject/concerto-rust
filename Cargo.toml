@@ -41,4 +41,9 @@ serde = { version = "1.0", features = ["derive"] }
 # Serializer fast path (P4-10, accordproject/concerto-rust#69).
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 thiserror = "1.0"
-chrono = "0.4"
+# P5-24 (accordproject/concerto-rust#328): the strict `DateTime` parser
+# (concerto-core `instance::dayjs`) and the metamodel's generated
+# `DateTime<Utc>` fields. No default features: nothing here reads the clock
+# or a time zone database, so `clock`/`wasmbind` (js-sys, wasm-bindgen) and
+# `iana-time-zone` stay out of the build (P5-23 follow-up 7).
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }

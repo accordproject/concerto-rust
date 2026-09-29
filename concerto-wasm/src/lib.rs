@@ -5872,6 +5872,32 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-34 (I-5, accordproject/concerto-rust#344): TS
+    /// `BaseModelManager.addModelFile`'s validation and registration of a
+    /// staged model file in one call: [`Self::model_file_validate_staged`]
+    /// then [`Self::commit_staged_model_file`]. Returns the file's handle, or
+    /// `undefined` if the stage id is unknown (evicted, or already consumed);
+    /// the caller then validates and registers the file as before. A
+    /// validation error is thrown as [`Self::model_file_validate_staged`]
+    /// throws it and leaves the file staged and the manager unchanged; the
+    /// stage is consumed only once validation passes, and a registration
+    /// error is then thrown as [`Self::commit_staged_model_file`] throws it.
+    /// Additive.
+    #[wasm_bindgen(js_name = validateAndCommitStagedModelFile)]
+    pub fn validate_and_commit_staged_model_file(
+        &mut self,
+        stage: u32,
+    ) -> std::result::Result<Option<u32>, JsValue> {
+        let Some(file) = self.staged.files.get(&stage) else {
+            return Ok(None);
+        };
+        run(|| {
+            self.manager.validate_detached_model_file(file)?;
+            Ok(())
+        })?;
+        self.commit_staged_model_file(stage)
+    }
+
     /// P5-06a: [`Self::model_file_validate_detached`] for a staged model
     /// file, without sending the AST again. Returns `true` once validated;
     /// `false` if the stage id is unknown, and the caller then falls back to

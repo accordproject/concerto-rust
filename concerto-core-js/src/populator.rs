@@ -30,9 +30,12 @@ use concerto_core::{Error, model_util};
 pub struct PopulatorOptions {
     /// `acceptResourcesForRelationships`.
     pub accept_resources_for_relationships: bool,
-    /// `utcOffset || 0`: the offset non-strict `DateTime` values get.
+    /// `utcOffset || 0`: the offset `DateTime` values get unless
+    /// `strictQualifiedDateTimes` is `true`.
     pub utc_offset: JsValue,
-    /// `strictQualifiedDateTimes`.
+    /// `strictQualifiedDateTimes === true`. Since P5-24 (BC-07, R1) every
+    /// `DateTime` string must have the strict format either way; the flag
+    /// only decides whether `utc_offset` is applied.
     pub strict_qualified_date_times: bool,
     /// `rejectUnknownKeys` and `rejectRequiredNull` (accordproject/concerto#1273).
     pub deserialize: DeserializeOptions,
@@ -82,15 +85,20 @@ pub fn convert_primitive(
             let result = match json {
                 JsValue::DateTime(d) => d.clone(),
                 JsValue::String(s) => {
-                    if !options.strict_qualified_date_times {
-                        Dayjs::utc_parse(s).utc_offset_set(&utc_offset_input(&options.utc_offset))
-                    } else if strict_qualified_date_time(s) {
-                        Dayjs::utc_parse(s)
-                    } else {
+                    // P5-24 (BC-07, R1): only the strict format, whatever
+                    // `strictQualifiedDateTimes` says; the flag now decides
+                    // only whether `utcOffset` applies, as it did before.
+                    if !strict_qualified_date_time(s) {
                         return Err(validation(
                             "jsonpopulator-converttoobject-datetimeformat",
                             vec![("path", path.to_string()), ("type", type_name.to_string())],
                         ));
+                    }
+                    let parsed = Dayjs::utc_parse(s);
+                    if options.strict_qualified_date_times {
+                        parsed
+                    } else {
+                        parsed.utc_offset_set(&utc_offset_input(&options.utc_offset))
                     }
                 }
                 _ => return Err(wrong_type()),
@@ -519,6 +527,9 @@ impl<'a> Populator<'a> {
                 self.pop_path();
             }
         }
+        // P5-24 (BC-45, R1): a non-strict `DateTime` default the document
+        // did not replace is applied, so it throws.
+        factory::check_populated_date_time_defaults(class_declaration, &resource)?;
         Ok(resource)
     }
 
@@ -947,29 +958,46 @@ mod tests {
         assert!(primitive_field_valid("Unknown", &JsValue::Null));
     }
 
-    /// DV-009 / accordproject/concerto-rust#169 (P5-05 fuzz cluster T1c):
-    /// non-strict `Serializer.fromJSON` accepts a `DateTime` string with an
-    /// embedded NUL, as `dayjs.rs`'s `date_parse` now truncates there like
-    /// V8 does; `strictQualifiedDateTimes` still rejects it, because
-    /// `strict_qualified_date_time`'s anchored regex never matches a NUL —
-    /// the fix does not widen what the strict path accepts.
+    /// P5-24 (BC-07, R1): `strictQualifiedDateTimes: false` no longer
+    /// opens a lenient path. An embedded NUL (DV-009,
+    /// accordproject/concerto-rust#169), a date-only string or an
+    /// impossible date is rejected with or without the flag, with the same
+    /// `ValidationException` as strict mode; a strict string is accepted
+    /// either way, with `utcOffset` applied only when the flag is not set.
     #[test]
-    fn datetime_with_embedded_nul() {
-        let s = "1970-01-01T00:00:00.000+00:00\u{0}";
+    fn datetime_strings_are_strict_either_way() {
         let non_strict = PopulatorOptions {
             accept_resources_for_relationships: false,
-            utc_offset: JsValue::Number(0.0),
+            utc_offset: JsValue::Number(60.0),
             strict_qualified_date_times: false,
             deserialize: DeserializeOptions::default(),
         };
-        let result = convert_primitive("DateTime", &JsValue::String(s.into()), &non_strict, "$.t");
-        assert!(result.is_ok(), "non-strict should accept: {result:?}");
-
         let strict = PopulatorOptions {
             strict_qualified_date_times: true,
-            ..non_strict
+            ..non_strict.clone()
         };
-        let result = convert_primitive("DateTime", &JsValue::String(s.into()), &strict, "$.t");
-        assert!(result.is_err(), "strict should still reject: {result:?}");
+        for s in [
+            "1970-01-01T00:00:00.000+00:00\u{0}",
+            "2020-01-01",
+            "2016-10-20T05:34:03.519",
+            "2024-02-30T00:00:00Z",
+            "2024-01-02T24:00:00Z",
+        ] {
+            for options in [&non_strict, &strict] {
+                let result =
+                    convert_primitive("DateTime", &JsValue::String(s.into()), options, "$.t");
+                let err = result.expect_err(s);
+                assert_eq!(err.kind().ts_class(), "ValidationException", "{s:?}: {err}");
+            }
+        }
+        let s = JsValue::String("2021-01-01T00:00:00Z".into());
+        let Ok(JsValue::DateTime(d)) = convert_primitive("DateTime", &s, &non_strict, "$.t") else {
+            panic!("non-strict should accept a strict string");
+        };
+        assert_eq!(d.utc_offset(), 60.0);
+        let Ok(JsValue::DateTime(d)) = convert_primitive("DateTime", &s, &strict, "$.t") else {
+            panic!("strict should accept a strict string");
+        };
+        assert!(d.is_utc());
     }
 }
