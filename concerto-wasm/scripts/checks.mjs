@@ -1331,6 +1331,28 @@ export function runChecks(engine) {
     target.free();
   });
 
+  // P5-27 (F6): DecoratorManager.validate's check against the handle's own
+  // manager throws what the per-call decoratorManagerValidate throws.
+  check('dcsValidate checks against the resident manager', () => {
+    const h = new engine.ModelManagerHandle();
+    h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, undefined, false);
+    const epoch = h.epoch();
+    h.dcsValidate({ $class: 'org.example@1.0.0.Person', name: 'Ann' });
+    assert(h.epoch() === epoch, 'dcsValidate leaves the manager unchanged');
+    for (const bad of [
+      { name: 'no class' },
+      { $class: 'org.nope@1.0.0.Missing' },
+      { $class: 'org.example@1.0.0.Missing' },
+      { $class: 'org.example@1.0.0.Person', name: 1 },
+    ]) {
+      const viaHandle = thrown(() => h.dcsValidate(bad));
+      const perCall = thrown(() => engine.decoratorManagerValidate(bad, [MODEL]));
+      assert(viaHandle.constructor.name === perCall.constructor.name && viaHandle.message === perCall.message,
+        `${viaHandle.constructor.name}: ${viaHandle.message} vs ${perCall.constructor.name}: ${perCall.message}`);
+    }
+    h.free();
+  });
+
   mm.free();
   return rows;
 }

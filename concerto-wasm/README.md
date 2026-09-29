@@ -97,7 +97,11 @@ and `extractNonVocabDecorators(target, options)` return what the matching
 `decoratorManager*` binding returns. Each also stages the result's model
 files into `target`, the new manager's `ModelManagerHandle`, and adds
 `staged` (a `[stageId, header]` entry, or `null`, for each result model)
-and `validated`. The per-call `decoratorManager*` bindings are unchanged.
+and `validated`. `ModelManagerHandle.dcsValidate(commandSet)` is
+`DecoratorManager.validate`'s structural check against the handle's own
+manager: the shim calls it on the validation manager it has just built,
+instead of `decoratorManagerValidate` rebuilding one from the model files.
+The per-call `decoratorManager*` bindings are unchanged.
 
 The P0-04b trial bindings (`modelUtil*`, `numberValidator*`,
 `scalarDeclaration*`) are unchanged. Their views still hand their JS objects

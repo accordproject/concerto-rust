@@ -7308,6 +7308,29 @@ impl DcsManagerHandle {
     }
 }
 
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// TS: `DecoratorManager.validate`'s structural check
+    /// (`serializer.fromJSON(decoratorCommandSet)`), against this handle's
+    /// own resident manager (P5-27, F6). The view calls it on the
+    /// `validationModelManager` it has just built and returns (the
+    /// metamodel, the caller's model files and the DCS model), once that
+    /// manager's rustHandle mirrors its model files; so, unlike
+    /// [`decorator_manager_validate`], it neither sends the model files
+    /// again nor rebuilds a manager from them, and [`dcs::validate_against`]
+    /// throws what [`dcs::validate`] throws at the same step. Additive:
+    /// `decoratorManagerValidate` is unchanged and remains the view's
+    /// fallback. Never changes the manager.
+    #[wasm_bindgen(js_name = dcsValidate)]
+    pub fn dcs_validate(&self, decorator_command_set: JsValue) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let command_set = to_json(&decorator_command_set)?.unwrap_or(Value::Null);
+            dcs::validate_against(&self.manager, &command_set)?;
+            Ok(())
+        })
+    }
+}
+
 impl DcsManagerHandle {
     /// One extract operation, staged into `target`.
     fn extract(

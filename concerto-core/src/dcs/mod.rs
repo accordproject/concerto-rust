@@ -1204,6 +1204,20 @@ pub fn validate(
     Ok(validation_model_manager)
 }
 
+/// The structural check of [`validate`] (`serializer.fromJSON(
+/// decoratorCommandSet)`), against a validation model manager the caller
+/// has already built the way [`validate`] builds its own: the metamodel,
+/// the caller's model files and the DCS model, loaded and validated
+/// (P5-27, F6: `DecoratorManager.validate` builds that manager in the view,
+/// so the engine checks the command set against it instead of building
+/// another). Additive; [`validate`] is unchanged.
+pub fn validate_against(
+    validation_model_manager: &ModelManager,
+    decorator_command_set: &Value,
+) -> Result<()> {
+    from_json_against(validation_model_manager, decorator_command_set)
+}
+
 /// `DecoratorManager.jsonToYaml(jsonInput)` (`src/decoratormanager.ts`):
 /// [`validate`], then [`dcsconverter::json_to_yaml`].
 pub fn validated_json_to_yaml(json_input: &Value) -> Result<String> {
@@ -2190,6 +2204,36 @@ mod tests {
         let mut command_set = valid_command_set();
         command_set["commands"][0]["type"] = json!("DELETE");
         assert!(validate_dcs_structure(&command_set).is_err());
+    }
+
+    /// P5-27 (F6): `validate_against` on the manager `validate` built
+    /// accepts and rejects what `validate` does, with the same error.
+    #[test]
+    fn validate_against_matches_validate_on_its_own_manager() {
+        let sample = sample_manager();
+        let files: Vec<&ModelFile> = sample
+            .model_files()
+            .filter(|mf| mf.namespace() == "org.acme@1.0.0")
+            .collect();
+        let mgr = validate(&valid_command_set(), Some(&files)).unwrap();
+        assert!(validate_against(&mgr, &valid_command_set()).is_ok());
+
+        let mut unknown_type = valid_command_set();
+        unknown_type["commands"][0]["type"] = json!("DELETE");
+        let mut no_class = valid_command_set();
+        no_class.as_object_mut().unwrap().remove("$class");
+        let mut unknown_class = valid_command_set();
+        unknown_class["$class"] = json!("org.acme@1.0.0.Missing");
+        for bad in [
+            unknown_type,
+            no_class,
+            unknown_class,
+            json!({ "$class": 1 }),
+        ] {
+            let expected = validate(&bad, Some(&files)).unwrap_err().to_string();
+            let actual = validate_against(&mgr, &bad).unwrap_err().to_string();
+            assert_eq!(actual, expected, "{bad}");
+        }
     }
 
     #[test]
