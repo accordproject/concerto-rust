@@ -88,6 +88,17 @@ shim registers with `setHost(factory, semverParse)`, as the payload
   verbatim.
 - Malformed JSON text is a JS `SyntaxError`.
 
+**The resident DCS manager** (P5-27, F6). `new DcsManagerHandle(models)`
+loads the source models of a `DecoratorManager` call once. The shim keeps it
+for as long as the source `ModelManager`'s epoch and model files are
+unchanged. Its `decorateModels(target, commandSets, options)`,
+`extractDecorators(target, options)`, `extractVocabularies(target, options)`
+and `extractNonVocabDecorators(target, options)` return what the matching
+`decoratorManager*` binding returns. Each also stages the result's model
+files into `target`, the new manager's `ModelManagerHandle`, and adds
+`staged` (a `[stageId, header]` entry, or `null`, for each result model)
+and `validated`. The per-call `decoratorManager*` bindings are unchanged.
+
 The P0-04b trial bindings (`modelUtil*`, `numberValidator*`,
 `scalarDeclaration*`) are unchanged. Their views still hand their JS objects
 back, until the graph they meet is Rust-backed (P4-06 … P4-08).

@@ -7044,6 +7044,296 @@ pub fn decorator_manager_extract_non_vocab_decorators(
     })
 }
 
+// ---------------------------------------------------------------------------
+// P5-27 (F6, accordproject/concerto-rust#332): a resident DCS manager with
+// staged-handle results. Additive: the `decoratorManager*` bindings above
+// are unchanged.
+//
+// The bindings above rebuild the input manager from the source models' AST
+// on every call, and hand back the result models as AST only. The view then
+// loads that AST into a new ModelManager (`fromAst`), which sends every
+// model back into Rust (`stageModelFile`), reads each header across the
+// boundary (`modelFileFromAstHeader`) and validates the whole set again
+// (`validateModelFiles`), although Rust has just loaded and validated those
+// same models.
+//
+// [`DcsManagerHandle`] keeps the input manager resident, so the view builds
+// it once per source ModelManager and reuses it while that manager's epoch
+// and model files are unchanged (engine/views.ts `dcsManagerFor`). Each of
+// its operations stages the result's model files into the new
+// ModelManager's own handle (`target`) and returns, with the result AST,
+// each file's stage id and header ([`staged_header`]), and whether the
+// result was validated. The view builds each ModelFile from its stage id and
+// header without sending the AST again, and skips its own
+// `validateModelFiles` when Rust has already validated the same files.
+// ---------------------------------------------------------------------------
+
+/// TS `EXCLUDE_NS` (src/basemodelmanager.ts): the system namespaces
+/// `fromAst` skips, since the new manager already has them.
+const DCS_EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
+
+/// The system type names every non-system model file imports implicitly
+/// (the `imports.push` in [`model_file_from_ast_header`]).
+const IMPLICIT_SYSTEM_TYPES: [&str; 5] =
+    ["Concept", "Asset", "Transaction", "Participant", "Event"];
+
+/// What [`model_file_from_ast_header`] would set on a JS `ModelFile` built
+/// from `ast`, when it would succeed: `[version, shortNames, uris]`, where
+/// `shortNames` is the `importShortNames` entries and `uris` the
+/// `importUriMap` entries, each flattened to `[key, value, key, value, …]`
+/// in insertion order (the implicit system import included). The view sets
+/// `namespace` to `ast.namespace` and `imports` to a copy of `ast.imports`
+/// plus the implicit import, as the binding does, and applies these.
+///
+/// `None` whenever the header is not the plain case: a system namespace (no
+/// implicit import), an unversioned or invalid namespace, an import the
+/// binding would reject (unversioned, wildcard, aliased to a primitive
+/// type), or any value that is not the JSON type the plain case reads. The
+/// view then calls [`model_file_from_ast_header`] itself, which throws what
+/// it throws. So a header returned here is always the one that binding
+/// would set.
+fn staged_header(ast: &Value) -> Option<Value> {
+    let namespace = ast.get("namespace")?.as_str()?;
+    if namespace.is_empty() || namespace == "concerto" || namespace.starts_with("concerto@") {
+        return None;
+    }
+    let (name, version) = match mu::parse_namespace(namespace).ok()? {
+        mu::ParsedNamespace::Full {
+            name,
+            version: Some(version),
+            ..
+        } if !version.is_empty() => (name, version),
+        _ => return None,
+    };
+    if !name.split('.').all(mu::is_valid_identifier) {
+        return None;
+    }
+
+    let implicit = json!({
+        "$class": format!("{METAMODEL_NAMESPACE}.ImportTypes"),
+        "namespace": "concerto@1.0.0",
+        "types": IMPLICIT_SYSTEM_TYPES,
+    });
+    let own: &[Value] = match ast.get("imports") {
+        None | Some(Value::Null) => &[],
+        Some(Value::Array(imports)) => imports,
+        Some(_) => return None,
+    };
+    let import_types = format!("{METAMODEL_NAMESPACE}.ImportTypes");
+    let import_type = format!("{METAMODEL_NAMESPACE}.ImportType");
+    let mut short_names: Vec<Value> = Vec::new();
+    let mut uris: Vec<Value> = Vec::new();
+    for imp in own.iter().chain(std::iter::once(&implicit)) {
+        // `enforceImportVersioning(imp)`: a versioned namespace.
+        let imp_namespace = imp.get("namespace")?.as_str()?;
+        match mu::parse_namespace(imp_namespace).ok()? {
+            mu::ParsedNamespace::Full {
+                version: Some(v), ..
+            } if !v.is_empty() => {}
+            _ => return None,
+        }
+        let class = imp.get("$class")?.as_str()?;
+        if class == import_types {
+            let aliases: Option<std::collections::HashMap<&str, &str>> =
+                match imp.get("aliasedTypes") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Array(entries)) if entries.is_empty() => None,
+                    Some(Value::Array(entries)) => {
+                        let mut map = std::collections::HashMap::new();
+                        for entry in entries {
+                            let alias_name = entry.get("name")?.as_str()?;
+                            let aliased_name = entry.get("aliasedName")?.as_str()?;
+                            if mu::is_primitive_type(aliased_name) {
+                                return None;
+                            }
+                            map.insert(alias_name, aliased_name);
+                        }
+                        Some(map)
+                    }
+                    Some(_) => return None,
+                };
+            for type_name in imp.get("types")?.as_array()? {
+                let type_name = type_name.as_str()?;
+                let key = aliases
+                    .as_ref()
+                    .and_then(|a| a.get(type_name).copied())
+                    .unwrap_or(type_name);
+                short_names.push(Value::from(key));
+                short_names.push(Value::from(format!("{imp_namespace}.{type_name}")));
+            }
+        } else if class == import_type {
+            let local = imp.get("name")?.as_str()?;
+            short_names.push(Value::from(local));
+            short_names.push(Value::from(format!("{imp_namespace}.{local}")));
+        } else {
+            return None;
+        }
+        match imp.get("uri") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(uri)) if uri.is_empty() => {}
+            Some(Value::String(uri)) => {
+                let first = mu::import_fully_qualified_names(Some(imp))
+                    .ok()?
+                    .into_iter()
+                    .next()?;
+                uris.push(Value::from(first));
+                uris.push(Value::from(uri.as_str()));
+            }
+            Some(_) => return None,
+        }
+    }
+    Some(json!([version, short_names, uris]))
+}
+
+/// Stages every non-system model file of `result` into `target`'s staging
+/// slot, while it has room (a file past [`StagedModelFiles::CAPACITY`] is
+/// not staged, so no other stage is evicted), and returns one entry per
+/// model file of `result`, in [`model_manager_to_ast`]'s order: `null` for a
+/// file not staged, or `[stageId, header]` ([`staged_header`], `null` when
+/// the view must read the header itself). Staging never changes `target`'s
+/// manager or epoch.
+fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<Value> {
+    result
+        .model_files()
+        .map(|mf| {
+            if DCS_EXCLUDE_NS.contains(&mf.namespace())
+                || target.staged.files.len() >= StagedModelFiles::CAPACITY
+            {
+                return Value::Null;
+            }
+            let header = staged_header(mf.ast()).unwrap_or(Value::Null);
+            let id = target.staged.insert(mf.clone());
+            json!([id, header])
+        })
+        .collect()
+}
+
+/// The input manager of the `DecoratorManager` operations, kept resident
+/// across calls (P5-27, F6): the source models, as the view reads them off
+/// `modelManager.getAst(resolve, false).models`, loaded once
+/// ([`model_manager_from_asts`], as each `decoratorManager*` binding loads
+/// them on every call). The view keeps one per source ModelManager and
+/// resolution flag, and builds a new one once that manager's epoch or model
+/// files change. The operations never change it. Additive.
+#[wasm_bindgen]
+pub struct DcsManagerHandle {
+    manager: ModelManager,
+}
+
+#[wasm_bindgen]
+impl DcsManagerHandle {
+    /// Loads `models` (a JSON array of model ASTs, none of them the system
+    /// ones), throwing what [`decorator_manager_decorate_models`] throws
+    /// while it loads them.
+    #[wasm_bindgen(constructor)]
+    pub fn new(models: JsValue) -> std::result::Result<DcsManagerHandle, JsValue> {
+        run(|| {
+            let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
+            let manager =
+                model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+            Ok(Self { manager })
+        })
+    }
+
+    /// [`decorator_manager_decorate_models`] on the resident manager, with
+    /// the result staged into `target` (the new ModelManager's handle, as
+    /// the view's `clearModelFiles` left it). Returns `{ast, staged,
+    /// validated}`: `ast` is what that binding returns, `staged` is
+    /// [`stage_result`]'s entries for `ast.models`, and `validated` is
+    /// whether the result manager was validated (every model but the system
+    /// ones, under the default options a fresh handle has).
+    #[wasm_bindgen(js_name = decorateModels)]
+    pub fn decorate_models(
+        &self,
+        target: &mut ModelManagerHandle,
+        decorator_command_sets: JsValue,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
+            let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+
+            let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
+            let mut opts = decorate_options_from_js(&options_json);
+
+            // `dcs::decorate_models` validates the result unless the command
+            // sets are empty or `disable_metamodel_validation` (as the
+            // options stand once `skip_validation_and_resolution` has set
+            // it) is `Some(true)`.
+            let applied = !sets.is_empty();
+            let decorated = dcs::decorate_models(&self.manager, &mut sets, &mut opts)?;
+            let validated = applied && opts.disable_metamodel_validation != Some(true);
+            let staged = stage_result(target, &decorated);
+            Ok(to_js(&json!({
+                "ast": model_manager_to_ast(&decorated),
+                "staged": staged,
+                "validated": validated,
+            })))
+        })
+    }
+
+    /// [`decorator_manager_extract_decorators`] on the resident manager,
+    /// with the result's model manager staged into `target`. Returns what
+    /// that binding returns, plus `staged` (for `modelManager.models`) and
+    /// `validated` (always `true`: the extractor validates its result).
+    #[wasm_bindgen(js_name = extractDecorators)]
+    pub fn extract_decorators(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.extract(target, &options, dcs::extract_decorators)
+    }
+
+    /// [`decorator_manager_extract_vocabularies`] on the resident manager
+    /// (see [`Self::extract_decorators`]).
+    #[wasm_bindgen(js_name = extractVocabularies)]
+    pub fn extract_vocabularies(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.extract(target, &options, dcs::extract_vocabularies)
+    }
+
+    /// [`decorator_manager_extract_non_vocab_decorators`] on the resident
+    /// manager (see [`Self::extract_decorators`]).
+    #[wasm_bindgen(js_name = extractNonVocabDecorators)]
+    pub fn extract_non_vocab_decorators(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.extract(target, &options, dcs::extract_non_vocab_decorators)
+    }
+}
+
+impl DcsManagerHandle {
+    /// One extract operation, staged into `target`.
+    fn extract(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: &JsValue,
+        op: fn(
+            &ModelManager,
+            &dcs::ExtractOptions,
+        ) -> concerto_core::Result<dcs::extractor::ExtractResult>,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
+            let opts = extract_options_from_js(&options_json);
+            let result = op(&self.manager, &opts)?;
+            let staged = stage_result(target, &result.model_manager);
+            let mut out = extract_result_to_js(result);
+            if let Some(map) = out.as_object_mut() {
+                map.insert("staged".to_string(), Value::Array(staged));
+                map.insert("validated".to_string(), Value::Bool(true));
+            }
+            Ok(to_js(&out))
+        })
+    }
+}
+
 // P5-12c (accordproject/concerto-rust#293): `ValidatedResource.validate()`,
 // `setPropertyValue` and `addArrayValue` in one engine call each.
 mod validate_resource;
@@ -7338,6 +7628,139 @@ mod tests {
             } else {
                 assert_eq!(ints, plain);
             }
+        }
+    }
+
+    /// A model AST for [`staged_header`] with these imports.
+    fn header_model(namespace: &str, imports: Value) -> Value {
+        json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": namespace,
+            "imports": imports,
+            "declarations": [],
+        })
+    }
+
+    /// The implicit system import's `importShortNames` entries.
+    fn implicit_short_names() -> Vec<Value> {
+        IMPLICIT_SYSTEM_TYPES
+            .iter()
+            .flat_map(|t| [json!(t), json!(format!("concerto@1.0.0.{t}"))])
+            .collect()
+    }
+
+    #[test]
+    fn staged_header_has_the_version_and_the_implicit_import() {
+        let header = staged_header(&header_model("org.acme@1.2.3", json!([]))).unwrap();
+        assert_eq!(header, json!(["1.2.3", implicit_short_names(), []]));
+        // An absent `imports` is read as none, as `ast.imports.concat` is skipped.
+        let mut ast = header_model("org.acme@1.2.3", json!(null));
+        ast.as_object_mut().unwrap().remove("imports");
+        assert_eq!(staged_header(&ast).unwrap(), header);
+    }
+
+    #[test]
+    fn staged_header_maps_imports_in_order_with_aliases_and_uris() {
+        let imports = json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                "namespace": "org.other@1.0.0",
+                "types": ["A", "B"],
+                "aliasedTypes": [
+                    {"$class": "concerto.metamodel@1.0.0.AliasedType", "name": "B", "aliasedName": "Bee"}
+                ],
+                "uri": "https://example.com/other.cto",
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.ImportType",
+                "namespace": "org.third@2.0.0",
+                "name": "C",
+                "uri": "https://example.com/third.cto",
+            },
+            {
+                "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                "namespace": "org.fourth@1.0.0",
+                "types": ["D"],
+                "aliasedTypes": [],
+                "uri": "",
+            },
+        ]);
+        let header = staged_header(&header_model("org.acme@1.0.0", imports)).unwrap();
+        let mut short_names = vec![
+            json!("A"),
+            json!("org.other@1.0.0.A"),
+            json!("Bee"),
+            json!("org.other@1.0.0.B"),
+            json!("C"),
+            json!("org.third@2.0.0.C"),
+            json!("D"),
+            json!("org.fourth@1.0.0.D"),
+        ];
+        short_names.extend(implicit_short_names());
+        assert_eq!(
+            header,
+            json!([
+                "1.0.0",
+                short_names,
+                [
+                    "org.other@1.0.0.A",
+                    "https://example.com/other.cto",
+                    "org.third@2.0.0.C",
+                    "https://example.com/third.cto",
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn staged_header_leaves_every_other_case_to_the_binding() {
+        let import = |value: Value| header_model("org.acme@1.0.0", json!([value]));
+        let cases = [
+            // System and unversioned or invalid namespaces.
+            header_model("concerto@1.0.0", json!([])),
+            header_model("concerto", json!([])),
+            header_model("org.acme", json!([])),
+            header_model("org.1acme@1.0.0", json!([])),
+            header_model("org.acme@x", json!([])),
+            json!({"$class": "concerto.metamodel@1.0.0.Model", "namespace": 1}),
+            // Imports the binding rejects.
+            import(json!({
+                "$class": "concerto.metamodel@1.0.0.ImportType",
+                "namespace": "org.other",
+                "name": "A",
+            })),
+            import(json!({
+                "$class": "concerto.metamodel@1.0.0.ImportAll",
+                "namespace": "org.other@1.0.0",
+            })),
+            import(json!({
+                "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                "namespace": "org.other@1.0.0",
+                "types": ["A"],
+                "aliasedTypes": [{"name": "A", "aliasedName": "String"}],
+            })),
+            // Values of another JSON type than the plain case reads.
+            header_model("org.acme@1.0.0", json!({})),
+            import(json!({
+                "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                "namespace": "org.other@1.0.0",
+                "types": [1],
+            })),
+            import(json!({
+                "$class": "concerto.metamodel@1.0.0.ImportType",
+                "namespace": "org.other@1.0.0",
+                "name": "A",
+                "uri": 1,
+            })),
+            import(json!({
+                "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                "namespace": "org.other@1.0.0",
+                "types": ["A"],
+                "aliasedTypes": [{"name": "A", "aliasedName": null}],
+            })),
+        ];
+        for ast in cases {
+            assert_eq!(staged_header(&ast), None, "{ast}");
         }
     }
 }
