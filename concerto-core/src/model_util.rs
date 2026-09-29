@@ -287,6 +287,42 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
     })
 }
 
+/// `parse_namespace_with(Some(ns), false)`'s checks and errors, in its
+/// order, returning its `name` and `version` borrowed from `ns` rather than
+/// the owned [`ParsedNamespace::Full`] (P5-48, accordproject/concerto-rust#369:
+/// the model load and `ModelFile.validate()`'s import loop run it per import
+/// and read only these two).
+pub(crate) fn split_namespace(ns: &str) -> Result<(&str, Option<&str>)> {
+    if ns.is_empty() {
+        return Err(error(
+            ErrorKind::InvalidArgument,
+            "modelutil-parsenamespace-nullorundefined",
+            Vec::new(),
+        ));
+    }
+    let invalid = || {
+        error(
+            ErrorKind::InvalidArgument,
+            "modelutil-parsenamespace-invalidnamespace",
+            vec![("ns", ns.to_string())],
+        )
+    };
+    let mut parts = ns.split('@');
+    let name = parts.next().unwrap_or_default();
+    let version = parts.next();
+    if parts.next().is_some() {
+        return Err(invalid());
+    }
+    // BC-41 (P5-38): acceptance is strict SemVer 2.0.0, as in
+    // `parse_namespace_with`; `versionParsed` is not built here.
+    if let Some(version) = version
+        && !is_strict_semver(version)
+    {
+        return Err(invalid());
+    }
+    Ok((name, version))
+}
+
 /// The result of [`parse_namespace`]: the TS `ParseNamespaceResult`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedNamespace {
@@ -822,6 +858,55 @@ mod tests {
     fn node_semver_recording() -> Value {
         serde_json::from_str(include_str!("../tests/semver/node-semver-7.6.3.json"))
             .unwrap_or_else(|e| panic!("node-semver-7.6.3.json: {e}"))
+    }
+
+    /// P5-48: [`split_namespace`] accepts and rejects exactly what
+    /// `parse_namespace_with(_, false)` does, with the same error, and gives
+    /// back its `name` and `version`; over every recorded semver input as a
+    /// namespace version, and the other namespace shapes.
+    #[test]
+    fn split_namespace_matches_parse_namespace() {
+        let recording = node_semver_recording();
+        let mut namespaces: Vec<String> = recording["cases"]
+            .as_array()
+            .unwrap_or_else(|| unreachable!())
+            .iter()
+            .map(|case| {
+                let input = case["input"].as_str().unwrap_or_else(|| unreachable!());
+                format!("org.acme@{input}")
+            })
+            .collect();
+        namespaces.extend(
+            [
+                "",
+                "org.acme",
+                "org.acme@",
+                "@1.0.0",
+                "org.acme@1.0.0@2.0.0",
+                "a@b@c",
+                "concerto@1.0.0",
+                "concerto",
+                "org.acme@v1.0.0",
+                "org.acme@ 1.0.0 ",
+                "org.acme@1.0.0-beta.1+build.2",
+                "org.acme@01.0.0",
+            ]
+            .map(str::to_string),
+        );
+        for ns in &namespaces {
+            let split = split_namespace(ns);
+            match parse_namespace_with(Some(ns), false) {
+                Ok(ParsedNamespace::Full { name, version, .. }) => {
+                    let (n, v) = split.unwrap_or_else(|e| panic!("{ns:?}: {e}"));
+                    assert_eq!((n, v), (name.as_str(), version.as_deref()), "{ns:?}");
+                }
+                Ok(other) => panic!("{ns:?}: {other:?}"),
+                Err(expected) => {
+                    let actual = split.err().unwrap_or_else(|| panic!("{ns:?} accepted"));
+                    assert_eq!(actual.to_string(), expected.to_string(), "{ns:?}");
+                }
+            }
+        }
     }
 
     #[test]
