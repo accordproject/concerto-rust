@@ -1098,6 +1098,36 @@ export function runChecks(engine) {
     h.free();
   });
 
+  // P5-34 (I-5): validateAndCommitStagedModelFile is validateStaged then
+  // commitStaged, in one call.
+  check('validateAndCommitStagedModelFile validates, then commits', () => {
+    const h = new engine.ModelManagerHandle();
+    const text = JSON.stringify({ ...MODEL, namespace: 'org.staged@1.0.0' });
+    const stage = h.stageModelFile(text, undefined, 'staged.cto');
+    const epoch = h.epoch();
+    const id = h.validateAndCommitStagedModelFile(stage);
+    assert(id === h.modelFileId('org.staged@1.0.0'), `returned ${id}`);
+    assert(h.epoch() > epoch, 'a commit moves the epoch');
+    assert(h.validateAndCommitStagedModelFile(stage) === undefined, 'a stage commits once');
+    // Invalid content throws what validateStaged throws, and stays staged.
+    const broken = JSON.stringify(BROKEN);
+    const s2 = h.stageModelFile(broken, undefined, 'broken.cto');
+    const before = h.epoch();
+    const e1 = thrown(() => h.validateAndCommitStagedModelFile(s2));
+    const e2 = thrown(() => h.modelFileValidateStaged(s2));
+    assert(e1.message === e2.message, `${e1.message} vs ${e2.message}`);
+    assert(h.epoch() === before, 'a failed validation does not move the epoch');
+    assert(h.modelFileId(JSON.parse(broken).namespace) === undefined, 'not registered');
+    h.dropStagedModelFile(s2);
+    // A registration error is the one commitStaged raises.
+    const again = h.stageModelFile(text, undefined, 'staged.cto');
+    const again2 = h.stageModelFile(text, undefined, 'staged.cto');
+    const viaBoth = thrown(() => h.validateAndCommitStagedModelFile(again));
+    const viaCommit = thrown(() => h.commitStagedModelFile(again2));
+    assert(viaBoth.message === viaCommit.message, `${viaBoth.message} vs ${viaCommit.message}`);
+    h.free();
+  });
+
   // P5-10a lazy views: the per-file view snapshot gives each declaration
   // the decisions the per-element bindings give its view, and each property
   // the modelFilePropertySnapshots entry.
