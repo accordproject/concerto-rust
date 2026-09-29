@@ -1,7 +1,7 @@
 // Records what node-semver's `parse(version)` returns for a fixed, generated
 // set of inputs, for the differential test `semver_parse_matches_node_semver`
-// in concerto-core/src/model_util.rs (task P5-20, F4: the hand-written
-// scanner that replaced the `safeRe[t.FULL]` regex).
+// in concerto-core/src/model_util.rs (task P5-20, F4; since P5-25 the
+// `semver` crate plus a node-compat wrapper).
 //
 // The recording must come from node-semver 7.6.3, the version concerto-core
 // 5.0.0 depends on. Pass the path to that package:

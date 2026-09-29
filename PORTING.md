@@ -948,7 +948,8 @@ Rules:
 - **Results that are instances of a JS library class** (a `SemVer` from
   `semver.parse`, a dayjs object) are built in JS. Rust ports the check that
   decides the result (node-semver 7.6.3's `valid`: the length limit, `trim`,
-  the `FULL` pattern and the `MAX_SAFE_INTEGER` bounds), and the binding calls
+  the `FULL` pattern and the `MAX_SAFE_INTEGER` bounds; since P5-25 the
+  `semver` crate behind a four-rule node-compat wrapper), and the binding calls
   the library through a **host function the shim registers at load**
   (`setHost(errorFactory, semverParse)`), so the view stays one line. Pin the
   library version the port follows, and name it in the doc comment.
