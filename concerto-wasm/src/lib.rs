@@ -74,8 +74,8 @@ use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, P
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
+use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions, generator, populator};
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
-use concerto_core_js::{Serializer, SerializerOptions, generator, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde_json::{Value, json};
@@ -4535,7 +4535,7 @@ fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<Instance> {
         .get("fields")
         .and_then(Value::as_object)
         .ok_or_else(|| wire_error("a typed wire value without fields".to_string()))?;
-    let mut props = SerializerOptions::new();
+    let mut props = SerializerOptions::default();
     for (key, value) in fields {
         props.insert(key.clone(), decode_wire(value)?);
     }
@@ -4563,7 +4563,7 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
             .map(CoreValue::Array),
         Value::Object(map) => match map.get(WIRE_TAG).and_then(Value::as_str) {
             None => {
-                let mut out = SerializerOptions::new();
+                let mut out = SerializerOptions::default();
                 for (key, item) in map {
                     out.insert(key.clone(), decode_wire(item)?);
                 }
@@ -4652,7 +4652,7 @@ fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
     match value {
         Value::Null => Ok(None),
         Value::Object(map) => {
-            let mut options = SerializerOptions::new();
+            let mut options = SerializerOptions::default();
             for (key, item) in &map {
                 options.insert(key.clone(), decode_wire(item)?);
             }
@@ -4743,6 +4743,512 @@ fn encode_wire(v: &CoreValue) -> Value {
         // a `BigInt` it is handed (`unsupported-value:bigint`). No decoded
         // wire value is a `BigInt`, so this is not reached today.
         CoreValue::BigInt(s) => json!({ WIRE_TAG: "bigint", "value": s }),
+    }
+}
+
+// P5-16 (accordproject/concerto-rust#310): `serializerFromJson` reads its
+// document straight into a [`CoreValue`] ([`parse_wire`]) and writes its
+// result straight to JSON text ([`WireOut`]), rather than through an
+// intermediate `serde_json::Value` tree in each direction
+// ([`decode_wire`]/[`encode_wire`] and [`snapshot`]): building, hashing and
+// dropping those trees was about a third of the call. The values and the
+// text are the same as the `Value` route's (the tests below check both).
+
+/// Deserializes one wire value (module doc) directly into a [`CoreValue`],
+/// as `decode_wire(&serde_json::from_str(text)?)` would. A wire shape the
+/// codec does not recognise is not a JSON syntax error: its [`wire_error`]
+/// is kept in `error` (the first one only) and the value read as
+/// `undefined`, so parsing goes on and a syntax error anywhere in the text
+/// still takes precedence, as it does when the whole text is parsed first.
+struct WireSeed<'e> {
+    error: &'e RefCell<Option<Error>>,
+}
+
+impl WireSeed<'_> {
+    fn fail(&self, error: Error) -> CoreValue {
+        let mut slot = self.error.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+        CoreValue::Undefined
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for WireSeed<'_> {
+    type Value = CoreValue;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<CoreValue, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for WireSeed<'_> {
+    type Value = CoreValue;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, b: bool) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Bool(b))
+    }
+
+    fn visit_i64<E>(self, n: i64) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Number(n as f64))
+    }
+
+    fn visit_u64<E>(self, n: u64) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Number(n as f64))
+    }
+
+    fn visit_f64<E>(self, n: f64) -> std::result::Result<CoreValue, E> {
+        // `serde_json::Value` holds a non-finite double as `null`.
+        Ok(if n.is_finite() {
+            CoreValue::Number(n)
+        } else {
+            CoreValue::Null
+        })
+    }
+
+    fn visit_str<E>(self, s: &str) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::String(s.to_string()))
+    }
+
+    fn visit_string<E>(self, s: String) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::String(s))
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Null)
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<CoreValue, E> {
+        Ok(CoreValue::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<CoreValue, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<CoreValue, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(item) = seq.next_element_seed(WireSeed { error: self.error })? {
+            items.push(item);
+        }
+        Ok(CoreValue::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut access: A,
+    ) -> std::result::Result<CoreValue, A::Error> {
+        // serde_json gives no size hint; most documents' objects have a
+        // handful of keys, so start with room for 8 rather than regrow.
+        let mut map = SerializerOptions::with_capacity_and_hasher(
+            access.size_hint().unwrap_or(8),
+            Default::default(),
+        );
+        while let Some(key) = access.next_key::<String>()? {
+            let value = access.next_value_seed(WireSeed { error: self.error })?;
+            map.insert(key, value);
+        }
+        let kind = match map.get(WIRE_TAG) {
+            Some(CoreValue::String(kind)) => kind.clone(),
+            _ => return Ok(CoreValue::Object(map)),
+        };
+        Ok(match decode_wire_tagged(&kind, map) {
+            Ok(value) => value,
+            Err(error) => self.fail(error),
+        })
+    }
+}
+
+/// A [`WIRE_TAG`]ged object of kind `kind`, its entries already read into
+/// `map`, as the [`CoreValue`] it decodes to: [`decode_wire`]'s tagged arms
+/// over already-decoded entries.
+fn decode_wire_tagged(kind: &str, mut map: SerializerOptions) -> Result<CoreValue> {
+    let number = |map: &SerializerOptions, key: &str| match map.get(key) {
+        Some(CoreValue::Number(n)) => Some(*n),
+        _ => None,
+    };
+    match kind {
+        "undefined" => Ok(CoreValue::Undefined),
+        "number" => match map.get("value") {
+            Some(CoreValue::String(text)) => decode_wire_number(text).map(CoreValue::Number),
+            _ => Err(wire_error("a wire number without value".to_string())),
+        },
+        "bigint" => match map.swap_remove("value") {
+            Some(CoreValue::String(text)) => Ok(CoreValue::BigInt(text)),
+            _ => Err(wire_error("a wire bigint without value".to_string())),
+        },
+        "map" => {
+            let Some(CoreValue::Array(entries)) = map.swap_remove("entries") else {
+                return Err(wire_error("a wire map without entries".to_string()));
+            };
+            let mut decoded = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let CoreValue::Array(pair) = entry else {
+                    return Err(wire_error(
+                        "a wire map entry that is not a pair".to_string(),
+                    ));
+                };
+                let mut pair = pair.into_iter();
+                let key = pair
+                    .next()
+                    .ok_or_else(|| wire_error("a wire map entry without a key".to_string()))?;
+                let value = pair
+                    .next()
+                    .ok_or_else(|| wire_error("a wire map entry without a value".to_string()))?;
+                decoded.push((key, value));
+            }
+            Ok(CoreValue::Map(decoded))
+        }
+        "dayjs" => {
+            let valid = matches!(map.get("valid"), Some(CoreValue::Bool(true)));
+            if !valid {
+                return Ok(CoreValue::DateTime(Dayjs::utc_invalid()));
+            }
+            let ms = number(&map, "ms")
+                .ok_or_else(|| wire_error("a valid wire dayjs without ms".to_string()))?;
+            let offset = number(&map, "utcOffset").unwrap_or(0.0);
+            let built = Dayjs::utc_from_number(ms);
+            let built = if offset == 0.0 {
+                built
+            } else {
+                built.utc_offset_set(&UtcOffset::Number(offset))
+            };
+            Ok(CoreValue::DateTime(built))
+        }
+        "typed" => {
+            let kind = match map.get("ctor") {
+                Some(CoreValue::String(ctor)) if ctor == "Resource" => InstanceKind::Resource,
+                Some(CoreValue::String(ctor)) if ctor == "ValidatedResource" => {
+                    InstanceKind::ValidatedResource
+                }
+                Some(CoreValue::String(ctor)) if ctor == "Relationship" => {
+                    InstanceKind::Relationship
+                }
+                other => {
+                    let other = match other {
+                        Some(CoreValue::String(ctor)) => Some(ctor.as_str()),
+                        _ => None,
+                    };
+                    return Err(wire_error(format!("a typed wire value of class {other:?}")));
+                }
+            };
+            let Some(CoreValue::String(fqn)) = map.swap_remove("fqn") else {
+                return Err(wire_error("a typed wire value without fqn".to_string()));
+            };
+            let Some(CoreValue::Object(props)) = map.swap_remove("fields") else {
+                return Err(wire_error("a typed wire value without fields".to_string()));
+            };
+            Ok(CoreValue::Instance(Box::new(Instance {
+                kind,
+                class_fqn: fqn,
+                props,
+                validator_options: concerto_core::instance::ValidateOptions::default(),
+            })))
+        }
+        other => Err(wire_error(format!(
+            "a wire value of kind {other} has no engine counterpart"
+        ))),
+    }
+}
+
+/// `decode_wire(&serde_json::from_str(text)?)` in one pass (see
+/// [`WireSeed`]): malformed JSON throws a JS `SyntaxError`, and an
+/// unrecognised wire shape its [`wire_error`].
+fn parse_wire(text: &str) -> Result<CoreValue> {
+    use serde::de::DeserializeSeed;
+    let error = RefCell::new(None);
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let value = WireSeed { error: &error }
+        .deserialize(&mut deserializer)
+        .and_then(|value| deserializer.end().map(|()| value))
+        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+    match error.into_inner() {
+        Some(error) => Err(error),
+        None => Ok(value),
+    }
+}
+
+/// A [`CoreValue`] written as [`encode_wire`]'s JSON text, without building
+/// the `serde_json::Value` first: `serde_json::to_string(&WireOut(v))` is
+/// `serde_json::to_string(&encode_wire(v))`.
+///
+/// With `INTS` (the compact result, P5-16), a finite number with no
+/// fractional part below 2^53 in magnitude is written as an integer (`42`,
+/// not `42.0`): the same number to `JSON.parse`, which reads an integer
+/// literal faster.
+struct WireOut<'a, const INTS: bool = false>(&'a CoreValue);
+
+/// An [`Instance`] written as [`encode_wire_instance`]'s JSON text.
+struct WireInstanceOut<'a, const INTS: bool = false>(&'a Instance);
+
+impl<const INTS: bool> serde::Serialize for WireOut<'_, INTS> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        match self.0 {
+            CoreValue::Undefined => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry(WIRE_TAG, "undefined")?;
+                map.end()
+            }
+            CoreValue::Null => s.serialize_unit(),
+            CoreValue::Bool(b) => s.serialize_bool(*b),
+            CoreValue::Number(n) => {
+                let n = *n;
+                let special = if n.is_nan() {
+                    Some("NaN")
+                } else if n.is_infinite() {
+                    Some(if n > 0.0 { "Infinity" } else { "-Infinity" })
+                } else if n == 0.0 && n.is_sign_negative() {
+                    Some("-0")
+                } else {
+                    None
+                };
+                match special {
+                    Some(text) => {
+                        let mut map = s.serialize_map(Some(2))?;
+                        map.serialize_entry(WIRE_TAG, "number")?;
+                        map.serialize_entry("value", text)?;
+                        map.end()
+                    }
+                    // `n` is finite and not `-0` here, so it is exactly
+                    // representable as an `i64` when it is integral and
+                    // below 2^53.
+                    None if INTS && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 => {
+                        s.serialize_i64(n as i64)
+                    }
+                    None => s.serialize_f64(n),
+                }
+            }
+            CoreValue::String(text) => s.serialize_str(text),
+            CoreValue::Array(items) => {
+                let mut seq = s.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(&WireOut::<INTS>(item))?;
+                }
+                seq.end()
+            }
+            CoreValue::Object(entries) => {
+                let mut map = s.serialize_map(Some(entries.len()))?;
+                for (key, item) in entries {
+                    map.serialize_entry(key, &WireOut::<INTS>(item))?;
+                }
+                map.end()
+            }
+            CoreValue::Map(entries) => {
+                struct Pair<'a, const I: bool>(&'a CoreValue, &'a CoreValue);
+                impl<const I: bool> serde::Serialize for Pair<'_, I> {
+                    fn serialize<S: serde::Serializer>(
+                        &self,
+                        s: S,
+                    ) -> std::result::Result<S::Ok, S::Error> {
+                        let mut seq = s.serialize_seq(Some(2))?;
+                        seq.serialize_element(&WireOut::<I>(self.0))?;
+                        seq.serialize_element(&WireOut::<I>(self.1))?;
+                        seq.end()
+                    }
+                }
+                struct Entries<'a, const I: bool>(&'a [(CoreValue, CoreValue)]);
+                impl<const I: bool> serde::Serialize for Entries<'_, I> {
+                    fn serialize<S: serde::Serializer>(
+                        &self,
+                        s: S,
+                    ) -> std::result::Result<S::Ok, S::Error> {
+                        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+                        for (key, value) in self.0 {
+                            seq.serialize_element(&Pair::<I>(key, value))?;
+                        }
+                        seq.end()
+                    }
+                }
+                let mut map = s.serialize_map(Some(2))?;
+                map.serialize_entry(WIRE_TAG, "map")?;
+                map.serialize_entry("entries", &Entries::<INTS>(entries))?;
+                map.end()
+            }
+            CoreValue::DateTime(d) => {
+                if !d.is_valid() {
+                    let mut map = s.serialize_map(Some(2))?;
+                    map.serialize_entry(WIRE_TAG, "dayjs")?;
+                    map.serialize_entry("valid", &false)?;
+                    return map.end();
+                }
+                let mut map = s.serialize_map(Some(4))?;
+                map.serialize_entry(WIRE_TAG, "dayjs")?;
+                map.serialize_entry("valid", &true)?;
+                map.serialize_entry("ms", &d.epoch_ms())?;
+                map.serialize_entry("utcOffset", &d.utc_offset())?;
+                map.end()
+            }
+            CoreValue::Instance(i) => WireInstanceOut::<INTS>(i).serialize(s),
+            CoreValue::BigInt(text) => {
+                let mut map = s.serialize_map(Some(2))?;
+                map.serialize_entry(WIRE_TAG, "bigint")?;
+                map.serialize_entry("value", text)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<const INTS: bool> serde::Serialize for WireInstanceOut<'_, INTS> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        struct Fields<'a, const I: bool>(&'a SerializerOptions);
+        impl<const I: bool> serde::Serialize for Fields<'_, I> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                s: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                let mut map = s.serialize_map(Some(self.0.len()))?;
+                for (key, value) in self.0 {
+                    map.serialize_entry(key, &WireOut::<I>(value))?;
+                }
+                map.end()
+            }
+        }
+        let mut map = s.serialize_map(Some(4))?;
+        map.serialize_entry(WIRE_TAG, "typed")?;
+        map.serialize_entry("ctor", self.0.kind.ctor())?;
+        map.serialize_entry("fqn", &self.0.class_fqn)?;
+        map.serialize_entry("fields", &Fields::<INTS>(&self.0.props))?;
+        map.end()
+    }
+}
+
+/// The own properties the view's `materializeTyped` reads by name rather
+/// than copying, and which [`CompactInstanceOut`] therefore writes by
+/// position instead of in its field object.
+const COMPACT_HEADER_KEYS: [&str; 5] = [
+    "$namespace",
+    "$type",
+    "$identifierFieldName",
+    "$identifier",
+    "$timestamp",
+];
+
+/// An [`Instance`] in the compact result shape of `serializerFromJsonCompact`
+/// (P5-16): the JSON array
+/// `[ctor, fqn, $namespace, $type, $identifierFieldName, $identifier,
+/// $timestamp, fields]`, each value in its wire encoding (a missing one as
+/// `undefined`), where `fields` is the `"typed"` shape's field object less
+/// what the view's `materializeTyped` skips: those five keys, `$class`,
+/// and the key named by `$identifierFieldName` when that is a string
+/// (the constructor sets it from `$identifier`). Nested instances keep the
+/// `"typed"` shape.
+struct CompactInstanceOut<'a>(&'a Instance);
+
+impl serde::Serialize for CompactInstanceOut<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        const UNDEFINED: CoreValue = CoreValue::Undefined;
+        struct Rest<'a>(&'a SerializerOptions, Option<&'a str>);
+        impl serde::Serialize for Rest<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                s: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                let mut map = s.serialize_map(None)?;
+                for (key, value) in self.0 {
+                    if COMPACT_HEADER_KEYS.contains(&key.as_str())
+                        || key == "$class"
+                        || Some(key.as_str()) == self.1
+                    {
+                        continue;
+                    }
+                    map.serialize_entry(key, &WireOut::<true>(value))?;
+                }
+                map.end()
+            }
+        }
+        let props = &self.0.props;
+        // The header values, found in one pass over the properties rather
+        // than one hashed lookup each.
+        let mut header: [&CoreValue; 5] = [&UNDEFINED; 5];
+        for (key, value) in props {
+            if let Some(slot) = COMPACT_HEADER_KEYS
+                .iter()
+                .position(|k| k == key)
+                .and_then(|i| header.get_mut(i))
+            {
+                *slot = value;
+            }
+        }
+        let [_, _, identifier_field_name, _, _] = header;
+        let identifier_field = match identifier_field_name {
+            CoreValue::String(name) => Some(name.as_str()),
+            _ => None,
+        };
+        let mut seq = s.serialize_seq(Some(8))?;
+        seq.serialize_element(self.0.kind.ctor())?;
+        seq.serialize_element(&self.0.class_fqn)?;
+        for value in header {
+            seq.serialize_element(&WireOut::<true>(value))?;
+        }
+        seq.serialize_element(&Rest(props, identifier_field))?;
+        seq.end()
+    }
+}
+
+/// The serializer of the last `serializerFromJson` call and its merged
+/// options as `from_json` reads them, keyed by that call's options text
+/// (P5-16): a caller normally passes the same merged options on every call,
+/// and both depend on nothing else, so a call with the same text reuses
+/// them instead of decoding the options and building them again.
+type SerializerCacheEntry = (String, Serializer, FromJsonOptions);
+
+thread_local! {
+    static FROM_JSON_SERIALIZER: RefCell<Option<SerializerCacheEntry>> =
+        const { RefCell::new(None) };
+}
+
+impl ModelManagerHandle {
+    /// The resource `serializerFromJson` and `serializerFromJsonCompact`
+    /// build (module doc above "Serializer fast path"), in one pass each way
+    /// ([`parse_wire`]) and with the serializer reused while the options
+    /// text is unchanged ([`FROM_JSON_SERIALIZER`], P5-16).
+    fn build_from_json(
+        &self,
+        json_text: &str,
+        options_text: &str,
+        env: JsValue,
+    ) -> Result<Instance> {
+        let object = parse_wire(json_text)?;
+        let cached = FROM_JSON_SERIALIZER.with(|slot| {
+            slot.borrow_mut()
+                .take()
+                .filter(|(text, _, _)| text == options_text)
+        });
+        let (text, serializer, prepared) = match cached {
+            Some(entry) => entry,
+            None => {
+                let options = decode_wire_options(options_text)?;
+                let serializer = Serializer::new(true, true, options.as_ref())?;
+                // `from_json(options)` merges `options` over the
+                // serializer's defaults, which were built from the same
+                // `options` over the base defaults: merging them again
+                // changes nothing, so the defaults are the merged options.
+                let prepared = FromJsonOptions::new(&serializer.default_options);
+                (options_text.to_string(), serializer, prepared)
+            }
+        };
+        let mut js_env = JsInstanceEnv { env };
+        let resource =
+            serializer.from_json_prepared(&self.manager, &object, &prepared, &mut js_env);
+        FROM_JSON_SERIALIZER.with(|slot| *slot.borrow_mut() = Some((text, serializer, prepared)));
+        Ok(resource?)
     }
 }
 
@@ -5157,15 +5663,28 @@ impl ModelManagerHandle {
         env: JsValue,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let json_value: Value = serde_json::from_str(json_text)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let object = decode_wire(&json_value)?;
-            let options = decode_wire_options(options_text)?;
-            let serializer = Serializer::new(true, true, options.as_ref())?;
-            let mut js_env = JsInstanceEnv { env };
-            let resource =
-                serializer.from_json(&self.manager, &object, options.as_ref(), &mut js_env)?;
-            snapshot(&encode_wire_instance(&resource))
+            let resource = self.build_from_json(json_text, options_text, env)?;
+            serde_json::to_string(&WireInstanceOut::<false>(&resource))
+                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+        })
+    }
+
+    /// [`Self::serializer_from_json`] with the result in the compact shape
+    /// (P5-16, accordproject/concerto-rust#310): the same resource, its
+    /// top level written as [`CompactInstanceOut`] instead of a `"typed"`
+    /// wire value, which the view parses and materialises in about half
+    /// the time. Additive: [`Self::serializer_from_json`] is unchanged.
+    #[wasm_bindgen(js_name = serializerFromJsonCompact)]
+    pub fn serializer_from_json_compact(
+        &self,
+        json_text: &str,
+        options_text: &str,
+        env: JsValue,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let resource = self.build_from_json(json_text, options_text, env)?;
+            serde_json::to_string(&CompactInstanceOut(&resource))
+                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
     }
 
@@ -6485,6 +7004,10 @@ pub fn decorator_manager_extract_non_vocab_decorators(
     })
 }
 
+// P5-12c (accordproject/concerto-rust#293): `ValidatedResource.validate()`,
+// `setPropertyValue` and `addArrayValue` in one engine call each.
+mod validate_resource;
+
 #[cfg(test)]
 mod tests {
     // Host-side tests of the pure wire codec (no `js_sys` call is reached on
@@ -6639,5 +7162,142 @@ mod tests {
             json!(char::from_u32(0xFFFD).unwrap().to_string())
         );
         assert_eq!(value["ok"], json!(true));
+    }
+
+    /// The wire documents `parse_wire`/`WireOut` are checked on: every
+    /// kind, nested, plus plain JSON, a tag that is not a string, and a
+    /// duplicate key.
+    const WIRE_SAMPLES: &[&str] = &[
+        r#"null"#,
+        r#"true"#,
+        r#"[1,-2,3.5,18446744073709551615,1e300,-0.0,0]"#,
+        r#""a \"string\" with é and 🎉""#,
+        r#"{"b":1,"a":[{"x":null}],"b":2}"#,
+        r#"{"@@oracle":1,"x":"y"}"#,
+        r#"{"@@oracle":"undefined"}"#,
+        r#"[{"@@oracle":"number","value":"NaN"},{"@@oracle":"number","value":"-Infinity"},{"@@oracle":"number","value":"Infinity"},{"@@oracle":"number","value":"-0"}]"#,
+        r#"{"@@oracle":"bigint","value":"123456789012345678901234567890"}"#,
+        r#"{"@@oracle":"map","entries":[["k",{"@@oracle":"undefined"}],[{"@@oracle":"number","value":"NaN"},[1,2]]]}"#,
+        r#"[{"@@oracle":"dayjs","valid":false},{"@@oracle":"dayjs","valid":true,"ms":1700000000123,"utcOffset":120},{"@@oracle":"dayjs","valid":true,"ms":0}]"#,
+        r#"{"@@oracle":"typed","ctor":"ValidatedResource","fqn":"org.acme@1.0.0.Item","fields":{"$namespace":"org.acme@1.0.0","$type":"Item","$identifierFieldName":"id","$identifier":"i1","id":"i1","$timestamp":null,"n":{"@@oracle":"number","value":"NaN"},"child":{"@@oracle":"typed","ctor":"Relationship","fqn":"org.acme@1.0.0.Other","fields":{"$class":"org.acme@1.0.0.Other"}},"labels":["a","b"]}}"#,
+        r#"{"@@oracle":"typed","ctor":"Resource","fqn":"org.acme@1.0.0.Item","fields":{}}"#,
+    ];
+
+    /// P5-16: `parse_wire` reads every sample as `decode_wire` does, and
+    /// `WireOut` writes each decoded value as `encode_wire` plus `snapshot`
+    /// do, byte for byte.
+    #[test]
+    fn parse_wire_and_wire_out_match_the_value_route() {
+        for text in WIRE_SAMPLES {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let expected = decoded(&value);
+            let parsed = match parse_wire(text) {
+                Ok(v) => v,
+                Err(_) => panic!("parse_wire failed on {text}"),
+            };
+            let via_value = serde_json::to_string(&encode_wire(&expected)).unwrap();
+            assert_eq!(
+                serde_json::to_string(&encode_wire(&parsed)).unwrap(),
+                via_value,
+                "{text}"
+            );
+            assert_eq!(
+                serde_json::to_string(&WireOut::<false>(&parsed)).unwrap(),
+                via_value,
+                "{text}"
+            );
+            if let CoreValue::Instance(instance) = &parsed {
+                assert_eq!(
+                    serde_json::to_string(&WireInstanceOut::<false>(instance)).unwrap(),
+                    serde_json::to_string(&encode_wire_instance(instance)).unwrap(),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    /// P5-16: a wire shape the codec does not recognise fails `parse_wire`
+    /// as it fails `decode_wire`, anywhere in the document.
+    #[test]
+    fn parse_wire_rejects_what_decode_wire_rejects() {
+        for text in [
+            r#"{"@@oracle":"bogus"}"#,
+            r#"[1,{"@@oracle":"number","value":"1"}]"#,
+            r#"{"@@oracle":"number"}"#,
+            r#"{"@@oracle":"bigint","value":1}"#,
+            r#"{"@@oracle":"map"}"#,
+            r#"{"@@oracle":"map","entries":[1]}"#,
+            r#"{"@@oracle":"map","entries":[[]]}"#,
+            r#"{"@@oracle":"map","entries":[["k"]]}"#,
+            r#"{"@@oracle":"dayjs","valid":true}"#,
+            r#"{"@@oracle":"typed","ctor":"Other","fqn":"a.B","fields":{}}"#,
+            r#"{"@@oracle":"typed","ctor":"Resource","fields":{}}"#,
+            r#"{"@@oracle":"typed","ctor":"Resource","fqn":"a.B"}"#,
+            r#"{"x":{"a":[{"@@oracle":"typed","ctor":"Resource","fqn":"a.B","fields":{"y":{"@@oracle":"nope"}}}]}}"#,
+        ] {
+            let value: Value = serde_json::from_str(text).unwrap();
+            assert!(decode_wire(&value).is_err(), "decode_wire accepted {text}");
+            assert!(parse_wire(text).is_err(), "parse_wire accepted {text}");
+        }
+    }
+
+    /// P5-16: `CompactInstanceOut` writes the header values by position and
+    /// the other fields in order, less the ones the view skips.
+    #[test]
+    fn compact_instance_out_moves_the_header_out_of_the_fields() {
+        let text = r#"{"@@oracle":"typed","ctor":"ValidatedResource","fqn":"org.acme@1.0.0.Item","fields":{"$namespace":"org.acme@1.0.0","$type":"Item","$identifierFieldName":"id","$identifier":"i1","id":"i1","$timestamp":{"@@oracle":"dayjs","valid":true,"ms":5,"utcOffset":0},"n":{"@@oracle":"number","value":"NaN"},"$class":"x","child":{"@@oracle":"typed","ctor":"Relationship","fqn":"org.acme@1.0.0.Other","fields":{"$class":"org.acme@1.0.0.Other"}},"labels":["a","b"]}}"#;
+        let CoreValue::Instance(instance) = parse_wire(text).ok().unwrap() else {
+            panic!("not an instance");
+        };
+        assert_eq!(
+            serde_json::to_string(&CompactInstanceOut(&instance)).unwrap(),
+            r#"["ValidatedResource","org.acme@1.0.0.Item","org.acme@1.0.0","Item","id","i1",{"@@oracle":"dayjs","valid":true,"ms":5.0,"utcOffset":0.0},{"n":{"@@oracle":"number","value":"NaN"},"child":{"@@oracle":"typed","ctor":"Relationship","fqn":"org.acme@1.0.0.Other","fields":{"$class":"org.acme@1.0.0.Other"}},"labels":["a","b"]}]"#
+        );
+        // A missing header value is written as `undefined`, and with no
+        // string `$identifierFieldName` no other key is dropped.
+        let text = r#"{"@@oracle":"typed","ctor":"Resource","fqn":"a.B","fields":{"$identifierFieldName":1,"1":true}}"#;
+        let CoreValue::Instance(instance) = parse_wire(text).ok().unwrap() else {
+            panic!("not an instance");
+        };
+        let undefined = r#"{"@@oracle":"undefined"}"#;
+        assert_eq!(
+            serde_json::to_string(&CompactInstanceOut(&instance)).unwrap(),
+            format!(
+                r#"["Resource","a.B",{undefined},{undefined},1,{undefined},{undefined},{{"1":true}}]"#
+            )
+        );
+    }
+
+    /// P5-16: `WireOut::<true>` writes an integral number as an integer
+    /// literal, which reads back as the same double, and every other number
+    /// exactly as `WireOut::<false>` does.
+    #[test]
+    fn wire_out_ints_reads_back_the_same_numbers() {
+        for n in [
+            0.0,
+            1.0,
+            -1.0,
+            42.0,
+            1.5,
+            -3.25,
+            9_007_199_254_740_991.0,
+            -9_007_199_254_740_991.0,
+            9_007_199_254_740_992.0,
+            1e21,
+            1e-7,
+            5e-324,
+            f64::MAX,
+        ] {
+            let value = CoreValue::Number(n);
+            let ints = serde_json::to_string(&WireOut::<true>(&value)).unwrap();
+            let plain = serde_json::to_string(&WireOut::<false>(&value)).unwrap();
+            let back: f64 = serde_json::from_str(&ints).unwrap();
+            assert_eq!(back.to_bits(), n.to_bits(), "{ints}");
+            if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+                assert!(!ints.contains('.') && !ints.contains('e'), "{ints}");
+            } else {
+                assert_eq!(ints, plain);
+            }
+        }
     }
 }

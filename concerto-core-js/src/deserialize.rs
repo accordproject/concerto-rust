@@ -86,7 +86,7 @@ mod tests {
             }
         );
         assert_eq!(
-            DeserializeOptions::from_serializer_options(&SerializerOptions::new()),
+            DeserializeOptions::from_serializer_options(&SerializerOptions::default()),
             DeserializeOptions::default()
         );
     }

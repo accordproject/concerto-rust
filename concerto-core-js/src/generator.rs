@@ -10,10 +10,8 @@
 
 use std::collections::HashSet;
 
-use indexmap::IndexMap;
-
 use super::populator::read_properties_error;
-use crate::value::{Instance, InstanceKind, JsValue};
+use crate::value::{Instance, InstanceKind, JsObject, JsValue};
 use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::UtcOffset;
@@ -164,7 +162,7 @@ impl<'a> Generator<'a> {
                 vec![("obj", obj.to_js_string())],
             ));
         };
-        let mut result: IndexMap<String, JsValue> = IndexMap::new();
+        let mut result = JsObject::default();
         let mut id: Option<String> = None;
         // `obj.isIdentifiable()`: its own class declaration's `isIdentified()`.
         if self.options.deduplicate_resources
@@ -390,7 +388,7 @@ fn typed_stack_found(obj: &JsValue) -> Result<String> {
 /// The generator's options from the serializer's merged options. `pub`
 /// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
 /// `GeneratorOptions` for [`convert_primitive`].
-pub fn generator_options(options: &IndexMap<String, JsValue>) -> GeneratorOptions {
+pub fn generator_options(options: &JsObject) -> GeneratorOptions {
     let is_true = |key: &str| options.get(key) == Some(&JsValue::Bool(true));
     let utc_offset = options
         .get("utcOffset")

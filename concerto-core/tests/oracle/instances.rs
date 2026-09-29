@@ -201,7 +201,7 @@ pub fn decode_instance(v: &Value) -> Result<Instance, String> {
         .get("keys")
         .and_then(Value::as_array)
         .ok_or("a typed value without keys")?;
-    let mut props = indexmap::IndexMap::new();
+    let mut props = concerto_core_js::JsObject::default();
     for key in keys {
         let key = key.as_str().ok_or("a typed key that is not a string")?;
         if matches!(key, "$modelManager" | "$classDeclaration" | "$validator") {
