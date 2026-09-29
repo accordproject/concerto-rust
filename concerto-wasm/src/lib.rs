@@ -7007,12 +7007,97 @@ fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
 /// `{ modelManager, decoratorCommandSet, vocabularies }`
 /// (`ExtractDecoratorsResult`, `src/decoratormanager.ts`'s JSDoc typedef),
 /// from a native [`dcs::extractor::ExtractResult`].
-fn extract_result_to_js(result: dcs::extractor::ExtractResult) -> Value {
+///
+/// The intermediate-`Value` encoding: [`extract_result_js`]'s fallback (P5-41).
+fn extract_result_to_js(result: &dcs::extractor::ExtractResult) -> Value {
     json!({
         "modelManager": model_manager_to_ast(&result.model_manager),
         "decoratorCommandSet": result.decorator_command_set,
         "vocabularies": result.vocabularies,
     })
+}
+
+/// P5-41 (F-C, accordproject/concerto-rust#351): the `{ "$class", "models" }`
+/// AST [`model_manager_to_ast`] builds, serialised straight from the
+/// manager's own model ASTs, without cloning them into a new `Value`.
+struct ModelManagerAstView<'a>(&'a ModelManager);
+
+impl serde::Serialize for ModelManagerAstView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(2))?;
+        map.serialize_entry("$class", "concerto.metamodel@1.0.0.Models")?;
+        map.serialize_entry("models", &ModelAstsView(self.0))?;
+        map.end()
+    }
+}
+
+/// The `models` array of [`ModelManagerAstView`].
+struct ModelAstsView<'a>(&'a ModelManager);
+
+impl serde::Serialize for ModelAstsView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_seq(self.0.model_files().map(ModelFile::ast))
+    }
+}
+
+/// P5-41 (F-C): [`extract_result_to_js`]'s object, serialised straight from
+/// the borrowed [`dcs::extractor::ExtractResult`] (same keys, same order),
+/// plus the resident path's `staged` and `validated` keys, which
+/// [`DcsManagerHandle::extract`] appends after them.
+struct ExtractResultView<'a> {
+    result: &'a dcs::extractor::ExtractResult,
+    staged: Option<&'a [Value]>,
+}
+
+impl serde::Serialize for ExtractResultView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(if self.staged.is_some() { 5 } else { 3 }))?;
+        map.serialize_entry(
+            "modelManager",
+            &ModelManagerAstView(&self.result.model_manager),
+        )?;
+        map.serialize_entry("decoratorCommandSet", &self.result.decorator_command_set)?;
+        map.serialize_entry("vocabularies", &self.result.vocabularies)?;
+        if let Some(staged) = self.staged {
+            map.serialize_entry("staged", staged)?;
+            map.serialize_entry("validated", &true)?;
+        }
+        map.end()
+    }
+}
+
+/// The JSON text of [`ExtractResultView`]: what `serde_json::to_string` of
+/// [`extract_result_to_js`]'s `Value` (plus the resident keys) gives, byte
+/// for byte, without building that `Value`.
+fn extract_result_text(
+    result: &dcs::extractor::ExtractResult,
+    staged: Option<&[Value]>,
+) -> serde_json::Result<String> {
+    serde_json::to_string(&ExtractResultView { result, staged })
+}
+
+/// P5-41 (F-C): the JS value of an extract result, encoded directly
+/// ([`extract_result_text`], then `JSON.parse`). Additive: the old
+/// intermediate-`Value` path ([`extract_result_to_js`] then [`to_js`]) stays
+/// as the fallback, should the direct encoding or its parse ever fail.
+fn extract_result_js(
+    result: &dcs::extractor::ExtractResult,
+    staged: Option<Vec<Value>>,
+) -> JsValue {
+    if let Some(js) = extract_result_text(result, staged.as_deref())
+        .ok()
+        .and_then(|text| JSON::parse(&text).ok())
+    {
+        return js;
+    }
+    let mut out = extract_result_to_js(result);
+    if let (Some(staged), Some(map)) = (staged, out.as_object_mut()) {
+        map.insert("staged".to_string(), Value::Array(staged));
+        map.insert("validated".to_string(), Value::Bool(true));
+    }
+    to_js(&out)
 }
 
 /// TS: `DecoratorManager.falsyOrEqual`. `values` is always a plain string
@@ -7151,7 +7236,7 @@ pub fn decorator_manager_extract_decorators(
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
         let result = dcs::extract_decorators(&mm, &opts)?;
-        Ok(to_js(&extract_result_to_js(result)))
+        Ok(extract_result_js(&result, None))
     })
 }
 
@@ -7169,7 +7254,7 @@ pub fn decorator_manager_extract_vocabularies(
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
         let result = dcs::extract_vocabularies(&mm, &opts)?;
-        Ok(to_js(&extract_result_to_js(result)))
+        Ok(extract_result_js(&result, None))
     })
 }
 
@@ -7188,7 +7273,7 @@ pub fn decorator_manager_extract_non_vocab_decorators(
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
         let result = dcs::extract_non_vocab_decorators(&mm, &opts)?;
-        Ok(to_js(&extract_result_to_js(result)))
+        Ok(extract_result_js(&result, None))
     })
 }
 
@@ -7495,12 +7580,7 @@ impl DcsManagerHandle {
             let opts = extract_options_from_js(&options_json);
             let result = op(&self.manager, &opts)?;
             let staged = stage_result(target, &result.model_manager);
-            let mut out = extract_result_to_js(result);
-            if let Some(map) = out.as_object_mut() {
-                map.insert("staged".to_string(), Value::Array(staged));
-                map.insert("validated".to_string(), Value::Bool(true));
-            }
-            Ok(to_js(&out))
+            Ok(extract_result_js(&result, Some(staged)))
         })
     }
 }
@@ -7516,6 +7596,67 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// P5-41 (F-C): the direct encoding of an extract result is, byte for
+    /// byte, the JSON text of the old intermediate `Value` (same keys, same
+    /// order, same numbers), with and without the resident path's keys.
+    #[test]
+    fn extract_result_text_matches_the_value_route() {
+        let dec = |name: &str, args: Value| json!({"$class": "concerto.metamodel@1.0.0.Decorator", "name": name, "arguments": args});
+        let model = json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.p541@1.0.0",
+            "imports": [],
+            "decorators": [dec("Term", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "A model"}]))],
+            "declarations": [{
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Person",
+                "isAbstract": false,
+                "decorators": [
+                    dec("Term", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "A person"}])),
+                    dec("Weight", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 0.1}])),
+                ],
+                "properties": [{
+                    "$class": "concerto.metamodel@1.0.0.StringProperty",
+                    "name": "name",
+                    "isArray": false,
+                    "isOptional": false,
+                    "decorators": [
+                        dec("Term", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "Name"}])),
+                        dec("Flag", json!([])),
+                    ],
+                }],
+            }],
+        });
+        for remove in [false, true] {
+            let Ok(mm) = model_manager_from_asts(std::slice::from_ref(&model)) else {
+                panic!("model_manager_from_asts failed");
+            };
+            let opts = dcs::ExtractOptions {
+                remove_decorators_from_model: remove,
+                locale: "en".to_string(),
+            };
+            let result = dcs::extract_decorators(&mm, &opts).unwrap();
+            assert!(!result.decorator_command_set.is_empty());
+            assert!(!result.vocabularies.is_empty());
+
+            let old = extract_result_to_js(&result);
+            assert_eq!(
+                extract_result_text(&result, None).unwrap(),
+                serde_json::to_string(&old).unwrap()
+            );
+
+            let staged = vec![json!([0, null]), Value::Null];
+            let mut old = old;
+            let map = old.as_object_mut().unwrap();
+            map.insert("staged".to_string(), Value::Array(staged.clone()));
+            map.insert("validated".to_string(), Value::Bool(true));
+            assert_eq!(
+                extract_result_text(&result, Some(&staged)).unwrap(),
+                serde_json::to_string(&old).unwrap()
+            );
+        }
+    }
 
     /// P5-28: [`staged_header`] of a canonical file gives what
     /// `modelFileFromAstHeader` sets: the version, the short names in
