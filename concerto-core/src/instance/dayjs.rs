@@ -22,6 +22,17 @@
 //!   the offset's local time; its `valueOf` takes the shift back off, so
 //!   `toDate()`, `toISOString()` and `.utc()` see the original instant.
 //! - `$u` (`isUTC()`), `$offset` and `$x.$localOffset`.
+//!
+//! Parsing is *not* dayjs's (P5-24, accordproject/concerto-rust#328): a
+//! `DateTime` string is accepted only in the strict ISO 8601 / RFC 3339
+//! form (the `strictQualifiedDateTimes` regex, then chrono's calendar
+//! checks, BC-07 and BC-42 in R1), on every path that reads one: fields,
+//! map values and model defaults. The emulation of dayjs's lenient
+//! `parseDate` and of V8's `Date.parse` is gone; what stays is the value
+//! model above and the output formatting (`format_json`, `to_iso_string`,
+//! `to_js_string`).
+
+use std::sync::LazyLock;
 
 use crate::ecma;
 
@@ -69,15 +80,13 @@ impl Dayjs {
         Self::with_time(now_ms, true)
     }
 
-    /// `dayjs.utc(date)` for a string `date`: dayjs's `parseDate` with
-    /// `utc: true`.
-    ///
-    /// A string that does not end in `Z` (case-insensitively) and matches
-    /// dayjs's `REGEX_PARSE` is built with `Date.UTC` from its parts;
-    /// anything else goes to `new Date(string)`, ECMAScript `Date.parse`
-    /// (`date_parse`).
+    /// A `DateTime` string read with the strict rule (P5-24, BC-07,
+    /// accordproject/concerto-rust#328): the `strictQualifiedDateTimes`
+    /// format, naming a real calendar instant (`strict_instant`). Anything
+    /// else is an invalid date, where TS's `dayjs.utc(date)` used to parse
+    /// leniently (DIVERGENCES.md DV-009).
     pub fn utc_parse(s: &str) -> Self {
-        Self::with_time(parse_date_utc(s), true)
+        Self::with_time(strict_instant(s), true)
     }
 
     /// `dayjs.utc(n)` for a number: `new Date(n)`.
@@ -99,28 +108,22 @@ impl Dayjs {
             // `dayjs('not a date')`: a local, invalid dayjs.
             return Self::with_time(f64::NAN, false);
         }
-        let iso = iso.unwrap_or_default();
+        let time = iso.map_or(f64::NAN, iso_string_instant);
         if utc {
-            let d = Self::utc_parse(iso);
+            let d = Self::with_time(time, true);
             if offset == 0.0 {
                 d
             } else {
                 d.utc_offset_set(&UtcOffset::Number(offset))
             }
         } else {
-            let local = Self::with_time(parse_date_utc(iso), false);
+            let local = Self::with_time(time, false);
             if local.utc_offset() == offset {
                 local
             } else {
                 local.utc_offset_set(&UtcOffset::Number(offset))
             }
         }
-    }
-
-    /// `Date.parse(s)` under `TZ=UTC`, as a time value (`NaN` when it does
-    /// not parse): the ECMAScript date time string format (`date_parse`).
-    pub fn parse_instant(s: &str) -> f64 {
-        date_parse(s)
     }
 
     /// This date in the instance validator's value shape: a
@@ -320,15 +323,14 @@ fn pad_zone_str(utc_offset: f64) -> String {
 /// The `utc` plugin's `offsetFromString`: the first `[+-]\d\d(?::?\d\d)?`
 /// in the string, in minutes, or `None` (JS `null`) when there is none.
 fn offset_from_string(value: &str) -> Option<f64> {
-    let re = regress::Regex::new(r"[+-]\d\d(?::?\d\d)?").expect("static pattern");
-    let m = re.find(value)?;
+    static OFFSET: LazyLock<regress::Regex> =
+        LazyLock::new(|| regress::Regex::new(r"[+-]\d\d(?::?\d\d)?").expect("static pattern"));
+    static PARTS: LazyLock<regress::Regex> =
+        LazyLock::new(|| regress::Regex::new(r"([+-]|\d\d)").expect("static pattern"));
+    let m = OFFSET.find(value)?;
     let offset = &value[m.range];
     // `("" + offset[0]).match(/([+-]|\d\d)/g) || ['-', 0, 0]`
-    let parts_re = regress::Regex::new(r"([+-]|\d\d)").expect("static pattern");
-    let parts: Vec<&str> = parts_re
-        .find_iter(offset)
-        .map(|m| &offset[m.range])
-        .collect();
+    let parts: Vec<&str> = PARTS.find_iter(offset).map(|m| &offset[m.range]).collect();
     let indicator = parts.first().copied().unwrap_or("-");
     let hours = parts.get(1).map_or(0.0, |h| ecma::string_to_number(h));
     // `+minutesOffset` with `minutesOffset` possibly `undefined`: NaN.
@@ -340,106 +342,77 @@ fn offset_from_string(value: &str) -> Option<f64> {
     Some(if indicator == "+" { total } else { -total })
 }
 
-/// dayjs `parseDate` for a string with `utc: true`, under `TZ=UTC`.
-fn parse_date_utc(s: &str) -> f64 {
-    let ends_with_z = s.ends_with('Z') || s.ends_with('z');
-    if !ends_with_z {
-        // C.REGEX_PARSE
-        let re = regress::Regex::new(
-            r"^(\d{4})[-/]?(\d{1,2})?[-/]?(\d{0,2})[Tt\s]*(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?[.:]?(\d+)?$",
-        )
-        .expect("static pattern");
-        if let Some(m) = re.find(s) {
-            let group = |i: usize| m.group(i).map(|r| &s[r]);
-            let num = |g: Option<&str>| g.map_or(f64::NAN, ecma::string_to_number);
-            // `const m = d[2] - 1 || 0`
-            let month = {
-                let v = num(group(2)) - 1.0;
-                if v == 0.0 || v.is_nan() { 0.0 } else { v }
-            };
-            // `(d[7] || '0').substring(0, 3)`
-            let ms_text: String = group(7)
-                .filter(|t| !t.is_empty())
-                .unwrap_or("0")
-                .chars()
-                .take(3)
-                .collect();
-            // `d[3] || 1`, `d[4] || 0`, ...: a present, non-empty group is
-            // truthy as a string, whatever its digits.
-            let or = |g: Option<&str>, default: f64| match g {
-                Some(t) if !t.is_empty() => ecma::string_to_number(t),
-                _ => default,
-            };
-            return date_utc(
-                num(group(1)),
-                month,
-                or(group(3), 1.0),
-                or(group(4), 0.0),
-                or(group(5), 0.0),
-                or(group(6), 0.0),
-                ecma::string_to_number(&ms_text),
-            );
-        }
+
+/// The `strictQualifiedDateTimes` format, the only `DateTime` string form
+/// accepted (P5-24, BC-07, accordproject/concerto-rust#328):
+/// `YYYY-MM-DDTHH:mm:ss`, an optional fraction of any length, then `Z` or
+/// `±HH:mm`. TS: `/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/`.
+static STRICT_DATE_TIME: LazyLock<regress::Regex> = LazyLock::new(|| {
+    regress::Regex::new(
+        r"^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$",
+    )
+    .expect("static pattern")
+});
+
+/// Whether `s` has the strict `DateTime` format ([`STRICT_DATE_TIME`]). It
+/// says nothing about whether the fields name a real instant: see
+/// [`strict_instant`].
+pub(crate) fn is_strict_date_time_format(s: &str) -> bool {
+    STRICT_DATE_TIME.find(s).is_some()
+}
+
+/// The time value (ms since the epoch) of a strict `DateTime` string, or
+/// `NaN` when `s` is not one: it must have the strict format, and name a
+/// real calendar instant (no `2024-02-30`, no `T24:00:00`, no leap second
+/// `:60`, offsets up to `±23:59`; BC-42). The fraction is truncated to
+/// milliseconds, as `Date` does. chrono's RFC 3339 parser does the
+/// calendar checks; the regex keeps out the forms RFC 3339 allows and the
+/// strict format does not (a lower-case `t`/`z`, a space separator).
+fn strict_instant(s: &str) -> f64 {
+    if !is_strict_date_time_format(s) {
+        return f64::NAN;
     }
-    date_parse(s)
+    match chrono::DateTime::parse_from_rfc3339(s) {
+        // chrono reads `:60` as a leap second (a nanosecond field of 1e9
+        // or more); a `DateTime` has none.
+        Ok(dt) if dt.timestamp_subsec_nanos() < 1_000_000_000 => {
+            time_clip(dt.timestamp_millis() as f64)
+        }
+        _ => f64::NAN,
+    }
+}
+
+/// `toISOString()` output (`YYYY-MM-DDTHH:mm:ss.sssZ`, or an expanded
+/// `±YYYYYY` year) read back as a time value, `NaN` when `s` is not one:
+/// the inverse of [`Dayjs::to_iso_string`], for values this engine (or the
+/// oracle's recorder) formatted itself. Not a parser for user input.
+fn iso_string_instant(s: &str) -> f64 {
+    static ISO_STRING: LazyLock<regress::Regex> = LazyLock::new(|| {
+        regress::Regex::new(r"^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$")
+            .expect("static pattern")
+    });
+    let Some(m) = ISO_STRING.find(s) else {
+        return f64::NAN;
+    };
+    let num = |i: usize| -> i64 {
+        m.group(i)
+            .and_then(|r| s[r].trim_start_matches('+').parse().ok())
+            .unwrap_or(-1)
+    };
+    let (year, month, day) = (num(1), num(2), num(3));
+    let (hour, minute, second, ms) = (num(4), num(5), num(6), num(7));
+    let date = i32::try_from(year)
+        .ok()
+        .and_then(|y| chrono::NaiveDate::from_ymd_opt(y, month as u32, day as u32));
+    match date.and_then(|d| d.and_hms_milli_opt(hour as u32, minute as u32, second as u32, ms as u32)) {
+        Some(dt) => time_clip(dt.and_utc().timestamp_millis() as f64),
+        None => f64::NAN,
+    }
 }
 
 /// ECMAScript `ToIntegerOrInfinity`.
 fn to_integer_or_infinity(n: f64) -> f64 {
     if n.is_nan() { 0.0 } else { n.trunc() }
-}
-
-/// ECMAScript `Date.UTC(year, month, date, hours, minutes, seconds, ms)`.
-fn date_utc(year: f64, month: f64, date: f64, h: f64, min: f64, s: f64, ms: f64) -> f64 {
-    let year = if !year.is_nan() {
-        let yi = to_integer_or_infinity(year);
-        if (0.0..=99.0).contains(&yi) {
-            1900.0 + yi
-        } else {
-            year
-        }
-    } else {
-        year
-    };
-    time_clip(make_date(
-        make_day(year, month, date),
-        make_time(h, min, s, ms),
-    ))
-}
-
-/// ECMAScript `MakeTime`.
-fn make_time(hour: f64, min: f64, sec: f64, ms: f64) -> f64 {
-    if !hour.is_finite() || !min.is_finite() || !sec.is_finite() || !ms.is_finite() {
-        return f64::NAN;
-    }
-    to_integer_or_infinity(hour) * 3_600_000.0
-        + to_integer_or_infinity(min) * MS_PER_MINUTE
-        + to_integer_or_infinity(sec) * 1000.0
-        + to_integer_or_infinity(ms)
-}
-
-/// ECMAScript `MakeDay`.
-fn make_day(year: f64, month: f64, date: f64) -> f64 {
-    if !year.is_finite() || !month.is_finite() || !date.is_finite() {
-        return f64::NAN;
-    }
-    let y = to_integer_or_infinity(year);
-    let m = to_integer_or_infinity(month);
-    let dt = to_integer_or_infinity(date);
-    let ym = y + (m / 12.0).floor();
-    if ym.abs() > 400_000.0 {
-        return f64::NAN;
-    }
-    let mn = m.rem_euclid(12.0);
-    days_from_civil(ym as i64, mn as i64 + 1, 1) as f64 + dt - 1.0
-}
-
-/// ECMAScript `MakeDate`.
-fn make_date(day: f64, time: f64) -> f64 {
-    if !day.is_finite() || !time.is_finite() {
-        return f64::NAN;
-    }
-    day * MS_PER_DAY + time
 }
 
 /// ECMAScript `TimeClip`.
@@ -449,17 +422,6 @@ fn time_clip(time: f64) -> f64 {
     }
     // `ToIntegerOrInfinity`, which also turns -0 into +0.
     to_integer_or_infinity(time) + 0.0
-}
-
-/// Days since 1970-01-01 of a proleptic Gregorian date (month 1-12).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 /// The UTC calendar fields of a time value.
@@ -504,111 +466,14 @@ impl Fields {
     }
 }
 
-/// `new Date(string)` under `TZ=UTC`: ECMAScript's date time string format
-/// (`YYYY`, `YYYY-MM`, `YYYY-MM-DD`, each optionally followed by
-/// `THH:mm`, `THH:mm:ss` or `THH:mm:ss.sss`, and `Z` or `±HH:mm`; expanded
-/// `±YYYYYY` years), with the V8 extensions the recorded corpus reaches:
-/// any number of fraction digits (truncated to milliseconds), `24:00`, a
-/// space or a lower-case `t` instead of `T`, a lower-case `z`, a `±HHmm`
-/// offset and a bare `Z` after a date; and, from V8's legacy fallback
-/// parser, a date of numbers alone ([`legacy_numeric_date`]). Anything else
-/// is `NaN` (the rest of V8's legacy parser is not ported; DIVERGENCES.md
-/// DV-009).
-fn date_parse(s: &str) -> f64 {
-    // V8's date tokenizer treats U+0000 as end of input, so `new
-    // Date(string)` parses only the part before the first NUL and ignores
-    // whatever follows it (DV-009; accordproject/concerto-rust#169). Mirror
-    // that here, ahead of both the ECMAScript date time string format match
-    // and the legacy numeric-date fallback below.
-    let s = match s.find('\u{0}') {
-        Some(i) => &s[..i],
-        None => s,
-    };
-    let re = regress::Regex::new(
-        r"^([+-]\d{6}|\d{4})(?:-(\d{2})(?:-(\d{2}))?)?(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(Z|z|[+-]\d{2}:?\d{2})?$",
-    )
-    .expect("static pattern");
-    let Some(m) = re.find(s) else {
-        return legacy_numeric_date(s);
-    };
-    let group = |i: usize| m.group(i).map(|r| &s[r]);
-    let year_text = group(1).unwrap_or_default();
-    if year_text == "-000000" {
-        return f64::NAN;
-    }
-    let year = ecma::string_to_number(year_text);
-    let month = group(2).map_or(1.0, ecma::string_to_number);
-    let day = group(3).map_or(1.0, ecma::string_to_number);
-    let hour = group(4).map_or(0.0, ecma::string_to_number);
-    let minute = group(5).map_or(0.0, ecma::string_to_number);
-    let second = group(6).map_or(0.0, ecma::string_to_number);
-    let ms = group(7).map_or(0.0, |f| {
-        let digits: String = f.chars().chain("000".chars()).take(3).collect();
-        ecma::string_to_number(&digits)
-    });
-    if !(1.0..=12.0).contains(&month) || !(1.0..=31.0).contains(&day) {
-        return f64::NAN;
-    }
-    if minute > 59.0 || second > 59.0 {
-        return f64::NAN;
-    }
-    if hour > 24.0 || (hour == 24.0 && (minute != 0.0 || second != 0.0 || ms != 0.0)) {
-        return f64::NAN;
-    }
-    let offset_minutes = match group(8) {
-        None | Some("Z") | Some("z") => 0.0,
-        Some(z) => {
-            let sign = if z.starts_with('-') { -1.0 } else { 1.0 };
-            let digits: String = z[1..].chars().filter(char::is_ascii_digit).collect();
-            let hh = ecma::string_to_number(&digits[..2]);
-            let mm = ecma::string_to_number(&digits[2..]);
-            if hh > 23.0 || mm > 59.0 {
-                return f64::NAN;
-            }
-            sign * (hh * 60.0 + mm)
-        }
-    };
-    let day_number = make_day(year, month - 1.0, day);
-    let time = make_time(hour, minute, second, ms);
-    time_clip(make_date(day_number, time) - offset_minutes * MS_PER_MINUTE)
-}
-
-/// V8's legacy date parser (`DateParser::Parse`, `DayComposer::Write`) for
-/// a date written as two or three numbers alone, separated by `-` or `/`
-/// (leading `-` signs are skipped): three numbers are year, month, day when
-/// the first cannot be a day (outside 1-31), and month, day, year
-/// otherwise; two numbers are month and day, in V8's default year 2001. A
-/// year 0-49 is 20xx and 50-99 is 19xx. The time is midnight, local time,
-/// which is UTC here.
-fn legacy_numeric_date(s: &str) -> f64 {
-    let re = regress::Regex::new(r"^-*(\d+)[-/](\d+)(?:[-/](\d+))?$").expect("static pattern");
-    let Some(m) = re.find(s) else {
-        return f64::NAN;
-    };
-    let num = |i: usize| m.group(i).map(|r| ecma::string_to_number(&s[r]));
-    let (Some(a), Some(b)) = (num(1), num(2)) else {
-        return f64::NAN;
-    };
-    let is_day = |n: f64| (1.0..=31.0).contains(&n);
-    let (mut year, month, day) = match num(3) {
-        Some(c) if !is_day(a) => (a, b, c),
-        Some(c) => (c, a, b),
-        None => (2001.0, a, b),
-    };
-    if (0.0..=49.0).contains(&year) {
-        year += 2000.0;
-    } else if (50.0..=99.0).contains(&year) {
-        year += 1900.0;
-    }
-    if !(1.0..=12.0).contains(&month) || !is_day(day) {
-        return f64::NAN;
-    }
-    time_clip(make_date(make_day(year, month - 1.0, day), 0.0))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn iso(s: &str) -> Option<String> {
+        Dayjs::utc_parse(s).to_iso_string()
+    }
 
     /// `epoch_ms()` round-trips through `utc_from_number`/`utc_offset_set`,
     /// the pair the Serializer fast path's wire codec (P4-10) crosses the
@@ -628,63 +493,116 @@ mod tests {
         assert!(Dayjs::utc_invalid().epoch_ms().is_nan());
     }
 
+    /// Strict strings read as the instant `Date` gives them: any number of
+    /// fraction digits, truncated to milliseconds, and `±HH:mm` offsets.
     #[test]
-    fn utc_parse_regex_path_and_iso() {
-        let d = Dayjs::utc_parse("2021-01-01T00:00:00");
+    fn strict_strings_parse_to_their_instant() {
         assert_eq!(
-            d.to_iso_string().as_deref(),
-            Some("2021-01-01T00:00:00.000Z")
-        );
-        // Two-digit years go through Date.UTC's 1900 mapping.
-        let d = Dayjs::utc_parse("0050-01-01");
-        assert_eq!(
-            d.to_iso_string().as_deref(),
-            Some("1950-01-01T00:00:00.000Z")
-        );
-        // A trailing Z goes to Date.parse.
-        let d = Dayjs::utc_parse("2021-01-01T10:20:30.123456Z");
-        assert_eq!(
-            d.to_iso_string().as_deref(),
+            iso("2021-01-01T10:20:30.123456Z").as_deref(),
             Some("2021-01-01T10:20:30.123Z")
         );
-        // An offset is not matched by REGEX_PARSE.
-        let d = Dayjs::utc_parse("2021-01-01T10:00:00+05:00");
         assert_eq!(
-            d.to_iso_string().as_deref(),
+            iso("2021-01-01T10:20:30.1234567891Z").as_deref(),
+            Some("2021-01-01T10:20:30.123Z")
+        );
+        assert_eq!(
+            iso("2021-01-01T10:00:00+05:00").as_deref(),
             Some("2021-01-01T05:00:00.000Z")
         );
-        assert!(!Dayjs::utc_parse("not a date").is_valid());
-        assert!(!Dayjs::utc_parse("2021-13-01T00:00:00Z").is_valid());
-        // Date.parse rolls an out-of-range day over, as V8 does.
-        let d = Dayjs::utc_parse("2021-02-30T00:00:00Z");
         assert_eq!(
-            d.to_iso_string().as_deref(),
-            Some("2021-03-02T00:00:00.000Z")
+            iso("2022-11-28T01:02:03.98765-08:00").as_deref(),
+            Some("2022-11-28T09:02:03.987Z")
+        );
+        assert_eq!(
+            iso("1969-12-31T23:59:59.9999Z").as_deref(),
+            Some("1969-12-31T23:59:59.999Z")
+        );
+        assert_eq!(
+            iso("0000-01-01T00:00:00Z").as_deref(),
+            Some("0000-01-01T00:00:00.000Z")
+        );
+        assert_eq!(
+            iso("9999-12-31T23:59:59.999Z").as_deref(),
+            Some("9999-12-31T23:59:59.999Z")
+        );
+        assert!(Dayjs::utc_parse("2021-01-01T00:00:00Z").is_utc());
+    }
+
+    /// BC-07 (R1): every lenient form dayjs and V8 used to accept is
+    /// invalid now.
+    #[test]
+    fn lenient_forms_are_invalid() {
+        for s in [
+            "2021-01-01",
+            "2021-01-01T00:00:00",
+            "2021-01-01T00:00",
+            "2022-11-28 01:02:03.987Z",
+            "2022-11-28t01:02:03.987Z",
+            "2022-11-28T01:02:03.987z",
+            "2022",
+            "2022-11",
+            "+002022-11-28",
+            "--11-28",
+            "11-28",
+            "11/28/2022",
+            "20240102",
+            "May 1, 2020",
+            "1",
+            "2022-11-28T01:02:03.987-08",
+            "2022-11-28T01:02:03+0100",
+            "1970-01-01T00:00:00.000Z\u{0}",
+            " 2021-01-01T00:00:00Z",
+            "not a date",
+            "",
+        ] {
+            assert!(!Dayjs::utc_parse(s).is_valid(), "{s:?} should be invalid");
+        }
+    }
+
+    /// BC-42 (R1): the fields must name a real calendar instant. No
+    /// roll-over of impossible days or `24:00`, no leap seconds, no
+    /// out-of-range months, hours, minutes or offsets.
+    #[test]
+    fn impossible_instants_are_invalid() {
+        for s in [
+            "2024-02-30T00:00:00Z",
+            "2023-02-29T00:00:00Z",
+            "2024-04-31T00:00:00Z",
+            "2024-01-02T24:00:00Z",
+            "2016-12-31T23:59:60Z",
+            "2021-13-01T00:00:00Z",
+            "2021-00-01T00:00:00Z",
+            "2021-01-00T00:00:00Z",
+            "2021-01-01T00:60:00Z",
+            "2021-01-01T00:00:00+24:00",
+            "2021-01-01T00:00:00+01:60",
+        ] {
+            assert!(!Dayjs::utc_parse(s).is_valid(), "{s:?} should be invalid");
+        }
+        // A leap day in a leap year is a real date.
+        assert_eq!(
+            iso("2024-02-29T00:00:00Z").as_deref(),
+            Some("2024-02-29T00:00:00.000Z")
+        );
+        assert_eq!(
+            iso("2021-01-01T00:00:00+23:59").as_deref(),
+            Some("2020-12-31T00:01:00.000Z")
         );
     }
 
+    /// `from_recorded` reads `toISOString()` output back, expanded years
+    /// included, and nothing else.
     #[test]
-    fn legacy_numeric_dates_match_v8() {
-        let iso = |s: &str| Dayjs::utc_parse(s).to_iso_string();
-        assert_eq!(iso("--11-28").as_deref(), Some("2001-11-28T00:00:00.000Z"));
-        assert_eq!(iso("11-28").as_deref(), Some("2001-11-28T00:00:00.000Z"));
-        assert_eq!(
-            iso("2022-11-28t01:02:03.987Z").as_deref(),
-            Some("2022-11-28T01:02:03.987Z")
-        );
-        assert_eq!(
-            Dayjs::parse_instant("--11-28"),
-            Dayjs::parse_instant("2001-11-28")
-        );
-        assert_eq!(
-            Dayjs::parse_instant("11/28/2022"),
-            Dayjs::parse_instant("2022-11-28")
-        );
-        assert_eq!(
-            Dayjs::parse_instant("--2022-11-28"),
-            Dayjs::parse_instant("2022-11-28")
-        );
-        assert!(Dayjs::parse_instant("13-28").is_nan());
+    fn iso_strings_read_back() {
+        let d = Dayjs::from_recorded(true, Some("2021-01-01T00:00:00.000Z"), 0.0, true);
+        assert_eq!(d.to_iso_string().as_deref(), Some("2021-01-01T00:00:00.000Z"));
+        let d = Dayjs::from_recorded(true, Some("-000001-12-31T23:00:00.000Z"), 60.0, true);
+        assert_eq!(d.to_iso_string().as_deref(), Some("-000001-12-31T23:00:00.000Z"));
+        assert_eq!(d.format_json(), "0000-01-01T00:00:00.000+01:00");
+        let d = Dayjs::from_recorded(true, Some("+010000-01-01T00:00:00.000Z"), 0.0, true);
+        assert_eq!(d.to_iso_string().as_deref(), Some("+010000-01-01T00:00:00.000Z"));
+        assert!(!Dayjs::from_recorded(true, Some("2021-01-01"), 0.0, true).is_valid());
+        assert!(!Dayjs::from_recorded(false, None, 0.0, true).is_valid());
     }
 
     #[test]
@@ -716,34 +634,6 @@ mod tests {
             Dayjs::utc_parse("2021-01-01T00:00:00Z").format_json(),
             "2021-01-01T00:00:00.000Z"
         );
-    }
-
-    /// DV-009 / accordproject/concerto-rust#169 (P5-05 fuzz cluster T1c): an
-    /// embedded NUL truncates `new Date(string)`'s input, as V8's date
-    /// tokenizer does, instead of failing the whole parse.
-    #[test]
-    fn embedded_nul_truncates_like_v8() {
-        let iso = |s: &str| Dayjs::utc_parse(s).to_iso_string();
-        assert_eq!(
-            iso("1970-01-01T00:00:00.000+00:00\u{0}").as_deref(),
-            Some("1970-01-01T00:00:00.000Z")
-        );
-        assert_eq!(
-            iso("1970-01-01T00:00:00.000Z\u{0}").as_deref(),
-            Some("1970-01-01T00:00:00.000Z")
-        );
-        // Anything after the NUL is ignored, exactly as it is by V8.
-        assert_eq!(
-            iso("1970-01-01T00:00:00.000+00:00\u{0}junk").as_deref(),
-            Some("1970-01-01T00:00:00.000Z")
-        );
-        assert_eq!(
-            iso("1970-01-01\u{0}").as_deref(),
-            Some("1970-01-01T00:00:00.000Z")
-        );
-        // A control character other than NUL gets no special treatment: it
-        // fails to parse in both TS and Rust.
-        assert!(!Dayjs::utc_parse("1970-01-01T00:00:00.000+00:00\u{1}").is_valid());
     }
 
     #[test]

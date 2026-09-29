@@ -4366,7 +4366,7 @@ Factory.newResource	1569acfe6a2d382a6da50852	pass
 Factory.newResource	156e5f3ec9ea7a6a9951f2f9	pass
 Factory.newResource	19a7ab07b01836cb256a1232	pass
 Factory.newResource	1a263eb1d362cd83435f1d35	pass
-Factory.newResource	1cf6a6d9ff910fe56e3848a3	pass
+Factory.newResource	1cf6a6d9ff910fe56e3848a3	fail:unexpected-error
 Factory.newResource	2363aa4d78a951b78fa0f811	pass
 Factory.newResource	23c40888bb5cd60f7dd3289c	pass
 Factory.newResource	24a7134e7341e98f712db270	pass
@@ -4440,7 +4440,7 @@ Factory.newResource	a3ba77fc1ac6d2d7c2a6ec9e	pass
 Factory.newResource	a5e86fdf53178ed555556077	pass
 Factory.newResource	a7b949c8bd57ea0e3c192b3c	pass
 Factory.newResource	ab22a52713b0ae5bd01c6220	pass
-Factory.newResource	af5730ac379eaaf6675b06eb	pass
+Factory.newResource	af5730ac379eaaf6675b06eb	fail:unexpected-error
 Factory.newResource	aff36603d7c4162c44587733	pass
 Factory.newResource	b07c07087c1c2e85c7a32386	pass
 Factory.newResource	b1344ba4ee9e724c4f0e60eb	pass
@@ -10091,7 +10091,7 @@ Serializer.fromJSON	17a82075f8503dcd3aa95e25	pass
 Serializer.fromJSON	17cd050fbe368d735e5d1ad7	pass
 Serializer.fromJSON	17f366e9f4f4188a5ce05c36	pass
 Serializer.fromJSON	17f458647ffd135161a42aff	pass
-Serializer.fromJSON	18085424055e321750edebee	pass
+Serializer.fromJSON	18085424055e321750edebee	fail:unexpected-error
 Serializer.fromJSON	180cb0109d9862ea5f2412df	pass
 Serializer.fromJSON	181b6f4580825df8e482d9ac	pass
 Serializer.fromJSON	1821c47158e191f485bde1e0	pass
@@ -10152,7 +10152,7 @@ Serializer.fromJSON	1f3d921c12aefd5039729904	pass
 Serializer.fromJSON	1f7bf266db32f4c1ab3bc9d7	pass
 Serializer.fromJSON	1fc7830b83e5a5a9a97f576c	pass
 Serializer.fromJSON	1fd721e35d606b388c1c223d	pass
-Serializer.fromJSON	1fea82f44c36875c961b3f8e	pass
+Serializer.fromJSON	1fea82f44c36875c961b3f8e	fail:unexpected-error
 Serializer.fromJSON	20062670b8915716ee87e834	pass
 Serializer.fromJSON	204c35c13c93c161c0813324	pass
 Serializer.fromJSON	2063a7e38c099fc7855317c9	pass
@@ -10484,7 +10484,7 @@ Serializer.fromJSON	48df155ca80ce550db807570	pass
 Serializer.fromJSON	48f788883f52fc86068df721	pass
 Serializer.fromJSON	491bea1dcbc48fe69264e222	pass
 Serializer.fromJSON	4930d487a92d0f3945cd857b	pass
-Serializer.fromJSON	494d8d9083a7b7e614fee3fa	pass
+Serializer.fromJSON	494d8d9083a7b7e614fee3fa	fail:unexpected-error
 Serializer.fromJSON	4954bce2b8339e34b45f3f8d	pass
 Serializer.fromJSON	495d242177a9322c541abf3d	pass
 Serializer.fromJSON	49abfc9c4b2e283661167824	pass
@@ -10560,13 +10560,13 @@ Serializer.fromJSON	51326d6f73e9b7908c72d910	pass
 Serializer.fromJSON	5152690f25247a3e24e5dbb3	pass
 Serializer.fromJSON	515bf372f482852576242d6d	pass
 Serializer.fromJSON	51799b9b31733d17a2410970	pass
-Serializer.fromJSON	519856916d57a599469553de	pass
+Serializer.fromJSON	519856916d57a599469553de	fail:unexpected-error
 Serializer.fromJSON	519c991762ab76cd7362285f	pass
 Serializer.fromJSON	51bc77df7226c3a8a6bb3166	pass
 Serializer.fromJSON	51e62df17856a2ff81519c4b	pass
 Serializer.fromJSON	52443488a716460f594bebaa	pass
 Serializer.fromJSON	526c7fb2ed20c8d557631583	pass
-Serializer.fromJSON	526f1b9728b27dd31e9494f6	pass
+Serializer.fromJSON	526f1b9728b27dd31e9494f6	fail:unexpected-error
 Serializer.fromJSON	528bea9bd8930ebd2ae3ca39	pass
 Serializer.fromJSON	529783a033738bddaeb28ca6	pass
 Serializer.fromJSON	52afc8137b5189d2aff3609d	pass
@@ -10718,7 +10718,7 @@ Serializer.fromJSON	64971281cf925925fbb7ff78	pass
 Serializer.fromJSON	64a7fda6f2fd8f2f9d4e0a8e	pass
 Serializer.fromJSON	64b4ff623e7d3f8ddc69e7d7	pass
 Serializer.fromJSON	64ec10bed2dd1829305ca1e7	pass
-Serializer.fromJSON	65335daaf05e8f1799e91ccb	pass
+Serializer.fromJSON	65335daaf05e8f1799e91ccb	fail:unexpected-error
 Serializer.fromJSON	6596ae91f827d1030fa23abf	pass
 Serializer.fromJSON	65bceda3f6583f0835ff902b	pass
 Serializer.fromJSON	65d62a382b8ea19306d991b3	pass
@@ -10768,7 +10768,7 @@ Serializer.fromJSON	6abd8cd707d1f8af7777f0ed	pass
 Serializer.fromJSON	6ac015da9849221b66c9b976	pass
 Serializer.fromJSON	6acf5caf9e766ad5e5afc3c4	pass
 Serializer.fromJSON	6af0e6bc541b7454a7e70697	pass
-Serializer.fromJSON	6afd7912da6ffd43a408ffb7	pass
+Serializer.fromJSON	6afd7912da6ffd43a408ffb7	fail:unexpected-error
 Serializer.fromJSON	6b09f166bb5783a729b3b9fb	pass
 Serializer.fromJSON	6b15892f05bd195c31198ff1	pass
 Serializer.fromJSON	6b2c25e2df9e1e0cc7bc58a7	pass
@@ -10789,7 +10789,7 @@ Serializer.fromJSON	6c3cd36a209ccee1b912bcd8	pass
 Serializer.fromJSON	6c5247bc5f28d9eea7b32639	pass
 Serializer.fromJSON	6c5effb955df16f04f9c45a2	pass
 Serializer.fromJSON	6cb857a2e5f3552a07428928	pass
-Serializer.fromJSON	6cbc00266ff1e25615aa2772	pass
+Serializer.fromJSON	6cbc00266ff1e25615aa2772	fail:unexpected-error
 Serializer.fromJSON	6cc5117fcf1b4e8d6245e912	pass
 Serializer.fromJSON	6ccc111606113cbea7380eb6	pass
 Serializer.fromJSON	6cef356188264533c1ec5723	pass
@@ -10810,7 +10810,7 @@ Serializer.fromJSON	6e11f30303bd7ca591c1bfab	pass
 Serializer.fromJSON	6e2f58f47656de6307086d1b	pass
 Serializer.fromJSON	6e62a3a8c7b244bd96df0489	pass
 Serializer.fromJSON	6e810c9deaf2e27f00752065	pass
-Serializer.fromJSON	6e9026f51cd5ece8fc5ea402	pass
+Serializer.fromJSON	6e9026f51cd5ece8fc5ea402	fail:unexpected-error
 Serializer.fromJSON	6ebfa700952b0a33299f25fb	pass
 Serializer.fromJSON	6ec8f0e3849f7e3371b6748e	pass
 Serializer.fromJSON	6ec9fabbea82b81d0f488912	pass
@@ -10928,7 +10928,7 @@ Serializer.fromJSON	7be91a9d0a5e890ed4912196	pass
 Serializer.fromJSON	7bec420662e08a10a780678e	pass
 Serializer.fromJSON	7c01eda021a5db92e2641108	pass
 Serializer.fromJSON	7c055e9ecc119cf215546c78	pass
-Serializer.fromJSON	7c1630d2a1cc381f73b18e68	pass
+Serializer.fromJSON	7c1630d2a1cc381f73b18e68	fail:unexpected-error
 Serializer.fromJSON	7c1e398344a8d7f70159a577	pass
 Serializer.fromJSON	7c35c81910fde3f9c86b38bf	pass
 Serializer.fromJSON	7c65dc806019f6be2d05bbb7	pass
@@ -10982,7 +10982,7 @@ Serializer.fromJSON	80e7386d0996af93b9540494	pass
 Serializer.fromJSON	8102d10c9c0acd1d3c99f41c	pass
 Serializer.fromJSON	817a892476b7981c97d7f188	pass
 Serializer.fromJSON	81807047aa8095c3cb507110	pass
-Serializer.fromJSON	81ae419d4329b9d36ba21e1c	pass
+Serializer.fromJSON	81ae419d4329b9d36ba21e1c	fail:unexpected-error
 Serializer.fromJSON	8219a5f4fd7bbcf1772748b9	pass
 Serializer.fromJSON	8232cd474e3540d185559551	pass
 Serializer.fromJSON	827075f1606ecf35c6415f44	pass
@@ -11059,7 +11059,7 @@ Serializer.fromJSON	8b1fb5abf27ddd46ae4423f9	pass
 Serializer.fromJSON	8b678075d9f0905fb903b2aa	pass
 Serializer.fromJSON	8b8642ba0f827e32b2c91ef4	pass
 Serializer.fromJSON	8b8d9bcb9b68f113ad2655f2	pass
-Serializer.fromJSON	8baf0a6515bd18d305be36ac	pass
+Serializer.fromJSON	8baf0a6515bd18d305be36ac	fail:unexpected-error
 Serializer.fromJSON	8bbfdacfff8c88f72265335e	pass
 Serializer.fromJSON	8bf86076f43ce2a60ddfdb46	pass
 Serializer.fromJSON	8bf988c7cfdf539c16558ce4	pass
@@ -11128,7 +11128,7 @@ Serializer.fromJSON	94acd1013c6d2d47cdf8af1d	pass
 Serializer.fromJSON	94cc1cb6fc3bf6f62ae38ecb	pass
 Serializer.fromJSON	94e373ddb800525c883697a9	pass
 Serializer.fromJSON	951e2e97bb21d3969fc9e2ba	pass
-Serializer.fromJSON	95353aac5a3d8b7ee9c05a38	pass
+Serializer.fromJSON	95353aac5a3d8b7ee9c05a38	fail:unexpected-error
 Serializer.fromJSON	957298a4203c14f6270187f1	pass
 Serializer.fromJSON	9598c75534863fe535836a90	pass
 Serializer.fromJSON	95a8f4fc4c14c93b6886c836	pass
@@ -11245,7 +11245,7 @@ Serializer.fromJSON	a36fccd5613e62b51e7f8325	pass
 Serializer.fromJSON	a38ab70419bbd7e5eb9b1819	pass
 Serializer.fromJSON	a38e0d318976b66c3287f0f9	pass
 Serializer.fromJSON	a39ace1560e1593b21ead6a1	pass
-Serializer.fromJSON	a3a1a6ab000a539d70b29dc9	pass
+Serializer.fromJSON	a3a1a6ab000a539d70b29dc9	fail:unexpected-error
 Serializer.fromJSON	a3aa02ab214e9ec41e18ba34	pass
 Serializer.fromJSON	a3c14584cb5725b5068250b6	pass
 Serializer.fromJSON	a3fa7682aac07798999ba1e2	pass
@@ -11318,7 +11318,7 @@ Serializer.fromJSON	ac6384fdffd32e27f2391c8e	pass
 Serializer.fromJSON	ac6d9d900329de8f90f7cef6	pass
 Serializer.fromJSON	aca0b3da8f2fe576a50e899c	pass
 Serializer.fromJSON	acae4d6f7f12e2abf55cd899	pass
-Serializer.fromJSON	ad039b9b37ee60b1a1556f69	pass
+Serializer.fromJSON	ad039b9b37ee60b1a1556f69	fail:unexpected-error
 Serializer.fromJSON	ad15250bb684994c000bf39f	pass
 Serializer.fromJSON	ad24226d48c20fa36f2be955	pass
 Serializer.fromJSON	ad734d9aee7fd3f052f17755	pass
@@ -11334,7 +11334,7 @@ Serializer.fromJSON	ae5a6e95d6c549b12e543745	pass
 Serializer.fromJSON	ae981e90accb9ce39b65bac9	pass
 Serializer.fromJSON	aeb2330d2945c8e9584c873f	pass
 Serializer.fromJSON	aeb2c57ce2d3d3a96a2fe3a6	pass
-Serializer.fromJSON	aed20361683be45d7c305857	pass
+Serializer.fromJSON	aed20361683be45d7c305857	fail:unexpected-error
 Serializer.fromJSON	aedafa32b70be851a1014d96	pass
 Serializer.fromJSON	aee94f197dd35f048a664d25	pass
 Serializer.fromJSON	aeeaf1a1042c8409223bc582	pass
@@ -11380,7 +11380,7 @@ Serializer.fromJSON	b5ea53e6e1c425fc24423a1b	pass
 Serializer.fromJSON	b5efc296af32d76713189848	pass
 Serializer.fromJSON	b5f61d367ff3a392aa710991	pass
 Serializer.fromJSON	b64654101dac4af8eff31e66	pass
-Serializer.fromJSON	b656bb812e2a1c9b18606ea8	pass
+Serializer.fromJSON	b656bb812e2a1c9b18606ea8	fail:unexpected-error
 Serializer.fromJSON	b66611703edd8fc12f14c068	pass
 Serializer.fromJSON	b6a1bc20fe32a09c22e104fb	pass
 Serializer.fromJSON	b6b09107c8c785b3a48dfc15	pass
@@ -11393,7 +11393,7 @@ Serializer.fromJSON	b726b87a2b52c3fb55c26a45	pass
 Serializer.fromJSON	b7300cedb1ad21c0e3d87dd0	pass
 Serializer.fromJSON	b758c087e650a714761b67b6	pass
 Serializer.fromJSON	b767678acf07b63f64354549	pass
-Serializer.fromJSON	b781d8e9f91991a4111ee5ff	pass
+Serializer.fromJSON	b781d8e9f91991a4111ee5ff	fail:unexpected-error
 Serializer.fromJSON	b793ba3657d8226e06aecd6a	pass
 Serializer.fromJSON	b7d8a2253755ee949c62b2f4	pass
 Serializer.fromJSON	b7db668f53c8efdd4d93ff28	pass
@@ -11500,7 +11500,7 @@ Serializer.fromJSON	c4129b082b56105cac2bcd78	pass
 Serializer.fromJSON	c41eddd286a449b08255bfa3	pass
 Serializer.fromJSON	c41f9b4402d86b9420153551	pass
 Serializer.fromJSON	c42fa53529c0ac5034030cd4	pass
-Serializer.fromJSON	c4658233d7917d290972e42b	pass
+Serializer.fromJSON	c4658233d7917d290972e42b	fail:unexpected-error
 Serializer.fromJSON	c486caa28505ad9bb0e86748	pass
 Serializer.fromJSON	c4b6b641c8be3b11c5143034	pass
 Serializer.fromJSON	c4b9ca7f94d43c9be4d57988	pass
@@ -11685,7 +11685,7 @@ Serializer.fromJSON	da7770373053efbcd3651cab	pass
 Serializer.fromJSON	dab3947084ccc27c468dfe6f	pass
 Serializer.fromJSON	dacf0aba06ff1fee850e4793	pass
 Serializer.fromJSON	dae628ebd92899c2d80c29bb	pass
-Serializer.fromJSON	dae941961d1b8633c1c9ad99	pass
+Serializer.fromJSON	dae941961d1b8633c1c9ad99	fail:unexpected-error
 Serializer.fromJSON	db276ba6ab66f489da043ea9	pass
 Serializer.fromJSON	db29b20b832d371ce27339be	pass
 Serializer.fromJSON	db48fe6e72db247b93bdfc46	pass
@@ -11717,7 +11717,7 @@ Serializer.fromJSON	de08b57b6381252a0e8e462a	pass
 Serializer.fromJSON	de30a3d4c81b140ff49aa037	pass
 Serializer.fromJSON	de760886de8914f254bbdd33	pass
 Serializer.fromJSON	debb2f650bd14e5935d6f331	pass
-Serializer.fromJSON	deccc004cdb69dcd4dce17dc	pass
+Serializer.fromJSON	deccc004cdb69dcd4dce17dc	fail:unexpected-error
 Serializer.fromJSON	dee5127dfdac6a29a39174cb	pass
 Serializer.fromJSON	deea1d1f40d85b52379f285a	pass
 Serializer.fromJSON	df1d68540087bed9955655d9	pass
@@ -11733,7 +11733,7 @@ Serializer.fromJSON	dfde6c283d290e4c6f4b57e3	pass
 Serializer.fromJSON	dfe13ffbbbba3e7ddd57e1fa	pass
 Serializer.fromJSON	dfeb45ad3cb87fd75fde6d6a	pass
 Serializer.fromJSON	dfebdd21952590a344bdc86f	pass
-Serializer.fromJSON	e0100bce1a50d508eec71c88	pass
+Serializer.fromJSON	e0100bce1a50d508eec71c88	fail:unexpected-error
 Serializer.fromJSON	e0501fe7f47b1913f3877f9b	pass
 Serializer.fromJSON	e050f9104d786033b3f937c5	pass
 Serializer.fromJSON	e066a5048d9c05d96ef01a7f	pass
@@ -11773,7 +11773,7 @@ Serializer.fromJSON	e5fb299ab682764dd4d3a570	pass
 Serializer.fromJSON	e5fb2f195f41d2cf69994785	pass
 Serializer.fromJSON	e629a0f394eef51ca9efa0dc	pass
 Serializer.fromJSON	e65098cc0d387f669ade384e	pass
-Serializer.fromJSON	e65b396734b2af5db3fd8851	pass
+Serializer.fromJSON	e65b396734b2af5db3fd8851	fail:unexpected-error
 Serializer.fromJSON	e68e182d56bd395f945bfd3a	pass
 Serializer.fromJSON	e69c7ddcfcc55d37ec42435d	pass
 Serializer.fromJSON	e6bddd3e868c35ce0831fcb8	pass
@@ -11830,11 +11830,11 @@ Serializer.fromJSON	ed1c6d5d56f570dd2ec65242	pass
 Serializer.fromJSON	ed381ac0d049dceb88613223	pass
 Serializer.fromJSON	ed6275d172d1292bae76784c	pass
 Serializer.fromJSON	eda0d9961b0909340f6f566e	pass
-Serializer.fromJSON	eda5cf1dffe07a15996b2b08	pass
+Serializer.fromJSON	eda5cf1dffe07a15996b2b08	fail:unexpected-error
 Serializer.fromJSON	eda864d7fcfe48c940aa4425	pass
 Serializer.fromJSON	edca6cf7dd651a416a9aa29c	pass
 Serializer.fromJSON	edd8c28867aadd6162557256	pass
-Serializer.fromJSON	edebccb603047fe3d939a63f	pass
+Serializer.fromJSON	edebccb603047fe3d939a63f	fail:unexpected-error
 Serializer.fromJSON	ee43a1beb35b121bb8fc4f50	pass
 Serializer.fromJSON	ee477a73ba7d0654e101bf11	pass
 Serializer.fromJSON	ee870c0a0789a01aef28ffed	pass
@@ -11898,7 +11898,7 @@ Serializer.fromJSON	f52f99b10b1dba112f53fc2e	pass
 Serializer.fromJSON	f5582a26bb62289393565719	pass
 Serializer.fromJSON	f5679c06dfa2d011352efb3a	pass
 Serializer.fromJSON	f598eaa0ee3f67710036163a	pass
-Serializer.fromJSON	f5b5a7cf3b6aa55727f05512	pass
+Serializer.fromJSON	f5b5a7cf3b6aa55727f05512	fail:unexpected-error
 Serializer.fromJSON	f5bf0f407865185509011f04	pass
 Serializer.fromJSON	f5c05bf19be1a55e489f593e	pass
 Serializer.fromJSON	f5cb38c81f14bc4c4f811948	pass
@@ -11955,7 +11955,7 @@ Serializer.fromJSON	fbf28b1fe14322abb0cc8a9a	pass
 Serializer.fromJSON	fbf53436288a99a4e94b9970	pass
 Serializer.fromJSON	fc19426e9503e7d091f72dc3	pass
 Serializer.fromJSON	fc38774c50f7045b974fb9c0	pass
-Serializer.fromJSON	fc5be1b119349be81dbdce5a	pass
+Serializer.fromJSON	fc5be1b119349be81dbdce5a	fail:unexpected-error
 Serializer.fromJSON	fc9e5b44fe5db7f529380240	pass
 Serializer.fromJSON	fcbe71df1834186be5c00d04	pass
 Serializer.fromJSON	fce275df73d076a023c37eb0	pass
@@ -11968,7 +11968,7 @@ Serializer.fromJSON	fdcbaa139f9f7775aa92e063	pass
 Serializer.fromJSON	fdd5392658861bf503b01ae6	pass
 Serializer.fromJSON	fe10013f870b3aaad2415a31	pass
 Serializer.fromJSON	fe1304dbce1596bbbfdc59d2	pass
-Serializer.fromJSON	fe97d9372a3576fba7f2bc41	pass
+Serializer.fromJSON	fe97d9372a3576fba7f2bc41	fail:unexpected-error
 Serializer.fromJSON	fee8fd234425dac612ad5451	pass
 Serializer.fromJSON	fefc77a69ac642dd74b5c3f6	pass
 Serializer.fromJSON	ff1970216e81719ef4d1ad4d	pass
