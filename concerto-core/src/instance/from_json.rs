@@ -69,9 +69,12 @@ js_compat_pub! {
         /// `validate`: validate the populated instance
         /// (`ValidatedResource.validate`).
         pub validate: bool,
-        /// `utcOffset || 0`: the offset a non-strict `DateTime` gets.
+        /// `utcOffset || 0`: the offset a `DateTime` gets unless
+        /// `strictQualifiedDateTimes` is `true`.
         pub utc_offset: UtcOffset,
-        /// `strictQualifiedDateTimes`.
+        /// `strictQualifiedDateTimes === true`. Since P5-24 (BC-07, R1)
+        /// every `DateTime` string must have the strict format either way;
+        /// the flag only decides whether `utc_offset` is applied.
         pub strict_qualified_date_times: bool,
         /// `acceptResourcesForRelationships`.
         pub accept_resources_for_relationships: bool,
@@ -1078,15 +1081,20 @@ impl Populator<'_> {
                 let Some(Value::String(s)) = json else {
                     return Err(wrong_type());
                 };
-                let result = if !self.options.strict_qualified_date_times {
-                    Dayjs::utc_parse(s).utc_offset_set(&self.options.utc_offset)
-                } else if strict_qualified_date_time(s) {
-                    Dayjs::utc_parse(s)
-                } else {
+                // P5-24 (BC-07, R1): only the strict format, whatever
+                // `strictQualifiedDateTimes` says; the flag now decides
+                // only whether `utcOffset` applies, as it did before.
+                if !strict_qualified_date_time(s) {
                     return Err(validation(
                         "jsonpopulator-converttoobject-datetimeformat",
                         vec![("path", path.to_string()), ("type", type_name.to_string())],
                     ));
+                }
+                let parsed = Dayjs::utc_parse(s);
+                let result = if self.options.strict_qualified_date_times {
+                    parsed
+                } else {
+                    parsed.utc_offset_set(&self.options.utc_offset)
                 };
                 if !result.is_valid() {
                     return Err(wrong_type());
@@ -1396,13 +1404,11 @@ fn map_set(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) {
 
 js_compat_pub! {
     /// `json.match(/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/)`:
-    /// the `strictQualifiedDateTimes` format.
+    /// the `strictQualifiedDateTimes` format, the only `DateTime` string
+    /// form accepted (P5-24, BC-07). A string with this format can still
+    /// name an impossible instant ([`Dayjs::utc_parse`] is then invalid).
     pub fn strict_qualified_date_time(s: &str) -> bool {
-        let re = regress::Regex::new(
-            r"^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$",
-        )
-        .expect("static pattern");
-        re.find(s).is_some()
+        super::dayjs::is_strict_date_time_format(s)
     }
 }
 

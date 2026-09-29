@@ -459,12 +459,21 @@ mod tests {
             message(serializer().from_json(&mm, &json, Some(&options), &mut Env)),
             "Expected value at path `$.built` to be of type `DateTime` with format YYYY-MM-DDTHH:mm:ss[Z]"
         );
-        let lenient = serializer()
-            .from_json(&mm, &json, None, &mut Env)
+        // P5-24 (BC-07, R1): without the flag, the same format rule and
+        // the same `ValidationException`; a strict string is accepted.
+        assert_eq!(
+            message(serializer().from_json(&mm, &json, None, &mut Env)),
+            "Expected value at path `$.built` to be of type `DateTime` with format YYYY-MM-DDTHH:mm:ss[Z]"
+        );
+        let strict = JsValue::from_json(
+            &json!({ "$class": "org.acme@1.0.0.Car", "vin": "A", "built": "2021-01-01T00:00:00Z" }),
+        );
+        let car = serializer()
+            .from_json(&mm, &strict, None, &mut Env)
             .expect("a car");
         assert_eq!(
-            lenient.get("built"),
-            &JsValue::DateTime(Dayjs::utc_parse("2021-01-01"))
+            car.get("built"),
+            &JsValue::DateTime(Dayjs::utc_parse("2021-01-01T00:00:00Z"))
         );
     }
 

@@ -404,9 +404,65 @@ impl Facts {
     }
 }
 
-/// `Date.parse` of an `ISO_RE` match (under `TZ=UTC`).
+/// `Date.parse` of an `ISO_RE` match (under `TZ=UTC`), `NaN` when it does
+/// not parse: `canon.js` compares instants, not strings. An `ISO_RE` match
+/// is always within the ECMAScript date time string format (or V8's `±HHmm`
+/// offset extension), so this is that format alone, as V8 reads it: no
+/// offset is UTC (a date-time with no offset is local time, UTC here), the
+/// fraction is truncated to milliseconds, a day up to 31 rolls over into
+/// the next month and `24:00` is the next midnight. The engine no longer
+/// parses dates this way (P5-24); the harness still has to, to read what
+/// TS recorded.
 fn instant(text: &str) -> f64 {
-    concerto_core::instance::dayjs::Dayjs::parse_instant(text)
+    static PARTS: std::sync::LazyLock<regress::Regex> = std::sync::LazyLock::new(|| {
+        regress::Regex::new(
+            r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|([+-])(\d{2}):?(\d{2}))?$",
+        )
+        .expect("static pattern")
+    });
+    let Some(m) = PARTS.find(text) else {
+        return f64::NAN;
+    };
+    let group = |i: usize| m.group(i).map(|r| &text[r]);
+    let num = |i: usize| group(i).map_or(0, |g| g.parse::<i64>().unwrap_or(0));
+    let (year, month, day) = (num(1), num(2), num(3));
+    let (hour, minute, second) = (num(4), num(5), num(6));
+    let ms = group(7).map_or(0, |f| {
+        let digits: String = f.chars().chain("000".chars()).take(3).collect();
+        digits.parse::<i64>().unwrap_or(0)
+    });
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || minute > 59 || second > 59 {
+        return f64::NAN;
+    }
+    if hour > 24 || (hour == 24 && (minute != 0 || second != 0 || ms != 0)) {
+        return f64::NAN;
+    }
+    let offset_minutes = match (group(9), group(10), group(11)) {
+        (Some(sign), Some(hh), Some(mm)) => {
+            let (hh, mm): (i64, i64) = (hh.parse().unwrap_or(0), mm.parse().unwrap_or(0));
+            if hh > 23 || mm > 59 {
+                return f64::NAN;
+            }
+            if sign == "-" {
+                -(hh * 60 + mm)
+            } else {
+                hh * 60 + mm
+            }
+        }
+        _ => 0,
+    };
+    let Some(first) = chrono::NaiveDate::from_ymd_opt(year as i32, month as u32, 1) else {
+        return f64::NAN;
+    };
+    let days = first
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight")
+        .and_utc()
+        .timestamp()
+        / 86_400
+        + (day - 1);
+    let ms_of_day = ((hour * 60 + minute) * 60 + second) * 1000 + ms;
+    (days * 86_400_000 + ms_of_day - offset_minutes * 60_000) as f64
 }
 
 /// `canon.js` `normaliseString`, over every string in `value`.

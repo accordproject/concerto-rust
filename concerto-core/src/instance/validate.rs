@@ -1040,38 +1040,26 @@ fn is_populated_datetime(value: &Value) -> bool {
     value.as_object().is_some_and(|o| o.contains_key(DAYJS_TAG))
 }
 
-/// TS `dayjs.utc(value).isValid()` (`checkMapType`, resourcevalidator.ts:156):
-/// unlike a class declaration's own fields, a `MapDeclaration`'s primitive
-/// values are *not* run through `JSONPopulator.convertToObject` (module doc
-/// on `visitMapDeclaration`/`processMapType`: only non-primitive map values
-/// are converted), so a `DateTime`-valued map entry really is still the raw
-/// wire value here, and TS really does re-parse it with `dayjs.utc` at this
-/// point. `dayjs.utc(string)` (no explicit format) first tries dayjs core's
-/// own lenient `REGEX_PARSE`, which requires only a four-digit year and
-/// accepts any digits (with any separators) after it -- out-of-range
-/// month/day/hour/minute/second values are *not* rejected there, they
-/// overflow-normalise the same way `Date.UTC` does with excess numeric
-/// constructor arguments, so `.isValid()` stays true; a string that
-/// `REGEX_PARSE` does not match falls back to native `Date` parsing, which
-/// this port cannot reproduce exactly. This is therefore a best-effort,
-/// *not byte-verified*, approximation of `dayjs`'s real leniency (documented
-/// here rather than silently passed off as exact, PORTING.md 7.2): a
-/// four-digit year, optionally followed by more digits/separators, is
-/// accepted without further range checking; anything else (including the
-/// native-`Date`-parsing fallback's own accepted formats, e.g. `"May 1,
-/// 2020"`) is rejected, which is stricter than TS in that one corner.
+/// Whether a `DateTime` map value is valid (`checkMapType`,
+/// resourcevalidator.ts; TS: `dayjs.utc(value).isValid()`). A map's
+/// primitive values are *not* run through `JSONPopulator.convertToObject`
+/// (only non-primitive map values are converted), so a `DateTime` map value
+/// is still the raw wire value here.
+///
+/// P5-24 (BC-43, R1; accordproject/concerto-rust#328): the same strict
+/// rule as a `DateTime` field (`Dayjs::utc_parse`: the
+/// `strictQualifiedDateTimes` format, naming a real instant). The dayjs
+/// approximation this replaces accepted any string starting with a
+/// four-digit year and any finite number, and differed from TS both ways
+/// (P5-23's D7; DIVERGENCES.md DV-020). A number is no longer a valid
+/// `DateTime` map value, as it is not one for a field. `undefined` still
+/// passes: it is the absence of a value, not a form of one (task P3-01b).
 fn parses_as_dayjs(value: &Value) -> bool {
-    // `dayjs.utc(undefined)` is the current time, which is valid (task
-    // P3-01b: a `Map` `DateTime` value that is `undefined`).
     if is_js_undefined(value) {
         return true;
     }
     match value {
-        Value::Number(_) => value.as_f64().is_some_and(f64::is_finite),
-        Value::String(s) => {
-            let re = regress::Regex::new(r"^\d{4}([^0-9].*)?$").expect("static pattern");
-            re.find(s).is_some()
-        }
+        Value::String(s) => super::dayjs::Dayjs::utc_parse(s).is_valid(),
         _ => false,
     }
 }
@@ -3004,20 +2992,32 @@ mod tests {
         assert!(parses_as_dayjs(&js_undefined()));
     }
 
-    /// [`parses_as_dayjs`]'s `Value::Number` arm (P5-06: cargo-mutants found
-    /// that arm's deletion survived): a finite number is a valid `DateTime`
-    /// map value. Deleting the arm falls through to the wildcard `false`.
+    /// P5-24 (BC-43, R1): a number is not a valid `DateTime` map value,
+    /// as it is not a valid `DateTime` field value.
     #[test]
-    fn a_finite_number_is_a_valid_datetime_map_value() {
-        assert!(parses_as_dayjs(&json!(1_700_000_000_000.0)));
+    fn a_number_is_not_a_valid_datetime_map_value() {
+        assert!(!parses_as_dayjs(&json!(1_700_000_000_000.0)));
     }
 
     /// [`parses_as_dayjs`]'s `Value::String` arm (P5-06: cargo-mutants found
-    /// that arm's deletion survived, the same way as the `Number` arm
-    /// above): a four-digit-year string is a valid `DateTime` map value.
+    /// that arm's deletion survived): a strict date-time string is a valid
+    /// `DateTime` map value, and (P5-24, BC-43) nothing looser is.
     #[test]
-    fn a_four_digit_year_string_is_a_valid_datetime_map_value() {
-        assert!(parses_as_dayjs(&json!("2024-05-01")));
+    fn only_a_strict_string_is_a_valid_datetime_map_value() {
+        assert!(parses_as_dayjs(&json!("2024-05-01T00:00:00Z")));
+        assert!(parses_as_dayjs(&json!("2024-05-01T10:00:00.5+02:00")));
+        for s in [
+            "2024-05-01",
+            "2024xyz",
+            " 2024-05-01",
+            "20240102",
+            "May 1, 2020",
+            "1",
+            "2024-02-30T00:00:00Z",
+            "2024-05-01T24:00:00Z",
+        ] {
+            assert!(!parses_as_dayjs(&json!(s)), "{s:?}");
+        }
     }
 
     /// [`parses_as_dayjs`]'s wildcard arm (P5-06: cargo-mutants found the
@@ -3140,7 +3140,7 @@ mod tests {
     #[test]
     fn a_datetime_map_with_a_parseable_value_passes() {
         let mgr = fixture();
-        let map = js_map(vec![(json!("a"), json!("2024-05-01"))]);
+        let map = js_map(vec![(json!("a"), json!("2024-05-01T00:00:00Z"))]);
         validate_map(&mgr, "org.acme@1.0.0.DateTimeMap", &map).unwrap();
     }
 
