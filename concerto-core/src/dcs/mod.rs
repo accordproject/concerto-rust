@@ -302,15 +302,12 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
     Ok(())
 }
 
-/// The [`model_util::SemVer`] for a bare version string (`"0.4.0"`), reusing
-/// [`model_util::parse_namespace`]'s node-semver-compatible parser rather
-/// than duplicating it — this crate exposes no standalone semver parser
-/// (`model_util::semver_parse` is private).
+/// The [`model_util::SemVer`] for a bare version string (`"0.4.0"`):
+/// node-semver's `parse`, as `parseNamespace` uses it
+/// (`model_util::semver_parse`, the `semver` crate plus the node-compat
+/// wrapper; P5-25).
 fn parse_version(version: &str) -> Option<model_util::SemVer> {
-    match model_util::parse_namespace_with(Some(&format!("x@{version}")), false) {
-        Ok(ParsedNamespace::Full { version_parsed, .. }) => version_parsed,
-        _ => None,
-    }
+    model_util::semver_parse(version)
 }
 
 /// node-semver's `new SemVer(undefined)` (`classes/semver.js`), which
