@@ -547,27 +547,33 @@ mod tests {
         );
     }
 
-    /// DV-012: `Math.trunc(Infinity) === Infinity`, so the populator takes
-    /// it as an Integer; the validator then rejects it.
+    /// P5-51 (BC-10, R1; DV-012): the populator rejects `±Infinity` for
+    /// an Integer or Long field, with validation off as well as on (before,
+    /// `Math.trunc(Infinity) === Infinity` let it through, and only the
+    /// validator caught it).
     #[test]
-    fn an_infinite_integer_passes_the_populator() {
+    fn an_infinite_integer_is_rejected_by_the_populator() {
         let mm = model();
-        let mut json = car_json();
-        let JsValue::Object(map) = &mut json else {
-            unreachable!()
-        };
-        map.insert("wheels".into(), JsValue::Number(f64::INFINITY));
-        let options: SerializerOptions = [("validate".to_string(), JsValue::Bool(false))]
-            .into_iter()
-            .collect();
-        let car = serializer()
-            .from_json(&mm, &json, Some(&options), &mut Env)
-            .expect("a car");
-        assert_eq!(car.get("wheels"), &JsValue::Number(f64::INFINITY));
-        assert!(
-            message(serializer().from_json(&mm, &json, None, &mut Env))
-                .contains("has a value of \"Infinity\"")
-        );
+        for n in [f64::INFINITY, f64::NEG_INFINITY] {
+            let mut json = car_json();
+            let JsValue::Object(map) = &mut json else {
+                unreachable!()
+            };
+            map.insert("wheels".into(), JsValue::Number(n));
+            let options: SerializerOptions = [("validate".to_string(), JsValue::Bool(false))]
+                .into_iter()
+                .collect();
+            for options in [Some(&options), None] {
+                let err = serializer()
+                    .from_json(&mm, &json, options, &mut Env)
+                    .expect_err("a non-finite Integer");
+                assert_eq!(err.kind().ts_class(), "ValidationException", "{n}: {err}");
+                assert_eq!(
+                    err.to_string(),
+                    "Expected value at path `$.wheels` to be of type `Integer`"
+                );
+            }
+        }
     }
 
     #[test]
