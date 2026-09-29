@@ -210,20 +210,7 @@ const MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
 /// `pub(crate)` so [`crate::semver_range`] and [`crate::dcs`] can parse a
 /// concrete version the same way `parseNamespace` does here.
 pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
-    // MAX_LENGTH is checked on the untrimmed string, in UTF-16 units. A
-    // string has no more UTF-16 units than UTF-8 bytes.
-    if version.len() > SEMVER_MAX_LENGTH && version.encode_utf16().count() > SEMVER_MAX_LENGTH {
-        return None;
-    }
-    let trimmed = ecma::js_trim(version);
-    let unprefixed = trimmed.strip_prefix('v').unwrap_or(trimmed);
-    let parsed = semver::Version::parse(unprefixed).ok()?;
-    if parsed.major > MAX_SAFE_INTEGER_U64
-        || parsed.minor > MAX_SAFE_INTEGER_U64
-        || parsed.patch > MAX_SAFE_INTEGER_U64
-    {
-        return None;
-    }
+    let parsed = semver_accept(version)?;
     // `+m[i]`: every component is at most MAX_SAFE_INTEGER, so the `u64` is
     // exactly the JS number.
     #[allow(clippy::cast_precision_loss)]
@@ -278,6 +265,61 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
         build,
         version: formatted,
     })
+}
+
+/// The version [`semver_parse`] accepts, before it is converted to a
+/// [`SemVer`]: the four wrapper rules and the strict grammar, and nothing
+/// else (P5-48: [`split_namespace`] needs only the verdict).
+fn semver_accept(version: &str) -> Option<semver::Version> {
+    // MAX_LENGTH is checked on the untrimmed string, in UTF-16 units. A
+    // string has no more UTF-16 units than UTF-8 bytes.
+    if version.len() > SEMVER_MAX_LENGTH && version.encode_utf16().count() > SEMVER_MAX_LENGTH {
+        return None;
+    }
+    let trimmed = ecma::js_trim(version);
+    let unprefixed = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    let parsed = semver::Version::parse(unprefixed).ok()?;
+    if parsed.major > MAX_SAFE_INTEGER_U64
+        || parsed.minor > MAX_SAFE_INTEGER_U64
+        || parsed.patch > MAX_SAFE_INTEGER_U64
+    {
+        return None;
+    }
+    Some(parsed)
+}
+
+/// `parse_namespace_with(Some(ns), false)`'s checks and errors, in its
+/// order, returning its `name` and `version` borrowed from `ns` rather than
+/// the owned [`ParsedNamespace::Full`] (P5-48, accordproject/concerto-rust#369:
+/// the model load and `ModelFile.validate()`'s import loop run it per import
+/// and read only these two).
+pub(crate) fn split_namespace(ns: &str) -> Result<(&str, Option<&str>)> {
+    if ns.is_empty() {
+        return Err(error(
+            ErrorKind::InvalidArgument,
+            "modelutil-parsenamespace-nullorundefined",
+            Vec::new(),
+        ));
+    }
+    let invalid = || {
+        error(
+            ErrorKind::InvalidArgument,
+            "modelutil-parsenamespace-invalidnamespace",
+            vec![("ns", ns.to_string())],
+        )
+    };
+    let mut parts = ns.split('@');
+    let name = parts.next().unwrap_or_default();
+    let version = parts.next();
+    if parts.next().is_some() {
+        return Err(invalid());
+    }
+    if let Some(version) = version
+        && semver_accept(version).is_none()
+    {
+        return Err(invalid());
+    }
+    Ok((name, version))
 }
 
 /// The result of [`parse_namespace`]: the TS `ParseNamespaceResult`.
@@ -807,6 +849,55 @@ mod tests {
     fn node_semver_recording() -> Value {
         serde_json::from_str(include_str!("../tests/semver/node-semver-7.6.3.json"))
             .unwrap_or_else(|e| panic!("node-semver-7.6.3.json: {e}"))
+    }
+
+    /// P5-48: [`split_namespace`] accepts and rejects exactly what
+    /// `parse_namespace_with(_, false)` does, with the same error, and gives
+    /// back its `name` and `version`; over every recorded semver input as a
+    /// namespace version, and the other namespace shapes.
+    #[test]
+    fn split_namespace_matches_parse_namespace() {
+        let recording = node_semver_recording();
+        let mut namespaces: Vec<String> = recording["cases"]
+            .as_array()
+            .unwrap_or_else(|| unreachable!())
+            .iter()
+            .map(|case| {
+                let input = case["input"].as_str().unwrap_or_else(|| unreachable!());
+                format!("org.acme@{input}")
+            })
+            .collect();
+        namespaces.extend(
+            [
+                "",
+                "org.acme",
+                "org.acme@",
+                "@1.0.0",
+                "org.acme@1.0.0@2.0.0",
+                "a@b@c",
+                "concerto@1.0.0",
+                "concerto",
+                "org.acme@v1.0.0",
+                "org.acme@ 1.0.0 ",
+                "org.acme@1.0.0-beta.1+build.2",
+                "org.acme@01.0.0",
+            ]
+            .map(str::to_string),
+        );
+        for ns in &namespaces {
+            let split = split_namespace(ns);
+            match parse_namespace_with(Some(ns), false) {
+                Ok(ParsedNamespace::Full { name, version, .. }) => {
+                    let (n, v) = split.unwrap_or_else(|e| panic!("{ns:?}: {e}"));
+                    assert_eq!((n, v), (name.as_str(), version.as_deref()), "{ns:?}");
+                }
+                Ok(other) => panic!("{ns:?}: {other:?}"),
+                Err(expected) => {
+                    let actual = split.err().unwrap_or_else(|| panic!("{ns:?} accepted"));
+                    assert_eq!(actual.to_string(), expected.to_string(), "{ns:?}");
+                }
+            }
+        }
     }
 
     #[test]
