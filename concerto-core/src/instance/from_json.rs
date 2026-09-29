@@ -1184,9 +1184,10 @@ impl Populator<'_> {
                 result.validator_value()
             }
             "Integer" | "Long" => match json {
-                // `Math.trunc(num) !== num` (Infinity passes, NaN does not). DV-012
+                // P5-51 (BC-10, R1; DV-012): an integral, finite number.
+                // A serde_json number is always finite; the check says so.
                 Some(Value::Number(n))
-                    if n.as_f64().is_some_and(|n| n.trunc() == n) =>
+                    if n.as_f64().is_some_and(|n| n.is_finite() && n.trunc() == n) =>
                 {
                     plain(json)
                 }
