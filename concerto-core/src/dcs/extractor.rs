@@ -29,20 +29,27 @@ pub enum Action {
     ExtractNonVocab,
 }
 
-/// One AST node's collected decorators, keyed in
-/// [`DecoratorExtractor::extraction_dictionary`] by the namespace they were
-/// found in. `ExtractedDecorator` (`src/decoratorextractor.ts`)'s `dcs`
-/// field stays the AST `decorators` array itself here rather than TS's
-/// `JSON.stringify`'d copy (`obj.dcs`, later `JSON.parse`'d back in
-/// `transformDecoratorsAndVocabularies`) — serialising through a string and
-/// back changes nothing a `Value` clone does not already give.
-#[derive(Debug, Clone, Default)]
-struct ExtractedDecorators {
-    declaration: String,
-    property: String,
-    map_element: String,
-    decorators: Vec<Value>,
+/// One AST node's collected decorators, keyed in the extraction dictionary
+/// ([`ExtractionDictionary`]) by the namespace they were found in.
+/// `ExtractedDecorator` (`src/decoratorextractor.ts`), borrowed from the
+/// models being walked (P5-40): the names are the AST's own strings (empty
+/// where TS's field is unset) and `decorators` is the AST `decorators`
+/// array itself, read before any of it is stripped — TS's `dcs` field is a
+/// `JSON.stringify`'d copy taken at the same point (`obj.dcs`, later
+/// `JSON.parse`'d back in `transformDecoratorsAndVocabularies`), which a
+/// borrow of the unchanged array reads the same as.
+#[derive(Debug, Clone, Copy, Default)]
+struct ExtractedDecorators<'a> {
+    declaration: &'a str,
+    property: &'a str,
+    map_element: &'a str,
+    decorators: &'a [Value],
 }
+
+/// `this.extractionDictionary` (`src/decoratorextractor.ts`), a JS object
+/// keyed by namespace: kept in insertion order, the order `Object.keys`
+/// then walks it in.
+type ExtractionDictionary<'a> = Vec<(&'a str, Vec<ExtractedDecorators<'a>>)>;
 
 /// The result of [`DecoratorExtractor::extract`]: `ExtractDecoratorsResult`
 /// (`src/decoratormanager.ts`'s JSDoc typedef).
@@ -57,21 +64,17 @@ pub struct ExtractResult {
     pub vocabularies: Vec<String>,
 }
 
-/// A decorator-extraction target: `declaration`, `property` and
-/// `mapElement` options `constructDCSDictionary`'s callers pass
-/// (`src/decoratorextractor.ts`).
-#[derive(Debug, Clone, Default)]
-struct TargetOptions<'a> {
-    declaration: Option<&'a str>,
-    property: Option<&'a str>,
-    map_element: Option<&'a str>,
+/// The `$class` strings every command a [`DecoratorExtractor`] builds
+/// repeats, formatted once per extraction rather than once per decorator.
+struct CommandClasses {
+    command: String,
+    target: String,
+    decorator: String,
+    type_reference: String,
 }
 
 /// `DecoratorExtractor` (`src/decoratorextractor.ts`).
 pub struct DecoratorExtractor {
-    /// `this.extractionDictionary`, a JS object keyed by namespace: kept in
-    /// insertion order, the order `Object.keys` then walks it in.
-    extraction_dictionary: Vec<(String, Vec<ExtractedDecorators>)>,
     remove_decorators_from_model: bool,
     locale: String,
     dcs_version: String,
@@ -91,7 +94,6 @@ impl DecoratorExtractor {
         action: Action,
     ) -> Self {
         Self {
-            extraction_dictionary: Vec::new(),
             remove_decorators_from_model,
             locale: locale.into(),
             dcs_version: dcs_version.into(),
@@ -105,29 +107,14 @@ impl DecoratorExtractor {
         name == "Term" || name.starts_with("Term_")
     }
 
-    /// `DecoratorExtractor.constructDCSDictionary` (`src/decoratorextractor.ts`).
-    fn construct_dcs_dictionary(
-        &mut self,
-        key: &str,
-        decorators: &[Value],
-        options: TargetOptions,
-    ) {
-        let entry = ExtractedDecorators {
-            declaration: options.declaration.unwrap_or_default().to_string(),
-            property: options.property.unwrap_or_default().to_string(),
-            map_element: options.map_element.unwrap_or_default().to_string(),
-            decorators: decorators.to_vec(),
-        };
-        match self
-            .extraction_dictionary
-            .iter_mut()
-            .find(|(k, _)| k == key)
-        {
-            Some((_, entries)) => entries.push(entry),
-            None => self
-                .extraction_dictionary
-                .push((key.to_string(), vec![entry])),
-        }
+    /// A decorator node's `name`, `""` when it has none (TS's
+    /// `isVocabDecorator(dcs.name)` on `undefined` is false, and so is
+    /// this on `""`).
+    fn decorator_name(decorator: &Value) -> &str {
+        decorator
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
     }
 
     /// `DecoratorExtractor.transformNonVocabularyDecorators`
@@ -257,15 +244,13 @@ impl DecoratorExtractor {
     }
 
     /// `DecoratorExtractor.constructTarget` (`src/decoratorextractor.ts`).
-    fn construct_target(&self, namespace: &str, obj: &ExtractedDecorators) -> Value {
+    fn construct_target(
+        classes: &CommandClasses,
+        namespace: &str,
+        obj: &ExtractedDecorators<'_>,
+    ) -> Value {
         let mut m = Map::new();
-        m.insert(
-            "$class".to_string(),
-            Value::String(format!(
-                "org.accordproject.decoratorcommands@{}.CommandTarget",
-                self.dcs_version
-            )),
-        );
+        m.insert("$class".to_string(), Value::String(classes.target.clone()));
         m.insert(
             "namespace".to_string(),
             Value::String(namespace.to_string()),
@@ -273,16 +258,19 @@ impl DecoratorExtractor {
         if !obj.declaration.is_empty() {
             m.insert(
                 "declaration".to_string(),
-                Value::String(obj.declaration.clone()),
+                Value::String(obj.declaration.to_string()),
             );
         }
         if !obj.property.is_empty() {
-            m.insert("property".to_string(), Value::String(obj.property.clone()));
+            m.insert(
+                "property".to_string(),
+                Value::String(obj.property.to_string()),
+            );
         }
         if !obj.map_element.is_empty() {
             m.insert(
                 "mapElement".to_string(),
-                Value::String(obj.map_element.clone()),
+                Value::String(obj.map_element.to_string()),
             );
         }
         Value::Object(m)
@@ -293,26 +281,25 @@ impl DecoratorExtractor {
     fn parse_non_vocabulary_decorators(
         dcs_objects: &mut Vec<Value>,
         dcs: &Value,
-        dcs_version: &str,
+        classes: &CommandClasses,
         target: &Value,
     ) {
         let mut decorator = Map::new();
         decorator.insert(
             "$class".to_string(),
-            Value::String(format!("{META_MODEL_NAMESPACE}.Decorator")),
+            Value::String(classes.decorator.clone()),
         );
         decorator.insert(
             "name".to_string(),
             dcs.get("name").cloned().unwrap_or(Value::Null),
         );
         if let Some(args) = dcs.get("arguments").and_then(Value::as_array) {
-            let type_reference_class = format!("{META_MODEL_NAMESPACE}.DecoratorTypeReference");
             let ported_args: Vec<Value> = args
                 .iter()
                 .map(|arg| {
                     let mut m = Map::new();
                     let class = arg.get("$class").cloned().unwrap_or(Value::Null);
-                    let is_type_reference = class.as_str() == Some(type_reference_class.as_str());
+                    let is_type_reference = class.as_str() == Some(classes.type_reference.as_str());
                     m.insert("$class".to_string(), class);
                     if is_type_reference {
                         m.insert(
@@ -336,12 +323,7 @@ impl DecoratorExtractor {
         }
 
         let mut command = Map::new();
-        command.insert(
-            "$class".to_string(),
-            Value::String(format!(
-                "org.accordproject.decoratorcommands@{dcs_version}.Command"
-            )),
-        );
+        command.insert("$class".to_string(), Value::String(classes.command.clone()));
         command.insert("type".to_string(), Value::String("UPSERT".to_string()));
         command.insert("target".to_string(), target.clone());
         command.insert("decorator".to_string(), Value::Object(decorator));
@@ -351,13 +333,13 @@ impl DecoratorExtractor {
     /// `DecoratorExtractor.parseVocabularies` (`src/decoratorextractor.ts`).
     fn parse_vocabularies(
         vocab_object: &mut Value,
-        vocab_target: &ExtractedDecorators,
+        vocab_target: &ExtractedDecorators<'_>,
         dcs: &Value,
     ) -> Result<()> {
         if !vocab_object.is_object() {
             *vocab_object = Value::Object(Map::new());
         }
-        let dcs_name = dcs.get("name").and_then(Value::as_str).unwrap_or_default();
+        let dcs_name = Self::decorator_name(dcs);
         let arg0 = dcs.get("arguments").and_then(|a| a.get(0));
         let arg_value = arg0
             .and_then(|a| a.get("value"))
@@ -387,7 +369,7 @@ impl DecoratorExtractor {
 
         let declarations = ensure_object(vocab_object, "declarations");
         let decl_entry = declarations
-            .entry(vocab_target.declaration.clone())
+            .entry(vocab_target.declaration)
             .or_insert_with(|| {
                 let mut m = Map::new();
                 m.insert("propertyVocabs".to_string(), Value::Object(Map::new()));
@@ -396,7 +378,7 @@ impl DecoratorExtractor {
         if !vocab_target.property.is_empty() {
             let prop_vocabs = ensure_object(decl_entry, "propertyVocabs");
             let prop_vocab = prop_vocabs
-                .entry(vocab_target.property.clone())
+                .entry(vocab_target.property)
                 .or_insert_with(|| Value::Object(Map::new()));
             let prop_vocab = prop_vocab.as_object_mut().expect("just ensured object");
             if dcs_name == "Term" {
@@ -416,7 +398,7 @@ impl DecoratorExtractor {
         } else if !vocab_target.map_element.is_empty() {
             let prop_vocabs = ensure_object(decl_entry, "propertyVocabs");
             let map_vocab = prop_vocabs
-                .entry(vocab_target.map_element.clone())
+                .entry(vocab_target.map_element)
                 .or_insert_with(|| Value::Object(Map::new()));
             let map_vocab = map_vocab.as_object_mut().expect("just ensured object");
             if dcs_name == "Term" {
@@ -456,24 +438,39 @@ impl DecoratorExtractor {
     }
 
     /// `DecoratorExtractor.transformDecoratorsAndVocabularies`
-    /// (`src/decoratorextractor.ts`).
-    fn transform_decorators_and_vocabularies(&self) -> Result<(Vec<Value>, Vec<String>)> {
+    /// (`src/decoratorextractor.ts`), over the borrowed dictionary
+    /// [`collect_models`] built.
+    fn transform_decorators_and_vocabularies(
+        &self,
+        extraction_dictionary: &ExtractionDictionary<'_>,
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let version = &self.dcs_version;
+        let classes = CommandClasses {
+            command: format!("org.accordproject.decoratorcommands@{version}.Command"),
+            target: format!("org.accordproject.decoratorcommands@{version}.CommandTarget"),
+            decorator: format!("{META_MODEL_NAMESPACE}.Decorator"),
+            type_reference: format!("{META_MODEL_NAMESPACE}.DecoratorTypeReference"),
+        };
         let mut decorator_data = Vec::new();
         let mut vocab_data = Vec::new();
-        for (namespace, entries) in &self.extraction_dictionary {
+        for (namespace, entries) in extraction_dictionary {
             let mut dcs_objects = Vec::new();
             let mut vocab_object = Value::Object(Map::new());
             for entry in entries {
-                let target = self.construct_target(namespace, entry);
-                for dcs in &entry.decorators {
-                    let name = dcs.get("name").and_then(Value::as_str).unwrap_or_default();
-                    let is_vocab = Self::is_vocab_decorator(name);
+                // TS builds the target for every entry; it is only read by
+                // the non-vocabulary commands, so it is built for the first.
+                let mut target = None;
+                for dcs in entry.decorators {
+                    let is_vocab = Self::is_vocab_decorator(Self::decorator_name(dcs));
                     if !is_vocab && self.action != Action::ExtractVocab {
+                        let target = target.get_or_insert_with(|| {
+                            Self::construct_target(&classes, namespace, entry)
+                        });
                         Self::parse_non_vocabulary_decorators(
                             &mut dcs_objects,
                             dcs,
-                            &self.dcs_version,
-                            &target,
+                            &classes,
+                            target,
                         );
                     }
                     if is_vocab && self.action != Action::ExtractNonVocab {
@@ -495,221 +492,217 @@ impl DecoratorExtractor {
         Ok((decorator_data, vocab_data))
     }
 
-    /// `DecoratorExtractor.filterOutDecorators` (`src/decoratorextractor.ts`).
-    fn filter_out_decorators(&self, decorators: Vec<Value>) -> Option<Vec<Value>> {
+    /// `DecoratorExtractor.filterOutDecorators` (`src/decoratorextractor.ts`),
+    /// applied in place to `node`'s own `decorators` array, when it has
+    /// one: with `removeDecoratorsFromModel` unset TS writes the same array
+    /// back, so nothing changes; otherwise `EXTRACT_ALL` deletes the key and
+    /// the other actions keep only the decorators they do not extract.
+    fn filter_out_decorators(&self, node: &mut Value) {
         if !self.remove_decorators_from_model {
-            return Some(decorators);
+            return;
         }
-        match self.action {
-            Action::ExtractAll => None,
-            Action::ExtractVocab => Some(
-                decorators
-                    .into_iter()
-                    .filter(|d| {
-                        !Self::is_vocab_decorator(
-                            d.get("name").and_then(Value::as_str).unwrap_or_default(),
-                        )
-                    })
-                    .collect(),
-            ),
-            Action::ExtractNonVocab => Some(
-                decorators
-                    .into_iter()
-                    .filter(|d| {
-                        Self::is_vocab_decorator(
-                            d.get("name").and_then(Value::as_str).unwrap_or_default(),
-                        )
-                    })
-                    .collect(),
-            ),
-        }
-    }
-
-    /// Extracts (and, per `filter_out_decorators`, removes) `node`'s own
-    /// `decorators` array, recording it under `namespace` with `options`.
-    fn extract_decorators_from(
-        &mut self,
-        node: &mut Value,
-        namespace: &str,
-        options: TargetOptions,
-    ) {
-        let Some(decorators) = node.get("decorators").and_then(Value::as_array).cloned() else {
+        let Some(map) = node.as_object_mut() else {
             return;
         };
-        self.construct_dcs_dictionary(namespace, &decorators, options);
-        let filtered = self.filter_out_decorators(decorators);
-        if let Some(map) = node.as_object_mut() {
-            match filtered {
-                Some(d) => {
-                    map.insert("decorators".to_string(), Value::Array(d));
-                }
-                None => {
+        let keep_vocab = match self.action {
+            Action::ExtractAll => {
+                if matches!(map.get("decorators"), Some(Value::Array(_))) {
                     map.remove("decorators");
                 }
+                return;
             }
-        }
-    }
-
-    /// `DecoratorExtractor.processMapDeclaration` (`src/decoratorextractor.ts`).
-    fn process_map_declaration(&mut self, declaration: &mut Value, namespace: &str) {
-        if let Some(map) = declaration.as_object_mut() {
-            let decl_name = map
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if let Some(key) = map.get_mut("key") {
-                self.extract_decorators_from(
-                    key,
-                    namespace,
-                    TargetOptions {
-                        declaration: Some(&decl_name),
-                        map_element: Some("KEY"),
-                        ..Default::default()
-                    },
-                );
-            }
-            if let Some(value) = map.get_mut("value") {
-                self.extract_decorators_from(
-                    value,
-                    namespace,
-                    TargetOptions {
-                        declaration: Some(&decl_name),
-                        map_element: Some("VALUE"),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-
-    /// `DecoratorExtractor.processProperties` (`src/decoratorextractor.ts`).
-    fn process_properties(
-        &mut self,
-        properties: &mut [Value],
-        declaration_name: &str,
-        namespace: &str,
-    ) {
-        for property in properties.iter_mut() {
-            let property_name = property
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            self.extract_decorators_from(
-                property,
-                namespace,
-                TargetOptions {
-                    declaration: Some(declaration_name),
-                    property: Some(&property_name),
-                    ..Default::default()
-                },
-            );
-        }
-    }
-
-    /// `DecoratorExtractor.processDeclarations` (`src/decoratorextractor.ts`).
-    fn process_declarations(&mut self, declarations: &mut [Value], namespace: &str) {
-        for decl in declarations.iter_mut() {
-            let decl_name = decl
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            self.extract_decorators_from(
-                decl,
-                namespace,
-                TargetOptions {
-                    declaration: Some(&decl_name),
-                    ..Default::default()
-                },
-            );
-            if decl.get("$class").and_then(Value::as_str) == Some(MAP_DECLARATION_CLASS) {
-                self.process_map_declaration(decl, namespace);
-            }
-            if let Some(Value::Array(_)) = decl.get("properties") {
-                let mut properties =
-                    match decl.as_object_mut().and_then(|m| m.get_mut("properties")) {
-                        Some(slot) => std::mem::take(slot),
-                        None => Value::Array(Vec::new()),
-                    };
-                if let Value::Array(props) = &mut properties {
-                    self.process_properties(props, &decl_name, namespace);
-                }
-                if let Some(m) = decl.as_object_mut() {
-                    m.insert("properties".to_string(), properties);
-                }
-            }
-        }
-    }
-
-    /// `DecoratorExtractor.processModels` (`src/decoratorextractor.ts`).
-    fn process_models(&mut self) {
-        let mut models = match self.updated_model_ast.get_mut("models") {
-            Some(slot) => std::mem::take(slot),
-            None => Value::Array(Vec::new()),
+            Action::ExtractVocab => false,
+            Action::ExtractNonVocab => true,
         };
-        if let Value::Array(models_arr) = &mut models {
-            for model in models_arr.iter_mut() {
-                let namespace = model
-                    .get("namespace")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let has_decorators = model
-                    .get("decorators")
-                    .and_then(Value::as_array)
-                    .is_some_and(|d| !d.is_empty());
-                if has_decorators {
-                    self.extract_decorators_from(model, &namespace, TargetOptions::default());
-                }
-                let mut declarations = match model
-                    .as_object_mut()
-                    .and_then(|m| m.get_mut("declarations"))
+        if let Some(Value::Array(decorators)) = map.get_mut("decorators") {
+            decorators.retain(|d| Self::is_vocab_decorator(Self::decorator_name(d)) == keep_vocab);
+        }
+    }
+
+    /// The model-changing half of `DecoratorExtractor.processModels`
+    /// (`processDeclarations`, `processMapDeclaration`, `processProperties`,
+    /// `src/decoratorextractor.ts`), run after [`collect_models`] has read
+    /// every decorator: each node's decorators filtered
+    /// ([`Self::filter_out_decorators`]), and a model with no `declarations`
+    /// given an empty array, as TS's `model.declarations = ...map(...)`
+    /// leaves it.
+    fn process_models(&self, models: &mut [Value]) {
+        for model in models.iter_mut() {
+            if has_decorators(model) {
+                self.filter_out_decorators(model);
+            }
+            let Some(model_map) = model.as_object_mut() else {
+                continue;
+            };
+            let declarations = model_map
+                .entry("declarations")
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if !self.remove_decorators_from_model {
+                continue;
+            }
+            let Value::Array(declarations) = declarations else {
+                continue;
+            };
+            for decl in declarations.iter_mut() {
+                self.filter_out_decorators(decl);
+                if decl.get("$class").and_then(Value::as_str) == Some(MAP_DECLARATION_CLASS)
+                    && let Some(map) = decl.as_object_mut()
                 {
-                    Some(slot) => std::mem::take(slot),
-                    None => Value::Array(Vec::new()),
-                };
-                if let Value::Array(decls) = &mut declarations {
-                    self.process_declarations(decls, &namespace);
+                    if let Some(key) = map.get_mut("key") {
+                        self.filter_out_decorators(key);
+                    }
+                    if let Some(value) = map.get_mut("value") {
+                        self.filter_out_decorators(value);
+                    }
                 }
-                if let Some(m) = model.as_object_mut() {
-                    m.insert("declarations".to_string(), declarations);
+                if let Some(Value::Array(properties)) = decl.get_mut("properties") {
+                    for property in properties.iter_mut() {
+                        self.filter_out_decorators(property);
+                    }
                 }
             }
-        }
-        if let Some(m) = self.updated_model_ast.as_object_mut() {
-            m.insert("models".to_string(), models);
         }
     }
 
     /// `DecoratorExtractor.extract` (`src/decoratorextractor.ts`).
+    ///
+    /// P5-40 (F-B): the models are walked twice rather than once. The first
+    /// walk ([`collect_models`]) only borrows them, recording where each
+    /// `decorators` array is; the command sets and vocabularies are built
+    /// from those borrows before the second walk
+    /// ([`Self::process_models`]) strips the decorators in place, and the
+    /// models are then moved, not copied, into the result manager. Errors
+    /// keep TS's order: a load or validation failure of the result models
+    /// is thrown ahead of a vocabulary-key error from the transform.
     pub fn extract(mut self) -> Result<ExtractResult> {
-        self.process_models();
-        let models = self
-            .updated_model_ast
-            .get("models")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let mut models = match self.updated_model_ast.get_mut("models").map(std::mem::take) {
+            Some(Value::Array(models)) => models,
+            _ => Vec::new(),
+        };
+        let transformed = {
+            let mut extraction_dictionary = ExtractionDictionary::new();
+            collect_models(&mut extraction_dictionary, &models);
+            self.transform_decorators_and_vocabularies(&extraction_dictionary)
+        };
+        self.process_models(&mut models);
+
         // `new ModelManager()` then `fromAst(this.updatedModelAst)`: every
         // model but the system ones (already preloaded), then validated.
         let mut model_manager = ModelManager::new()?;
-        for model in models.iter().filter(|m| {
+        for model in models.into_iter().filter(|m| {
             !m.get("namespace")
                 .and_then(Value::as_str)
                 .is_some_and(|ns| crate::model_manager::EXCLUDE_NS.contains(&ns))
         }) {
-            model_manager.load_model(model, None)?;
+            model_manager.add_owned_model_with_definitions(model, None, None)?;
         }
         model_manager.validate_models()?;
 
-        let (decorator_command_set, vocabularies) = self.transform_decorators_and_vocabularies()?;
+        let (decorator_command_set, vocabularies) = transformed?;
         Ok(ExtractResult {
             model_manager,
             decorator_command_set,
             vocabularies,
         })
+    }
+}
+
+/// Whether a model node has a non-empty `decorators` array: TS's
+/// `processModels` only extracts a model's own decorators then.
+fn has_decorators(model: &Value) -> bool {
+    model
+        .get("decorators")
+        .and_then(Value::as_array)
+        .is_some_and(|d| !d.is_empty())
+}
+
+/// `DecoratorExtractor.constructDCSDictionary` (`src/decoratorextractor.ts`),
+/// for `node`'s own `decorators` array, when it has one.
+fn construct_dcs_dictionary<'a>(
+    extraction_dictionary: &mut ExtractionDictionary<'a>,
+    node: &'a Value,
+    namespace: &'a str,
+    target: ExtractedDecorators<'a>,
+) {
+    let Some(decorators) = node.get("decorators").and_then(Value::as_array) else {
+        return;
+    };
+    let entry = ExtractedDecorators {
+        decorators,
+        ..target
+    };
+    match extraction_dictionary
+        .iter_mut()
+        .find(|(k, _)| *k == namespace)
+    {
+        Some((_, entries)) => entries.push(entry),
+        None => extraction_dictionary.push((namespace, vec![entry])),
+    }
+}
+
+/// The reading half of `DecoratorExtractor.processModels` (with
+/// `processDeclarations`, `processMapDeclaration` and `processProperties`,
+/// `src/decoratorextractor.ts`): every decorated node, in TS's walk order,
+/// recorded by borrow into `extraction_dictionary`. Nothing is cloned; the
+/// names are the AST's own strings (`""` for a missing one, as TS's
+/// `obj.declaration || ''` reads).
+fn collect_models<'a>(extraction_dictionary: &mut ExtractionDictionary<'a>, models: &'a [Value]) {
+    for model in models {
+        let namespace = model
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if has_decorators(model) {
+            construct_dcs_dictionary(
+                extraction_dictionary,
+                model,
+                namespace,
+                ExtractedDecorators::default(),
+            );
+        }
+        let Some(Value::Array(declarations)) = model.get("declarations") else {
+            continue;
+        };
+        for decl in declarations {
+            let declaration = decl.get("name").and_then(Value::as_str).unwrap_or_default();
+            let at_declaration = ExtractedDecorators {
+                declaration,
+                ..Default::default()
+            };
+            construct_dcs_dictionary(extraction_dictionary, decl, namespace, at_declaration);
+            if decl.get("$class").and_then(Value::as_str) == Some(MAP_DECLARATION_CLASS) {
+                for (element, map_element) in [("key", "KEY"), ("value", "VALUE")] {
+                    if let Some(node) = decl.get(element) {
+                        construct_dcs_dictionary(
+                            extraction_dictionary,
+                            node,
+                            namespace,
+                            ExtractedDecorators {
+                                map_element,
+                                ..at_declaration
+                            },
+                        );
+                    }
+                }
+            }
+            if let Some(Value::Array(properties)) = decl.get("properties") {
+                for property in properties {
+                    let property_name = property
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    construct_dcs_dictionary(
+                        extraction_dictionary,
+                        property,
+                        namespace,
+                        ExtractedDecorators {
+                            property: property_name,
+                            ..at_declaration
+                        },
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -821,6 +814,87 @@ mod tests {
             .map(|d| d["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, vec!["Custom"]);
+    }
+
+    #[test]
+    fn without_remove_the_result_models_are_the_source_models() {
+        let source = sample_models();
+        let extractor =
+            DecoratorExtractor::new(false, "en", "0.4.0", source.clone(), Action::ExtractAll);
+        let result = extractor.extract().expect("extraction succeeds");
+        assert_eq!(result.decorator_command_set.len(), 1);
+        assert_eq!(result.vocabularies.len(), 1);
+        assert_eq!(
+            result.model_manager.model_file("test@1.0.0").unwrap().ast(),
+            &source["models"][0]
+        );
+    }
+
+    #[test]
+    fn a_model_without_declarations_is_given_an_empty_array() {
+        let models = json!({
+            "$class": "concerto.metamodel@1.0.0.Models",
+            "models": [{
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "test@1.0.0",
+                "decorators": [decorator("Term", "Test")]
+            }]
+        });
+        let extractor = DecoratorExtractor::new(true, "en", "0.4.0", models, Action::ExtractAll);
+        let result = extractor.extract().expect("extraction succeeds");
+        let ast = result.model_manager.model_file("test@1.0.0").unwrap().ast();
+        assert!(ast.get("decorators").is_none());
+        assert_eq!(ast["declarations"], json!([]));
+        assert_eq!(
+            result.vocabularies,
+            vec!["locale: en\nnamespace: test@1.0.0\nterm: Test\ndeclarations: []\n"]
+        );
+    }
+
+    #[test]
+    fn map_keys_and_values_are_extracted_and_stripped() {
+        let models = json!({
+            "$class": "concerto.metamodel@1.0.0.Models",
+            "models": [{
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "test@1.0.0",
+                "declarations": [{
+                    "$class": MAP_DECLARATION_CLASS,
+                    "name": "Dictionary",
+                    "key": {
+                        "$class": "concerto.metamodel@1.0.0.StringMapKeyType",
+                        "decorators": [decorator("Term", "Word"), decorator("Custom", "k")]
+                    },
+                    "value": {
+                        "$class": "concerto.metamodel@1.0.0.StringMapValueType",
+                        "decorators": [decorator("Custom", "v")]
+                    }
+                }]
+            }]
+        });
+        let extractor =
+            DecoratorExtractor::new(true, "en", "0.4.0", models, Action::ExtractNonVocab);
+        let result = extractor.extract().expect("extraction succeeds");
+        let commands = result.decorator_command_set[0]["commands"]
+            .as_array()
+            .unwrap();
+        let targets: Vec<&Value> = commands
+            .iter()
+            .map(|c| &c["target"]["mapElement"])
+            .collect();
+        assert_eq!(targets, vec!["KEY", "VALUE"]);
+        assert!(result.vocabularies.is_empty());
+
+        // EXTRACT_NON_VOCAB with removal keeps only the vocabulary decorators.
+        let map = &result.model_manager.model_file("test@1.0.0").unwrap().ast()["declarations"][0];
+        let key_names: Vec<&str> = map["key"]["decorators"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(key_names, vec!["Term"]);
+        assert_eq!(map["value"]["decorators"], json!([]));
     }
 
     #[test]
