@@ -1,0 +1,31 @@
+# P5-42 (accordproject/concerto-rust#352): measure-only spike for the F-A
+# design report. Times, natively, the stages of the DCS extract call as the
+# resident path runs it today (P5-27 DcsManagerHandle, P5-41 direct encode)
+# on the P5-30 dumped inputs, and two prototype walks (typed model, borrowed
+# AST) in place of the extractor's cloned-Value walk. See README.md.
+#
+# Not part of the root workspace, and nothing depends on it.
+[package]
+name = "p542-typed-extract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[[bin]]
+name = "p542-native"
+path = "src/main.rs"
+
+[dependencies]
+accordproject-concerto-core = { path = "../../concerto-core", features = ["js-compat"] }
+serde = "1"
+serde_json = { version = "1.0", features = ["float_roundtrip", "preserve_order"] }
+
+# The shipped concerto-wasm release profile, natively.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,9 @@
+# scripts/dv.js and scripts/dv2.js: the source manager has decoratorValidation
+# {missingDecorator: 'error', invalidDecorator: 'error'}.
+# dv.js: decorateModels applies an undeclared decorator @Undeclared.
+TS 5.0.0:                       missingDecorator=error: threw IllegalModelException: Undeclared type "Undeclared" in "test@1.0.0.Person".
+Rust engine (resident path):    missingDecorator=error: no throw; Person has @Undeclared: true
+Rust engine (per-call path):    missingDecorator=error: no throw; Person has @Undeclared: true
+# dv2.js: the same check without DecoratorManager.
+TS 5.0.0:    addCTOModel threw IllegalModelException; fromAst threw IllegalModelException
+Rust engine: addCTOModel threw IllegalModelException; fromAst: no throw
