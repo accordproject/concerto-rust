@@ -1860,6 +1860,28 @@ mod tests {
     }
 
     #[test]
+    fn can_migrate_takes_strict_semver_only() {
+        // BC-41 (P5-38): no leading `v` and no surrounding whitespace, with
+        // the error `parseNamespace` throws for any invalid version.
+        for class in [
+            "org.accordproject.decoratorcommands@v0.3.0.DecoratorCommandSet",
+            "org.accordproject.decoratorcommands@ 0.3.0.DecoratorCommandSet",
+        ] {
+            let err = can_migrate(&json!({ "$class": class }), DCS_VERSION)
+                .err()
+                .unwrap_or_else(|| panic!("{class} was accepted"));
+            assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
+        }
+        // Components above 2^53 are compared exactly: 2^53 + 1 and 2^53
+        // are the same `f64`, but different majors.
+        let big = json!({
+            "$class": "org.accordproject.decoratorcommands@9007199254740993.0.0.DecoratorCommandSet"
+        });
+        assert!(!can_migrate(&big, "9007199254740992.1.0").unwrap());
+        assert!(can_migrate(&big, "9007199254740993.1.0").unwrap());
+    }
+
+    #[test]
     fn check_for_duplicate_decorators_rejects_a_repeated_name() {
         let ast = json!({ "decorators": [ {"name": "Foo"}, {"name": "Foo"} ] });
         let err = match check_for_duplicate_decorators(&ast) {
