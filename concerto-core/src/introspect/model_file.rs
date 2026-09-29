@@ -110,10 +110,8 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> std::result::Result<Result<Self>, serde_json::Error> {
-        Ok(
-            Self::from_json_text_with_imports(text, definitions, file_name)?
-                .map(|(model_file, _)| model_file),
-        )
+        Ok(Self::load_text_with_imports(text, definitions, file_name)?
+            .map(|(model_file, _)| model_file))
     }
 
     /// [`ModelFile::from_json_text`], also returning the AST's own
@@ -122,7 +120,23 @@ impl ModelFile {
     /// the text (P5-28, accordproject/concerto-rust#333: the WASM binding's
     /// `stageModelFileWithHeader` reads the TS `ModelFile` header from it).
     /// Same result, same errors in the same order.
+    ///
+    /// Behind `js-compat`, like the rest of the seam concerto-wasm builds
+    /// on, so it stays out of the default (D11) public surface
+    /// (docs/public-api.md sections 2.1 and 4.6).
+    #[cfg(feature = "js-compat")]
     pub fn from_json_text_with_imports(
+        text: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+        Self::load_text_with_imports(text, definitions, file_name)
+    }
+
+    /// The body of [`ModelFile::from_json_text`] and of the `js-compat`
+    /// `from_json_text_with_imports`: the loaded file plus the AST's own
+    /// `imports` node.
+    fn load_text_with_imports(
         text: &str,
         definitions: Option<String>,
         file_name: Option<String>,
@@ -1460,17 +1474,17 @@ mod tests {
             "declarations": []
         })
         .to_string();
-        let (mf, node) = ModelFile::from_json_text_with_imports(&text, None, None)
+        let (mf, node) = ModelFile::load_text_with_imports(&text, None, None)
             .unwrap()
             .unwrap();
         assert_eq!(mf.namespace(), "org.uri@1.0.0");
         assert_eq!(node, Some(imports));
         let text = r#"{"$class":"concerto.metamodel@1.0.0.Model","namespace":"org.x@1.0.0"}"#;
-        let (_, node) = ModelFile::from_json_text_with_imports(text, None, None)
+        let (_, node) = ModelFile::load_text_with_imports(text, None, None)
             .unwrap()
             .unwrap();
         assert_eq!(node, None);
-        assert!(ModelFile::from_json_text_with_imports("{", None, None).is_err());
+        assert!(ModelFile::load_text_with_imports("{", None, None).is_err());
     }
 
     #[test]
