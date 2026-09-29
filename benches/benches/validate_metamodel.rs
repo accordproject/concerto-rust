@@ -10,6 +10,12 @@
 //!     `Serializer::from_json` against the metamodel), on a manager that
 //!     does not hold the metamodel, over the models it accepts - as
 //!     `run-ts.mjs`'s `benchValidateAst` keeps them.
+//!   - `concerto-core/metamodel::validate_ast` (task P5-21,
+//!     accordproject/concerto-rust#319): the public crate-root free
+//!     function `concerto_core::metamodel::validate_ast`, which now runs on
+//!     a resident, per-thread metamodel manager, over the models it
+//!     accepts (it runs the strict preset, so its subset can differ from
+//!     `ModelManager::validate_ast`'s).
 //!   - `concerto-core`: `ModelFile::from_json`, which builds the model file
 //!     by deserialising the AST into `concerto-metamodel`'s strongly-typed
 //!     schema. This is model loading, not the metamodel check
@@ -19,7 +25,7 @@
 //!     function, over the same fixtures (only when the `validate-rs`
 //!     feature is enabled; see benches/README.md).
 
-use concerto_core::{ModelFile, ModelManager};
+use concerto_core::{metamodel, ModelFile, ModelManager};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 #[path = "common/mod.rs"]
@@ -52,6 +58,29 @@ fn bench_model_set(c: &mut Criterion, set_name: &str) {
                 b.iter(|| {
                     for mf in accepted {
                         mm.validate_ast(mf).expect("accepted above");
+                    }
+                });
+            },
+        );
+    }
+
+    // The public free function (P5-21), over the models it accepts,
+    // checked once outside the timed section.
+    let accepted_free: Vec<&serde_json::Value> = set
+        .iter()
+        .map(|(_, ast)| ast)
+        .filter(|ast| metamodel::validate_ast(ast).is_ok())
+        .collect();
+    if accepted_free.is_empty() {
+        eprintln!("validate_metamodel/{set_name}/concerto-core/metamodel::validate_ast: SKIPPED - it accepts none of the models");
+    } else {
+        group.bench_with_input(
+            BenchmarkId::new("concerto-core/metamodel::validate_ast", accepted_free.len()),
+            &accepted_free,
+            |b, accepted| {
+                b.iter(|| {
+                    for ast in accepted {
+                        metamodel::validate_ast(ast).expect("accepted above");
                     }
                 });
             },

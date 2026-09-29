@@ -71,3 +71,10 @@ harness = false
 [[bench]]
 name = "instance_validate"
 harness = false
+
+[[bench]]
+# Task P6-04 (accordproject/concerto-rust#273): the same workloads through
+# the P6-01 public API (docs/public-api.md) alone - see public_api.rs's
+# module docs for how it differs from the three benches above.
+name = "public_api"
+harness = false
