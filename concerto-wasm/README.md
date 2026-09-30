@@ -115,6 +115,15 @@ own, so it no longer copies the models into a `DcsManagerHandle`, and keeps
 another handle. `dcsDecorateModels` validates its result with `target`'s
 `decoratorValidation`; none of them changes the handle or its epoch.
 
+**Extract result memo** (P5-56, F-A2). With `removeDecoratorsFromModel`
+false, the three `dcsExtract*` methods keep a per-epoch memo on the handle:
+the second call on unchanged models keeps the result manager, its encoded
+AST and the resolved source models, and every later call rebuilds only the
+command sets and vocabularies from them. Any change that moves the epoch
+drops the memo, and so does `ModelManagerHandle.dropDcsMemo()` (additive).
+Errors are never memoised, every call returns new JS objects and new staged
+clones, and the memo never moves the epoch.
+
 The P0-04b trial bindings (`modelUtil*`, `numberValidator*`,
 `scalarDeclaration*`) are unchanged. Their views still hand their JS objects
 back, until the graph they meet is Rust-backed (P4-06 … P4-08).

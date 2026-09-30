@@ -1508,6 +1508,110 @@ export function runChecks(engine) {
     }
   });
 
+  // P5-56 (T2, F-A2): the per-epoch extract result memo. A repeated
+  // removeDecoratorsFromModel: false extract (the memo is filled on the
+  // second call, used from the third) gives what the resident handle gives,
+  // with any action and locale; a model change is seen by the next call; a
+  // returned result is the caller's own; dropDcsMemo and a throwing call
+  // change nothing; the epoch never moves.
+  check('dcsExtract* repeated calls through the memo', () => {
+    const str = (v) => [{ $class: `${MM}.DecoratorString`, value: v }];
+    const dec = (name, args) => ({ $class: `${MM}.Decorator`, name, arguments: args });
+    const DECORATED = {
+      $class: `${MM}.Model`, namespace: 'org.memo@1.0.0', imports: [],
+      decorators: [dec('Term', str('Memo')), dec('Tag', str('m'))],
+      declarations: [{
+        $class: `${MM}.ConceptDeclaration`, name: 'Person', isAbstract: false,
+        decorators: [dec('Term', str('A person')), dec('Flag', [])],
+        properties: [{ $class: `${MM}.StringProperty`, name: 'name', isArray: false, isOptional: false,
+          decorators: [dec('Term_description', str('The name')), dec('Tag', str('n'))] }],
+      }],
+    };
+    const OTHER = {
+      $class: `${MM}.Model`, namespace: 'org.other@1.0.0', imports: [],
+      declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 'Thing', isAbstract: false,
+        decorators: [dec('Term', str('Thing')), dec('Other', [])], properties: [] }],
+    };
+    const h = new engine.ModelManagerHandle();
+    h.addModelWithDefinitions(JSON.stringify(DECORATED), undefined, undefined, false);
+    const epoch = h.epoch();
+    const same = (own, resident, models, opts, label) => {
+      const dcs = new engine.DcsManagerHandle(models);
+      const t1 = new engine.ModelManagerHandle();
+      const t2 = new engine.ModelManagerHandle();
+      const a = h[own](t1, structuredClone(opts));
+      const b = dcs[resident](t2, structuredClone(opts));
+      const ja = JSON.stringify(a);
+      assert(ja === JSON.stringify(b), `${label} ${own}: ${ja.slice(0, 200)}`);
+      assert(a.staged.some((s) => Array.isArray(s)), `${label} ${own} staged`);
+      for (const x of [dcs, t1, t2]) {
+        x.free();
+      }
+      return a;
+    };
+    const ops = [
+      ['dcsExtractDecorators', 'extractDecorators'],
+      ['dcsExtractVocabularies', 'extractVocabularies'],
+      ['dcsExtractNonVocabDecorators', 'extractNonVocabDecorators'],
+    ];
+    const keep = { removeDecoratorsFromModel: false, locale: 'en' };
+    for (const [own, resident] of ops) {
+      for (let i = 0; i < 4; i++) {
+        same(own, resident, [DECORATED], i === 3 ? { removeDecoratorsFromModel: false, locale: 'fr' } : keep, `call ${i}`);
+      }
+    }
+    // Memoised calls with every action interleaved, then a result mutated
+    // by its caller: the next call is unaffected.
+    for (let i = 0; i < 3; i++) {
+      same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'warm');
+    }
+    same('dcsExtractVocabularies', 'extractVocabularies', [DECORATED], keep, 'vocab after all');
+    const mutated = same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'to mutate');
+    mutated.modelManager.models.length = 0;
+    mutated.decoratorCommandSet.push({ junk: true });
+    mutated.vocabularies[0] = 'junk';
+    same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'after mutation');
+    // removeDecoratorsFromModel: true never reads the memo.
+    same('dcsExtractDecorators', 'extractDecorators', [DECORATED], { removeDecoratorsFromModel: true, locale: 'en' }, 'remove');
+    same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'after remove');
+    h.dropDcsMemo();
+    for (let i = 0; i < 3; i++) {
+      same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, `after drop ${i}`);
+    }
+    assert(h.epoch() === epoch, 'the memo never moves the epoch');
+    // A model change is seen by the next call.
+    h.addModelWithDefinitions(JSON.stringify(OTHER), undefined, undefined, false);
+    for (const [own, resident] of ops) {
+      for (let i = 0; i < 3; i++) {
+        const out = same(own, resident, [DECORATED, OTHER], keep, `changed ${i}`);
+        assert(out.modelManager.models.some((m) => m.namespace === 'org.other@1.0.0'), `changed ${i} ${own}`);
+      }
+    }
+    h.deleteModelFile('org.other@1.0.0');
+    for (let i = 0; i < 3; i++) {
+      const out = same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, `deleted ${i}`);
+      assert(!out.modelManager.models.some((m) => m.namespace === 'org.other@1.0.0'), `deleted ${i}`);
+    }
+    // A throwing call is never memoised: it throws the same class each time.
+    const bad = {
+      $class: `${MM}.Model`, namespace: 'org.bad@1.0.0', imports: [],
+      declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 'Uses', isAbstract: false,
+        properties: [{ $class: `${MM}.ObjectProperty`, name: 'm', isArray: false, isOptional: false,
+          type: { $class: `${MM}.TypeIdentifier`, name: 'Missing' } }] }],
+    };
+    const hb = new engine.ModelManagerHandle();
+    hb.addModelWithDefinitions(JSON.stringify(bad), undefined, undefined, false);
+    const t = new engine.ModelManagerHandle();
+    const perCall = thrown(() => engine.decoratorManagerExtractDecorators([bad], {})).constructor.name;
+    for (let i = 0; i < 3; i++) {
+      const viaHandle = thrown(() => hb.dcsExtractDecorators(t, keep)).constructor.name;
+      assert(viaHandle === perCall, `throw ${i}: ${viaHandle} vs ${perCall}`);
+    }
+    for (const x of [h, hb, t]) {
+      x.free();
+    }
+  });
+
   mm.free();
   return rows;
 }

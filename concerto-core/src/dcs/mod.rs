@@ -1788,6 +1788,48 @@ pub fn extract_encoded(
     .extract_encoded()
 }
 
+/// [`extract_encoded`], also returning the source models its walk read
+/// (P5-56, T2, F-A2, accordproject/concerto-rust#377,
+/// [`extractor::DecoratorExtractor::extract_encoded_keeping_source`]), so a
+/// caller that keeps them can rebuild the same command sets and
+/// vocabularies with [`encode_extract_source`] while `model_manager` is
+/// unchanged. The same result and the same errors as [`extract_encoded`].
+pub fn extract_encoded_keeping_source(
+    model_manager: &ModelManager,
+    options: &ExtractOptions,
+    action: extractor::Action,
+) -> Result<(extractor::EncodedExtractResult, Vec<Value>)> {
+    let include_system = action != extractor::Action::ExtractNonVocab;
+    extractor::DecoratorExtractor::new(
+        options.remove_decorators_from_model,
+        options.locale.clone(),
+        DCS_VERSION,
+        model_manager.models_ast(true, include_system)?,
+        action,
+    )
+    .extract_encoded_keeping_source()
+}
+
+/// The command sets (JSON text) and vocabularies [`extract_encoded`] gives
+/// for `action` and `options`, rebuilt from `models`, the source models an
+/// earlier [`extract_encoded_keeping_source`] with the same `action`'s
+/// system flag returned (P5-56). The source models are neither resolved nor
+/// loaded again, and no result manager is built.
+pub fn encode_extract_source(
+    models: &[Value],
+    options: &ExtractOptions,
+    action: extractor::Action,
+) -> Result<(String, Vec<String>)> {
+    extractor::DecoratorExtractor::new(
+        options.remove_decorators_from_model,
+        options.locale.clone(),
+        DCS_VERSION,
+        Value::Null,
+        action,
+    )
+    .encode_source(models)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2443,5 +2485,69 @@ mod tests {
             err.to_string(),
             "Cannot read properties of undefined (reading 'decorator')"
         );
+    }
+
+    /// P5-56 (T2, F-A2): on a manager (system models included for
+    /// `ExtractAll`/`ExtractVocab`, not for `ExtractNonVocab`),
+    /// `extract_encoded_keeping_source` gives `extract_encoded`'s result, and
+    /// `encode_extract_source` over the kept models rebuilds its command
+    /// sets and vocabularies.
+    #[test]
+    fn the_kept_source_rebuilds_the_extracted_command_sets() {
+        let mut mgr = sample_manager();
+        mgr.load_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.deco@1.0.0",
+                "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.acme@1.0.0", "name": "Person" }],
+                "decorators": [{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Term",
+                    "arguments": [{ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "Deco" }] }],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Staff", "isAbstract": false,
+                      "decorators": [{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Ref",
+                        "arguments": [{ "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
+                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" }, "isArray": false }] }],
+                      "properties": [
+                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id", "isArray": false, "isOptional": false,
+                          "decorators": [{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Term",
+                            "arguments": [{ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "Id" }] }] }
+                      ] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        for action in [
+            extractor::Action::ExtractAll,
+            extractor::Action::ExtractVocab,
+            extractor::Action::ExtractNonVocab,
+        ] {
+            let options = ExtractOptions::default();
+            let direct = extract_encoded(&mgr, &options, action).unwrap();
+            let (kept, source) = extract_encoded_keeping_source(&mgr, &options, action).unwrap();
+            assert_eq!(kept.decorator_command_set, direct.decorator_command_set);
+            assert_eq!(kept.vocabularies, direct.vocabularies);
+            let asts = |mm: &ModelManager| {
+                mm.model_files()
+                    .map(|f| f.ast().clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(asts(&kept.model_manager), asts(&direct.model_manager));
+            let system = source
+                .iter()
+                .any(|m| m.get("namespace").and_then(Value::as_str) == Some("concerto@1.0.0"));
+            assert_eq!(system, action != extractor::Action::ExtractNonVocab);
+            for locale in ["en", "fr"] {
+                let options = ExtractOptions {
+                    remove_decorators_from_model: false,
+                    locale: locale.to_string(),
+                };
+                let fresh = extract_encoded(&mgr, &options, action).unwrap();
+                let (sets, vocabularies) =
+                    encode_extract_source(&source, &options, action).unwrap();
+                assert_eq!(sets, fresh.decorator_command_set, "{action:?} {locale}");
+                assert_eq!(vocabularies, fresh.vocabularies, "{action:?} {locale}");
+            }
+        }
     }
 }
