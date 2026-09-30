@@ -287,12 +287,11 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
     };
     for model in models {
         // BC-19 (R1): `new ModelFile(modelManager, mm, null, null)` on a
-        // `new ModelManager()`, whose default is the strict shape check. The
-        // constructor's own `typeof ast !== 'object'` check comes first, so
-        // a model that is not a JS object keeps that error (below).
-        if model.is_object() || model.is_array() {
-            check_ast_shape(model)?;
-        }
+        // `new ModelManager()`, whose default is the strict shape check,
+        // after the constructor's own argument checks (a falsy or non-object
+        // AST is a plain `Error`).
+        ModelFile::check_constructor_arguments(Some(model), None, None)?;
+        check_ast_shape(model)?;
         let model_file = ModelFile::from_json_with_definitions(model, None, None)?;
         if mm.model_file(model_file.namespace()).is_none() {
             mm.validate_detached_model_file(&model_file)?;
@@ -321,7 +320,11 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
 ///    (`modelfile-load-decoratorsnotarray`); a super type (`superType`)
 ///    whose `name` is not a non-empty string
 ///    (`modelfile-load-supertypename`); any other `name` that is not a
-///    string (`modelfile-load-namenotstring`).
+///    string (`modelfile-load-namenotstring`); since P5-61, an
+///    `identified`, `sizeValidator`, `lengthValidator` or `validator` that
+///    is present, not `null` and not an object with a string `$class`
+///    (`modelfile-load-nodenotobject`), which the metamodel check alone
+///    accepts when it has no own keys or no `$class`.
 /// 2. `validateAst`'s strict check ([`validate_ast`]): the version check,
 ///    then the structure against the metamodel with the strict preset
 ///    ([`validate_metamodel`]). Its error, whatever its class, is
@@ -386,6 +389,13 @@ fn strip_parser_extras(node: &mut Value) {
     }
 }
 
+/// The keys whose value, when present and not `null`, must be a node: an
+/// object with a string `$class` ([`check_ast_shape`], step 1). The metamodel
+/// check alone accepts any value with no own keys there (a number, a
+/// boolean, `""`, `[]`, `{}`), as TS's `validateAst` does, and an object
+/// without a `$class` (P5-61, accordproject/concerto-rust#393).
+const NODE_KEYS: [&str; 4] = ["identified", "sizeValidator", "lengthValidator", "validator"];
+
 /// [`check_ast_shape`]'s first step, for `node` and everything under it.
 /// `super_type` is true for the node under a `superType` key;
 /// `parser_extras` is set when a node matches [`has_parser_default`].
@@ -410,6 +420,19 @@ fn check_node_shapes(node: &Value, super_type: bool, parser_extras: &mut bool) -
                 && !name.is_string()
             {
                 return Err(shape_error("modelfile-load-namenotstring", name));
+            }
+            for key in NODE_KEYS {
+                if let Some(value) = map.get(key)
+                    && !value.is_null()
+                    && !value.get("$class").is_some_and(Value::is_string)
+                {
+                    return Err(ContractError::new(
+                        ErrorKind::IllegalModel,
+                        "modelfile-load-nodenotobject",
+                        vec![("key", key.to_string()), ("value", value.to_string())],
+                    )
+                    .into());
+                }
             }
             for (key, value) in map {
                 check_node_shapes(value, key == "superType" && value.is_object(), parser_extras)?;
@@ -876,16 +899,25 @@ mod tests {
         // TS: `validateAst`'s `deleteModelFile(MetaModelNamespace)` follows
         // the `try`/`catch` that re-throws, so a failed check never reaches it.
         let mut mm = ModelManager::new().unwrap();
+        // P5-61: the loader refuses an unknown key, so the model file holds
+        // a malformation the loader does not check (a fraction in an
+        // `Integer` field; `typed_ast`'s module doc, "Not checked").
+        let position = json!({"$class": "concerto.metamodel@1.0.0.Position", "line": 1.5, "column": 1, "offset": 0});
         let mf = model_file(&json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.acme@1.0.0",
             "imports": [],
-            "declarations": [],
-            "undeclared": []
+            "declarations": [{
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Thing",
+                "isAbstract": false,
+                "properties": [],
+                "location": {"$class": "concerto.metamodel@1.0.0.Range", "start": position, "end": position}
+            }]
         }));
         let err = mm
             .validate_ast(&mf)
-            .expect_err("an undeclared property is invalid");
+            .expect_err("a fraction in an Integer field is invalid");
         let Some(contract) = err.ported().cloned() else {
             panic!("expected a Contract error, got {err:?}");
         };
@@ -1298,6 +1330,64 @@ mod tests {
     }
 
     #[test]
+    fn check_ast_shape_requires_a_node_for_identified_and_the_validators() {
+        // P5-61: the metamodel check alone accepts a value with no own keys,
+        // or an object without a `$class`, for these four keys.
+        let identified = |value: Value| {
+            let mut model = person_model();
+            model["declarations"][0]["identified"] = value;
+            model
+        };
+        let validator = |key: &str, value: Value| {
+            let mut model = person_model();
+            model["declarations"][0]["properties"][0][key] = value;
+            model
+        };
+        let bad = [
+            json!(0),
+            json!(1),
+            json!(true),
+            json!(""),
+            json!([]),
+            json!({}),
+        ];
+        for value in bad.iter().cloned().chain([json!({"name": "name"})]) {
+            assert_eq!(
+                shape_code(&identified(value.clone())),
+                Some("modelfile-load-nodenotobject"),
+                "identified {value}"
+            );
+        }
+        for key in ["sizeValidator", "lengthValidator", "validator"] {
+            for value in bad.iter().cloned().chain([json!({"minLength": 1}), json!({"pattern": "a", "flags": ""})]) {
+                assert_eq!(
+                    shape_code(&validator(key, value.clone())),
+                    Some("modelfile-load-nodenotobject"),
+                    "{key} {value}"
+                );
+            }
+            assert_eq!(shape_code(&validator(key, Value::Null)), None, "{key} null");
+        }
+        assert_eq!(shape_code(&identified(Value::Null)), None);
+        assert_eq!(
+            shape_code(&identified(json!({"$class": "concerto.metamodel@1.0.0.Identified"}))),
+            None
+        );
+        assert_eq!(
+            shape_code(&validator(
+                "validator",
+                json!({"$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "a", "flags": ""})
+            )),
+            None
+        );
+        // A `$class` names the node's type, which the metamodel check checks.
+        assert_eq!(
+            shape_code(&validator("validator", json!({"$class": "x", "pattern": "a", "flags": ""}))),
+            Some("modelfile-load-astshape")
+        );
+    }
+
+    #[test]
     fn check_ast_shape_rejects_non_string_names() {
         // BC-20: TS coerces a name with `String()`.
         for name in [json!(1e308), json!(0), json!(false), json!(null), json!({})] {
@@ -1325,8 +1415,9 @@ mod tests {
 
     #[test]
     fn check_ast_shape_rejects_what_the_metamodel_rejects() {
-        // BC-19: an unknown property, a wrong-typed field, a malformed
-        // `identified` and another metamodel version.
+        // BC-19: an unknown property, a wrong-typed field and another
+        // metamodel version (a malformed `identified` is step 1's since
+        // P5-61, `check_ast_shape_requires_a_node_for_identified_and_the_validators`).
         let mut unknown = person_model();
         unknown["undeclared"] = json!([]);
         let mut bounds = person_model();
@@ -1337,8 +1428,6 @@ mod tests {
             "isOptional": false,
             "validator": {"$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": "0"}
         });
-        let mut identified = person_model();
-        identified["declarations"][0]["identified"] = json!("yes");
         let mut version = person_model();
         version["$class"] = json!("concerto.metamodel@99.0.0.Model");
         // DV-017's typeless relationship and DV-018's `null` decorator: the
@@ -1353,7 +1442,7 @@ mod tests {
         });
         let mut null_decorator = person_model();
         null_decorator["declarations"][0]["decorators"] = json!([null]);
-        for ast in [unknown, bounds, identified, version, relationship, null_decorator] {
+        for ast in [unknown, bounds, version, relationship, null_decorator] {
             assert_eq!(shape_code(&ast), Some("modelfile-load-astshape"), "{ast}");
         }
         let mut version = person_model();

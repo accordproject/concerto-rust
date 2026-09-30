@@ -163,13 +163,16 @@ impl ScalarDeclaration {
                         ast,
                         fully_qualified_name,
                     };
+                    // On the model-file load path, `declaration::load_scalar`
+                    // has already read this node strictly (P5-61, BR-09), so
+                    // `validator`/`lengthValidator` are well-formed here and a
+                    // wrongly-typed one never reaches this point.
                     // `validators::regex_validator_from_ast`/`length_validator_from_ast`
-                    // read `ast.validator`/`ast.lengthValidator` the same
-                    // untyped way TS's `StringValidator` constructor does,
-                    // rather than `serde`'s strict struct decode, so a
-                    // fuzz-mutated, wrongly-typed field there (a bool, an
-                    // array, an object) coerces instead of failing the whole
-                    // scalar's parse (accordproject/concerto-rust#217).
+                    // read the raw AST untyped, as TS's `StringValidator`
+                    // constructor does, only because `process` also runs on
+                    // ASTs that bypass the loader: `build_standalone` (a
+                    // `new ScalarDeclaration(modelFile, ast)` never added to
+                    // its file) and concerto-wasm's standalone bindings.
                     let validator = validators::regex_validator_from_ast(ast.get("validator"));
                     let length_validator =
                         validators::length_validator_from_ast(ast.get("lengthValidator"));

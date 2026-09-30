@@ -1322,31 +1322,19 @@ impl Validate for MapDeclaration {
 }
 
 js_compat_pub! {
-    /// `MapKeyType.validate` (src/introspect/mapkeytype.ts), plus the key-kind
+    /// `MapKeyType.validate` (src/introspect/mapkeytype.ts). The key-kind
     /// membership check TS makes at `MapDeclaration` construction time
-    /// (`ModelUtil.isValidMapKey`, src/introspect/mapdeclaration.ts): this
-    /// engine's `MapDeclaration` always constructs (`introspect::declaration`'s
-    /// doc comment on `MapDeclaration::Untyped`), deferring an unsupported kind
-    /// to this semantic-validation pass instead.
+    /// (`ModelUtil.isValidMapKey`) is the typed read's: a loaded
+    /// `MapDeclaration`'s key is always one of the metamodel's key kinds
+    /// (P5-61).
     ///
-    /// Every error passes `location: None`: `MapDeclaration`'s own doc comment
-    /// records that its `location` (and its key's and value's) is deliberately
-    /// not read, so there is no AST node to copy from, not a gap left for later.
+    /// Every error passes `location: None`: `MapDeclaration` does not keep
+    /// its key's location, so there is no AST node to copy from.
     pub fn validate_map_key(
         manager: &ModelManager,
         namespace: &str,
         map: &MapDeclaration,
     ) -> Result<()> {
-        if !model_util::MAP_KEY_KINDS.contains(&map.key_kind()) {
-            return Err(failed(
-                format!(
-                    "The key of map {} must be a String or DateTime, or a scalar over one of them",
-                    map.name()
-                ),
-                None,
-            ));
-        }
-
         // An object key names a scalar, which has to be over a String or DateTime.
         //
         // TS: `MapKeyType.validate` (src/introspect/mapkeytype.ts) — this is a
@@ -1387,88 +1375,32 @@ js_compat_pub! {
 }
 
 js_compat_pub! {
-    /// `MapValueType.validate` (src/introspect/mapvaluetype.ts), plus the
-    /// value-kind membership check TS makes at `MapDeclaration` construction
-    /// time (`ModelUtil.isValidMapValue`), deferred here for the same reason as
-    /// [`validate_map_key`].
+    /// `MapValueType.validate` (src/introspect/mapvaluetype.ts). The
+    /// value-kind membership check and `MapValueType.processType`'s "must
+    /// contain property 'type'" checks are the typed read's: a loaded
+    /// `MapDeclaration`'s value is always one of the metamodel's value
+    /// kinds, and an object or relationship value always has a `type` with
+    /// a string `name` (P5-61).
     pub fn validate_map_value(
         manager: &ModelManager,
         namespace: &str,
         map: &MapDeclaration,
     ) -> Result<()> {
-        if !model_util::MAP_VALUE_KINDS.contains(&map.value_kind()) {
+        // TS: `MapValueType.processType` (src/introspect/mapvaluetype.ts): an
+        // object or relationship value's `type.$class` must be
+        // `TypeIdentifier`. The typed read keeps the `$class` string as
+        // given, so this is checked here.
+        if let Some(t) = map.value_type()
+            && t._class != crate::introspect::qualified_class("TypeIdentifier")
+        {
             return Err(failed(
                 format!(
-                    "The value of map {} may not be a {}",
-                    map.name(),
-                    map.value_kind()
+                    "{} type $class must be of TypeIdentifier for MapDeclaration named {}",
+                    map.value_kind(),
+                    map.name()
                 ),
                 None,
             ));
-        }
-
-        // TS: `MapValueType.processType` (src/introspect/mapvaluetype.ts), for
-        // `ObjectMapValueType`/`RelationshipMapValueType`: the node must carry a
-        // `type` property, that `type` must have both a `$class` and a `name`,
-        // and its `$class` must be `TypeIdentifier`. This engine's loader folds
-        // "no `type`" and "`type` has no `name`" into the same `None`
-        // ([`MapVariant::Untyped`]'s doc comment), so one message covers both,
-        // as neither TS test on these paths asserts on message text, only that
-        // an `IllegalModelException` is thrown.
-        if matches!(
-            map.value_kind(),
-            "ObjectMapValueType" | "RelationshipMapValueType"
-        ) {
-            match map.value_type() {
-                // Reachable (P5-06, validation.rs test
-                // `validate_detached_map_key_and_value_in_isolation`'s
-                // `ValueTypeNameIsNotAString` case): `MapDeclaration::from_json`
-                // only checks that `type.name` is *present*, not that it is a
-                // string, so a malformed `name` field leaves `value_type()`
-                // `None` despite construction succeeding.
-                None => {
-                    return Err(failed(
-                        format!(
-                            "{} must contain property 'type' with a 'name', for MapDeclaration named {}",
-                            map.value_kind(),
-                            map.name()
-                        ),
-                        None,
-                    ));
-                }
-                // Provably unreachable through any constructed `MapDeclaration`
-                // (P5-06: cargo-mutants found this arm's mutants survived, and
-                // review correctly rejected the earlier "likely unreachable, no
-                // proof" claim — this is the proof, not a repeat of the
-                // assertion). `MapDeclaration::from_json`
-                // (introspect/declaration.rs) already rejects, at construction,
-                // any `ObjectMapValueType`/`RelationshipMapValueType` node whose
-                // `type.$class` is not the literal string
-                // `"concerto.metamodel@1.0.0.TypeIdentifier"` (its own
-                // `class_field.and_then(|c| c.as_str()) != Some(...)` check) —
-                // the exact same string [`crate::introspect::qualified_class`]
-                // builds here (`METAMODEL_NAMESPACE` + `".TypeIdentifier"`).
-                // `t._class` above is read off the *same* JSON node by
-                // `type_reference`'s `serde_json::from_value::<mm::TypeIdentifier>`
-                // (declaration.rs), a field-for-field deserialize with no
-                // normalisation, so `t._class` cannot come out different from
-                // the exact string construction already checked. The only way
-                // `type_reference` disagrees with that raw check at all is by
-                // *failing* to deserialize (a malformed `name`, the `None` arm
-                // just above) — it can fail to produce a match, never produce a
-                // different one.
-                Some(t) if t._class != crate::introspect::qualified_class("TypeIdentifier") => {
-                    return Err(failed(
-                        format!(
-                            "{} type $class must be of TypeIdentifier for MapDeclaration named {}",
-                            map.value_kind(),
-                            map.name()
-                        ),
-                        None,
-                    ));
-                }
-                _ => {}
-            }
         }
 
         // TS: `MapValueType.validate` allows any declaration as a map value except
@@ -1606,6 +1538,19 @@ mod tests {
         manager.validate_models()
     }
 
+    /// P5-61: a map, key or value node the typed read cannot read is a
+    /// `modelfile-load-unreadable` `IllegalModelException` at load (BC-19's
+    /// shape check rejects it first), where TS 5.0.0's per-site guards gave
+    /// their own `IllegalModelException` messages.
+    fn assert_unreadable(result: crate::error::Result<()>) {
+        let err = result.unwrap_err();
+        let Some(contract) = err.ported() else {
+            panic!("expected an IllegalModelException, got {err:?}");
+        };
+        assert_eq!(contract.kind, ErrorKind::IllegalModel, "{err}");
+        assert_eq!(contract.code, "modelfile-load-unreadable", "{err}");
+    }
+
     fn concept(body: serde_json::Value) -> serde_json::Value {
         let mut v = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
@@ -1639,99 +1584,19 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("super type"));
     }
 
-    /// accordproject/concerto-rust#217 review finding 1, on the validating
-    /// `addModelFile` path (`ModelManager::add_model`, not just the pure
-    /// `process_decision`/`classDeclarationProcess` fuzz path in
-    /// `introspect::declaration`'s own tests): an explicit `name: null`
-    /// still loads and validates cleanly, exactly like having no `superType`
-    /// node — TS's `this.superType` ends up `null` here, which every
-    /// `!== null` guard reads as "nothing to resolve".
-    #[test]
-    fn super_type_with_an_explicit_null_name_has_no_super_type_and_validates() {
-        let err = validate(serde_json::json!([concept(serde_json::json!({
-            "name": "Employee",
-            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": null }
-        }))]));
-        assert!(err.is_ok());
-    }
-
     /// accordproject/concerto-rust#217 review finding 2, on the same
-    /// validating `addModelFile` path: a `superType` node with no `name` key
-    /// at all must still fail — TS's `this.superType` ends up `undefined`
-    /// here, not `null`, so it is NOT read as "nothing to resolve"; it is a
-    /// real, if unresolvable, super type name, and TS's own string
-    /// concatenation turns it into the literal text `"undefined"` in the
-    /// error it raises. This must load and fail with that same message
-    /// (`Could not find super type undefined`), not a raw decode error like
-    /// `missing field \`name\`` — an earlier version of this fix's `from_json`
-    /// pre-processing produced that generic error instead of a proper
-    /// `IllegalModelException`, and never got as far as `super_type_that_is_missing_fails`'s
-    /// ordinary "unresolvable super type" path above.
+    /// validating `addModelFile` path: an empty `identified.name` validates
+    /// cleanly, with no id field. TS's `this.idField` is read everywhere
+    /// downstream (including the "does not contain this property" check
+    /// `check_identifier` ports) with a plain truthiness test. The falsy
+    /// non-strings (`0`, `false`) are the loader's error since P5-61.
     #[test]
-    fn super_type_with_no_name_key_fails_with_could_not_find_super_type_undefined() {
+    fn identified_by_an_empty_name_has_no_id_field_and_validates() {
         let err = validate(serde_json::json!([concept(serde_json::json!({
-            "name": "Employee",
-            "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" }
+            "name": "Manufactured",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "" }
         }))]));
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "Could not find super type undefined"
-        );
-    }
-
-    /// accordproject/concerto-rust#217 review finding 2, second half (the
-    /// "only half fixed" half), on the same validating `addModelFile` path:
-    /// a `superType.name` that is falsy but not `null` — `0` or `false` — is
-    /// a different shape from an explicit `null`
-    /// ([`super_type_with_an_explicit_null_name_has_no_super_type_and_validates`]):
-    /// it must still fail to resolve, exactly like the missing-name-key case
-    /// above, with the falsy value's own `ToString` text in the message. An
-    /// earlier version of this fix folded `0`/`false` into "no super type",
-    /// which let a model TS itself rejects (`Could not find super type
-    /// 0`/`Could not find super type false`, raised from
-    /// `ClassDeclaration.getProperties`, which guards only on
-    /// `this.superType !== null`) load and validate with no error at all.
-    #[test]
-    fn super_type_with_a_falsy_non_nullish_name_fails_with_could_not_find_super_type() {
-        for (name, expected) in [
-            (serde_json::json!(0), "Could not find super type 0"),
-            (serde_json::json!(false), "Could not find super type false"),
-        ] {
-            let err = validate(serde_json::json!([concept(serde_json::json!({
-                "name": "Employee",
-                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name }
-            }))]));
-            assert_eq!(
-                err.unwrap_err().to_string(),
-                expected,
-                "superType.name {name:?}"
-            );
-        }
-    }
-
-    /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"),
-    /// on the same validating `addModelFile` path: `identified.name` values
-    /// that are falsy but not nullish — `0`, `false`, `""` — must validate
-    /// cleanly too, exactly like an explicit `null`. TS's `this.idField` is
-    /// read everywhere downstream (including the "does not contain this
-    /// property" check `check_identifier` ports) with a plain truthiness
-    /// test, so none of these three ever becomes a property name to look
-    /// up — before this fix, the class had no field named `"0"`/`"false"`/
-    /// `""` either, but `check_identifier` still ran and failed with exactly
-    /// that message; TS itself never runs the check at all.
-    #[test]
-    fn identified_by_a_falsy_non_nullish_name_has_no_id_field_and_validates() {
-        for name in [
-            serde_json::json!(0),
-            serde_json::json!(false),
-            serde_json::json!(""),
-        ] {
-            let err = validate(serde_json::json!([concept(serde_json::json!({
-                "name": "Manufactured",
-                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": name }
-            }))]));
-            assert!(err.is_ok(), "identified.name {name:?} -> {err:?}");
-        }
+        assert!(err.is_ok(), "{err:?}");
     }
 
     /// PORTING.md 2.1: `failed`'s `location` is the failing class's own AST
@@ -2043,158 +1908,15 @@ mod tests {
         assert!(err.is_ok());
     }
 
-    /// accordproject/concerto-rust#218 cluster #1, minimised: the P5-05 fuzz
-    /// seed `data/ModelManager.fromAst/6287c8da05a81a766dd6845b.json`
-    /// (the `carResolved` pair of models) with `models[1].decorators` set to
-    /// the string `"💥emoji"`. TS's `Decorated.process` iterates that string
-    /// by UTF-16 code unit, each unit becoming a decorator whose name is
-    /// `undefined`, so `Decorated.validate` rejects it as a duplicate. The
-    /// repro goes through the same steps as the oracle's native
-    /// `ModelManager.fromAst` (`add_model` per model, then
-    /// `validate_models`).
+    /// P5-61 (was DV-018): a `null` element in any `decorators` array — or
+    /// a string `decorators` value (BC-17's shape), or a decorator node with
+    /// no `name` — is not a decorator the typed read can read, so the load
+    /// fails with a `modelfile-load-unreadable` `IllegalModelException`
+    /// naming the file. BC-19's shape check rejects each of these first.
+    /// Covers every decorated element: the model file, a class, a property,
+    /// an enum value, a scalar, a map and its key and value types.
     #[test]
-    fn string_decorators_on_a_model_are_duplicate_undefined_decorators() {
-        let mut manager = ModelManager::new().unwrap();
-        manager
-            .load_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "decorators": [],
-                    "namespace": "org.vehicle@1.0.0",
-                    "imports": [],
-                    "declarations": [
-                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                          "name": "Manufactured", "isAbstract": true, "properties": [] },
-                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                          "name": "Vehicle", "isAbstract": true,
-                          "properties": [
-                            { "$class": "concerto.metamodel@1.0.0.StringProperty",
-                              "name": "name", "isArray": false, "isOptional": false },
-                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty",
-                              "name": "range", "isArray": false, "isOptional": false }
-                          ],
-                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
-                                         "name": "Manufactured", "namespace": "org.vehicle@1.0.0" } }
-                    ]
-                }),
-                None,
-            )
-            .unwrap();
-        manager
-            .load_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "decorators": "\u{1F4A5}emoji",
-                    "namespace": "org.car@1.0.0",
-                    "imports": [
-                        { "$class": "concerto.metamodel@1.0.0.ImportType",
-                          "namespace": "org.vehicle@1.0.0", "name": "Vehicle" }
-                    ],
-                    "declarations": [
-                        { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                          "name": "Car", "isAbstract": false,
-                          "properties": [
-                            { "$class": "concerto.metamodel@1.0.0.DoubleProperty",
-                              "name": "mileage", "isArray": false, "isOptional": false }
-                          ],
-                          "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
-                                         "name": "Vehicle", "namespace": "org.vehicle@1.0.0" } }
-                    ]
-                }),
-                None,
-            )
-            .unwrap();
-        let err = manager.validate_models().unwrap_err();
-        let Some(contract) = err.ported() else {
-            panic!("expected an IllegalModelException, got {err:?}");
-        };
-        assert_eq!(contract.kind, ErrorKind::IllegalModel);
-        assert_eq!(contract.message(), "Duplicate decorator undefined");
-    }
-
-    /// #218 clusters #2-#5 (DV-017, maintainer-accepted): a
-    /// `RelationshipProperty` whose `type` is missing or `null` makes TS's
-    /// `Property.process` throw a `TypeError` from the `ModelFile`
-    /// constructor; Rust rejects the model at `add_model` with an
-    /// `IllegalModelException` naming the property, the file and the node's
-    /// location. The document is the P5-05 minimised reproducer.
-    #[test]
-    fn a_relationship_with_a_missing_or_null_type_is_rejected_at_load() {
-        let position = |offset: u32, line: u32, column: u32| {
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Position",
-                                "offset": offset, "line": line, "column": column })
-        };
-        for (ty, file_name) in [
-            (None, Some("relationship003.cto")),
-            (Some(serde_json::Value::Null), Some("relationship003.cto")),
-            (None, None),
-            (Some(serde_json::Value::Null), None),
-        ] {
-            let mut relationship = serde_json::json!({
-                "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
-                "name": "dept", "isArray": false, "isOptional": false,
-                "location": { "$class": "concerto.metamodel@1.0.0.Range",
-                              "start": position(109, 5, 3), "end": position(131, 6, 1) }
-            });
-            if let Some(ty) = &ty {
-                relationship["type"] = ty.clone();
-            }
-            let mut manager = ModelManager::new().unwrap();
-            let err = manager
-                .load_model(
-                    &serde_json::json!({
-                        "$class": "concerto.metamodel@1.0.0.Model",
-                        "decorators": [],
-                        "namespace": "org.example.relationship003.invalid@1.0.0",
-                        "imports": [],
-                        "declarations": [
-                            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                              "name": "Employee", "isAbstract": false,
-                              "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
-                              "properties": [
-                                { "$class": "concerto.metamodel@1.0.0.StringProperty",
-                                  "name": "id", "isArray": false, "isOptional": false },
-                                relationship
-                              ] },
-                            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                              "name": "Department", "isAbstract": false,
-                              "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "code" },
-                              "properties": [
-                                { "$class": "concerto.metamodel@1.0.0.StringProperty",
-                                  "name": "code", "isArray": false, "isOptional": false }
-                              ] }
-                        ]
-                    }),
-                    file_name.map(String::from),
-                )
-                .unwrap_err();
-            let Some(contract) = err.ported() else {
-                panic!("expected an IllegalModelException, got {err:?}");
-            };
-            assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ty:?}");
-            assert_eq!(contract.code, "property-process-relationshipnotype");
-            let suffix = match file_name {
-                Some(f) => format!("File '{f}': line"),
-                None => "Line".to_string(),
-            };
-            assert_eq!(
-                contract.final_message(),
-                format!(
-                    "Relationship dept must have a type {suffix} 5 column 3, to line 6 column 1. "
-                )
-            );
-        }
-    }
-
-    /// #218 (DV-018, maintainer-accepted): a `null` element in any
-    /// `decorators` array makes TS's `Decorator.process` throw a `TypeError`
-    /// (decorator.ts:139) from the `ModelFile` constructor; Rust rejects the
-    /// model at `add_model` with an `IllegalModelException` naming the file
-    /// (a `null` node has no location). Covers every decorated element: the
-    /// model file, a class, a property, an enum value, a scalar, a map and
-    /// its key and value types.
-    #[test]
-    fn a_null_decorator_is_rejected_at_load_wherever_it_sits() {
+    fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
         let mut model = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "decorators": [],
@@ -2234,14 +1956,20 @@ mod tests {
             &["declarations", "3", "key", "decorators"],
             &["declarations", "3", "value", "decorators"],
         ];
-        for site in sites {
-            let pointer = format!("/{}", site.join("/"));
-            // A `null` after a well-formed decorator: TS builds the first,
-            // then crashes on the second.
-            *model.pointer_mut(&pointer).unwrap() = serde_json::json!([
+        let malformed = [
+            serde_json::json!([
                 { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Hide" },
                 null
-            ]);
+            ]),
+            serde_json::json!("ab"),
+            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator" }]),
+        ];
+        for (site, decorators) in sites
+            .iter()
+            .flat_map(|site| malformed.iter().map(move |d| (site, d)))
+        {
+            let pointer = format!("/{}", site.join("/"));
+            *model.pointer_mut(&pointer).unwrap() = decorators.clone();
             for file_name in [Some("test.cto"), None] {
                 let err = ModelManager::new()
                     .unwrap()
@@ -2251,14 +1979,10 @@ mod tests {
                     panic!("{pointer}: expected an IllegalModelException, got {err:?}");
                 };
                 assert_eq!(contract.kind, ErrorKind::IllegalModel, "{pointer}");
-                assert_eq!(contract.code, "decorator-process-notobject", "{pointer}");
-                let suffix = match file_name {
-                    Some(f) => format!(" File '{f}': "),
-                    None => " ".to_string(),
-                };
+                assert_eq!(contract.code, "modelfile-load-unreadable", "{pointer}");
                 assert_eq!(
-                    contract.final_message(),
-                    format!("Invalid decorator. Expected object. Found null{suffix}"),
+                    contract.model_file,
+                    Some(file_name.map(String::from)),
                     "{pointer}"
                 );
                 // The owned load path (P5-06, used by the WASM binding)
@@ -2275,78 +1999,6 @@ mod tests {
                 assert_eq!(format!("{owned:?}"), format!("{err:?}"), "{pointer}");
             }
             *model.pointer_mut(&pointer).unwrap() = serde_json::json!([]);
-        }
-    }
-
-    /// DV-018 keeps TS's order: `Decorated.process` runs first in each
-    /// element's own `process`, so a `null` decorator on an element is
-    /// reported ahead of that element's other checks (an invalid class name,
-    /// DV-017's typeless relationship), but after an earlier element's.
-    #[test]
-    fn a_null_decorator_is_reported_in_ts_order() {
-        let load = |declarations: serde_json::Value| {
-            ModelManager::new()
-                .unwrap()
-                .load_model(
-                    &serde_json::json!({
-                        "$class": "concerto.metamodel@1.0.0.Model",
-                        "namespace": "org.example@1.0.0",
-                        "imports": [],
-                        "declarations": declarations
-                    }),
-                    Some("test.cto".into()),
-                )
-                .unwrap_err()
-                .to_string()
-        };
-        let null_decorator = "Invalid decorator. Expected object. Found null";
-        let msg = load(serde_json::json!([
-            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-              "name": "1bad", "isAbstract": false, "decorators": [null], "properties": [] }
-        ]));
-        assert!(msg.contains(null_decorator), "{msg}");
-        let msg = load(serde_json::json!([
-            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-              "name": "Person", "isAbstract": false,
-              "properties": [
-                { "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
-                  "name": "dept", "isArray": false, "isOptional": false, "decorators": [null] }
-              ] }
-        ]));
-        assert!(msg.contains(null_decorator), "{msg}");
-        // An earlier declaration's own error still comes first.
-        let msg = load(serde_json::json!([
-            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-              "name": "1bad", "isAbstract": false, "properties": [] },
-            { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-              "name": "Person", "isAbstract": false, "decorators": [null], "properties": [] }
-        ]));
-        assert!(msg.contains("Invalid class name '1bad'"), "{msg}");
-    }
-
-    /// Only a `null` node crashes TS. Any other non-object element (a
-    /// number, a string, a boolean) becomes a nameless decorator there, so
-    /// DV-018 does not reject it.
-    #[test]
-    fn a_non_null_non_object_decorator_is_not_dv_018() {
-        for element in [
-            serde_json::json!(5),
-            serde_json::json!("x"),
-            serde_json::json!(true),
-        ] {
-            let result = ModelManager::new().unwrap().load_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "decorators": [element],
-                    "namespace": "org.example@1.0.0",
-                    "imports": [],
-                    "declarations": []
-                }),
-                None,
-            );
-            if let Some(contract) = result.as_ref().err().and_then(Error::ported) {
-                assert_ne!(contract.code, "decorator-process-notobject", "{element}");
-            }
         }
     }
 
@@ -2388,85 +2040,6 @@ mod tests {
         };
         assert_eq!(contract.kind, ErrorKind::IllegalModel);
         assert_eq!(contract.message(), "Could not find super type ");
-    }
-
-    /// A one-character string is a single `undefined`-named decorator in TS:
-    /// no duplicate, so the model is accepted (#218).
-    #[test]
-    fn single_code_unit_string_decorators_are_accepted() {
-        let mut manager = ModelManager::new().unwrap();
-        manager
-            .load_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "namespace": "org.example@1.0.0",
-                    "decorators": "x",
-                    "declarations": []
-                }),
-                None,
-            )
-            .unwrap();
-        assert!(manager.validate_models().is_ok());
-    }
-
-    /// Loads a model with no declarations whose own `decorators` value is
-    /// `decorators`, and validates it.
-    fn validate_model_decorators(decorators: serde_json::Value) -> crate::error::Result<()> {
-        let mut manager = ModelManager::new().unwrap();
-        manager.load_model(
-            &serde_json::json!({
-                "$class": "concerto.metamodel@1.0.0.Model",
-                "namespace": "org.example@1.0.0",
-                "decorators": decorators,
-                "declarations": []
-            }),
-            None,
-        )?;
-        manager.validate_models()
-    }
-
-    /// A one-character string is a single `undefined`-named decorator in TS:
-    /// no duplicate, so the model is accepted; an empty string is falsy and
-    /// yields none (#218).
-    #[test]
-    fn single_code_unit_or_empty_string_decorators_are_accepted() {
-        assert!(validate_model_decorators(serde_json::json!("x")).is_ok());
-        assert!(validate_model_decorators(serde_json::json!("")).is_ok());
-    }
-
-    /// A decorator node with no `name` reads `undefined` in the message, as
-    /// TS's does, whether it came from a string's code unit or from a
-    /// nameless node in a real array (#218).
-    #[test]
-    fn nameless_model_decorators_are_duplicate_undefined_decorators() {
-        for decorators in [
-            serde_json::json!("ab"),
-            serde_json::json!([
-                { "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] },
-                { "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] }
-            ]),
-        ] {
-            let err = validate_model_decorators(decorators).unwrap_err();
-            let Some(contract) = err.ported() else {
-                panic!("expected an IllegalModelException, got {err:?}");
-            };
-            assert_eq!(contract.message(), "Duplicate decorator undefined");
-        }
-    }
-
-    /// TS's `Set` tells a missing name (`undefined`) apart from `""`, so one
-    /// of each is not a duplicate; two empty names still are (#218).
-    #[test]
-    fn a_missing_and_an_empty_decorator_name_are_distinct() {
-        let nameless =
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "arguments": [] });
-        let empty = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "", "arguments": [] });
-        assert!(validate_model_decorators(serde_json::json!([nameless, empty])).is_ok());
-        let err = validate_model_decorators(serde_json::json!([empty, empty])).unwrap_err();
-        let Some(contract) = err.ported() else {
-            panic!("expected an IllegalModelException, got {err:?}");
-        };
-        assert_eq!(contract.message(), "Duplicate decorator ");
     }
 
     #[test]
@@ -3145,7 +2718,7 @@ mod tests {
     /// allow overriding system identifier": both `FancyOrder` and the
     /// `Asset` it implicitly extends declare a bare `identified` (system),
     /// so each contributes its own synthesised `$identifier` field
-    /// (P2-03, `ClassDeclaration::from_json`) and the two collide as a
+    /// (P2-03, the class declaration's loader) and the two collide as a
     /// duplicate field name — not the identity-redeclare check, which
     /// allows a system identifier over a system identifier.
     #[test]
@@ -3654,11 +3227,7 @@ mod tests {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain valid MapKeyType")
-        );
+        assert_unreadable(err);
     }
 
     #[test]
@@ -4344,7 +3913,7 @@ mod tests {
     // `declref`/`map_part` on an `mfnew` target) rather than duplicating them
     // as hand-written Rust tests — this engine has no separate `MapKeyType`/
     // `MapValueType` type to call `getParent`/`getNamespace`/`toString` on in
-    // the first place (`MapVariant`'s doc comment: "this engine reads a
+    // the first place (this engine reads a
     // map's key and value as plain accessors on `MapDeclaration`"). The TS
     // `getModelFile()` test has no oracle fixture and stays untouched; the
     // TS `#accept` visitor test has no Rust counterpart yet at all, since no
@@ -4352,10 +3921,8 @@ mod tests {
     // shells for now).
 
     // TS: `#constructor` "should throw if ast contains no Map Key Type" /
-    // "no Map Value Property". This engine's `MapDeclaration` always
-    // constructs, deferring an absent key/value to semantic validation
-    // instead (doc comment on `MapVariant`); the missing side loads with an
-    // empty kind, which is not in the allowed set either way.
+    // "no Map Value Property": a map without its key or value is not a map
+    // the typed read can read (P5-61).
     #[test]
     fn map_missing_its_key_field_is_rejected_at_construction() {
         let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
@@ -4365,11 +3932,7 @@ mod tests {
             "value": value
         });
         let err = validate(serde_json::json!([node.take()]));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain Key & Value properties")
-        );
+        assert_unreadable(err);
     }
 
     #[test]
@@ -4381,63 +3944,19 @@ mod tests {
             "key": key
         });
         let err = validate(serde_json::json!([node]));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain Key & Value properties")
-        );
-    }
-
-    // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's own check is
-    // `if (!this.ast.key || !this.ast.value)` — plain JS truthiness of the
-    // whole node — so a fuzz-mutated `key`/`value` of `false`, `0` or `""`
-    // is exactly as "missing" as an absent or `null` one, and must fail
-    // with the same "Key & Value properties" message, not fall through to
-    // `isValidMapKey`'s own, differently-worded rejection ("must contain
-    // valid MapKeyType") the way a filter that only excluded JSON `null`
-    // (not every JS-falsy value) wrongly did.
-    #[test]
-    fn map_with_a_falsy_non_null_key_is_rejected_with_the_missing_properties_message() {
-        for falsy_key in [
-            serde_json::json!(false),
-            serde_json::json!(0),
-            serde_json::json!(""),
-        ] {
-            let value =
-                serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
-            let node = serde_json::json!({
-                "$class": "concerto.metamodel@1.0.0.MapDeclaration",
-                "name": "MapPermutation1",
-                "key": falsy_key,
-                "value": value
-            });
-            let err = validate(serde_json::json!([node]));
-            assert!(
-                err.unwrap_err()
-                    .to_string()
-                    .contains("MapDeclaration must contain Key & Value properties"),
-                "falsy key should report the missing-properties message, not the MapKeyType one"
-            );
-        }
+        assert_unreadable(err);
     }
 
     // TS: `#constructor` "should throw if invalid $class provided for Map
     // Key" / "... for Map Value": a `$class` the metamodel does not declare
-    // at all falls back to [`MapVariant::Untyped`] and is rejected by the
-    // same kind-membership check as any other unsupported kind, now at
-    // construction time (TS `MapDeclaration.process`), not at
-    // `validate_models`.
+    // is not a key or value the typed read can read (P5-61).
     #[test]
     fn map_key_with_an_unknown_class_is_rejected_at_construction() {
         let err = validate(map_with(
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain valid MapKeyType")
-        );
+        assert_unreadable(err);
     }
 
     #[test]
@@ -4446,11 +3965,7 @@ mod tests {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapValueType" }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain valid MapValueType")
-        );
+        assert_unreadable(err);
     }
 
     // TS: "should throw if ast contains illegal Map Value Property" (an
@@ -4462,11 +3977,7 @@ mod tests {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.EnumMapValueType" }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain valid MapValueType")
-        );
+        assert_unreadable(err);
     }
 
     // TS: "should throw if ast contains illegal Map Key Type - Enum" (an
@@ -4479,11 +3990,7 @@ mod tests {
             object_type("States", "EnumMapKeyType"),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("MapDeclaration must contain valid MapKeyType")
-        );
+        assert_unreadable(err);
     }
 
     // TS: "should throw if ast contains illegal Map Key Type - Scalar
@@ -4621,11 +4128,7 @@ mod tests {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("must contain property 'type'")
-        );
+        assert_unreadable(err);
     }
 
     #[test]
@@ -4637,11 +4140,7 @@ mod tests {
                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" }
             }),
         ));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("must contain property '$class' and property 'name'")
-        );
+        assert_unreadable(err);
     }
 
     #[test]
@@ -5534,29 +5033,10 @@ mod tests {
                       "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
                     { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ValuePointsAtAMap",
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
-                      "value": object_type("Valid", "ObjectMapValueType") },
-                    // `validate_map_value`'s `None => ...` arm (P5-06:
-                    // cargo-mutants found this survived, and the earlier
-                    // partial sweep called it "likely unreachable" with no
-                    // proof — it is reachable, through this exact shape).
-                    // `MapDeclaration::from_json`'s own construction-time
-                    // check (declaration.rs) only verifies that the value
-                    // node's `type.name` field is *present*
-                    // (`type_node.get("name")`, a `serde_json::Value`
-                    // presence check), never that it is a *string* — while
-                    // `map.value_type()` comes from `type_reference`
-                    // (declaration.rs), which deserializes that same node
-                    // straight into the generated `mm::TypeIdentifier`
-                    // (`name: String`) and discards any deserialize failure
-                    // as `None` (`.ok()`). A `name` present but of the wrong
-                    // JSON type — a number here — therefore passes
-                    // construction (both `$class` and `name` are "present")
-                    // but still leaves `value_type` `None`, reaching this
-                    // arm for real.
-                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ValueTypeNameIsNotAString",
-                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
-                      "value": { "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
-                                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": 42 } } }
+                      "value": object_type("Valid", "ObjectMapValueType") }
+                    // P5-61: a `type.name` that is not a string is not
+                    // a map the typed read can read, so the loaded map's
+                    // `value_type()` is never `None` for an object value.
                 ]
             }),
             None,
@@ -5594,18 +5074,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("MapDeclaration as Map Type Value is not supported")
-        );
-
-        // `validate_map_value`'s `None` arm, reached for real (see the
-        // declaration's own doc comment above): a `type.name` present but
-        // not a string slips past construction yet still leaves
-        // `value_type()` `None`.
-        assert!(
-            manager
-                .validate_detached_map_value(&mf, 5)
-                .unwrap_err()
-                .to_string()
-                .contains("must contain property 'type' with a 'name'")
         );
 
         // Not a map at all: `detached_map`'s own bound, same message shape

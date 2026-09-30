@@ -17,9 +17,22 @@ use indexmap::IndexMap;
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
-use crate::introspect::decorator::{Decorated, Decorator, null_decorator, parse_decorators};
+use crate::introspect::decorator::{Decorated, Decorator, parse_decorators};
 use crate::introspect::import::Import;
+use crate::introspect::typed_ast::{self, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
+
+/// The keys of the generated `Model` struct, which are all a model AST's
+/// top level may hold.
+const MODEL_KEYS: [&str; 7] = [
+    "$class",
+    "namespace",
+    "sourceUri",
+    "concertoVersion",
+    "imports",
+    "declarations",
+    "decorators",
+];
 
 /// A parsed model file for one namespace.
 #[derive(Debug, Clone)]
@@ -74,7 +87,7 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
-        let mut model_file = Self::load(value, None, definitions, file_name)?;
+        let mut model_file = Self::load_value(value, definitions, file_name)?;
         model_file.ast = Ast::from_value(value.clone());
         Ok(model_file)
     }
@@ -88,23 +101,20 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
-        let mut model_file = Self::load(&value, None, definitions, file_name)?;
+        let mut model_file = Self::load_value(&value, definitions, file_name)?;
         model_file.ast = Ast::from_value(value);
         Ok(model_file)
     }
 
     /// [`ModelFile::from_json_with_definitions`] for an AST given as JSON
-    /// text (P5-06c): the same result, and the same errors in the same
-    /// order, as parsing `text` into a `serde_json::Value` and loading that.
-    /// The outer `Err` is the parse error for text that is not JSON; the
-    /// inner result is the load's.
+    /// text (P5-06c): the same result, and the same errors, as parsing
+    /// `text` into a `serde_json::Value` and loading that. The outer `Err`
+    /// is the parse error for text that is not JSON; the inner result is
+    /// the load's.
     ///
-    /// It first tries the typed AST path, which reads the text straight into
-    /// the typed model without a `Value` for the whole document (module doc
-    /// of `typed_ast`); [`ModelFile::ast`] is then parsed from the kept text
-    /// on first use. Whenever the typed path does not succeed, for any
-    /// reason, its result is discarded and the text goes through the `Value`
-    /// path, which reports every error.
+    /// The text is read straight into the typed model, without a `Value`
+    /// for the whole document (module doc of `typed_ast`); [`ModelFile::ast`]
+    /// is then parsed from the kept text on first use.
     pub fn from_json_text(
         text: &str,
         definitions: Option<String>,
@@ -141,47 +151,69 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
-        if let Some(model) = crate::introspect::typed_ast::parse(text)
-            && let Ok(mut model_file) = Self::load(
-                &model.header,
-                Some(model.declarations),
-                definitions.clone(),
-                file_name.clone(),
-            )
-        {
-            model_file.ast = Ast::from_text(text);
-            let imports = match model.header {
-                serde_json::Value::Object(mut header) => header.remove("imports"),
-                _ => None,
-            };
-            return Ok(Ok((model_file, imports)));
-        }
-        let value: serde_json::Value = serde_json::from_str(text)?;
-        let imports = value.get("imports").cloned();
-        Ok(
-            Self::from_owned_json_with_definitions(value, definitions, file_name)
-                .map(|model_file| (model_file, imports)),
-        )
+        let model = match typed_ast::parse(text) {
+            Ok(model) => model,
+            Err(err) => {
+                // Text that is JSON, but not a model the reader can read,
+                // is a load error; text that is not JSON at all (even past
+                // the point the reader stopped at) is the parse error.
+                if !err.is_data() {
+                    return Err(err);
+                }
+                serde_json::from_str::<serde_json::Value>(text)?;
+                return Ok(Err(unreadable_ast(&err, file_name.as_deref())));
+            }
+        };
+        let mut header = model.header;
+        let result = Self::load(&header, model.declarations, definitions, file_name).map(
+            |mut model_file| {
+                model_file.ast = Ast::from_text(text);
+                let imports = header.as_object_mut().and_then(|h| h.remove("imports"));
+                (model_file, imports)
+            },
+        );
+        Ok(result)
     }
 
-    /// The body of [`ModelFile::from_json_with_definitions`], leaving
-    /// [`ModelFile::ast`] `Null` for the caller to fill in. `typed` is the
-    /// declarations the typed AST path has already read
-    /// ([`ModelFile::from_json_text`]), in place of `value`'s own
-    /// `declarations` (which `value` then does not have).
-    fn load(
+    /// Reads `value` into the typed model and loads it, leaving
+    /// [`ModelFile::ast`] `Null` for the caller to fill in.
+    fn load_value(
         value: &serde_json::Value,
-        typed: Option<Vec<crate::introspect::typed_ast::TypedDeclaration>>,
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
-        // TS: the constructor's `this.process()` (`Decorated.process`, the
-        // model file's own decorators) runs before `fromAst`. DV-018: a
-        // `null` decorator node is an `IllegalModelException` naming this
-        // file, where TS crashes (`null_decorator`).
-        if let Some(mut err) = null_decorator(value) {
-            err.model_file = Some(file_name.clone());
-            return Err(err.into());
+        let model = typed_ast::from_value(value)
+            .map_err(|err| unreadable_ast(&err, file_name.as_deref()))?;
+        Self::load(&model.header, model.declarations, definitions, file_name)
+    }
+
+    /// Builds the model file from the model the typed read gave: `value`
+    /// is the AST's header (every top-level key but `declarations`), and
+    /// `declarations` its declarations, already read. Leaves
+    /// [`ModelFile::ast`] `Null` for the caller to fill in.
+    fn load(
+        value: &serde_json::Value,
+        typed: Vec<TypedDeclaration>,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<Self> {
+        // The model's own keys, read as strictly as every other node's
+        // (`typed_ast`'s module doc, "Unknown keys"): only the generated
+        // `Model`'s, and its decorators decoded into the generated struct.
+        if let Some(key) = value.as_object().and_then(|header| {
+            header
+                .keys()
+                .find(|key| !MODEL_KEYS.contains(&key.as_str()))
+        }) {
+            return Err(unreadable_ast(
+                &serde::de::Error::custom(format_args!("unknown field `{key}`")),
+                file_name.as_deref(),
+            ));
+        }
+        if let Some(decorators) = value.get("decorators") {
+            let _: Option<Vec<concerto_metamodel::concerto_metamodel_1_0_0::Decorator>> =
+                typed_ast::strict_from_value(decorators)
+                    .map_err(|err| unreadable_ast(&err, file_name.as_deref()))?;
         }
 
         let namespace = value
@@ -250,42 +282,19 @@ impl ModelFile {
             }
         }
 
-        let mut declarations = Vec::new();
+        // TS: the constructor's `localTypes` loop is a plain `Map.set` per
+        // declaration, so a second declaration of the same name is accepted
+        // here and simply replaces the first in the lookup (the last one
+        // wins), while `getAllDeclarations()` still lists both. Only
+        // `ModelFile.validate()`'s duplicate-name scan rejects it
+        // (`ModelManager::validate_model_file`, P2-08).
+        let mut declarations = Vec::with_capacity(typed.len());
         let mut local_types = rustc_hash::FxHashMap::default();
-        if let Some(typed) = typed {
-            declarations.reserve(typed.len());
-            for raw in typed {
-                let decl = Declaration::from_typed(raw, &namespace, file_name.as_deref())?;
-                local_types.insert(decl.name().to_string(), declarations.len());
-                declarations.push(decl);
-            }
-        } else {
-            match value.get("declarations") {
-                None => {}
-                Some(serde_json::Value::Array(arr)) => {
-                    for raw in arr {
-                        let decl =
-                            Declaration::from_model_json(raw, &namespace, file_name.as_deref())
-                                .map_err(|e| annotate(e, &file_name))?;
-                        // TS: the constructor's `localTypes` loop is a plain
-                        // `Map.set` per declaration, so a second declaration of
-                        // the same name is accepted here and simply replaces the
-                        // first in the lookup (the last one wins), while
-                        // `getAllDeclarations()` still lists both. Only
-                        // `ModelFile.validate()`'s duplicate-name scan rejects it
-                        // (`ModelManager::validate_model_file`, P2-08).
-                        local_types.insert(decl.name().to_string(), declarations.len());
-                        declarations.push(decl);
-                    }
-                }
-                Some(_) => {
-                    return Err(Error::illegal_model(
-                        "model 'declarations' must be an array",
-                        file_name.clone(),
-                        None,
-                    ));
-                }
-            }
+        for raw in typed {
+            let decl = Declaration::from_typed(raw, &namespace, file_name.as_deref())
+                .map_err(|e| annotate(e, &file_name))?;
+            local_types.insert(decl.name().to_string(), declarations.len());
+            declarations.push(decl);
         }
 
         // TS: `ModelFile.isCompatibleVersion`, run from the constructor right
@@ -914,6 +923,22 @@ impl ModelFile {
     }
 }
 
+/// The error for an AST the typed read cannot read
+/// (`modelfile-load-unreadable`): an `IllegalModelException` naming the
+/// file. With BC-19's shape check on (the default on the JS API), a model
+/// whose AST is not in the metamodel's shape is rejected before it is read,
+/// so only a caller that skips the check (`metamodelValidation: false`, or
+/// a native caller) can meet it (P5-61).
+pub(crate) fn unreadable_ast(err: &serde_json::Error, file_name: Option<&str>) -> Error {
+    let mut contract = ContractError::new(
+        ErrorKind::IllegalModel,
+        "modelfile-load-unreadable",
+        vec![("message", err.to_string())],
+    );
+    contract.model_file = Some(file_name.map(str::to_string));
+    contract.into()
+}
+
 /// [`ModelFile::ast`]: the AST as a `serde_json::Value`, either given
 /// directly or parsed on first use from the JSON text the typed AST path
 /// read (P5-06c, [`ModelFile::from_json_text`]).
@@ -1341,7 +1366,7 @@ mod tests {
 
     #[test]
     fn keeps_the_ast_it_was_given_in_its_original_key_order() {
-        let text = r#"{"namespace":"org.order@1.0.0","$class":"concerto.metamodel@1.0.0.Model","declarations":[{"properties":[],"name":"A","$class":"concerto.metamodel@1.0.0.ConceptDeclaration","isAbstract":false,"extra":null}]}"#;
+        let text = r#"{"namespace":"org.order@1.0.0","$class":"concerto.metamodel@1.0.0.Model","declarations":[{"properties":[],"name":"A","$class":"concerto.metamodel@1.0.0.ConceptDeclaration","isAbstract":false,"decorators":[]}]}"#;
         let value: serde_json::Value = serde_json::from_str(text).unwrap();
         let mf = ModelFile::from_json(&value, None).unwrap();
         assert_eq!(mf.ast(), &value);

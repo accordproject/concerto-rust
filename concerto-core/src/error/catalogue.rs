@@ -440,20 +440,22 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "classdeclaration-validate-undefined-properties",
         template: "Properties of Class \"{class}\" has to be defined.",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.process (RUST), called from `parse_properties`
-        // (src/introspect/declaration.rs) for a `properties` that is present
-        // but not an array *and* one that is absent — TS's single
-        // `!Array.isArray(this.ast.properties)` guard covers both (P2-11b-F1,
-        // #193).
+        // ClassDeclaration.process. Not raised since P5-61 (BR-09): the typed
+        // read requires `properties` to be an array (BC-19's shape check
+        // rejects anything else first), so a class without one is a
+        // `modelfile-load-unreadable` error. Kept as the TS template OD-5
+        // scopes (P2-11b-F1, #193).
         sources: &["src/introspect/classdeclaration.ts:102"],
     },
     CatalogueEntry {
         code: "classdeclaration-process-unrecmodelelem",
         template: "Unrecognised model element \"{type}\".",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.process (RUST); not yet called. Same English text
-        // as `modelfile-constructor-unrecmodelelem` above; see that entry's
-        // note.
+        // ClassDeclaration.process. Not raised since P5-61 (BR-09): a
+        // property `$class` the typed read does not recognise is a
+        // `modelfile-load-unreadable` error (BC-19's shape check rejects it
+        // first). Same English text as `modelfile-constructor-unrecmodelelem`
+        // above; see that entry's note.
         sources: &["src/introspect/classdeclaration.ts:130"],
     },
     CatalogueEntry {
@@ -1100,11 +1102,27 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         ],
     },
     CatalogueEntry {
+        code: "modelfile-load-nodenotobject",
+        template: "Invalid {key}. Expected an object with a $class. Found {value}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-61 / BC-19: no TS throw site (ClassDeclaration.process and the validator constructors read identified, sizeValidator, lengthValidator and validator with no type check, src/introspect/*.ts)",
+        ],
+    },
+    CatalogueEntry {
         code: "modelfile-load-astshape",
         template: "Model AST does not conform to the metamodel: {message}",
         renderer: Renderer::Inline,
         sources: &[
             "concerto-rust P5-49 / BC-19: no TS throw site (validateAst's check, src/basemodelmanager.ts:296, run at model load and re-thrown as an IllegalModelException)",
+        ],
+    },
+    CatalogueEntry {
+        code: "modelfile-load-unreadable",
+        template: "Model AST could not be read: {message}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-61 / BR-09: no TS throw site (the typed AST read, the only model loader, fails on a node it cannot read; with BC-19's shape check on, the check rejects such an AST first)",
         ],
     },
     // Not a TS template: see the module doc and `ContractError::pre_port`.

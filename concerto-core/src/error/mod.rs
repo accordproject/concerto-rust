@@ -1751,6 +1751,18 @@ mod tests {
     }
 
     #[test]
+    fn golden_modelfile_load_nodenotobject() {
+        assert_eq!(
+            contract(
+                "modelfile-load-nodenotobject",
+                &[("key", "identified"), ("value", "true")]
+            )
+            .message(),
+            "Invalid identified. Expected an object with a $class. Found true"
+        );
+    }
+
+    #[test]
     fn golden_modelfile_load_astshape() {
         assert_eq!(
             contract(
@@ -1762,6 +1774,18 @@ mod tests {
             )
             .message(),
             "Model AST does not conform to the metamodel: Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_unreadable() {
+        assert_eq!(
+            contract(
+                "modelfile-load-unreadable",
+                &[("message", "missing field `name`")]
+            )
+            .message(),
+            "Model AST could not be read: missing field `name`"
         );
     }
 
