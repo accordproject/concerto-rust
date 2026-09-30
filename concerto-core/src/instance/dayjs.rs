@@ -664,8 +664,10 @@ mod legacy;
 /// every construction and operation the callers use.
 #[cfg(test)]
 mod parity {
-    use super::legacy::{Dayjs as Old, UtcOffset as OldOffset};
-    use super::{Dayjs, UtcOffset, Zone};
+    use sha2::{Digest, Sha256};
+
+    use super::legacy;
+    use super::{Dayjs, UtcOffset};
 
     /// A fixed-seed SplitMix64, so every run checks the same cases.
     struct Rng(u64);
@@ -711,52 +713,118 @@ mod parity {
         if n.is_nan() { f64::NAN.to_bits() } else { n.to_bits() }
     }
 
-    fn seen_new(d: &Dayjs) -> Seen {
-        Seen {
-            valid: d.is_valid(),
-            epoch_ms: bits(d.epoch_ms()),
-            utc: d.is_utc(),
-            utc_offset: bits(d.utc_offset()),
-            format_json: d.format_json(),
-            iso: d.to_iso_string(),
-            js_string: d.to_js_string(),
-            validator: d.validator_value(),
-        }
-    }
-
-    fn seen_old(d: &Old) -> Seen {
-        Seen {
-            valid: d.is_valid(),
-            epoch_ms: bits(d.epoch_ms()),
-            utc: d.is_utc(),
-            utc_offset: bits(d.utc_offset()),
-            format_json: d.format_json(),
-            iso: d.to_iso_string(),
-            js_string: d.to_js_string(),
-            validator: d.validator_value(),
-        }
-    }
-
+    /// An offset input, for either model.
     #[derive(Clone, Debug)]
     enum Input {
         Number(f64),
         String(String),
     }
 
-    impl Input {
-        fn to_new(&self) -> UtcOffset {
-            match self {
-                Self::Number(n) => UtcOffset::Number(*n),
-                Self::String(s) => UtcOffset::String(s.clone()),
+    /// The operations the callers use, over either model.
+    trait Model: Sized + PartialEq {
+        fn utc_invalid() -> Self;
+        fn utc_parse(s: &str) -> Self;
+        fn utc_from_number(n: f64) -> Self;
+        fn utc_now(n: f64) -> Self;
+        fn from_recorded(valid: bool, iso: Option<&str>, offset: f64, utc: bool) -> Self;
+        fn set(&self, input: &Input) -> Self;
+        fn to_utc(&self) -> Self;
+        fn is_valid(&self) -> bool;
+        fn epoch_ms(&self) -> f64;
+        fn is_utc(&self) -> bool;
+        fn utc_offset(&self) -> f64;
+        fn format_json(&self) -> String;
+        fn to_iso_string(&self) -> Option<String>;
+        fn to_js_string(&self) -> String;
+        fn validator_value(&self) -> serde_json::Value;
+
+        fn seen(&self) -> Seen {
+            Seen {
+                valid: self.is_valid(),
+                epoch_ms: bits(self.epoch_ms()),
+                utc: self.is_utc(),
+                utc_offset: bits(self.utc_offset()),
+                format_json: self.format_json(),
+                iso: self.to_iso_string(),
+                js_string: self.to_js_string(),
+                validator: self.validator_value(),
             }
         }
-        fn to_old(&self) -> OldOffset {
-            match self {
-                Self::Number(n) => OldOffset::Number(*n),
-                Self::String(s) => OldOffset::String(s.clone()),
+
+        /// The WASM wire codec's decode of an encoded date: `{valid:
+        /// false}`, or `utc_from_number(ms)` then `utcOffset(offset)`
+        /// unless it is 0.
+        fn wire(&self) -> Self {
+            if !self.is_valid() {
+                return Self::utc_invalid();
+            }
+            let built = Self::utc_from_number(self.epoch_ms());
+            if self.utc_offset() == 0.0 {
+                built
+            } else {
+                built.set(&Input::Number(self.utc_offset()))
             }
         }
     }
+
+    macro_rules! model {
+        ($t:ty, $offset:ident) => {
+            impl Model for $t {
+                fn utc_invalid() -> Self {
+                    <$t>::utc_invalid()
+                }
+                fn utc_parse(s: &str) -> Self {
+                    <$t>::utc_parse(s)
+                }
+                fn utc_from_number(n: f64) -> Self {
+                    <$t>::utc_from_number(n)
+                }
+                fn utc_now(n: f64) -> Self {
+                    <$t>::utc_now(n)
+                }
+                fn from_recorded(valid: bool, iso: Option<&str>, offset: f64, utc: bool) -> Self {
+                    <$t>::from_recorded(valid, iso, offset, utc)
+                }
+                fn set(&self, input: &Input) -> Self {
+                    self.utc_offset_set(&match input {
+                        Input::Number(n) => $offset::Number(*n),
+                        Input::String(s) => $offset::String(s.clone()),
+                    })
+                }
+                fn to_utc(&self) -> Self {
+                    <$t>::to_utc(self)
+                }
+                fn is_valid(&self) -> bool {
+                    <$t>::is_valid(self)
+                }
+                fn epoch_ms(&self) -> f64 {
+                    <$t>::epoch_ms(self)
+                }
+                fn is_utc(&self) -> bool {
+                    <$t>::is_utc(self)
+                }
+                fn utc_offset(&self) -> f64 {
+                    <$t>::utc_offset(self)
+                }
+                fn format_json(&self) -> String {
+                    <$t>::format_json(self)
+                }
+                fn to_iso_string(&self) -> Option<String> {
+                    <$t>::to_iso_string(self)
+                }
+                fn to_js_string(&self) -> String {
+                    <$t>::to_js_string(self)
+                }
+                fn validator_value(&self) -> serde_json::Value {
+                    <$t>::validator_value(self)
+                }
+            }
+        };
+    }
+
+    model!(Dayjs, UtcOffset);
+    use legacy::UtcOffset as LegacyOffset;
+    model!(legacy::Dayjs, LegacyOffset);
 
     /// The offsets: the hours rule's edges (`|n| <= 16`), whole and
     /// fractional minutes, offsets past a day, non-numbers, and strings.
@@ -914,13 +982,9 @@ mod parity {
     }
 
     /// Every way the callers build a date, each built by both models.
-    fn bases(rng: &mut Rng) -> Vec<(String, Dayjs, Old)> {
-        let mut out = Vec::new();
-        out.push((
-            "utc_invalid".to_string(),
-            Dayjs::utc_invalid(),
-            Old::utc_invalid(),
-        ));
+    /// Every way the callers build a date.
+    fn bases<M: Model>(rng: &mut Rng) -> Vec<(String, M)> {
+        let mut out = vec![("utc_invalid".to_string(), M::utc_invalid())];
         for s in [
             "2021-01-01T00:00:00Z",
             "0000-01-01T00:00:00Z",
@@ -934,39 +998,35 @@ mod parity {
             "not a date",
             "",
         ] {
-            out.push((
-                format!("utc_parse({s:?})"),
-                Dayjs::utc_parse(s),
-                Old::utc_parse(s),
-            ));
+            out.push((format!("utc_parse({s:?})"), M::utc_parse(s)));
         }
         for _ in 0..400 {
             let s = date_string(rng);
-            out.push((
-                format!("utc_parse({s:?})"),
-                Dayjs::utc_parse(&s),
-                Old::utc_parse(&s),
-            ));
+            out.push((format!("utc_parse({s:?})"), M::utc_parse(&s)));
         }
         for _ in 0..400 {
             let n = time_value(rng);
-            out.push((
-                format!("utc_from_number({n:?})"),
-                Dayjs::utc_from_number(n),
-                Old::utc_from_number(n),
-            ));
+            out.push((format!("utc_from_number({n:?})"), M::utc_from_number(n)));
         }
         for _ in 0..20 {
             // `Date.now()`: a whole number of milliseconds.
             let n = rng.range(YEAR_0, YEAR_9999_END) as f64;
-            out.push((
-                format!("utc_now({n:?})"),
-                Dayjs::utc_now(n),
-                Old::utc_now(n),
-            ));
+            out.push((format!("utc_now({n:?})"), M::utc_now(n)));
         }
         let recorded_offsets = [
-            0.0, -0.0, 1.0, -5.0, 16.0, 17.0, 60.0, -300.0, 330.0, 1500.0, 0.5, 30.5, f64::NAN,
+            0.0,
+            -0.0,
+            1.0,
+            -5.0,
+            16.0,
+            17.0,
+            60.0,
+            -300.0,
+            330.0,
+            1500.0,
+            0.5,
+            30.5,
+            f64::NAN,
         ];
         for _ in 0..300 {
             let n = time_value(rng);
@@ -975,91 +1035,77 @@ mod parity {
                 1 => Some("2021-01-01".to_string()),
                 2 => Some("+275760-09-13T00:00:00.000Z".to_string()),
                 3 => Some("+262143-01-01T00:00:00.000Z".to_string()),
-                _ => Old::utc_from_number(n).to_iso_string(),
+                _ => M::utc_from_number(n).to_iso_string(),
             };
             let valid = rng.below(10) != 0;
             let utc = rng.below(2) == 0;
             let offset = recorded_offsets[rng.below(recorded_offsets.len() as u64) as usize];
             out.push((
                 format!("from_recorded({valid}, {iso:?}, {offset:?}, {utc})"),
-                Dayjs::from_recorded(valid, iso.as_deref(), offset, utc),
-                Old::from_recorded(valid, iso.as_deref(), offset, utc),
+                M::from_recorded(valid, iso.as_deref(), offset, utc),
             ));
         }
         out
     }
 
-    /// The WASM wire codec's decode of an encoded date: `{valid: false}`,
-    /// or `utc_from_number(ms)` then `utcOffset(offset)` unless it is 0.
-    fn wire_new(d: &Dayjs) -> Dayjs {
-        if !d.is_valid() {
-            return Dayjs::utc_invalid();
-        }
-        let built = Dayjs::utc_from_number(d.epoch_ms());
-        if d.utc_offset() == 0.0 {
-            built
-        } else {
-            built.utc_offset_set(&UtcOffset::Number(d.utc_offset()))
-        }
-    }
-
-    fn wire_old(d: &Old) -> Old {
-        if !d.is_valid() {
-            return Old::utc_invalid();
-        }
-        let built = Old::utc_from_number(d.epoch_ms());
-        if d.utc_offset() == 0.0 {
-            built
-        } else {
-            built.utc_offset_set(&OldOffset::Number(d.utc_offset()))
-        }
-    }
-
-    /// Both models agree on every output of every date the callers can
-    /// build: as constructed; with each offset set (populator, `fromJSON`,
-    /// the wire decode); through `.utc().utcOffset(o)` then `format`
+    /// One line per output of every date the callers can build: as
+    /// constructed; with each offset set (populator, `fromJSON`, the wire
+    /// decode, on a date in UTC or local time, the only ones the callers
+    /// set an offset on); through `.utc().utcOffset(o)` then `format`
     /// (generator), also of a date already in an offset; across a wire
     /// round trip; and on equality.
-    #[test]
-    fn outputs_match_the_dayjs_emulation() {
+    fn transcript<M: Model>() -> Vec<String> {
         let mut rng = Rng(0x5066_D4A7_0000_0403);
         let offsets = offsets(&mut rng);
-        let bases = bases(&mut rng);
-        let mut checked = 0usize;
-        for (name, new, old) in &bases {
-            assert_eq!(seen_new(new), seen_old(old), "{name}");
-            assert_eq!(seen_new(&new.to_utc()), seen_old(&old.to_utc()), "{name}.utc()");
-            assert_eq!(seen_new(&wire_new(new)), seen_old(&wire_old(old)), "{name} wire");
-            assert_eq!(new == new, old == old, "{name} == itself");
-            let has_offset = matches!(new.zone, Zone::Offset(_));
+        let bases = bases::<M>(&mut rng);
+        let mut out = Vec::new();
+        for (name, base) in &bases {
+            out.push(format!("{name}: {:?}", base.seen()));
+            out.push(format!("{name}.utc(): {:?}", base.to_utc().seen()));
+            out.push(format!("{name} wire: {:?}", base.wire().seen()));
+            out.push(format!("{name} == itself: {}", base == base));
+            let has_offset = !base.is_utc() && base.utc_offset() != 0.0;
             for input in &offsets {
                 let case = format!("{name}.utcOffset({input:?})");
                 if !has_offset {
-                    let (n, o) = (new.utc_offset_set(&input.to_new()), old.utc_offset_set(&input.to_old()));
-                    assert_eq!(seen_new(&n), seen_old(&o), "{case}");
-                    assert_eq!(seen_new(&wire_new(&n)), seen_old(&wire_old(&o)), "{case} wire");
-                    assert_eq!(n == *new, o == *old, "{case} == base");
-                    assert_eq!(
-                        wire_new(&n) == n,
-                        wire_old(&o) == o,
-                        "{case} wire == itself"
-                    );
-                    // The generator, on a date already in an offset.
+                    let set = base.set(input);
+                    out.push(format!("{case}: {:?}", set.seen()));
+                    out.push(format!("{case} wire: {:?}", set.wire().seen()));
+                    out.push(format!("{case} == base: {}", set == *base));
+                    out.push(format!("{case} wire == itself: {}", set.wire() == set));
                     let second = &offsets[rng.below(offsets.len() as u64) as usize];
-                    assert_eq!(
-                        seen_new(&n.to_utc().utc_offset_set(&second.to_new())),
-                        seen_old(&o.to_utc().utc_offset_set(&second.to_old())),
-                        "{case}.utc().utcOffset({second:?})"
-                    );
+                    out.push(format!(
+                        "{case}.utc().utcOffset({second:?}): {:?}",
+                        set.to_utc().set(second).seen()
+                    ));
                 }
-                let (n, o) = (
-                    new.to_utc().utc_offset_set(&input.to_new()),
-                    old.to_utc().utc_offset_set(&input.to_old()),
-                );
-                assert_eq!(n.format_json(), o.format_json(), "{name}.utc().utcOffset({input:?})");
-                checked += 1;
+                out.push(format!(
+                    "{name}.utc().utcOffset({input:?}).format(): {}",
+                    base.to_utc().set(input).format_json()
+                ));
             }
         }
-        assert!(checked > 100_000, "{checked}");
+        out
+    }
+
+    fn digest(lines: &[String]) -> String {
+        let mut hash = Sha256::new();
+        for line in lines {
+            hash.update(line.as_bytes());
+            hash.update(b"\n");
+        }
+        format!("{:x}", hash.finalize())
+    }
+
+    #[test]
+    fn outputs_match_the_dayjs_emulation() {
+        let new = transcript::<Dayjs>();
+        let old = transcript::<legacy::Dayjs>();
+        assert_eq!(new.len(), old.len());
+        for (n, o) in new.iter().zip(&old) {
+            assert_eq!(n, o);
+        }
+        assert!(new.len() > 500_000, "{}", new.len());
+        println!("{} lines, sha256 {}", new.len(), digest(&new));
     }
 }
