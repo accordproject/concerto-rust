@@ -1764,6 +1764,28 @@ pub fn extract_non_vocab_decorators(
     .extract()
 }
 
+/// [`extract_decorators`], [`extract_vocabularies`] or
+/// [`extract_non_vocab_decorators`], by `action`, with the command sets and
+/// vocabularies encoded directly from the borrowed AST nodes (P5-57, T3,
+/// accordproject/concerto-rust#378,
+/// [`extractor::DecoratorExtractor::extract_encoded`]): the same result and
+/// the same errors, with the command sets as JSON text.
+pub fn extract_encoded(
+    model_manager: &ModelManager,
+    options: &ExtractOptions,
+    action: extractor::Action,
+) -> Result<extractor::EncodedExtractResult> {
+    let include_system = action != extractor::Action::ExtractNonVocab;
+    extractor::DecoratorExtractor::new(
+        options.remove_decorators_from_model,
+        options.locale.clone(),
+        DCS_VERSION,
+        model_manager.models_ast(true, include_system)?,
+        action,
+    )
+    .extract_encoded()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
