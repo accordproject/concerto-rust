@@ -75,14 +75,16 @@
 //! words TS reports (`checkItem` reports an `undefined` item as a field type
 //! violation of value `undefined`, type `undefined`).
 //!
-//! # JS engine errors
+//! # Values the `report*` helpers cannot describe
 //!
-//! Where TS calls a method that its argument may not have, the V8
-//! `TypeError` is part of the behaviour and is ported (PORTING.md 2.2 step
-//! 3): `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()`,
+//! TS 5.0.0's `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()`,
 //! and `reportNotResouceViolation`/`reportNotRelationshipViolation` call
-//! `value.toString()`, on whatever value reached them (DV-008,
-//! `invalid_field_assignment_shape`, `js_method_receiver_error`).
+//! `value.toString()`, on whatever value reached them, so a value that is not
+//! `Identifiable` (or a `null`/`undefined` element) made V8 throw a
+//! `TypeError` in place of the `ValidationException` (DV-008). Since BC-06
+//! (R1) the report is the `ValidationException` itself: the field assignment
+//! names the value's JS type (`invalid_field_assignment_shape`), and a
+//! `null` or `undefined` value is written as `null`/`undefined`.
 //!
 //! # Walk
 //!
@@ -1742,8 +1744,9 @@ fn field_type_violation(p: &Params, owner_fqn: &str, property: &Property, value:
 }
 
 /// TS: `ResourceValidator.reportNotResouceViolation` (resourcevalidator.ts:560).
-/// `value.toString()` is a V8 `TypeError` for a `null` or `undefined` value
-/// (DV-008), and `'Relationship {id=...}'` for a `Relationship`.
+/// `value.toString()` is `'Relationship {id=...}'` for a `Relationship`, and a
+/// `null` or `undefined` value is written as `null`/`undefined` (BC-06, R1;
+/// TS 5.0.0's `value.toString()` threw a V8 `TypeError` for one, DV-008).
 fn not_resource_violation(p: &Params, class_fqn: &str, value: &Value) -> Error {
     not_resource_violation_with(p, class_fqn, value, true)
 }
@@ -1763,10 +1766,6 @@ fn not_resource_violation_with(
     value: &Value,
     try_identifiable: bool,
 ) -> Error {
-    if is_js_null(value) {
-        // DV-008
-        return js_method_receiver_error(value, "value.toString", "toString");
-    }
     let invalid_value = if try_identifiable {
         identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value))
     } else {
@@ -1784,41 +1783,10 @@ fn not_resource_violation_with(
     .into()
 }
 
-/// V8's `TypeError` for `expression()`, a call of `method` on `value`,
-/// when `value` has no such method (PORTING.md 2.2 step 3): `Cannot read
-/// properties of null (reading 'method')` when `value` is `null` or
-/// `undefined`, and `expression is not a function` otherwise.
-fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Error {
-    if is_js_null(value) {
-        let receiver = if is_js_undefined(value) {
-            "undefined"
-        } else {
-            "null"
-        };
-        return ContractError::new(
-            ErrorKind::MalformedInput,
-            "engine-typeerror-readproperties",
-            vec![
-                ("value", receiver.to_string()),
-                ("property", method.to_string()),
-            ],
-        )
-        .into();
-    }
-    ContractError::new(
-        ErrorKind::MalformedInput,
-        "engine-typeerror-notafunction",
-        vec![("expression", expression.to_string())],
-    )
-    .into()
-}
-
 /// TS: `ResourceValidator.reportNotRelationshipViolation` (resourcevalidator.ts:576).
+/// A `null` or `undefined` value is written as `null`/`undefined` (BC-06, R1;
+/// TS 5.0.0's `value.toString()` threw a V8 `TypeError` for one, DV-008).
 fn not_relationship_violation(p: &Params, holder: &RelationshipHolder, value: &Value) -> Error {
-    if is_js_null(value) {
-        // DV-008: `value.toString()` on `null`/`undefined`.
-        return js_method_receiver_error(value, "value.toString", "toString");
-    }
     let namespace = model_util::get_namespace(Some(holder.owner_fqn)).unwrap_or(holder.owner_fqn);
     let class_fqn = model_util::qualify(namespace, holder.type_name);
     // `value.toString()`: a nested Resource or (wrongly, per this check)
@@ -1958,9 +1926,11 @@ fn invalid_assignment(
 /// (resourcevalidator.ts:468). That call reads `objectType:
 /// obj.getFullyQualifiedType()` off the non-array value itself: an
 /// `Identifiable` (a single `Relationship` or `Resource` on an array field)
-/// answers its own type, and any other value has no such method, so V8
-/// throws a `TypeError` instead of the `ValidationException` (DV-008;
-/// fixture `d444ebcf0cf5a3c23e5ee6dd`, a string on a `--> Car[]` field).
+/// answers its own type. Any other value is reported by its JS type
+/// (`string`, `number`, `null`, ...; BC-06, R1): TS 5.0.0 found no such
+/// method on it, so V8 threw a `TypeError` instead of the
+/// `ValidationException` (DV-008; fixture `d444ebcf0cf5a3c23e5ee6dd`, a
+/// string on a `--> Car[]` field).
 fn invalid_field_assignment_shape(
     p: &Params,
     owner_fqn: &str,
@@ -1969,9 +1939,9 @@ fn invalid_field_assignment_shape(
 ) -> Error {
     match identifiable_parts(p, value) {
         Some((object_type, _)) => invalid_field_assignment(p, owner_fqn, property, &object_type),
-        // DV-008
         None => {
-            js_method_receiver_error(value, "obj.getFullyQualifiedType", "getFullyQualifiedType")
+            let js_type = if value.is_null() { "null" } else { js_typeof(value) };
+            invalid_field_assignment(p, owner_fqn, property, js_type)
         }
     }
 }
@@ -3584,25 +3554,33 @@ mod tests {
         );
     }
 
-    // ---- DV-008: V8 TypeErrors from `report*` (fixture d444ebcf0cf5a3c23e5ee6dd) ----
+    // ---- BC-06 (R1; DV-008 was a V8 TypeError; fixture d444ebcf0cf5a3c23e5ee6dd) ----
 
-    /// `reportInvalidFieldAssignment` calls `obj.getFullyQualifiedType()` on
-    /// a string that reached a relationship array field.
+    /// A string that reached a relationship array field is reported by its JS
+    /// type (TS 5.0.0 called `obj.getFullyQualifiedType()` on it).
     #[test]
-    fn a_non_array_non_identifiable_value_on_a_relationship_array_is_a_type_error() {
+    fn a_non_array_non_identifiable_value_on_a_relationship_array_is_a_validation_error() {
         let mgr = fixture();
         let owner = json!({
             "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
             "vehicles": "not-an-array"
         });
         let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
-        assert_eq!(
-            class_and_message(&err),
-            (
-                "TypeError",
-                "obj.getFullyQualifiedType is not a function".to_string()
-            )
+        let (class, message) = class_and_message(&err);
+        assert_eq!(class, "ValidationException");
+        assert!(
+            message.contains("\"vehicles\" with type \"string\"")
+                && message.contains("org.acme@1.0.0.Vehicle[]"),
+            "{message}"
         );
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
+            "vehicles": 5
+        });
+        let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
+        let (class, message) = class_and_message(&err);
+        assert_eq!(class, "ValidationException");
+        assert!(message.contains("with type \"number\""), "{message}");
     }
 
     /// A single `Relationship` on a relationship array field does have
@@ -3624,22 +3602,21 @@ mod tests {
         );
     }
 
-    /// `reportNotRelationshipViolation` calls `value.toString()` on a `null`
-    /// array element.
+    /// A `null` relationship array element is reported as `null` (TS 5.0.0
+    /// called `value.toString()` on it).
     #[test]
-    fn a_null_relationship_array_element_is_a_type_error() {
+    fn a_null_relationship_array_element_is_a_validation_error() {
         let mgr = fixture();
         let owner = json!({
             "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
             "vehicles": [null]
         });
         let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
-        assert_eq!(
-            class_and_message(&err),
-            (
-                "TypeError",
-                "Cannot read properties of null (reading 'toString')".to_string()
-            )
+        let (class, message) = class_and_message(&err);
+        assert_eq!(class, "ValidationException");
+        assert!(
+            message.contains("has a value of \"null\". Expected a \"Relationship\""),
+            "{message}"
         );
     }
 

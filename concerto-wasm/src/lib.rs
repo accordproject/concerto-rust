@@ -772,11 +772,17 @@ pub fn model_util_is_scalar(field: JsValue) -> std::result::Result<JsValue, JsVa
     run(|| Ok(js_opt_bool(mu::is_scalar(&JsContext, &field)?)))
 }
 
-/// TS: ModelUtil.isValidIdentifier. `RegExp.prototype.test` converts its
-/// argument with `String()`: `undefined` tests "undefined" (DV-002).
+/// TS: ModelUtil.isValidIdentifier. A non-string (`undefined`, `null`, a
+/// number, ...) is not a valid identifier (BC-01, R1). TS 5.0.0 passed it to
+/// `RegExp.prototype.test`, which converts it with `String()`, so
+/// `undefined` and `null` answered `true` (DV-002).
 #[wasm_bindgen(js_name = modelUtilIsValidIdentifier)]
 pub fn model_util_is_valid_identifier(name: JsValue) -> std::result::Result<bool, JsValue> {
-    run(|| Ok(mu::is_valid_identifier(&js_string(&name)?)))
+    run(|| {
+        Ok(name
+            .as_string()
+            .is_some_and(|name| mu::is_valid_identifier(&name)))
+    })
 }
 
 /// TS: ModelUtil.getFullyQualifiedName. A falsy namespace returns the `type`
@@ -2857,6 +2863,74 @@ fn illegal_model_error(message: String, location: Option<Value>) -> Error {
     .into()
 }
 
+/// BC-11 (R1): the `IllegalModelException` for a cyclic inheritance chain
+/// met by a walk over the JS declaration views, the same error the engine's
+/// own walk raises (concerto-core `ModelManager::class_info_of`). `cycle` is
+/// the loop from the declaration met again round to the one whose super type
+/// it is; `repeated` is that declaration. TS 5.0.0 overflowed V8's stack or
+/// ran out of memory instead (DV-013).
+fn circular_inheritance_error(cycle: &[JsValue], repeated: &JsValue) -> Result<Error> {
+    let fqn = |declaration: &JsValue| -> Result<String> { js_string(&get(declaration, "fqn")?) };
+    let mut names = cycle.iter().map(fqn).collect::<Result<Vec<_>>>()?;
+    let name = fqn(repeated)?;
+    names.push(name.clone());
+    let mut err = ContractError::new(
+        ErrorKind::IllegalModel,
+        "classdeclaration-circularinheritance",
+        vec![("type", name), ("cycle", names.join(" -> "))],
+    );
+    err.model_file = Some(None);
+    Ok(err.into())
+}
+
+thread_local! {
+    /// The declarations whose `getProperties`, `getProperty` or
+    /// `getIdentifierFieldName` binding is running, with the binding's name,
+    /// outermost first: each recurses into its super type through JS, so a
+    /// declaration met again by the same binding is a cyclic inheritance
+    /// chain (BC-11).
+    static SUPER_WALKS: RefCell<Vec<(&'static str, JsValue)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A running step of a super type walk, removed from [`SUPER_WALKS`] when
+/// dropped.
+struct SuperWalk;
+
+impl SuperWalk {
+    /// Records `declaration` as walked by the binding `properties` names, or
+    /// returns the BC-11 error when that binding is already walking it
+    /// further out (a cyclic chain).
+    fn enter(properties: &'static str, declaration: &JsValue) -> Result<Self> {
+        let cycle = SUPER_WALKS.with(|walks| {
+            let walks = walks.borrow();
+            walks
+                .iter()
+                .position(|(kind, seen)| *kind == properties && Object::is(seen, declaration))
+                .map(|start| {
+                    walks
+                        .iter()
+                        .skip(start)
+                        .filter(|(kind, _)| *kind == properties)
+                        .map(|(_, seen)| seen.clone())
+                        .collect::<Vec<_>>()
+                })
+        });
+        if let Some(cycle) = cycle {
+            return Err(circular_inheritance_error(&cycle, declaration)?);
+        }
+        SUPER_WALKS.with(|walks| walks.borrow_mut().push((properties, declaration.clone())));
+        Ok(SuperWalk)
+    }
+}
+
+impl Drop for SuperWalk {
+    fn drop(&mut self) {
+        SUPER_WALKS.with(|walks| {
+            walks.borrow_mut().pop();
+        });
+    }
+}
+
 /// `declaration.ast.location`, as JSON (`None` when nullish).
 fn ast_location(declaration: &JsValue) -> Result<Option<Value>> {
     to_json(&get(&get(declaration, "ast")?, "location")?)
@@ -3131,13 +3205,16 @@ pub fn class_declaration_get_super_type(
 
 /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`: repeats
 /// `type = type.getSuperTypeDeclaration()` from `this`, collecting every
-/// non-null result.
+/// non-null result. A declaration met again is a cyclic inheritance chain,
+/// the BC-11 `IllegalModelException` (R1; TS 5.0.0 looped until it ran out
+/// of memory, DV-013).
 #[wasm_bindgen(js_name = classDeclarationGetAllSuperTypeDeclarations)]
 pub fn class_declaration_get_all_super_type_declarations(
     declaration: JsValue,
 ) -> std::result::Result<Array, JsValue> {
     run(|| {
         let results = Array::new();
+        let mut chain = vec![declaration.clone()];
         let mut current = declaration;
         loop {
             let next = call(
@@ -3149,6 +3226,13 @@ pub fn class_declaration_get_all_super_type_declarations(
             if !next.is_truthy() {
                 break;
             }
+            if let Some(start) = chain.iter().position(|seen| Object::is(seen, &next)) {
+                return Err(circular_inheritance_error(
+                    chain.get(start..).unwrap_or_default(),
+                    &next,
+                )?);
+            }
+            chain.push(next.clone());
             results.push(&next);
             current = next;
         }
@@ -3160,12 +3244,14 @@ pub fn class_declaration_get_all_super_type_declarations(
 /// otherwise the super type's own answer, found through `getLocalType` (or,
 /// failing that, the model manager). A `null` super type resolution reaches
 /// the same unguarded `classDecl.getIdentifierFieldName()` call TS makes
-/// (and the same host `TypeError` `call` raises for it).
+/// (and the same host `TypeError` `call` raises for it). A declaration met
+/// again is a cyclic inheritance chain (BC-11, [`SuperWalk`]).
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldName)]
 pub fn class_declaration_get_identifier_field_name(
     declaration: JsValue,
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
+        let _walk = SuperWalk::enter("getIdentifierFieldName", &declaration)?;
         let id_field = get(&declaration, "idField")?;
         if id_field.is_truthy() {
             return Ok(id_field);
@@ -3226,13 +3312,15 @@ pub fn class_declaration_get_identifier_field_name(
 /// same `null` its own `getIdentifierFieldName` does (no truthy `idField`
 /// or `superType`).
 ///
-/// A super type seen earlier in the walk (a cycle) is not inlined: its
-/// method is called, and recurses as TS does.
+/// A super type seen earlier in the walk is a cyclic inheritance chain: the
+/// BC-11 `IllegalModelException` (R1; TS 5.0.0 recursed until V8's stack
+/// overflowed, DV-013).
 ///
 /// Returns `[answer, cacheable, ...chain]`: `chain` is every declaration the
 /// walk read, from `declaration` on, and `cacheable` is false when the walk
-/// ended in a call (a cycle), so its answer depends on more than the
-/// chain's fields (engine/views.ts keeps the answer only when it is true).
+/// ended in a call (a nullish super type resolution), so its answer depends
+/// on more than the chain's fields (engine/views.ts keeps the answer only
+/// when it is true).
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldNameWalk)]
 pub fn class_declaration_get_identifier_field_name_walk(
     declaration: JsValue,
@@ -3293,9 +3381,15 @@ pub fn class_declaration_get_identifier_field_name_walk(
             }
 
             // `return classDecl.getIdentifierFieldName();` -- a nullish
-            // `classDecl` raises the same TypeError through `call`.
-            let seen = chain.iter().any(|d| Object::is(d, &class_decl));
-            if !nullish(&class_decl) && !seen {
+            // `classDecl` raises the same TypeError through `call`. A
+            // declaration met again is a cyclic inheritance chain (BC-11).
+            if let Some(start) = chain.iter().position(|d| Object::is(d, &class_decl)) {
+                return Err(circular_inheritance_error(
+                    chain.get(start..).unwrap_or_default(),
+                    &class_decl,
+                )?);
+            }
+            if !nullish(&class_decl) {
                 chain.push(class_decl.clone());
                 current = class_decl;
                 continue;
@@ -3337,6 +3431,7 @@ pub fn class_declaration_get_property(
     name: JsValue,
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
+        let _walk = SuperWalk::enter("getProperty", &declaration)?;
         let own = call(
             &declaration,
             "getOwnProperty",
@@ -3371,6 +3466,7 @@ pub fn class_declaration_get_properties(
     declaration: JsValue,
 ) -> std::result::Result<Array, JsValue> {
     let body = || -> Result<Array> {
+        let _walk = SuperWalk::enter("getProperties", &declaration)?;
         let own = call(
             &declaration,
             "getOwnProperties",
@@ -3468,6 +3564,10 @@ fn build_subclass_map(
 /// `Set<ClassDeclaration>` deduplicates — by declaration identity, which
 /// (every FQN in a validated model manager names exactly one declaration
 /// instance) is the same as deduplicating by fully qualified name here.
+///
+/// A declaration met again below itself is a cyclic inheritance chain: the
+/// BC-11 `IllegalModelException` (R1; TS 5.0.0 recursed until V8's stack
+/// overflowed, DV-013).
 #[wasm_bindgen(js_name = classDeclarationGetAssignableClassDeclarations)]
 pub fn class_declaration_get_assignable_class_declarations(
     declaration: JsValue,
@@ -3482,11 +3582,14 @@ pub fn class_declaration_get_assignable_class_declarations(
         )?;
         let subclass_map = build_subclass_map(&model_manager)?;
 
+        /// `path` is the declarations from `this` down to `declarations`'
+        /// super type, with their names.
         fn collect(
             declarations: &[JsValue],
             subclass_map: &std::collections::HashMap<String, Vec<JsValue>>,
             seen: &mut Vec<JsValue>,
             seen_keys: &mut HashSet<String>,
+            path: &mut Vec<(String, JsValue)>,
         ) -> Result<()> {
             for decl in declarations {
                 let fqn = js_string(&call(
@@ -3495,11 +3598,22 @@ pub fn class_declaration_get_assignable_class_declarations(
                     &[],
                     "declaration.getFullyQualifiedName",
                 )?)?;
+                if let Some(start) = path.iter().position(|(name, _)| *name == fqn) {
+                    // `path` runs from super type to subclass; the chain
+                    // runs the other way, from `decl` up to `decl` again.
+                    let cycle = std::iter::once(decl.clone())
+                        .chain(path.iter().skip(start + 1).rev().map(|(_, d)| d.clone()))
+                        .collect::<Vec<_>>();
+                    return Err(circular_inheritance_error(&cycle, decl)?);
+                }
                 if seen_keys.insert(fqn.clone()) {
                     seen.push(decl.clone());
                 }
                 if let Some(children) = subclass_map.get(&fqn) {
-                    collect(children, subclass_map, seen, seen_keys)?;
+                    path.push((fqn, decl.clone()));
+                    let walked = collect(children, subclass_map, seen, seen_keys, path);
+                    path.pop();
+                    walked?;
                 }
             }
             Ok(())
@@ -3512,6 +3626,7 @@ pub fn class_declaration_get_assignable_class_declarations(
             &subclass_map,
             &mut seen,
             &mut seen_keys,
+            &mut Vec::new(),
         )?;
 
         let result = Array::new();
@@ -4140,61 +4255,6 @@ fn report_invalid(view: &JsValue, invalid: &Option<String>, message: String) -> 
     handle_error(view, invalid, &JsValue::from_str(&message))
 }
 
-/// `IllegalModelException`'s own message decoration
-/// (`illegalmodelexception.ts`): `message + ' ' + messageSuffix`, where
-/// `messageSuffix` is `File '<name>': ` when `modelFile` is truthy and its
-/// `getName()` is truthy, followed by `line .. column .., to line .. column
-/// ... ` when `location` is truthy, with the whole suffix's first character
-/// upper-cased. Needed only for [`try_validate_decorator`]'s own resolution
-/// failure ([`named_js_error`]): the real `IllegalModelException`
-/// construction this replicates is `ModelFile.resolveType`'s own throw,
-/// which is not a call this binding makes (P2-07 module doc,
-/// `resolve_own_name`) — every other message here reaches the exception
-/// through a real `view.handleError` call ([`handle_error`]), never through
-/// this.
-fn illegal_model_message(
-    message: &str,
-    model_file: &JsValue,
-    location: &JsValue,
-) -> Result<String> {
-    let mut suffix = String::new();
-    if model_file.is_truthy() {
-        let file_name = call(model_file, "getName", &[], "modelFile.getName")?;
-        if file_name.is_truthy() {
-            suffix.push_str(&format!("File '{}': ", js_string(&file_name)?));
-        }
-    }
-    if location.is_truthy() {
-        let start = get(location, "start")?;
-        let end = get(location, "end")?;
-        let field = |node: &JsValue, name: &str| -> Result<String> { js_string(&get(node, name)?) };
-        suffix.push_str(&format!(
-            "line {} column {}, to line {} column {}. ",
-            field(&start, "line")?,
-            field(&start, "column")?,
-            field(&end, "line")?,
-            field(&end, "column")?,
-        ));
-    }
-    let mut capitalized = String::with_capacity(suffix.len());
-    let mut chars = suffix.chars();
-    if let Some(first) = chars.next() {
-        capitalized.extend(first.to_uppercase());
-        capitalized.push_str(chars.as_str());
-    }
-    Ok(format!("{message} {capitalized}"))
-}
-
-/// An `Error` whose `name` is `IllegalModelException` and whose `message`
-/// already carries [`illegal_model_message`]'s decoration, so that coercing
-/// it (`String(err)`, `` `${err}` ``) reads the same way TS's caught
-/// `IllegalModelException` would.
-fn named_js_error(name: &str, text: &str) -> JsValue {
-    let err = js_sys::Error::new(text);
-    let _ = Reflect::set(&err, &JsValue::from_str("name"), &JsValue::from_str(name));
-    err.into()
-}
-
 /// TS: `Decorator.validate`, driven through [`JsContext`] since the model
 /// graph these views meet is still TS (module doc: "until P4-06 … P4-08").
 /// `view` is the Decorator, already processed (`name`/`arguments` set);
@@ -4204,10 +4264,11 @@ fn named_js_error(name: &str, text: &str) -> JsValue {
 ///
 /// Every exception this function and its helpers raise is built by calling
 /// back into `view.handleError` (or, for the try block's own resolution
-/// failure, a plain `Error` that coerces the same way TS's caught value
-/// would): the `IllegalModelException` construction, its "File '...': "
-/// decoration and the log call are never reimplemented here, so they cannot
-/// drift from TS's. TS's outer `catch` re-reports *every* thrown value —
+/// failure, the shim's own `IllegalModelException`): the
+/// `IllegalModelException` construction, its "File '...': " decoration and
+/// the log call are never reimplemented here, so they cannot drift from
+/// TS's. `handleError` rethrows a caught `IllegalModelException` as it is
+/// (BC-14, R1; TS 5.0.0 wrapped it again, DV-016). TS's outer `catch` re-reports *every* thrown value —
 /// including a raw host `TypeError` from reading a collaborator that does
 /// not behave like a real model element (e.g. a decorator named after a
 /// primitive, so `mf.getType` resolves it to a type with no
@@ -4273,9 +4334,12 @@ fn try_validate_decorator(
             name,
             context.unwrap_or("undefined"),
         );
-        let location = opt_get(&get(view, "ast")?, "location")?;
-        let message = illegal_model_message(&raw, model_file, &location)?;
-        return Err(Error::Js(named_js_error("IllegalModelException", &message)));
+        // `ModelFile.resolveType`'s own `IllegalModelException(message, mf,
+        // location)`, built by the shim, so that `handleError` rethrows it
+        // as it is (BC-14, R1).
+        let location = to_json(&opt_get(&get(view, "ast")?, "location")?)?;
+        let err = illegal_model_error(raw, location);
+        return Err(Error::Js(throw(err, Some(model_file))));
     };
 
     let properties: Vec<PropertyView> = {

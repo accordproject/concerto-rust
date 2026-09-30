@@ -1411,23 +1411,18 @@ js_compat_pub! {
             let declared = resolve(manager, namespace, &value.name)
                 .and_then(|fqn| manager.get_declaration(&fqn).ok());
             let Some(declared) = declared else {
-                // TS: `MapValueType.validate` reads `this.modelFile.getType(...)`
-                // (which returns `null` for an undeclared type, `ModelFile.getType`,
-                // modelfile.ts) straight into `decl.isMapDeclaration?.()`: the
-                // `?.` guards only the *call*, not the `.isMapDeclaration`
-                // property read on `decl` itself, so V8 throws `TypeError: Cannot
-                // read properties of null (reading 'isMapDeclaration')` rather
-                // than the graceful "undeclared type" message this port used to
-                // raise. Ported as TS has it (a `ts-bug` divergence).
-                return Err(ContractError::new(
-                    ErrorKind::MalformedInput,
-                    "engine-typeerror-readproperties",
-                    vec![
-                        ("value", "null".to_string()),
-                        ("property", "isMapDeclaration".to_string()),
-                    ],
-                )
-                .into());
+                // BC-12 (R1): an undeclared value type is an
+                // `IllegalModelException` naming it. TS 5.0.0 read
+                // `this.modelFile.getType(...)`'s `null` straight into
+                // `decl.isMapDeclaration?.()` (the `?.` guards only the call,
+                // not the property read), so V8 threw `TypeError: Cannot read
+                // properties of null (reading 'isMapDeclaration')` (DV-014).
+                return Err(undeclared_type_error(
+                    manager,
+                    namespace,
+                    &value.name,
+                    format!("the value of map {}", qualify(namespace, map.name())),
+                ));
             };
             if declared.is_map_declaration() {
                 return Err(failed(
@@ -2948,24 +2943,20 @@ mod tests {
             invalid_decorator: None,
         });
         let err = manager.validate_models().unwrap_err().to_string();
-        assert!(
-            err.contains("IllegalModelException: Undeclared type"),
-            "{err}"
-        );
+        // BC-14: the undeclared-type error itself, not wrapped again.
+        assert!(err.starts_with("Undeclared type"), "{err}");
         assert!(!err.contains("Duplicate decorator"), "{err}");
     }
 
-    /// DV-016 (P2-09c/F6, gap-audit finding): TS `Decorator.validate` catches
-    /// its own `try` block's errors (including its own `invalidDecorator`
-    /// throws) in one outer `catch`, and re-reports the caught error through
-    /// `handleError(missingDecorator, err)` — which re-decorates an already
-    /// fully-formatted `IllegalModelException` (`this.getParent().
-    /// getModelFile()` attaches the file to it a second time), so with
-    /// `missingDecorator: "error"` the `"File '<name>': "` suffix appears
-    /// twice. Ported faithfully: `DIVERGENCES.md` DV-016,
-    /// accordproject/concerto-rust#179 tracks the TS-side fix.
+    /// BC-14 (R1, closing DV-016; P2-09c/F6 gap-audit finding): TS
+    /// `Decorator.validate` catches its own `try` block's errors (including
+    /// its own `invalidDecorator` throws) in one outer `catch` and re-reports
+    /// them through `handleError(missingDecorator, err)`. TS 5.0.0 wrapped the
+    /// caught `IllegalModelException` in a new one, so the message embedded
+    /// `IllegalModelException: ` and carried the `"File '<name>': "` suffix
+    /// twice. The caught exception is now thrown as it is: one suffix.
     #[test]
-    fn a_decorator_validation_error_carries_the_file_suffix_twice_like_ts() {
+    fn a_decorator_validation_error_carries_the_file_suffix_once() {
         use crate::introspect::decorator::DecoratorValidationOptions;
 
         let mut manager = ModelManager::new().unwrap();
@@ -3002,7 +2993,7 @@ mod tests {
         };
         assert_eq!(
             contract.final_message(),
-            "IllegalModelException: Undeclared type \"Hide\" in \"test@1.0.0.Person.ssn\". File 'test.cto':  File 'test.cto': "
+            "Undeclared type \"Hide\" in \"test@1.0.0.Person.ssn\". File 'test.cto': "
         );
     }
 
@@ -3231,21 +3222,25 @@ mod tests {
     }
 
     #[test]
-    fn an_undeclared_map_value_type_is_a_type_error() {
-        // TS: `MapValueType.validate` reads an undeclared type's `null` from
-        // `this.modelFile.getType(...)` straight into `decl.isMapDeclaration`
-        // with no null guard on the property read (DV-014, mapvaluetype.ts):
-        // a `TypeError`, not the `IllegalModelException` this port raised
-        // before that fix.
+    fn an_undeclared_map_value_type_is_an_illegal_model_error() {
+        // BC-12 (R1): an `IllegalModelException` naming the undeclared type
+        // (TS 5.0.0 threw V8's `TypeError` reading `isMapDeclaration` off
+        // `null`, DV-014).
         let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
         let err = validate(map_with(
             key.clone(),
             object_type("Missing", "ObjectMapValueType"),
         ));
-        assert!(matches!(
-            err.unwrap_err().ported(),
-            Some(c) if c.kind == ErrorKind::MalformedInput
-        ));
+        let err = err.unwrap_err();
+        let Some(c) = err.ported() else {
+            panic!("expected a contract error, got {err:?}");
+        };
+        assert_eq!(c.kind, ErrorKind::IllegalModel);
+        assert!(
+            c.message().contains("Undeclared type \"Missing\""),
+            "{}",
+            c.message()
+        );
 
         assert!(validate(map_with(key, object_type("Item", "ObjectMapValueType"))).is_ok());
     }

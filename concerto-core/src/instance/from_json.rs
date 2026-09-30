@@ -905,9 +905,8 @@ impl Populator<'_> {
         if declaration.is_map_declaration() {
             return self.visit_map_declaration(declaration, json);
         }
-        // `throw new Error('Unrecognised ' + JSON.stringify(thing))`: a
-        // scalar declaration.
-        Err(model::unrecognised())
+        // `visit`'s `Unrecognised` fallthrough: a scalar declaration (BC-08).
+        Err(model::unrecognised(declaration.fqn()))
     }
 
     /// TS: JSONPopulator.visitClassDeclaration.
@@ -1006,9 +1005,9 @@ impl Populator<'_> {
     fn visit_property(&mut self, field: &Field, json: Option<&Value>) -> Result<Value> {
         match &field.field_type {
             FieldType::Relationship(_) => self.visit_relationship_declaration(field, json),
-            // An enum value is not a `Field`: `visit` falls through to
-            // `'Unrecognised ' + JSON.stringify(thing)`.
-            FieldType::EnumValue => Err(model::unrecognised()),
+            // An enum value is not a `Field`: `visit` falls through to its
+            // `Unrecognised` error (BC-08).
+            FieldType::EnumValue => Err(model::unrecognised_field(field)),
             _ => self.visit_field(field, json),
         }
     }

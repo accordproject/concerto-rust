@@ -298,12 +298,10 @@ impl Decorator {
                     ],
                 )
                 .into();
-                // DV-016: TS `mf.resolveType(...)` throws `new IllegalModelException(
-                // message, this, fileLocation)` — `this` is the model file `mf` is
-                // called on, so the "File '<name>': " suffix is already part of this
-                // error's own message by the time `Decorator.validate`'s `catch`
-                // re-wraps it. Reproducing that requires this error to carry its own
-                // model file *now*, not only once the caller backstops it later.
+                // TS `mf.resolveType(...)` throws `new IllegalModelException(
+                // message, this, fileLocation)`: `this` is the model file `mf` is
+                // called on, so this error carries its file from the start, and
+                // [`Self::rethrow`] passes it on unchanged (BC-14).
                 self.attach_file(manager, namespace, err)
             })
     }
@@ -313,8 +311,9 @@ impl Decorator {
     /// this module — reused here (rather than deferring to that backstop) so
     /// an error this module builds already carries its file *before*
     /// [`Self::rethrow`] re-reports it, matching TS's `this`/`this.getParent().
-    /// getModelFile()`, which is resolved synchronously at each throw site
-    /// (DV-016).
+    /// getModelFile()`, which is resolved synchronously at each throw site.
+    /// It never attaches a second file (`attach_model_file` only fills an
+    /// empty one).
     fn attach_file(&self, manager: &ModelManager, namespace: &str, err: Error) -> Error {
         match manager.model_file(namespace) {
             Some(model_file) => crate::validation::attach_model_file(err, model_file),
@@ -464,10 +463,8 @@ impl Decorator {
     /// then throws only when `level` is the exact string `"error"`.
     ///
     /// TS: `new IllegalModelException(err, this.getParent().getModelFile(),
-    /// this.ast.location)` — the file is attached right here, at construction
-    /// (DV-016), not only once the caller backstops it later: that is what
-    /// makes [`Self::rethrow`]'s own double-wrap carry the file suffix
-    /// twice, exactly as TS's does.
+    /// this.ast.location)` — the file is attached right here, at construction,
+    /// not only once the caller backstops it later.
     fn handle(
         &self,
         manager: &ModelManager,
@@ -482,20 +479,19 @@ impl Decorator {
         Ok(())
     }
 
-    /// TS: the outer `catch (err) { this.handleError(validationOptions.missingDecorator, err); }`.
+    /// TS: the outer `catch (err) { this.handleError(validationOptions.missingDecorator, err); }`:
+    /// whatever the `try` block threw is reported again at the
+    /// `missingDecorator` level, so it is thrown only when that level is
+    /// `"error"`.
     ///
-    /// Every error caught here was itself thrown as an `IllegalModelException`
-    /// — either by [`Self::resolve_own_name`], or by [`Self::handle`] a
-    /// moment ago — so re-reporting it constructs a *new* `IllegalModelException`
-    /// whose message is the caught one, coerced to a string the way a JS
-    /// template literal coerces an `Error`: `"<name>: <message>"`. This is a
-    /// real double-wrap in the TS reference (`new IllegalModelException(err, ...)`
-    /// with `err` an `Error`, not a string), not a simplification. That caught
-    /// error's own message already carries its own "File '…': " suffix
-    /// (`Self::handle`/`Self::resolve_own_name` attach it eagerly, same as
-    /// TS), and this rethrow attaches the *same* file again to its own new
-    /// exception — so a caller with `missingDecorator: "error"` sees the
-    /// suffix twice over, faithfully (DV-016, DIVERGENCES.md).
+    /// BC-14 (R1): an `IllegalModelException` caught here (from
+    /// [`Self::resolve_own_name`] or [`Self::handle`], already carrying its
+    /// file) is thrown as it is. Any other error becomes an
+    /// `IllegalModelException` with the caught error's own message and one
+    /// file suffix. TS 5.0.0 built `new IllegalModelException(err, ...)` from
+    /// the caught `Error` itself, so its message embedded
+    /// `"IllegalModelException: "` and the caught error's own `File '<name>': `
+    /// suffix, and then added the suffix a second time (DV-016).
     fn rethrow(
         &self,
         manager: &ModelManager,
@@ -503,12 +499,15 @@ impl Decorator {
         level: Option<&str>,
         problem: Error,
     ) -> Result<()> {
-        if level == Some("error") {
-            let (class, message) = js_class_and_message(&problem);
-            let err = illegal_model(format!("{class}: {message}"), self.location.clone());
-            return Err(self.attach_file(manager, namespace, err));
+        if level != Some("error") {
+            return Ok(());
         }
-        Ok(())
+        if problem.contract().kind == ErrorKind::IllegalModel {
+            return Err(self.attach_file(manager, namespace, problem));
+        }
+        let message = js_message(&problem);
+        let err = illegal_model(message, self.location.clone());
+        Err(self.attach_file(manager, namespace, err))
     }
 }
 
@@ -519,22 +518,17 @@ fn illegal_model(message: String, location: Option<Value>) -> Error {
     ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
 }
 
-/// The TS class name and message an already-thrown error would report, the
-/// same two fields `ops.rs`'s oracle harness reads off a [`Error`]
-/// (`to_oracle_error`), needed here to reproduce [`Decorator::rethrow`]'s
-/// string coercion of a caught exception.
-fn js_class_and_message(err: &Error) -> (&'static str, String) {
+/// The message an already-thrown error would report (what `ops.rs`'s
+/// oracle harness reads off a [`Error`], `to_oracle_error`), for
+/// [`Decorator::rethrow`] to carry into its `IllegalModelException`.
+fn js_message(err: &Error) -> String {
     if let Some(type_name) = err.unported_type_not_found() {
-        return (
-            ErrorKind::TypeNotFound.ts_class(),
-            format!("Type \"{type_name}\" not found."),
-        );
+        return format!("Type \"{type_name}\" not found.");
     }
     if let Some(message) = err.unported_illegal_model() {
-        return (ErrorKind::IllegalModel.ts_class(), message.to_string());
+        return message.to_string();
     }
-    let ce = err.contract();
-    (ce.kind.ts_class(), ce.final_message())
+    err.contract().final_message()
 }
 
 /// JS `typeof` of a decoded argument, as `Decorator.validate` reports it.
@@ -928,9 +922,9 @@ mod tests {
 
     /// TS `decorators.js` "#validate should fail to validate type refs that
     /// are not defined locally": `missingDecorator: 'error'`, a decorator
-    /// whose own name ("category") is undeclared anywhere, double-wrapped
-    /// into a message that still contains the inner `IllegalModelException:
-    /// Undeclared type` text (module doc on `Decorator::rethrow`).
+    /// whose own name ("category") is undeclared anywhere. The undeclared-type
+    /// `IllegalModelException` is thrown as it is, with no embedded
+    /// `IllegalModelException: ` fragment (BC-14, `Decorator::rethrow`).
     #[test]
     fn missing_decorator_error_reports_the_undeclared_type_wrapped_once() {
         let mut manager = manager_with(serde_json::json!([decorated_concept(
@@ -948,9 +942,10 @@ mod tests {
             .unwrap_err();
         let message = err.to_string();
         assert!(
-            message.contains("IllegalModelException: Undeclared type"),
+            message.starts_with("Undeclared type \"category\""),
             "{message}"
         );
+        assert!(!message.contains("IllegalModelException"), "{message}");
     }
 
     /// The same failure with `missingDecorator` left off: the error is

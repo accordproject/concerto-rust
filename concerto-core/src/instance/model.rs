@@ -49,15 +49,25 @@ pub fn not_a_function(expression: &str) -> crate::Error {
     .into()
 }
 
-/// `'Unrecognised ' + JSON.stringify(thing)` for an introspection object:
-/// `JSON.stringify` throws V8's circular-structure `TypeError` first. DV-010
-pub fn unrecognised() -> crate::Error {
+/// The populator's and generator's `visit` fallthrough for an introspection
+/// object they cannot visit (a scalar declaration, an enum value): a plain
+/// `Error` naming it by its fully-qualified name (BC-08, R1). TS 5.0.0 built
+/// `'Unrecognised ' + JSON.stringify(thing)`, where `JSON.stringify` met the
+/// model manager again and threw V8's circular-structure `TypeError` first
+/// (DV-010).
+pub fn unrecognised(name: &str) -> crate::Error {
     ContractError::new(
-        ErrorKind::MalformedInput,
-        "engine-typeerror-circularjson",
-        Vec::new(),
+        ErrorKind::InvalidArgument,
+        "serializer-visit-unrecognised",
+        vec![("name", name.to_string())],
     )
     .into()
+}
+
+/// [`unrecognised`] for an enum value reached as a property: its
+/// fully-qualified name (TS `Property.getFullyQualifiedName()`).
+pub fn unrecognised_field(field: &Field) -> crate::Error {
+    unrecognised(&format!("{}.{}", field.owner_fqn, field.name()))
 }
 
 impl<'a> TypeRef<'a> {
