@@ -324,8 +324,13 @@ pub enum ErrorKind {
     TypeNotFound,
     /// A value fails a validator declared on a field or scalar.
     ///
-    /// TS: concerto-util `BaseException(message, undefined, errorType)`,
-    /// thrown by `Validator.reportError`.
+    /// TS 5.0.0: concerto-util `BaseException(message, undefined,
+    /// errorType)`, thrown by `Validator.reportError`. Since BC-39 (R1) no
+    /// validator raises this kind: a validator error found while a model
+    /// loads is [`ErrorKind::IllegalModel`], and an instance value that fails
+    /// a validator is [`ErrorKind::Validation`], each keeping the
+    /// `errorType` in [`ContractError::validator`]. The variant stays so
+    /// that the enum's public shape does not change.
     Validator,
     /// An instance does not conform to its model.
     ///
@@ -577,7 +582,8 @@ js_compat_pub! {
         /// exception, holding that file's name (`modelFile.getName()`, `None`
         /// when it has none). The WASM shim passes the real JS model file instead.
         pub model_file: Option<Option<String>>,
-        /// `Validator` only: what `Validator.reportError` adds.
+        /// A validator error only (an `IllegalModel` or `Validation` error
+        /// since BC-39, `Validator` before): what `Validator.reportError` adds.
         pub validator: Option<ValidatorReport>,
         /// `ValidationException.details` (accordproject/concerto#1273): one
         /// entry per violation the error reports, for callers that enumerate

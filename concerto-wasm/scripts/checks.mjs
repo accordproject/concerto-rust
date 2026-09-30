@@ -700,12 +700,24 @@ export function runChecks(engine) {
 
     // A `lengthValidator` that is not even an object (a fuzz-mutated array,
     // matching a recorded cluster's minimised repro `lengthValidator: [10]`):
-    // every key on it reads as absent, so this behaves as "no length
-    // bounds at all" rather than throwing.
-    const notAnObject = engine.stringValidatorNew(view, null, [10]);
-    assert(notAnObject.minLength === null && notAnObject.maxLength === null, `lengthValidator:[10] -> ${JSON.stringify(notAnObject)}`);
+    // every key on it reads as absent, so it has no length bounds at all.
+    // Since BC-40 (R1, P5-53) that is rejected like `length=[,]`, with the
+    // "must be specified" error, an `IllegalModel` error keeping its
+    // `errorType` (BC-39), not a decode failure. v5.0.0 accepted it.
+    const named = {
+      field: { getName: () => 's' },
+      getFieldOrScalarDeclaration: () => ({ getFullyQualifiedName: () => 'ns.Box.s' }),
+    };
+    const notAnObject = thrown(() => engine.stringValidatorNew(named, null, [10]));
+    assert(
+      notAnObject instanceof EngineError
+        && notAnObject.payload.kind === 'IllegalModel'
+        && notAnObject.payload.errorType === 'DefaultValidatorException'
+        && notAnObject.message === 'Validator error for field `s`. ns.Box.s: Invalid string length, minLength and-or maxLength must be specified.',
+      `lengthValidator:[10] threw ${notAnObject && notAnObject.name}: ${notAnObject && notAnObject.message}`,
+    );
 
-    return { size, length, oneBoundOnly, regex, notAnObject };
+    return { size, length, oneBoundOnly, regex, notAnObject: notAnObject.payload.kind };
   });
 
   // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's own

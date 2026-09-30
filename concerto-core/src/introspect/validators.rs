@@ -62,9 +62,18 @@ impl Validator {
 /// instance identifier and the element's fully qualified name in front. The
 /// name is read only here, as TS reads it only when it reports.
 ///
+/// `kind` is the exception class (BC-39, R1; maintainer decision Q-15 on
+/// accordproject/concerto-rust#249): [`ErrorKind::IllegalModel`] for a
+/// check the constructor makes while the model loads (bad bounds, an invalid
+/// regex, a default value outside the validator), and
+/// [`ErrorKind::Validation`] for an instance value that fails the validator.
+/// Both keep the `errorType` and the `Validator error for field …` message.
+/// TS 5.0.0 threw a plain `BaseException` for both.
+///
 /// TS: Validator.reportError (src/introspect/validator.ts)
 fn report_error<F: ValidatedElement>(
     field: &F,
+    kind: ErrorKind,
     id: Option<&str>,
     error_type: &'static str,
     code: &'static str,
@@ -74,7 +83,7 @@ fn report_error<F: ValidatedElement>(
         Ok(fqn) => fqn,
         Err(err) => return err,
     };
-    let mut err = ContractError::new(ErrorKind::Validator, code, params);
+    let mut err = ContractError::new(kind, code, params);
     err.validator = Some(ValidatorReport {
         // `'…`' + id + '`…'`: a null id prints as "null".
         id: id.unwrap_or("null").to_string(),
@@ -133,20 +142,13 @@ fn bounds_out_of_order(
         // here already means neither raw side was an absent key or an
         // explicit `null` ([`validator_number_field`] returns `None` for
         // either, never reaching this branch's `Some`/`Some` zip's only
-        // caller, [`CollectionSizeValidator::new`]'s `min_size.zip(max_size)`;
-        // [`length_bound_field`]'s own absent-key `NaN` sentinel is not
-        // `null`, so it *can* reach here for `StringValidator`, but then
-        // `min_raw`/`max_raw` themselves are still each present — an absent
-        // *length* key never has a raw AST entry to find here at all, so it
-        // falls through to the `_` arm below instead).
+        // callers, [`CollectionSizeValidator::new`]'s `min_size.zip(max_size)`
+        // and [`StringValidator::new`]'s `min_length.zip(max_length)`;
+        // [`length_bound_field`] reads the length bounds the same way).
         Some((min_raw, max_raw)) if !min_raw.is_null() && !max_raw.is_null() => {
             ecma::greater_than(min_raw, max_raw)
         }
-        // No raw AST, or the raw key itself is absent/null (only reachable
-        // for `StringValidator`'s `length_bound_field` `NaN` sentinel, whose
-        // `NaN > x`/`x > NaN` was already always `false`, TS's own
-        // `undefined`/`null` skip of this check): the pre-existing `f64`
-        // comparison, unchanged.
+        // No raw AST: the pre-existing `f64` comparison, unchanged.
         _ => min > max,
     }
 }
@@ -215,29 +217,21 @@ js_compat_pub! {
     }
 }
 
-/// [`validator_number_field`], but for `StringLengthValidator`'s own
-/// `minLength`/`maxLength` specifically, which — unlike `CollectionSizeValidator`'s
-/// `minSize`/`maxSize` (that function's own doc comment) — TS reads with a
-/// plain optional chain (`lengthValidator?.minLength`), never `??`
-/// (`StringValidator`'s doc comment on its own fields): an explicit JSON
-/// `null` and an absent key are *not* the same value there. Only an explicit
-/// `null` on *both* bounds trips `StringValidator::new`'s "must be
-/// specified" check (a strict `this.minLength === null` identity, not a
-/// truthiness test), so this keeps that state as `None`; an absent key (or,
-/// accordproject/concerto-rust#217, a `lengthValidator` that is not even an
-/// object — a fuzz-mutated bool/array/number/string — so *every* key reads
-/// as absent) leaves TS's own `this.minLength` as `undefined`, never
-/// `null`, so this gives `Some(f64::NAN)` rather than `None`: not `None`, so
-/// it never wrongly joins the both-`null` check, and `NaN` makes every
-/// later magnitude comparison false, the same outcome `undefined` gives
-/// each of them (TS guards every one with `?? 0` or `!== undefined`; IEEE754
-/// `NaN` comparisons are always false, matching both).
+/// [`validator_number_field`], for `StringLengthValidator`'s own
+/// `minLength`/`maxLength`. TS 5.0.0 read these with a plain optional chain
+/// (`lengthValidator?.minLength`) and a strict `=== null` test, so only an
+/// explicit `null` on *both* bounds tripped `StringValidator::new`'s "must
+/// be specified" check, and an absent key (`length=[,]`, or a
+/// `lengthValidator` that is not even an object, accordproject/concerto-rust#217)
+/// slipped past it. BC-40 (R1; maintainer decision D2 on
+/// accordproject/concerto-rust#249) rejects a length validator with neither
+/// bound, as `NumberValidator` rejects `range=[,]`, so an absent key and an
+/// explicit `null` are the same "no bound" here, as they are for
+/// `CollectionSizeValidator`: `None` for both. Anything else is coerced
+/// through `ToNumber`, so a fuzz-mutated non-number becomes `NaN`, whose
+/// comparisons are always false.
 fn length_bound_field(ast: &Value, key: &str) -> Option<f64> {
-    match ast.get(key) {
-        Some(Value::Null) => None,
-        None => Some(f64::NAN),
-        Some(value) => Some(ecma::to_number(value)),
-    }
+    validator_number_field(ast, key)
 }
 
 js_compat_pub! {
@@ -296,6 +290,7 @@ impl NumberValidator {
                 (None, None) => {
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         None,
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "numbervalidator-constructor-nobounds",
@@ -305,6 +300,7 @@ impl NumberValidator {
                 (Some(lower), Some(upper)) if ecma::greater_than(lower, upper) => {
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         None,
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "numbervalidator-constructor-lowerhigherthanupper",
@@ -320,6 +316,7 @@ impl NumberValidator {
                 {
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         None,
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "numbervalidator-constructor-outsidelowerbound",
@@ -334,6 +331,7 @@ impl NumberValidator {
                 {
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         None,
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "numbervalidator-constructor-outsideupperbound",
@@ -386,6 +384,7 @@ impl NumberValidator {
             {
                 return Err(report_error(
                     field,
+                    ErrorKind::Validation,
                     identifier,
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "numbervalidator-constructor-outsidelowerbound",
@@ -400,6 +399,7 @@ impl NumberValidator {
             {
                 return Err(report_error(
                     field,
+                    ErrorKind::Validation,
                     identifier,
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "numbervalidator-constructor-outsideupperbound",
@@ -489,6 +489,7 @@ impl CollectionSizeValidator {
             if min_size.is_none() && max_size.is_none() {
                 return Err(report_error(
                     field,
+                    ErrorKind::IllegalModel,
                     Some(&field.name()?),
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "collectionsizevalidator-constructor-nosize",
@@ -497,6 +498,7 @@ impl CollectionSizeValidator {
             } else if min_size.unwrap_or(0.0) < 0.0 || max_size.unwrap_or(0.0) < 0.0 {
                 return Err(report_error(
                     field,
+                    ErrorKind::IllegalModel,
                     Some(&field.name()?),
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "collectionsizevalidator-constructor-negativesize",
@@ -509,6 +511,7 @@ impl CollectionSizeValidator {
                 // whether minSize > maxSize.
                 return Err(report_error(
                     field,
+                    ErrorKind::IllegalModel,
                     Some(&field.name()?),
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "collectionsizevalidator-constructor-mingreaterthanmax",
@@ -552,6 +555,7 @@ impl CollectionSizeValidator {
             {
                 return Err(report_error(
                     field,
+                    ErrorKind::Validation,
                     identifier,
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "collectionsizevalidator-validate-belowminsize",
@@ -563,6 +567,7 @@ impl CollectionSizeValidator {
             {
                 return Err(report_error(
                     field,
+                    ErrorKind::Validation,
                     identifier,
                     DEFAULT_VALIDATOR_EXCEPTION,
                     "collectionsizevalidator-validate-abovemaxsize",
@@ -747,14 +752,10 @@ fn valid_js_regex_flags(flags: &str) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StringValidator {
     // The metamodel's `min_length`/`max_length` collapse an absent bound and
-    // an explicit `null` one into `None` alike (OD-3). TS reads
-    // `lengthValidator?.minLength` (no `??`), so it can tell an explicit
-    // `null` apart from an absent key for one thing only: whether *both*
-    // bounds are exactly `null` (rather than both simply absent) trips the
-    // "must be specified" error. No fixture or oracle case is known to reach
-    // that corner (a `lengthValidator` object with neither key set at all),
-    // so this port accepts the OD-3 collapse here rather than reading the raw
-    // AST, and reports the same "must be specified" error either way.
+    // an explicit `null` one into `None` alike (OD-3), and so does
+    // [`length_bound_field`]: since BC-40 (R1) a length validator with
+    // neither bound, absent or `null`, fails the "must be specified" check.
+    // TS 5.0.0 rejected only two explicit `null`s.
     min_length: Option<f64>,
     max_length: Option<f64>,
     regex: Option<CompiledRegex>,
@@ -784,6 +785,7 @@ impl StringValidator {
                 if min_length.is_none() && max_length.is_none() {
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         Some(&field.name()?),
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "stringvalidator-constructor-invalidlength",
@@ -792,6 +794,7 @@ impl StringValidator {
                 } else if min_length.unwrap_or(0.0) < 0.0 || max_length.unwrap_or(0.0) < 0.0 {
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         Some(&field.name()?),
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "stringvalidator-constructor-negativelength",
@@ -804,6 +807,7 @@ impl StringValidator {
                     // check minLength > maxLength.
                     return Err(report_error(
                         field,
+                        ErrorKind::IllegalModel,
                         Some(&field.name()?),
                         DEFAULT_VALIDATOR_EXCEPTION,
                         "stringvalidator-constructor-mingreaterthanmax",
@@ -828,6 +832,7 @@ impl StringValidator {
                             format!("Invalid flags supplied to RegExp constructor '{}'", v.flags);
                         return Err(report_error(
                             field,
+                            ErrorKind::IllegalModel,
                             Some(&field.name()?),
                             REGEX_VALIDATOR_EXCEPTION,
                             "stringvalidator-constructor-invalidregex",
@@ -852,6 +857,7 @@ impl StringValidator {
                             );
                             return Err(report_error(
                                 field,
+                                ErrorKind::IllegalModel,
                                 Some(&field.name()?),
                                 REGEX_VALIDATOR_EXCEPTION,
                                 "stringvalidator-constructor-invalidregex",
@@ -873,12 +879,18 @@ impl StringValidator {
             // skips the check, and only a string default reaches `.length`/regex
             // logic below (a non-string default is a model TS itself does not
             // guard against; this port skips the check for one rather than
-            // guessing at JS's coercions).
+            // guessing at JS's coercions). A default outside the validator is
+            // a model error (BC-39), so it is reported as one.
             if let Some(value) = field.default_value()?
                 && ecma::is_truthy(&value)
                 && let Some(text) = value.as_str()
             {
-                built.validate(field, Some(&field.name()?), Some(text))?;
+                built.check(
+                    field,
+                    ErrorKind::IllegalModel,
+                    Some(&field.name()?),
+                    Some(text),
+                )?;
             }
 
             Ok(built)
@@ -930,51 +942,68 @@ impl StringValidator {
             identifier: Option<&str>,
             value: Option<&str>,
         ) -> Result<(), F::Error> {
-            let Some(value) = value else {
-                return Ok(());
-            };
-            let length = value.encode_utf16().count() as f64;
-            if let Some(min) = self.min_length
-                && length < min
-            {
-                return Err(report_error(
-                    field,
-                    identifier,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "stringvalidator-validate-belowminlength",
-                    vec![
-                        ("value", value.to_string()),
-                        ("minLength", ecma::number_to_string(min)),
-                    ],
-                ));
-            }
-            if let Some(max) = self.max_length
-                && length > max
-            {
-                return Err(report_error(
-                    field,
-                    identifier,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "stringvalidator-validate-abovemaxlength",
-                    vec![
-                        ("value", value.to_string()),
-                        ("maxLength", ecma::number_to_string(max)),
-                    ],
-                ));
-            }
-            if let Some(regex) = &self.regex
-                && !regex.matches(value)
-            {
-                return Err(report_error(
-                    field,
-                    identifier,
-                    DEFAULT_VALIDATOR_EXCEPTION,
-                    "stringvalidator-validate-regexmismatch",
-                    vec![("value", value.to_string()), ("regex", regex.to_string())],
-                ));
-            }
-            Ok(())
+            self.check(field, ErrorKind::Validation, identifier, value)
         }
+    }
+
+    /// [`StringValidator::validate`], reporting a failure as `kind`: an
+    /// instance value is a [`ErrorKind::Validation`] error, and the
+    /// constructor's default-value check an [`ErrorKind::IllegalModel`] one
+    /// (BC-39).
+    fn check<F: ValidatedElement>(
+        &self,
+        field: &F,
+        kind: ErrorKind,
+        identifier: Option<&str>,
+        value: Option<&str>,
+    ) -> Result<(), F::Error> {
+        let Some(value) = value else {
+            return Ok(());
+        };
+        let length = value.encode_utf16().count() as f64;
+        if let Some(min) = self.min_length
+            && length < min
+        {
+            return Err(report_error(
+                field,
+                kind,
+                identifier,
+                DEFAULT_VALIDATOR_EXCEPTION,
+                "stringvalidator-validate-belowminlength",
+                vec![
+                    ("value", value.to_string()),
+                    ("minLength", ecma::number_to_string(min)),
+                ],
+            ));
+        }
+        if let Some(max) = self.max_length
+            && length > max
+        {
+            return Err(report_error(
+                field,
+                kind,
+                identifier,
+                DEFAULT_VALIDATOR_EXCEPTION,
+                "stringvalidator-validate-abovemaxlength",
+                vec![
+                    ("value", value.to_string()),
+                    ("maxLength", ecma::number_to_string(max)),
+                ],
+            ));
+        }
+        if let Some(regex) = &self.regex
+            && !regex.matches(value)
+        {
+            return Err(report_error(
+                field,
+                kind,
+                identifier,
+                DEFAULT_VALIDATOR_EXCEPTION,
+                "stringvalidator-validate-regexmismatch",
+                vec![("value", value.to_string()), ("regex", regex.to_string())],
+            ));
+        }
+        Ok(())
     }
 
     /// Whether every value this validator accepts is accepted by `other`:
@@ -1004,20 +1033,11 @@ impl StringValidator {
         }
 
         // TS: `isNull(thisMinLength)` (`NullUtil.isNull`, which is true for
-        // both `undefined` and `null`) — unlike the constructor's own
-        // bound-order checks above (which read `min_length`/`max_length`
-        // straight as `f64`s and rely on a `NaN` comparison already being
-        // `false`, the same outcome an absent/null TS bound gives), this
-        // method's own `isNull` calls make the absent-vs-null distinction
-        // `length_bound_field` preserves in `Some`/`None` (accordproject/concerto-rust#217's
-        // "must be specified" corner) invisible again: an absent-key `NaN`
-        // sentinel is exactly as "no bound" here as an explicit-`null`
-        // `None` is, so both must take the same branch below (P5-05-T2a
-        // review: this fell out of sync with `length_bound_field`'s new
-        // `Some(NaN)` state and silently passed a widened `Some(NaN)` bound
-        // as compatible with a narrower real one, oracle
-        // `StringValidator.compatibleWith` fixtures `0a5c036e…`, `9741b5ff…`,
-        // `acec2eb1…`, `b95d5042…`).
+        // both `undefined` and `null`). An absent or `null` bound is `None`
+        // ([`length_bound_field`]); a `NaN` bound (a non-numeric AST value)
+        // takes the same "no bound" branch, as it did before BC-40 (P5-05-T2a
+        // review: oracle `StringValidator.compatibleWith` fixtures
+        // `0a5c036e…`, `9741b5ff…`, `acec2eb1…`, `b95d5042…`).
         fn is_null_bound(bound: Option<f64>) -> bool {
             bound.is_none_or(f64::is_nan)
         }
@@ -1204,6 +1224,34 @@ mod tests {
             err.to_string()
                 .contains("Invalid string length, minLength and-or maxLength must be specified")
         );
+    }
+
+    /// BC-40 (R1): a length validator whose bounds are both *absent*
+    /// (`length=[,]`), or not an object at all, is rejected like one whose
+    /// bounds are both `null`, as an `IllegalModel` error (BC-39) with the
+    /// `DefaultValidatorException` error type. TS 5.0.0 accepted it.
+    #[test]
+    fn string_validator_rejects_length_with_absent_bounds() {
+        for ast in [
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator", "minLength": null }),
+            serde_json::json!(true),
+        ] {
+            let length = length_validator_from_ast(Some(&ast));
+            let err = StringValidator::new(&field(), None, length.as_ref(), Some(&ast))
+                .expect_err(&format!("{ast} should be rejected"));
+            let contract = err.into_ported().expect("a contract error");
+            assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ast}");
+            assert_eq!(contract.code, "stringvalidator-constructor-invalidlength");
+            assert_eq!(
+                contract.validator.as_ref().map(|report| report.error_type),
+                Some(DEFAULT_VALIDATOR_EXCEPTION)
+            );
+        }
+        // One bound is enough.
+        let min_only = serde_json::json!({ "minLength": 1 });
+        let length = length_validator_from_ast(Some(&min_only));
+        assert!(StringValidator::new(&field(), None, length.as_ref(), Some(&min_only)).is_ok());
     }
 
     #[test]
@@ -1450,15 +1498,14 @@ mod tests {
     /// `minLength`/`maxLength` key specifically, built the way a real
     /// fixture reaches `StringValidator::new` — through
     /// `validators::length_validator_from_ast` (`Property::try_from`'s own
-    /// call site) — rather than `length_ast`'s straight `serde` decode
-    /// (whose `None` is always an absent key already, never reaching
-    /// `length_bound_field`'s `Some(f64::NAN)` sentinel for one). A
-    /// regression here (P5-05-T2a review) let a widened `Some(NaN)` bound
-    /// (from an absent key) silently compare as `false` against any real
-    /// bound in `compatible_with`'s old `(Some(this), Some(other)) if this <
-    /// other` arm, wrongly treating "no bound at all" as compatible with a
-    /// narrower one, instead of taking the `isNull` branch this validator's
-    /// own explicit-`null` (`length_ast`) case above already covers.
+    /// call site) — rather than `length_ast`'s straight `serde` decode. A
+    /// regression here (P5-05-T2a review) let a bound read from an absent
+    /// key (then a `Some(NaN)` sentinel, `None` since BC-40) silently compare
+    /// as `false` against any real bound in `compatible_with`'s old
+    /// `(Some(this), Some(other)) if this < other` arm, wrongly treating "no
+    /// bound at all" as compatible with a narrower one, instead of taking the
+    /// `isNull` branch this validator's own explicit-`null` (`length_ast`)
+    /// case above already covers.
     #[test]
     fn string_validator_length_compatibility_with_an_absent_bound_matches_an_explicit_null_one() {
         fn length_validator_via_ast(min: Option<f64>, max: Option<f64>) -> StringValidator {
@@ -1488,11 +1535,6 @@ mod tests {
         let this_no_max = length_validator_via_ast(Some(1.0), None);
         let other_has_max = length_validator_via_ast(Some(1.0), Some(10.0));
         assert!(!this_no_max.compatible_with(Some(&Validator::String(other_has_max))));
-
-        // Both absent on `this`, both real on `other`: still incompatible.
-        let this_no_bounds = length_validator_via_ast(None, None);
-        let other_both = length_validator_via_ast(Some(1.0), Some(100.0));
-        assert!(!this_no_bounds.compatible_with(Some(&Validator::String(other_both))));
 
         // Both sides have the *same* absent bound: compatible, matching the
         // "no constraint on either side" case `compatible_with` already
@@ -1780,5 +1822,77 @@ mod tests {
             !collection(Some(1.0), Some(5.0))
                 .compatible_with(Some(&collection(Some(2.0), Some(5.0))))
         );
+    }
+
+    // ---- BC-39: the error class of each validator error ----
+
+    /// The kind and `errorType` of a validator error.
+    fn kind_and_type(err: Error) -> (ErrorKind, &'static str) {
+        let contract = err.into_ported().expect("a contract error");
+        let error_type = contract
+            .validator
+            .as_ref()
+            .expect("a validator report")
+            .error_type;
+        (contract.kind, error_type)
+    }
+
+    /// BC-39 (R1): a validator error found while the model loads (a bad
+    /// bound, an invalid regex, a default value outside the validator) is an
+    /// `IllegalModel` error, and an instance value that fails a validator is a
+    /// `Validation` error. Both keep their `errorType`. TS 5.0.0 threw a
+    /// `BaseException` for all of them.
+    #[test]
+    fn validator_errors_are_illegal_model_at_load_and_validation_for_instances() {
+        const MODEL: ErrorKind = ErrorKind::IllegalModel;
+        const INSTANCE: ErrorKind = ErrorKind::Validation;
+        const DEFAULT: &str = DEFAULT_VALIDATOR_EXCEPTION;
+
+        // Load time.
+        let no_bounds = NumberValidator::new(&field(), &number_ast(None, None)).unwrap_err();
+        assert_eq!(kind_and_type(no_bounds), (MODEL, DEFAULT));
+        let swapped =
+            NumberValidator::new(&field(), &number_ast(Some(5.0), Some(1.0))).unwrap_err();
+        assert_eq!(kind_and_type(swapped), (MODEL, DEFAULT));
+        let number_default = field().with_default(serde_json::json!(50));
+        let outside =
+            NumberValidator::new(&number_default, &number_ast(Some(1.0), Some(10.0))).unwrap_err();
+        assert_eq!(kind_and_type(outside), (MODEL, DEFAULT));
+        let no_size =
+            CollectionSizeValidator::new(&field(), &size_ast(None, None), None).unwrap_err();
+        assert_eq!(kind_and_type(no_size), (MODEL, DEFAULT));
+        let bad_regex = string_validator(Some(("^[A-z", "")), None).unwrap_err();
+        assert_eq!(kind_and_type(bad_regex), (MODEL, REGEX_VALIDATOR_EXCEPTION));
+        let negative = string_validator(None, Some((Some(-1.0), None))).unwrap_err();
+        assert_eq!(kind_and_type(negative), (MODEL, DEFAULT));
+        let string_default = field().with_default(serde_json::json!("abc"));
+        let too_short = StringValidator::new(
+            &string_default,
+            None,
+            Some(&length_ast(Some(5.0), None)),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(kind_and_type(too_short), (MODEL, DEFAULT));
+
+        // Instance validation.
+        let number = NumberValidator::new(&field(), &number_ast(Some(1.0), Some(10.0))).unwrap();
+        let above = number
+            .validate(&field(), Some("id"), Some(11.0))
+            .unwrap_err();
+        assert_eq!(kind_and_type(above), (INSTANCE, DEFAULT));
+        let size =
+            CollectionSizeValidator::new(&field(), &size_ast(Some(1.0), None), None).unwrap();
+        let empty = size.validate(&field(), Some("id"), 0.0).unwrap_err();
+        assert_eq!(kind_and_type(empty), (INSTANCE, DEFAULT));
+        let string = string_validator(Some(("^a", "")), Some((None, Some(3.0)))).unwrap();
+        let long = string
+            .validate(&field(), Some("id"), Some("abcd"))
+            .unwrap_err();
+        assert_eq!(kind_and_type(long), (INSTANCE, DEFAULT));
+        let mismatch = string
+            .validate(&field(), Some("id"), Some("b"))
+            .unwrap_err();
+        assert_eq!(kind_and_type(mismatch), (INSTANCE, DEFAULT));
     }
 }

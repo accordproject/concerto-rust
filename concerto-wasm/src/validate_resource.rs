@@ -43,7 +43,9 @@
 //! cost no exception object built in WASM (P5-12b, candidate (e)):
 //!
 //! - [`CODE_VALID`]: the value is valid;
-//! - [`CODE_VALIDATION`]: a `Validation` error. TS reads its message with
+//! - [`CODE_VALIDATION`]: a `Validation` error that is not a validator's
+//!   (a validator's carries an `errorType`, BC-39, so it is a
+//!   [`CODE_ERROR`]). TS reads its message with
 //!   [`validate_error_message`] and throws `new ValidationException(message)`
 //!   itself, which is exactly what the error factory builds for that kind
 //!   (src/engine/errors.ts);
@@ -96,7 +98,12 @@ fn code_of(result: std::result::Result<Result<()>, Unsupported>) -> u32 {
         Ok(Ok(())) => return CODE_VALID,
         Ok(Err(err)) => {
             let code = match &err {
-                Error::Contract(c) if c.kind == ErrorKind::Validation => CODE_VALIDATION,
+                // A validator error (BC-39) is a `Validation` error too, but
+                // it carries an `errorType`, which only the full `throw` path
+                // sets on the exception.
+                Error::Contract(c) if c.kind == ErrorKind::Validation && c.validator.is_none() => {
+                    CODE_VALIDATION
+                }
                 _ => CODE_ERROR,
             };
             (code, err)
@@ -386,6 +393,19 @@ mod tests {
         )
         .into();
         assert_eq!(code_of(Ok(Err(validation))), CODE_VALIDATION);
+        // A validator's `Validation` error (BC-39) keeps its `errorType`
+        // through the full `throw` path.
+        let mut validator = concerto_core::error::ContractError::pre_port(
+            ErrorKind::Validation,
+            "too long".to_string(),
+            None,
+        );
+        validator.validator = Some(concerto_core::error::ValidatorReport {
+            id: "null".to_string(),
+            fqn: "org.acme@1.0.0.C.s".to_string(),
+            error_type: "DefaultValidatorException",
+        });
+        assert_eq!(code_of(Ok(Err(validator.into()))), CODE_ERROR);
         let other: Error = concerto_core::error::ContractError::pre_port(
             ErrorKind::TypeNotFound,
             "missing".to_string(),
