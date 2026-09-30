@@ -6253,7 +6253,7 @@ ModelManager.addCTOModel	86003d3c8a371c45e3d044d7	pass
 ModelManager.addCTOModel	8617c709737a00478e3b6079	pass
 ModelManager.addCTOModel	861ccd6b760bcf698f0df3fb	pass
 ModelManager.addCTOModel	8640191f5c16f1dda3a927f0	pass
-ModelManager.addCTOModel	86d8728f782c4378437d2daf	pass
+ModelManager.addCTOModel	86d8728f782c4378437d2daf	fail:class-mismatch
 ModelManager.addCTOModel	880098fd73184d948d972253	pass
 ModelManager.addCTOModel	886860c6fa7e39f92b83f79a	pass
 ModelManager.addCTOModel	88d344c256855d90498e52e2	pass
@@ -6710,7 +6710,7 @@ ModelManager.addCTOModel	d78ab1ab95090b8fc92c4add	pass
 ModelManager.addCTOModel	d78e05d08468c05787f824ad	pass
 ModelManager.addCTOModel	d7f57b731561f75fd8c8f348	pass
 ModelManager.addCTOModel	d8103ffb000a2b571fdfd871	pass
-ModelManager.addCTOModel	d85b28076a8ece00c558322c	pass
+ModelManager.addCTOModel	d85b28076a8ece00c558322c	fail:class-mismatch
 ModelManager.addCTOModel	d869636cd0d03a81226e7024	pass
 ModelManager.addCTOModel	d8cfe03400ec78ff1bfea7ae	pass
 ModelManager.addCTOModel	d9234910dbfddef0f7e93746	pass
@@ -8400,7 +8400,7 @@ ModelManager.validateModelFiles	0b1cc315a23d8ef418875e95	pass
 ModelManager.validateModelFiles	0c3b211ea1cddf829787c629	pass
 ModelManager.validateModelFiles	0c55e86b38d14cef5fa14f1c	pass
 ModelManager.validateModelFiles	0cb350a3a55a5cd3a097df91	pass
-ModelManager.validateModelFiles	0e00ad666a82bab5f4398fc2	pass
+ModelManager.validateModelFiles	0e00ad666a82bab5f4398fc2	fail:state-divergence
 ModelManager.validateModelFiles	0e722be103499c89800c7b44	pass
 ModelManager.validateModelFiles	0e829a2bff3907a29e315d8d	pass
 ModelManager.validateModelFiles	0ea829536020835895202d07	pass
@@ -8445,7 +8445,7 @@ ModelManager.validateModelFiles	320c1195bff042ed06d8980b	pass
 ModelManager.validateModelFiles	3258f38fbcbea24464b95d6c	pass
 ModelManager.validateModelFiles	3291428502bf74c8e2699c19	pass
 ModelManager.validateModelFiles	3300bad29a9e348af232b08a	pass
-ModelManager.validateModelFiles	343223828152dd93cffd4c24	pass
+ModelManager.validateModelFiles	343223828152dd93cffd4c24	fail:class-mismatch
 ModelManager.validateModelFiles	359fd7391cba0198cf27a68a	pass
 ModelManager.validateModelFiles	35c63eb8e78d7bcb0bfa98d3	pass
 ModelManager.validateModelFiles	37d53593fd5389b1892a22c6	pass
@@ -8581,7 +8581,7 @@ ModelManager.validateModelFiles	8d0b428da46327c72e5ac532	pass
 ModelManager.validateModelFiles	8def523a2dfa50af4cc003ae	pass
 ModelManager.validateModelFiles	8eeaa9c87b5b4e5718625c6e	pass
 ModelManager.validateModelFiles	918ba3ea67250edb77758805	pass
-ModelManager.validateModelFiles	91fbc42e091bda3907e47d53	pass
+ModelManager.validateModelFiles	91fbc42e091bda3907e47d53	fail:class-mismatch
 ModelManager.validateModelFiles	9376033ac34119e32b65263f	pass
 ModelManager.validateModelFiles	93b0210fc4b99d5f9e9fb796	pass
 ModelManager.validateModelFiles	93ddb7516f9ca825f50a94e6	pass
@@ -8631,7 +8631,7 @@ ModelManager.validateModelFiles	b0d679d25803012c5ecb3edf	pass
 ModelManager.validateModelFiles	b11f9424aea0bd57938987de	pass
 ModelManager.validateModelFiles	b123a2ffb7004f57251bf808	pass
 ModelManager.validateModelFiles	b21cbc92f30d080273d067ad	pass
-ModelManager.validateModelFiles	b25d9dd5f7e2162ef0a0b2ee	pass
+ModelManager.validateModelFiles	b25d9dd5f7e2162ef0a0b2ee	fail:state-divergence
 ModelManager.validateModelFiles	b325d0f14563faa5347c6f1f	pass
 ModelManager.validateModelFiles	b396078a29297c4db3da1c1d	pass
 ModelManager.validateModelFiles	b3ad530c1392266ce23e7294	pass
@@ -8678,7 +8678,7 @@ ModelManager.validateModelFiles	cc9586575602ccf85d3f3c10	pass
 ModelManager.validateModelFiles	cd12ade758b4addac19a7dbf	pass
 ModelManager.validateModelFiles	cd8e1654838841b8d6e68d7d	pass
 ModelManager.validateModelFiles	cdb310652320b4f571692df0	pass
-ModelManager.validateModelFiles	ce4c72b99abd76dea938c762	pass
+ModelManager.validateModelFiles	ce4c72b99abd76dea938c762	fail:class-mismatch
 ModelManager.validateModelFiles	cfa4f2eac2b2df6d6346247a	pass
 ModelManager.validateModelFiles	cfef990f8936ead454a2a8fd	pass
 ModelManager.validateModelFiles	d010ea60d66ee30b6a7902e1	pass
@@ -8723,7 +8723,7 @@ ModelManager.validateModelFiles	e513214adb3fe69a16980729	pass
 ModelManager.validateModelFiles	e5bd518003c5b19e3613c342	pass
 ModelManager.validateModelFiles	e5ecedef2cd131c7bdf0651e	pass
 ModelManager.validateModelFiles	e60259ee40713de348ed18e9	pass
-ModelManager.validateModelFiles	e69364085d56bf0e71748217	pass
+ModelManager.validateModelFiles	e69364085d56bf0e71748217	fail:class-mismatch
 ModelManager.validateModelFiles	e7c3fc28cbc5cf96ad2ed3fd	pass
 ModelManager.validateModelFiles	e804a8fbe28ee289b0f3805d	pass
 ModelManager.validateModelFiles	e979b0c3d921c0a6629f5aff	pass
@@ -8834,9 +8834,9 @@ ModelUtil.isSystemProperty	f66c92fcffdaacfab580e598	pass
 ModelUtil.isValidIdentifier	0692921295a1df144f9d9e6c	pass
 ModelUtil.isValidIdentifier	183076801c054024763a587a	pass
 ModelUtil.isValidIdentifier	468f923bf034b4b525585c82	pass
-ModelUtil.isValidIdentifier	69180a304acffbfb4c5dd2b9	pass
+ModelUtil.isValidIdentifier	69180a304acffbfb4c5dd2b9	fail:value-mismatch
 ModelUtil.isValidIdentifier	caba14b152502469c5846f0f	pass
-ModelUtil.isValidIdentifier	ddc54fdc16555fd15439a76d	pass
+ModelUtil.isValidIdentifier	ddc54fdc16555fd15439a76d	fail:value-mismatch
 ModelUtil.isValidIdentifier	e6950fdea351d9a0ad4938a1	pass
 ModelUtil.isValidIdentifier	ea8308fef78b0e065847f858	pass
 ModelUtil.isValidIdentifier	f803bb772273772d782c8927	pass
@@ -9849,7 +9849,7 @@ Resource.validate	d2358f8a29e58042f7c2de82	pass
 Resource.validate	d247e2f9102e71d9e652908f	pass
 Resource.validate	d26b00158798833cf0f5bc2f	pass
 Resource.validate	d38602da7faf720ef90b4f00	pass
-Resource.validate	d444ebcf0cf5a3c23e5ee6dd	pass
+Resource.validate	d444ebcf0cf5a3c23e5ee6dd	fail:class-mismatch
 Resource.validate	e0884b230ad1cda7f998ae8f	pass
 Resource.validate	e112db6f710c1ba9da2175b7	pass
 Resource.validate	e2649af2c774da7d2f7a8484	pass
@@ -11010,7 +11010,7 @@ Serializer.fromJSON	84ab9e39b1578f430ebf46e4	pass
 Serializer.fromJSON	84b8f621ab6e5675c7b0e7b4	pass
 Serializer.fromJSON	84b95c2f381825a9397ddad8	pass
 Serializer.fromJSON	850c8ffc5dd829804c4442ac	pass
-Serializer.fromJSON	85289b13ad849c509a61d932	pass
+Serializer.fromJSON	85289b13ad849c509a61d932	fail:class-mismatch
 Serializer.fromJSON	852f78af6d3c57e1d1af131a	pass
 Serializer.fromJSON	853af8b9ef7b95224e8881ce	pass
 Serializer.fromJSON	859e45ef592a60fe3d4d7a17	pass
@@ -11858,7 +11858,7 @@ Serializer.fromJSON	f0dc934339430f55997bf460	pass
 Serializer.fromJSON	f100f98cbea1fa3dbf58f160	pass
 Serializer.fromJSON	f12026c57c9b526858af5bb0	pass
 Serializer.fromJSON	f12bc914427a35e00fbcef17	pass
-Serializer.fromJSON	f15994fd38479210bfa67c82	pass
+Serializer.fromJSON	f15994fd38479210bfa67c82	fail:class-mismatch
 Serializer.fromJSON	f1723866ac7bdaa3f7f922f7	pass
 Serializer.fromJSON	f1c630920fbfd2800e0df209	pass
 Serializer.fromJSON	f1e40c6c4a6337da8c7854ca	pass
@@ -12559,7 +12559,7 @@ Serializer.toJSON	3ac8d7821c96cee6301149b4	pass
 Serializer.toJSON	3ae2a6d1d5ba5629e5cd00fb	pass
 Serializer.toJSON	3b0c4c5155b696c87d55784e	pass
 Serializer.toJSON	3b2a8b89cbdb8d30c2eae580	pass
-Serializer.toJSON	3b324a181dc418651686defb	pass
+Serializer.toJSON	3b324a181dc418651686defb	fail:class-mismatch
 Serializer.toJSON	3b49f8287a605f62c7d0ce06	pass
 Serializer.toJSON	3b6635def8247e652c569f32	pass
 Serializer.toJSON	3b73df27ccc7074da8a3f7ee	pass
@@ -12864,7 +12864,7 @@ Serializer.toJSON	65a77a2e5832a76967642729	pass
 Serializer.toJSON	66258b95734692288dee3036	pass
 Serializer.toJSON	662a041355b3872d48ecd2ec	pass
 Serializer.toJSON	6638eeaf5bf4219c816b48d8	pass
-Serializer.toJSON	6684ed223599d0576d1512f8	pass
+Serializer.toJSON	6684ed223599d0576d1512f8	fail:class-mismatch
 Serializer.toJSON	66a3d53bc1feb41b7d3a13bf	pass
 Serializer.toJSON	671508214e5ecf5960a426fd	pass
 Serializer.toJSON	6716ed61ae936dec5b4c0388	pass
@@ -13007,7 +13007,7 @@ Serializer.toJSON	7cd9e98437c99e9e88361458	pass
 Serializer.toJSON	7cf22857dcc4af1824d6d1ec	pass
 Serializer.toJSON	7cf9a6f299c50d6878b5b18a	pass
 Serializer.toJSON	7d10906eea72a13d4e43e217	pass
-Serializer.toJSON	7d3800e3f4640b92e2c224b4	pass
+Serializer.toJSON	7d3800e3f4640b92e2c224b4	fail:class-mismatch
 Serializer.toJSON	7d65a2b039fa7e380d237f83	pass
 Serializer.toJSON	7d7de11ea378ba907aaa4c1f	pass
 Serializer.toJSON	7d7e1520b88330a46f43e9bc	pass
@@ -13106,7 +13106,7 @@ Serializer.toJSON	8c97c47d48bb4c8119d7a871	pass
 Serializer.toJSON	8d37cfb040fee5e526812fed	pass
 Serializer.toJSON	8d5fa84df6b4f5a16e68771f	pass
 Serializer.toJSON	8dab6c09d0b56641b232039a	pass
-Serializer.toJSON	8dddc00b8bfae07bfef03ca5	pass
+Serializer.toJSON	8dddc00b8bfae07bfef03ca5	fail:class-mismatch
 Serializer.toJSON	8dfbda2be08eda3e470e24d2	pass
 Serializer.toJSON	8dffa9f07846467f37af7ff6	pass
 Serializer.toJSON	8e089381345e1660db26efa6	pass
@@ -13172,7 +13172,7 @@ Serializer.toJSON	96b2870fa1dc83f5ea57ff34	pass
 Serializer.toJSON	96f79a7c9786926ee989928c	pass
 Serializer.toJSON	96fc1abdc37771b1ef5bcd72	pass
 Serializer.toJSON	9761ffa2ef1947885b3f135d	pass
-Serializer.toJSON	979f875542a474e9f77835ee	pass
+Serializer.toJSON	979f875542a474e9f77835ee	fail:class-mismatch
 Serializer.toJSON	97ae52bfba9b38f9504f045d	pass
 Serializer.toJSON	97de7c8204b806bc49ec0134	pass
 Serializer.toJSON	97fc5fcc4a6381d8173d85c2	pass
@@ -13261,7 +13261,7 @@ Serializer.toJSON	a0e72699496b8c4550dbdc96	pass
 Serializer.toJSON	a0f3a532cf95ec9e278eb31b	pass
 Serializer.toJSON	a10c61bc6832686820412ad9	pass
 Serializer.toJSON	a14d2b7173e299e45e185b78	pass
-Serializer.toJSON	a1904c4ff977a8514e15a39c	pass
+Serializer.toJSON	a1904c4ff977a8514e15a39c	fail:class-mismatch
 Serializer.toJSON	a229647dd58e1483cb4c50ad	pass
 Serializer.toJSON	a26e408d0a115135fdb60dc4	pass
 Serializer.toJSON	a296e78a80b405869c3ea1ac	pass
@@ -13867,7 +13867,7 @@ Serializer.toJSON	fa180a4464a3844d5c29d75c	pass
 Serializer.toJSON	fa240d2a2a0ab992e44509c5	pass
 Serializer.toJSON	fa258129fdc6d7c34f2a5bfb	pass
 Serializer.toJSON	fa46d38f6ec1c86326c9ec2f	pass
-Serializer.toJSON	fa5b026e1b5119eead5524e5	pass
+Serializer.toJSON	fa5b026e1b5119eead5524e5	fail:class-mismatch
 Serializer.toJSON	fa677a1063113078c00d1d0e	pass
 Serializer.toJSON	fa8b62dffca32f0dcdf5ede5	pass
 Serializer.toJSON	fa98628bbb998b4584d48618	pass
