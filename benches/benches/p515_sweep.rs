@@ -80,6 +80,24 @@ struct SetData {
     pairs: Vec<(String, String)>,
 }
 
+/// P5-60 (accordproject/concerto-rust#392): the same input fix as the TS
+/// sweep's `withoutEnumIsAbstract` (P5-56, `p515-sweep.mjs`). The generated
+/// synthetic-large model gives its EnumDeclaration an `isAbstract: false`,
+/// a key the metamodel does not declare for enums; the strict typed AST read
+/// (P5-49, P5-61) rejects it, so no crate row could load that set. It is
+/// dropped here, for every model, before the AST text is taken.
+fn without_enum_is_abstract(ast: &mut Value) {
+    if let Some(decls) = ast.get_mut("declarations").and_then(Value::as_array_mut) {
+        for decl in decls {
+            if decl["$class"] == "concerto.metamodel@1.0.0.EnumDeclaration" {
+                if let Some(obj) = decl.as_object_mut() {
+                    obj.remove("isAbstract");
+                }
+            }
+        }
+    }
+}
+
 fn load(set: &str) -> SetData {
     let path = common::fixtures_dir()
         .join("p515")
@@ -92,7 +110,8 @@ fn load(set: &str) -> SetData {
         .unwrap()
         .iter()
         .map(|m| {
-            let ast = m["ast"].clone();
+            let mut ast = m["ast"].clone();
+            without_enum_is_abstract(&mut ast);
             let text = serde_json::to_string(&ast).unwrap();
             (m["name"].as_str().unwrap().to_string(), ast, text)
         })
