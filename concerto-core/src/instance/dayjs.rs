@@ -1063,7 +1063,10 @@ mod parity {
             out.push(format!("{name}: {:?}", base.seen()));
             out.push(format!("{name}.utc(): {:?}", base.to_utc().seen()));
             out.push(format!("{name} wire: {:?}", base.wire().seen()));
-            out.push(format!("{name} == itself: {}", base == base));
+            // An invalid date equals nothing, itself included.
+            #[allow(clippy::eq_op)]
+            let itself = base == base;
+            out.push(format!("{name} == itself: {itself}"));
             let has_offset = !base.is_utc() && base.utc_offset() != 0.0;
             for input in &offsets {
                 let case = format!("{name}.utcOffset({input:?})");
