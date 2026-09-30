@@ -5477,6 +5477,22 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-49 (BC-19 with BC-17 and BC-20, R1): the strict AST shape check
+    /// the TS `ModelFile` constructor runs at model load
+    /// ([`concerto_core::instance::check_ast_shape`]), over the JSON AST
+    /// text. Throws an `IllegalModelException` for an AST that does not have
+    /// the metamodel's shape. Reads nothing of this handle and changes
+    /// nothing (not its epoch either). Additive; malformed JSON throws a JS
+    /// `SyntaxError`.
+    #[wasm_bindgen(js_name = checkAstShape)]
+    pub fn check_ast_shape(&self, ast: &str) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            Ok(concerto_core::instance::check_ast_shape(&value)?)
+        })
+    }
+
     /// The handle's own mutation counter (P5-06): bumped by every binding
     /// that can change this handle, and never reset, so anything a view
     /// read from the handle is still current while the epoch is unchanged.
@@ -7045,13 +7061,16 @@ fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
 
 /// `{ modelManager, decoratorCommandSet, vocabularies }`
 /// (`ExtractDecoratorsResult`, `src/decoratormanager.ts`'s JSDoc typedef),
-/// from a native [`dcs::extractor::ExtractResult`].
+/// from a native [`dcs::extractor::EncodedExtractResult`].
 ///
-/// The intermediate-`Value` encoding: [`extract_result_js`]'s fallback (P5-41).
-fn extract_result_to_js(result: &dcs::extractor::ExtractResult) -> Value {
+/// The intermediate-`Value` encoding: [`extract_result_js`]'s fallback
+/// (P5-41), with the command sets parsed back from their text (P5-57).
+fn extract_result_to_js(result: &dcs::extractor::EncodedExtractResult) -> Value {
+    let decorator_command_set: Value =
+        serde_json::from_str(&result.decorator_command_set).unwrap_or(Value::Null);
     json!({
         "modelManager": model_manager_to_ast(&result.model_manager),
-        "decoratorCommandSet": result.decorator_command_set,
+        "decoratorCommandSet": decorator_command_set,
         "vocabularies": result.vocabularies,
     })
 }
@@ -7080,41 +7099,33 @@ impl serde::Serialize for ModelAstsView<'_> {
     }
 }
 
-/// P5-41 (F-C): [`extract_result_to_js`]'s object, serialised straight from
-/// the borrowed [`dcs::extractor::ExtractResult`] (same keys, same order),
-/// plus the resident path's `staged` and `validated` keys, which
-/// [`DcsManagerHandle::extract`] appends after them.
-struct ExtractResultView<'a> {
-    result: &'a dcs::extractor::ExtractResult,
-    staged: Option<&'a [Value]>,
-}
-
-impl serde::Serialize for ExtractResultView<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(if self.staged.is_some() { 5 } else { 3 }))?;
-        map.serialize_entry(
-            "modelManager",
-            &ModelManagerAstView(&self.result.model_manager),
-        )?;
-        map.serialize_entry("decoratorCommandSet", &self.result.decorator_command_set)?;
-        map.serialize_entry("vocabularies", &self.result.vocabularies)?;
-        if let Some(staged) = self.staged {
-            map.serialize_entry("staged", staged)?;
-            map.serialize_entry("validated", &true)?;
-        }
-        map.end()
-    }
-}
-
-/// The JSON text of [`ExtractResultView`]: what `serde_json::to_string` of
-/// [`extract_result_to_js`]'s `Value` (plus the resident keys) gives, byte
-/// for byte, without building that `Value`.
+/// The JSON text of [`extract_result_to_js`]'s object, serialised straight
+/// from the borrowed [`dcs::extractor::EncodedExtractResult`] (same keys,
+/// same order, same bytes), plus the resident path's `staged` and
+/// `validated` keys, which [`DcsManagerHandle::extract`] appends after
+/// them. P5-41 (F-C) serialises the model ASTs without cloning them into a
+/// new `Value`; P5-57 (T3, accordproject/concerto-rust#378) splices in the
+/// command sets, which the extractor has already encoded from the borrowed
+/// AST nodes.
 fn extract_result_text(
-    result: &dcs::extractor::ExtractResult,
+    result: &dcs::extractor::EncodedExtractResult,
     staged: Option<&[Value]>,
 ) -> serde_json::Result<String> {
-    serde_json::to_string(&ExtractResultView { result, staged })
+    let mut out = Vec::new();
+    out.extend_from_slice(b"{\"modelManager\":");
+    serde_json::to_writer(&mut out, &ModelManagerAstView(&result.model_manager))?;
+    out.extend_from_slice(b",\"decoratorCommandSet\":");
+    out.extend_from_slice(result.decorator_command_set.as_bytes());
+    out.extend_from_slice(b",\"vocabularies\":");
+    serde_json::to_writer(&mut out, &result.vocabularies)?;
+    if let Some(staged) = staged {
+        out.extend_from_slice(b",\"staged\":");
+        serde_json::to_writer(&mut out, staged)?;
+        out.extend_from_slice(b",\"validated\":true");
+    }
+    out.push(b'}');
+    // Every piece is serde_json output or a Rust `String`: valid UTF-8.
+    String::from_utf8(out).map_err(serde::ser::Error::custom)
 }
 
 /// P5-41 (F-C): the JS value of an extract result, encoded directly
@@ -7122,7 +7133,7 @@ fn extract_result_text(
 /// intermediate-`Value` path ([`extract_result_to_js`] then [`to_js`]) stays
 /// as the fallback, should the direct encoding or its parse ever fail.
 fn extract_result_js(
-    result: &dcs::extractor::ExtractResult,
+    result: &dcs::extractor::EncodedExtractResult,
     staged: Option<Vec<Value>>,
 ) -> JsValue {
     if let Some(js) = extract_result_text(result, staged.as_deref())
@@ -7274,7 +7285,7 @@ pub fn decorator_manager_extract_decorators(
         let mm = model_manager_from_owned_asts(models_json)?;
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
-        let result = dcs::extract_decorators(&mm, &opts)?;
+        let result = dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractAll)?;
         Ok(extract_result_js(&result, None))
     })
 }
@@ -7292,7 +7303,7 @@ pub fn decorator_manager_extract_vocabularies(
         let mm = model_manager_from_owned_asts(models_json)?;
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
-        let result = dcs::extract_vocabularies(&mm, &opts)?;
+        let result = dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractVocab)?;
         Ok(extract_result_js(&result, None))
     })
 }
@@ -7311,7 +7322,7 @@ pub fn decorator_manager_extract_non_vocab_decorators(
         let mm = model_manager_from_owned_asts(models_json)?;
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
-        let result = dcs::extract_non_vocab_decorators(&mm, &opts)?;
+        let result = dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractNonVocab)?;
         Ok(extract_result_js(&result, None))
     })
 }
@@ -7530,29 +7541,9 @@ impl DcsManagerHandle {
         decorator_command_sets: JsValue,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        run(|| {
-            self.manager
-                .set_decorator_validation(target.manager.decorator_validation().clone());
-            let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-            let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
-
-            let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
-            let mut opts = decorate_options_from_js(&options_json);
-
-            // `dcs::decorate_models` validates the result unless the command
-            // sets are empty or `disable_metamodel_validation` (as the
-            // options stand once `skip_validation_and_resolution` has set
-            // it) is `Some(true)`.
-            let applied = !sets.is_empty();
-            let decorated = dcs::decorate_models(&self.manager, &mut sets, &mut opts)?;
-            let validated = applied && opts.disable_metamodel_validation != Some(true);
-            let staged = stage_result(target, &decorated);
-            Ok(to_js(&json!({
-                "ast": model_manager_to_ast(&decorated),
-                "staged": staged,
-                "validated": validated,
-            })))
-        })
+        self.manager
+            .set_decorator_validation(target.manager.decorator_validation().clone());
+        run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
     }
 
     /// [`decorator_manager_extract_decorators`] on the resident manager,
@@ -7565,7 +7556,7 @@ impl DcsManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        self.extract(target, &options, dcs::extract_decorators)
+        self.extract(target, &options, dcs::extractor::Action::ExtractAll)
     }
 
     /// [`decorator_manager_extract_vocabularies`] on the resident manager
@@ -7576,7 +7567,7 @@ impl DcsManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        self.extract(target, &options, dcs::extract_vocabularies)
+        self.extract(target, &options, dcs::extractor::Action::ExtractVocab)
     }
 
     /// [`decorator_manager_extract_non_vocab_decorators`] on the resident
@@ -7587,7 +7578,7 @@ impl DcsManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        self.extract(target, &options, dcs::extract_non_vocab_decorators)
+        self.extract(target, &options, dcs::extractor::Action::ExtractNonVocab)
     }
 }
 
@@ -7620,17 +7611,150 @@ impl DcsManagerHandle {
         &self,
         target: &mut ModelManagerHandle,
         options: &JsValue,
-        op: fn(
-            &ModelManager,
-            &dcs::ExtractOptions,
-        ) -> concerto_core::Result<dcs::extractor::ExtractResult>,
+        action: dcs::extractor::Action,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| staged_extract(&self.manager, target, options, action))
+    }
+}
+
+/// [`DcsManagerHandle::decorate_models`]'s body, on `manager` (whose
+/// `decoratorValidation` the caller has already set to `target`'s): the
+/// result staged into `target`, and `{ast, staged, validated}` returned.
+fn staged_decorate_models(
+    manager: &ModelManager,
+    target: &mut ModelManagerHandle,
+    decorator_command_sets: &JsValue,
+    options: &JsValue,
+) -> Result<JsValue> {
+    let sets_json = to_json(decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
+    let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+
+    let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
+    let mut opts = decorate_options_from_js(&options_json);
+
+    // `dcs::decorate_models` validates the result unless the command sets
+    // are empty or `disable_metamodel_validation` (as the options stand
+    // once `skip_validation_and_resolution` has set it) is `Some(true)`.
+    let applied = !sets.is_empty();
+    let decorated = dcs::decorate_models(manager, &mut sets, &mut opts)?;
+    let validated = applied && opts.disable_metamodel_validation != Some(true);
+    let staged = stage_result(target, &decorated);
+    Ok(to_js(&json!({
+        "ast": model_manager_to_ast(&decorated),
+        "staged": staged,
+        "validated": validated,
+    })))
+}
+
+/// [`DcsManagerHandle::extract`]'s body, on `manager`: one extract
+/// operation, its result's model files staged into `target`.
+fn staged_extract(
+    manager: &ModelManager,
+    target: &mut ModelManagerHandle,
+    options: &JsValue,
+    action: dcs::extractor::Action,
+) -> Result<JsValue> {
+    let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
+    let opts = extract_options_from_js(&options_json);
+    let result = dcs::extract_encoded(manager, &opts, action)?;
+    let staged = stage_result(target, &result.model_manager);
+    Ok(extract_result_js(&result, Some(staged)))
+}
+
+// ---------------------------------------------------------------------------
+// P5-55 (T1, F-A1, accordproject/concerto-rust#376): the DecoratorManager
+// operations on the source ModelManager's own rustHandle. Additive: the
+// `decoratorManager*` bindings and [`DcsManagerHandle`] are unchanged and
+// stay the view's fallbacks.
+//
+// The view's source ModelManager already mirrors its model files into its
+// rustHandle (P4-08, P5-34), so the handle holds exactly the models a
+// [`DcsManagerHandle`] would be built from: the same ASTs, loaded the same
+// way, with the same system models. [`dcs::decorate_models`] and
+// [`dcs::extract_encoded`] resolve those models themselves
+// (`ModelManager::models_ast`), so running them on the handle's own manager
+// skips the copy (`getAst`, then JsValue to `Value`, then the load) that a
+// cold [`DcsManagerHandle`] costs. Each operation is
+// [`DcsManagerHandle`]'s, staged into `target` the same way.
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// [`DcsManagerHandle::decorate_models`] on this handle's own manager.
+    /// `target` is the new ModelManager's handle, never this one. The result
+    /// is validated with `target`'s `decoratorValidation`, as
+    /// [`DcsManagerHandle::decorate_models`] validates it (P5-54): this
+    /// manager's own option is set to it for the call and restored after,
+    /// so the call never changes this manager (nor its epoch).
+    #[wasm_bindgen(js_name = dcsDecorateModels)]
+    pub fn dcs_decorate_models(
+        &mut self,
+        target: &mut ModelManagerHandle,
+        decorator_command_sets: JsValue,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        let own = self.manager.decorator_validation().clone();
+        self.manager
+            .set_decorator_validation(target.manager.decorator_validation().clone());
+        let result = run(|| {
+            staged_decorate_models(&self.manager, target, &decorator_command_sets, &options)
+        });
+        self.manager.set_decorator_validation(own);
+        result
+    }
+
+    /// [`DcsManagerHandle::extract_decorators`] on this handle's own
+    /// manager, staged into `target` (the new ModelManager's handle, never
+    /// this one). Never changes this manager.
+    #[wasm_bindgen(js_name = dcsExtractDecorators)]
+    pub fn dcs_extract_decorators(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
         run(|| {
-            let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
-            let opts = extract_options_from_js(&options_json);
-            let result = op(&self.manager, &opts)?;
-            let staged = stage_result(target, &result.model_manager);
-            Ok(extract_result_js(&result, Some(staged)))
+            staged_extract(
+                &self.manager,
+                target,
+                &options,
+                dcs::extractor::Action::ExtractAll,
+            )
+        })
+    }
+
+    /// [`DcsManagerHandle::extract_vocabularies`] on this handle's own
+    /// manager (see [`Self::dcs_extract_decorators`]).
+    #[wasm_bindgen(js_name = dcsExtractVocabularies)]
+    pub fn dcs_extract_vocabularies(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            staged_extract(
+                &self.manager,
+                target,
+                &options,
+                dcs::extractor::Action::ExtractVocab,
+            )
+        })
+    }
+
+    /// [`DcsManagerHandle::extract_non_vocab_decorators`] on this handle's
+    /// own manager (see [`Self::dcs_extract_decorators`]).
+    #[wasm_bindgen(js_name = dcsExtractNonVocabDecorators)]
+    pub fn dcs_extract_non_vocab_decorators(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            staged_extract(
+                &self.manager,
+                target,
+                &options,
+                dcs::extractor::Action::ExtractNonVocab,
+            )
         })
     }
 }
@@ -7647,9 +7771,12 @@ mod tests {
 
     use super::*;
 
-    /// P5-41 (F-C): the direct encoding of an extract result is, byte for
-    /// byte, the JSON text of the old intermediate `Value` (same keys, same
-    /// order, same numbers), with and without the resident path's keys.
+    /// P5-41 (F-C) and P5-57 (T3): the direct encoding of an extract result
+    /// (the model ASTs borrowed, the command sets encoded from the borrowed
+    /// AST nodes) is, byte for byte, the JSON text of the old intermediate
+    /// `Value` route (same keys, same order, same numbers), with and without
+    /// the resident path's keys, for each extract action; so is the
+    /// fallback's `Value`.
     #[test]
     fn extract_result_text_matches_the_value_route() {
         let dec = |name: &str, args: Value| json!({"$class": "concerto.metamodel@1.0.0.Decorator", "name": name, "arguments": args});
@@ -7686,15 +7813,49 @@ mod tests {
                 remove_decorators_from_model: remove,
                 locale: "en".to_string(),
             };
-            let result = dcs::extract_decorators(&mm, &opts).unwrap();
-            assert!(!result.decorator_command_set.is_empty());
-            assert!(!result.vocabularies.is_empty());
+            for (action, value_route) in [
+                (
+                    dcs::extractor::Action::ExtractAll,
+                    dcs::extract_decorators
+                        as fn(
+                            &ModelManager,
+                            &dcs::ExtractOptions,
+                        )
+                            -> concerto_core::Result<dcs::extractor::ExtractResult>,
+                ),
+                (
+                    dcs::extractor::Action::ExtractVocab,
+                    dcs::extract_vocabularies,
+                ),
+                (
+                    dcs::extractor::Action::ExtractNonVocab,
+                    dcs::extract_non_vocab_decorators,
+                ),
+            ] {
+                let value = value_route(&mm, &opts).unwrap();
+                let result = dcs::extract_encoded(&mm, &opts, action).unwrap();
+                let old = json!({
+                    "modelManager": model_manager_to_ast(&value.model_manager),
+                    "decoratorCommandSet": value.decorator_command_set,
+                    "vocabularies": value.vocabularies,
+                });
+                assert_eq!(
+                    extract_result_text(&result, None).unwrap(),
+                    serde_json::to_string(&old).unwrap()
+                );
+                assert_eq!(extract_result_to_js(&result), old);
+            }
 
-            let old = extract_result_to_js(&result);
-            assert_eq!(
-                extract_result_text(&result, None).unwrap(),
-                serde_json::to_string(&old).unwrap()
-            );
+            let value = dcs::extract_decorators(&mm, &opts).unwrap();
+            assert!(!value.decorator_command_set.is_empty());
+            assert!(!value.vocabularies.is_empty());
+            let result =
+                dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractAll).unwrap();
+            let old = json!({
+                "modelManager": model_manager_to_ast(&value.model_manager),
+                "decoratorCommandSet": value.decorator_command_set,
+                "vocabularies": value.vocabularies,
+            });
 
             let staged = vec![json!([0, null]), Value::Null];
             let mut old = old;

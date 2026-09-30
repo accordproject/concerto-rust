@@ -595,6 +595,15 @@ Catalogue rules the trial added:
   `engine-typeerror-notafunction` (`{expression} is not a function`). The
   first is exact for any nullish receiver. The second needs the source
   expression, which the port writes as TS spells it (`imp.types.forEach`).
+  **Since BC-19 (R1, P5-49)** a model load checks the AST's shape first
+  (`instance::metamodel::check_ast_shape`, on unless a manager opts out with
+  `metamodelValidation: false`), so an AST-walk site reaches one of these
+  entries only on the opt-out path. That path is an escape hatch for trusted
+  input (maintainer decision 2026-09-30 on #370): a malformed AST there gets
+  unspecified behaviour, an error but never a WASM trap or a process crash,
+  with no guarantee of its class or message. It still behaves as TS 5.0.0 did
+  until P5-61 removes the redundant guards. None is retired: each is still
+  reachable there, or from instance data (the serializer, DCS commands).
 
 **Rendering is a faithful port of `globalize.ts` `messageFormatter`.** Params
 are replaced in insertion order. Each `{name}` is replaced *globally*, and
@@ -622,7 +631,7 @@ difference is reported for information, not judged (section 2).
 | `TypeNotFound` | `TypeNotFoundException(typeName, message)` | `@accordproject/concerto-core` | `params` must include `typeName`. The default message is `typenotfounderror-defaultmessage`. |
 | `Validation` | `ValidationException(message)` | `@accordproject/concerto-util` | the BaseException default component |
 | `Metamodel` | `MetamodelException(message)` | `@accordproject/concerto-util` | |
-| `Validator` | concerto-util `BaseException(message, undefined, errorType)` | `@accordproject/concerto-util` | the message is `Validator error for field \`<id>\`. <fqn>: <msg>` (`Validator.reportError`), rendered whole in Rust (catalogue `validator-reporterror`); `code` is the inner message's key. `errorType` is `DefaultValidatorException` or `RegexValidatorException`. |
+| `Validator` | concerto-util `BaseException(message, undefined, errorType)` | `@accordproject/concerto-util` | not raised since BC-39 (R1, P5-53): a validator error is `IllegalModel` when the model loads (a bad bound or regex, a default outside the validator) and `Validation` for an instance value, and either one carries the validator report, so the shim sets `errorType` on it. The message is `Validator error for field \`<id>\`. <fqn>: <msg>` (`Validator.reportError`), rendered whole in Rust (catalogue `validator-reporterror`); `code` is the inner message's key. `errorType` is `DefaultValidatorException` or `RegexValidatorException`. |
 | `InvalidArgument` | `Error(message)` | `null` | 638 fixtures |
 | `MalformedInput` | `TypeError(message)` | `null` | reproduced engine errors (2.2 step 3); 92 fixtures |
 | `RecursionLimit` | `RangeError(message)` | `null` | stack overflow at a TS recursion point, message `Maximum call stack size exceeded`, location `None` (2.5); 4 fixtures |

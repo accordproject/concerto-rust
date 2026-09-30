@@ -63,7 +63,12 @@
 //! `addModelFile` does) and `addMetamodel` (accordproject/concerto-rust#265:
 //! `ModelManager::add_metamodel` right after construction, the TS
 //! constructor's validating `addModelFile(this.metamodelModelFile)`, tracked
-//! as one of the recipe's files so a rebuild keeps it) are replayed. Any
+//! as one of the recipe's files so a rebuild keeps it) are replayed.
+//! `metamodelValidation` also selects BC-19's strict AST shape check (R1,
+//! P5-49): unless it is exactly `false`, every `new ModelFile(...)` a step,
+//! an op or an `mfnew` argument runs is preceded by
+//! [`concerto_core::instance::check_ast_shape`] on an object AST
+//! ([`Replayed::strict_ast`], [`shape_error`]). Any
 //! other option with a truthy value changes TS behaviour the Rust engine
 //! does not model yet (`regExp`), so such a recipe is `unsupported`.
 //!
@@ -263,8 +268,26 @@ pub struct Replayed {
     /// TS `options.metamodelValidation` (P4-08b, JS truthiness), set on
     /// every manager this recipe builds or rebuilds.
     metamodel_validation: bool,
+    /// BC-19 (R1, P5-49): whether `new ModelFile(this, ...)` runs the strict
+    /// AST shape check, which is TS `options?.metamodelValidation !== false`.
+    strict_ast: bool,
     files: Vec<Entry>,
     pub mm: ModelManager,
+}
+
+/// BC-19 (R1, P5-49): the strict AST shape check `new ModelFile(mm, ast,
+/// ...)` runs after its own argument checks, when `strict` (the manager's
+/// [`Replayed::strict_ast`]). Those argument checks reject an `ast` that is
+/// not a JS object with a plain `Error` first, so only an object or array
+/// `ast` is checked here; anything else is left to the caller's own
+/// construction.
+pub fn shape_error(strict: bool, ast: &Value) -> Option<OracleError> {
+    if strict && (ast.is_object() || ast.is_array()) {
+        return concerto_core::instance::check_ast_shape(ast)
+            .err()
+            .map(|e| to_oracle_error(&e));
+    }
+    None
 }
 
 /// A model file argument, rebuilt from `mfref` or `mfnew`.
@@ -738,6 +761,10 @@ impl<'h> Session<'h> {
             file.mm_index = owner;
             return Ok(file);
         }
+        let strict_ast = match owner {
+            Some(index) => self.pool[index].strict_ast,
+            None => self_mm.expect("checked above").strict_ast,
+        };
         let ast = v.get("ast").cloned().unwrap_or(Value::Null);
         let (file_name, nullish_name) =
             nullish_or_string(v.get("fileName").unwrap_or(&undefined()))?;
@@ -753,6 +780,10 @@ impl<'h> Session<'h> {
         };
         // TS `new ModelFile(mm, ast, definitions, fileName)` runs while the
         // input is decoded, so a failure here is "input construction failed".
+        // BC-19 (R1): the constructor's shape check comes first.
+        if let Some(e) = shape_error(strict_ast, &ast) {
+            return Err(divergence_from(&e, "new ModelFile"));
+        }
         ModelFile::from_json_with_definitions(&ast, definitions.clone(), file_name.clone())
             .map_err(|e| divergence_from(&to_oracle_error(&e), "new ModelFile"))?;
         Ok(FileArg {
@@ -1446,6 +1477,7 @@ struct Options {
     allow_reserved_system_type_names: bool,
     decorator_validation: DecoratorValidationOptions,
     metamodel_validation: bool,
+    strict_ast: bool,
     add_metamodel: bool,
 }
 
@@ -1458,6 +1490,7 @@ fn check_options(options: &Value) -> Faulty<Options> {
             allow_reserved_system_type_names: false,
             decorator_validation: DecoratorValidationOptions::default(),
             metamodel_validation: false,
+            strict_ast: true,
             add_metamodel: false,
         });
     }
@@ -1497,6 +1530,8 @@ fn check_options(options: &Value) -> Faulty<Options> {
             Some(v) => decode_decorator_validation(v)?,
         },
         metamodel_validation: map.get(METAMODEL_VALIDATION).is_some_and(truthy),
+        // BC-19 (R1): `options?.metamodelValidation !== false`.
+        strict_ast: map.get(METAMODEL_VALIDATION) != Some(&Value::Bool(false)),
         add_metamodel: map.get(ADD_METAMODEL).is_some_and(truthy),
     })
 }
@@ -1509,6 +1544,7 @@ impl Replayed {
             allow_reserved_system_type_names,
             decorator_validation,
             metamodel_validation,
+            strict_ast,
             add_metamodel,
         } = check_options(options)?;
         let mm = Self::fresh_manager(
@@ -1523,6 +1559,7 @@ impl Replayed {
             allow_reserved_system_type_names,
             decorator_validation,
             metamodel_validation,
+            strict_ast,
             files: Vec::new(),
             mm,
         };
@@ -1592,6 +1629,10 @@ impl Replayed {
                 .dangerously_allow_reserved_system_type_names_in_user_models(),
             decorator_validation: derived.mm.decorator_validation().clone(),
             metamodel_validation: derived.mm.metamodel_validation(),
+            // Every derived manager TS builds is a `new ModelManager()` with
+            // no `metamodelValidation` option (`extract*`, `decorateModels`,
+            // `modelManagerFromMetaModel`) or with `true` (`validate`).
+            strict_ast: true,
             files,
             mm: derived.mm,
         }
@@ -1655,6 +1696,7 @@ impl Replayed {
             allow_reserved_system_type_names: self.allow_reserved_system_type_names,
             decorator_validation: self.decorator_validation.clone(),
             metamodel_validation: self.metamodel_validation,
+            strict_ast: self.strict_ast,
             files: self.files.clone(),
             mm: Self::fresh_manager(
                 self.allow_reserved_system_type_names,
@@ -1766,6 +1808,12 @@ impl Replayed {
 
     pub fn file_id(&self, ns: &str) -> Option<ModelFileId> {
         self.mm.model_file_id(ns)
+    }
+
+    /// BC-19 (R1, P5-49): whether `new ModelFile(this, ...)` runs the
+    /// strict AST shape check ([`shape_error`]).
+    pub fn strict_ast(&self) -> bool {
+        self.strict_ast
     }
 
     fn cto_ast(&self, h: &Harness, cto: &str, file_name: Option<&str>) -> Faulty<Outcome> {
@@ -1937,6 +1985,10 @@ impl Replayed {
             Value::String(s) => Some(s.clone()),
             _ => None,
         };
+        // BC-19 (R1): `new ModelFile(this, ast, ...)` checks the shape.
+        if let Some(e) = shape_error(self.strict_ast, &ast) {
+            return Ok(Err(e));
+        }
         let mf = ModelFile::from_json_with_definitions(&ast, Some(cto.to_string()), file_name_str)
             .map_err(|e| {
                 Fault::Divergence(format!(
@@ -2221,6 +2273,10 @@ impl Replayed {
                 });
                 // `new ModelFile(...)` then `addModelFile(...)`: `add_model`
                 // builds the model file first, so its errors come first.
+                // BC-19 (R1): the constructor's shape check before either.
+                if let Some(e) = shape_error(self.strict_ast, &ast) {
+                    return Ok(Err(e));
+                }
                 self.add_file(
                     FileArg {
                         ast,
@@ -2278,6 +2334,10 @@ impl Replayed {
                     };
                     // `new ModelFile(this, model)`, then `addModelFile(…,
                     // true)`; TS keeps whatever loaded before an error.
+                    // BC-19 (R1): the constructor's shape check first.
+                    if let Some(e) = shape_error(self.strict_ast, &file.ast) {
+                        return Ok(Err(e));
+                    }
                     if let Err(e) = self.add_file(file, false)? {
                         return Ok(Err(e));
                     }
@@ -2306,6 +2366,11 @@ impl Replayed {
                         Err(parse_error) => return Ok(Err(parse_error)),
                     };
                     let (file_name, nullish_name) = nullish_or_string(&file_name_value)?;
+                    // BC-19 (R1): `new ModelFile(this, ast, ...)` checks
+                    // the shape.
+                    if let Some(e) = shape_error(self.strict_ast, &ast) {
+                        return Ok(Err(e));
+                    }
                     self.update_file(
                         FileArg {
                             ast,
@@ -2390,7 +2455,12 @@ impl Replayed {
                         _ => None,
                     };
                     match self.process_file(h, input, &file_name_value)? {
-                        Ok(ast) => (file_name, nullish_name, ast, definitions),
+                        // BC-19 (R1): `new ModelFile(this, ast, ...)` checks
+                        // the shape.
+                        Ok(ast) => match shape_error(self.strict_ast, &ast) {
+                            None => (file_name, nullish_name, ast, definitions),
+                            Some(e) => return restore(self, e),
+                        },
                         Err(e) => return restore(self, e),
                     }
                 }

@@ -324,8 +324,13 @@ pub enum ErrorKind {
     TypeNotFound,
     /// A value fails a validator declared on a field or scalar.
     ///
-    /// TS: concerto-util `BaseException(message, undefined, errorType)`,
-    /// thrown by `Validator.reportError`.
+    /// TS 5.0.0: concerto-util `BaseException(message, undefined,
+    /// errorType)`, thrown by `Validator.reportError`. Since BC-39 (R1) no
+    /// validator raises this kind: a validator error found while a model
+    /// loads is [`ErrorKind::IllegalModel`], and an instance value that fails
+    /// a validator is [`ErrorKind::Validation`], each keeping the
+    /// `errorType` in [`ContractError::validator`]. The variant stays so
+    /// that the enum's public shape does not change.
     Validator,
     /// An instance does not conform to its model.
     ///
@@ -577,7 +582,8 @@ js_compat_pub! {
         /// exception, holding that file's name (`modelFile.getName()`, `None`
         /// when it has none). The WASM shim passes the real JS model file instead.
         pub model_file: Option<Option<String>>,
-        /// `Validator` only: what `Validator.reportError` adds.
+        /// A validator error only (an `IllegalModel` or `Validation` error
+        /// since BC-39, `Validator` before): what `Validator.reportError` adds.
         pub validator: Option<ValidatorReport>,
         /// `ValidationException.details` (accordproject/concerto#1273): one
         /// entry per violation the error reports, for callers that enumerate
@@ -1711,6 +1717,51 @@ mod tests {
             )
             .message(),
             "Invalid default value `2022-11-18` for the DateTime field `org.acme@1.0.0.Foo.bar`: expected an ISO 8601 date-time with an offset, YYYY-MM-DDTHH:mm:ss[.SSS](Z|+HH:mm|-HH:mm), naming a real instant"
+        );
+    }
+
+    // Not TS templates: BC-17, BC-19 and BC-20 (P5-49,
+    // accordproject/concerto-rust#370), the strict AST shape check at load.
+    #[test]
+    fn golden_modelfile_load_decoratorsnotarray() {
+        assert_eq!(
+            contract(
+                "modelfile-load-decoratorsnotarray",
+                &[("value", "\"💥emoji\"")]
+            )
+            .message(),
+            "Invalid decorators. Expected array. Found \"💥emoji\""
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_namenotstring() {
+        assert_eq!(
+            contract("modelfile-load-namenotstring", &[("value", "1e308")]).message(),
+            "Invalid name. Expected a string. Found 1e308"
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_supertypename() {
+        assert_eq!(
+            contract("modelfile-load-supertypename", &[("value", "\"\"")]).message(),
+            "Invalid super type name. Expected a non-empty string. Found \"\""
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_astshape() {
+        assert_eq!(
+            contract(
+                "modelfile-load-astshape",
+                &[(
+                    "message",
+                    "Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
+                )]
+            )
+            .message(),
+            "Model AST does not conform to the metamodel: Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
         );
     }
 

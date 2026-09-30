@@ -701,12 +701,24 @@ export function runChecks(engine) {
 
     // A `lengthValidator` that is not even an object (a fuzz-mutated array,
     // matching a recorded cluster's minimised repro `lengthValidator: [10]`):
-    // every key on it reads as absent, so this behaves as "no length
-    // bounds at all" rather than throwing.
-    const notAnObject = engine.stringValidatorNew(view, null, [10]);
-    assert(notAnObject.minLength === null && notAnObject.maxLength === null, `lengthValidator:[10] -> ${JSON.stringify(notAnObject)}`);
+    // every key on it reads as absent, so it has no length bounds at all.
+    // Since BC-40 (R1, P5-53) that is rejected like `length=[,]`, with the
+    // "must be specified" error, an `IllegalModel` error keeping its
+    // `errorType` (BC-39), not a decode failure. v5.0.0 accepted it.
+    const named = {
+      field: { getName: () => 's' },
+      getFieldOrScalarDeclaration: () => ({ getFullyQualifiedName: () => 'ns.Box.s' }),
+    };
+    const notAnObject = thrown(() => engine.stringValidatorNew(named, null, [10]));
+    assert(
+      notAnObject instanceof EngineError
+        && notAnObject.payload.kind === 'IllegalModel'
+        && notAnObject.payload.errorType === 'DefaultValidatorException'
+        && notAnObject.message === 'Validator error for field `s`. ns.Box.s: Invalid string length, minLength and-or maxLength must be specified.',
+      `lengthValidator:[10] threw ${notAnObject && notAnObject.name}: ${notAnObject && notAnObject.message}`,
+    );
 
-    return { size, length, oneBoundOnly, regex, notAnObject };
+    return { size, length, oneBoundOnly, regex, notAnObject: notAnObject.payload.kind };
   });
 
   // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): TS's own
@@ -1062,6 +1074,27 @@ export function runChecks(engine) {
     assert(err.message === 'Invalid decorator. Expected object. Found null', `message ${err.message}`);
   });
 
+  // P5-49 (BC-19 with BC-17 and BC-20, R1): the strict AST shape check the
+  // TS ModelFile constructor runs at load.
+  check('checkAstShape accepts a well-formed model and rejects a malformed one (BC-19)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    h.checkAstShape(JSON.stringify(MODEL));
+    assert(h.epoch() === epoch, 'the check does not move the epoch');
+    const cases = [
+      [{ ...MODEL, decorators: 'x' }, 'modelfile-load-decoratorsnotarray'],
+      [{ ...MODEL, undeclared: [] }, 'modelfile-load-astshape'],
+      [{ ...MODEL, declarations: [{ ...MODEL.declarations[0], name: 7 }] }, 'modelfile-load-namenotstring'],
+    ];
+    for (const [ast, code] of cases) {
+      const err = thrown(() => h.checkAstShape(JSON.stringify(ast)));
+      assert(err instanceof EngineError, `${code}: threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `${code}: kind ${err.payload.kind}`);
+      assert(err.payload.code === code, `${code}: code ${err.payload.code}`);
+    }
+    assert(thrown(() => h.checkAstShape('{')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
+  });
+
   // P5-06a lazy-views spike: the staging bindings load an AST once, then
   // validate and register the loaded file without it crossing again.
   check('a staged model file validates and commits like addModelWithDefinitions', () => {
@@ -1382,6 +1415,58 @@ export function runChecks(engine) {
         `${viaHandle.constructor.name}: ${viaHandle.message} vs ${perCall.constructor.name}: ${perCall.message}`);
     }
     h.free();
+  });
+
+  // P5-55 (T1, F-A1): the DCS operations on a ModelManagerHandle's own
+  // manager give what the DcsManagerHandle ones give, stage the same way,
+  // and leave the handle (and its epoch) unchanged.
+  check('dcsDecorateModels and dcsExtract* run on the handle itself', () => {
+    const h = new engine.ModelManagerHandle();
+    h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, undefined, false);
+    const dcs = new engine.DcsManagerHandle([MODEL]);
+    const commandSet = {
+      $class: 'org.accordproject.decoratorcommands@0.3.0.DecoratorCommandSet',
+      name: 'smoke', version: '1.0.0',
+      commands: [{
+        $class: 'org.accordproject.decoratorcommands@0.3.0.Command', type: 'UPSERT',
+        target: { $class: 'org.accordproject.decoratorcommands@0.3.0.CommandTarget', namespace: 'org.example@1.0.0', declaration: 'Person' },
+        decorator: { $class: `${MM}.Decorator`, name: 'Smoke', arguments: [] },
+      }],
+    };
+    const epoch = h.epoch();
+    const pairs = [
+      ['dcsDecorateModels', 'decorateModels', [[commandSet], {}]],
+      ['dcsExtractDecorators', 'extractDecorators', [{ removeDecoratorsFromModel: true, locale: 'en' }]],
+      ['dcsExtractVocabularies', 'extractVocabularies', [{ removeDecoratorsFromModel: false, locale: 'en' }]],
+      ['dcsExtractNonVocabDecorators', 'extractNonVocabDecorators', [{ removeDecoratorsFromModel: true, locale: 'en' }]],
+    ];
+    for (const [own, resident, args] of pairs) {
+      const t1 = new engine.ModelManagerHandle();
+      const t2 = new engine.ModelManagerHandle();
+      const a = h[own](t1, ...structuredClone(args));
+      const b = dcs[resident](t2, ...structuredClone(args));
+      assert(JSON.stringify(a) === JSON.stringify(b), `${own}: ${JSON.stringify(a).slice(0, 200)}`);
+      assert(a.staged.some((s) => Array.isArray(s)), `${own} staged`);
+      t1.free();
+      t2.free();
+    }
+    assert(h.epoch() === epoch, 'the handle is unchanged');
+    // A resolution error throws what the resident handle throws.
+    const bad = {
+      $class: `${MM}.Model`, namespace: 'org.bad@1.0.0', imports: [],
+      declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 'Uses', isAbstract: false,
+        properties: [{ $class: `${MM}.ObjectProperty`, name: 'm', isArray: false, isOptional: false,
+          type: { $class: `${MM}.TypeIdentifier`, name: 'Missing' } }] }],
+    };
+    const hb = new engine.ModelManagerHandle();
+    hb.addModelWithDefinitions(JSON.stringify(bad), undefined, undefined, false);
+    const t = new engine.ModelManagerHandle();
+    const viaHandle = thrown(() => hb.dcsExtractDecorators(t, {}));
+    const perCall = thrown(() => engine.decoratorManagerExtractDecorators([bad], {}));
+    assert(viaHandle.constructor.name === perCall.constructor.name, `${viaHandle.constructor.name} vs ${perCall.constructor.name}`);
+    for (const x of [h, hb, t, dcs]) {
+      x.free();
+    }
   });
 
   mm.free();

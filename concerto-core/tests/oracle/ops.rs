@@ -860,7 +860,12 @@ fn exec_handles(h: &Harness, op: &str, inputs: &Inputs) -> Faulty<Dispatch> {
     // constructed `ModelFile` does not itself need it for these arguments —
     // only `getModelManager`/`getType` do, later, through `file.mm_index`.
     if class == "ModelFile" && member == "new" {
-        return Ok(model_file_new(&args));
+        // BC-19 (R1): the manager's strict AST shape check.
+        let strict_ast = match args.first() {
+            Some(Arg::Mm(index)) => session.pool[*index].strict_ast(),
+            _ => true,
+        };
+        return Ok(model_file_new(&args, strict_ast));
     }
 
     if member == "new" {
@@ -2007,7 +2012,7 @@ fn declaration_op(r: &Replayed, id: DeclId, member: &str) -> Dispatch {
 /// TS: `new ModelFile(modelManager, ast, definitions, fileName)` (P2-08),
 /// for a receiver never added to a manager via `addModelFile` (that is
 /// `ModelManager.addModelFile`, already dispatched).
-fn model_file_new(args: &[Arg]) -> Dispatch {
+fn model_file_new(args: &[Arg], strict_ast: bool) -> Dispatch {
     // Each constructor argument as plain data, `None` for JS `undefined`.
     let mut plain = [None, None, None];
     for (slot, (index, what)) in
@@ -2032,6 +2037,10 @@ fn model_file_new(args: &[Arg]) -> Dispatch {
         return ran(Err(to_oracle_error(&e)));
     }
     let ast = ast.expect("check_constructor_arguments rejects a missing ast");
+    // BC-19 (R1, P5-49): then the strict AST shape check.
+    if let Some(e) = recipe::shape_error(strict_ast, ast) {
+        return ran(Err(e));
+    }
     // A falsy non-string `definitions` passed those checks; TS keeps it as
     // given, but nothing the oracle compares reads it back (the harness's
     // `getDefinitions` answers only for a string).
@@ -3318,10 +3327,62 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             };
             let r = &session.pool[*index];
             let options = extract_options(plain_arg(&args, 1)?.as_ref());
-            let result = match member {
-                "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
-                "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
-                _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
+            let (action, value_route) = match member {
+                "extractDecorators" => (
+                    dcs::extractor::Action::ExtractAll,
+                    dcs::extract_decorators(&r.mm, &options),
+                ),
+                "extractVocabularies" => (
+                    dcs::extractor::Action::ExtractVocab,
+                    dcs::extract_vocabularies(&r.mm, &options),
+                ),
+                _ => (
+                    dcs::extractor::Action::ExtractNonVocab,
+                    dcs::extract_non_vocab_decorators(&r.mm, &options),
+                ),
+            };
+            // P5-57 (T3, accordproject/concerto-rust#378): the binding
+            // encodes the command sets directly from the borrowed AST
+            // nodes. Replay that route, and hold it byte for byte to the
+            // `Value` route it replaces: the same command-set JSON text,
+            // vocabularies and result models, or the same error.
+            let direct = dcs::extract_encoded(&r.mm, &options, action);
+            let agrees = match (&direct, &value_route) {
+                (Ok(d), Ok(v)) => {
+                    serde_json::to_string(&v.decorator_command_set)
+                        .ok()
+                        .as_deref()
+                        == Some(d.decorator_command_set.as_str())
+                        && d.vocabularies == v.vocabularies
+                        && d.model_manager
+                            .model_files()
+                            .map(ModelFile::ast)
+                            .eq(v.model_manager.model_files().map(ModelFile::ast))
+                }
+                (Err(d), Err(v)) => d == v,
+                _ => false,
+            };
+            if !agrees {
+                return Err(Fault::Divergence(format!(
+                    "{op}: the direct-encoded extract result differs from the Value route"
+                )));
+            }
+            let result = match direct {
+                Ok(res) => {
+                    let Ok(Value::Array(decorator_command_set)) =
+                        serde_json::from_str(&res.decorator_command_set)
+                    else {
+                        return Err(Fault::Divergence(format!(
+                            "{op}: the direct-encoded command sets are not a JSON array"
+                        )));
+                    };
+                    Ok(dcs::extractor::ExtractResult {
+                        model_manager: res.model_manager,
+                        decorator_command_set,
+                        vocabularies: res.vocabularies,
+                    })
+                }
+                Err(e) => Err(e),
             };
             Ok(ran(result.map_err(err).map(|res| {
                 let mut summary =
