@@ -350,24 +350,13 @@ fn exec_plain(op: &str, inputs: &Inputs) -> Option<Dispatch> {
         }
         "ModelUtil.isValidIdentifier" => {
             let arg0 = decode::arg(&args, 0);
-            // TS: `ID_REGEX.test(name as string)` — `RegExp.prototype.test`
-            // coerces its argument with `String()`, so a missing name
-            // becomes the string `"undefined"` and an explicit `null`
-            // becomes `"null"`; both are valid identifiers (DV-002,
-            // ts-bug). P2-09b: this harness used to require an already
-            // decoded string and reported these two nullish fixtures as
-            // unsupported instead of replaying DV-002.
-            let name = match &arg0 {
-                Decoded::Undefined => "undefined",
-                Decoded::Value(Value::Null) => "null",
-                _ => {
-                    let Ok(name) = decode::as_str(&arg0) else {
-                        bad_args!()
-                    };
-                    name
-                }
-            };
-            Ok(Value::Bool(model_util::is_valid_identifier(name)))
+            // BC-01 (R1, closing DV-002): a non-string is not a valid
+            // identifier, as the JS binding (`modelUtilIsValidIdentifier`)
+            // answers. TS 5.0.0 tested `String(name)`, so its `undefined`
+            // and `null` fixtures record `true`: both are intended changes.
+            Ok(Value::Bool(
+                decode::as_str(&arg0).is_ok_and(model_util::is_valid_identifier),
+            ))
         }
         "ModelUtil.getFullyQualifiedName" => {
             let arg0 = decode::arg(&args, 0);

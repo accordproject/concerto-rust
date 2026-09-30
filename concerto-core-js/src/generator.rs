@@ -146,8 +146,8 @@ impl<'a> Generator<'a> {
         if declaration.is_map_declaration() {
             return self.visit_map_declaration(declaration, obj);
         }
-        // `throw new Error('Unrecognised ' + JSON.stringify(thing))`.
-        Err(model::unrecognised())
+        // `visit`'s `Unrecognised` fallthrough (BC-08).
+        Err(model::unrecognised(declaration.fqn()))
     }
 
     /// TS: JSONGenerator.visitClassDeclaration.
@@ -198,7 +198,7 @@ impl<'a> Generator<'a> {
                 FieldType::Relationship(_) => {
                     self.visit_relationship_declaration(&field, &value)?
                 }
-                FieldType::EnumValue => return Err(model::unrecognised()),
+                FieldType::EnumValue => return Err(model::unrecognised_field(&field)),
                 _ => self.visit_field(&field, &value)?,
             };
             result.insert(name, converted);

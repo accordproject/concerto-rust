@@ -686,6 +686,17 @@ TS throws the **first** error it meets. Rust must return the same one:
 
 ### 2.5 Unbounded TS recursion: `RangeError`, never a native stack overflow
 
+**Superseded for cyclic inheritance by BC-11 (R1, P5-63,
+accordproject/concerto-rust#400, closing DV-013).** Every walk of an
+inheritance chain (the engine's `ModelManager::class_info_of`, and the WASM
+bindings that walk the JS views: `getProperties`, `getProperty`,
+`getIdentifierFieldName`, `getAllSuperTypeDeclarations`,
+`getAssignableClassDeclarations`) reports a cycle as an
+`IllegalModelException` naming it (`classdeclaration-circularinheritance`).
+`engine-rangeerror-maxcallstack` is retired and nothing raises
+`ErrorKind::RecursionLimit` any more. Rules 1 and 5 below still hold; rules
+2 to 4 and 6 describe the port before R1 and are kept for history.
+
 Four fixtures record a V8 stack overflow, all from cyclic inheritance
 (`concept A extends C`, `B extends A`, `C extends B`):
 
@@ -920,7 +931,8 @@ Rules:
     non-string: `isSystemProperty(1)` and `isPrimitiveType(undefined)` are
     `false`;
   - `RegExp.prototype.test(x)` and template literals apply `String(x)`:
-    `isValidIdentifier(undefined)` tests `"undefined"` (DV-002);
+    `isValidIdentifier(undefined)` tested `"undefined"` (DV-002; since BC-01,
+    R1, `ModelUtil.isValidIdentifier` answers `false` for a non-string);
   - falsy checks (`!fqn`, `if (namespace)`) cover every falsy JS value, so
     the binding tests JS truthiness before converting;
   - **pass-through results:** `getFullyQualifiedName(undefined, undefined)`

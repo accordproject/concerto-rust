@@ -1622,8 +1622,8 @@ impl ModelManager {
     }
 
     /// Every super type of `fqn`, from its direct super type up to the root,
-    /// with their fully-qualified names. A cyclic chain is a
-    /// `RecursionLimit` error.
+    /// with their fully-qualified names. A cyclic chain is an
+    /// `IllegalModel` error (BC-11).
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`.
     pub fn super_types(&self, fqn: &str) -> Result<Vec<(String, &Declaration)>> {
@@ -1671,7 +1671,7 @@ impl ModelManager {
     /// name of the declaration that declares each: the type's own first,
     /// then each super type's up to the root. It is an error when `fqn` is
     /// not a concept-like or enum type, a super type cannot be resolved, or
-    /// the chain is cyclic (`RecursionLimit`).
+    /// the chain is cyclic (`IllegalModel`, BC-11).
     ///
     /// TS: `ClassDeclaration.getProperties`, with `Property.getParent()`.
     pub fn properties(&self, fqn: &str) -> Result<Vec<(String, &Property)>> {
@@ -2061,10 +2061,9 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
     /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `super_chain`, so it returns the same `ErrorKind::RecursionLimit`
-    /// DV-013 documents for `getProperties`/`getProperty`/
-    /// `getIdentifierFieldName` — unobserved by any fixture, accepted on
-    /// accordproject/concerto-rust#151.
+    /// `super_chain`, so it returns the same `IllegalModelException` naming
+    /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
+    /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
     #[deprecated(since = "0.1.0", note = "use `super_types`")]
     pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         self.super_type_names(fqn)
@@ -2075,10 +2074,9 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
     /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `super_chain`, so it returns the same `ErrorKind::RecursionLimit`
-    /// DV-013 documents for `getProperties`/`getProperty`/
-    /// `getIdentifierFieldName` — unobserved by any fixture, accepted on
-    /// accordproject/concerto-rust#151.
+    /// `super_chain`, so it returns the same `IllegalModelException` naming
+    /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
+    /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
     fn super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         Ok(self
             .super_chain(fqn)?
@@ -2191,9 +2189,10 @@ impl ModelManager {
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
     ///
     /// On a cyclic inheritance chain this walks `super_chain`, so it returns
-    /// the same `ErrorKind::RecursionLimit` DV-013 documents for
-    /// `getProperties`/`getProperty`/`getIdentifierFieldName` — unobserved by
-    /// any fixture, accepted on accordproject/concerto-rust#151.
+    /// the same `IllegalModelException` naming the cycle as
+    /// `getProperties`/`getProperty`/`getIdentifierFieldName` (BC-11, R1;
+    /// TS 5.0.0 returns `true` when the target is in the cycle and otherwise
+    /// loops until it runs out of memory, DV-013).
     pub fn is_assignable_to(&self, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
         if sub_fqn == super_fqn {
             return Ok(true);
@@ -2353,14 +2352,41 @@ impl ModelManager {
         }
     }
 
+    /// BC-11 (R1): the `IllegalModelException` for a cyclic inheritance
+    /// chain. `cycle` is the loop from `repeated` round to the declaration
+    /// whose super type is `repeated` again; the error carries `repeated`'s
+    /// model file (TS 5.0.0 overflowed V8's stack instead, DV-013).
+    fn circular_inheritance(&self, cycle: &[DeclId], repeated: DeclId) -> Error {
+        let name = |id: DeclId| self.decl_fqn(id).unwrap_or_default().to_string();
+        let path = cycle
+            .iter()
+            .chain(std::iter::once(&repeated))
+            .map(|id| name(*id))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let mut err = ContractError::new(
+            ErrorKind::IllegalModel,
+            "classdeclaration-circularinheritance",
+            vec![("type", name(repeated)), ("cycle", path)],
+        );
+        err.model_file = Some(
+            self.model_file_of(repeated)
+                .and_then(|file| self.file(file))
+                .and_then(ModelFile::file_name)
+                .map(str::to_string),
+        );
+        err.into()
+    }
+
     /// The cached [`ClassInfo`] of a declaration, computed on first use.
     ///
     /// TS walks the chain by recursion (`ClassDeclaration.getProperties`,
-    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so a
-    /// cyclic chain overflows V8's stack. This walk is a loop with a
-    /// visited set (PORTING.md 2.5 rule 1) and, when it meets a declaration
-    /// again, returns the `RangeError` V8 raises (rule 2), after the same
-    /// earlier checks: a missing or non-class super type still fails first.
+    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so in
+    /// TS 5.0.0 a cyclic chain overflowed V8's stack (DV-013). This walk is
+    /// a loop with a visited set (PORTING.md 2.5 rule 1) and, when it meets
+    /// a declaration again, returns an `IllegalModelException` naming the
+    /// cycle (BC-11, R1), after the same earlier checks: a missing or
+    /// non-class super type still fails first.
     fn class_info_of(&self, id: DeclId) -> Result<Arc<ClassInfo>> {
         {
             let cache = match self.class_cache.lock() {
@@ -2375,14 +2401,8 @@ impl ModelManager {
         let mut properties = Vec::new();
         let mut current = id;
         loop {
-            if chain.contains(&current) {
-                // DV-013: TS has no cycle check here and overflows the stack.
-                return Err(ContractError::new(
-                    ErrorKind::RecursionLimit,
-                    "engine-rangeerror-maxcallstack",
-                    Vec::new(),
-                )
-                .into());
+            if let Some(start) = chain.iter().position(|seen| *seen == current) {
+                return Err(self.circular_inheritance(&chain[start..], current));
             }
             let current_fqn = self.decl_fqn(current)?;
             let declaration = self
@@ -5547,10 +5567,11 @@ mod tests {
         assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
     }
 
-    /// PORTING.md 2.5 / DV-013: a cyclic chain is V8's stack-overflow
-    /// `RangeError`, as TS's unguarded recursion fails, not a cycle error.
+    /// BC-11 (R1): a cyclic chain is an `IllegalModelException` naming the
+    /// cycle, from every entry point (TS 5.0.0 overflowed V8's stack or ran
+    /// out of memory, DV-013).
     #[test]
-    fn circular_inheritance_is_a_range_error() {
+    fn circular_inheritance_is_an_illegal_model_error() {
         let concept = |name: &str, sup: &str| {
             serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
                 "name": name, "isAbstract": false, "properties": [],
@@ -5566,17 +5587,40 @@ mod tests {
             None,
         )
         .unwrap();
-        for err in [
+        #[allow(deprecated)]
+        let errors = [
             mgr.properties("org.cycle@1.0.0.A").unwrap_err(),
             mgr.validate_models().unwrap_err(),
-        ] {
+            mgr.super_types("org.cycle@1.0.0.B").unwrap_err(),
+            mgr.get_all_super_type_names("org.cycle@1.0.0.B")
+                .unwrap_err(),
+            mgr.is_assignable_to("org.cycle@1.0.0.A", "org.cycle@1.0.0.B")
+                .unwrap_err(),
+            mgr.is_assignable_to("org.cycle@1.0.0.A", "org.cycle@1.0.0.Other")
+                .unwrap_err(),
+            mgr.derives_from("org.cycle@1.0.0.C", "org.cycle@1.0.0.A")
+                .unwrap_err(),
+        ];
+        for err in errors {
             let Some(c) = err.ported().cloned() else {
                 panic!("expected a contract error, got {err:?}");
             };
-            assert_eq!(c.kind, ErrorKind::RecursionLimit);
-            assert_eq!(c.message(), "Maximum call stack size exceeded");
+            assert_eq!(c.kind, ErrorKind::IllegalModel);
+            assert_eq!(c.code, "classdeclaration-circularinheritance");
+            assert!(
+                c.message()
+                    .starts_with("The super type chain of \"org.cycle@1.0.0.")
+                    && c.message().contains(" is circular: "),
+                "{}",
+                c.message()
+            );
             assert_eq!(c.location, None);
         }
+        let err = mgr.properties("org.cycle@1.0.0.A").unwrap_err();
+        assert_eq!(
+            err.ported().unwrap().message(),
+            "The super type chain of \"org.cycle@1.0.0.A\" is circular: org.cycle@1.0.0.A -> org.cycle@1.0.0.C -> org.cycle@1.0.0.B -> org.cycle@1.0.0.A."
+        );
     }
 
     #[test]

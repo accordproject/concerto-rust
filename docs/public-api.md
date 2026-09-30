@@ -722,7 +722,7 @@ pub enum ErrorKind {
     Validation,       // TS ValidationException
     InvalidArgument,  // TS Error               [ErrorKind::Error]
     MalformedInput,   // TS TypeError           [ErrorKind::JsTypeError]
-    RecursionLimit,   // TS RangeError          [ErrorKind::JsRangeError]
+    RecursionLimit,   // TS RangeError          [ErrorKind::JsRangeError]; not raised since BC-11
     Metamodel,        // TS MetamodelException
 }
 
@@ -913,8 +913,10 @@ this design:
   while a model loads) or `Validation` (an instance value), keeping the
   `errorType` in `ContractError::validator`. `ErrorKind::Validator` is no
   longer raised, but stays in the enum, so no matcher breaks.
-- **BC-11** turns the cyclic-inheritance `RecursionLimit` into
-  `IllegalModel`. The kind stays for real recursion limits.
+- **BC-11** (R1, P5-63) turns the cyclic-inheritance `RecursionLimit` into
+  `IllegalModel` (`classdeclaration-circularinheritance`). Nothing else
+  raised `RecursionLimit`, so it is no longer raised, but it stays in the
+  enum, so no matcher breaks.
 - **BC-19** (a strict AST shape check on load) removes most kind (c)
   emulation, and so shrinks what the native path shares with the JS quirks.
 

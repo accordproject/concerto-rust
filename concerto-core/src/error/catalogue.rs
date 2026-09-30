@@ -241,12 +241,6 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["V8 (property read on null or undefined)"],
     },
     CatalogueEntry {
-        code: "engine-rangeerror-maxcallstack",
-        template: "Maximum call stack size exceeded",
-        renderer: Renderer::Inline,
-        sources: &["V8 (stack overflow at a TS recursion point, PORTING.md 2.5)"],
-    },
-    CatalogueEntry {
         code: "engine-typeerror-notafunction",
         template: "{expression} is not a function",
         renderer: Renderer::Inline,
@@ -1030,14 +1024,27 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     CatalogueEntry {
         // `'Unrecognised ' + JSON.stringify(thing)` in `JSONPopulator.visit`
         // and `JSONGenerator.visit`, for an introspection object (a scalar
-        // declaration, an enum value): `JSON.stringify` meets the model
-        // manager again through the model file and throws before the
-        // `Error` is built. The cycle it names is always the same one.
-        code: "engine-typeerror-circularjson",
-        template: "Converting circular structure to JSON\n    --> starting at object with constructor 'ModelManager'\n    |     property 'modelFiles' -> object with constructor 'Object'\n    |     property 'concerto.decorator@1.0.0' -> object with constructor 'ModelFile'\n    --- property 'modelManager' closes the circle",
+        // declaration, an enum value). In TS 5.0.0 `JSON.stringify` met the
+        // model manager again through the model file and threw V8's
+        // circular-structure `TypeError` before the `Error` was built
+        // (DV-010); BC-08 (R1) names the element by its fully-qualified name.
+        code: "serializer-visit-unrecognised",
+        template: "Unrecognised element \"{name}\"",
         renderer: Renderer::Inline,
         sources: &[
-            "V8 (JSON.stringify of a cyclic object), src/serializer/jsonpopulator.ts:124, src/serializer/jsongenerator.ts:72",
+            "concerto-rust P5-63 / BC-08 (DV-010): replaces the V8 TypeError at src/serializer/jsonpopulator.ts:124, src/serializer/jsongenerator.ts:72",
+        ],
+    },
+    CatalogueEntry {
+        // A cyclic inheritance chain. TS 5.0.0 has no cycle check: its
+        // recursion overflowed V8's stack (`RangeError: Maximum call stack
+        // size exceeded`) or its loops ran out of memory (DV-013); BC-11
+        // (R1) reports the cycle from every entry point.
+        code: "classdeclaration-circularinheritance",
+        template: "The super type chain of \"{type}\" is circular: {cycle}.",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-63 / BC-11 (DV-013): replaces the V8 RangeError of ClassDeclaration.getProperties, src/introspect/classdeclaration.ts",
         ],
     },
     // ---- P3-04 (BaseModelManager.validateAst, concerto_core::instance::metamodel) ----
