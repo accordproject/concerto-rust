@@ -650,7 +650,7 @@ impl<T> WithDecorators<T> {
     }
 
     /// The wrapped node, for a loader that fills in fields it reads apart
-    /// from the node's own decode ([`crate::introspect::Property::set_ast_validators`]).
+    /// from the node's own decode (its `location`, `Property::set_location`).
     pub(crate) fn node_mut(&mut self) -> &mut T {
         &mut self.node
     }

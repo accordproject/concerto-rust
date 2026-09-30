@@ -1751,6 +1751,18 @@ mod tests {
     }
 
     #[test]
+    fn golden_modelfile_load_nodenotobject() {
+        assert_eq!(
+            contract(
+                "modelfile-load-nodenotobject",
+                &[("key", "identified"), ("value", "true")]
+            )
+            .message(),
+            "Invalid identified. Expected an object with a $class. Found true"
+        );
+    }
+
+    #[test]
     fn golden_modelfile_load_astshape() {
         assert_eq!(
             contract(

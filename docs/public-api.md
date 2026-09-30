@@ -935,11 +935,12 @@ this design:
   manager opts out (`metamodelValidation: false`, trusted input: the error's
   class and message are then unspecified, but it is an error, never a trap).
   A native caller has no shape check, and gets the strict read. The native
-  API did not change. Two things are deliberately not strict, because the
-  shape check does not constrain them fully: the four fields it accepts any
-  keyless value for (`identified`, `sizeValidator`, `lengthValidator`,
-  `validator`), which are read as TS reads them, and a node whose `$class`
-  is not its first key, which is buffered and read again.
+  API did not change. Every field is decoded strictly (`identified` and the
+  three validators included; the shape check requires a node there since
+  P5-61), and a key a node's generated struct does not declare is refused,
+  but for the parser's `DateTimeProperty` `defaultValue`. A node whose
+  `$class` is not its first key is buffered and read again. The read is not
+  a full metamodel check (`typed_ast`'s module doc, "Not checked").
 
   Which loads are shape-checked, and which are trusted by construction:
 

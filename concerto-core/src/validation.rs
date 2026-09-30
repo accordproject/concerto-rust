@@ -1584,29 +1584,19 @@ mod tests {
         assert!(err.unwrap_err().to_string().contains("super type"));
     }
 
-    /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"),
-    /// on the same validating `addModelFile` path: `identified.name` values
-    /// that are falsy but not nullish — `0`, `false`, `""` — must validate
-    /// cleanly too, exactly like an explicit `null`. TS's `this.idField` is
-    /// read everywhere downstream (including the "does not contain this
-    /// property" check `check_identifier` ports) with a plain truthiness
-    /// test, so none of these three ever becomes a property name to look
-    /// up — before this fix, the class had no field named `"0"`/`"false"`/
-    /// `""` either, but `check_identifier` still ran and failed with exactly
-    /// that message; TS itself never runs the check at all.
+    /// accordproject/concerto-rust#217 review finding 2, on the same
+    /// validating `addModelFile` path: an empty `identified.name` validates
+    /// cleanly, with no id field. TS's `this.idField` is read everywhere
+    /// downstream (including the "does not contain this property" check
+    /// `check_identifier` ports) with a plain truthiness test. The falsy
+    /// non-strings (`0`, `false`) are the loader's error since P5-61.
     #[test]
-    fn identified_by_a_falsy_non_nullish_name_has_no_id_field_and_validates() {
-        for name in [
-            serde_json::json!(0),
-            serde_json::json!(false),
-            serde_json::json!(""),
-        ] {
-            let err = validate(serde_json::json!([concept(serde_json::json!({
-                "name": "Manufactured",
-                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": name }
-            }))]));
-            assert!(err.is_ok(), "identified.name {name:?} -> {err:?}");
-        }
+    fn identified_by_an_empty_name_has_no_id_field_and_validates() {
+        let err = validate(serde_json::json!([concept(serde_json::json!({
+            "name": "Manufactured",
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "" }
+        }))]));
+        assert!(err.is_ok(), "{err:?}");
     }
 
     /// PORTING.md 2.1: `failed`'s `location` is the failing class's own AST

@@ -392,48 +392,7 @@ pub(crate) fn property_kind(class: &str) -> Option<&str> {
     PROPERTY_KINDS.contains(&kind).then_some(kind)
 }
 
-/// The keys of a property node of kind `kind` (its `$class` short name)
-/// that the typed read keeps out of the strict decode into the generated
-/// struct, and reads as TS does instead ([`Property::set_ast_validators`]):
-/// BC-19's shape check accepts any value with no own keys there (a number,
-/// a boolean, `""`, `[]`, `{}`), and an object without a `$class`
-/// (P5-61; `crate::introspect::typed_ast`'s module doc, "Strictness").
-pub(crate) fn ast_validator_keys(kind: &str) -> &'static [&'static str] {
-    if kind == "StringProperty" {
-        &["sizeValidator", "lengthValidator", "validator"]
-    } else {
-        &["sizeValidator"]
-    }
-}
-
 impl Property {
-    /// Sets the validators the typed read keeps out of the strict decode
-    /// ([`ast_validator_keys`]), `raw` giving the property node's value for
-    /// a key, read with no type check, as TS's validator constructors read
-    /// them (`new CollectionSizeValidator(this, this.ast.sizeValidator)`,
-    /// `new StringValidator(this, this.ast.validator,
-    /// this.ast.lengthValidator)`). An enum value has none.
-    pub(crate) fn set_ast_validators<'v>(&mut self, raw: impl Fn(&str) -> Option<&'v Value>) {
-        let size_validator = || validators::size_validator_from_ast(raw("sizeValidator"));
-        match self {
-            Self::Boolean(p) => p.node_mut().size_validator = size_validator(),
-            Self::String(p) => {
-                let node = p.node_mut();
-                node.size_validator = size_validator();
-                node.length_validator =
-                    validators::length_validator_from_ast(raw("lengthValidator"));
-                node.validator = validators::regex_validator_from_ast(raw("validator"));
-            }
-            Self::Integer(p) => p.node_mut().size_validator = size_validator(),
-            Self::Long(p) => p.node_mut().size_validator = size_validator(),
-            Self::Double(p) => p.node_mut().size_validator = size_validator(),
-            Self::DateTime(p) => p.node_mut().size_validator = size_validator(),
-            Self::Object(p) => p.node_mut().size_validator = size_validator(),
-            Self::Relationship(p) => p.node_mut().size_validator = size_validator(),
-            Self::Enum(_) => {}
-        }
-    }
-
     /// Sets the node's `location`, which the typed read reads apart from the
     /// node's own decode (`crate::introspect::typed_ast`).
     pub(crate) fn set_location(&mut self, location: Option<mm::Range>) {
@@ -1498,76 +1457,77 @@ mod tests {
         assert!(optional.is_optional());
     }
 
-    /// accordproject/concerto-rust#217, cluster 1/3: a fuzz-mutated
-    /// `sizeValidator.minSize`/`maxSize` that is not a JSON number (here, a
-    /// non-numeric string) must not fail the whole property's parse the way
-    /// `serde`'s strict struct decode otherwise would — TS's own
-    /// `CollectionSizeValidator` constructor reads them with no type check
-    /// at all, and coerces through `ToNumber` only when it later compares
-    /// them (`ecma::to_number`'s own doc comment): `"NaN" < 0` is `false`
-    /// (like every other comparison against a non-numeric coercion), so
-    /// this loads with no bound enforced, not an error.
+    /// P5-61 (BR-09, accordproject/concerto-rust#393): a property's
+    /// `sizeValidator`, `lengthValidator` and `validator` are decoded as
+    /// strictly as its other fields. TS 5.0.0 read them with no type check
+    /// (a non-numeric bound, a non-string `$class` or pattern, a validator
+    /// that is not an object, #217), and so did the port until P5-61. BC-19's
+    /// shape check rejects each of these first; with the check off they are
+    /// the loader's error.
     #[test]
-    fn size_validator_with_a_non_numeric_bound_loads_instead_of_failing_to_parse() {
-        let p = prop(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "items", "isArray": true, "isOptional": false,
-            "sizeValidator": {
-                "$class": "concerto.metamodel@1.0.0.CollectionDomainValidator",
-                "minSize": "NaN", "maxSize": 5
-            }
-        }));
-        assert_eq!(p.size_validator().unwrap().max_size, Some(5.0));
-        assert!(p.size_validator().unwrap().min_size.unwrap().is_nan());
-    }
-
-    /// accordproject/concerto-rust#217: a `sizeValidator`/`lengthValidator`/
-    /// `validator` sub-object's own `$class`, when it is not a JSON string
-    /// (here, an array), must not fail the parse either — nothing in this
-    /// crate ever reads that field back (`validators::size_validator_from_ast`'s
-    /// own doc comment).
-    #[test]
-    fn size_validator_class_that_is_not_a_string_loads_instead_of_failing_to_parse() {
-        let p = prop(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "items", "isArray": true, "isOptional": false,
-            "sizeValidator": {
-                "$class": ["concerto.metamodel@1.0.0.CollectionDomainValidator"],
-                "minSize": 1, "maxSize": 5
-            }
-        }));
-        assert_eq!(p.size_validator().unwrap().min_size, Some(1.0));
-    }
-
-    /// accordproject/concerto-rust#217, cluster 4/44: a `lengthValidator`
-    /// AST replaced wholesale by a wrongly-shaped, but still truthy, JSON
-    /// value (here, an array) must load with no bound enforced, matching
-    /// TS's own outcome: `this.ast.lengthValidator` is truthy, so
-    /// `StringValidator`'s constructor runs, but `lengthValidator.minLength`/
-    /// `.maxLength` on a non-object are both `undefined`, which never trips
-    /// the "must be specified" check (that check is a strict `=== null`
-    /// identity, not a truthiness test — `validators::length_bound_field`'s
-    /// own doc comment).
-    #[test]
-    fn string_property_with_a_non_object_length_validator_loads() {
-        let p = prop(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "s", "isArray": false, "isOptional": false,
-            "lengthValidator": [{
-                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
-                "minLength": null, "maxLength": 10
-            }]
-        }));
+    fn a_malformed_validator_is_an_unreadable_ast() {
+        let string = |key: &str, value: serde_json::Value| {
+            let mut ast = serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.StringProperty",
+                "name": "s", "isArray": true, "isOptional": false
+            });
+            ast[key] = value;
+            ast
+        };
+        for ast in [
+            string(
+                "sizeValidator",
+                serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": "NaN", "maxSize": 5
+                }),
+            ),
+            string(
+                "sizeValidator",
+                serde_json::json!({
+                    "$class": ["concerto.metamodel@1.0.0.CollectionSizeValidator"], "minSize": 1, "maxSize": 5
+                }),
+            ),
+            string("sizeValidator", serde_json::json!({ "minSize": 1 })),
+            string("sizeValidator", serde_json::json!(true)),
+            string(
+                "lengthValidator",
+                serde_json::json!([{
+                    "$class": "concerto.metamodel@1.0.0.StringLengthValidator", "minLength": null, "maxLength": 10
+                }]),
+            ),
+            string("lengthValidator", serde_json::json!({})),
+            string(
+                "validator",
+                serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": 5, "flags": ""
+                }),
+            ),
+            string(
+                "validator",
+                serde_json::json!({ "pattern": "a", "flags": "" }),
+            ),
+            string("validator", serde_json::json!(0)),
+            string(
+                "validator",
+                serde_json::json!({
+                    "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "a", "flags": "", "extra": 1
+                }),
+            ),
+        ] {
+            let err = contract(Property::try_from(&ast).unwrap_err());
+            assert_eq!(err.kind, ErrorKind::IllegalModel, "{ast}");
+            assert_eq!(err.code, "modelfile-load-unreadable", "{ast}");
+        }
+        let p = prop(string("validator", serde_json::Value::Null));
         match &p {
-            Property::String(s) => assert!(s.length_validator.is_some()),
+            Property::String(s) => assert!(s.validator.is_none()),
             _ => panic!("expected String"),
         }
     }
 
-    /// The corner `string_property_with_a_non_object_length_validator_loads`
-    /// must still catch: a *well-formed* `lengthValidator` whose bounds are
-    /// both explicitly `null` is the one shape that does still trip the
-    /// "must be specified" check, in both engines.
+    /// A well-formed `lengthValidator` whose bounds are both explicitly
+    /// `null` loads, and trips the "must be specified" check, in both
+    /// engines.
     #[test]
     fn string_property_with_both_length_bounds_explicitly_null_is_rejected() {
         let err = Property::try_from(&serde_json::json!({
@@ -1582,25 +1542,5 @@ mod tests {
         .check_bound_validators("ns.C")
         .unwrap_err();
         assert!(err.to_string().contains("must be specified"));
-    }
-
-    /// accordproject/concerto-rust#217, cluster 6: a `validator.pattern`
-    /// that is not a JSON string (here, a number) must coerce through
-    /// `ToString`, matching `new RegExp(validator.pattern, ...)`, not fail
-    /// the parse.
-    #[test]
-    fn regex_validator_with_a_non_string_pattern_loads_instead_of_failing_to_parse() {
-        let p = prop(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "s", "isArray": false, "isOptional": false,
-            "validator": {
-                "$class": "concerto.metamodel@1.0.0.StringRegexValidator",
-                "pattern": 5, "flags": ""
-            }
-        }));
-        match &p {
-            Property::String(s) => assert_eq!(s.validator.as_ref().unwrap().pattern, "5"),
-            _ => panic!("expected String"),
-        }
     }
 }

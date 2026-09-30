@@ -91,9 +91,9 @@ macro_rules! class_field {
 }
 
 impl ClassNode {
-    /// Sets the node's `identified` ([`identified_from_ast`]).
-    pub(crate) fn set_identified(&mut self, identified: Option<mm::Identified>) {
-        class_field!(self, d => d.identified = identified);
+    /// Applies [`identity`] to the node's `identified`.
+    pub(crate) fn normalize_identified(&mut self) {
+        class_field!(self, d => d.identified = identity(d.identified.take()));
     }
 
     /// Sets the node's `location`.
@@ -102,36 +102,20 @@ impl ClassNode {
     }
 }
 
-/// A class-like declaration's `identified`, read from its AST value as
-/// `ClassDeclaration.process` reads it (P5-61 keeps this lenient read:
-/// BC-19's shape check accepts any value with no own keys here, a number,
-/// a boolean, `""`, `[]` or `{}`, as well as a well-formed node). TS tests
-/// `this.ast.identified` for truthiness, then compares its `$class` with the
-/// `IdentifiedBy` class by `===`:
-/// - a falsy value is no identity;
-/// - an `IdentifiedBy` gives `this.idField = this.ast.identified.name`,
-///   read only by truthiness afterwards (`if (this.idField)`), so a falsy
-///   name is no identity either;
-/// - anything else truthy is system identity (`idField = '$identifier'`,
-///   `addIdentifierField()`), whatever it holds.
+/// A class-like declaration's `identified`, as decoded strictly into the
+/// generated struct, with the one rule `ClassDeclaration.process` applies to
+/// a well-formed node: an `IdentifiedBy` gives `this.idField =
+/// this.ast.identified.name`, read only by truthiness afterwards
+/// (`if (this.idField)`), so an empty name is no identity.
 ///
-/// An `IdentifiedBy` with a truthy name that is not a string is an error
-/// (the shape check rejects it first).
-pub(crate) fn identified_from_ast(
-    value: &serde_json::Value,
-) -> std::result::Result<Option<mm::Identified>, serde_json::Error> {
-    if !crate::ecma::is_truthy(value) {
-        return Ok(None);
+/// Since P5-61 the value is a node or `null`: BC-19's shape check rejects
+/// anything else (`modelfile-load-nodenotobject`), and with the check off
+/// the strict decode does (accordproject/concerto-rust#393).
+pub(crate) fn identity(identified: Option<mm::Identified>) -> Option<mm::Identified> {
+    match identified {
+        Some(mm::Identified::IdentifiedBy(by)) if by.name.is_empty() => None,
+        other => other,
     }
-    if value.get("$class").and_then(serde_json::Value::as_str)
-        == Some("concerto.metamodel@1.0.0.IdentifiedBy")
-    {
-        if !value.get("name").is_some_and(crate::ecma::is_truthy) {
-            return Ok(None);
-        }
-        return serde::Deserialize::deserialize(value).map(Some);
-    }
-    Ok(Some(mm::Identified::Identified))
 }
 
 /// A concept-like declaration: concept, asset, participant, transaction or
@@ -673,24 +657,24 @@ fn load_scalar(
     let bad = |e: serde_json::Error| unreadable_ast(&e, file_name);
     let v = value;
     let node = match short {
-        "BooleanScalar" => {
-            mm::ScalarDeclaration::BooleanScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
-        }
-        "IntegerScalar" => {
-            mm::ScalarDeclaration::IntegerScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
-        }
+        "BooleanScalar" => mm::ScalarDeclaration::BooleanScalar(
+            typed_ast::strict_variant_from_value(v).map_err(bad)?,
+        ),
+        "IntegerScalar" => mm::ScalarDeclaration::IntegerScalar(
+            typed_ast::strict_variant_from_value(v).map_err(bad)?,
+        ),
         "LongScalar" => {
-            mm::ScalarDeclaration::LongScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
+            mm::ScalarDeclaration::LongScalar(typed_ast::strict_variant_from_value(v).map_err(bad)?)
         }
-        "DoubleScalar" => {
-            mm::ScalarDeclaration::DoubleScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
-        }
-        "StringScalar" => {
-            mm::ScalarDeclaration::StringScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
-        }
-        _ => {
-            mm::ScalarDeclaration::DateTimeScalar(serde::Deserialize::deserialize(v).map_err(bad)?)
-        }
+        "DoubleScalar" => mm::ScalarDeclaration::DoubleScalar(
+            typed_ast::strict_variant_from_value(v).map_err(bad)?,
+        ),
+        "StringScalar" => mm::ScalarDeclaration::StringScalar(
+            typed_ast::strict_variant_from_value(v).map_err(bad)?,
+        ),
+        _ => mm::ScalarDeclaration::DateTimeScalar(
+            typed_ast::strict_variant_from_value(v).map_err(bad)?,
+        ),
     };
     let name = scalar::node_name(&node);
     check_declaration_name(name, value.get("location"), file_name)?;
@@ -985,8 +969,8 @@ impl MapDeclaration {
     /// without the `type` its kind requires, is an error), with the
     /// decorators of the map and of its key and value.
     fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
-        let node: mm::MapDeclaration =
-            serde::Deserialize::deserialize(value).map_err(|e| unreadable_ast(&e, file_name))?;
+        let node: mm::MapDeclaration = typed_ast::strict_variant_from_value(value)
+            .map_err(|e| unreadable_ast(&e, file_name))?;
         Ok(Self {
             node,
             decorators: parse_decorators(value),
@@ -1312,90 +1296,58 @@ mod tests {
         assert!(!d.is_enum_declaration());
     }
 
-    /// `identified: {$class: IdentifiedBy, name: null}`: TS's
-    /// `this.idField = this.ast.identified.name` also ends up `null` here,
-    /// read by a plain truthiness check (`if (this.idField)`), so this loads
-    /// with no id field at all — not a decode error either.
-    #[test]
-    fn an_explicit_null_identified_name_loads_with_no_id_field() {
-        let d = decl(serde_json::json!({
+    fn identified(value: serde_json::Value) -> Result<Declaration> {
+        Declaration::try_from(&serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "Person",
-            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": null },
+            "isAbstract": false,
+            "identified": value,
             "properties": []
-        }));
+        }))
+    }
 
+    /// An `IdentifiedBy` with an empty name: TS's `this.idField =
+    /// this.ast.identified.name` is read only by truthiness afterwards
+    /// (`if (this.idField)`), so this loads with no id field at all
+    /// (accordproject/concerto-rust#217).
+    #[test]
+    fn an_empty_identified_by_name_loads_with_no_id_field() {
+        let d = identified(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": ""
+        }))
+        .expect("an empty name loads");
         let c = d.as_class().expect("class");
+        assert!(!c.is_identified());
         assert!(c.own_properties().is_empty());
     }
 
-    /// accordproject/concerto-rust#244: TS compares `this.ast.identified.$class`
-    /// to the metamodel's own full FQN (`concerto.metamodel@1.0.0.IdentifiedBy`)
-    /// with strict `===` (`classdeclaration.ts`), never merely the short name
-    /// after the last `.`. A class whose `identified.$class` is some other
-    /// namespace's `IdentifiedBy` — for example `foo.IdentifiedBy` — must NOT
-    /// take the explicit-identifier branch: TS's strict comparison fails, so
-    /// it falls to the `else` branch instead, exactly as if `$class` held any
-    /// other unrelated string (system-identified, `idField = '$identifier'`,
-    /// `addIdentifierField()` runs). Before this fix, matching by short name
-    /// alone (`short_name(class) == "IdentifiedBy"`) wrongly took the
-    /// explicit branch here, using the field named `email` as the identifier
-    /// instead of adding the system `$identifier` field.
+    /// P5-61 (BR-09, accordproject/concerto-rust#393): `identified` is read
+    /// strictly. TS 5.0.0 loaded a nullish or falsy non-string
+    /// `IdentifiedBy` name as no identity, and a `$class` of another
+    /// namespace (`foo.IdentifiedBy`, #244) or any other truthy value as
+    /// system identity. BC-19's shape check rejects all of these first; with
+    /// the check off they are the loader's error.
     #[test]
-    fn an_identified_class_field_from_a_foreign_namespace_is_not_matched_as_identified_by() {
-        let d = decl(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-            "name": "Person",
-            "identified": { "$class": "foo.IdentifiedBy", "name": "email" },
-            "properties": []
-        }));
-
-        let c = d.as_class().expect("class");
-        assert!(c.is_identified());
-        assert!(
-            !c.is_explicitly_identified(),
-            "a foreign-namespace $class ending in IdentifiedBy must be system-identified, not explicit"
-        );
-        assert_eq!(c.own_identifier_field_name(), Some("$identifier"));
-        assert!(
-            c.own_properties().iter().any(|p| p.name() == "$identifier"),
-            "the system $identifier field must be added"
-        );
-    }
-
-    /// accordproject/concerto-rust#217 review finding 2 ("only half fixed"):
-    /// `identified.name` values that are falsy but not nullish — `0`,
-    /// `false`, `""` — must load with no id field at all too, exactly like
-    /// an explicit `null` ([`an_explicit_null_identified_name_loads_with_no_id_field`]).
-    /// TS's `this.idField = this.ast.identified.name` is a plain assignment,
-    /// taken exactly as given, and every downstream read of it —
-    /// `if (this.idField)` — is a plain truthiness check: `0`/`false`/`""`
-    /// are all falsy there, so none of them ever become a property name TS
-    /// goes on to look up. Before this fix, `from_json` only special-cased
-    /// an explicit `null`, so these three loaded with the field name kept
-    /// verbatim ("0"/"false"/"") and then failed `check_identifier` with
-    /// "does not contain this property" — a model TS loads with no error at
-    /// all.
-    #[test]
-    fn a_falsy_non_nullish_identified_name_loads_with_no_id_field() {
-        for name in [
+    fn a_malformed_identified_is_an_error() {
+        for value in [
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": null }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": 0 }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": false }),
+            serde_json::json!({ "$class": "foo.IdentifiedBy", "name": "email" }),
+            serde_json::json!({ "name": "email" }),
+            serde_json::json!({}),
+            serde_json::json!(true),
             serde_json::json!(0),
-            serde_json::json!(false),
             serde_json::json!(""),
+            serde_json::json!([]),
         ] {
-            let d = decl(serde_json::json!({
-                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                "name": "Person",
-                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": name },
-                "properties": []
-            }));
-
-            let c = d.as_class().expect("class");
-            assert!(
-                !c.is_identified(),
-                "identified.name {name:?} -> is_identified"
-            );
+            let err = identified(value.clone()).expect_err(&value.to_string());
+            assert_eq!(err.code(), "modelfile-load-unreadable", "{value}");
+            assert_eq!(err.kind(), ErrorKind::IllegalModel, "{value}");
         }
+        // `null` is no identity.
+        let d = identified(serde_json::Value::Null).expect("null loads");
+        assert!(!d.as_class().expect("class").is_identified());
     }
 
     #[test]
@@ -1480,10 +1432,14 @@ mod tests {
     #[test]
     fn a_declaration_name_must_be_an_identifier() {
         for kind in ["ConceptDeclaration", "EnumDeclaration"] {
-            let err = Declaration::try_from(&serde_json::json!({
+            let mut ast = serde_json::json!({
                 "$class": format!("concerto.metamodel@1.0.0.{kind}"),
-                "name": "1Bad", "isAbstract": false, "properties": []
-            }));
+                "name": "1Bad", "properties": []
+            });
+            if kind == "ConceptDeclaration" {
+                ast["isAbstract"] = serde_json::json!(false);
+            }
+            let err = Declaration::try_from(&ast);
             assert_eq!(
                 err.unwrap_err().to_string(),
                 "Invalid class name '1Bad'",

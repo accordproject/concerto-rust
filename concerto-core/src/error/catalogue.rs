@@ -1102,6 +1102,14 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         ],
     },
     CatalogueEntry {
+        code: "modelfile-load-nodenotobject",
+        template: "Invalid {key}. Expected an object with a $class. Found {value}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "concerto-rust P5-61 / BC-19: no TS throw site (ClassDeclaration.process and the validator constructors read identified, sizeValidator, lengthValidator and validator with no type check, src/introspect/*.ts)",
+        ],
+    },
+    CatalogueEntry {
         code: "modelfile-load-astshape",
         template: "Model AST does not conform to the metamodel: {message}",
         renderer: Renderer::Inline,

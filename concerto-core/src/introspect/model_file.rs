@@ -22,6 +22,18 @@ use crate::introspect::import::Import;
 use crate::introspect::typed_ast::{self, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
+/// The keys of the generated `Model` struct, which are all a model AST's
+/// top level may hold.
+const MODEL_KEYS: [&str; 7] = [
+    "$class",
+    "namespace",
+    "sourceUri",
+    "concertoVersion",
+    "imports",
+    "declarations",
+    "decorators",
+];
+
 /// A parsed model file for one namespace.
 #[derive(Debug, Clone)]
 pub struct ModelFile {
@@ -185,11 +197,22 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
-        // The model file's own decorators, read as strictly as every other
-        // node's (the generated `Model.decorators`).
+        // The model's own keys, read as strictly as every other node's
+        // (`typed_ast`'s module doc, "Unknown keys"): only the generated
+        // `Model`'s, and its decorators decoded into the generated struct.
+        if let Some(key) = value.as_object().and_then(|header| {
+            header
+                .keys()
+                .find(|key| !MODEL_KEYS.contains(&key.as_str()))
+        }) {
+            return Err(unreadable_ast(
+                &serde::de::Error::custom(format_args!("unknown field `{key}`")),
+                file_name.as_deref(),
+            ));
+        }
         if let Some(decorators) = value.get("decorators") {
             let _: Option<Vec<concerto_metamodel::concerto_metamodel_1_0_0::Decorator>> =
-                serde::Deserialize::deserialize(decorators)
+                typed_ast::strict_from_value(decorators)
                     .map_err(|err| unreadable_ast(&err, file_name.as_deref()))?;
         }
 
@@ -1343,7 +1366,7 @@ mod tests {
 
     #[test]
     fn keeps_the_ast_it_was_given_in_its_original_key_order() {
-        let text = r#"{"namespace":"org.order@1.0.0","$class":"concerto.metamodel@1.0.0.Model","declarations":[{"properties":[],"name":"A","$class":"concerto.metamodel@1.0.0.ConceptDeclaration","isAbstract":false,"extra":null}]}"#;
+        let text = r#"{"namespace":"org.order@1.0.0","$class":"concerto.metamodel@1.0.0.Model","declarations":[{"properties":[],"name":"A","$class":"concerto.metamodel@1.0.0.ConceptDeclaration","isAbstract":false,"decorators":[]}]}"#;
         let value: serde_json::Value = serde_json::from_str(text).unwrap();
         let mf = ModelFile::from_json(&value, None).unwrap();
         assert_eq!(mf.ast(), &value);

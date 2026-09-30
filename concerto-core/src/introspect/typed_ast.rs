@@ -30,13 +30,26 @@
 //! (identifiers, reserved names, validators, and everything
 //! `ModelFile.validate` does) runs after the read, on the typed result.
 //!
-//! Four fields are the exception, because the shape check does not constrain
-//! them fully: it accepts any value with no own keys (a number, a boolean,
-//! `""`, `[]`, `{}`) for a class's `identified` and a property's
-//! `sizeValidator`, `lengthValidator` and `validator`, and an object without
-//! a `$class` for the three validators. They are read as TS reads them
-//! ([`identified_from_ast`], [`Property::set_ast_validators`]), not strictly.
+//! Since P5-61 (accordproject/concerto-rust#393) there is no exception:
+//! a class's `identified` and a property's `sizeValidator`,
+//! `lengthValidator` and `validator` are decoded as strictly as every other
+//! field. BC-19's shape check requires a node there (an object with a
+//! `$class`, or `null`; `modelfile-load-nodenotobject`), where the
+//! metamodel check alone accepts any value with no own keys (a number, a
+//! boolean, `""`, `[]`, `{}`) and an object without a `$class`.
 //!
+//! With the shape check off (`metamodelValidation: false`, an escape hatch
+//! for trusted input), this read is the only check. A malformed AST it
+//! cannot read is an error, never a trap or a panic; the read is not a full
+//! metamodel check, though (see "Not checked" below).
+//!
+//! - **Unknown keys.** A key the generated struct for a node does not
+//!   declare is an error (`Strict`), on every node decoded into a
+//!   generated struct: declarations, properties, the structs under them,
+//!   decorators, locations, scalar and map declarations, and the model's
+//!   own header. The one exception is BC-19's tolerance: the
+//!   `defaultValue` the reference parser writes on a `DateTimeProperty`
+//!   (read, as before, by BC-45's check when it is applied).
 //! - **Key order.** A node's `$class` is read first when it is the first
 //!   key (as every AST that `concerto-cto` or `JSON.stringify` writes has
 //!   it); otherwise the node is buffered and read again with `$class` in
@@ -44,13 +57,21 @@
 //! - **JSON syntax.** `serde_json` checks less when it skips a value
 //!   (`deserialize_ignored_any`) than when it builds one: a skipped `1e400`,
 //!   lone surrogate escape or over-deep array is accepted where a `Value`
-//!   parse rejects it. Every value the generated structs skip is read
-//!   through [`Strict`], which builds and drops a `Value` for it instead, so
-//!   text is read as JSON exactly when it parses as a `Value`.
+//!   parse rejects it. The generated structs never skip a value: [`Strict`]
+//!   refuses one (an unknown key), so text is read as JSON exactly when it
+//!   parses as a `Value`.
 //! - **Duplicate keys.** A `Value` keeps the last of two equal keys. This
 //!   reader refuses a duplicate `$class`, `properties`, `decorators` or
 //!   `location` key, or a duplicate struct field, in JSON text
 //!   (`JSON.stringify` never writes one).
+//! - **Not checked.** With the shape check off, the read still accepts some
+//!   ASTs the metamodel check rejects: an unknown key inside a node of a
+//!   polymorphic type that `serde` buffers before it picks the variant (an
+//!   `IdentifiedBy`, a decorator argument, a map key or value type), an
+//!   import node (read untyped by `Import::try_from`), a `$class` naming
+//!   the wrong type on a node whose type has no subtypes, a model `$class`
+//!   of another metamodel version, and a fraction in an `Integer` field
+//!   (the generated structs read every number as `f64`).
 
 use std::borrow::Cow;
 use std::fmt;
@@ -62,9 +83,9 @@ use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visit
 use serde_json::{Map, Value};
 
 use crate::introspect::METAMODEL_NAMESPACE;
-use crate::introspect::declaration::{ClassKind, ClassNode, identified_from_ast};
+use crate::introspect::declaration::{ClassKind, ClassNode};
 use crate::introspect::decorator::{WithDecorators, parse_decorator_list};
-use crate::introspect::property::{Property, ast_validator_keys, property_kind};
+use crate::introspect::property::{Property, property_kind};
 
 type Error = serde_json::Error;
 
@@ -312,7 +333,7 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
         properties: Some(&mut properties),
         decorators: &mut decorators,
         location: &mut location,
-        take: &["identified"],
+        take: &[],
         taken: &mut taken,
         pending: Pending::Other,
     };
@@ -330,9 +351,7 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     };
     // The generated struct requires `properties`, so it was read.
     let properties = properties.ok_or_else(|| refuse("missing field `properties`"))?;
-    if let Some(identified) = taken.get("identified") {
-        node.set_identified(identified_from_ast(identified)?);
-    }
+    node.normalize_identified();
     node.set_location(read_location(location.as_ref())?);
     Ok(TypedDeclaration::Class {
         kind,
@@ -384,7 +403,33 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
 fn read_location(location: Option<&Value>) -> Result<Option<mm::Range>, Error> {
     match location {
         None => Ok(None),
-        Some(value) => Option::<mm::Range>::deserialize(value),
+        Some(value) => strict_from_value(value),
+    }
+}
+
+/// Decodes `value` into a generated struct as the typed read decodes a node:
+/// through [`Strict`], so a key the struct does not declare is an error.
+pub(crate) fn strict_from_value<'de, T: Deserialize<'de>>(value: &'de Value) -> Result<T, Error> {
+    T::deserialize(Strict(value))
+}
+
+/// [`strict_from_value`], for the generated struct of one variant of a
+/// polymorphic type (a scalar or map declaration), which has no `$class`
+/// field of its own: `value`'s `$class` (which picked the variant) is left
+/// out.
+pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
+    value: &Value,
+) -> Result<T, Error> {
+    match value {
+        Value::Object(map) => {
+            let rest: Map<String, Value> = map
+                .iter()
+                .filter(|(key, _)| *key != "$class")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            T::deserialize(Strict(&Value::Object(rest)))
+        }
+        other => T::deserialize(Strict(other)),
     }
 }
 
@@ -436,7 +481,15 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
         properties: None,
         decorators: &mut decorators,
         location: &mut location,
-        take: ast_validator_keys(kind),
+        // The reference parser writes a `defaultValue` on a
+        // `DateTimeProperty`, which the metamodel does not declare (BC-19's
+        // one tolerance, `instance::check_ast_shape`). It is kept out of the
+        // struct, as before P5-61; BC-45 checks it when it is applied.
+        take: if kind == "DateTimeProperty" {
+            &["defaultValue"]
+        } else {
+            &[]
+        },
         taken: &mut taken,
         pending: Pending::Other,
     };
@@ -471,7 +524,6 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
             ))
         }
     };
-    property.set_ast_validators(|key| taken.get(key));
     property.set_location(read_location(location.as_ref())?);
     Ok(TypedProperty { property, location })
 }
@@ -561,6 +613,9 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                     return Err(refuse("duplicate decorators"));
                 }
                 let value: Value = self.inner.next_value()?;
+                // Checked through [`strict_from_value`] (as the model's own
+                // decorators are), then handed to the struct as before.
+                strict_from_value::<Option<Vec<mm::Decorator>>>(&value)?;
                 let read = seed.deserialize(value.clone())?;
                 *self.decorators = Some(value);
                 Ok(read)
@@ -726,9 +781,10 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Strict<D> {
         deserialize_identifier();
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, D::Error> {
-        Value::deserialize(self.0)?;
-        visitor.visit_unit()
+    /// A generated struct skips the value of a key it does not declare:
+    /// that is an error (the module doc, "Unknown keys").
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, D::Error> {
+        Err(de::Error::custom("unknown field"))
     }
 
     fn is_human_readable(&self) -> bool {
@@ -1095,13 +1151,15 @@ mod tests {
         }
     }
 
-    /// The fields BC-19's shape check does not constrain fully (the module
-    /// doc, "Strictness") are read as TS reads them, on both inputs.
+    /// P5-61: `identified` and the three validators are read as strictly as
+    /// every other field (the module doc, "Strictness"). Each value TS
+    /// 5.0.0 read with no type check is rejected by BC-19's shape check and,
+    /// with the check off, is unreadable, on both inputs.
     #[test]
-    fn fields_the_shape_check_does_not_constrain_are_read_as_ts_reads_them() {
+    fn identified_and_the_validators_are_read_strictly() {
         let with = |key: &str, value: Value| {
             let mut node = json!({"$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "C",
-                "properties": [string_property("s")]});
+                "isAbstract": false, "properties": [string_property("s")]});
             if key == "identified" {
                 node[key] = value;
             } else {
@@ -1109,8 +1167,7 @@ mod tests {
             }
             model(json!([node])).to_string()
         };
-        let mut texts = Vec::new();
-        for value in [
+        let keyless = [
             json!(0),
             json!(false),
             json!(""),
@@ -1118,22 +1175,17 @@ mod tests {
             json!({}),
             json!(1),
             json!(true),
-            json!({"$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": ""}),
+        ];
+        let mut texts = Vec::new();
+        for value in keyless.iter().cloned().chain([
             json!({"$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": null}),
             json!({"$class": "foo.IdentifiedBy", "name": "s"}),
-        ] {
+            json!({"name": "s"}),
+        ]) {
             texts.push(with("identified", value));
         }
         for key in ["sizeValidator", "lengthValidator", "validator"] {
-            for value in [
-                json!(0),
-                json!(false),
-                json!(""),
-                json!([]),
-                json!({}),
-                json!(1),
-                json!(true),
-            ] {
+            for value in keyless.iter().cloned() {
                 texts.push(with(key, value));
             }
         }
@@ -1142,12 +1194,93 @@ mod tests {
             "lengthValidator",
             json!({"minLength": 2, "maxLength": 5}),
         ));
+        texts.push(with("validator", json!({"pattern": "a", "flags": ""})));
         for text in &texts {
             let value: Value = serde_json::from_str(text).unwrap();
-            if crate::instance::check_ast_shape(&value).is_ok() {
-                assert!(!is_unreadable(&check(text)), "{text}");
-            }
+            assert!(crate::instance::check_ast_shape(&value).is_err(), "{text}");
+            assert!(is_unreadable(&check(text)), "{text}");
         }
+        // An empty `IdentifiedBy` name is no identity (TS reads it by
+        // truthiness); `null` is no value.
+        for value in [
+            json!({"$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": ""}),
+            Value::Null,
+        ] {
+            assert!(
+                matches!(
+                    check(&with("identified", value.clone())),
+                    Outcome::Loaded(_)
+                ),
+                "{value}"
+            );
+        }
+    }
+
+    /// P5-61: a key the generated struct for a node does not declare is
+    /// unreadable (the module doc, "Unknown keys"), on both inputs, except
+    /// the `defaultValue` the reference parser writes on a
+    /// `DateTimeProperty`.
+    #[test]
+    fn an_unknown_key_is_unreadable() {
+        let type_identifier =
+            json!({"$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Thing"});
+        let position = json!({"$class": "concerto.metamodel@1.0.0.Position", "line": 1, "column": 1, "offset": 0});
+        let well_formed = model(json!([
+            {
+                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": "Thing",
+                "isAbstract": false,
+                "decorators": [{"$class": "concerto.metamodel@1.0.0.Decorator", "name": "d", "arguments": []}],
+                "location": {"$class": "concerto.metamodel@1.0.0.Range", "start": position, "end": position},
+                "properties": [
+                    string_property("a"),
+                    {"$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "o", "isArray": false,
+                        "isOptional": true, "type": type_identifier},
+                ],
+            },
+            {"$class": "concerto.metamodel@1.0.0.StringScalar", "name": "S",
+                "validator": {"$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "a", "flags": ""}},
+            {"$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "M",
+                "key": {"$class": "concerto.metamodel@1.0.0.StringMapKeyType"},
+                "value": {"$class": "concerto.metamodel@1.0.0.StringMapValueType"}},
+        ]));
+        assert!(matches!(
+            check(&well_formed.to_string()),
+            Outcome::Loaded(_)
+        ));
+        let paths: &[&[&str]] = &[
+            &[],
+            &["declarations", "0"],
+            &["declarations", "0", "decorators", "0"],
+            &["declarations", "0", "location"],
+            &["declarations", "0", "location", "start"],
+            &["declarations", "0", "properties", "0"],
+            &["declarations", "0", "properties", "1", "type"],
+            &["declarations", "1"],
+            &["declarations", "1", "validator"],
+            &["declarations", "2"],
+        ];
+        for path in paths {
+            let mut ast = well_formed.clone();
+            let mut node = &mut ast;
+            for step in *path {
+                node = match step.parse::<usize>() {
+                    Ok(i) => &mut node[i],
+                    Err(_) => &mut node[*step],
+                };
+            }
+            node["undeclared"] = json!(1);
+            let text = ast.to_string();
+            assert!(crate::instance::check_ast_shape(&ast).is_err(), "{path:?}");
+            assert!(is_unreadable(&check(&text)), "{path:?}");
+        }
+        // BC-19's one tolerance.
+        let date_time = model(json!([concept(json!([{
+            "$class": "concerto.metamodel@1.0.0.DateTimeProperty", "name": "d",
+            "isArray": false, "isOptional": false, "defaultValue": "2020-01-01T00:00:00Z"
+        }]))]));
+        assert!(crate::instance::check_ast_shape(&date_time).is_ok());
+        assert!(matches!(check(&date_time.to_string()), Outcome::Loaded(_)));
     }
 
     // -----------------------------------------------------------------------
