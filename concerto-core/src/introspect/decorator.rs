@@ -590,25 +590,15 @@ fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
     }
 }
 
-/// The decorators found on a raw AST node's `decorators` value, or empty if
-/// it has none.
+/// The decorators found on an AST node's `decorators` value, or empty if it
+/// has none.
 ///
 /// TS: `Decorated.process` (src/introspect/decorated.ts), the part that is
 /// not about picking a `DecoratorFactory`'s decorator over the default (that
-/// stays TS, module doc). TS does not check that `ast.decorators` is an
-/// array: `if (this.ast.decorators)`, then `for (n = 0; n <
-/// this.ast.decorators.length; n++) new Decorator(this,
-/// this.ast.decorators[n])`. So a non-empty *string* there is iterated one
-/// UTF-16 code unit at a time, and each code unit becomes a `Decorator`
-/// whose `ast.name` is `undefined` (a string has no `name`). Two or more
-/// such decorators then fail `Decorated.validate`'s duplicate check with
-/// `Duplicate decorator undefined`, and that exception is ported here
-/// (accordproject/concerto-rust#218). Any other non-array value
-/// (a number, a boolean, `null`, an empty string) has no `length` and so
-/// yields no decorators, as it always has here. A JSON object with a
-/// `length` key of its own is not followed: TS would index it by
-/// `"0"`, `"1"`, ... and crash with a `TypeError` on a missing element,
-/// which is outside this port's scope.
+/// stays TS, module doc). The loader reads every `decorators` value strictly
+/// first (the generated structs' `Option<Vec<Decorator>>`), so this only
+/// ever sees an array of decorator nodes, or `null` (P5-61: before BC-19 it
+/// also reproduced TS's iteration of a string by UTF-16 code unit, #218).
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
     parse_decorator_list(ast.get("decorators"))
 }
@@ -619,47 +609,17 @@ pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
 pub(crate) fn parse_decorator_list(decorators: Option<&Value>) -> Vec<Decorator> {
     match decorators {
         Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
-        Some(Value::String(s)) => s
-            .encode_utf16()
-            .map(|_| Decorator::from_ast(&Value::Null))
-            .collect(),
         _ => Vec::new(),
     }
-}
-
-/// DV-018 (maintainer-accepted, accordproject/concerto-rust#218): the first
-/// `null` element of a raw AST node's `decorators` array, as the error Rust
-/// raises for it; `None` when there is none.
-///
-/// TS `Decorated.process` passes each element to `new Decorator(this,
-/// thing)`, and `Decorator.process` reads `this.ast.name` with no guard
-/// (decorator.ts:139), so a `null` element makes V8 throw an uncaught
-/// `TypeError: Cannot read properties of null (reading 'name')` from the
-/// `ModelFile` constructor. Rust does not port that crash: it raises
-/// `IllegalModelException: Invalid decorator. Expected object. Found null`
-/// (`decorator-process-notobject`), worded like `Decorator.validate`'s own
-/// `... invalid decorator argument. Expected object. Found ...` rejections.
-/// TS's `handleError` passes the decorator's `this.ast.location` (none, for
-/// a `null` node) and its parent's model file; the caller attaches the file.
-/// Every other element (a number, a string, an object with no `name`) does
-/// not crash TS, which builds a nameless decorator from it, so it is not this
-/// check's; nor is a non-array `decorators` value ([`parse_decorators`]).
-///
-/// TS runs `Decorated.process` first in every decorated element's own
-/// `process` (`super.process()`), so each loader calls this before the
-/// element's other checks.
-pub(crate) fn null_decorator(ast: &Value) -> Option<ContractError> {
-    let items = ast.get("decorators")?.as_array()?;
-    items
-        .iter()
-        .any(Value::is_null)
-        .then(|| not_an_object("null"))
 }
 
 js_compat_pub! {
     /// The DV-018 error for a decorator node that is `value` (`null`, or
     /// `undefined` through the WASM boundary), with no location and no model
-    /// file yet (module doc on `null_decorator`).
+    /// file yet. Raised by the `decoratorProcess` binding, for a decorator
+    /// view built outside a model load (a model load reads every decorator
+    /// node strictly, so a `null` one there is a `modelfile-load-unreadable`
+    /// error, P5-61).
     pub fn not_an_object(value: &str) -> ContractError {
         ContractError::new(
             ErrorKind::IllegalModel,
@@ -796,38 +756,6 @@ mod tests {
 
     fn string_arg(value: &str) -> Value {
         serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": value })
-    }
-
-    /// DV-018: only a `null` element of a `decorators` *array* is flagged;
-    /// every other element, and a non-array `decorators`, is left to TS's own
-    /// (non-crashing) handling.
-    #[test]
-    fn null_decorator_flags_only_a_null_array_element() {
-        let flagged =
-            |decorators: Value| null_decorator(&serde_json::json!({ "decorators": decorators }));
-        let err = flagged(serde_json::json!([ast("A", Value::Null), null])).unwrap();
-        assert_eq!(err.kind, ErrorKind::IllegalModel);
-        assert_eq!(err.code, "decorator-process-notobject");
-        assert_eq!(
-            err.message(),
-            "Invalid decorator. Expected object. Found null"
-        );
-        assert_eq!(err.location, None);
-        assert_eq!(err.model_file, None);
-        for fine in [
-            serde_json::json!([]),
-            serde_json::json!([ast("A", Value::Null)]),
-            serde_json::json!([5, "x", true, {}]),
-            serde_json::json!("💥emoji"),
-            Value::Null,
-        ] {
-            assert!(flagged(fine.clone()).is_none(), "{fine}");
-        }
-        assert!(null_decorator(&serde_json::json!({})).is_none());
-        assert_eq!(
-            not_an_object("undefined").message(),
-            "Invalid decorator. Expected object. Found undefined"
-        );
     }
 
     fn number_arg(value: f64) -> Value {

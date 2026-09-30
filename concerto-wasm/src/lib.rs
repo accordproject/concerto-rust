@@ -1715,7 +1715,10 @@ impl ValidatedElement for JsonElement<'_> {
 /// `collectionSizeValidatorNew`'s snapshot for a property's truthy
 /// `sizeValidator` (TS: `this.ast.sizeValidator ? new
 /// CollectionSizeValidator(this, this.ast.sizeValidator) : null`), or `None`
-/// when there is none or its constructor would throw.
+/// when there is none or its constructor would throw. The bounds are
+/// compared as numbers: the file loaded, and BC-19's shape check rejects a
+/// bound that is not one (P5-61; the binding keeps the raw comparison for a
+/// validator built outside a model load).
 fn size_validator_view_snapshot(name: &str, ast: Option<&Value>) -> Option<Value> {
     let ast = ast.filter(|v| json_truthy(Some(v)))?;
     let typed =
@@ -1728,13 +1731,14 @@ fn size_validator_view_snapshot(name: &str, ast: Option<&Value>) -> Option<Value
         name,
         default_value: None,
     };
-    let built = CollectionSizeValidator::new(&element, &typed, Some(ast)).ok()?;
+    let built = CollectionSizeValidator::new(&element, &typed, None).ok()?;
     Some(json!({ "minSize": built.min_size(), "maxSize": built.max_size() }))
 }
 
 /// `stringValidatorNew`'s snapshot for an element's `validator` and
 /// `lengthValidator` (a field, or a String scalar), or `None` when its
-/// constructor would throw.
+/// constructor would throw. The length bounds are compared as numbers, as
+/// in [`size_validator_view_snapshot`].
 fn string_validator_view_snapshot(name: &str, ast: &Value) -> Option<Value> {
     let validator = ast.get("validator").filter(|v| !v.is_null());
     let length_validator = ast.get("lengthValidator").filter(|v| !v.is_null());
@@ -1744,13 +1748,8 @@ fn string_validator_view_snapshot(name: &str, ast: &Value) -> Option<Value> {
         name,
         default_value: ast.get("defaultValue"),
     };
-    let built = StringValidator::new(
-        &element,
-        regex_ast.as_ref(),
-        length_ast.as_ref(),
-        length_validator,
-    )
-    .ok()?;
+    let built =
+        StringValidator::new(&element, regex_ast.as_ref(), length_ast.as_ref(), None).ok()?;
     Some(json!({ "minLength": built.min_length(), "maxLength": built.max_length() }))
 }
 
@@ -4623,11 +4622,11 @@ fn decode_wire(value: &Value) -> Result<CoreValue> {
     }
 }
 
-/// P5-06c: a model file from its JSON AST text, through the typed AST path
-/// ([`ModelFile::from_json_text`]): the same file, and the same errors in
-/// the same order, as parsing the text into a `Value` and loading that.
-/// Malformed JSON throws a JS `SyntaxError`, as it always has. (`validateAst`
-/// keeps the `Value` path: it reads the whole AST as a `Value` anyway.)
+/// P5-06c: a model file from its JSON AST text, through the typed AST read
+/// ([`ModelFile::from_json_text`], the only model loader since P5-61): the
+/// same file, and the same errors, as parsing the text into a `Value` and
+/// loading that. Malformed JSON throws a JS `SyntaxError`, as it always has.
+/// (`validateAst` reads the whole AST as a `Value` anyway.)
 fn model_file_from_text(
     ast: &str,
     definitions: Option<String>,

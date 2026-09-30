@@ -287,12 +287,11 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
     };
     for model in models {
         // BC-19 (R1): `new ModelFile(modelManager, mm, null, null)` on a
-        // `new ModelManager()`, whose default is the strict shape check. The
-        // constructor's own `typeof ast !== 'object'` check comes first, so
-        // a model that is not a JS object keeps that error (below).
-        if model.is_object() || model.is_array() {
-            check_ast_shape(model)?;
-        }
+        // `new ModelManager()`, whose default is the strict shape check,
+        // after the constructor's own argument checks (a falsy or non-object
+        // AST is a plain `Error`).
+        ModelFile::check_constructor_arguments(Some(model), None, None)?;
+        check_ast_shape(model)?;
         let model_file = ModelFile::from_json_with_definitions(model, None, None)?;
         if mm.model_file(model_file.namespace()).is_none() {
             mm.validate_detached_model_file(&model_file)?;

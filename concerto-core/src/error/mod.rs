@@ -1765,6 +1765,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn golden_modelfile_load_unreadable() {
+        assert_eq!(
+            contract(
+                "modelfile-load-unreadable",
+                &[("message", "missing field `name`")]
+            )
+            .message(),
+            "Model AST could not be read: missing field `name`"
+        );
+    }
+
     // Not a TS template: DIVERGENCES.md DV-018 (maintainer-accepted, #218),
     // Rust's replacement for TS's `TypeError` on a `null` decorator node.
     #[test]

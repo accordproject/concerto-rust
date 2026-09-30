@@ -15,11 +15,10 @@ use serde_json::Value;
 
 use crate::derive::Named;
 use crate::error::{ContractError, Error, ErrorKind, Result};
-use crate::introspect::decorator::{
-    Decorated, Decorator, WithDecorators, null_decorator, parse_decorators,
-};
+use crate::introspect::decorator::{Decorated, Decorator, WithDecorators};
+use crate::introspect::model_file::unreadable_ast;
 use crate::introspect::validators;
-use crate::introspect::{FullyQualified, METAMODEL_NAMESPACE, Named, Typed, declared_class};
+use crate::introspect::{FullyQualified, METAMODEL_NAMESPACE, Named, Typed};
 use crate::model_util::{is_system_property, is_valid_identifier};
 
 js_compat_pub! {
@@ -393,24 +392,12 @@ pub(crate) fn property_kind(class: &str) -> Option<&str> {
     PROPERTY_KINDS.contains(&kind).then_some(kind)
 }
 
-/// TS: the `else` branch of `ClassDeclaration.process`'s properties loop
-/// (classdeclaration.ts): `IllegalModelException` naming the unrecognised
-/// `thing.$class`. `this.modelFile`/`this.ast.location` there are the
-/// *class's*, which [`Property::try_from`] has no way to reach (the module
-/// doc on [`BoundElement`]), so this carries neither.
-fn unrecognised_property(class: &str) -> Error {
-    ContractError::new(
-        ErrorKind::IllegalModel,
-        "classdeclaration-process-unrecmodelelem",
-        vec![("type", class.to_string())],
-    )
-    .into()
-}
-
 /// The keys of a property node of kind `kind` (its `$class` short name)
-/// that [`Property::try_from`] keeps out of the strict decode into the
-/// generated struct, and rebuilds from the raw AST instead
-/// ([`Property::set_ast_validators`]).
+/// that the typed read keeps out of the strict decode into the generated
+/// struct, and reads as TS does instead ([`Property::set_ast_validators`]):
+/// BC-19's shape check accepts any value with no own keys there (a number,
+/// a boolean, `""`, `[]`, `{}`), and an object without a `$class`
+/// (P5-61; `crate::introspect::typed_ast`'s module doc, "Strictness").
 pub(crate) fn ast_validator_keys(kind: &str) -> &'static [&'static str] {
     if kind == "StringProperty" {
         &["sizeValidator", "lengthValidator", "validator"]
@@ -419,19 +406,13 @@ pub(crate) fn ast_validator_keys(kind: &str) -> &'static [&'static str] {
     }
 }
 
-/// The `type` [`Property::try_from`] gives an `ObjectProperty` whose AST has
-/// none (or `null`): an empty `TypeIdentifier`, standing in for TS's `null`.
-pub(crate) fn object_type_placeholder() -> Value {
-    serde_json::json!({
-        "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
-        "name": ""
-    })
-}
-
 impl Property {
-    /// Sets the validators [`Property::try_from`] rebuilds from the raw AST
+    /// Sets the validators the typed read keeps out of the strict decode
     /// ([`ast_validator_keys`]), `raw` giving the property node's value for
-    /// a key. An enum value has none.
+    /// a key, read with no type check, as TS's validator constructors read
+    /// them (`new CollectionSizeValidator(this, this.ast.sizeValidator)`,
+    /// `new StringValidator(this, this.ast.validator,
+    /// this.ast.lengthValidator)`). An enum value has none.
     pub(crate) fn set_ast_validators<'v>(&mut self, raw: impl Fn(&str) -> Option<&'v Value>) {
         let size_validator = || validators::size_validator_from_ast(raw("sizeValidator"));
         match self {
@@ -452,178 +433,49 @@ impl Property {
             Self::Enum(_) => {}
         }
     }
+
+    /// Sets the node's `location`, which the typed read reads apart from the
+    /// node's own decode (`crate::introspect::typed_ast`).
+    pub(crate) fn set_location(&mut self, location: Option<mm::Range>) {
+        match self {
+            Self::Boolean(p) => p.node_mut().location = location,
+            Self::String(p) => p.node_mut().location = location,
+            Self::Integer(p) => p.node_mut().location = location,
+            Self::Long(p) => p.node_mut().location = location,
+            Self::Double(p) => p.node_mut().location = location,
+            Self::DateTime(p) => p.node_mut().location = location,
+            Self::Object(p) => p.node_mut().location = location,
+            Self::Relationship(p) => p.node_mut().location = location,
+            Self::Enum(p) => p.node_mut().location = location,
+        }
+    }
 }
 
 impl TryFrom<&serde_json::Value> for Property {
     type Error = Error;
 
+    /// Reads one property node, outside any declaration: the typed read (a
+    /// strict one, `crate::introspect::typed_ast`), then the name checks
+    /// `ClassDeclaration.process`'s loop and `Property.process` make — a
+    /// reserved system name, then a name that is not a valid identifier.
+    /// The validators are checked once the owning class is known
+    /// (`Property::check_bound_validators`).
     fn try_from(value: &serde_json::Value) -> Result<Self> {
-        // Concerto keeps a set of property names for itself, so a model may
-        // not declare a field with one of them. TS: the first check of
-        // `ClassDeclaration.process`'s properties loop, ahead of its `$class`
-        // match.
-        if let Some(name) = value.get("name").and_then(|n| n.as_str())
-            && is_system_property(name)
-        {
+        let property = crate::introspect::typed_ast::property_from_value(value)
+            .map_err(|e| unreadable_ast(&e, None))?;
+        let name = property.name();
+        if is_system_property(name) {
             return Err(Error::illegal_model(
                 format!("Invalid field name '{name}'"),
                 None,
                 None,
             ));
         }
-        let class = declared_class(value);
-        if class.is_empty() {
-            return Err(Error::illegal_model(
-                "property node is missing its $class",
-                None,
-                None,
-            ));
-        }
-        // TS: `ClassDeclaration.process`'s loop matches the full `$class`
-        // (`===`) before it constructs the property, so an unrecognised one
-        // is reported ahead of everything `Property.process` checks.
-        let Some(kind) = property_kind(class) else {
-            return Err(unrecognised_property(class));
-        };
-        // TS `Property.process` (property.ts) starts with `super.process()`
-        // (`Decorated.process`), so a `null` decorator node (DV-018,
-        // `null_decorator`) is reported ahead of every other property check.
-        // The model file's name is filled in by `Declaration::from_model_json`
-        // (`with_model_file`).
-        if let Some(err) = null_decorator(value) {
-            return Err(err.into());
-        }
-        // TS `Property.process` (property.ts): `ModelUtil.isValidIdentifier`
-        // treats a nullish `ast.name` as valid (DV-002: `String(undefined)`/
-        // `String(null)` are valid identifiers), so it is the very next
-        // check, `if (!this.name)`, that rejects it — with a plain `Error`,
-        // not an `IllegalModelException`, before the `$class` switch (and so
-        // before any deserialization into the concrete property struct,
-        // which would otherwise fail first on the missing `name` field with
-        // an unrelated message).
-        if value.get("name").is_none_or(|n| n.is_null()) {
-            return Err(ContractError::new(
-                ErrorKind::InvalidArgument,
-                "property-process-noname",
-                vec![("ast", value.to_string())],
-            )
-            .into());
-        }
-
-        // DV-017: a `RelationshipProperty` with a missing or `null` `type`
-        // (see [`relationship_without_type`]). TS's `Property.process` checks
-        // the name before its `$class` switch, so an invalid name is still
-        // reported first; a non-string name is left to serde below.
-        if kind == "RelationshipProperty"
-            && let Some(name) = value.get("name").and_then(Value::as_str)
-            && let Some(no_type) = relationship_without_type(value, name)
-        {
-            if is_valid_identifier(name) {
-                return Err(no_type.into());
-            }
+        if !is_valid_identifier(name) {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,
                 "property-process-invalidname",
                 vec![("name", name.to_string())],
-            );
-            err.location = value.get("location").cloned();
-            return Err(err.into());
-        }
-
-        // Parse into whatever struct the `$class` says this is. If serde
-        // chokes, the JSON is malformed for the kind it claims to be.
-        let bad =
-            |e: serde_json::Error| Error::illegal_model(format!("invalid {kind}: {e}"), None, None);
-
-        // TS `Property.process`'s `ObjectProperty` arm (property.ts):
-        // `this.type = this.ast.type ? this.ast.type.name : null` — a
-        // missing (or `null`) `type` node is not an error, unlike every
-        // other check on this path; `RelationshipProperty`'s own arm has no
-        // such guard (`this.ast.type.name` unconditionally), so this is
-        // `ObjectProperty` only. `mm::ObjectProperty::type_` has no `Option`
-        // (the generated struct always requires it), so a placeholder empty
-        // `TypeIdentifier` stands in for TS's `null`: [`Property::type_identifier`]
-        // then reads an empty name, which every other check on this path
-        // already treats the same as "no type" (TS's own `this.type` is
-        // equally falsy for `""` and `null`).
-        let value = if kind == "ObjectProperty" && value.get("type").is_none_or(|t| t.is_null()) {
-            let mut patched = value.clone();
-            if let Some(map) = patched.as_object_mut() {
-                map.insert("type".into(), object_type_placeholder());
-            }
-            std::borrow::Cow::Owned(patched)
-        } else {
-            std::borrow::Cow::Borrowed(value)
-        };
-        let value = value.as_ref();
-
-        let decorators = parse_decorators(value);
-        // Every non-enum kind's own `sizeValidator` (and, for a
-        // `StringProperty`, its `lengthValidator`/`validator`) is set aside
-        // before the strict struct decode below and rebuilt straight from
-        // this untouched `value` with `validators::size_validator_from_ast`/
-        // `length_validator_from_ast`/`regex_validator_from_ast`
-        // ([`Property::set_ast_validators`]): `serde`'s
-        // derived `Deserialize` requires an actual JSON number/string for
-        // their nested fields, but TS reads every one of them completely
-        // untyped (those functions' own doc comments), so a fuzz-mutated,
-        // wrongly-typed field there must not fail the whole property's
-        // parse (accordproject/concerto-rust#217).
-        let mut sanitized = value.clone();
-        if let Some(map) = sanitized.as_object_mut() {
-            for key in ast_validator_keys(kind) {
-                map.remove(*key);
-            }
-        }
-        let mut property = match kind {
-            "BooleanProperty" => Self::Boolean(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "StringProperty" => Self::String(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "IntegerProperty" => Self::Integer(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "LongProperty" => Self::Long(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "DoubleProperty" => Self::Double(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "DateTimeProperty" => Self::DateTime(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "ObjectProperty" => Self::Object(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "RelationshipProperty" => Self::Relationship(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            "EnumProperty" => Self::Enum(WithDecorators::new(
-                serde_json::from_value(sanitized).map_err(bad)?,
-                decorators,
-            )),
-            _ => return Err(unrecognised_property(class)),
-        };
-        property.set_ast_validators(|key| value.get(key));
-        if !is_valid_identifier(property.name()) {
-            // TS: `Property.process` (property.ts) — `this.getModelFile()`
-            // and `this.ast.location`; `try_from` has no model file in
-            // scope (the module doc on [`BoundElement`]), so only the
-            // location, which is this property's own AST node, is set here.
-            let mut err = ContractError::new(
-                ErrorKind::IllegalModel,
-                "property-process-invalidname",
-                vec![("name", property.name().to_string())],
             );
             err.location = value.get("location").cloned();
             return Err(err.into());
@@ -635,7 +487,7 @@ impl TryFrom<&serde_json::Value> for Property {
 /// The property as the element its own validator is attached to, once the
 /// fully qualified name is known — TS: `this` (`Property`/`Field`), whose
 /// `getFullyQualifiedName()` needs the owning class and namespace that
-/// [`Property::try_from`] (and so [`parse_properties`](super::declaration))
+/// [`Property::try_from`] (and so the typed read of a class's properties)
 /// never has. [`Property::check_bound_validators`] builds this once that
 /// context is known.
 struct BoundElement<'a> {
@@ -686,7 +538,6 @@ impl Property {
         fqn: &str,
         name: &str,
         validator: Option<&mm::CollectionSizeValidator>,
-        raw: Option<&Value>,
     ) -> Result<()> {
         let Some(v) = validator else { return Ok(()) };
         let element = BoundElement {
@@ -694,7 +545,7 @@ impl Property {
             name,
             default_value: None,
         };
-        validators::CollectionSizeValidator::new(&element, v, raw)?;
+        validators::CollectionSizeValidator::new(&element, v, None)?;
         Ok(())
     }
 
@@ -722,7 +573,7 @@ impl Property {
         /// validator's own range — `Property::try_from` itself has no
         /// [`FullyQualified`] context to build these messages with (the module
         /// doc on `BoundElement`), so this is called once that context is
-        /// known, from `ClassDeclaration::from_json`
+        /// known, by the class declaration's loader
         /// (`super::declaration::ClassDeclaration`), never from `try_from`
         /// itself: a property whose validator does not check out must still
         /// *parse*, exactly as TS's own two-phase load (parse, then
@@ -734,15 +585,11 @@ impl Property {
         /// length-and-regex validator — the same order as this method's own
         /// `match`.
         ///
-        /// `raw` is this property's own AST node, when the caller has it (only
-        /// `super::declaration::ClassDeclaration::from_json` does — it is what
-        /// lets [`validators::CollectionSizeValidator::new`]/
-        /// [`validators::StringValidator::new`] compare a fuzzed `sizeValidator`/
-        /// `lengthValidator`'s `minSize`/`maxSize`/`minLength`/`maxLength` with
-        /// JS's own untyped `>` instead of a value already coerced to `f64`
-        /// (accordproject/concerto-rust#219): `None` falls back to the `f64`
-        /// comparison, the same question for already-validated data.
-        pub fn check_bound_validators(&self, class_fqn: &str, raw: Option<&Value>) -> Result<()> {
+        /// The bounds are compared as the numbers the typed read gave (P5-61:
+        /// the load reads a validator strictly, so a bound is always a number
+        /// here; before BC-19 the loader passed each property's raw AST node,
+        /// so that a wrongly-typed bound compared with JS's untyped `>`).
+        pub fn check_bound_validators(&self, class_fqn: &str) -> Result<()> {
             // P5-48: a property with no validator to rebuild (most) returns
             // before its fully-qualified name is built; every arm below is
             // then a no-op.
@@ -755,13 +602,7 @@ impl Property {
             // `getFullyQualifiedName`), not its owning class's.
             let fqn = format!("{class_fqn}.{name}");
             let fqn = fqn.as_str();
-            let raw_field = |key: &str| raw.and_then(|r| r.get(key));
-            Self::check_size_validator(
-                fqn,
-                &name,
-                self.size_validator(),
-                raw_field("sizeValidator"),
-            )?;
+            Self::check_size_validator(fqn, &name, self.size_validator())?;
             let element = |default_value: Option<Value>| BoundElement {
                 fqn,
                 name: &name,
@@ -774,7 +615,7 @@ impl Property {
                         &element(default_value),
                         p.validator.as_ref(),
                         p.length_validator.as_ref(),
-                        raw_field("lengthValidator"),
+                        None,
                     )?;
                     Ok(())
                 }
@@ -1094,23 +935,28 @@ mod tests {
         assert_eq!(err.code, "property-process-invalidname");
     }
 
-    /// The native construction path (`Property::try_from`) raises the same
-    /// DV-017 error, ahead of the serde step that used to reject it with
-    /// "invalid RelationshipProperty: missing field `type`".
+    /// P5-61: a property node the typed read cannot read — no `$class`, an
+    /// unknown one, a field of the wrong type, a `RelationshipProperty`
+    /// with no `type` (DV-017's shape), a `null` decorator (DV-018's) — is a
+    /// `modelfile-load-unreadable` `IllegalModelException`. BC-19's shape
+    /// check rejects each of them first; with it off, only the class is
+    /// promised.
     #[test]
-    fn try_from_rejects_a_relationship_with_a_missing_or_null_type() {
-        for ty in [None, Some(Value::Null)] {
-            let ast = relationship("dept", ty);
+    fn a_malformed_property_node_is_an_unreadable_ast() {
+        for ast in [
+            serde_json::json!({ "name": "x" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.MysteryProperty", "name": "x" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": "yes" }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "isArray": false, "isOptional": false }),
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": false,
+                "isOptional": false, "decorators": [null] }),
+            relationship("dept", None),
+            relationship("dept", Some(Value::Null)),
+        ] {
             let err = contract(Property::try_from(&ast).unwrap_err());
-            assert_eq!(err.kind, ErrorKind::IllegalModel);
-            assert_eq!(err.code, "property-process-relationshipnotype");
-            assert_eq!(err.message(), "Relationship dept must have a type");
-            assert_eq!(err.location, ast.get("location").cloned());
-            // Left for the declaration loader to attach the file name.
-            assert_eq!(err.model_file, None);
+            assert_eq!(err.kind, ErrorKind::IllegalModel, "{ast}");
+            assert_eq!(err.code, "modelfile-load-unreadable", "{ast}");
         }
-        let err = contract(Property::try_from(&relationship("1bad", None)).unwrap_err());
-        assert_eq!(err.code, "property-process-invalidname");
     }
 
     fn prop(json: serde_json::Value) -> Property {
@@ -1262,7 +1108,7 @@ mod tests {
         assert!(Property::try_from(&matching(r"^.+@.+\..+$")).is_ok());
         for pattern in ["*invalid", "[unclosed", "(unclosed"] {
             let p = Property::try_from(&matching(pattern)).expect("construction accepts it");
-            let err = p.check_bound_validators("test@1.0.0.Box", None);
+            let err = p.check_bound_validators("test@1.0.0.Box");
             assert!(
                 err.unwrap_err().to_string().contains("regular expression"),
                 "{pattern} should be rejected"
@@ -1274,7 +1120,7 @@ mod tests {
     fn range_lower_above_upper_is_rejected() {
         let p =
             Property::try_from(&ranged(Some(10.0), Some(5.0))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box", None);
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("Lower bound"));
     }
 
@@ -1288,7 +1134,7 @@ mod tests {
     #[test]
     fn range_without_either_bound_is_rejected() {
         let p = Property::try_from(&ranged(None, None)).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box", None);
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("lower and-or upper"));
     }
 
@@ -1350,66 +1196,15 @@ mod tests {
     #[test]
     fn negative_string_length_is_rejected() {
         let p = Property::try_from(&sized(Some(-1), Some(5))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box", None);
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
     #[test]
     fn string_length_min_above_max_is_rejected() {
         let p = Property::try_from(&sized(Some(10), Some(5))).expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box", None);
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("minLength"));
-    }
-
-    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): the fuzz-triage
-    /// minimised repro `15270a3d46ae76b3adf549eb` — a `lengthValidator` with
-    /// `minLength: "__proto__"` and `maxLength: [10]`. TS's own
-    /// `this.minLength > this.maxLength` compares these two *raw* AST values
-    /// with JS's untyped `>`: `ToPrimitive([10])` is the string `"10"`, and
-    /// since both sides are then strings, JS compares them lexicographically
-    /// (`"__proto__" > "10"` is `true`, `'_'`'s code point exceeding
-    /// `'1'`'s), so TS rejects the model. Coercing each bound to a number
-    /// first (`ToNumber("__proto__")` is `NaN`) makes the comparison always
-    /// false, so Rust used to wrongly accept this model — the raw AST
-    /// comparison this test pins fixes that.
-    #[test]
-    fn string_length_min_above_max_by_raw_string_comparison_is_rejected() {
-        let raw = serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "text", "isArray": false, "isOptional": false,
-            "lengthValidator": {
-                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
-                "minLength": "__proto__",
-                "maxLength": [10]
-            }
-        });
-        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
-        let err = p
-            .check_bound_validators("test@1.0.0.Box", Some(&raw))
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("minLength must be less than or equal to maxLength")
-        );
-    }
-
-    /// The same fixture, but checked with no raw AST (as every call site but
-    /// `ClassDeclaration::from_json` passes): without the raw comparison,
-    /// each bound coerces to `NaN` and the order check never fires — the
-    /// pre-existing, still-correct behaviour for already-validated data.
-    #[test]
-    fn string_length_min_above_max_by_raw_string_comparison_is_accepted_without_raw_ast() {
-        let raw = serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "text", "isArray": false, "isOptional": false,
-            "lengthValidator": {
-                "$class": "concerto.metamodel@1.0.0.StringLengthValidator",
-                "minLength": "__proto__",
-                "maxLength": [10]
-            }
-        });
-        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
-        assert!(p.check_bound_validators("test@1.0.0.Box", None).is_ok());
     }
 
     #[test]
@@ -1458,7 +1253,7 @@ mod tests {
     fn size_validator_min_above_max_is_rejected() {
         let p = Property::try_from(&collection_sized(true, Some(10), Some(2)))
             .expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box", None);
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(
             err.unwrap_err()
                 .to_string()
@@ -1466,59 +1261,11 @@ mod tests {
         );
     }
 
-    /// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): the fuzz-triage
-    /// minimised repro `7b9fc1eca8208827732709eb` — a `sizeValidator` with
-    /// `minSize: "aaaa…"` and `maxSize: [1]`. As
-    /// [`string_length_min_above_max_by_raw_string_comparison_is_rejected`]'s
-    /// doc comment explains for `lengthValidator`: `ToPrimitive([1])` is the
-    /// string `"1"`, so TS's raw `this.minSize > this.maxSize` becomes a
-    /// string comparison (`"aaaa…" > "1"` is `true`), not the always-false
-    /// `NaN` comparison converting each side to a number first would give.
-    #[test]
-    fn size_validator_min_above_max_by_raw_string_comparison_is_rejected() {
-        let raw = serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "tags", "isArray": true, "isOptional": false,
-            "sizeValidator": {
-                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
-                "minSize": "aaaaaaaaaaaaaaaaaaaaa",
-                "maxSize": [1]
-            }
-        });
-        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
-        let err = p
-            .check_bound_validators("test@1.0.0.Box", Some(&raw))
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("minSize must be less than or equal to maxSize")
-        );
-    }
-
-    /// The same fixture, but checked with no raw AST (as every call site but
-    /// `ClassDeclaration::from_json` passes): without the raw comparison,
-    /// each bound coerces to `NaN` and the order check never fires — the
-    /// pre-existing, still-correct behaviour for already-validated data.
-    #[test]
-    fn size_validator_min_above_max_by_raw_string_comparison_is_accepted_without_raw_ast() {
-        let raw = serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "tags", "isArray": true, "isOptional": false,
-            "sizeValidator": {
-                "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
-                "minSize": "aaaaaaaaaaaaaaaaaaaaa",
-                "maxSize": [1]
-            }
-        });
-        let p = Property::try_from(&raw).expect("construction accepts it (a two-phase load)");
-        assert!(p.check_bound_validators("test@1.0.0.Box", None).is_ok());
-    }
-
     #[test]
     fn size_validator_negative_bounds_rejected() {
         let p = Property::try_from(&collection_sized(true, Some(-1), Some(5)))
             .expect("construction accepts it");
-        let err = p.check_bound_validators("test@1.0.0.Box", None);
+        let err = p.check_bound_validators("test@1.0.0.Box");
         assert!(err.unwrap_err().to_string().contains("positive integers"));
     }
 
@@ -1581,33 +1328,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_property_kind_is_reported_by_name() {
-        let err = Property::try_from(&serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.MysteryProperty",
-            "name": "x"
-        }));
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "Unrecognised model element \"concerto.metamodel@1.0.0.MysteryProperty\"."
-        );
-    }
-
-    #[test]
-    fn missing_class_is_reported_verbatim() {
-        let err = Property::try_from(&serde_json::json!({ "name": "x" }));
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "illegal model: property node is missing its $class"
-        );
-    }
-
-    #[test]
     fn only_the_full_metamodel_property_classes_are_recognised() {
         // TS `ClassDeclaration.process` matches each property's `$class`
-        // with `===` against the full metamodel classes; a short name,
-        // another namespace's, or text that merely ends in a property
-        // class's short name is "Unrecognised model element"
-        // (accordproject/concerto-rust#285, BC-25).
+        // with `===` against the full metamodel classes
+        // (accordproject/concerto-rust#285, BC-25); a short name, another
+        // namespace's, or text that merely ends in a property class's short
+        // name is not a property the typed read can read (P5-61: a
+        // `modelfile-load-unreadable` `IllegalModelException`; BC-19's shape
+        // check rejects it first).
         for class in [
             "StringProperty",
             "foo.StringProperty",
@@ -1625,43 +1353,18 @@ mod tests {
                 "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "T" }
             }))
             .unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!("Unrecognised model element \"{class}\"."),
-                "{class}"
+            assert!(
+                matches!(
+                    err.ported(),
+                    Some(c) if c.kind == ErrorKind::IllegalModel && c.code == "modelfile-load-unreadable"
+                ),
+                "{class}: {err}"
             );
-            assert!(matches!(
-                err.ported(),
-                Some(c) if c.kind == ErrorKind::IllegalModel
-            ));
         }
         for kind in PROPERTY_KINDS {
             assert_eq!(
                 property_kind(&format!("concerto.metamodel@1.0.0.{kind}")),
                 Some(kind)
-            );
-        }
-    }
-
-    #[test]
-    fn an_unrecognised_property_class_is_reported_before_the_property_checks() {
-        // TS: the `$class` match comes before `Property.process`, so it wins
-        // over a null decorator (DV-018), a missing name (a plain `Error`)
-        // and an invalid name.
-        for extra in [
-            serde_json::json!({ "name": "a", "decorators": [null] }),
-            serde_json::json!({}),
-            serde_json::json!({ "name": "1bad" }),
-        ] {
-            let mut ast = serde_json::json!({ "$class": "foo.StringProperty" });
-            for (key, value) in extra.as_object().unwrap() {
-                ast[key] = value.clone();
-            }
-            let err = Property::try_from(&ast).unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                "Unrecognised model element \"foo.StringProperty\".",
-                "{ast}"
             );
         }
     }
@@ -1685,18 +1388,6 @@ mod tests {
                 "$class": "RelationshipProperty", "name": "r"
             }))
             .is_ok()
-        );
-    }
-
-    #[test]
-    fn a_reserved_name_is_rejected_before_the_kind_is_checked() {
-        let err = Property::try_from(&serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.MysteryProperty",
-            "name": "$identifier"
-        }));
-        assert_eq!(
-            err.unwrap_err().to_string(),
-            "illegal model: Invalid field name '$identifier'"
         );
     }
 
@@ -1725,20 +1416,6 @@ mod tests {
         assert_eq!(
             err.unwrap_err().to_string(),
             "illegal model: Invalid field name '$identifier'"
-        );
-    }
-
-    #[test]
-    fn a_malformed_property_is_reported_under_its_own_kind() {
-        let err = Property::try_from(&serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.StringProperty",
-            "name": "s",
-            "isArray": "yes"
-        }));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .starts_with("illegal model: invalid StringProperty: ")
         );
     }
 
@@ -1902,7 +1579,7 @@ mod tests {
             }
         }))
         .expect("try_from itself does not build the validator")
-        .check_bound_validators("ns.C", None)
+        .check_bound_validators("ns.C")
         .unwrap_err();
         assert!(err.to_string().contains("must be specified"));
     }

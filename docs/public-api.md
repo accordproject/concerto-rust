@@ -312,7 +312,7 @@ them differently.
 |---|---|---|---|
 | **(a) The JS object model.** Values and objects that exist only in a JS caller: `undefined`, a JS `Map`, a `BigInt`, a dayjs object, a TS `Resource`, and the option bags that carry them. | `instance/value.rs` (375 lines), `dayjs.rs` (748), `serializer.rs` (811), `populator.rs` (867), `factory.rs` (645), `generator.rs` (399), `resource.rs` (178), `resource_id.rs` (579); the `$$` tags in `validate.rs` | about 4,600 lines, plus the tag handling | **Leaves core** (4.4). |
 | **(b) ECMAScript semantics that *are* Concerto semantics.** Concerto defines numbers as doubles, string lengths in UTF-16 code units, regexes in the ECMAScript dialect, and the `ID_REGEX`. A Rust caller must get the same verdict as a JS caller for the same model. | `ecma.rs` (336 lines, already private `mod ecma`), `regress`, `ryu-js`, the string validator | – | **Stays in core, private.** It is implementation, not API. |
-| **(c) Emulation of TS quirks on malformed input.** How TS treats a numeric name, a truthy non-string, a missing `$class` or a cyclic super type, and the TS exception class each one throws. | `ecma::{to_js_string, is_truthy, to_number}` from `introspect/*`, `validation.rs`, `model_manager.rs`; `ErrorKind::{JsTypeError, JsRangeError}` | spread | **Stays in core, private,** because it decides the verdict for both callers (guarantee 2). Its error kinds get Rust names (5.6). It shrinks as BC-19 and BR-09 land (section 6). |
+| **(c) Emulation of TS quirks on malformed input.** How TS treats a numeric name, a truthy non-string, a missing `$class` or a cyclic super type, and the TS exception class each one throws. | `ecma::{to_js_string, is_truthy, to_number}` from `introspect/*`, `validation.rs`, `model_manager.rs`; `ErrorKind::{JsTypeError, JsRangeError}` | spread | **Stays in core, private,** because it decides the verdict for both callers (guarantee 2). Its error kinds get Rust names (5.6). It shrank with BC-19 and BR-09 (P5-61, section 6.2): the model loader no longer emulates TS on a malformed node. |
 
 Kind (a) is what makes the public API JS-centric. Kinds (b) and (c) make the
 source look JS-centric, but a native caller never sees them, and moving them
@@ -533,8 +533,9 @@ impl ModelManagerBuilder {
 - **`add_model_ast_text`** exposes P5-06d's typed read, which parses the
   text straight into the typed model. It is the fast path for a caller that
   holds JSON text, and it gives the same result as `add_model_ast` by
-  construction (the typed path falls back to the `Value` path for every
-  error, and the differential test in CI guards that).
+  construction: since P5-61 (BR-09) both are the one typed read, over the
+  text or over a `Value`, and a test in CI checks that the two agree on
+  every model AST it can find.
 - **Validation stays explicit.** `add_model_ast` loads without the semantic
   pass, and `add_model_asts` validates the batch and rolls back on failure
   (P1-06).
@@ -899,8 +900,8 @@ CHANGELOG entries (BR-06).
 | BR-06 | 44 `get_*` names, and `add_model` takes a JSON AST. | 5.5 and 5.8, with deprecation aliases (step 4). |
 | BR-07 | Three error shapes; no `#[non_exhaustive]`. | 5.6 (step 3) and step 6. |
 | BR-08 | #1273 options are only reachable through `SerializerOptions`. | 5.7 (step 5a, done): `ValidationOptions` over `&Value`. |
-| BR-09 | The typed decode falls back to the `Value` path for every error. | 6.2. After BC-19; not in P6 unless BC-19 has landed. |
-| BR-10 | The native loader treats truthy non-string names differently from TS. | A kind (c) behaviour (4.1). Fixed as a faithful port, or made strict with BC-19. It changes no signature. |
+| BR-09 | The typed decode falls back to the `Value` path for every error. | 6.2. **Done in P5-61** (accordproject/concerto-rust#393), after BC-19. |
+| BR-10 | The native loader treats truthy non-string names differently from TS. | A kind (c) behaviour (4.1). Made strict as a side effect of BR-09 (P5-61): the native loader's typed read requires a string name. It changes no signature. |
 | BR-11 | Cross-reference to BR-01 and BR-02. | – |
 
 The JS-facing rows (BC-xx) change behaviour, not the Rust API. Four touch
@@ -925,11 +926,33 @@ this design:
   what lets it be a stable entry point with no second set of errors.
 - **The `typed_ast` module stays private.** Its types (`TypedDeclaration`)
   are an implementation detail of the loader.
-- **BR-09 (drop the `Value` fallback) waits for BC-19.** Until the loader is
-  strict, the fallback is what produces TS's first error on malformed input,
-  for native and JS callers alike. When BC-19 ships, the loader for both is
-  the typed read, the kind (c) coercions in `ecma` lose their last caller on
-  the load path, and the native API does not change.
+- **BR-09 (drop the `Value` fallback) is done (P5-61, accordproject/concerto-rust#393).**
+  The typed read is the only model loader, for text (`ModelFile::from_json_text`)
+  and for a `Value` (`ModelFile::from_json` and the rest, which read the
+  `Value` through the same seeds). It is strict: a node it cannot read is a
+  `modelfile-load-unreadable` `IllegalModel` error, not a TS-style coercion.
+  On the JS API, BC-19's shape check rejects such an AST first, unless the
+  manager opts out (`metamodelValidation: false`, trusted input: the error's
+  class and message are then unspecified, but it is an error, never a trap).
+  A native caller has no shape check, and gets the strict read. The native
+  API did not change. Two things are deliberately not strict, because the
+  shape check does not constrain them fully: the four fields it accepts any
+  keyless value for (`identified`, `sizeValidator`, `lengthValidator`,
+  `validator`), which are read as TS reads them, and a node whose `$class`
+  is not its first key, which is buffered and read again.
+
+  Which loads are shape-checked, and which are trusted by construction:
+
+  | Path | Check |
+  |---|---|
+  | JS `new ModelFile(...)`, and so `fromAst`, `addModel`, `addCTOModel`, `addModelFiles`, `updateModelFile`, the file `addModelFile` is given | The TS constructor runs `check_ast_shape` first (P5-49), unless the manager opts out. |
+  | JS `DecoratorManager.decorateModels` and `extract*` results | Each result model is a `new ModelFile` in a new default `ModelManager`, so it is checked. The engine-side file staged for it (P5-27) is built by Rust from already-loaded models and validated command sets: trusted by construction. |
+  | JS `modelManagerFromMetaModel`, Rust `model_manager_from_meta_model` | `check_ast_shape` per model (P5-49), after the TS constructor's argument checks. |
+  | The engine-side copy of a JS `ModelFile` (`stageModelFile`, `addModelWithDefinitions`, `updateModelFile`, `modelFileValidateDetached`, `modelFileFromAst`) | The AST of a `ModelFile` the TS constructor built: checked there, or opted out. |
+  | The system models, the metamodel, the DCS model (embedded ASTs) | Trusted by construction. |
+  | Rust `decorate_models`/`extract_*` results, `update_external_models` | Built from already-loaded models (trusted by construction), or, for `update_external_models`' downloaded models on the native API, not checked: the strict typed read. |
+  | Rust native `ModelFile::from_json*`, `ModelManager::add_model_ast*`, `load_model*`, `update_model_ast` | Not checked (BR-10): the strict typed read. |
+  | A detached file (`validate_detached_model_file`) | Takes a `ModelFile` already built by one of the above. |
 
 ---
 

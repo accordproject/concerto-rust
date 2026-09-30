@@ -1094,6 +1094,45 @@ export function runChecks(engine) {
     assert(thrown(() => h.checkAstShape('{')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
   });
 
+  // P5-61 (BR-09, maintainer decision 2026-09-30): with the shape check off
+  // (`metamodelValidation: false`), a malformed AST reaches the engine's
+  // typed read, the only model loader. It must throw an error (the
+  // `modelfile-load-unreadable` IllegalModelException), never trap: the
+  // handle keeps working afterwards.
+  check('a malformed AST loaded without the shape check throws, never traps (P5-61)', () => {
+    const h = new engine.ModelManagerHandle();
+    const declaration = MODEL.declarations[0];
+    const malformed = [
+      { ...MODEL, decorators: 'x' },
+      { ...MODEL, decorators: [null] },
+      { ...MODEL, declarations: [{ ...declaration, name: 7 }] },
+      { ...MODEL, declarations: [{ ...declaration, properties: 'x' }] },
+      { ...MODEL, declarations: [{ ...declaration, properties: [null] }] },
+      { ...MODEL, declarations: [{ ...declaration, superType: { $class: `${MM}.TypeIdentifier`, name: null } }] },
+      { ...MODEL, declarations: [{ $class: `${MM}.RelationshipProperty`, name: 'r' }] },
+      { ...MODEL, declarations: [{ $class: `${MM}.MapDeclaration`, name: 'M', key: 5, value: null }] },
+      { ...MODEL, declarations: [{ $class: `${MM}.StringScalar`, name: 'S', validator: 'x' }] },
+      { ...MODEL, declarations: 'x' },
+      [],
+      { namespace: 7 },
+    ];
+    for (const ast of malformed) {
+      const text = JSON.stringify(ast);
+      for (const load of [
+        () => h.stageModelFile(text, undefined, 'bad.cto'),
+        () => h.stageModelFileWithHeader(text, undefined, 'bad.cto'),
+        () => h.addModelWithDefinitions(text, undefined, 'bad.cto', false),
+      ]) {
+        const err = thrown(load);
+        assert(err instanceof EngineError, `${text}: threw ${err} (${err && err.constructor && err.constructor.name})`);
+        assert(!(err instanceof WebAssembly.RuntimeError), `${text}: trapped`);
+      }
+    }
+    // The handle still loads a well-formed model.
+    const id = h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, 'good.cto', false);
+    assert(typeof id === 'number', `a well-formed model loads after the malformed ones (${id})`);
+  });
+
   // P5-06a lazy-views spike: the staging bindings load an AST once, then
   // validate and register the loaded file without it crossing again.
   check('a staged model file validates and commits like addModelWithDefinitions', () => {
