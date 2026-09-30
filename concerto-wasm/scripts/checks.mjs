@@ -1383,6 +1383,58 @@ export function runChecks(engine) {
     h.free();
   });
 
+  // P5-55 (T1, F-A1): the DCS operations on a ModelManagerHandle's own
+  // manager give what the DcsManagerHandle ones give, stage the same way,
+  // and leave the handle (and its epoch) unchanged.
+  check('dcsDecorateModels and dcsExtract* run on the handle itself', () => {
+    const h = new engine.ModelManagerHandle();
+    h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, undefined, false);
+    const dcs = new engine.DcsManagerHandle([MODEL]);
+    const commandSet = {
+      $class: 'org.accordproject.decoratorcommands@0.3.0.DecoratorCommandSet',
+      name: 'smoke', version: '1.0.0',
+      commands: [{
+        $class: 'org.accordproject.decoratorcommands@0.3.0.Command', type: 'UPSERT',
+        target: { $class: 'org.accordproject.decoratorcommands@0.3.0.CommandTarget', namespace: 'org.example@1.0.0', declaration: 'Person' },
+        decorator: { $class: `${MM}.Decorator`, name: 'Smoke', arguments: [] },
+      }],
+    };
+    const epoch = h.epoch();
+    const pairs = [
+      ['dcsDecorateModels', 'decorateModels', [[commandSet], {}]],
+      ['dcsExtractDecorators', 'extractDecorators', [{ removeDecoratorsFromModel: true, locale: 'en' }]],
+      ['dcsExtractVocabularies', 'extractVocabularies', [{ removeDecoratorsFromModel: false, locale: 'en' }]],
+      ['dcsExtractNonVocabDecorators', 'extractNonVocabDecorators', [{ removeDecoratorsFromModel: true, locale: 'en' }]],
+    ];
+    for (const [own, resident, args] of pairs) {
+      const t1 = new engine.ModelManagerHandle();
+      const t2 = new engine.ModelManagerHandle();
+      const a = h[own](t1, ...structuredClone(args));
+      const b = dcs[resident](t2, ...structuredClone(args));
+      assert(JSON.stringify(a) === JSON.stringify(b), `${own}: ${JSON.stringify(a).slice(0, 200)}`);
+      assert(a.staged.some((s) => Array.isArray(s)), `${own} staged`);
+      t1.free();
+      t2.free();
+    }
+    assert(h.epoch() === epoch, 'the handle is unchanged');
+    // A resolution error throws what the resident handle throws.
+    const bad = {
+      $class: `${MM}.Model`, namespace: 'org.bad@1.0.0', imports: [],
+      declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 'Uses', isAbstract: false,
+        properties: [{ $class: `${MM}.ObjectProperty`, name: 'm', isArray: false, isOptional: false,
+          type: { $class: `${MM}.TypeIdentifier`, name: 'Missing' } }] }],
+    };
+    const hb = new engine.ModelManagerHandle();
+    hb.addModelWithDefinitions(JSON.stringify(bad), undefined, undefined, false);
+    const t = new engine.ModelManagerHandle();
+    const viaHandle = thrown(() => hb.dcsExtractDecorators(t, {}));
+    const perCall = thrown(() => engine.decoratorManagerExtractDecorators([bad], {}));
+    assert(viaHandle.constructor.name === perCall.constructor.name, `${viaHandle.constructor.name} vs ${perCall.constructor.name}`);
+    for (const x of [h, hb, t, dcs]) {
+      x.free();
+    }
+  });
+
   mm.free();
   return rows;
 }

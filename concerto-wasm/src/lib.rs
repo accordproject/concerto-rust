@@ -7503,29 +7503,9 @@ impl DcsManagerHandle {
         decorator_command_sets: JsValue,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        run(|| {
-            self.manager
-                .set_decorator_validation(target.manager.decorator_validation().clone());
-            let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-            let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
-
-            let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
-            let mut opts = decorate_options_from_js(&options_json);
-
-            // `dcs::decorate_models` validates the result unless the command
-            // sets are empty or `disable_metamodel_validation` (as the
-            // options stand once `skip_validation_and_resolution` has set
-            // it) is `Some(true)`.
-            let applied = !sets.is_empty();
-            let decorated = dcs::decorate_models(&self.manager, &mut sets, &mut opts)?;
-            let validated = applied && opts.disable_metamodel_validation != Some(true);
-            let staged = stage_result(target, &decorated);
-            Ok(to_js(&json!({
-                "ast": model_manager_to_ast(&decorated),
-                "staged": staged,
-                "validated": validated,
-            })))
-        })
+        self.manager
+            .set_decorator_validation(target.manager.decorator_validation().clone());
+        run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
     }
 
     /// [`decorator_manager_extract_decorators`] on the resident manager,
@@ -7595,12 +7575,148 @@ impl DcsManagerHandle {
         options: &JsValue,
         action: dcs::extractor::Action,
     ) -> std::result::Result<JsValue, JsValue> {
+        run(|| staged_extract(&self.manager, target, options, action))
+    }
+}
+
+/// [`DcsManagerHandle::decorate_models`]'s body, on `manager` (whose
+/// `decoratorValidation` the caller has already set to `target`'s): the
+/// result staged into `target`, and `{ast, staged, validated}` returned.
+fn staged_decorate_models(
+    manager: &ModelManager,
+    target: &mut ModelManagerHandle,
+    decorator_command_sets: &JsValue,
+    options: &JsValue,
+) -> Result<JsValue> {
+    let sets_json = to_json(decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
+    let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+
+    let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
+    let mut opts = decorate_options_from_js(&options_json);
+
+    // `dcs::decorate_models` validates the result unless the command sets
+    // are empty or `disable_metamodel_validation` (as the options stand
+    // once `skip_validation_and_resolution` has set it) is `Some(true)`.
+    let applied = !sets.is_empty();
+    let decorated = dcs::decorate_models(manager, &mut sets, &mut opts)?;
+    let validated = applied && opts.disable_metamodel_validation != Some(true);
+    let staged = stage_result(target, &decorated);
+    Ok(to_js(&json!({
+        "ast": model_manager_to_ast(&decorated),
+        "staged": staged,
+        "validated": validated,
+    })))
+}
+
+/// [`DcsManagerHandle::extract`]'s body, on `manager`: one extract
+/// operation, its result's model files staged into `target`.
+fn staged_extract(
+    manager: &ModelManager,
+    target: &mut ModelManagerHandle,
+    options: &JsValue,
+    action: dcs::extractor::Action,
+) -> Result<JsValue> {
+    let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
+    let opts = extract_options_from_js(&options_json);
+    let result = dcs::extract_encoded(manager, &opts, action)?;
+    let staged = stage_result(target, &result.model_manager);
+    Ok(extract_result_js(&result, Some(staged)))
+}
+
+// ---------------------------------------------------------------------------
+// P5-55 (T1, F-A1, accordproject/concerto-rust#376): the DecoratorManager
+// operations on the source ModelManager's own rustHandle. Additive: the
+// `decoratorManager*` bindings and [`DcsManagerHandle`] are unchanged and
+// stay the view's fallbacks.
+//
+// The view's source ModelManager already mirrors its model files into its
+// rustHandle (P4-08, P5-34), so the handle holds exactly the models a
+// [`DcsManagerHandle`] would be built from: the same ASTs, loaded the same
+// way, with the same system models. [`dcs::decorate_models`] and
+// [`dcs::extract_encoded`] resolve those models themselves
+// (`ModelManager::models_ast`), so running them on the handle's own manager
+// skips the copy (`getAst`, then JsValue to `Value`, then the load) that a
+// cold [`DcsManagerHandle`] costs. Each operation is
+// [`DcsManagerHandle`]'s, staged into `target` the same way.
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// [`DcsManagerHandle::decorate_models`] on this handle's own manager.
+    /// `target` is the new ModelManager's handle, never this one. The result
+    /// is validated with `target`'s `decoratorValidation`, as
+    /// [`DcsManagerHandle::decorate_models`] validates it (P5-54): this
+    /// manager's own option is set to it for the call and restored after,
+    /// so the call never changes this manager (nor its epoch).
+    #[wasm_bindgen(js_name = dcsDecorateModels)]
+    pub fn dcs_decorate_models(
+        &mut self,
+        target: &mut ModelManagerHandle,
+        decorator_command_sets: JsValue,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        let own = self.manager.decorator_validation().clone();
+        self.manager
+            .set_decorator_validation(target.manager.decorator_validation().clone());
+        let result = run(|| {
+            staged_decorate_models(&self.manager, target, &decorator_command_sets, &options)
+        });
+        self.manager.set_decorator_validation(own);
+        result
+    }
+
+    /// [`DcsManagerHandle::extract_decorators`] on this handle's own
+    /// manager, staged into `target` (the new ModelManager's handle, never
+    /// this one). Never changes this manager.
+    #[wasm_bindgen(js_name = dcsExtractDecorators)]
+    pub fn dcs_extract_decorators(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
         run(|| {
-            let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
-            let opts = extract_options_from_js(&options_json);
-            let result = dcs::extract_encoded(&self.manager, &opts, action)?;
-            let staged = stage_result(target, &result.model_manager);
-            Ok(extract_result_js(&result, Some(staged)))
+            staged_extract(
+                &self.manager,
+                target,
+                &options,
+                dcs::extractor::Action::ExtractAll,
+            )
+        })
+    }
+
+    /// [`DcsManagerHandle::extract_vocabularies`] on this handle's own
+    /// manager (see [`Self::dcs_extract_decorators`]).
+    #[wasm_bindgen(js_name = dcsExtractVocabularies)]
+    pub fn dcs_extract_vocabularies(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            staged_extract(
+                &self.manager,
+                target,
+                &options,
+                dcs::extractor::Action::ExtractVocab,
+            )
+        })
+    }
+
+    /// [`DcsManagerHandle::extract_non_vocab_decorators`] on this handle's
+    /// own manager (see [`Self::dcs_extract_decorators`]).
+    #[wasm_bindgen(js_name = dcsExtractNonVocabDecorators)]
+    pub fn dcs_extract_non_vocab_decorators(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            staged_extract(
+                &self.manager,
+                target,
+                &options,
+                dcs::extractor::Action::ExtractNonVocab,
+            )
         })
     }
 }
