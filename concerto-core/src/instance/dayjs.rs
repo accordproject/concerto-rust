@@ -1,56 +1,67 @@
-//! The `dayjs` values an instance holds in its `DateTime` fields and its
-//! `$timestamp` (PORTING.md 3.3), modelled closely enough to reproduce what
-//! `JSONPopulator`, `JSONGenerator`, `Typed.assignFieldDefaults` and
-//! `Factory.newResource` do with them, and what the oracle records of them
-//! (`codec.js`: `{valid, iso, offset, utc}`).
+//! The `DateTime` values an instance holds in its `DateTime` fields and its
+//! `$timestamp` (PORTING.md 3.3): what TS keeps as dayjs objects.
 //!
-//! D7 keeps the *construction* of dayjs objects in TS: on the WASM fast
-//! path Rust receives and returns `(epoch ms, utcOffset minutes)`. The
-//! native harness has no TS, so this module stands in for the handful of
-//! dayjs 1.11.10 operations (with its `utc` plugin, `dayjs-setup.ts`) the
-//! ported members call, under `TZ=UTC` (3.3: every test runs with it, and
-//! Rust never consults the system time zone). Under `TZ=UTC` a "local"
-//! dayjs and a UTC one read the same calendar fields, so only the state
-//! the `utc` plugin keeps differs.
+//! D7 keeps the dayjs objects themselves in TS (template logic does date
+//! arithmetic on them): on the WASM fast path Rust receives and returns
+//! `(epoch ms, utcOffset minutes)`. Rust only needs the value behind one,
+//! so [`Dayjs`] is a plain instant plus a UTC offset, or an explicit
+//! invalid date, with the handful of operations the ported members call
+//! (`JSONPopulator`, `JSONGenerator`, `Typed.assignFieldDefaults`,
+//! `Factory.newResource`, the WASM wire codec and the oracle's `codec.js`
+//! records). Every output is what dayjs 1.11.10 with its `utc` plugin
+//! (`dayjs-setup.ts`) gives under `TZ=UTC` (3.3: every test runs with it,
+//! and Rust never consults the system time zone). P5-66
+//! (accordproject/concerto-rust#403) replaced the emulation of dayjs's
+//! internal state (`$d` shifting, `$u`, `$offset`, `$x.$localOffset`)
+//! with this value, with no change in behaviour.
 //!
-//! The state is dayjs's own:
-//!
-//! - `$d`, the JS `Date` it wraps, as its time value in ms (`NaN` when
-//!   invalid). The `utc` plugin's `utcOffset(n)` *shifts* `$d` by `n`
-//!   minutes (`this.local().add(offset + localTimezoneOffset, 'minute')`)
-//!   and records `$offset`, so that the calendar fields `format` reads are
-//!   the offset's local time; its `valueOf` takes the shift back off, so
-//!   `toDate()`, `toISOString()` and `.utc()` see the original instant.
-//! - `$u` (`isUTC()`), `$offset` and `$x.$localOffset`.
+//! The instant is an ECMAScript time value (whole milliseconds since the
+//! epoch, at most 8.64e15 either way). That range runs to the year
+//! 275760, past chrono's (262142), so the instant is held as milliseconds
+//! and chrono does the calendar work on the same day of a 400-year
+//! Gregorian cycle ([`Fields::of`]).
 //!
 //! Parsing is *not* dayjs's (P5-24, accordproject/concerto-rust#328): a
 //! `DateTime` string is accepted only in the strict ISO 8601 / RFC 3339
 //! form (the `strictQualifiedDateTimes` regex, then chrono's calendar
 //! checks, BC-07 and BC-42 in R1), on every path that reads one: fields,
-//! map values and model defaults. The emulation of dayjs's lenient
-//! `parseDate` and of V8's `Date.parse` is gone; what stays is the value
-//! model above and the output formatting (`format_json`, `to_iso_string`,
-//! `to_js_string`).
+//! map values and model defaults.
 
 use std::sync::LazyLock;
+
+use chrono::Datelike;
 
 use crate::ecma;
 
 /// Milliseconds in a minute (`MILLISECONDS_A_MINUTE`).
 const MS_PER_MINUTE: f64 = 60_000.0;
-const MS_PER_DAY: f64 = 86_400_000.0;
+const MS_PER_DAY: i64 = 86_400_000;
+/// The largest ECMAScript time value, either way (`TimeClip`).
+const MAX_TIME: f64 = 8.64e15;
 
-/// A dayjs object (the `dayjs-setup.ts` build: dayjs 1.11.10 plus `utc`).
-#[derive(Debug, Clone, PartialEq)]
+/// A `DateTime` value: an instant plus the UTC offset it reads in, or an
+/// invalid date. What a dayjs object (the `dayjs-setup.ts` build: dayjs
+/// 1.11.10 plus `utc`) is to the ported members.
+#[derive(Debug, Clone)]
 pub struct Dayjs {
-    /// `$d.getTime()`: `NaN` for an invalid date.
-    time: f64,
-    /// `$u`.
-    utc: bool,
-    /// `$offset`, in minutes, when the `utc` plugin set one.
-    offset: Option<f64>,
-    /// `$x.$localOffset`.
-    local_offset: Option<f64>,
+    /// The instant, as an ECMAScript time value (`valueOf()` of a dayjs in
+    /// UTC or local time); `None` for an invalid date.
+    instant: Option<i64>,
+    /// The offset the date reads in.
+    zone: Zone,
+}
+
+/// The offset a [`Dayjs`] reads in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Zone {
+    /// UTC (`isUTC()`): `utcOffset()` is 0.
+    Utc,
+    /// Local time, which under `TZ=UTC` reads as UTC: `utcOffset()` is
+    /// `-0`, dayjs's `-Math.round(0 / 15) * 15`.
+    Local,
+    /// A fixed offset in minutes, as `utcOffset(n)` set it (any number,
+    /// fractional or beyond a day included, as dayjs keeps it).
+    Offset(f64),
 }
 
 /// What `utcOffset(input)` is given: a number of minutes (or hours, when
@@ -63,21 +74,29 @@ pub enum UtcOffset {
     String(String),
 }
 
+impl PartialEq for Dayjs {
+    /// Two dates are equal when both are valid, read in the same offset
+    /// and show the same local time. An invalid date equals nothing, as
+    /// the time value it wraps is `NaN`.
+    fn eq(&self, other: &Self) -> bool {
+        self.zone == other.zone
+            && matches!((self.local_ms(), other.local_ms()), (Some(a), Some(b)) if a == b)
+    }
+}
+
 impl Dayjs {
-    /// A dayjs over an arbitrary `$d` time value.
-    fn with_time(time: f64, utc: bool) -> Self {
+    /// A UTC date at the time value `time` (invalid when it is `None`).
+    fn utc_at(instant: Option<i64>) -> Self {
         Self {
-            time,
-            utc,
-            offset: None,
-            local_offset: None,
+            instant,
+            zone: Zone::Utc,
         }
     }
 
     /// `dayjs.utc()` at the time value `now_ms` (TS reads the clock; the
     /// caller supplies it, D7).
     pub fn utc_now(now_ms: f64) -> Self {
-        Self::with_time(now_ms, true)
+        Self::utc_from_number(now_ms)
     }
 
     /// A `DateTime` string read with the strict rule (P5-24, BC-07,
@@ -86,43 +105,41 @@ impl Dayjs {
     /// else is an invalid date, where TS's `dayjs.utc(date)` used to parse
     /// leniently (DIVERGENCES.md DV-009).
     pub fn utc_parse(s: &str) -> Self {
-        Self::with_time(strict_instant(s), true)
+        Self::utc_at(strict_instant(s))
     }
 
     /// `dayjs.utc(n)` for a number: `new Date(n)`.
     pub fn utc_from_number(n: f64) -> Self {
-        Self::with_time(time_clip(n), true)
+        Self::utc_at(time_clip(n))
     }
 
     /// `dayjs.utc(null)`: `parseDate` returns `new Date(NaN)` for `null`.
     pub fn utc_invalid() -> Self {
-        Self::with_time(f64::NAN, true)
+        Self::utc_at(None)
     }
 
-    /// A dayjs as the oracle recorded it (`codec.js` `encodeScalar`):
+    /// A date as the oracle recorded it (`codec.js` `encodeScalar`):
     /// rebuilt the way `codec.js`'s decoder does it (`dayjs.utc(iso)`, then
     /// `.utcOffset(offset)` when the offset is not 0; a non-UTC one through
     /// `dayjs(iso)`, the local, equal-offset case under `TZ=UTC`).
     pub fn from_recorded(valid: bool, iso: Option<&str>, offset: f64, utc: bool) -> Self {
+        let zone = if utc { Zone::Utc } else { Zone::Local };
         if !valid {
             // `dayjs('not a date')`: a local, invalid dayjs.
-            return Self::with_time(f64::NAN, false);
+            return Self {
+                instant: None,
+                zone: Zone::Local,
+            };
         }
-        let time = iso.map_or(f64::NAN, iso_string_instant);
-        if utc {
-            let d = Self::with_time(time, true);
-            if offset == 0.0 {
-                d
-            } else {
-                d.utc_offset_set(&UtcOffset::Number(offset))
-            }
+        let d = Self {
+            instant: iso.and_then(iso_string_instant),
+            zone,
+        };
+        // `utcOffset()` is 0 (UTC) or -0 (local), both `== 0`.
+        if offset == 0.0 {
+            d
         } else {
-            let local = Self::with_time(time, false);
-            if local.utc_offset() == offset {
-                local
-            } else {
-                local.utc_offset_set(&UtcOffset::Number(offset))
-            }
+            d.utc_offset_set(&UtcOffset::Number(offset))
         }
     }
 
@@ -133,62 +150,70 @@ impl Dayjs {
         serde_json::json!({ super::validate::DAYJS_TAG: self.to_iso_string() })
     }
 
-    /// `isValid()`: `!(this.$d.toString() === 'Invalid Date')`.
+    /// `isValid()`.
     pub fn is_valid(&self) -> bool {
-        !self.time.is_nan()
+        self.instant.is_some()
     }
 
     /// `valueOf()`, exposed for the Serializer fast path across the WASM
     /// boundary (PORTING.md 3.3: "On the fast path Rust receives and
     /// returns (epoch ms, utcOffset minutes)"). `NaN` for an invalid date.
+    ///
+    /// With an offset, dayjs keeps the local time (the instant shifted by
+    /// the offset, cut to whole milliseconds) and takes the shift back off,
+    /// so an offset that is not a whole number of milliseconds gives a
+    /// value a fraction away from the instant.
     pub fn epoch_ms(&self) -> f64 {
-        self.value_of()
+        match (self.instant, self.zone) {
+            (None, _) => f64::NAN,
+            (Some(_), Zone::Offset(minutes)) => {
+                let shift = minutes * MS_PER_MINUTE;
+                self.local_ms().map_or(f64::NAN, |local| local as f64 - shift)
+            }
+            (Some(ms), _) => ms as f64,
+        }
     }
 
     /// `isUTC()`.
     pub fn is_utc(&self) -> bool {
-        self.utc
+        self.zone == Zone::Utc
     }
 
-    /// `utcOffset()`: 0 when UTC, else `$offset`, else the local zone's
-    /// offset, which under `TZ=UTC` dayjs computes as
-    /// `-Math.round(0 / 15) * 15`, that is `-0`.
+    /// `utcOffset()`, in minutes.
     pub fn utc_offset(&self) -> f64 {
-        if self.utc {
-            0.0
-        } else {
-            self.offset.unwrap_or(-0.0)
+        match self.zone {
+            Zone::Utc => 0.0,
+            Zone::Local => -0.0,
+            Zone::Offset(minutes) => minutes,
         }
     }
 
-    /// `valueOf()` (the `utc` plugin's): `$d` less the offset's shift,
-    /// `$offset + ($x.$localOffset || $d.getTimezoneOffset())` minutes, the
-    /// time zone offset being 0 under `TZ=UTC`. `toDate()` is `new
-    /// Date(this.valueOf())`.
-    fn value_of(&self) -> f64 {
-        match self.offset {
-            Some(offset) => {
-                let local = self
-                    .local_offset
-                    .filter(|l| *l != 0.0 && !l.is_nan())
-                    .unwrap_or(0.0);
-                self.time - (offset + local) * MS_PER_MINUTE
-            }
-            None => self.time,
+    /// The local time the date reads as, as a time value: the instant
+    /// shifted by the offset (`None` when invalid). A valid date's always
+    /// is a time value (the setter keeps it so).
+    fn local_ms(&self) -> Option<i64> {
+        let ms = self.instant?;
+        match self.zone {
+            Zone::Offset(minutes) => time_clip(ms as f64 + minutes * MS_PER_MINUTE),
+            Zone::Utc | Zone::Local => Some(ms),
         }
     }
 
-    /// `.utc()`: `dayjs(this.toDate(), { utc: true })`.
+    /// `.utc()`: the same instant in UTC.
     pub fn to_utc(&self) -> Self {
-        Self::with_time(time_clip(self.value_of()), true)
+        Self::utc_at(time_clip(self.epoch_ms()))
     }
 
-    /// `.local()`: `dayjs(this.toDate(), { utc: false })`.
-    fn to_local(&self) -> Self {
-        Self::with_time(time_clip(self.value_of()), false)
-    }
-
-    /// `.utcOffset(input)` (the `utc` plugin's setter).
+    /// `.utcOffset(input)` (the `utc` plugin's setter) on a date in UTC or
+    /// local time, the only ones the callers set an offset on: a number
+    /// `|n| <= 16` is hours, others minutes (until BC-44); a string is
+    /// read for its first `±HH:mm`, and one without any leaves the date as
+    /// it is; an offset of 0 is `.utc()`. The date is invalid when the
+    /// offset is not a number or its local time is not a time value.
+    ///
+    /// (dayjs, on a date that already has an offset, shifts the local time
+    /// by the difference of the two offsets; this sets the offset on the
+    /// date's instant.)
     pub fn utc_offset_set(&self, input: &UtcOffset) -> Self {
         let input = match input {
             UtcOffset::Number(n) => *n,
@@ -198,35 +223,29 @@ impl Dayjs {
                 None => return self.clone(),
             },
         };
-        let offset = if input.abs() <= 16.0 {
+        let minutes = if input.abs() <= 16.0 {
             input * 60.0
         } else {
             input
         };
         // `input !== 0` (`-0 !== 0` is false; `NaN !== 0` is true).
-        if input != 0.0 {
-            // `this.$u ? this.toDate().getTimezoneOffset() : -1 * this.utcOffset()`,
-            // with `getTimezoneOffset()` 0 under TZ=UTC.
-            let local_timezone_offset = if self.utc { 0.0 } else { -self.utc_offset() };
-            let mut ins = self.to_local();
-            // `.add(offset + localTimezoneOffset, 'minute')`
-            ins.time = time_clip(ins.time + (offset + local_timezone_offset) * MS_PER_MINUTE);
-            ins.offset = Some(offset);
-            ins.local_offset = Some(local_timezone_offset);
-            ins
-        } else {
-            self.to_utc()
+        if input == 0.0 {
+            return self.to_utc();
+        }
+        let set = Self {
+            instant: time_clip(self.epoch_ms()),
+            zone: Zone::Offset(minutes),
+        };
+        Self {
+            instant: set.local_ms().and(set.instant),
+            zone: set.zone,
         }
     }
 
     /// `toISOString()`: `this.toDate().toISOString()`, `None` where JS
     /// throws `RangeError: Invalid time value`.
     pub fn to_iso_string(&self) -> Option<String> {
-        let time = time_clip(self.value_of());
-        if time.is_nan() {
-            return None;
-        }
-        let f = Fields::of(time);
+        let f = Fields::of(time_clip(self.epoch_ms())?);
         let year = if (0..=9999).contains(&f.year) {
             format!("{:04}", f.year)
         } else if f.year < 0 {
@@ -248,10 +267,9 @@ impl Dayjs {
     /// `toString()`: `this.toDate().toUTCString()` (`"Invalid Date"` when
     /// invalid).
     pub fn to_js_string(&self) -> String {
-        let time = time_clip(self.value_of());
-        if time.is_nan() {
+        let Some(time) = time_clip(self.epoch_ms()) else {
             return "Invalid Date".to_string();
-        }
+        };
         const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
         const MONTHS: [&str; 12] = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -270,13 +288,14 @@ impl Dayjs {
 
     /// `format('YYYY-MM-DDTHH:mm:ss.SSS[Z]')` when `utcOffset()` is 0, and
     /// `format('YYYY-MM-DDTHH:mm:ss.SSSZ')` otherwise: the two formats
-    /// `JSONGenerator.convertToJSON` uses (TS: `inZ ? '[Z]' : 'Z'`). An
-    /// invalid date formats as `"Invalid Date"` (`C.INVALID_DATE_STRING`).
+    /// `JSONGenerator.convertToJSON` uses (TS: `inZ ? '[Z]' : 'Z'`), of the
+    /// local time. An invalid date formats as `"Invalid Date"`
+    /// (`C.INVALID_DATE_STRING`).
     pub fn format_json(&self) -> String {
-        if !self.is_valid() {
+        let Some(local) = self.local_ms() else {
             return "Invalid Date".to_string();
-        }
-        let f = Fields::of(self.time);
+        };
+        let f = Fields::of(local);
         let zone = if self.utc_offset() == 0.0 {
             "Z".to_string()
         } else {
@@ -342,7 +361,6 @@ fn offset_from_string(value: &str) -> Option<f64> {
     Some(if indicator == "+" { total } else { -total })
 }
 
-
 /// The `strictQualifiedDateTimes` format, the only `DateTime` string form
 /// accepted (P5-24, BC-07, accordproject/concerto-rust#328):
 /// `YYYY-MM-DDTHH:mm:ss`, an optional fraction of any length, then `Z` or
@@ -362,15 +380,15 @@ pub(crate) fn is_strict_date_time_format(s: &str) -> bool {
 }
 
 /// The time value (ms since the epoch) of a strict `DateTime` string, or
-/// `NaN` when `s` is not one: it must have the strict format, and name a
+/// `None` when `s` is not one: it must have the strict format, and name a
 /// real calendar instant (no `2024-02-30`, no `T24:00:00`, no leap second
 /// `:60`, offsets up to `±23:59`; BC-42). The fraction is truncated to
 /// milliseconds, as `Date` does. chrono's RFC 3339 parser does the
 /// calendar checks; the regex keeps out the forms RFC 3339 allows and the
 /// strict format does not (a lower-case `t`/`z`, a space separator).
-fn strict_instant(s: &str) -> f64 {
+fn strict_instant(s: &str) -> Option<i64> {
     if !is_strict_date_time_format(s) {
-        return f64::NAN;
+        return None;
     }
     match chrono::DateTime::parse_from_rfc3339(s) {
         // chrono reads `:60` as a leap second (a nanosecond field of 1e9
@@ -378,22 +396,20 @@ fn strict_instant(s: &str) -> f64 {
         Ok(dt) if dt.timestamp_subsec_nanos() < 1_000_000_000 => {
             time_clip(dt.timestamp_millis() as f64)
         }
-        _ => f64::NAN,
+        _ => None,
     }
 }
 
 /// `toISOString()` output (`YYYY-MM-DDTHH:mm:ss.sssZ`, or an expanded
-/// `±YYYYYY` year) read back as a time value, `NaN` when `s` is not one:
+/// `±YYYYYY` year) read back as a time value, `None` when `s` is not one:
 /// the inverse of [`Dayjs::to_iso_string`], for values this engine (or the
 /// oracle's recorder) formatted itself. Not a parser for user input.
-fn iso_string_instant(s: &str) -> f64 {
+fn iso_string_instant(s: &str) -> Option<i64> {
     static ISO_STRING: LazyLock<regress::Regex> = LazyLock::new(|| {
         regress::Regex::new(r"^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$")
             .expect("static pattern")
     });
-    let Some(m) = ISO_STRING.find(s) else {
-        return f64::NAN;
-    };
+    let m = ISO_STRING.find(s)?;
     let num = |i: usize| -> i64 {
         m.group(i)
             .and_then(|r| s[r].trim_start_matches('+').parse().ok())
@@ -401,27 +417,20 @@ fn iso_string_instant(s: &str) -> f64 {
     };
     let (year, month, day) = (num(1), num(2), num(3));
     let (hour, minute, second, ms) = (num(4), num(5), num(6), num(7));
-    let date = i32::try_from(year)
+    let dt = i32::try_from(year)
         .ok()
-        .and_then(|y| chrono::NaiveDate::from_ymd_opt(y, month as u32, day as u32));
-    match date.and_then(|d| d.and_hms_milli_opt(hour as u32, minute as u32, second as u32, ms as u32)) {
-        Some(dt) => time_clip(dt.and_utc().timestamp_millis() as f64),
-        None => f64::NAN,
-    }
+        .and_then(|y| chrono::NaiveDate::from_ymd_opt(y, month as u32, day as u32))?
+        .and_hms_milli_opt(hour as u32, minute as u32, second as u32, ms as u32)?;
+    time_clip(dt.and_utc().timestamp_millis() as f64)
 }
 
-/// ECMAScript `ToIntegerOrInfinity`.
-fn to_integer_or_infinity(n: f64) -> f64 {
-    if n.is_nan() { 0.0 } else { n.trunc() }
-}
-
-/// ECMAScript `TimeClip`.
-fn time_clip(time: f64) -> f64 {
-    if !time.is_finite() || time.abs() > 8.64e15 {
-        return f64::NAN;
+/// ECMAScript `TimeClip`: `None` for `NaN`, an infinity or a value beyond
+/// 8.64e15 either way, else the value truncated to whole milliseconds.
+fn time_clip(time: f64) -> Option<i64> {
+    if !time.is_finite() || time.abs() > MAX_TIME {
+        return None;
     }
-    // `ToIntegerOrInfinity`, which also turns -0 into +0.
-    to_integer_or_infinity(time) + 0.0
+    Some(time.trunc() as i64)
 }
 
 /// The UTC calendar fields of a time value.
@@ -434,38 +443,38 @@ struct Fields {
     minute: i64,
     second: i64,
     ms: i64,
+    /// 0 (Sunday) to 6.
     weekday: i64,
 }
 
 impl Fields {
-    fn of(time: f64) -> Self {
-        let t = time as i64;
-        let days = t.div_euclid(MS_PER_DAY as i64);
-        let ms_of_day = t.rem_euclid(MS_PER_DAY as i64);
-        // civil_from_days
-        let z = days + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let year = if m <= 2 { y + 1 } else { y };
+    /// chrono's calendar fields of the same day in the 400-year Gregorian
+    /// cycle from 1970 (146097 days, a whole number of weeks), with the
+    /// cycles added back to the year: the ECMAScript time value range runs
+    /// past chrono's.
+    fn of(time: i64) -> Self {
+        const DAYS_PER_400_YEARS: i64 = 146_097;
+        let days = time.div_euclid(MS_PER_DAY);
+        let ms_of_day = time.rem_euclid(MS_PER_DAY);
+        let cycles = days.div_euclid(DAYS_PER_400_YEARS);
+        let date = chrono::DateTime::UNIX_EPOCH
+            .date_naive()
+            .checked_add_days(chrono::Days::new(
+                days.rem_euclid(DAYS_PER_400_YEARS).unsigned_abs(),
+            ))
+            .expect("1970 to 2369 is in chrono's range");
         Self {
-            year,
-            month: m - 1,
-            day: d,
+            year: i64::from(date.year()) + cycles * 400,
+            month: i64::from(date.month0()),
+            day: i64::from(date.day()),
             hour: ms_of_day / 3_600_000,
             minute: ms_of_day / 60_000 % 60,
             second: ms_of_day / 1000 % 60,
             ms: ms_of_day % 1000,
-            weekday: (days + 4).rem_euclid(7),
+            weekday: i64::from(date.weekday().num_days_from_sunday()),
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -606,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn utc_offset_shifts_the_wrapped_date() {
+    fn utc_offset_shifts_the_local_time() {
         let d = Dayjs::utc_parse("2021-01-01T00:00:00Z").utc_offset_set(&UtcOffset::Number(60.0));
         assert_eq!(d.utc_offset(), 60.0);
         assert!(!d.is_utc());
@@ -643,5 +652,414 @@ mod tests {
             "Fri, 01 Jan 2021 00:00:00 GMT"
         );
         assert_eq!(Dayjs::utc_invalid().to_js_string(), "Invalid Date");
+    }
+}
+
+#[cfg(test)]
+#[path = "dayjs_legacy.rs"]
+mod legacy;
+
+/// P5-66 (accordproject/concerto-rust#403): the value above against the
+/// dayjs state emulation it replaced ([`legacy`]), output for output, on
+/// every construction and operation the callers use.
+#[cfg(test)]
+mod parity {
+    use super::legacy::{Dayjs as Old, UtcOffset as OldOffset};
+    use super::{Dayjs, UtcOffset, Zone};
+
+    /// A fixed-seed SplitMix64, so every run checks the same cases.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        fn range(&mut self, lo: i64, hi: i64) -> i64 {
+            lo + self.below((hi - lo + 1) as u64) as i64
+        }
+        fn unit(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// `0000-01-01T00:00:00.000Z` and `9999-12-31T23:59:59.999Z`.
+    const YEAR_0: i64 = -62_167_219_200_000;
+    const YEAR_9999_END: i64 = 253_402_300_799_999;
+
+    /// Everything a caller can read of a date. Numbers are compared by
+    /// their bits (`-0` is not `0` on the wire), `NaN` with `NaN`.
+    #[derive(Debug, PartialEq)]
+    struct Seen {
+        valid: bool,
+        epoch_ms: u64,
+        utc: bool,
+        utc_offset: u64,
+        format_json: String,
+        iso: Option<String>,
+        js_string: String,
+        validator: serde_json::Value,
+    }
+
+    fn bits(n: f64) -> u64 {
+        if n.is_nan() { f64::NAN.to_bits() } else { n.to_bits() }
+    }
+
+    fn seen_new(d: &Dayjs) -> Seen {
+        Seen {
+            valid: d.is_valid(),
+            epoch_ms: bits(d.epoch_ms()),
+            utc: d.is_utc(),
+            utc_offset: bits(d.utc_offset()),
+            format_json: d.format_json(),
+            iso: d.to_iso_string(),
+            js_string: d.to_js_string(),
+            validator: d.validator_value(),
+        }
+    }
+
+    fn seen_old(d: &Old) -> Seen {
+        Seen {
+            valid: d.is_valid(),
+            epoch_ms: bits(d.epoch_ms()),
+            utc: d.is_utc(),
+            utc_offset: bits(d.utc_offset()),
+            format_json: d.format_json(),
+            iso: d.to_iso_string(),
+            js_string: d.to_js_string(),
+            validator: d.validator_value(),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum Input {
+        Number(f64),
+        String(String),
+    }
+
+    impl Input {
+        fn to_new(&self) -> UtcOffset {
+            match self {
+                Self::Number(n) => UtcOffset::Number(*n),
+                Self::String(s) => UtcOffset::String(s.clone()),
+            }
+        }
+        fn to_old(&self) -> OldOffset {
+            match self {
+                Self::Number(n) => OldOffset::Number(*n),
+                Self::String(s) => OldOffset::String(s.clone()),
+            }
+        }
+    }
+
+    /// The offsets: the hours rule's edges (`|n| <= 16`), whole and
+    /// fractional minutes, offsets past a day, non-numbers, and strings.
+    fn offsets(rng: &mut Rng) -> Vec<Input> {
+        let mut numbers = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.25,
+            1e-7,
+            0.1 + 0.2,
+            15.99,
+            -15.99,
+            16.0,
+            -16.0,
+            16.0000001,
+            -16.0000001,
+            16.5,
+            -16.5,
+            17.0,
+            -17.0,
+            17.3,
+            17.00001,
+            -17.00001,
+            30.0,
+            45.0,
+            60.0,
+            -60.0,
+            90.0,
+            -90.0,
+            330.0,
+            345.0,
+            -570.0,
+            720.0,
+            840.0,
+            -840.0,
+            1439.0,
+            1440.0,
+            -1440.0,
+            1500.0,
+            -2000.0,
+            5000.0,
+            1e6,
+            1e11,
+            -1e11,
+            1.5e11,
+            1e300,
+            f64::MIN_POSITIVE,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        numbers.extend((-20..=20).map(f64::from));
+        for _ in 0..40 {
+            numbers.push(rng.range(-3000, 3000) as f64);
+            numbers.push((rng.unit() - 0.5) * 6000.0);
+            numbers.push((rng.unit() - 0.5) * 40.0);
+        }
+        let strings = [
+            "+05:30",
+            "-08:00",
+            "-0800",
+            "+0530",
+            "+05",
+            "-05",
+            "+00",
+            "Z",
+            "",
+            "+00:00",
+            "-00:00",
+            "+0000",
+            "UTC+01:00",
+            "x-12:34y",
+            "+99:99",
+            "+16:00",
+            "-16:01",
+            "+24:00",
+            "+00:15",
+            "-00:30",
+            "2021-01-01T00:00:00+05:30",
+        ];
+        numbers
+            .into_iter()
+            .map(Input::Number)
+            .chain(strings.iter().map(|s| Input::String((*s).to_string())))
+            .collect()
+    }
+
+    /// Strict-format strings over years 0000-9999, some of them naming no
+    /// real instant (day 31 of a short month, hour 24, second 60, offset
+    /// hour 24 or minute 60), with fractions of up to ten digits.
+    fn date_string(rng: &mut Rng) -> String {
+        let fraction = match rng.below(4) {
+            0 => String::new(),
+            _ => {
+                let digits = rng.range(1, 10) as usize;
+                let n: String = (0..digits)
+                    .map(|_| char::from(b'0' + rng.below(10) as u8))
+                    .collect();
+                format!(".{n}")
+            }
+        };
+        let zone = match rng.below(3) {
+            0 => "Z".to_string(),
+            _ => format!(
+                "{}{:02}:{:02}",
+                if rng.below(2) == 0 { '+' } else { '-' },
+                rng.range(0, 24),
+                if rng.below(8) == 0 { 60 } else { rng.range(0, 59) }
+            ),
+        };
+        // Mostly in range, at times one past it.
+        let mut field = |lo: i64, hi: i64, past: i64, one_in: u64| {
+            let hi = if rng.below(one_in) == 0 { past } else { hi };
+            rng.range(lo, hi)
+        };
+        let year = field(0, 9999, 9999, 1);
+        let month = field(1, 12, 13, 20);
+        let day = field(1, 28, 31, 4);
+        let hour = field(0, 23, 24, 20);
+        let minute = field(0, 59, 60, 40);
+        let second = field(0, 59, 60, 20);
+        let month = if month == 13 { 0 } else { month };
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}{fraction}{zone}")
+    }
+
+    /// A time value: mostly in years 0000-9999, else anywhere in (and
+    /// just beyond) the ECMAScript range, fractional, or not a number.
+    fn time_value(rng: &mut Rng) -> f64 {
+        match rng.below(10) {
+            0 => (rng.unit() - 0.5) * 2.0 * 8.64e15,
+            1 => rng.range(YEAR_0, YEAR_9999_END) as f64 + rng.unit(),
+            2 => [
+                0.0,
+                -0.0,
+                -1.0,
+                1.0,
+                8.64e15,
+                -8.64e15,
+                8.64e15 + 1.0,
+                -8.64e15 - 1.0,
+                8.64e15 - 0.5,
+                -0.5,
+                0.5,
+                YEAR_0 as f64,
+                YEAR_0 as f64 - 1.0,
+                YEAR_9999_END as f64,
+                YEAR_9999_END as f64 + 1.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ][rng.below(18) as usize],
+            _ => rng.range(YEAR_0, YEAR_9999_END) as f64,
+        }
+    }
+
+    /// Every way the callers build a date, each built by both models.
+    fn bases(rng: &mut Rng) -> Vec<(String, Dayjs, Old)> {
+        let mut out = Vec::new();
+        out.push((
+            "utc_invalid".to_string(),
+            Dayjs::utc_invalid(),
+            Old::utc_invalid(),
+        ));
+        for s in [
+            "2021-01-01T00:00:00Z",
+            "0000-01-01T00:00:00Z",
+            "0000-01-01T00:00:00+23:59",
+            "9999-12-31T23:59:59.999Z",
+            "9999-12-31T23:59:59.999-23:59",
+            "1970-01-01T00:00:00.000Z",
+            "1969-12-31T23:59:59.9999Z",
+            "2024-02-29T12:00:00+05:30",
+            "2021-01-01",
+            "not a date",
+            "",
+        ] {
+            out.push((
+                format!("utc_parse({s:?})"),
+                Dayjs::utc_parse(s),
+                Old::utc_parse(s),
+            ));
+        }
+        for _ in 0..400 {
+            let s = date_string(rng);
+            out.push((
+                format!("utc_parse({s:?})"),
+                Dayjs::utc_parse(&s),
+                Old::utc_parse(&s),
+            ));
+        }
+        for _ in 0..400 {
+            let n = time_value(rng);
+            out.push((
+                format!("utc_from_number({n:?})"),
+                Dayjs::utc_from_number(n),
+                Old::utc_from_number(n),
+            ));
+        }
+        for _ in 0..20 {
+            // `Date.now()`: a whole number of milliseconds.
+            let n = rng.range(YEAR_0, YEAR_9999_END) as f64;
+            out.push((
+                format!("utc_now({n:?})"),
+                Dayjs::utc_now(n),
+                Old::utc_now(n),
+            ));
+        }
+        let recorded_offsets = [
+            0.0, -0.0, 1.0, -5.0, 16.0, 17.0, 60.0, -300.0, 330.0, 1500.0, 0.5, 30.5, f64::NAN,
+        ];
+        for _ in 0..300 {
+            let n = time_value(rng);
+            let iso = match rng.below(12) {
+                0 => None,
+                1 => Some("2021-01-01".to_string()),
+                2 => Some("+275760-09-13T00:00:00.000Z".to_string()),
+                3 => Some("+262143-01-01T00:00:00.000Z".to_string()),
+                _ => Old::utc_from_number(n).to_iso_string(),
+            };
+            let valid = rng.below(10) != 0;
+            let utc = rng.below(2) == 0;
+            let offset = recorded_offsets[rng.below(recorded_offsets.len() as u64) as usize];
+            out.push((
+                format!("from_recorded({valid}, {iso:?}, {offset:?}, {utc})"),
+                Dayjs::from_recorded(valid, iso.as_deref(), offset, utc),
+                Old::from_recorded(valid, iso.as_deref(), offset, utc),
+            ));
+        }
+        out
+    }
+
+    /// The WASM wire codec's decode of an encoded date: `{valid: false}`,
+    /// or `utc_from_number(ms)` then `utcOffset(offset)` unless it is 0.
+    fn wire_new(d: &Dayjs) -> Dayjs {
+        if !d.is_valid() {
+            return Dayjs::utc_invalid();
+        }
+        let built = Dayjs::utc_from_number(d.epoch_ms());
+        if d.utc_offset() == 0.0 {
+            built
+        } else {
+            built.utc_offset_set(&UtcOffset::Number(d.utc_offset()))
+        }
+    }
+
+    fn wire_old(d: &Old) -> Old {
+        if !d.is_valid() {
+            return Old::utc_invalid();
+        }
+        let built = Old::utc_from_number(d.epoch_ms());
+        if d.utc_offset() == 0.0 {
+            built
+        } else {
+            built.utc_offset_set(&OldOffset::Number(d.utc_offset()))
+        }
+    }
+
+    /// Both models agree on every output of every date the callers can
+    /// build: as constructed; with each offset set (populator, `fromJSON`,
+    /// the wire decode); through `.utc().utcOffset(o)` then `format`
+    /// (generator), also of a date already in an offset; across a wire
+    /// round trip; and on equality.
+    #[test]
+    fn outputs_match_the_dayjs_emulation() {
+        let mut rng = Rng(0x5066_D4A7_0000_0403);
+        let offsets = offsets(&mut rng);
+        let bases = bases(&mut rng);
+        let mut checked = 0usize;
+        for (name, new, old) in &bases {
+            assert_eq!(seen_new(new), seen_old(old), "{name}");
+            assert_eq!(seen_new(&new.to_utc()), seen_old(&old.to_utc()), "{name}.utc()");
+            assert_eq!(seen_new(&wire_new(new)), seen_old(&wire_old(old)), "{name} wire");
+            assert_eq!(new == new, old == old, "{name} == itself");
+            let has_offset = matches!(new.zone, Zone::Offset(_));
+            for input in &offsets {
+                let case = format!("{name}.utcOffset({input:?})");
+                if !has_offset {
+                    let (n, o) = (new.utc_offset_set(&input.to_new()), old.utc_offset_set(&input.to_old()));
+                    assert_eq!(seen_new(&n), seen_old(&o), "{case}");
+                    assert_eq!(seen_new(&wire_new(&n)), seen_old(&wire_old(&o)), "{case} wire");
+                    assert_eq!(n == *new, o == *old, "{case} == base");
+                    assert_eq!(
+                        wire_new(&n) == n,
+                        wire_old(&o) == o,
+                        "{case} wire == itself"
+                    );
+                    // The generator, on a date already in an offset.
+                    let second = &offsets[rng.below(offsets.len() as u64) as usize];
+                    assert_eq!(
+                        seen_new(&n.to_utc().utc_offset_set(&second.to_new())),
+                        seen_old(&o.to_utc().utc_offset_set(&second.to_old())),
+                        "{case}.utc().utcOffset({second:?})"
+                    );
+                }
+                let (n, o) = (
+                    new.to_utc().utc_offset_set(&input.to_new()),
+                    old.to_utc().utc_offset_set(&input.to_old()),
+                );
+                assert_eq!(n.format_json(), o.format_json(), "{name}.utc().utcOffset({input:?})");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100_000, "{checked}");
     }
 }
