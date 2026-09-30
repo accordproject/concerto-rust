@@ -265,6 +265,107 @@ impl Field<'_> {
             self.property.is_optional(),
         )
     }
+
+    /// The relationship slot of a relationship property (`--> T field`),
+    /// or `None` for any other field.
+    pub fn relationship_slot(&self) -> Option<RelationshipSlot<'_>> {
+        let FieldType::Relationship(target_fqn) = &self.field_type else {
+            return None;
+        };
+        Some(RelationshipSlot {
+            owner_fqn: self.owner_fqn,
+            name: self.name(),
+            target_fqn,
+            is_array: self.property.is_array(),
+            is_optional: self.property.is_optional(),
+            map_value: false,
+        })
+    }
+}
+
+/// Where a relationship is held (P5-58, BC-05, R1): a relationship property
+/// (`--> T field`), or the value of a map declared with a relationship
+/// value type (`map M { o String --> T }`). The populator's and the
+/// generator's relationship code takes one of these, so a map value is
+/// read and written by the same code as a relationship property, under the
+/// same `acceptResourcesForRelationships`, `convertResourcesToRelationships`
+/// and `permitResourcesForRelationships` options.
+#[derive(Debug, Clone, Copy)]
+pub struct RelationshipSlot<'a> {
+    /// The fully-qualified name of the class that declares the property,
+    /// or of the map.
+    pub owner_fqn: &'a str,
+    /// The property's name, or the map's name for a map value.
+    pub name: &'a str,
+    /// The fully-qualified name of the declared target type.
+    pub target_fqn: &'a str,
+    /// TS `isArray()`: `false` for a map value.
+    pub is_array: bool,
+    /// TS `isOptional()`: `false` for a map value.
+    pub is_optional: bool,
+    /// Whether this is a map's value rather than a property.
+    pub map_value: bool,
+}
+
+impl RelationshipSlot<'_> {
+    /// TS `RelationshipDeclaration.toString()` for a property; for a map
+    /// value, the same shape naming the map.
+    pub fn relationship_to_string(&self) -> String {
+        if self.map_value {
+            format!(
+                "RelationshipMapValueType {{map={}, type={}}}",
+                self.owner_fqn, self.target_fqn,
+            )
+        } else {
+            format!(
+                "RelationshipDeclaration {{name={}, type={}, array={}, optional={}}}",
+                self.name, self.target_fqn, self.is_array, self.is_optional,
+            )
+        }
+    }
+}
+
+/// Whether a map's value type is a relationship (`RelationshipMapValueType`,
+/// `map M { o String --> T }`).
+pub fn is_relationship_map(map_declaration: &TypeRef) -> bool {
+    matches!(map_declaration.decl, Declaration::Map(map) if map.value_kind() == "RelationshipMapValueType")
+}
+
+/// The fully-qualified target type of a map whose value type is a
+/// relationship (`RelationshipMapValueType`, P5-58, BC-05, R1), resolved in
+/// the map's own model file as a relationship property's type is; `None`
+/// for any other map. Pair it with the map's [`TypeRef`] to build its
+/// [`RelationshipSlot`] with [`map_relationship_slot`].
+pub fn map_relationship_target(map_declaration: &TypeRef) -> Result<Option<String>> {
+    let Declaration::Map(map) = map_declaration.decl else {
+        return Ok(None);
+    };
+    if !is_relationship_map(map_declaration) {
+        return Ok(None);
+    }
+    let Some(type_id) = map.value_type() else {
+        return Ok(None);
+    };
+    let fqn = map_declaration
+        .mm
+        .resolve_type_name_at(map_declaration.namespace(), &type_id.name, None)?;
+    Ok(Some(fqn))
+}
+
+/// The [`RelationshipSlot`] of a map's relationship-typed value, whose
+/// target [`map_relationship_target`] resolved.
+pub fn map_relationship_slot<'a>(
+    map_declaration: &TypeRef<'a>,
+    target_fqn: &'a str,
+) -> RelationshipSlot<'a> {
+    RelationshipSlot {
+        owner_fqn: map_declaration.fqn(),
+        name: map_declaration.name(),
+        target_fqn,
+        is_array: false,
+        is_optional: false,
+        map_value: true,
+    }
 }
 
 /// Resolves a property's declared type in its owner's model file.

@@ -19,9 +19,10 @@
 //! - `mm_new`: `ModelManager::new` (`new ModelManagerHandle`).
 //! - `modelfile_new`: `ModelFile::from_json_text` over the AST text
 //!   (`stageModelFile`).
-//! - `add_model_file`: a fresh manager, then per model `from_json_text`,
-//!   `validate_detached_model_file`, `add_model_file` (stage, validate
-//!   staged, commit). `addCTOModel` has no crate row of its own: its CTO
+//! - `add_model_file`: a fresh manager, then per model `from_json_text`
+//!   and `validate_and_add_model_file` (stage, then validate and commit;
+//!   `validate_detached_model_file` then `add_model_file` before P5-48).
+//!   `addCTOModel` has no crate row of its own: its CTO
 //!   parse is TS (concerto-cto) on both engines, and the rest is this.
 //! - `from_json` / `to_json`: `concerto_core_js::Serializer` on a resident
 //!   manager, from a prebuilt `JsValue` (the binding also parses the JSON
@@ -145,9 +146,10 @@ fn manager_of<'a>(models: impl Iterator<Item = &'a (String, Value, String)>) -> 
     let mut mm = ModelManager::new().expect("a fresh manager");
     for (name, _, text) in models {
         let mf = file_of(name, text);
-        mm.validate_detached_model_file(&mf)
-            .expect("model validates");
-        mm.add_model_file(mf).expect("model adds");
+        // P5-48: the binding's validate-and-commit, in one step.
+        mm.validate_and_add_model_file(mf)
+            .map_err(|(err, _)| err)
+            .expect("model validates and adds");
     }
     mm
 }

@@ -308,7 +308,14 @@ mod tests {
                         property("ObjectProperty", "address", json!({ "isOptional": true, "type": type_ref("Address") })),
                         property("ObjectProperty", "color", json!({ "isOptional": true, "type": type_ref("Color") })),
                         property("RelationshipProperty", "owner", json!({ "isOptional": true, "type": type_ref("Person") })),
+                        property("ObjectProperty", "drivers", json!({ "isOptional": true, "type": type_ref("PersonMap") })),
                     ]
+                },
+                {
+                    "$class": "concerto.metamodel@1.0.0.MapDeclaration",
+                    "name": "PersonMap",
+                    "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                    "value": { "$class": "concerto.metamodel@1.0.0.RelationshipMapValueType", "type": type_ref("Person") }
                 }
             ]
         });
@@ -547,27 +554,33 @@ mod tests {
         );
     }
 
-    /// DV-012: `Math.trunc(Infinity) === Infinity`, so the populator takes
-    /// it as an Integer; the validator then rejects it.
+    /// P5-51 (BC-10, R1; DV-012): the populator rejects `±Infinity` for
+    /// an Integer or Long field, with validation off as well as on (before,
+    /// `Math.trunc(Infinity) === Infinity` let it through, and only the
+    /// validator caught it).
     #[test]
-    fn an_infinite_integer_passes_the_populator() {
+    fn an_infinite_integer_is_rejected_by_the_populator() {
         let mm = model();
-        let mut json = car_json();
-        let JsValue::Object(map) = &mut json else {
-            unreachable!()
-        };
-        map.insert("wheels".into(), JsValue::Number(f64::INFINITY));
-        let options: SerializerOptions = [("validate".to_string(), JsValue::Bool(false))]
-            .into_iter()
-            .collect();
-        let car = serializer()
-            .from_json(&mm, &json, Some(&options), &mut Env)
-            .expect("a car");
-        assert_eq!(car.get("wheels"), &JsValue::Number(f64::INFINITY));
-        assert!(
-            message(serializer().from_json(&mm, &json, None, &mut Env))
-                .contains("has a value of \"Infinity\"")
-        );
+        for n in [f64::INFINITY, f64::NEG_INFINITY] {
+            let mut json = car_json();
+            let JsValue::Object(map) = &mut json else {
+                unreachable!()
+            };
+            map.insert("wheels".into(), JsValue::Number(n));
+            let options: SerializerOptions = [("validate".to_string(), JsValue::Bool(false))]
+                .into_iter()
+                .collect();
+            for options in [Some(&options), None] {
+                let err = serializer()
+                    .from_json(&mm, &json, options, &mut Env)
+                    .expect_err("a non-finite Integer");
+                assert_eq!(err.kind().ts_class(), "ValidationException", "{n}: {err}");
+                assert_eq!(
+                    err.to_string(),
+                    "Expected value at path `$.wheels` to be of type `Integer`"
+                );
+            }
+        }
     }
 
     #[test]
@@ -615,6 +628,147 @@ mod tests {
             message(serializer().to_json(&mm, &car, Some(&plain))),
             "Did not find a relationship for org.acme@1.0.0.Person found Resource {id=org.acme@1.0.0.Person#bob}"
         );
+    }
+
+    /// A car whose `drivers` map holds `drivers`.
+    fn car_with_drivers(drivers: serde_json::Value) -> JsValue {
+        JsValue::from_json(&json!({
+            "$class": "org.acme@1.0.0.Car",
+            "vin": "ABC",
+            "drivers": drivers,
+        }))
+    }
+
+    fn options(entries: &[(&str, bool)]) -> SerializerOptions {
+        entries
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), JsValue::Bool(*v)))
+            .collect()
+    }
+
+    /// P5-58 (BC-05, R1; DV-007): a relationship-typed map value is a
+    /// relationship, as a relationship property is: a URI (or a bare
+    /// identifier) populates a `Relationship`, validates, and is written
+    /// back as its URI.
+    #[test]
+    fn a_relationship_map_value_is_a_relationship() {
+        let mm = model();
+        let car = serializer()
+            .from_json(
+                &mm,
+                &car_with_drivers(
+                    json!({ "a": "resource:org.acme@1.0.0.Person#bob", "b": "carol" }),
+                ),
+                None,
+                &mut Env,
+            )
+            .expect("a car");
+        let JsValue::Map(entries) = car.get("drivers") else {
+            panic!("a map");
+        };
+        for (_, value) in entries.iter().filter(|(k, _)| k.as_str() != Some("$class")) {
+            let JsValue::Instance(driver) = value else {
+                panic!("a relationship, got {value:?}");
+            };
+            assert_eq!(driver.kind, InstanceKind::Relationship);
+            assert_eq!(driver.class_fqn, "org.acme@1.0.0.Person");
+        }
+        let json = serializer()
+            .to_json(&mm, &JsValue::Instance(Box::new(car)), None)
+            .expect("the car's JSON");
+        let JsValue::Object(map) = json else {
+            panic!("an object");
+        };
+        assert_eq!(
+            map.get("drivers").cloned(),
+            Some(JsValue::from_json(&json!({
+                "a": "resource:org.acme@1.0.0.Person#bob",
+                "b": "resource:org.acme@1.0.0.Person#carol"
+            })))
+        );
+    }
+
+    /// P5-58 (BC-05, R1; DV-007): an embedded resource in a relationship
+    /// map is read only with `acceptResourcesForRelationships`, validated
+    /// only with `permitResourcesForRelationships` or
+    /// `convertResourcesToRelationships`, and written in full only with
+    /// `permitResourcesForRelationships`: the options a relationship
+    /// property takes, with the same outcomes.
+    #[test]
+    fn a_relationship_map_value_takes_an_embedded_resource_only_with_the_options() {
+        let mm = model();
+        let embedded =
+            car_with_drivers(json!({ "a": { "$class": "org.acme@1.0.0.Person", "email": "bob" } }));
+        // fromJSON: not without `acceptResourcesForRelationships`.
+        let err = serializer()
+            .from_json(&mm, &embedded, None, &mut Env)
+            .expect_err("an embedded resource needs the option");
+        assert_eq!(err.kind().ts_class(), "Error", "{err}");
+        // With it, and validation off, the value is a resource.
+        let accept = options(&[
+            ("acceptResourcesForRelationships", true),
+            ("validate", false),
+        ]);
+        let car = serializer()
+            .from_json(&mm, &embedded, Some(&accept), &mut Env)
+            .expect("a car with an embedded driver");
+        let JsValue::Map(entries) = car.get("drivers") else {
+            panic!("a map");
+        };
+        let Some((_, JsValue::Instance(driver))) =
+            entries.iter().find(|(k, _)| k.as_str() == Some("a"))
+        else {
+            panic!("an instance");
+        };
+        assert_ne!(driver.kind, InstanceKind::Relationship);
+        // With validation on, the resource's own validator (no options)
+        // rejects it, as for a property.
+        let accept_validate = options(&[("acceptResourcesForRelationships", true)]);
+        let err = serializer()
+            .from_json(&mm, &embedded, Some(&accept_validate), &mut Env)
+            .expect_err("validation rejects the embedded resource");
+        assert_eq!(err.kind().ts_class(), "ValidationException", "{err}");
+
+        // toJSON of the car holding the resource.
+        let car = JsValue::Instance(Box::new(car));
+        let drivers =
+            |options: &SerializerOptions| match serializer().to_json(&mm, &car, Some(options)) {
+                Ok(JsValue::Object(map)) => map.get("drivers").cloned(),
+                other => panic!("{other:?}"),
+            };
+        for validate in [true, false] {
+            assert_eq!(
+                drivers(&options(&[
+                    ("convertResourcesToRelationships", true),
+                    ("validate", validate)
+                ])),
+                Some(JsValue::from_json(
+                    &json!({ "a": "resource:org.acme@1.0.0.Person#bob" })
+                ))
+            );
+            let Some(JsValue::Object(written)) = drivers(&options(&[
+                ("permitResourcesForRelationships", true),
+                ("validate", validate),
+            ])) else {
+                panic!("the drivers map");
+            };
+            let Some(JsValue::Object(driver)) = written.get("a") else {
+                panic!("the driver in full, got {written:?}");
+            };
+            assert_eq!(
+                driver.get("$class"),
+                Some(&JsValue::String("org.acme@1.0.0.Person".into()))
+            );
+            assert_eq!(driver.get("email"), Some(&JsValue::String("bob".into())));
+        }
+        let err = serializer()
+            .to_json(&mm, &car, Some(&options(&[("validate", false)])))
+            .expect_err("the generator needs an option");
+        assert_eq!(err.kind().ts_class(), "Error", "{err}");
+        let err = serializer()
+            .to_json(&mm, &car, None)
+            .expect_err("the validator needs an option");
+        assert_eq!(err.kind().ts_class(), "ValidationException", "{err}");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 // Records what node-semver's `parse(version)` returns for a fixed, generated
 // set of inputs, for the differential test `semver_parse_matches_node_semver`
-// in concerto-core/src/model_util.rs (task P5-20, F4; since P5-25 the
-// `semver` crate plus a node-compat wrapper).
+// in concerto-core/src/model_util.rs (task P5-20, F4). Since BC-41 (P5-38)
+// the Rust parse is strict SemVer 2.0.0, and the test checks it against
+// node-semver's `parse` restricted to strict SemVer 2.0.0.
 //
 // The recording must come from node-semver 7.6.3, the version concerto-core
 // 5.0.0 depends on. Pass the path to that package:

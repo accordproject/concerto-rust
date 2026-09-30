@@ -40,13 +40,14 @@
 //! with validation disabled is never re-checked (P2-08: a later
 //! `validateModelFiles` is what rejects it), and a self-import cannot yet
 //! resolve through the manager (P2-08d, accordproject/concerto-rust#151).
-//! The harness replays this as "validate the new file with
-//! [`ModelManager::validate_detached_model_file`] against the manager as it
-//! stands (before registering), then register" — matching TS's own order,
-//! including its duplicate-namespace check firing first regardless of
-//! validation (`add_model_with_definitions`'s own check, unconditional).
-//! Validation failing leaves the manager untouched, since nothing is
-//! registered yet; removal has no Rust counterpart, so a later step that
+//! The harness replays this as "validate the new file against the manager
+//! as it stands (before registering), then register", in one step
+//! ([`ModelManager::validate_and_add_model_file`], P5-48: the checks
+//! [`ModelManager::validate_detached_model_file`] makes, then registration)
+//! — matching TS's own order, including its duplicate-namespace check
+//! firing first regardless of validation (`add_model_with_definitions`'s
+//! own check, unconditional). Validation failing leaves the manager
+//! untouched; removal has no Rust counterpart, so a later step that
 //! must undo a registered file still rebuilds the manager from the
 //! surviving files (all of which loaded before).
 //!
@@ -1833,10 +1834,11 @@ impl Replayed {
     /// and — only for a genuinely new namespace — `modelFile.validate()`
     /// runs while `this.modelFiles` still lacks this file's own namespace:
     /// an import naming it (a self-import) cannot resolve. Replayed the
-    /// same way, via [`ModelManager::validate_detached_model_file`], which
-    /// checks `getImports()` against `self.mm` as it stands here (not yet
-    /// holding this namespace) while still resolving the file's own local
-    /// types, the same as `self.mm.validate_model_file` would once
+    /// same way, via [`ModelManager::validate_and_add_model_file`] (the
+    /// checks of [`ModelManager::validate_detached_model_file`], P5-48),
+    /// which checks `getImports()` against `self.mm` as it stands here (not
+    /// yet holding this namespace) while still resolving the file's own
+    /// local types, the same as `self.mm.validate_model_file` would once
     /// registered (that function's doc comment). A namespace already
     /// registered skips straight to `add_model_with_definitions`, which
     /// raises TS's `_throwAlreadyExists` for it, matching TS's order.
@@ -1846,6 +1848,7 @@ impl Replayed {
             .get("namespace")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let mut added = false;
         if validate {
             let already_registered = ns
                 .as_deref()
@@ -1881,16 +1884,26 @@ impl Replayed {
                         return Ok(Err(to_oracle_error(&e)));
                     }
                 }
-                if let Err(e) = self.mm.validate_detached_model_file(&mf) {
+                // P5-48 (accordproject/concerto-rust#369): validated and
+                // registered in one step, as concerto-wasm's
+                // `validateAndCommitStagedModelFile` and
+                // `addModelWithDefinitions` do
+                // (`ModelManager::validate_and_add_model_file`: the same
+                // checks and errors as `validate_detached_model_file` then
+                // registering; a failure leaves the manager as it was).
+                if let Err((e, _)) = self.mm.validate_and_add_model_file(mf) {
                     return Ok(Err(to_oracle_error(&e)));
                 }
+                added = true;
             }
         }
-        if let Err(e) = self.mm.add_model_with_definitions(
-            &file.ast,
-            file.definitions.clone(),
-            file.file_name.clone(),
-        ) {
+        if !added
+            && let Err(e) = self.mm.add_model_with_definitions(
+                &file.ast,
+                file.definitions.clone(),
+                file.file_name.clone(),
+            )
+        {
             return Ok(Err(to_oracle_error(&e)));
         }
         self.files.push(Entry {

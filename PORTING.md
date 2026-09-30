@@ -135,13 +135,13 @@ Mechanical rules. Apply them in order.
 | Ledger | Rust (`concerto-core`) | `concerto-wasm` | TS view (P4-xx) |
 |---|---|---|---|
 | **RUST** | All of the member's logic, ported in the P2/P3 task named in `planned_task`, in the module named in `target_rust_module` | one binding function or method per member, plus the JS-callback `ResolutionContext` (1.4) | a one-line delegation, with no branches (plan §7: "keep the views branch-free"), **or a read of the object's cached snapshot** (1.5). During the flag period the delegation sits behind the one `if (rust)` guard of 1.5. A row with `needs_fallback=true` still delegates in one line; the collaborator-call path is kept for that member only, behind the binding (1.4). |
-| **HYBRID** | Everything *except* what the ledger `reason` column says stays in JS | binding for the Rust part, plus the JS-callback `ResolutionContext` if the row has `needs_fallback=true` (1.4), or the JS regex evaluator if the reason names `options.regExp` (3.2) | the JS part named in `reason`, calling Rust for the rest. Nothing else stays in JS. |
+| **HYBRID** | Everything *except* what the ledger `reason` column says stays in JS | binding for the Rust part, plus the JS-callback `ResolutionContext` if the row has `needs_fallback=true` (1.4), (the JS regex evaluator once named here for `options.regExp` is gone: BC-28, 3.2) | the JS part named in `reason`, calling Rust for the rest. Nothing else stays in JS. |
 | **TS** | nothing | nothing | unchanged. Do not port it, even if it looks easy. A TS row with `needs_fallback=true` (for example the `Factory` or `ModelManager` constructor) is not ported either: the member stays JS, so it has no Rust path to fall back from, and the flag records coupling that P2-10 lifts into fixtures (SUMMARY §10). |
 
 - The `reason` column of a HYBRID row is a contract, unless section 5 overrides it. What stays in JS is
   exactly what it names (a user callback, the `yaml` library, dayjs object
-  construction, the `processFile` parse seam, `options.regExp`, the
-  `Logger`). If the port seems to need more JS than that, stop and raise it.
+  construction, the `processFile` parse seam, `options.regExp` (until
+  BC-28 retired it in R1, 3.2), the `Logger`). If the port seems to need more JS than that, stop and raise it.
 - If a RUST member calls a TS member, Rust carries what it needs itself. For
   example, a RUST member that formats a message uses the Rust catalogue
   (section 2), not `Globalize`.
@@ -213,8 +213,9 @@ declaration get `PropId`s when P2-04 makes them `Property` values.
 - A port that meets a W test needing the fallback on a row *without*
   `needs_fallback=true` raises it on its issue instead of wiring it; the fix
   is a ledger rebuild, not a local fallback.
-- Core never knows which implementation it is talking to. Section 3.2 uses
-  the same pattern for the `options.regExp` engine.
+- Core never knows which implementation it is talking to. (Section 3.2
+  planned the same pattern for the `options.regExp` engine; BC-28 retired
+  that option in R1 instead.)
 - **Until the arena owns the graph, every collaborator call goes through the
   JS-callback context** (lesson of P0-04b). `needs_fallback` describes the end
   state, when `ModelManager`, `ModelFile` and the declarations are Rust-backed
@@ -773,8 +774,7 @@ Rules:
   point outside the BMP comes back unchanged.
 - **JS `trim` is not Rust `trim`.** JS removes WhiteSpace and LineTerminator,
   which includes U+FEFF and excludes U+0085; Rust's `char::is_whitespace` is
-  the other way round. Use `ecma::js_trim` (node-semver trims the version it
-  parses).
+  the other way round. Use `ecma::js_trim`.
 - **`String.prototype.replace` with a string pattern replaces the first
   occurrence only** (`ns.replace('@', '_')` is `replacen('@', "_", 1)`).
 - **Comparisons on AST values keep JS semantics.** TS compares whatever the
@@ -792,64 +792,34 @@ Rules:
 ### 3.2 Regular expressions
 
 - **All evaluation against a validator's regex happens in Rust** (#32
-  point 7), with the `regress` crate (ECMAScript semantics). The one
-  exception is a custom engine supplied through `options.regExp` (point 7a,
-  below), which Rust still drives.
-  P2-02 replaces the current `fancy-regex` use. This covers every place TS
-  compiles or tests a validator regex: the `StringValidator` constructor
-  (compile errors, and the `defaultValue` check it runs at load time),
-  `validate`, `matchesRegex`, and instance validation on both Serializer
-  paths.
-- **`getRegex()` is for TS callers only.** The view converts the pattern and
-  flags into a JS object for `StringValidator.getRegex()`, built with the
-  same constructor TS picks (the next bullet). That object is never used for
-  validation. Compiling the pattern twice, once in Rust and once in JS, is
-  accepted.
-- **The `options.regExp` custom engine** (#32 point 7a, option (b)). Only when
-  a caller supplies a custom engine through `options.regExp` does evaluation
-  fall back to it. That is the whole of what the ledger's HYBRID reason
-  "`options.regExp`" leaves in JS (the `StringValidator` constructor,
-  `validate` and `matchesRegex`).
-  - **Rust is the caller.** With the Serializer single-call path (section 5
-    row 6) and the load-time `defaultValue` check inside `add_model`, the
-    custom engine is reached from inside Rust, so the fallback is a callback,
-    not a view branch. P2-02 defines a public evaluator trait in core, with no JS types,
-    in the same pattern as `ResolutionContext` (1.4). Its methods mirror the
-    three things TS does with the regex object: construct it
-    (`new CustomRegExp(pattern, flags)`, which may throw; the thrown message
-    goes to `reportError` with `RegexValidatorException`), test a value (set
-    `lastIndex = 0`, call `test`, reset `lastIndex = 0`), and render it for
-    the `failed to match validation regex: ${this.regex}` message (JS
-    `String(regex)`, which for a custom engine is whatever its `toString`
-    returns). The default implementation is `regress`, with the
-    `RegExp.prototype.toString` rendering below.
-  - **The JS implementation lives in `concerto-wasm`** (section 4). It wraps
-    the `options.regExp` constructor and calls it back. A model manager
-    carries an optional evaluator. The binding installs the JS one only when
-    `options.regExp` is present. Core never knows which engine it is using,
-    and core's public API stays free of JS types. A native Rust caller (Phase
-    6) may supply its own evaluator, or none.
-  - **Reproduce the TS scope of the custom engine exactly**
-    (`stringvalidator.ts:77-81`): TS uses `options.regExp` only when the
-    validator's `field` has `getParent()`, reaching the model manager through
-    `parent.getModelFile().getModelManager()`. So:
-    - the validator of a `ScalarDeclaration` (built in
-      `scalardeclaration.ts:105` with the declaration itself as `field`)
-      **always uses the built-in engine**, `regress` in Rust, even when
-      `options.regExp` is set. This includes the load-time check of the
-      scalar's `defaultValue`;
-    - the validator of a `Field` (`field.ts:79`) uses the custom engine when
-      one is set. This includes the synthetic field that
-      `Field.getScalarField()` builds with the property's parent, which
-      `ResourceValidator` uses for scalar-typed properties. The scalar's
-      pattern is therefore evaluated by the custom engine during instance
-      validation, and by the built-in engine when the scalar declaration
-      itself is constructed.
-    The TS source comments on this limitation. Record it as a `ts-bug` row
-    (the custom engine is not applied uniformly), with a Rust test for each
-    of the two cases.
-  - The length checks, their order before the regex check, and all messages
-    stay in Rust whichever engine is in use.
+  point 7), with the `regress` crate (ECMAScript semantics). This covers
+  every place TS compiles or tests a validator regex: the `StringValidator`
+  constructor (compile errors, and the `defaultValue` check it runs at load
+  time), `validate`, and instance validation on both Serializer paths.
+- **`getRegex()` is for TS callers only.** The view builds a native JS
+  `RegExp` from the pattern and flags after the engine has compiled and
+  validated them (`stringValidatorNew` throws first for a pattern it
+  rejects), for `StringValidator.getRegex()`. That object is never used by
+  `validate`. Compiling the pattern twice, once in Rust and once in JS, is
+  accepted. (`matchesRegex`, which the TS `Factory` identifier check calls,
+  still tests that JS object, as v5.0.0 did.)
+- **The `options.regExp` custom engine is retired (BC-28, R1; P5-52,
+  accordproject/concerto-rust#373; maintainer decision 2026-09-29).** It
+  was once planned here as an evaluator trait in core with a JS
+  implementation in `concerto-wasm` (#32 point 7a, option (b)); that
+  trait was never built, and the TS fallback that stood in for it (the
+  `StringValidator` TS bodies, a Serializer fast-path bail-out, and the
+  lazy views' construction-time probe) is deleted. The `ModelManager`
+  ignores the option, with one warning per process
+  (`concerto-regexp-option`), and every `regex=` goes to `regress`,
+  whatever the model manager. The TS scope quirk it had (a
+  `ScalarDeclaration` validator never used the custom engine) no longer
+  exists. `regress` semantics are authoritative. A later browser build that
+  evaluates with the host `RegExp` instead (to drop `regress`) would have to
+  reproduce them exactly: the flag handling below, UTF-16 matching without
+  `u`/`v`, the `/<source>/<flags>` rendering in messages, and the compile
+  errors `stringValidatorNew` reports at load; the length checks and all
+  messages stay in Rust either way.
 - **Flags.** Port the effect each flag has on `matchesRegex`, which resets
   `lastIndex` to 0 and calls `test`. `g` and `d` have no effect. `y` means the
   match must start at index 0. `i`, `m`, `s`, `u` and `v` go to `regress`. With
@@ -950,12 +920,14 @@ Rules:
   expression as the port spells it); say so in the binding's doc comment.
 - **Results that are instances of a JS library class** (a `SemVer` from
   `semver.parse`, a dayjs object) are built in JS. Rust ports the check that
-  decides the result (node-semver 7.6.3's `valid`: the length limit, `trim`,
-  the `FULL` pattern and the `MAX_SAFE_INTEGER` bounds; since P5-25 the
-  `semver` crate behind a four-rule node-compat wrapper), and the binding calls
-  the library through a **host function the shim registers at load**
-  (`setHost(errorFactory, semverParse)`), so the view stays one line. Pin the
-  library version the port follows, and name it in the doc comment.
+  decides the result (for a namespace version, strict SemVer 2.0.0 through
+  the `semver` crate since BC-41, P5-38, with no `SemVer` beyond
+  node-semver's own limits, where `semver.parse` gives `null`; before it,
+  node-semver 7.6.3's `valid` through a four-rule node-compat wrapper), and
+  the binding calls the library through a **host function the shim
+  registers at load** (`setHost(errorFactory, semverParse)`), so the view
+  stays one line. Pin the library version the port follows, and name it in
+  the doc comment.
 
 ### 3.6 D6: match TS where it differs from Concerto v4
 
@@ -1105,7 +1077,7 @@ contract (1.3) only when it agrees with this table.
 | 5 | **YAML plain-scalar quoting is ported to Rust** with golden tests, so there is no WASM call per string (confirmed) | `DecoratorExtractor.quoteStringValue` becomes fully Rust. Golden tests compare against `yaml.stringify` output, byte for byte. |
 | 6 | **Serializer: option B, final.** `Serializer.toJSON`/`fromJSON` always make a single whole-document call into Rust. The internal visitor classes (`JSONGenerator`, `JSONPopulator`, `ResourceValidator`) stay as thin shells whose per-type methods call the same Rust per-field checks. There is one implementation of the rules, in Rust. **Leaving the visitors as untouched legacy TS is not allowed.** | write each per-field check and coercion *once*, in `instance`. The document-level path and the per-field bindings used by the visitor shells call the same function. Never duplicate a check between the two paths, and never leave a visitor method running its own TS check. The visitor shells keep only the dispatch the W tests spy on (`visitX`), so the white-box tests on `jsonpopulator` and `resourcevalidator` exercise the Rust rules. |
 | 7 | **Regex: all evaluation against a validator's regex happens in Rust** (`regress`). The facade only converts the pattern into a JS `RegExp` for TS callers of `StringValidator.getRegex()`, and that `RegExp` is never used for validation. *(Changed from the 1st comment.)* | section 3.2 |
-| 7a | **The `options.regExp` custom engine: option (b).** Rust evaluates by default. Only when a caller supplies a custom engine through `options.regExp` does evaluation fall back to that JS engine. `getRegex()` converts the pattern into a JS object for TS callers. | section 3.2: the evaluator trait in core, its JS implementation in `concerto-wasm`, and the TS scope of the custom engine (`ScalarDeclaration` validators always use the built-in engine) |
+| 7a | **The `options.regExp` custom engine: option (b).** Rust evaluates by default. Only when a caller supplies a custom engine through `options.regExp` does evaluation fall back to that JS engine. `getRegex()` converts the pattern into a JS object for TS callers. | section 3.2: the evaluator trait in core, its JS implementation in `concerto-wasm`, and the TS scope of the custom engine (`ScalarDeclaration` validators always use the built-in engine). **Superseded by BC-28 (R1, P5-52 #373): the option is ignored with a warning, and the trait was never built.** |
 | 8 | `ModelLoader`, `writeModelsToFileSystem` and `updateExternalModels` stay in TS. There is no Rust loader, and the WASM/browser build needs none. (confirmed) | do not port `modelloader.ts`, `writeModelsToFileSystem` or the download in `updateExternalModels`. `updateExternalModels` itself stays HYBRID as in the TSV: the download is TS, and the add, validate and rollback steps run in Rust. There is no Rust loader. |
 | 9 | **Coupling: yes, and now.** Re-derive the ledger's coupling from P0-02's per-test tags and the runtime sinon trace, ahead of P2-10 and P4, because it decides where views need a collaborator fallback and which white-box tests need rewriting as fixtures. **Done** in the ledger at commit `c48423c`. | the TSV's `coupled_tests` column is gone. It is replaced by `w_tests`, `direct_tests` and `needs_fallback`, and the old grep survives only as `coupled_tests_grep`, for comparison (1.3). The fallback rows are exactly the `needs_fallback=true` rows: 19 members across 19 classes (SUMMARY §9, section 1.4). The W tests to lift into fixtures are SUMMARY §10: 272 W tests across 24 files, which drives P2-10. SUMMARY §11 lists the 19 of them that map to no ledger member (6.1). A port does not re-derive coupling itself. |
 
@@ -1604,10 +1576,9 @@ any item fails, and cite the item number.
 5. The semantics rules hold wherever they apply:
    - numbers are `f64`, and text uses JS formatting (3.1);
    - string lengths are UTF-16 (3.1);
-   - every validator regex is evaluated in Rust (`regress`, ported flags),
-     or through the evaluator trait when `options.regExp` is set, with the
-     TS scope of the custom engine (`ScalarDeclaration` validators always
-     built-in); the `getRegex()` object is never used for validation (3.2);
+   - every validator regex is evaluated in Rust (`regress`, ported flags;
+     `options.regExp` is ignored since BC-28); the `getRegex()` object is
+     never used by `validate` (3.2);
    - dates follow dayjs under UTC (3.3);
    - `ID_REGEX` is character for character (3.4);
    - `null`, `undefined` and falsy cases are kept (3.5);

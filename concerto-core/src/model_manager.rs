@@ -337,6 +337,15 @@ impl<'a> ClassProperties<'a> {
     }
 }
 
+/// The arena lengths and generation before
+/// [`ModelManager::append_for_validation`] appended a file (P5-48).
+pub(crate) struct AppendMark {
+    files: usize,
+    declarations: usize,
+    properties: usize,
+    generation: u64,
+}
+
 /// Where a property is: its declaration, and its position in
 /// [`ClassDeclaration::own_properties`].
 #[derive(Debug, Clone)]
@@ -626,28 +635,34 @@ fn already_exists(namespace: &str, new_file_name: Option<&str>, existing: &Model
 
 thread_local! {
     /// The decorator and root system model files, loaded from their vendored
-    /// ASTs once per thread and cloned into every new manager (P5-06): a
-    /// model file is a pure function of its AST and file name, so a clone is
-    /// indistinguishable from a fresh load, without re-serialising and
-    /// re-reading both ASTs on every [`ModelManager::new`].
-    static SYSTEM_MODEL_FILES: std::cell::RefCell<Option<(ModelFile, ModelFile)>> =
+    /// ASTs once per thread and shared by every new manager (P5-06; P5-48,
+    /// accordproject/concerto-rust#369: shared, not deep-cloned, as P5-18's
+    /// scratch managers share their files): a model file is a pure function
+    /// of its AST and file name, and a manager never changes a registered
+    /// file, so a shared file is indistinguishable from a fresh load, without
+    /// re-serialising and re-reading both ASTs on every
+    /// [`ModelManager::new`].
+    static SYSTEM_MODEL_FILES: std::cell::RefCell<Option<(Arc<ModelFile>, Arc<ModelFile>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// The decorator and root system model files, as [`ModelManager::new`]
 /// loads them (see [`SYSTEM_MODEL_FILES`]). A load error is returned, and
 /// not cached, exactly as an uncached load would return it.
-fn system_model_files() -> Result<(ModelFile, ModelFile)> {
+fn system_model_files() -> Result<(Arc<ModelFile>, Arc<ModelFile>)> {
     if let Some(files) = SYSTEM_MODEL_FILES.with(|cache| cache.borrow().clone()) {
         return Ok(files);
     }
-    let decorator = ModelFile::from_json(
+    let decorator = Arc::new(ModelFile::from_json(
         &decorator_model_ast(),
         Some("concerto_decorator_1.0.0.cto".into()),
-    )?;
-    let root = ModelFile::from_json(&root_model_ast(), Some("concerto_1.0.0.cto".into()))?;
+    )?);
+    let root = Arc::new(ModelFile::from_json(
+        &root_model_ast(),
+        Some("concerto_1.0.0.cto".into()),
+    )?);
     SYSTEM_MODEL_FILES.with(|cache| {
-        *cache.borrow_mut() = Some((decorator.clone(), root.clone()));
+        *cache.borrow_mut() = Some((Arc::clone(&decorator), Arc::clone(&root)));
     });
     Ok((decorator, root))
 }
@@ -673,8 +688,8 @@ impl ModelManager {
         // the namespace, which happens to differ only for these two files
         // because every other file name in this port comes from the caller.
         let (decorator, root) = system_model_files()?;
-        mgr.insert(decorator)?;
-        mgr.insert(root)?;
+        mgr.insert_shared(decorator)?;
+        mgr.insert_shared(root)?;
         Ok(mgr)
     }
 
@@ -762,6 +777,49 @@ impl ModelManager {
             return Err(already_exists(mf.namespace(), mf.file_name(), existing));
         }
         self.insert(mf)
+    }
+
+    /// P5-48 (accordproject/concerto-rust#369): registers `model_file` in
+    /// place for [`ModelManager::validate_and_add_model_file`], when this
+    /// manager does not hold its namespace and every file it holds is
+    /// registered under its own namespace — exactly the case in which
+    /// [`ModelManager::with_model_file_registered`]'s scratch copy is this
+    /// manager's arena with the file appended. Returns the file's handle and
+    /// what [`ModelManager::undo_append`] needs to take it out again, or
+    /// `None` (nothing changed) when that is not the case or no handle can
+    /// be allocated; the file is then still the caller's.
+    pub(crate) fn append_for_validation(
+        &mut self,
+        model_file: &Arc<ModelFile>,
+    ) -> Option<(ModelFileId, AppendMark)> {
+        let namespace = model_file.namespace();
+        if self.namespaces.contains_key(namespace) || self.namespaces.len() != self.files.len() {
+            return None;
+        }
+        let mark = AppendMark {
+            files: self.files.len(),
+            declarations: self.declarations.len(),
+            properties: self.properties.len(),
+            generation: self.generation,
+        };
+        let id = self.insert_shared(Arc::clone(model_file)).ok()?;
+        Some((id, mark))
+    }
+
+    /// Takes out the file [`ModelManager::append_for_validation`] appended,
+    /// leaving the arena, the namespaces and the generation as they were
+    /// before it (as [`ModelManager::load_models`] rolls a batch back). The
+    /// caches are dropped: they may hold the appended file's handles.
+    pub(crate) fn undo_append(&mut self, mark: AppendMark) {
+        if let Some(slot) = self.files.get(mark.files) {
+            let namespace = slot.model_file.namespace().to_string();
+            self.namespaces.remove(&namespace);
+        }
+        self.files.truncate(mark.files);
+        self.declarations.truncate(mark.declarations);
+        self.properties.truncate(mark.properties);
+        self.generation = mark.generation;
+        self.invalidate_caches();
     }
 
     /// Loads a batch of models irrespective of import order between them,
@@ -1766,23 +1824,35 @@ impl ModelManager {
             short: &str,
             location: Option<serde_json::Value>,
         ) -> Result<String> {
-            let mf = self.model_file(in_namespace).ok_or_else(|| {
-                // TS: BaseModelManager.getType's unregistered-namespace path
-                // (src/basemodelmanager.ts), reused for the equivalent check
-                // here (error/catalogue.rs doc comment on the entry).
-                let fqn = qualify(in_namespace, short);
-                ContractError::type_not_found(
-                    "modelmanager-gettype-noregisteredns",
-                    vec![("type", fqn.clone())],
-                    fqn,
-                    location,
-                )
-            })?;
-
-            mf.resolve_local_type(short)
-                .ok_or_else(|| Error::type_not_found(qualify(in_namespace, short)))
+            self.resolve_type_name_lazy(in_namespace, short, || location)
         }
     }
+
+    /// [`ModelManager::resolve_type_name_at`], building the location only
+    /// when the error that carries it is raised (P5-48).
+    pub(crate) fn resolve_type_name_lazy(
+        &self,
+        in_namespace: &str,
+        short: &str,
+        location: impl FnOnce() -> Option<serde_json::Value>,
+    ) -> Result<String> {
+        let mf = self.model_file(in_namespace).ok_or_else(|| {
+            // TS: BaseModelManager.getType's unregistered-namespace path
+            // (src/basemodelmanager.ts), reused for the equivalent check
+            // here (error/catalogue.rs doc comment on the entry).
+            let fqn = qualify(in_namespace, short);
+            ContractError::type_not_found(
+                "modelmanager-gettype-noregisteredns",
+                vec![("type", fqn.clone())],
+                fqn,
+                location(),
+            )
+        })?;
+
+        mf.resolve_local_type(short)
+            .ok_or_else(|| Error::type_not_found(qualify(in_namespace, short)))
+    }
+
     /// The name of the field that gives `fqn` its identity: its own, if it
     /// declares one (explicit `identified by field`, giving that field's
     /// name, or system `identified`, giving `$identifier`), otherwise its
@@ -2422,8 +2492,10 @@ impl ModelManager {
         // class whose super type is being resolved is the AST node in scope
         // here, so its `location` is passed on, re-serialised from the typed
         // `mm::Range` by `location_value` (PORTING.md 2.1).
-        let location = class.location().and_then(crate::error::location_value);
-        match self.resolve_type_name_at(in_namespace, &ti.name, location.clone()) {
+        // P5-48: the location is re-serialised only on an error path, not
+        // on every (successful) step of a super-type walk.
+        let location = || class.location().and_then(crate::error::location_value);
+        match self.resolve_type_name_lazy(in_namespace, &ti.name, location) {
             Ok(fqn) => Ok(Some(fqn)),
             // TS: `_resolveSuperType`'s own hardcoded `IllegalModelException`
             // (src/introspect/classdeclaration.ts) — `resolve_type_name`'s
@@ -2434,7 +2506,7 @@ impl ModelManager {
             Err(err) if err.is_unported_type_not_found() => Err(ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Could not find super type {}", ti.name),
-                location,
+                location(),
             )
             .into()),
             Err(other) => Err(other),
