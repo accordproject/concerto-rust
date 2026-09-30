@@ -128,17 +128,6 @@ fn falsy_or_equal_in_string(test: Option<&Value>, values: &str) -> bool {
     }
 }
 
-/// `isUnversionedNamespaceEqual(modelFile, unversionedNamespace)`
-/// (`src/decoratormanager.ts`).
-fn is_unversioned_namespace_equal(model_file: &ModelFile, unversioned_namespace: &str) -> bool {
-    match model_util::parse_namespace_with(Some(model_file.namespace()), false) {
-        Ok(ParsedNamespace::Full { name, .. }) | Ok(ParsedNamespace::NameOnly { name }) => {
-            name == unversioned_namespace
-        }
-        Err(_) => false,
-    }
-}
-
 /// `DcsIndexWrapper` (`src/decoratormanager.ts`): a decorator command
 /// alongside its position in the command set it was collected from, so
 /// commands collected from several of [`get_decorator_maps`]'s maps can be
@@ -694,9 +683,8 @@ pub fn execute_command(
 
 /// `DecoratorManager.validateCommand` (`src/decoratormanager.ts`): checks a
 /// single command's target resolves against `model_manager` — its
-/// `target.type` names a real type, its `target.namespace` (allowing an
-/// unversioned namespace when exactly one loaded model file matches it) a
-/// loaded model, and, together with a `target.namespace` and
+/// `target.type` names a real type, its `target.namespace` (which must be
+/// versioned, BC-02) a loaded model, and, together with a `target.namespace` and
 /// `target.declaration`, its `target.property`/`target.properties` a real
 /// property of that declaration.
 ///
@@ -724,20 +712,13 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         .filter(|v| !v.is_empty())
     {
         resolved_model_file = model_manager.model_file(namespace);
-        // `ModelUtil.parseNamespace(target.namespace)`, except that an
-        // unversioned target namespace still matches any version of that
-        // namespace, as in TS 5.0.0, through the lenient `split_namespace`
-        // (BC-02, P5-50: whether DCS targets must be versioned too is a
-        // pending maintainer decision on accordproject/concerto-rust#371;
-        // concerto-core's own tests use unversioned targets).
-        if resolved_model_file.is_none()
-            && let (name, None) = model_util::split_namespace(namespace)?
-        {
-            // TS `getModelFiles()`: the user's model files only.
-            resolved_model_file = model_manager
-                .model_files()
-                .filter(|m| !crate::model_manager::EXCLUDE_NS.contains(&m.namespace()))
-                .find(|m| is_unversioned_namespace_equal(m, name));
+        // `ModelUtil.parseNamespace(target.namespace)`: since BC-02 (R1,
+        // P5-50; maintainer decision on accordproject/concerto-rust#371,
+        // option 1) an unversioned target namespace is rejected with the
+        // error an invalid namespace throws, instead of matching any
+        // version of that namespace as in TS 5.0.0.
+        if resolved_model_file.is_none() {
+            model_util::parse_namespace(namespace)?;
         }
         if resolved_model_file.is_none() {
             return Err(ContractError::pre_port(
@@ -1417,6 +1398,22 @@ pub fn prepare_decoration(
     // Every element is a command object: `synthetic_decorator_imports` has
     // already read `command.decorator` from each.
     let combined_commands: Vec<Value> = combined_commands.into_iter().flatten().collect();
+    // BC-02 (R1, P5-50; maintainer decision on
+    // accordproject/concerto-rust#371, option 1): a command's
+    // `target.namespace` goes through `ModelUtil.parseNamespace`, so an
+    // unversioned one is rejected when the commands are applied, with or
+    // without `validateCommands`, instead of matching any version of that
+    // namespace as in TS 5.0.0.
+    for command in &combined_commands {
+        if let Some(namespace) = command
+            .get("target")
+            .and_then(|t| t.get("namespace"))
+            .and_then(Value::as_str)
+            .filter(|ns| !ns.is_empty())
+        {
+            model_util::parse_namespace(namespace)?;
+        }
+    }
     let maps = get_decorator_maps(&combined_commands);
     Ok(Some(PreparedDecoration {
         decorator_imports,
@@ -2005,6 +2002,70 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn validate_command_rejects_an_unversioned_target_namespace() {
+        // BC-02 (P5-50, #371 option 1): `org.acme` no longer matches the
+        // loaded `org.acme@1.0.0`; it is `parseNamespace`'s invalid
+        // namespace, a plain `Error`.
+        let mgr = sample_manager();
+        for target in [
+            json!({ "namespace": "org.acme" }),
+            json!({ "namespace": "org.acme", "declaration": "Person", "property": "name" }),
+        ] {
+            let err = validate_command(&mgr, &json!({ "target": target })).unwrap_err();
+            assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{err}");
+            assert!(err.to_string().contains("Invalid namespace"), "{err}");
+        }
+    }
+
+    #[test]
+    fn decorate_models_rejects_an_unversioned_target_namespace_without_validation() {
+        // BC-02 (P5-50, #371 option 1): applying the commands rejects an
+        // unversioned `target.namespace` too, with or without
+        // `validateCommands`; a versioned one still applies.
+        let mgr = sample_manager();
+        let command_set = |namespace: &str| {
+            json!({
+                "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+                "name": "x",
+                "version": "1.0.0",
+                "commands": [{
+                    "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                    "type": "UPSERT",
+                    "target": {
+                        "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget",
+                        "namespace": namespace,
+                        "declaration": "Person"
+                    },
+                    "decorator": {
+                        "$class": "concerto.metamodel@1.0.0.Decorator",
+                        "name": "Hello",
+                        "arguments": []
+                    }
+                }]
+            })
+        };
+        for validate in [false, true] {
+            let mut options = DecorateOptions {
+                validate,
+                validate_commands: validate,
+                ..Default::default()
+            };
+            let mut sets = [command_set("org.acme")];
+            let err = decorate_models(&mgr, &mut sets, &mut options).unwrap_err();
+            assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{err}");
+            assert!(err.to_string().contains("Invalid namespace"), "{err}");
+
+            let mut sets = [command_set("org.acme@1.0.0")];
+            let decorated = decorate_models(&mgr, &mut sets, &mut options).unwrap();
+            let person = &decorated.model_file("org.acme@1.0.0").unwrap().ast()["declarations"][0];
+            assert_eq!(
+                person["decorators"][0]["name"], "Hello",
+                "validate={validate}"
+            );
+        }
     }
 
     #[test]
