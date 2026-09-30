@@ -717,7 +717,7 @@ impl std::error::Error for Error {}
 pub enum ErrorKind {
     IllegalModel,     // TS IllegalModelException
     TypeNotFound,     // TS TypeNotFoundException
-    Validator,        // TS BaseException from Validator.reportError (BC-39 may merge it)
+    Validator,        // TS 5.0.0 BaseException from Validator.reportError; not raised since BC-39
     Validation,       // TS ValidationException
     InvalidArgument,  // TS Error               [ErrorKind::Error]
     MalformedInput,   // TS TypeError           [ErrorKind::JsTypeError]
@@ -908,9 +908,10 @@ this design:
 
 - **BC-38** fixes the public error-code format. `Error::code()` is the place
   for it, so it adds no new API.
-- **BC-39** may merge `ErrorKind::Validator` into `IllegalModel` and
-  `Validation`. `#[non_exhaustive]` makes that removal-free for matchers
-  that have a wildcard arm.
+- **BC-39** (R1, P5-53) reports validator errors as `IllegalModel` (found
+  while a model loads) or `Validation` (an instance value), keeping the
+  `errorType` in `ContractError::validator`. `ErrorKind::Validator` is no
+  longer raised, but stays in the enum, so no matcher breaks.
 - **BC-11** turns the cyclic-inheritance `RecursionLimit` into
   `IllegalModel`. The kind stays for real recursion limits.
 - **BC-19** (a strict AST shape check on load) removes most kind (c)

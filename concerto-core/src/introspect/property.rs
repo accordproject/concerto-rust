@@ -714,9 +714,10 @@ impl Property {
 
     js_compat_pub! {
         /// Rebuilds and discards this property's own numeric, string and
-        /// collection-size validators, purely to surface the `BaseException`
-        /// their constructors raise (through `Validator.reportError`,
-        /// `ErrorKind::Validator`, PORTING.md 2.1) for a bound out of order, a
+        /// collection-size validators, purely to surface the
+        /// `IllegalModelException` their constructors raise (BC-39, R1:
+        /// `ErrorKind::IllegalModel`, keeping the errorType; 5.0.0 raised a
+        /// `BaseException` through `Validator.reportError`) for a bound out of order, a
         /// negative size, an uncompilable regex, or a default value outside the
         /// validator's own range — `Property::try_from` itself has no
         /// [`FullyQualified`] context to build these messages with (the module
