@@ -19,7 +19,9 @@
 //! PORTING.md section 2.5, DV-013), raised by the model manager's
 //! super-type walk. A model that validates cleanly returns `Ok(())`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration, MapDeclaration};
@@ -27,10 +29,7 @@ use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
 use crate::introspect::{DeclarationKind, Decorated, Typed, Validate};
 use crate::model_manager::ModelManager;
-use crate::model_util::{
-    self, ParsedNamespace, get_namespace, is_primitive_type, parse_namespace_with, qualify,
-    short_name,
-};
+use crate::model_util::{self, get_namespace, is_primitive_type, qualify, short_name};
 
 /// A class's own AST `location`, for [`failed`]'s `location` parameter
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
@@ -41,16 +40,6 @@ fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
     class.location().and_then(crate::error::location_value)
 }
 
-/// An enum's own AST `location` (TS: `this.ast.location` inside
-/// `Declaration.validate`, reached through `EnumDeclaration`'s inherited
-/// `ClassDeclaration.validate` — `this` there is the enum itself, the same
-/// as [`class_location`] for a class-like declaration).
-fn enum_location(
-    enm: &crate::introspect::declaration::EnumDeclaration,
-) -> Option<serde_json::Value> {
-    enm.location().and_then(crate::error::location_value)
-}
-
 /// A property's own AST `location` (TS: `this.ast.location` inside
 /// `Property.validate`/`Decorated.validate`, property.ts/decorated.ts —
 /// `this` there is the property, not its owning class). P2-08 review
@@ -58,6 +47,15 @@ fn enum_location(
 /// class's location for these, before `Property` carried its own.
 fn property_location(property: &Property) -> Option<serde_json::Value> {
     property.location().and_then(crate::error::location_value)
+}
+
+/// A typed AST `location`, re-serialised for an error only once that error
+/// is raised (P5-48, accordproject/concerto-rust#369): the checks below take
+/// the typed `mm::Range` and build its JSON value on their error path alone,
+/// not on every call, which is what a check that passes (the common case)
+/// used to pay for.
+fn lazy_location(range: Option<&mm::Range>) -> Option<serde_json::Value> {
+    range.and_then(crate::error::location_value)
 }
 
 impl ModelManager {
@@ -130,7 +128,7 @@ impl ModelManager {
     /// constructed with no model file at all in TS, so it has no `File
     /// '<name>'` suffix.
     pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
-        self.validate_model_file_with_import_scope(model_file, self)
+        self.validate_model_file_with_import_scope(model_file, self, None)
     }
 
     /// [`ModelManager::validate_model_file`], checking `model_file`'s own
@@ -147,15 +145,21 @@ impl ModelManager {
     /// it must see the manager exactly as it stood when TS calls
     /// `.validate()` — which, for every caller of `validate_detached_model_file`,
     /// never yet holds `model_file`'s own namespace.
+    ///
+    /// `hidden` names a namespace `import_scope` is taken not to hold
+    /// (P5-48: [`ModelManager::validate_and_add_model_file`] validates a file
+    /// it has already registered, and its own namespace must still look
+    /// unregistered to `check_imports`).
     fn validate_model_file_with_import_scope(
         &self,
         model_file: &ModelFile,
         import_scope: &ModelManager,
+        hidden: Option<&str>,
     ) -> Result<()> {
         let attach = |e| attach_model_file(e, model_file);
         validate_decorators(self, model_file.namespace(), model_file, None).map_err(attach)?;
         check_unique_decorators(model_file, None).map_err(attach)?;
-        check_imports(import_scope, model_file).map_err(attach)?;
+        check_imports(import_scope, hidden, model_file).map_err(attach)?;
         check_unique_declaration_names(model_file)?;
         for declaration in model_file.declarations() {
             declaration
@@ -206,7 +210,60 @@ impl ModelManager {
                 .expect("with_model_file_registered registers the file under its namespace");
             // P2-08d (#151): `import_scope: self`, not `scratch` — see the doc comment
             // above and on `validate_model_file_with_import_scope`.
-            scratch.validate_model_file_with_import_scope(registered, self)
+            scratch.validate_model_file_with_import_scope(registered, self, None)
+        }
+    }
+
+    js_compat_pub! {
+        /// TS `BaseModelManager.addModelFile`'s validate-then-register for a
+        /// model file this manager does not hold yet: the same checks, the
+        /// same first error and the same result as
+        /// [`ModelManager::validate_detached_model_file`] followed, once it
+        /// passes, by [`ModelManager::add_model_file`], returning the new
+        /// file's handle.
+        ///
+        /// P5-48 (accordproject/concerto-rust#369): when this manager does
+        /// not hold the file's namespace (the common case), the file is
+        /// registered first and validated in place, and taken out again if
+        /// validation fails, rather than validated in a scratch copy of the
+        /// manager holding a deep copy of the file
+        /// ([`ModelManager::with_model_file_registered`]) and then
+        /// registered. The manager validated is the one the scratch copy
+        /// would be (the same files, in the same order, the same options),
+        /// and `check_imports` still sees the manager without the file's
+        /// namespace (P2-08d). Any other case takes the two-step path.
+        ///
+        /// On a validation error the manager is as it was (its caches aside)
+        /// and the file is handed back (boxed) with the error; an error from the
+        /// registration itself (a namespace already registered, only on the
+        /// two-step path) consumes it, as [`ModelManager::add_model_file`]
+        /// does.
+        pub fn validate_and_add_model_file(
+            &mut self,
+            model_file: ModelFile,
+        ) -> std::result::Result<crate::model_manager::ModelFileId, (Error, Option<Box<ModelFile>>)> {
+            let shared = std::sync::Arc::new(model_file);
+            if let Some((id, mark)) = self.append_for_validation(&shared) {
+                let namespace = shared.namespace();
+                return match self.validate_model_file_with_import_scope(&shared, self, Some(namespace)) {
+                    Ok(()) => Ok(id),
+                    Err(err) => {
+                        self.undo_append(mark);
+                        let model_file = std::sync::Arc::try_unwrap(shared)
+                            .unwrap_or_else(|shared| (*shared).clone());
+                        Err((err, Some(Box::new(model_file))))
+                    }
+                };
+            }
+            let model_file = std::sync::Arc::try_unwrap(shared)
+                .unwrap_or_else(|shared| (*shared).clone());
+            if let Err(err) = self.validate_detached_model_file(&model_file) {
+                return Err((err, Some(Box::new(model_file))));
+            }
+            let namespace = model_file.namespace().to_string();
+            self.add_model_file(model_file).map_err(|err| (err, None))?;
+            self.model_file_id(&namespace)
+                .ok_or_else(|| (Error::type_not_found(namespace), None))
         }
     }
 
@@ -368,7 +425,7 @@ fn check_import_clash(
     manager: &ModelManager,
     namespace: &str,
     name: &str,
-    location: Option<serde_json::Value>,
+    location: Option<&mm::Range>,
 ) -> Result<()> {
     let Some(model_file) = manager.model_file(namespace) else {
         return Ok(());
@@ -383,7 +440,7 @@ fn check_import_clash(
     }
     Err(failed(
         format!("Type '{name}' clashes with an imported type with the same name."),
-        location,
+        lazy_location(location),
     ))
 }
 
@@ -436,7 +493,7 @@ impl Validate for Declaration {
                 // scan (F4, #152).
                 validate_decorators(manager, namespace, enm, Some(&fqn))?;
                 check_unique_decorators(enm, None)?;
-                check_import_clash(manager, namespace, enm.name(), enum_location(enm))?;
+                check_import_clash(manager, namespace, enm.name(), enm.location())?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
                 // check, inherited unchanged by `EnumDeclaration` — run in
                 // the same position relative to the decorator checks above
@@ -445,12 +502,11 @@ impl Validate for Declaration {
                 // closing the "enum duplicate values" gap of plan §1.2).
                 check_unique_field_names(manager, enm.name(), None, &fqn)?;
                 for value in enm.values() {
-                    validate_decorators(
-                        manager,
-                        namespace,
-                        value,
-                        Some(&format!("{fqn}.{}", value.name())),
-                    )?;
+                    // P5-48: the value's name is built only when a decorator
+                    // check will read it.
+                    let value_fqn = decorator_context(manager, value)
+                        .then(|| format!("{fqn}.{}", value.name()));
+                    validate_decorators(manager, namespace, value, value_fqn.as_deref())?;
                     check_unique_decorators(value, None)?;
                 }
                 Ok(())
@@ -489,8 +545,8 @@ impl Validate for ClassDeclaration {
         // this method's own super-type block (P2-08, reordered #152: this
         // used to run the decorator checks last).
         validate_decorators(manager, namespace, self, Some(&fqn))?;
-        check_unique_decorators(self, class_location(self))?;
-        check_import_clash(manager, namespace, self.name(), class_location(self))?;
+        check_unique_decorators(self, self.location())?;
+        check_import_clash(manager, namespace, self.name(), self.location())?;
         check_super_type(manager, namespace, self)?;
         // TS: the `if (this.idField)` identity block — `check_identifier`'s
         // not-a-property/not-a-string/optional checks, then
@@ -504,14 +560,16 @@ impl Validate for ClassDeclaration {
         // super type's own system identifier) instead of naming the conflict.
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
-        check_unique_field_names(manager, self.name(), class_location(self), &fqn)?;
+        check_unique_field_names(manager, self.name(), self.location(), &fqn)?;
         // TS: `for (field of this.getProperties())` — every property, own
         // and then inherited (`getProperties` walks up the super-type
         // chain), each validated in this class's own pass (P2-08 review:
         // this used to loop over `own_properties()` only, so a file
         // validated on its own never checked what it inherits).
-        for (owner_fqn, property) in manager.properties(&fqn)? {
-            validate_property(manager, namespace, self, &owner_fqn, property)?;
+        // P5-48: the borrowed property list (P5-13's `class_properties`),
+        // not a copied one with an owned owner name per property.
+        for (owner_fqn, property) in manager.class_properties(&fqn)?.iter() {
+            validate_property(manager, namespace, self, owner_fqn, property)?;
         }
         Ok(())
     }
@@ -539,7 +597,10 @@ fn validate_property(
 ) -> Result<()> {
     let owner_ns = get_namespace(Some(owner_fqn))?;
     let owner_name = short_name(owner_fqn);
-    let property_fqn = format!("{owner_fqn}.{}", property.name());
+    // P5-48: the property's own name is built only when a decorator check
+    // will read it.
+    let property_fqn =
+        decorator_context(manager, property).then(|| format!("{owner_fqn}.{}", property.name()));
     // `field.getModelFile()`: the declaring file, for an inherited
     // property's own `Decorated.validate` errors.
     let owner_file = manager.model_file(owner_ns);
@@ -554,13 +615,16 @@ fn validate_property(
     // call (property.ts). `check_property_type` below is that
     // `resolveType`/relationship logic, so the decorator checks run first
     // here too (P2-08 review carry-over (b) from P2-04's review, #48).
-    validate_decorators(manager, owner_ns, property, Some(&property_fqn)).map_err(in_owner_file)?;
-    check_unique_decorators(property, property_location(property)).map_err(in_owner_file)?;
+    validate_decorators(manager, owner_ns, property, property_fqn.as_deref())
+        .map_err(in_owner_file)?;
+    check_unique_decorators(property, property.location()).map_err(in_owner_file)?;
 
     let type_name = property.type_identifier().map(|t| t.name.as_str());
     let is_primitive = type_name.is_none_or(is_primitive_type);
     if is_primitive || owner_ns == namespace {
-        return check_property_type(manager, namespace, owner_ns, owner_name, class, property);
+        return check_property_type(
+            manager, namespace, owner_ns, owner_name, owner_fqn, class, property,
+        );
     }
 
     // `field.getFullyQualifiedTypeName()`: resolved in the declaring file,
@@ -581,12 +645,20 @@ fn validate_property(
     // TS `modelManager.getType(typeFqn)`, with its own two errors.
     manager.get_type_declaration(&type_fqn)?;
     let context_ns = get_namespace(Some(&type_fqn))?;
-    check_property_type(manager, context_ns, owner_ns, owner_name, class, property).map_err(|e| {
-        match manager.model_file(context_ns) {
-            Some(file) if context_ns != namespace => attach_model_file(e, file),
-            _ => e,
-        }
+    check_property_type(
+        manager, context_ns, owner_ns, owner_name, owner_fqn, class, property,
+    )
+    .map_err(|e| match manager.model_file(context_ns) {
+        Some(file) if context_ns != namespace => attach_model_file(e, file),
+        _ => e,
     })
+}
+
+/// Whether [`validate_decorators`] reads its `context` for `element`: only
+/// when decorator validation is enabled and `element` has a decorator
+/// (P5-48, so that a caller builds the context string only then).
+fn decorator_context(manager: &ModelManager, element: &impl Decorated) -> bool {
+    manager.decorator_validation().is_enabled() && !element.decorators().is_empty()
 }
 
 /// Runs [`crate::introspect::decorator::Decorator::validate`] over every
@@ -609,10 +681,7 @@ fn validate_decorators(
 }
 
 /// An element may not carry the same decorator twice.
-fn check_unique_decorators(
-    element: &impl Decorated,
-    location: Option<serde_json::Value>,
-) -> Result<()> {
+fn check_unique_decorators(element: &impl Decorated, location: Option<&mm::Range>) -> Result<()> {
     let mut seen = HashSet::new();
     for decorator in element.decorators() {
         // TS keys its `Set` on `getName()` and interpolates it into the
@@ -622,7 +691,7 @@ fn check_unique_decorators(
         if !seen.insert(name) {
             return Err(failed(
                 format!("Duplicate decorator {}", name.unwrap_or("undefined")),
-                location,
+                lazy_location(location),
             ));
         }
     }
@@ -713,19 +782,22 @@ fn check_super_type(
 fn check_unique_field_names(
     manager: &ModelManager,
     declaration_name: &str,
-    location: Option<serde_json::Value>,
+    location: Option<&mm::Range>,
     fqn: &str,
 ) -> Result<()> {
-    let mut seen = HashSet::new();
-    for (_, property) in manager.properties(fqn)? {
-        if !seen.insert(property.name().to_string()) {
+    // P5-48: the borrowed property list and borrowed names, in an FxHash
+    // set (only ever probed, never iterated).
+    let properties = manager.class_properties(fqn)?;
+    let mut seen = rustc_hash::FxHashSet::default();
+    for (_, property) in properties.iter() {
+        if !seen.insert(property.name()) {
             return Err(catalogue_error(
                 "classdeclaration-validate-duplicatefieldname",
                 vec![
                     ("class", declaration_name.to_string()),
                     ("fieldName", property.name().to_string()),
                 ],
-                location,
+                lazy_location(location),
             ));
         }
     }
@@ -748,9 +820,8 @@ fn check_identifier(
     };
     let fqn = qualify(namespace, class.name());
     let (owner, field) = manager
-        .properties(&fqn)?
-        .into_iter()
-        .find(|(_, property)| property.name() == field_name)
+        .class_properties(&fqn)?
+        .find(field_name)
         .ok_or_else(|| {
             catalogue_error(
                 "classdeclaration-validate-identifiernotproperty",
@@ -767,7 +838,7 @@ fn check_identifier(
     // TS: `idField.getParent().getModelFile().getType(idField.getType())`
     // resolves the field's type in the file that *declares* the field, which
     // for an inherited identifier is the super type's, not this class's.
-    let owner_namespace = get_namespace(Some(&owner))?;
+    let owner_namespace = get_namespace(Some(owner))?;
     if !is_string_typed(manager, owner_namespace, field) {
         return Err(catalogue_error(
             "classdeclaration-validate-identifiernotstring",
@@ -811,20 +882,22 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
 /// `owner` name the property's declaring class, for its fully-qualified
 /// name and for `RelationshipDeclaration.validate`'s own target lookup;
 /// `class` is the class whose pass this is, for the last-resort fallback's
-/// location.
+/// location. `owner_fqn` is `owner_ns` and `owner` qualified (the arena's
+/// cached FQN, P5-48: not rebuilt per property).
+#[allow(clippy::too_many_arguments)]
 fn check_property_type(
     manager: &ModelManager,
     namespace: &str,
     owner_ns: &str,
     owner: &str,
+    owner_fqn: &str,
     class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
-    let owner_fqn = qualify(owner_ns, owner);
     let Some(type_identifier) = property.type_identifier() else {
         // A primitive field: TS's `resolveType` of a primitive always
         // succeeds, so the size-validator check is all that is left.
-        return check_size_validator_target(&owner_fqn, property, false);
+        return check_size_validator_target(owner_fqn, property, false);
     };
 
     if type_identifier.name.is_empty() {
@@ -845,14 +918,14 @@ fn check_property_type(
                 property_location(property),
             ));
         }
-        return check_size_validator_target(&owner_fqn, property, false);
+        return check_size_validator_target(owner_fqn, property, false);
     }
 
     if is_primitive_type(&type_identifier.name) {
         // TS: `resolveType` succeeds for a primitive, then `Property.validate`
         // runs its size-validator check (a primitive is never a map), all
         // before `RelationshipDeclaration.validate`'s own checks.
-        check_size_validator_target(&owner_fqn, property, false)?;
+        check_size_validator_target(owner_fqn, property, false)?;
     }
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
@@ -897,7 +970,7 @@ fn check_property_type(
         // a type that `getType` cannot find (swallowed by its try/catch)
         // counts as not a map.
         check_size_validator_target(
-            &owner_fqn,
+            owner_fqn,
             property,
             target.is_some_and(Declaration::is_map_declaration),
         )?;
@@ -1073,54 +1146,91 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
 /// [`parse_namespace`] first and propagating its error with `?`, faithfully
 /// including that ordering (accordproject/concerto-rust#241, the `../`
 /// namespace-import mismatch off #219).
-fn check_imports(manager: &ModelManager, model_file: &ModelFile) -> Result<()> {
-    let mut seen_versions: HashMap<String, Option<String>> = HashMap::new();
-    for import_fqn in model_file.imported_type_names() {
-        let import_namespace = get_namespace(Some(&import_fqn))?;
-        let import_short_name = short_name(&import_fqn);
+fn check_imports(
+    manager: &ModelManager,
+    hidden: Option<&str>,
+    model_file: &ModelFile,
+) -> Result<()> {
+    // P5-48 (accordproject/concerto-rust#369): the walk over
+    // `imported_type_names()`, reading each import's namespace and name in
+    // place; a fully-qualified name is built only for an error, or for a
+    // name the plain split would not give back (an empty part, or a dot in
+    // the imported name).
+    type Borrowed<'a> = std::borrow::Cow<'a, str>;
+    let mut seen_versions: rustc_hash::FxHashMap<Borrowed<'_>, Option<Borrowed<'_>>> =
+        rustc_hash::FxHashMap::default();
+    for imp in model_file.imports() {
+        for imported in imp.imported_names() {
+            let owned: String;
+            let in_place =
+                !imp.namespace().is_empty() && !imported.is_empty() && !imported.contains('.');
+            let (import_namespace, import_short_name) = if in_place {
+                (imp.namespace(), imported.as_str())
+            } else {
+                owned = qualify(imp.namespace(), imported);
+                (get_namespace(Some(&owned))?, short_name(&owned))
+            };
+            let import_fqn = || qualify(imp.namespace(), imported);
 
-        let found = manager.model_file(import_namespace);
-        let ParsedNamespace::Full { name, version, .. } =
-            parse_namespace_with(Some(import_namespace), false)?
-        else {
-            unreachable!("disable_version_parsing is false")
-        };
+            let found = if hidden == Some(import_namespace) {
+                None
+            } else {
+                manager.model_file(import_namespace)
+            };
+            // Borrowed from the import itself, or, on the rare path that built
+            // the name, copied (the set outlives it).
+            let (name, version): (Borrowed<'_>, Option<Borrowed<'_>>) = if in_place {
+                let (name, version) = model_util::split_namespace(imp.namespace())?;
+                (Borrowed::Borrowed(name), version.map(Borrowed::Borrowed))
+            } else {
+                let (name, version) = model_util::split_namespace(import_namespace)?;
+                (
+                    Borrowed::Owned(name.to_string()),
+                    version.map(|v| Borrowed::Owned(v.to_string())),
+                )
+            };
 
-        if found.is_none() {
-            return Err(catalogue_error(
-                "modelmanager-gettype-noregisteredns",
-                vec![("type", import_fqn.clone())],
-                None,
-            ));
-        }
+            let Some(source_file) = found else {
+                return Err(catalogue_error(
+                    "modelmanager-gettype-noregisteredns",
+                    vec![("type", import_fqn())],
+                    None,
+                ));
+            };
 
-        let is_global_model = name == "concerto";
-        if let Some(existing) = seen_versions.get(&name)
-            && *existing != version
-            && !is_global_model
-        {
-            return Err(catalogue_error(
-                "modelmanager-gettype-duplicatensimport",
-                vec![
-                    ("namespace", import_namespace.to_string()),
-                    ("version1", existing.clone().unwrap_or_default()),
-                    ("version2", version.clone().unwrap_or_default()),
-                ],
-                None,
-            ));
-        }
-        seen_versions.insert(name, version);
+            let is_global_model = name == "concerto";
+            if let Some(existing) = seen_versions.get(&name)
+                && *existing != version
+                && !is_global_model
+            {
+                return Err(catalogue_error(
+                    "modelmanager-gettype-duplicatensimport",
+                    vec![
+                        ("namespace", import_namespace.to_string()),
+                        (
+                            "version1",
+                            existing.as_deref().unwrap_or_default().to_string(),
+                        ),
+                        (
+                            "version2",
+                            version.as_deref().unwrap_or_default().to_string(),
+                        ),
+                    ],
+                    None,
+                ));
+            }
+            seen_versions.insert(name, version);
 
-        let source_file = found.expect("checked registered above");
-        if !source_file.is_local_type(import_short_name) {
-            return Err(catalogue_error(
-                "modelmanager-gettype-notypeinns",
-                vec![
-                    ("type", import_short_name.to_string()),
-                    ("namespace", import_namespace.to_string()),
-                ],
-                None,
-            ));
+            if !source_file.is_local_type(import_short_name) {
+                return Err(catalogue_error(
+                    "modelmanager-gettype-notypeinns",
+                    vec![
+                        ("type", import_short_name.to_string()),
+                        ("namespace", import_namespace.to_string()),
+                    ],
+                    None,
+                ));
+            }
         }
     }
     Ok(())
@@ -3924,6 +4034,104 @@ mod tests {
         manager.load_model(&model, None).unwrap();
         let message = manager.validate_models().unwrap_err().to_string();
         assert!(!message.contains("Duplicate class name"), "{message}");
+    }
+
+    /// P5-48: [`ModelManager::validate_and_add_model_file`] gives the same
+    /// result as `validate_detached_model_file` then `add_model_file`: the
+    /// same handle and namespaces when the file is valid; when it is not,
+    /// the same error, the file handed back and the manager unchanged
+    /// (another file still registers under the handle it would have had).
+    #[test]
+    fn validate_and_add_model_file_matches_validate_detached_then_add() {
+        use crate::introspect::model_file::ModelFile;
+        let base = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.base@1.0.0",
+            "declarations": [concept(serde_json::json!({ "name": "Base" }))]
+        });
+        let good = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.good@1.0.0",
+            "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.base@1.0.0", "name": "Base" }],
+            "declarations": [concept(serde_json::json!({
+                "name": "Good",
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" }
+            }))]
+        });
+        let mut bad = good.clone();
+        bad["declarations"][0]["superType"]["name"] = serde_json::json!("Missing");
+        let file =
+            |ast: &serde_json::Value| ModelFile::from_json(ast, Some("f.cto".into())).unwrap();
+
+        let mut two_step = ModelManager::new().unwrap();
+        two_step.add_model_file(file(&base)).unwrap();
+        let mut one_step = ModelManager::new().unwrap();
+        one_step.add_model_file(file(&base)).unwrap();
+
+        let expected = two_step
+            .validate_detached_model_file(&file(&bad))
+            .unwrap_err()
+            .to_string();
+        let (err, handed_back) = one_step
+            .validate_and_add_model_file(file(&bad))
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert!(handed_back.is_some_and(|f| f.namespace() == "org.good@1.0.0"));
+        assert!(one_step.model_file("org.good@1.0.0").is_none());
+        assert_eq!(
+            one_step.model_files().count(),
+            two_step.model_files().count()
+        );
+
+        two_step.validate_detached_model_file(&file(&good)).unwrap();
+        two_step.add_model_file(file(&good)).unwrap();
+        let id = one_step
+            .validate_and_add_model_file(file(&good))
+            .map_err(|(err, _)| err)
+            .unwrap();
+        assert_eq!(Some(id), two_step.model_file_id("org.good@1.0.0"));
+        assert_eq!(Some(id), one_step.model_file_id("org.good@1.0.0"));
+        assert_eq!(
+            one_step.properties("org.good@1.0.0.Good").unwrap().len(),
+            two_step.properties("org.good@1.0.0.Good").unwrap().len()
+        );
+        one_step.validate_models().unwrap();
+
+        // A namespace already registered: the two-step path, whose
+        // registration error consumes the file.
+        let (err, handed_back) = one_step
+            .validate_and_add_model_file(file(&good))
+            .unwrap_err();
+        assert!(handed_back.is_none());
+        assert!(err.to_string().contains("already"), "{err}");
+    }
+
+    /// P5-48: a self-import still fails as "namespace not defined" in
+    /// [`ModelManager::validate_and_add_model_file`], which validates the
+    /// file already registered: `check_imports` does not see its own
+    /// namespace (P2-08d), exactly as `validate_detached_model_file` does.
+    #[test]
+    fn validate_and_add_model_file_does_not_resolve_a_self_import() {
+        use crate::introspect::model_file::ModelFile;
+        let ast = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.self@1.0.0",
+            "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType",
+                          "namespace": "org.self@1.0.0", "name": "A" }],
+            "declarations": [concept(serde_json::json!({ "name": "B" }))]
+        });
+        let file = || ModelFile::from_json(&ast, None).unwrap();
+        let manager = ModelManager::new().unwrap();
+        let expected = manager
+            .validate_detached_model_file(&file())
+            .unwrap_err()
+            .to_string();
+        let mut manager = ModelManager::new().unwrap();
+        let (err, handed_back) = manager.validate_and_add_model_file(file()).unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        assert!(handed_back.is_some());
+        assert!(manager.model_file("org.self@1.0.0").is_none());
     }
 
     /// [`ModelManager::validate_detached_model_file`]'s fast-path guard

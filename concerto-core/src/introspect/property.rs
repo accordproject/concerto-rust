@@ -698,6 +698,20 @@ impl Property {
         Ok(())
     }
 
+    /// Whether [`Property::check_bound_validators`] has a validator to
+    /// rebuild: a size validator, or a String, Integer, Long or Double
+    /// domain (or length) validator (P5-48).
+    pub(crate) fn has_bound_validators(&self) -> bool {
+        self.size_validator().is_some()
+            || match self {
+                Self::String(p) => p.validator.is_some() || p.length_validator.is_some(),
+                Self::Integer(p) => p.validator.is_some(),
+                Self::Long(p) => p.validator.is_some(),
+                Self::Double(p) => p.validator.is_some(),
+                _ => false,
+            }
+    }
+
     js_compat_pub! {
         /// Rebuilds and discards this property's own numeric, string and
         /// collection-size validators, purely to surface the `BaseException`
@@ -728,6 +742,12 @@ impl Property {
         /// (accordproject/concerto-rust#219): `None` falls back to the `f64`
         /// comparison, the same question for already-validated data.
         pub fn check_bound_validators(&self, class_fqn: &str, raw: Option<&Value>) -> Result<()> {
+            // P5-48: a property with no validator to rebuild (most) returns
+            // before its fully-qualified name is built; every arm below is
+            // then a no-op.
+            if !self.has_bound_validators() {
+                return Ok(());
+            }
             let name = self.name().to_string();
             // TS: `Validator.getFieldOrScalarDeclaration().getFullyQualifiedName()`
             // — a property's own, `<namespace>.<Class>.<property>` (property.ts

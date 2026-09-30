@@ -1252,23 +1252,51 @@ fn visit_relationship(
                 items.len() as f64,
             )?;
         }
+        let holder = RelationshipHolder::of_property(owner_fqn, property, type_id);
         for item in items {
-            check_relationship(p, owner_fqn, property, type_id, item)?;
+            check_relationship(p, &holder, item)?;
         }
     } else {
-        check_relationship(p, owner_fqn, property, type_id, value)?;
+        let holder = RelationshipHolder::of_property(owner_fqn, property, type_id);
+        check_relationship(p, &holder, value)?;
     }
     Ok(())
 }
 
+/// What `checkRelationship` reads of the relationship it checks: a
+/// relationship property (`--> T field`), or, since P5-58 (BC-05, R1;
+/// DV-007), a map's relationship-typed value (`map M { o String --> T }`),
+/// so that both go through [`check_relationship`] under the same
+/// `convertResourcesToRelationships`/`permitResourcesForRelationships`
+/// options.
+struct RelationshipHolder<'a> {
+    /// The fully-qualified name of the declaring class, or of the map.
+    owner_fqn: &'a str,
+    /// The property's name, or the map's name.
+    name: &'a str,
+    /// The declared target type, as written.
+    type_name: &'a str,
+    /// TS `isArray()`: `false` for a map value.
+    is_array: bool,
+}
+
+impl<'a> RelationshipHolder<'a> {
+    fn of_property(
+        owner_fqn: &'a str,
+        property: &'a Property,
+        type_id: &'a mm::TypeIdentifier,
+    ) -> Self {
+        Self {
+            owner_fqn,
+            name: property.name(),
+            type_name: &type_id.name,
+            is_array: property.is_array(),
+        }
+    }
+}
+
 /// TS: `ResourceValidator.checkRelationship` (resourcevalidator.ts:491).
-fn check_relationship(
-    p: &mut Params,
-    owner_fqn: &str,
-    property: &Property,
-    type_id: &mm::TypeIdentifier,
-    value: &Value,
-) -> Result<()> {
+fn check_relationship(p: &mut Params, holder: &RelationshipHolder, value: &Value) -> Result<()> {
     // `obj instanceof Relationship`: a [`RELATIONSHIP_TAG`]-tagged object
     // (see its doc), carrying the pointed-at type as `$class`.
     let obj = as_js_object(value);
@@ -1294,14 +1322,14 @@ fn check_relationship(
         (false, None) => None,
     };
     let Some(target_fqn) = target_fqn else {
-        return Err(not_relationship_violation(p, owner_fqn, property, value));
+        return Err(not_relationship_violation(p, holder, value));
     };
 
     let relationship_type =
         p.mm.get_declaration(&target_fqn)
             .map_err(|e| remap_type_not_found(e, &target_fqn, "modelmanager-gettype-notypeinns"))?;
     let Some(target_class) = relationship_type.as_class() else {
-        return Err(not_relationship_violation(p, owner_fqn, property, value));
+        return Err(not_relationship_violation(p, holder, value));
     };
     let _ = target_class;
 
@@ -1314,13 +1342,15 @@ fn check_relationship(
         .into());
     }
 
-    let namespace = model_util::get_namespace(Some(owner_fqn))?;
-    let declared_fqn = p.mm.resolve_type_name_at(namespace, &type_id.name, None)?;
+    let namespace = model_util::get_namespace(Some(holder.owner_fqn))?;
+    let declared_fqn = p.mm.resolve_type_name_at(namespace, holder.type_name, None)?;
     if !p.mm.is_assignable_to(&target_fqn, &declared_fqn)? {
-        return Err(invalid_field_assignment(
+        return Err(invalid_assignment(
             p,
-            owner_fqn,
-            property,
+            holder.owner_fqn,
+            holder.name,
+            holder.type_name,
+            holder.is_array,
             &target_fqn,
         ));
     }
@@ -1371,6 +1401,21 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
             key_is_scalar,
             key,
         )?;
+        // P5-58 (BC-05, R1; DV-007): a relationship-typed value is checked
+        // as a relationship property is (`checkRelationship`), not as an
+        // embedded object.
+        if map.value_kind() == "RelationshipMapValueType"
+            && let Some(type_id) = map.value_type()
+        {
+            let holder = RelationshipHolder {
+                owner_fqn: map_fqn,
+                name: decl.name(),
+                type_name: &type_id.name,
+                is_array: false,
+            };
+            check_relationship(p, &holder, value)?;
+            continue;
+        }
         check_map_type(
             p,
             map_fqn,
@@ -1439,9 +1484,9 @@ fn check_map_type(
             return visit_enum_declaration_value(p, &fqn, value);
         } else if decl.is_class_declaration() {
             // `thing.accept(this, parameters)` -> `visitClassDeclaration`.
-            // Ported faithfully: this is also how TS itself checks a
-            // `RelationshipMapValueType` value (as a nested object, not a
-            // relationship URI) — module doc "Scope". `value` may be a raw,
+            // A `RelationshipMapValueType` value no longer reaches here: it
+            // goes through `check_relationship` (P5-58, BC-05; see
+            // `visit_map_declaration`). `value` may be a raw,
             // never-converted object (accordproject/concerto-rust#194): see
             // `visit_map_value_class_declaration`'s doc.
             return visit_map_value_class_declaration(p, &fqn, value);
@@ -1769,19 +1814,13 @@ fn js_method_receiver_error(value: &Value, expression: &str, method: &str) -> Er
 }
 
 /// TS: `ResourceValidator.reportNotRelationshipViolation` (resourcevalidator.ts:576).
-fn not_relationship_violation(
-    p: &Params,
-    owner_fqn: &str,
-    property: &Property,
-    value: &Value,
-) -> Error {
+fn not_relationship_violation(p: &Params, holder: &RelationshipHolder, value: &Value) -> Error {
     if is_js_null(value) {
         // DV-008: `value.toString()` on `null`/`undefined`.
         return js_method_receiver_error(value, "value.toString", "toString");
     }
-    let type_name = property.type_name().unwrap_or_default();
-    let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
-    let class_fqn = model_util::qualify(namespace, type_name);
+    let namespace = model_util::get_namespace(Some(holder.owner_fqn)).unwrap_or(holder.owner_fqn);
+    let class_fqn = model_util::qualify(namespace, holder.type_name);
     // `value.toString()`: a nested Resource or (wrongly, per this check)
     // Relationship-shaped value that reaches here is `Identifiable`, whose
     // own `toString()` is `'Resource {id=...}'`/`'Relationship {id=...}'`
@@ -1874,10 +1913,30 @@ fn invalid_field_assignment(
     property: &Property,
     object_type: &str,
 ) -> Error {
-    let type_name = property.type_name().unwrap_or_default();
+    invalid_assignment(
+        p,
+        owner_fqn,
+        property.name(),
+        property.type_name().unwrap_or_default(),
+        property.is_array(),
+        object_type,
+    )
+}
+
+/// [`invalid_field_assignment`] for a holder named `name`, declared as
+/// `type_name` (an array when `is_array`) in `owner_fqn`: a property, or a
+/// relationship-typed map value (P5-58).
+fn invalid_assignment(
+    p: &Params,
+    owner_fqn: &str,
+    name: &str,
+    type_name: &str,
+    is_array: bool,
+    object_type: &str,
+) -> Error {
     let namespace = model_util::get_namespace(Some(owner_fqn)).unwrap_or(owner_fqn);
     let mut field_type = model_util::qualify(namespace, type_name);
-    if property.is_array() {
+    if is_array {
         field_type.push_str("[]");
     }
     ContractError::new(
@@ -1885,7 +1944,7 @@ fn invalid_field_assignment(
         "resourcevalidator-invalidfieldassignment",
         vec![
             ("resourceId", p.root_resource_identifier.clone()),
-            ("propertyName", property.name().to_string()),
+            ("propertyName", name.to_string()),
             ("objectType", object_type.to_string()),
             ("fieldType", field_type),
         ],
@@ -2925,7 +2984,15 @@ mod tests {
     //      it (`Kind::MapTyped`, `check_item`). ----
 
     fn validate_map(mgr: &ModelManager, map_fqn: &str, value: &Value) -> Result<()> {
-        let options = ValidateOptions::default();
+        validate_map_with(mgr, map_fqn, value, ValidateOptions::default())
+    }
+
+    fn validate_map_with(
+        mgr: &ModelManager,
+        map_fqn: &str,
+        value: &Value,
+        options: ValidateOptions,
+    ) -> Result<()> {
         let mut params = Params {
             mm: mgr,
             options: &options,
@@ -3056,18 +3123,70 @@ mod tests {
         assert!(err.to_string().contains("Invalid enum value"), "{err}");
     }
 
-    /// Bug fix (plan §1.2 gap list): a `RelationshipMapValueType` map value
-    /// used to be wrongly rejected. Ported faithfully (module doc "Scope"
-    /// on `check_map_type`): TS itself validates it as a nested object, not
-    /// a relationship URI.
+    /// P5-58 (BC-05, R1; DV-007): a `RelationshipMapValueType` map value is
+    /// checked as a relationship property is (`checkRelationship`): a
+    /// relationship to the declared type, or a subtype, passes.
     #[test]
-    fn a_map_with_a_relationship_typed_value_accepts_a_nested_resource() {
+    fn a_map_with_a_relationship_typed_value_accepts_a_relationship() {
+        let mgr = fixture();
+        let map = js_map(vec![(
+            json!("a"),
+            json!({ "$$relationship": true, "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12" }),
+        )]);
+        validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map).unwrap();
+    }
+
+    /// P5-58 (BC-05, R1; DV-007): an embedded resource in a relationship
+    /// map is rejected by default, as in a relationship property (TS 5.0.0
+    /// required it), and accepted exactly when
+    /// `permitResourcesForRelationships` or `convertResourcesToRelationships`
+    /// allows it for a property.
+    #[test]
+    fn a_map_with_a_relationship_typed_value_takes_a_nested_resource_only_with_the_options() {
         let mgr = fixture();
         let map = js_map(vec![(
             json!("a"),
             json!({ "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1 }),
         )]);
-        validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map).unwrap();
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map));
+        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
+        assert!(
+            err.to_string().contains("Expected a \"Relationship\""),
+            "{err}"
+        );
+        for options in [
+            ValidateOptions {
+                permit_resources_for_relationships: true,
+                ..ValidateOptions::default()
+            },
+            ValidateOptions {
+                convert_resources_to_relationships: true,
+                ..ValidateOptions::default()
+            },
+        ] {
+            validate_map_with(&mgr, "org.acme@1.0.0.VehicleMap", &map, options).unwrap();
+        }
+    }
+
+    /// P5-58: a relationship map value of the wrong type, or a string that
+    /// was never populated into a relationship, fails as a relationship
+    /// property does.
+    #[test]
+    fn a_map_with_a_relationship_typed_value_rejects_what_a_relationship_property_rejects() {
+        let mgr = fixture();
+        let wrong_type = js_map(vec![(
+            json!("a"),
+            json!({ "$$relationship": true, "$class": "org.acme@1.0.0.Owner", "ownerId": "O1" }),
+        )]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &wrong_type));
+        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
+        assert!(err.to_string().contains("org.acme@1.0.0.Owner"), "{err}");
+        let uri = js_map(vec![(json!("a"), json!("resource:org.acme@1.0.0.Vehicle#V1"))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &uri));
+        assert!(
+            err.to_string().contains("Expected a \"Relationship\""),
+            "{err}"
+        );
     }
 
     /// Bug fix, accordproject/concerto-rust#194: a map value whose own
