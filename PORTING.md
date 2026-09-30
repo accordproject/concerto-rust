@@ -598,9 +598,12 @@ Catalogue rules the trial added:
   **Since BC-19 (R1, P5-49)** a model load checks the AST's shape first
   (`instance::metamodel::check_ast_shape`, on unless a manager opts out with
   `metamodelValidation: false`), so an AST-walk site reaches one of these
-  entries only on the opt-out path, which keeps TS 5.0.0's behaviour for this
-  major. None is retired: each is still reachable there, or from instance
-  data (the serializer, DCS commands).
+  entries only on the opt-out path. That path is an escape hatch for trusted
+  input (maintainer decision 2026-09-30 on #370): a malformed AST there gets
+  unspecified behaviour, an error but never a WASM trap or a process crash,
+  with no guarantee of its class or message. It still behaves as TS 5.0.0 did
+  until P5-61 removes the redundant guards. None is retired: each is still
+  reachable there, or from instance data (the serializer, DCS commands).
 
 **Rendering is a faithful port of `globalize.ts` `messageFormatter`.** Params
 are replaced in insertion order. Each `{name}` is replaced *globally*, and
