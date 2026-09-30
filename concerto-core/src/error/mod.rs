@@ -1720,6 +1720,51 @@ mod tests {
         );
     }
 
+    // Not TS templates: BC-17, BC-19 and BC-20 (P5-49,
+    // accordproject/concerto-rust#370), the strict AST shape check at load.
+    #[test]
+    fn golden_modelfile_load_decoratorsnotarray() {
+        assert_eq!(
+            contract(
+                "modelfile-load-decoratorsnotarray",
+                &[("value", "\"💥emoji\"")]
+            )
+            .message(),
+            "Invalid decorators. Expected array. Found \"💥emoji\""
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_namenotstring() {
+        assert_eq!(
+            contract("modelfile-load-namenotstring", &[("value", "1e308")]).message(),
+            "Invalid name. Expected a string. Found 1e308"
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_supertypename() {
+        assert_eq!(
+            contract("modelfile-load-supertypename", &[("value", "\"\"")]).message(),
+            "Invalid super type name. Expected a non-empty string. Found \"\""
+        );
+    }
+
+    #[test]
+    fn golden_modelfile_load_astshape() {
+        assert_eq!(
+            contract(
+                "modelfile-load-astshape",
+                &[(
+                    "message",
+                    "Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
+                )]
+            )
+            .message(),
+            "Model AST does not conform to the metamodel: Unexpected properties for type concerto.metamodel@1.0.0.Model: undeclared"
+        );
+    }
+
     // Not a TS template: DIVERGENCES.md DV-018 (maintainer-accepted, #218),
     // Rust's replacement for TS's `TypeError` on a `null` decorator node.
     #[test]

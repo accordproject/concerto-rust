@@ -5468,6 +5468,22 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-49 (BC-19 with BC-17 and BC-20, R1): the strict AST shape check
+    /// the TS `ModelFile` constructor runs at model load
+    /// ([`concerto_core::instance::check_ast_shape`]), over the JSON AST
+    /// text. Throws an `IllegalModelException` for an AST that does not have
+    /// the metamodel's shape. Reads nothing of this handle and changes
+    /// nothing (not its epoch either). Additive; malformed JSON throws a JS
+    /// `SyntaxError`.
+    #[wasm_bindgen(js_name = checkAstShape)]
+    pub fn check_ast_shape(&self, ast: &str) -> std::result::Result<(), JsValue> {
+        run(|| {
+            let value: Value = serde_json::from_str(ast)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            Ok(concerto_core::instance::check_ast_shape(&value)?)
+        })
+    }
+
     /// The handle's own mutation counter (P5-06): bumped by every binding
     /// that can change this handle, and never reset, so anything a view
     /// read from the handle is still current while the epoch is unchanged.
