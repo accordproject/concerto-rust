@@ -5293,6 +5293,11 @@ pub struct ModelManagerHandle {
     /// Model files loaded by [`Self::stage_model_file`] and not yet
     /// committed or dropped (lazy views: P5-06a, P5-10a).
     staged: StagedModelFiles,
+    /// The per-epoch extract result memo (P5-56, T2, F-A2,
+    /// [`DcsExtractMemo`]): dropped whenever the epoch moves
+    /// ([`Self::bump_epoch`]) and by [`Self::drop_dcs_memo`]. A `RefCell`,
+    /// so the extract bindings keep taking `&self` and never move the epoch.
+    dcs_memo: std::cell::RefCell<Option<DcsExtractMemo>>,
 }
 
 /// The staging slot of a [`ModelManagerHandle`] (lazy views: P5-06a, P5-10a):
@@ -5309,6 +5314,16 @@ pub struct ModelManagerHandle {
 struct StagedModelFiles {
     files: std::collections::BTreeMap<u32, ModelFile>,
     next: u32,
+}
+
+impl ModelManagerHandle {
+    /// Moves the epoch on ([`Self::epoch`]): the manager has, or may have,
+    /// changed. Also drops the extract result memo (P5-56), which is only
+    /// ever valid for the epoch it was built at.
+    fn bump_epoch(&mut self) {
+        self.epoch += 1;
+        *self.dcs_memo.get_mut() = None;
+    }
 }
 
 impl StagedModelFiles {
@@ -5336,6 +5351,7 @@ impl ModelManagerHandle {
                 manager: ModelManager::new()?,
                 epoch: 0,
                 staged: StagedModelFiles::default(),
+                dcs_memo: std::cell::RefCell::new(None),
             })
         })
     }
@@ -5351,7 +5367,7 @@ impl ModelManagerHandle {
     /// caller meant to allow.
     #[wasm_bindgen(js_name = setDangerouslyAllowReservedSystemTypeNamesInUserModels)]
     pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
-        self.epoch += 1;
+        self.bump_epoch();
         self.manager
             .set_dangerously_allow_reserved_system_type_names_in_user_models(allow);
     }
@@ -5365,7 +5381,7 @@ impl ModelManagerHandle {
         ast: &str,
         file_name: Option<String>,
     ) -> std::result::Result<u32, JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             let model_file = model_file_from_text(ast, None, file_name)?;
             let namespace = model_file.namespace().to_string();
@@ -5394,7 +5410,7 @@ impl ModelManagerHandle {
     /// Sets the constructor's `options.metamodelValidation` (P4-08b).
     #[wasm_bindgen(js_name = setMetamodelValidation)]
     pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
-        self.epoch += 1;
+        self.bump_epoch();
         self.manager.set_metamodel_validation(metamodel_validation);
     }
 
@@ -5416,7 +5432,7 @@ impl ModelManagerHandle {
         &mut self,
         options: &JsValue,
     ) -> std::result::Result<(), JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             let missing_decorator = level_option(options, "missingDecorator")?;
             let invalid_decorator = level_option(options, "invalidDecorator")?;
@@ -5441,7 +5457,7 @@ impl ModelManagerHandle {
         ast: &str,
         file_name: Option<String>,
     ) -> std::result::Result<(), JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -5460,7 +5476,7 @@ impl ModelManagerHandle {
     /// Additive; malformed JSON throws a JS `SyntaxError`.
     #[wasm_bindgen(js_name = validateAstValue)]
     pub fn validate_ast_value(&mut self, ast: &str) -> std::result::Result<(), JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             let value: Value = serde_json::from_str(ast)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -5746,7 +5762,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
         validate: bool,
     ) -> std::result::Result<u32, JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             // P5-06c: the file is built once, through the typed AST path,
             // for both the check and the add; building it is the first
@@ -5836,7 +5852,7 @@ impl ModelManagerHandle {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             let namespace = file.namespace().to_string();
             self.manager.add_model_file(file)?;
@@ -5874,7 +5890,7 @@ impl ModelManagerHandle {
         // `commit_staged_model_file` moves it.
         match self.manager.validate_and_add_model_file(file) {
             Ok(id) => {
-                self.epoch += 1;
+                self.bump_epoch();
                 Ok(Some(ModelFileId::index(id)))
             }
             Err((err, Some(file))) => {
@@ -5882,7 +5898,7 @@ impl ModelManagerHandle {
                 run(|| Err(err.into()))
             }
             Err((err, None)) => {
-                self.epoch += 1;
+                self.bump_epoch();
                 run(|| Err(err.into()))
             }
         }
@@ -5962,7 +5978,7 @@ impl ModelManagerHandle {
         file_name: Option<String>,
         validate: bool,
     ) -> std::result::Result<u32, JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             let model_file = model_file_from_text(ast, definitions, file_name)?;
             let namespace = model_file.namespace().to_string();
@@ -5977,7 +5993,7 @@ impl ModelManagerHandle {
     /// Mirrors TS `BaseModelManager.deleteModelFile(namespace)` (P4-08).
     #[wasm_bindgen(js_name = deleteModelFile)]
     pub fn delete_model_file(&mut self, namespace: &str) -> std::result::Result<(), JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         run(|| {
             self.manager = self.manager.delete_model_file(namespace)?;
             Ok(())
@@ -6199,7 +6215,7 @@ impl ModelManagerHandle {
         sources: &str,
         model_files: &JsValue,
     ) -> std::result::Result<(), JsValue> {
-        self.epoch += 1;
+        self.bump_epoch();
         let parsed = (|| -> Result<Vec<ModelFileSource>> {
             let value: Value = serde_json::from_str(sources)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
@@ -6291,7 +6307,7 @@ impl ModelManagerHandle {
         predicate: Function,
         target: &mut ModelManagerHandle,
     ) -> std::result::Result<Option<u32>, JsValue> {
-        target.epoch += 1;
+        target.bump_epoch();
         run(|| {
             let file = self.require_file(model_file)?;
             // `ModelFile::filter`'s predicate carries no namespace of its
@@ -7690,14 +7706,7 @@ impl ModelManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        run(|| {
-            staged_extract(
-                &self.manager,
-                target,
-                &options,
-                dcs::extractor::Action::ExtractAll,
-            )
-        })
+        run(|| self.memo_extract(target, &options, dcs::extractor::Action::ExtractAll))
     }
 
     /// [`DcsManagerHandle::extract_vocabularies`] on this handle's own
@@ -7708,14 +7717,7 @@ impl ModelManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        run(|| {
-            staged_extract(
-                &self.manager,
-                target,
-                &options,
-                dcs::extractor::Action::ExtractVocab,
-            )
-        })
+        run(|| self.memo_extract(target, &options, dcs::extractor::Action::ExtractVocab))
     }
 
     /// [`DcsManagerHandle::extract_non_vocab_decorators`] on this handle's
@@ -7726,14 +7728,202 @@ impl ModelManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        run(|| {
-            staged_extract(
-                &self.manager,
-                target,
-                &options,
-                dcs::extractor::Action::ExtractNonVocab,
-            )
-        })
+        run(|| self.memo_extract(target, &options, dcs::extractor::Action::ExtractNonVocab))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P5-56 (T2, F-A2, accordproject/concerto-rust#377): a per-epoch extract
+// result memo on the source handle (the P5-42 report's Design 2, on #352).
+//
+// With `removeDecoratorsFromModel` false, an extract's result models are the
+// handle's own models, resolved, whatever the action and locale; only the
+// command sets and vocabularies depend on those. So while the epoch is
+// unchanged, a repeated `dcsExtract*` call reuses the result manager, its
+// encoded AST and its staged headers, and rebuilds only the command sets
+// and vocabularies from the kept source models
+// ([`dcs::encode_extract_source`]): no resolve, no result-manager build,
+// validation or drop, no AST encode.
+//
+// - Filled on the second call at the same epoch (and system flag), so a
+//   one-shot caller never pays for it; the first call only notes its key.
+// - Dropped when the epoch moves ([`ModelManagerHandle::bump_epoch`]), on
+//   [`ModelManagerHandle::drop_dcs_memo`] and with the handle.
+// - Errors are never memoised: a call that throws leaves no memo, and the
+//   next call runs in full. A memo exists only after a call whose result
+//   models loaded and validated, which is the only error that
+//   `extract_encoded` reports ahead of the transform's, so a repeated call
+//   throws what a full one throws.
+// - Nothing shared is returned: the JS result is parsed from new text on
+//   every call, and each staged model file is a new clone.
+// ---------------------------------------------------------------------------
+
+/// A [`ModelManagerHandle`]'s extract memo (P5-56): its key, and the kept
+/// result once the second call at that key has filled it.
+struct DcsExtractMemo {
+    /// `(epoch, system models walked)`: `ExtractAll` and `ExtractVocab` walk
+    /// the system models too, `ExtractNonVocab` does not
+    /// ([`dcs::extract_encoded`]).
+    key: (u64, bool),
+    /// `None` after the first call at `key`, `Some` from the second on.
+    kept: Option<DcsExtractKept>,
+}
+
+/// What a repeated `removeDecoratorsFromModel: false` extract reuses.
+struct DcsExtractKept {
+    /// The resolved source models the extractor walks.
+    source: Vec<Value>,
+    /// The result manager, staged from on every call.
+    result: ModelManager,
+    /// The JSON text of the result manager's AST ([`ModelManagerAstView`]).
+    ast_text: String,
+    /// [`staged_header`] of each of `result`'s model files, in order.
+    headers: Vec<Value>,
+}
+
+impl DcsExtractKept {
+    fn new(source: Vec<Value>, result: ModelManager) -> Self {
+        let ast_text = serde_json::to_string(&ModelManagerAstView(&result)).unwrap_or_default();
+        let headers = result
+            .model_files()
+            .map(|mf| staged_header(mf.ast()).unwrap_or(Value::Null))
+            .collect();
+        Self {
+            source,
+            result,
+            ast_text,
+            headers,
+        }
+    }
+
+    /// [`stage_result`] from the kept result manager, with its kept headers.
+    fn stage(&self, target: &mut ModelManagerHandle) -> Vec<Value> {
+        self.result
+            .model_files()
+            .zip(&self.headers)
+            .map(|(mf, header)| {
+                if DCS_EXCLUDE_NS.contains(&mf.namespace())
+                    || target.staged.files.len() >= StagedModelFiles::CAPACITY
+                {
+                    return Value::Null;
+                }
+                let id = target.staged.insert(mf.clone());
+                json!([id, header])
+            })
+            .collect()
+    }
+
+    /// [`extract_result_text`] for the kept result and this call's command
+    /// sets and vocabularies, byte for byte, with the AST spliced in from
+    /// [`Self::ast_text`].
+    fn result_text(
+        &self,
+        command_sets: &str,
+        vocabularies: &[String],
+        staged: &[Value],
+    ) -> serde_json::Result<String> {
+        if self.ast_text.is_empty() {
+            return Err(serde::ser::Error::custom("no kept AST text"));
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(b"{\"modelManager\":");
+        out.extend_from_slice(self.ast_text.as_bytes());
+        out.extend_from_slice(b",\"decoratorCommandSet\":");
+        out.extend_from_slice(command_sets.as_bytes());
+        out.extend_from_slice(b",\"vocabularies\":");
+        serde_json::to_writer(&mut out, vocabularies)?;
+        out.extend_from_slice(b",\"staged\":");
+        serde_json::to_writer(&mut out, staged)?;
+        out.extend_from_slice(b",\"validated\":true}");
+        String::from_utf8(out).map_err(serde::ser::Error::custom)
+    }
+
+    /// [`extract_result_js`] for the kept result: [`Self::result_text`],
+    /// parsed, or the same intermediate-`Value` fallback.
+    fn result_js(
+        &self,
+        command_sets: &str,
+        vocabularies: &[String],
+        staged: Vec<Value>,
+    ) -> JsValue {
+        let text = self.result_text(command_sets, vocabularies, &staged);
+        if let Some(js) = text.ok().and_then(|text| JSON::parse(&text).ok()) {
+            return js;
+        }
+        // The intermediate-`Value` fallback, as [`extract_result_js`]'s.
+        let decorator_command_set: Value =
+            serde_json::from_str(command_sets).unwrap_or(Value::Null);
+        to_js(&json!({
+            "modelManager": model_manager_to_ast(&self.result),
+            "decoratorCommandSet": decorator_command_set,
+            "vocabularies": vocabularies,
+            "staged": staged,
+            "validated": true,
+        }))
+    }
+}
+
+impl ModelManagerHandle {
+    /// [`staged_extract`] on this handle's own manager, through the
+    /// per-epoch memo when `removeDecoratorsFromModel` is false (P5-56).
+    fn memo_extract(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: &JsValue,
+        action: dcs::extractor::Action,
+    ) -> Result<JsValue> {
+        let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
+        let opts = extract_options_from_js(&options_json);
+        if opts.remove_decorators_from_model {
+            let result = dcs::extract_encoded(&self.manager, &opts, action)?;
+            let staged = stage_result(target, &result.model_manager);
+            return Ok(extract_result_js(&result, Some(staged)));
+        }
+        let key = (
+            self.epoch,
+            action != dcs::extractor::Action::ExtractNonVocab,
+        );
+        let mut memo = self.dcs_memo.borrow_mut();
+        match memo.as_mut() {
+            Some(DcsExtractMemo {
+                key: memo_key,
+                kept: Some(kept),
+            }) if *memo_key == key => {
+                let (command_sets, vocabularies) =
+                    dcs::encode_extract_source(&kept.source, &opts, action)?;
+                let staged = kept.stage(target);
+                Ok(kept.result_js(&command_sets, &vocabularies, staged))
+            }
+            Some(DcsExtractMemo {
+                key: memo_key,
+                kept: kept @ None,
+            }) if *memo_key == key => {
+                let (result, source) =
+                    dcs::extract_encoded_keeping_source(&self.manager, &opts, action)?;
+                let staged = stage_result(target, &result.model_manager);
+                let js = extract_result_js(&result, Some(staged));
+                *kept = Some(DcsExtractKept::new(source, result.model_manager));
+                Ok(js)
+            }
+            _ => {
+                *memo = Some(DcsExtractMemo { key, kept: None });
+                drop(memo);
+                let result = dcs::extract_encoded(&self.manager, &opts, action)?;
+                let staged = stage_result(target, &result.model_manager);
+                Ok(extract_result_js(&result, Some(staged)))
+            }
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// Drops this handle's extract result memo (P5-56), freeing the result
+    /// models it keeps; the next repeated extract fills it again. Never
+    /// changes the manager or its epoch. Additive.
+    #[wasm_bindgen(js_name = dropDcsMemo)]
+    pub fn drop_dcs_memo(&self) {
+        *self.dcs_memo.borrow_mut() = None;
     }
 }
 
@@ -7748,6 +7938,71 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// P5-56 (T2, F-A2): a repeated extract through the memo writes, byte
+    /// for byte, the text a full extract writes (result AST, command sets,
+    /// vocabularies, staged ids and headers), for every action and locale,
+    /// and stages new clones; moving the epoch drops the memo.
+    #[test]
+    fn the_extract_memo_writes_what_a_full_extract_writes() {
+        let mm =
+            |v: &str| json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": v}]);
+        let dec = |name: &str, args: Value| json!({"$class": "concerto.metamodel@1.0.0.Decorator", "name": name, "arguments": args});
+        let mut handle = ModelManagerHandle::new().unwrap();
+        handle
+            .manager
+            .add_model_ast(
+                &json!({
+                    "$class": "concerto.metamodel@1.0.0.Model",
+                    "namespace": "org.memo@1.0.0",
+                    "decorators": [dec("Term", mm("Memo")), dec("Tag", mm("m"))],
+                    "declarations": [{
+                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Person", "isAbstract": false,
+                        "decorators": [dec("Term", mm("A person")), dec("Flag", json!([]))],
+                        "properties": [{
+                            "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "name", "isArray": false, "isOptional": false,
+                            "decorators": [dec("Term_description", mm("The name")), dec("Tag", mm("n"))]
+                        }]
+                    }]
+                }),
+                None,
+            )
+            .unwrap();
+        for action in [
+            dcs::extractor::Action::ExtractAll,
+            dcs::extractor::Action::ExtractVocab,
+            dcs::extractor::Action::ExtractNonVocab,
+        ] {
+            let fill = dcs::ExtractOptions::default();
+            let (result, source) =
+                dcs::extract_encoded_keeping_source(&handle.manager, &fill, action).unwrap();
+            let kept = DcsExtractKept::new(source, result.model_manager);
+            for locale in ["en", "fr"] {
+                let opts = dcs::ExtractOptions {
+                    remove_decorators_from_model: false,
+                    locale: locale.to_string(),
+                };
+                let full = dcs::extract_encoded(&handle.manager, &opts, action).unwrap();
+                let mut t1 = ModelManagerHandle::new().unwrap();
+                let mut t2 = ModelManagerHandle::new().unwrap();
+                let staged = stage_result(&mut t1, &full.model_manager);
+                let expected = extract_result_text(&full, Some(&staged)).unwrap();
+                let (sets, vocabularies) =
+                    dcs::encode_extract_source(&kept.source, &opts, action).unwrap();
+                let staged = kept.stage(&mut t2);
+                let got = kept.result_text(&sets, &vocabularies, &staged).unwrap();
+                assert_eq!(got, expected, "{action:?} {locale}");
+                assert_eq!(t2.staged.files.len(), t1.staged.files.len());
+                assert!(!t2.staged.files.is_empty());
+            }
+        }
+        *handle.dcs_memo.get_mut() = Some(DcsExtractMemo {
+            key: (handle.epoch, true),
+            kept: None,
+        });
+        handle.bump_epoch();
+        assert!(handle.dcs_memo.get_mut().is_none());
+    }
 
     /// P5-41 (F-C) and P5-57 (T3): the direct encoding of an extract result
     /// (the model ASTs borrowed, the command sets encoded from the borrowed

@@ -704,17 +704,61 @@ impl DecoratorExtractor {
         })
     }
 
+    /// [`Self::extract_encoded`], also returning a copy of the source models
+    /// its walk read (P5-56, T2, F-A2, accordproject/concerto-rust#377):
+    /// taken before the walk, so [`Self::encode_source`] over them gives
+    /// exactly this call's command sets and vocabularies. The same result
+    /// and the same errors, in the same order, as [`Self::extract_encoded`].
+    pub fn extract_encoded_keeping_source(self) -> Result<(EncodedExtractResult, Vec<Value>)> {
+        let (model_manager, (decorator_command_set, vocabularies), source) =
+            self.extract_with_source(true, Self::encode_decorators_and_vocabularies)?;
+        Ok((
+            EncodedExtractResult {
+                model_manager,
+                decorator_command_set,
+                vocabularies,
+            },
+            source.unwrap_or_default(),
+        ))
+    }
+
+    /// The command sets (as JSON text) and vocabularies that
+    /// [`Self::extract_encoded`] would return for `models` (P5-56): the same
+    /// walk and the same transform, with the same first error, but no
+    /// result manager. `models` are the source models of an earlier
+    /// extraction ([`Self::extract_encoded_keeping_source`]); this
+    /// extractor's own source AST is not read. The command sets and
+    /// vocabularies are read before any decorator is stripped, so
+    /// `removeDecoratorsFromModel` does not change them.
+    pub fn encode_source(&self, models: &[Value]) -> Result<(String, Vec<String>)> {
+        let mut extraction_dictionary = ExtractionDictionary::new();
+        collect_models(&mut extraction_dictionary, models);
+        self.encode_decorators_and_vocabularies(&extraction_dictionary)
+    }
+
     /// The body of [`Self::extract`] and [`Self::extract_encoded`], which
     /// differ only in how `transform` builds the command sets and
     /// vocabularies from the borrowed dictionary.
     fn extract_with<T>(
-        mut self,
+        self,
         transform: impl FnOnce(&Self, &ExtractionDictionary<'_>) -> Result<T>,
     ) -> Result<(ModelManager, T)> {
+        let (model_manager, transformed, _) = self.extract_with_source(false, transform)?;
+        Ok((model_manager, transformed))
+    }
+
+    /// [`Self::extract_with`], with a copy of the source models taken
+    /// before the walk when `keep_source` is set (P5-56).
+    fn extract_with_source<T>(
+        mut self,
+        keep_source: bool,
+        transform: impl FnOnce(&Self, &ExtractionDictionary<'_>) -> Result<T>,
+    ) -> Result<(ModelManager, T, Option<Vec<Value>>)> {
         let mut models = match self.updated_model_ast.get_mut("models").map(std::mem::take) {
             Some(Value::Array(models)) => models,
             _ => Vec::new(),
         };
+        let source = keep_source.then(|| models.clone());
         let transformed = {
             let mut extraction_dictionary = ExtractionDictionary::new();
             collect_models(&mut extraction_dictionary, &models);
@@ -734,7 +778,7 @@ impl DecoratorExtractor {
         }
         model_manager.validate_models()?;
 
-        Ok((model_manager, transformed?))
+        Ok((model_manager, transformed?, source))
     }
 }
 
@@ -1381,6 +1425,69 @@ mod tests {
                         d.is_ok()
                     ),
                 }
+                assert_memo_route_agrees(models, action, remove);
+            }
+        }
+    }
+
+    /// P5-56 (T2, F-A2): `extract_encoded_keeping_source` is
+    /// `extract_encoded` (same result, same error), and `encode_source` over
+    /// the kept models gives the same command sets and vocabularies (or the
+    /// same error) as `extract_encoded` with any locale and either
+    /// `removeDecoratorsFromModel`, every time it is called.
+    fn assert_memo_route_agrees(models: &Value, action: Action, remove: bool) {
+        let direct = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
+            .extract_encoded();
+        let keeping = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
+            .extract_encoded_keeping_source();
+        let (kept_result, source) = match (direct, keeping) {
+            (Ok(d), Ok(k)) => (Some((d, k.0)), k.1),
+            (Err(d), Err(k)) => {
+                assert_eq!(k, d, "{action:?} remove={remove}");
+                (
+                    None,
+                    models["models"].as_array().cloned().unwrap_or_default(),
+                )
+            }
+            (d, k) => panic!(
+                "{action:?} remove={remove}: direct ok {}, keeping ok {}",
+                d.is_ok(),
+                k.is_ok()
+            ),
+        };
+        if let Some((d, k)) = &kept_result {
+            assert_eq!(k.decorator_command_set, d.decorator_command_set);
+            assert_eq!(k.vocabularies, d.vocabularies);
+            let asts = |mm: &ModelManager| {
+                mm.model_files()
+                    .map(|f| f.ast().clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(asts(&k.model_manager), asts(&d.model_manager));
+            assert_eq!(&source, models["models"].as_array().unwrap());
+        }
+        for (other_remove, locale) in [(remove, "fr"), (!remove, "de"), (remove, "fr")] {
+            let encoded =
+                DecoratorExtractor::new(other_remove, locale, "0.4.0", Value::Null, action)
+                    .encode_source(&source);
+            let fresh =
+                DecoratorExtractor::new(other_remove, locale, "0.4.0", models.clone(), action)
+                    .extract_encoded();
+            match (encoded, fresh) {
+                (Ok(e), Ok(f)) => {
+                    assert_eq!(e.0, f.decorator_command_set, "{action:?} {locale}");
+                    assert_eq!(e.1, f.vocabularies, "{action:?} {locale}");
+                }
+                // A result-model error comes first in `extract_encoded`; the
+                // memo is only kept after a call that did not fail, so only
+                // the transform's own errors can reach `encode_source`.
+                (Err(e), Err(f)) => assert_eq!(e, f, "{action:?} {locale}"),
+                (Ok(_), Err(_)) if kept_result.is_none() => {}
+                (e, f) => panic!(
+                    "{action:?} {locale}: encode_source ok {}, extract_encoded ok {}",
+                    e.is_ok(),
+                    f.is_ok()
+                ),
             }
         }
     }
