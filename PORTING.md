@@ -937,7 +937,8 @@ the oracle. Examples already known:
 
 - TS `ModelUtil.parseNamespace('org.acme')` accepts an unversioned namespace
   (`version: null`), which the pre-port Rust `parse_namespace` rejected
-  (DV-003, ported in P0-04b).
+  (DV-003, ported in P0-04b). Since BC-02 (R1, P5-50) it is rejected again,
+  by maintainer decision: DV-003 is closed.
 - The two conformance scenarios that expect errors the reference never raises
   (plan §1.2).
 

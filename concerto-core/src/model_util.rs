@@ -291,7 +291,12 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
 /// order, returning its `name` and `version` borrowed from `ns` rather than
 /// the owned [`ParsedNamespace::Full`] (P5-48, accordproject/concerto-rust#369:
 /// the model load and `ModelFile.validate()`'s import loop run it per import
-/// and read only these two).
+/// and read only these two). Except that an unversioned namespace is not an
+/// error here (`version` is `None`): since BC-02 (P5-50) `parse_namespace_with`
+/// rejects one, but these callers reject it themselves, each with the error
+/// (class and message) it already had (`Cannot use an unversioned import`,
+/// `Cannot create a ModelFile with an unversioned namespace`, a metamodel
+/// version mismatch).
 pub(crate) fn split_namespace(ns: &str) -> Result<(&str, Option<&str>)> {
     if ns.is_empty() {
         return Err(error(
@@ -348,8 +353,7 @@ pub enum ParsedNamespace {
 }
 
 /// Parses a namespace into its name and its version. An unversioned
-/// namespace is accepted, with no version (DV-003); an empty one is an
-/// error.
+/// namespace is an error (BC-02, R1; DV-003 closed), as an empty one is.
 ///
 /// ```
 /// # use concerto_core::model_util::{parse_namespace, ParsedNamespace};
@@ -358,6 +362,7 @@ pub enum ParsedNamespace {
 /// };
 /// assert_eq!((name.as_str(), version.as_deref()), ("org.acme", Some("1.0.0")));
 /// assert!(parse_namespace("org.acme@1.0.0@2.3").is_err());
+/// assert!(parse_namespace("org.acme").is_err());
 /// ```
 pub fn parse_namespace(ns: &str) -> Result<ParsedNamespace> {
     parse_namespace_with(Some(ns), false)
@@ -367,7 +372,10 @@ js_compat_pub! {
     /// [`parse_namespace`], in the shape of TS `ModelUtil.parseNamespace(ns,
     /// disableVersionParsing)`. `None` (JS `undefined` or `null`) and `""` fail
     /// the TS `!ns` check. An unversioned namespace is
-    /// accepted, with `version: null` (D6, PORTING.md 3.6; DV-003).
+    /// rejected, with or without `disable_version_parsing`, as Concerto v4
+    /// requires (BC-02, R1, P5-50; DV-003 closed): TS 5.0.0 accepted it,
+    /// with `version: null`. So `ParsedNamespace::Full`'s `version` is
+    /// always `Some`.
     ///
     /// TS: ModelUtil.parseNamespace (src/modelutil.ts)
     ///
@@ -378,6 +386,8 @@ js_compat_pub! {
     /// };
     /// assert_eq!((name.as_str(), version.as_deref()), ("org.acme", Some("1.0.0")));
     /// assert!(parse_namespace_with(Some("org.acme@1.0.0@2.3"), false).is_err());
+    /// assert!(parse_namespace_with(Some("org.acme"), false).is_err());
+    /// assert!(parse_namespace_with(Some("org.acme"), true).is_err());
     /// ```
     pub fn parse_namespace_with(ns: Option<&str>, disable_version_parsing: bool) -> Result<ParsedNamespace> {
         let ns = match ns {
@@ -398,7 +408,11 @@ js_compat_pub! {
             )
         };
         let parts: Vec<&str> = ns.split('@').collect();
-        if parts.len() > 2 {
+        // BC-02 (R1, P5-50; DV-003 closed): a namespace must carry a version,
+        // as Concerto v4 requires, whether or not the version is parsed. An
+        // unversioned namespace is rejected with the error (class and
+        // message) an invalid one already gets.
+        if parts.len() != 2 {
             return Err(invalid());
         }
         let mut version_parsed = None;
@@ -863,7 +877,9 @@ mod tests {
     /// P5-48: [`split_namespace`] accepts and rejects exactly what
     /// `parse_namespace_with(_, false)` does, with the same error, and gives
     /// back its `name` and `version`; over every recorded semver input as a
-    /// namespace version, and the other namespace shapes.
+    /// namespace version, and the other namespace shapes. The one exception
+    /// (BC-02, P5-50): an unversioned namespace, which `split_namespace`
+    /// gives back with no version for its callers to reject.
     #[test]
     fn split_namespace_matches_parse_namespace() {
         let recording = node_semver_recording();
@@ -895,6 +911,11 @@ mod tests {
         );
         for ns in &namespaces {
             let split = split_namespace(ns);
+            if !ns.is_empty() && !ns.contains('@') {
+                assert!(parse_namespace_with(Some(ns), false).is_err(), "{ns:?}");
+                assert_eq!(split.ok(), Some((ns.as_str(), None)), "{ns:?}");
+                continue;
+            }
             match parse_namespace_with(Some(ns), false) {
                 Ok(ParsedNamespace::Full { name, version, .. }) => {
                     let (n, v) = split.unwrap_or_else(|e| panic!("{ns:?}: {e}"));
@@ -1306,6 +1327,21 @@ mod tests {
         fn parse_namespace_invalid_version() {
             let err = parse_namespace_with(Some("org.acme@1.1.2+.123"), false).unwrap_err();
             assert!(err.to_string().contains("Invalid namespace"), "{err}");
+        }
+
+        // BC-02 (R1, P5-50; DV-003 closed): an unversioned namespace is
+        // rejected, with the error an invalid one gets, whether or not the
+        // version is parsed.
+        #[test]
+        fn parse_namespace_rejects_an_unversioned_namespace() {
+            for disable in [false, true] {
+                for ns in ["org.acme", "concerto", "a"] {
+                    let err = parse_namespace_with(Some(ns), disable).unwrap_err();
+                    assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{ns}");
+                    assert!(err.to_string().contains("Invalid namespace"), "{ns}: {err}");
+                }
+            }
+            assert!(parse_namespace("org.acme").is_err());
         }
     }
 }

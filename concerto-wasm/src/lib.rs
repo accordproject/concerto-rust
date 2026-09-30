@@ -606,6 +606,15 @@ fn parse_namespace_js(ns: &JsValue, disable: bool) -> Result<mu::ParsedNamespace
     }
 }
 
+/// Whether `ns` is a non-empty string with no `@`: a namespace with no
+/// version, which `parseNamespace` rejects since BC-02 (R1, P5-50), and
+/// which the model file header and `enforceImportVersioning` reject with
+/// their own errors, as TS 5.0.0 did.
+fn is_unversioned_namespace(ns: &JsValue) -> bool {
+    ns.as_string()
+        .is_some_and(|ns| !ns.is_empty() && !ns.contains('@'))
+}
+
 /// TS: ModelUtil.parseNamespace. When the engine gives a `versionParsed`
 /// (a strict SemVer 2.0.0 version within node-semver's limits), the JS
 /// value is built by the registered `semver.parse`, so that it is a real
@@ -5991,10 +6000,9 @@ impl ModelManagerHandle {
     // -----------------------------------------------------------------------
 
     /// TS: `ModelFile.getVersion`. `None` (JS `undefined`) for an unversioned
-    /// namespace — a system model file's, the only one whose namespace may
-    /// carry no `@version` (`ModelFile::version` stores `""` for it; every
-    /// other namespace is required to carry one, `parse_namespace_version`'s
-    /// own check, model_file.rs).
+    /// namespace, which no registered file has: every namespace is required
+    /// to carry a version (`parse_namespace_version`'s own check,
+    /// model_file.rs; before BC-02, P5-50, a system model file's was exempt).
     #[wasm_bindgen(js_name = modelFileGetVersion)]
     pub fn model_file_get_version(
         &self,
@@ -6369,10 +6377,13 @@ const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 /// namespace `parseNamespace` rejects raises its own error first.
 fn enforce_import_versioning(imp: &JsValue) -> Result<()> {
     let namespace = get(imp, "namespace")?;
-    let versioned = matches!(
-        parse_namespace_js(&namespace, false)?,
-        mu::ParsedNamespace::Full { version: Some(ref v), .. } if !v.is_empty()
-    );
+    // BC-02 (R1, P5-50): `parseNamespace` rejects an unversioned namespace
+    // itself now; an unversioned import keeps this function's own error.
+    let versioned = !is_unversioned_namespace(&namespace)
+        && matches!(
+            parse_namespace_js(&namespace, false)?,
+            mu::ParsedNamespace::Full { version: Some(ref v), .. } if !v.is_empty()
+        );
     if versioned {
         return Ok(());
     }
@@ -6423,7 +6434,8 @@ pub fn model_file_is_compatible_version(view: JsValue) -> std::result::Result<()
 /// TS: `ModelFile._fromAstHeader(ast)`, the part of `ModelFile.fromAst`
 /// before the declarations (P5-11, accordproject/concerto-rust#287), on the
 /// JS `ModelFile` `view`: parses and checks `ast.namespace` (every part a
-/// valid identifier, and a version unless `view.isSystemModelFile()`),
+/// valid identifier, and a version: since BC-02, R1, P5-50, for a system
+/// file too, where TS 5.0.0 exempted `view.isSystemModelFile()`),
 /// then sets `view.namespace`, `view.version` and `view.imports` (a copy
 /// of `ast.imports`, plus the implicit import of the system types for a
 /// non-system file), and fills `view.importShortNames` (local name, alias
@@ -6437,12 +6449,19 @@ pub fn model_file_is_compatible_version(view: JsValue) -> std::result::Result<()
 pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::Result<(), JsValue> {
     let body = || -> Result<()> {
         let namespace = get(&ast, "namespace")?;
-        let (name, version) = match parse_namespace_js(&namespace, false)? {
-            mu::ParsedNamespace::Full { name, version, .. } => (
-                name,
-                version.map_or(JsValue::NULL, |v| JsValue::from_str(&v)),
-            ),
-            mu::ParsedNamespace::NameOnly { name } => (name, JsValue::UNDEFINED),
+        // BC-02 (R1, P5-50): an unversioned namespace keeps this header's
+        // own checks and errors (the identifier check, then the plain
+        // `Error` below), rather than `parseNamespace`'s.
+        let (name, version) = if is_unversioned_namespace(&namespace) {
+            (namespace.as_string().unwrap_or_default(), JsValue::NULL)
+        } else {
+            match parse_namespace_js(&namespace, false)? {
+                mu::ParsedNamespace::Full { name, version, .. } => (
+                    name,
+                    version.map_or(JsValue::NULL, |v| JsValue::from_str(&v)),
+                ),
+                mu::ParsedNamespace::NameOnly { name } => (name, JsValue::UNDEFINED),
+            }
         };
         for part in name.split('.') {
             if !mu::is_valid_identifier(part) {
@@ -6457,7 +6476,10 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
         let is_system = || -> Result<bool> {
             Ok(call(&view, "isSystemModelFile", &[], "this.isSystemModelFile")?.is_truthy())
         };
-        if !version.is_truthy() && !is_system()? {
+        // BC-02 (R1, P5-50; DV-003 closed): every model file needs a
+        // version; TS 5.0.0 exempted a system one (`isSystemModelFile()`, a
+        // bare `concerto` namespace).
+        if !version.is_truthy() {
             return Err(ContractError::pre_port(
                 ErrorKind::InvalidArgument,
                 format!(

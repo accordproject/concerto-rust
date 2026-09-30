@@ -354,8 +354,9 @@ fn js_read<'a>(object: Option<&'a Value>, key: &str) -> Result<Option<&'a Value>
 /// `decorator_command_set`'s `$class` version can be migrated to
 /// `target_version` — same major version, and strictly lower minor version.
 /// Its failures are TS's: `ModelUtil.getNamespace` rejects a missing
-/// `$class` ("FQN is invalid."), `ModelUtil.parseNamespace` an invalid
-/// namespace, and node-semver a namespace with no version.
+/// `$class` ("FQN is invalid."), and `ModelUtil.parseNamespace` an invalid
+/// namespace, including, since BC-02 (R1, P5-50), one with no version (in
+/// TS 5.0.0 node-semver rejected that one, with a `TypeError`).
 pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Result<bool> {
     let class = js_read(Some(decorator_command_set), "$class")?;
     let class = match class {
@@ -723,16 +724,20 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         .filter(|v| !v.is_empty())
     {
         resolved_model_file = model_manager.model_file(namespace);
+        // `ModelUtil.parseNamespace(target.namespace)`, except that an
+        // unversioned target namespace still matches any version of that
+        // namespace, as in TS 5.0.0, through the lenient `split_namespace`
+        // (BC-02, P5-50: whether DCS targets must be versioned too is a
+        // pending maintainer decision on accordproject/concerto-rust#371;
+        // concerto-core's own tests use unversioned targets).
         if resolved_model_file.is_none()
-            && let ParsedNamespace::Full { name, version, .. } =
-                model_util::parse_namespace_with(Some(namespace), false)?
-            && version.is_none()
+            && let (name, None) = model_util::split_namespace(namespace)?
         {
             // TS `getModelFiles()`: the user's model files only.
             resolved_model_file = model_manager
                 .model_files()
                 .filter(|m| !crate::model_manager::EXCLUDE_NS.contains(&m.namespace()))
-                .find(|m| is_unversioned_namespace_equal(m, &name));
+                .find(|m| is_unversioned_namespace_equal(m, name));
         }
         if resolved_model_file.is_none() {
             return Err(ContractError::pre_port(
@@ -1872,6 +1877,14 @@ mod tests {
                 .unwrap_or_else(|| panic!("{class} was accepted"));
             assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
         }
+        // BC-02 (P5-50): an unversioned `$class` namespace is
+        // `parseNamespace`'s invalid namespace, a plain `Error`.
+        let err = can_migrate(
+            &json!({ "$class": "org.accordproject.decoratorcommands.DecoratorCommandSet" }),
+            DCS_VERSION,
+        )
+        .unwrap_err();
+        assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{err}");
         // Components above 2^53 are compared exactly: 2^53 + 1 and 2^53
         // are the same `f64`, but different majors.
         let big = json!({
