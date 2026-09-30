@@ -103,6 +103,18 @@ manager: the shim calls it on the validation manager it has just built,
 instead of `decoratorManagerValidate` rebuilding one from the model files.
 The per-call `decoratorManager*` bindings are unchanged.
 
+**DCS operations on the source handle** (P5-55, F-A1).
+`ModelManagerHandle.dcsDecorateModels(target, commandSets, options)`,
+`dcsExtractDecorators(target, options)`, `dcsExtractVocabularies(target,
+options)` and `dcsExtractNonVocabDecorators(target, options)` are the
+`DcsManagerHandle` operations, run on the source `ModelManager`'s own
+handle, which already mirrors its models. The shim calls them whenever the
+source manager's `getAst`, `getModelFiles` and `resolveMetaModel` are its
+own, so it no longer copies the models into a `DcsManagerHandle`, and keeps
+`DcsManagerHandle` and the per-call bindings as fallbacks. `target` must be
+another handle. `dcsDecorateModels` validates its result with `target`'s
+`decoratorValidation`; none of them changes the handle or its epoch.
+
 The P0-04b trial bindings (`modelUtil*`, `numberValidator*`,
 `scalarDeclaration*`) are unchanged. Their views still hand their JS objects
 back, until the graph they meet is Rust-backed (P4-06 … P4-08).
