@@ -5738,7 +5738,14 @@ impl ModelManagerHandle {
             let model_file = model_file_from_text(ast, definitions, file_name)?;
             let namespace = model_file.namespace().to_string();
             if validate && self.manager.model_file(&namespace).is_none() {
-                self.manager.validate_detached_model_file(&model_file)?;
+                // P5-48: validated and registered in one step, without a
+                // scratch copy of the manager (the same checks and errors
+                // as `validate_detached_model_file` then `add_model_file`).
+                return self
+                    .manager
+                    .validate_and_add_model_file(model_file)
+                    .map(ModelFileId::index)
+                    .map_err(|(err, _)| err.into());
             }
             self.manager.add_model_file(model_file)?;
             self.manager
@@ -5840,14 +5847,29 @@ impl ModelManagerHandle {
         &mut self,
         stage: u32,
     ) -> std::result::Result<Option<u32>, JsValue> {
-        let Some(file) = self.staged.files.get(&stage) else {
+        let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
-        run(|| {
-            self.manager.validate_detached_model_file(file)?;
-            Ok(())
-        })?;
-        self.commit_staged_model_file(stage)
+        // P5-48 (accordproject/concerto-rust#369): validated and registered
+        // in one step (`ModelManager::validate_and_add_model_file`), without
+        // a scratch copy of the manager and of the file. A validation error
+        // hands the file back, and it stays staged under the same id, as
+        // before; the epoch moves once validation has passed, as
+        // `commit_staged_model_file` moves it.
+        match self.manager.validate_and_add_model_file(file) {
+            Ok(id) => {
+                self.epoch += 1;
+                Ok(Some(ModelFileId::index(id)))
+            }
+            Err((err, Some(file))) => {
+                self.staged.files.insert(stage, *file);
+                run(|| Err(err.into()))
+            }
+            Err((err, None)) => {
+                self.epoch += 1;
+                run(|| Err(err.into()))
+            }
+        }
     }
 
     /// P5-06a: [`Self::model_file_validate_detached`] for a staged model
@@ -6891,6 +6913,22 @@ fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     Ok(mm)
 }
 
+/// [`model_manager_from_asts`], taking the `models` array itself (anything
+/// but an array loads nothing, as `as_array().unwrap_or_default()` read it)
+/// and moving each AST into its model file
+/// ([`ModelManager::add_owned_model_with_definitions`]: same result, same
+/// errors, in the same order) rather than copying the array and then every
+/// AST in it (P5-40, F-B).
+fn model_manager_from_owned_asts(models: Value) -> Result<ModelManager> {
+    let mut mm = ModelManager::new()?;
+    if let Value::Array(models) = models {
+        for model in models {
+            mm.add_owned_model_with_definitions(model, None, None)?;
+        }
+    }
+    Ok(mm)
+}
+
 /// [`model_manager_from_asts`], plus the namespaces of the models it added
 /// (as distinct from the system ones `ModelManager::new()` pre-loads) — for
 /// [`decorator_manager_validate`], which must hand [`dcs::validate`] only
@@ -7211,7 +7249,7 @@ pub fn decorator_manager_extract_decorators(
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
         let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+        let mm = model_manager_from_owned_asts(models_json)?;
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
         let result = dcs::extract_decorators(&mm, &opts)?;
@@ -7229,7 +7267,7 @@ pub fn decorator_manager_extract_vocabularies(
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
         let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+        let mm = model_manager_from_owned_asts(models_json)?;
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
         let result = dcs::extract_vocabularies(&mm, &opts)?;
@@ -7248,7 +7286,7 @@ pub fn decorator_manager_extract_non_vocab_decorators(
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
         let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+        let mm = model_manager_from_owned_asts(models_json)?;
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
         let result = dcs::extract_non_vocab_decorators(&mm, &opts)?;
@@ -7423,9 +7461,9 @@ fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<V
 /// The input manager of the `DecoratorManager` operations, kept resident
 /// across calls (P5-27, F6): the source models, as the view reads them off
 /// `modelManager.getAst(resolve, false).models`, loaded once
-/// ([`model_manager_from_asts`], as each `decoratorManager*` binding loads
-/// them on every call). The view keeps one per source ModelManager and
-/// resolution flag, and builds a new one once that manager's epoch or model
+/// ([`model_manager_from_owned_asts`], as each `decoratorManagerExtract*`
+/// binding loads them on every call). The view keeps one per source
+/// ModelManager and resolution flag, and builds a new one once that manager's epoch or model
 /// files change. The operations never change it. Additive.
 #[wasm_bindgen]
 pub struct DcsManagerHandle {
@@ -7441,8 +7479,7 @@ impl DcsManagerHandle {
     pub fn new(models: JsValue) -> std::result::Result<DcsManagerHandle, JsValue> {
         run(|| {
             let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-            let manager =
-                model_manager_from_asts(&models_json.as_array().cloned().unwrap_or_default())?;
+            let manager = model_manager_from_owned_asts(models_json)?;
             Ok(Self { manager })
         })
     }

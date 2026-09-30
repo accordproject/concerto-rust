@@ -577,11 +577,12 @@ impl ClassDeclaration {
         decorators: Vec<Decorator>,
         namespace: &str,
     ) -> Result<Self> {
-        let name = class_field!(&node, d => d.name.clone());
+        // P5-48: borrowed; `node` is only moved into the result at the end.
+        let name: &str = class_field!(&node, d => d.name.as_str());
 
         let implicit_super_type = if explicit_null_super_type
             || class_field!(&node, d => d.super_type.is_some())
-            || Self::is_system_concept(namespace, &name)
+            || Self::is_system_concept(namespace, name)
         {
             None
         } else {
@@ -675,7 +676,12 @@ impl ClassDeclaration {
         // need. The two synthesized system fields above never carry a
         // validator, so checking every property here (not just the AST's
         // own) is a no-op for them.
-        let fqn = qualify(namespace, &name);
+        // P5-48: built only when a property has a validator to rebuild.
+        let fqn = if properties.iter().any(Property::has_bound_validators) {
+            qualify(namespace, name)
+        } else {
+            String::new()
+        };
         // `raw_properties`, indexed the same way `parse_properties` walked
         // `value.get("properties")` to build `properties`, is each
         // property's own AST node — needed so a fuzzed `sizeValidator`/
@@ -725,12 +731,27 @@ pub(crate) fn normalize_class_fields(
     // reaching a property of this class — the same shape of bug
     // `superType.name`/`identified.name` needed normalizing for,
     // just above this same object.
-    let coerced_name = object
-        .get("name")
-        .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
-    object.insert("name".into(), serde_json::Value::String(coerced_name));
+    // P5-48: a `name` that is already a string is left as it is (writing
+    // back its own `ToString`, the same string, changes nothing), without
+    // copying it; likewise the two nodes below are read in place and copied
+    // only when they are rewritten.
+    if !matches!(object.get("name"), Some(serde_json::Value::String(_))) {
+        let coerced_name = object
+            .get("name")
+            .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string);
+        object.insert("name".into(), serde_json::Value::String(coerced_name));
+    }
 
-    if let Some(serde_json::Value::Object(super_type_object)) = object.get("superType").cloned() {
+    let super_type_name_is_string = matches!(
+        object.get("superType"),
+        Some(serde_json::Value::Object(super_type_object))
+            if matches!(super_type_object.get("name"), Some(serde_json::Value::String(_)))
+    );
+    if super_type_name_is_string {
+        // Unchanged (the `Some(String(_))` arm below).
+    } else if let Some(serde_json::Value::Object(super_type_object)) =
+        object.get("superType").cloned()
+    {
         match super_type_object.get("name") {
             Some(serde_json::Value::Null) => {
                 object.remove("superType");
@@ -797,16 +818,23 @@ pub(crate) fn normalize_class_fields(
     // non-string or non-object `$class` the way a `.toString()` call
     // would. Normalizing here, before the strict decode, reproduces
     // that in full:
-    if let Some(identified_value) = object.get("identified").cloned() {
+    if let Some(identified_value) = object.get("identified") {
         let is_identified_by = matches!(
-            &identified_value,
+            identified_value,
             serde_json::Value::Object(identified_object)
                 if identified_object
                     .get("$class")
                     .and_then(serde_json::Value::as_str)
-                    == Some(qualified_class("IdentifiedBy").as_str())
+                    == Some(IDENTIFIED_BY_CLASS)
         );
-        if !crate::ecma::is_truthy(&identified_value) {
+        let already_identified = matches!(
+            identified_value,
+            serde_json::Value::Object(identified_object)
+                if identified_object.len() == 1
+                    && identified_object.get("$class").and_then(serde_json::Value::as_str)
+                        == Some(IDENTIFIED_CLASS)
+        );
+        if !crate::ecma::is_truthy(identified_value) {
             // `if (this.ast.identified)` is false for any falsy
             // value (`false`, `0`, `""`, `null`, or the key
             // altogether missing) — no `idField`, no
@@ -850,14 +878,22 @@ pub(crate) fn normalize_class_fields(
             // examined, so a null decorator among them (DV-018)
             // never got the chance TS's and the WASM binding's own
             // processing order give it.
-            object.insert(
-                "identified".into(),
-                serde_json::json!({ "$class": qualified_class("Identified") }),
-            );
+            // P5-48: a node that already is exactly that is left alone.
+            if !already_identified {
+                object.insert(
+                    "identified".into(),
+                    serde_json::json!({ "$class": IDENTIFIED_CLASS }),
+                );
+            }
         }
     }
     explicit_null_super_type
 }
+
+/// `qualified_class("IdentifiedBy")` and `qualified_class("Identified")`,
+/// as constants (P5-48: [`normalize_class_fields`] runs per class).
+const IDENTIFIED_BY_CLASS: &str = "concerto.metamodel@1.0.0.IdentifiedBy";
+const IDENTIFIED_CLASS: &str = "concerto.metamodel@1.0.0.Identified";
 
 /// TS: `ModelFile.isSystemModelFile` (src/introspect/modelfile.ts).
 fn is_system_model_namespace(namespace: &str) -> bool {
