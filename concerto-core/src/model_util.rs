@@ -631,8 +631,10 @@ js_compat_pub! {
 }
 
 /// Returns true if the name is a valid Concerto identifier: `ID_REGEX.test`.
-/// A caller holding JS `undefined` or `null` tests the strings `"undefined"`
-/// and `"null"`, both valid (DV-002).
+/// A JS caller's non-string (`undefined`, `null`, ...) is not a valid
+/// identifier: the binding answers `false` without calling this (BC-01, R1;
+/// TS 5.0.0 tested `String(name)`, so `"undefined"` and `"null"` passed,
+/// DV-002).
 ///
 /// TS: ModelUtil.isValidIdentifier (src/modelutil.ts)
 ///
@@ -1040,7 +1042,8 @@ mod tests {
         assert!(is_valid_identifier(r"Abc"));
         assert!(!is_valid_identifier(""));
         assert!(!is_valid_identifier("with space"));
-        // `ID_REGEX.test(undefined)` tests "undefined". DV-002
+        // The *string* "undefined" is a valid identifier; a JS `undefined`
+        // never reaches this function (BC-01).
         assert!(is_valid_identifier("undefined"));
     }
 

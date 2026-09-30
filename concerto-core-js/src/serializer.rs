@@ -514,12 +514,17 @@ mod tests {
             message(from(json!({ "$class": "org.acme@1.0.0.Color" }))),
             "Attempting to create an ENUM declaration is not supported."
         );
-        // DV-010: an object that names an enum type and one of its values.
-        let circular = from(json!({
+        // BC-08 (R1; DV-010 was V8's circular-JSON TypeError): an object that
+        // names an enum type and one of its values is an `Error` naming the
+        // enum value.
+        let unrecognised = from(json!({
             "$class": "org.acme@1.0.0.Car", "vin": "A",
             "address": { "$class": "org.acme@1.0.0.Color", "RED": "x" }
         }));
-        assert!(message(circular).starts_with("Converting circular structure to JSON"));
+        assert_eq!(
+            message(unrecognised),
+            "Unrecognised element \"org.acme@1.0.0.Color.RED\""
+        );
     }
 
     #[test]

@@ -348,11 +348,12 @@ pub enum ErrorKind {
     ///
     /// TS: a `TypeError(message)` the V8 engine raises in the TS code.
     MalformedInput,
-    /// A recursion point with no cycle check went too deep (PORTING.md 2.5),
-    /// always `engine-rangeerror-maxcallstack`.
+    /// A recursion point with no cycle check went too deep (PORTING.md 2.5).
     ///
     /// TS: a `RangeError(message)` the V8 engine raises in the TS code (a
-    /// stack overflow).
+    /// stack overflow). Since BC-11 (R1) nothing raises this kind: a cyclic
+    /// inheritance chain, its only source, is [`ErrorKind::IllegalModel`].
+    /// The variant stays so that the enum's public shape does not change.
     RecursionLimit,
     /// A document fails the metamodel check.
     ///
@@ -1119,15 +1120,23 @@ mod tests {
     }
 
     #[test]
-    fn golden_engine_rangeerror_maxcallstack() {
+    fn golden_classdeclaration_circularinheritance() {
         let err = ContractError::new(
-            ErrorKind::RecursionLimit,
-            "engine-rangeerror-maxcallstack",
-            Vec::new(),
+            ErrorKind::IllegalModel,
+            "classdeclaration-circularinheritance",
+            vec![
+                ("type", "org.cycle@1.0.0.A".to_string()),
+                (
+                    "cycle",
+                    "org.cycle@1.0.0.A -> org.cycle@1.0.0.C -> org.cycle@1.0.0.A".to_string(),
+                ),
+            ],
         );
-        assert_eq!(err.message(), "Maximum call stack size exceeded");
-        assert_eq!(err.kind.ts_class(), "RangeError");
-        assert_eq!(err.component(), None);
+        assert_eq!(
+            err.message(),
+            "The super type chain of \"org.cycle@1.0.0.A\" is circular: org.cycle@1.0.0.A -> org.cycle@1.0.0.C -> org.cycle@1.0.0.A."
+        );
+        assert_eq!(err.kind.ts_class(), "IllegalModelException");
     }
 
     #[test]
@@ -1986,10 +1995,14 @@ mod tests {
     }
 
     #[test]
-    fn golden_engine_typeerror_circularjson() {
+    fn golden_serializer_visit_unrecognised() {
         assert_eq!(
-            contract("engine-typeerror-circularjson", &[]).message(),
-            "Converting circular structure to JSON\n    --> starting at object with constructor 'ModelManager'\n    |     property 'modelFiles' -> object with constructor 'Object'\n    |     property 'concerto.decorator@1.0.0' -> object with constructor 'ModelFile'\n    --- property 'modelManager' closes the circle"
+            contract(
+                "serializer-visit-unrecognised",
+                &[("name", "org.acme@1.0.0.Color.RED")]
+            )
+            .message(),
+            "Unrecognised element \"org.acme@1.0.0.Color.RED\""
         );
     }
 
