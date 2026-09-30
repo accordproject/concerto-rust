@@ -42,7 +42,7 @@ use crate::ecma;
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
-use crate::model_util::{self, ParsedNamespace};
+use crate::model_util;
 
 /// `MetaModelNamespace` (`@accordproject/concerto-metamodel`), as
 /// `basemodelmanager.ts` imports it.
@@ -505,13 +505,12 @@ pub(crate) fn check_version(ast: &Value) -> Result<()> {
     Ok(())
 }
 
-/// `ModelUtil.parseNamespace(ns).version`.
+/// `ModelUtil.parseNamespace(ns).version`, except that an unversioned
+/// namespace gives `None` rather than `parse_namespace`'s error (BC-02,
+/// P5-50): it is still rejected, by the caller's version mismatch, with the
+/// `MetamodelException` TS 5.0.0 threw for it.
 fn namespace_version(ns: &str) -> Result<Option<String>> {
-    let ParsedNamespace::Full { version, .. } = model_util::parse_namespace_with(Some(ns), false)?
-    else {
-        unreachable!("parse_namespace_with(_, false) always returns ParsedNamespace::Full")
-    };
-    Ok(version)
+    Ok(model_util::split_namespace(ns)?.1.map(str::to_string))
 }
 
 #[cfg(test)]

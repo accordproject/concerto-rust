@@ -207,8 +207,9 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     }
     let class = dcs_json.get("$class").and_then(Value::as_str);
     let dcs_namespace = model_util::get_namespace(class.filter(|c| !c.is_empty()))?;
-    // `ModelUtil.parseNamespace(dcsNamespace).version`, `undefined` for an
-    // unversioned namespace.
+    // `ModelUtil.parseNamespace(dcsNamespace).version`. Since BC-02 (R1,
+    // P5-50) an unversioned namespace is rejected there (TS 5.0.0 gave
+    // `undefined`).
     let version = match model_util::parse_namespace_with(Some(dcs_namespace), false)? {
         ParsedNamespace::Full { version, .. } => version,
         ParsedNamespace::NameOnly { .. } => None,

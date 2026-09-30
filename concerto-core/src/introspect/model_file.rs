@@ -225,13 +225,11 @@ impl ModelFile {
             .to_string();
 
         // TS: `ModelFile.fromAst`'s own namespace handling (modelfile.ts) —
-        // `ModelUtil.parseNamespace` (which accepts an unversioned namespace,
-        // DV-003), a check that every dot-separated part of the name is a
-        // valid identifier, and then, for a non-system model file only, a
-        // version requirement (P2-08). `is_system` is computed here rather
-        // than reused from below, since TS's own version needs it first.
+        // `ModelUtil.parseNamespace`, a check that every dot-separated part
+        // of the name is a valid identifier, and then a version requirement
+        // (P2-08), for every model file since BC-02 (R1, P5-50).
         let is_system_namespace = namespace.starts_with("concerto@") || namespace == "concerto";
-        let version = parse_namespace_version(&namespace, is_system_namespace, &file_name)?;
+        let version = parse_namespace_version(&namespace, &file_name)?;
 
         let mut imports = match value.get("imports") {
             None => Vec::new(),
@@ -1087,25 +1085,19 @@ fn plain_error(message: String) -> Error {
 }
 
 /// `ModelFile.fromAst`'s own namespace handling (modelfile.ts, P2-08): parses
-/// `namespace` with `ModelUtil.parseNamespace` (`model_util::parse_namespace`,
-/// which accepts an unversioned namespace and returns `version: None`,
-/// DV-003), rejects a namespace whose name has a part that is not a valid
-/// identifier (`IllegalModelException`, `this` and `this.ast.location` in TS —
-/// no oracle fixture reaches this branch, and `ModelFile` keeps no AST
-/// `location` in this port (validation.rs review comment), so only the file
-/// name is attached here), then — for a non-system model file only —
-/// requires a version, with the same plain `Error` TS's own hardcoded
-/// message uses. Returns the version (`""` for none, as every unversioned
-/// caller here is a system model file).
-fn parse_namespace_version(
-    namespace: &str,
-    is_system: bool,
-    file_name: &Option<String>,
-) -> Result<String> {
-    let (name, version) = match model_util::parse_namespace_with(Some(namespace), false)? {
-        model_util::ParsedNamespace::Full { name, version, .. } => (name, version),
-        model_util::ParsedNamespace::NameOnly { name } => (name, None),
-    };
+/// `namespace` as `ModelUtil.parseNamespace` does, except that an unversioned
+/// namespace gets this function's own errors, in TS 5.0.0's order
+/// (`model_util::split_namespace`), rejects a namespace whose name has a part
+/// that is not a valid identifier (`IllegalModelException`, `this` and
+/// `this.ast.location` in TS — no oracle fixture reaches this branch, and
+/// `ModelFile` keeps no AST `location` in this port (validation.rs review
+/// comment), so only the file name is attached here), then requires a
+/// version, with the same plain `Error` TS's own hardcoded message uses.
+/// TS 5.0.0 exempted a system model file (a bare `concerto` namespace) from
+/// that last check; since BC-02 (R1, P5-50; DV-003 closed) every model file
+/// needs a version. Returns the version.
+fn parse_namespace_version(namespace: &str, file_name: &Option<String>) -> Result<String> {
+    let (name, version) = model_util::split_namespace(namespace)?;
     for part in name.split('.') {
         if !is_valid_identifier(part) {
             // `ContractError` (not the pre-port `Error::illegal_model`
@@ -1123,13 +1115,13 @@ fn parse_namespace_version(
             return Err(err.into());
         }
     }
-    if version.is_none() && !is_system {
+    if version.is_none() {
         return Err(plain_error(format!(
             "Cannot create a ModelFile with an unversioned namespace: {namespace}. All \
              models must specify a version (e.g., @1.0.0)."
         )));
     }
-    Ok(version.unwrap_or_default())
+    Ok(version.unwrap_or_default().to_string())
 }
 
 /// Stamps this file's name onto an `IllegalModel` error that came up while

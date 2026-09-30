@@ -256,10 +256,11 @@ export function runChecks(engine) {
     assert(snap.fileName === 'inline.cto', `fileName ${snap.fileName}`);
     assert(snap.isSystemModelFile === false, 'isSystemModelFile');
     assert(snap.imports.includes('concerto@1.0.0.Concept'), `imports ${snap.imports}`);
-    // An unversioned namespace (only ever legal for the bare `concerto`
-    // system namespace) reports `version: null`, matching TS's `undefined`.
-    const bareSnap = JSON.parse(engine.modelFileFromAst({ ...MODEL, namespace: 'concerto' }, undefined, undefined));
-    assert(bareSnap.version === null, `bare-namespace version ${bareSnap.version}`);
+    // BC-02 (R1, P5-50; DV-003 closed): an unversioned namespace is
+    // rejected, the bare `concerto` system namespace included (TS 5.0.0
+    // accepted that one, with no version).
+    const bare = thrown(() => engine.modelFileFromAst({ ...MODEL, namespace: 'concerto' }, undefined, undefined));
+    assert(bare instanceof EngineError && /unversioned namespace: concerto\b/.test(bare.message), `bare namespace threw ${bare}`);
     const bad = thrown(() => engine.modelFileFromAst(null, undefined, undefined));
     assert(bad instanceof EngineError && bad.payload.code === 'pre-port', `bad ast threw ${bad}`);
   });
