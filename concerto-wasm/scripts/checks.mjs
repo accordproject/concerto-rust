@@ -1095,6 +1095,47 @@ export function runChecks(engine) {
     assert(thrown(() => h.checkAstShape('{')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
   });
 
+  // P5-69 (BC-19-b, R1): the shape check folded into the staging load. A
+  // well-formed model stages as stageModelFileWithHeader stages it; a
+  // malformed one throws the check's own error, the one checkAstShape
+  // throws; an AST the check accepts but the load rejects throws the
+  // load's error.
+  check('stageModelFileChecked stages like stageModelFileWithHeader, after the shape check (BC-19-b)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    const text = JSON.stringify(MODEL);
+    const checked = JSON.parse(h.stageModelFileChecked(text, undefined, 'm.cto'));
+    const unchecked = JSON.parse(h.stageModelFileWithHeader(text, undefined, 'm.cto'));
+    assert(typeof checked.id === 'number' && checked.id !== unchecked.id, `stage ids ${checked.id} ${unchecked.id}`);
+    assert(JSON.stringify(checked.header) === JSON.stringify(unchecked.header), 'the same header');
+    h.dropStagedModelFile(checked.id);
+    h.dropStagedModelFile(unchecked.id);
+    assert(h.epoch() === epoch, 'staging does not move the epoch');
+    const malformed = [
+      { ...MODEL, decorators: 'x' },
+      { ...MODEL, undeclared: [] },
+      { ...MODEL, declarations: [{ ...MODEL.declarations[0], name: 7 }] },
+      { ...MODEL, declarations: [{ ...MODEL.declarations[0], name: '1a' }] },
+      { $class: `${MM}.TypeIdentifier`, name: 7 },
+    ];
+    for (const ast of malformed) {
+      const astText = JSON.stringify(ast);
+      const expected = thrown(() => h.checkAstShape(astText));
+      const err = thrown(() => h.stageModelFileChecked(astText, undefined, 'bad.cto'));
+      assert(err instanceof EngineError, `${astText}: threw ${err}`);
+      assert(err.payload.kind === 'IllegalModel', `${astText}: kind ${err.payload.kind}`);
+      assert(err.payload.code === expected.payload.code, `${astText}: code ${err.payload.code}, not ${expected.payload.code}`);
+      assert(err.message === expected.message, `${astText}: message ${err.message}`);
+    }
+    // Accepted by the check (a root that is not a Model), rejected by the load.
+    const notAModel = JSON.stringify({ $class: `${MM}.TypeIdentifier`, name: 'X' });
+    h.checkAstShape(notAModel);
+    const err = thrown(() => h.stageModelFileChecked(notAModel, undefined, 'x.cto'));
+    const load = thrown(() => h.stageModelFileWithHeader(notAModel, undefined, 'x.cto'));
+    assert(err instanceof EngineError && err.payload.code === load.payload.code, `load error ${err && err.payload && err.payload.code}`);
+    assert(thrown(() => h.stageModelFileChecked('{', undefined, undefined)) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
+  });
+
   // P5-61 (BR-09, maintainer decision 2026-09-30): with the shape check off
   // (`metamodelValidation: false`), a malformed AST reaches the engine's
   // typed read, the only model loader. It must throw an error (the

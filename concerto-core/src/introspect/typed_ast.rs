@@ -30,6 +30,15 @@
 //! (identifiers, reserved names, validators, and everything
 //! `ModelFile.validate` does) runs after the read, on the typed result.
 //!
+//! Since P5-69 (BC-19-b, accordproject/concerto-rust#408) that shape check
+//! is folded into this read: `crate::introspect::shape` decides it from
+//! what the read has decoded, and only an AST it cannot vouch for is checked
+//! again in full (`ModelFile::from_json_text_checked_with_imports`, and
+//! `instance::check_ast_shape` itself). For that, the read keeps the
+//! `Value`s the check needs that the generated structs drop: a class's
+//! `identified`, each property's `decorators`, and the `defaultValue` of a
+//! `DateTimeProperty`.
+//!
 //! Since P5-61 (accordproject/concerto-rust#393) there is no exception:
 //! a class's `identified` and a property's `sizeValidator`,
 //! `lengthValidator` and `validator` are decoded as strictly as every other
@@ -110,6 +119,9 @@ pub(crate) enum TypedDeclaration {
         decorators: Option<Value>,
         /// The node's `location` value, as given (for an error).
         location: Option<Value>,
+        /// The node's `identified` value, as given (for BC-19's shape
+        /// check, [`crate::introspect::shape`]).
+        identified: Option<Value>,
     },
     /// An enum declaration, read straight into its generated struct, whose
     /// `properties` are the enum values' own nodes.
@@ -127,10 +139,16 @@ pub(crate) enum TypedDeclaration {
 }
 
 /// One property read by [`parse`] or [`from_value`], with its node's
-/// `location` value as given (for an error).
+/// `location` value as given (for an error), and the values BC-19's shape
+/// check reads ([`crate::introspect::shape`]).
 pub(crate) struct TypedProperty {
     pub(crate) property: Property,
     pub(crate) location: Option<Value>,
+    /// The node's `decorators` value, if it has that key.
+    pub(crate) decorators: Option<Value>,
+    /// The `defaultValue` the reference parser writes on a
+    /// `DateTimeProperty`, which the generated struct does not declare.
+    pub(crate) date_time_default: Option<Value>,
 }
 
 /// Reads a model AST from JSON text. The error is a `serde_json` syntax
@@ -327,12 +345,14 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     let mut properties = None;
     let mut decorators = None;
     let mut location = None;
+    let mut identified = None;
     let mut taken = Map::new();
     let access = Intercept {
         inner: map,
         properties: Some(&mut properties),
         decorators: &mut decorators,
         location: &mut location,
+        identified: Some(&mut identified),
         take: &[],
         taken: &mut taken,
         pending: Pending::Other,
@@ -359,6 +379,7 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
         properties,
         decorators,
         location,
+        identified,
     })
 }
 
@@ -374,6 +395,7 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
         properties: Some(&mut properties),
         decorators: &mut decorators,
         location: &mut location,
+        identified: None,
         take: &[],
         taken: &mut taken,
         pending: Pending::Other,
@@ -481,6 +503,7 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
         properties: None,
         decorators: &mut decorators,
         location: &mut location,
+        identified: None,
         // The reference parser writes a `defaultValue` on a
         // `DateTimeProperty`, which the metamodel does not declare (BC-19's
         // one tolerance, `instance::check_ast_shape`). It is kept out of the
@@ -525,7 +548,12 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
         }
     };
     property.set_location(read_location(location.as_ref())?);
-    Ok(TypedProperty { property, location })
+    Ok(TypedProperty {
+        property,
+        location,
+        decorators,
+        date_time_default: taken.shift_remove("defaultValue"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +565,7 @@ enum Pending {
     Properties,
     Decorators,
     Location,
+    Identified,
     Other,
 }
 
@@ -548,6 +577,9 @@ enum Pending {
 ///   [`parse_decorator_list`] then read;
 /// - `location`: read as a `Value`, kept as given for an error's location;
 ///   the struct is handed `null` for it, and [`read_location`] reads it;
+/// - `identified`, when `identified` is set: read as a `Value`, kept as
+///   given for BC-19's shape check, and handed to the struct (through
+///   [`Strict`]);
 /// - every key in `take`: read as a `Value` into `taken` (a repeated key
 ///   replaces the earlier value, as in a `Value`), and kept from the struct,
 ///   for the loader to read as TS does (the module doc, "Strictness").
@@ -559,6 +591,8 @@ struct Intercept<'a, A> {
     properties: Option<&'a mut Option<Vec<TypedProperty>>>,
     decorators: &'a mut Option<Value>,
     location: &'a mut Option<Value>,
+    /// Where the `identified` value goes, or `None` to pass it through.
+    identified: Option<&'a mut Option<Value>>,
     take: &'static [&'static str],
     taken: &'a mut Map<String, Value>,
     pending: Pending,
@@ -586,6 +620,7 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
             "properties" if self.properties.is_some() => Pending::Properties,
             "decorators" => Pending::Decorators,
             "location" => Pending::Location,
+            "identified" if self.identified.is_some() => Pending::Identified,
             _ => Pending::Other,
         };
         match key {
@@ -629,6 +664,14 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 // so the value is kept without a copy.
                 *self.location = Some(self.inner.next_value()?);
                 seed.deserialize(Value::Null)
+            }
+            Pending::Identified => {
+                let value: Value = self.inner.next_value()?;
+                let read = Strict(seed).deserialize(value.clone())?;
+                if let Some(slot) = self.identified.as_deref_mut() {
+                    *slot = Some(value);
+                }
+                Ok(read)
             }
             Pending::Other => self.inner.next_value_seed(Strict(seed)),
         }
