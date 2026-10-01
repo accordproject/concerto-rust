@@ -424,6 +424,26 @@ impl ModelFile {
         self.ast.get()
     }
 
+    js_compat_pub! {
+        /// P5-77 (accordproject/concerto-rust#419): [`ModelFile::ast`]'s
+        /// compact JSON text (`serde_json::to_string`). A file built from a
+        /// parsed AST then keeps that text in place of the parsed AST, which
+        /// is parsed again from it on first use, as for a file read from text
+        /// (P5-06c); with `float_roundtrip` and `preserve_order` that gives
+        /// an AST equal to the one it replaces. A file read from text is
+        /// left as it is (its own text is the caller's, not this one).
+        pub fn compact_ast(&mut self) -> serde_json::Result<Arc<str>> {
+            let text: Arc<str> = Arc::from(serde_json::to_string(self.ast())?);
+            if self.ast.text.is_none() {
+                self.ast = Ast {
+                    value: OnceLock::new(),
+                    text: Some(Arc::clone(&text)),
+                };
+            }
+            Ok(text)
+        }
+    }
+
     /// Whether this file was built by the typed AST path.
     #[cfg(test)]
     pub(crate) fn built_by_typed_path(&self) -> bool {
@@ -1204,6 +1224,50 @@ mod tests {
             Some("example.cto".into()),
         )
         .unwrap()
+    }
+
+    /// P5-77 (accordproject/concerto-rust#419): `compact_ast` keeps a
+    /// parsed AST as its compact JSON text, and the AST read back from it is
+    /// equal to the one it replaced (numbers included), so is the text a
+    /// second compaction returns, and a clone shares the text; a file read
+    /// from text keeps its own text.
+    #[test]
+    fn compact_ast_keeps_an_equal_ast_as_text() {
+        let value = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.compact@1.0.0",
+            "decorators": [{
+                "$class": "concerto.metamodel@1.0.0.Decorator", "name": "N",
+                "arguments": [
+                    { "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 0.1 },
+                    { "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": -0.0 },
+                    { "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 1.0e300 },
+                    { "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 9_007_199_254_740_993_u64 },
+                    { "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "\u{e9}\"\n" }
+                ]
+            }],
+            "declarations": [
+                { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                  "name": "Person", "isAbstract": false, "properties": [] }
+            ]
+        });
+        let mut mf = ModelFile::from_json(&value, None).unwrap();
+        assert!(!mf.built_by_typed_path());
+        let text = mf.compact_ast().unwrap();
+        assert_eq!(&*text, serde_json::to_string(&value).unwrap());
+        assert!(mf.built_by_typed_path());
+        let copy = mf.clone();
+        assert_eq!(mf.ast(), &value);
+        assert_eq!(copy.ast(), &value);
+        assert_eq!(mf.compact_ast().unwrap(), text);
+
+        let mut typed =
+            ModelFile::from_json_text(&serde_json::to_string(&value).unwrap(), None, None)
+                .unwrap()
+                .unwrap();
+        let own = typed.ast.text.clone();
+        assert_eq!(&*typed.compact_ast().unwrap(), &*text);
+        assert_eq!(typed.ast.text, own);
     }
 
     #[test]

@@ -5382,9 +5382,15 @@ pub struct ModelManagerHandle {
 /// Bounded: past [`StagedModelFiles::CAPACITY`] entries the oldest one is
 /// evicted. A view whose stage id was evicted gets `undefined` back and
 /// falls back to sending the AST again, so eviction only costs time.
+///
+/// P5-77 (accordproject/concerto-rust#419): each file is kept shared
+/// (`Arc`), so a DecoratorManager result staged from a manager that keeps
+/// its files (the extract memo, P5-56) or is about to drop them
+/// ([`stage_result`]) is staged without a deep copy, and registered as the
+/// same shared file ([`ModelManager::add_shared_model_file`]).
 #[derive(Default)]
 struct StagedModelFiles {
-    files: std::collections::BTreeMap<u32, ModelFile>,
+    files: std::collections::BTreeMap<u32, std::sync::Arc<ModelFile>>,
     next: u32,
 }
 
@@ -5403,6 +5409,12 @@ impl StagedModelFiles {
     const CAPACITY: usize = 256;
 
     fn insert(&mut self, file: ModelFile) -> u32 {
+        self.insert_shared(std::sync::Arc::new(file))
+    }
+
+    /// [`Self::insert`] for a model file that may also be held elsewhere
+    /// (P5-77): the file is shared, not copied.
+    fn insert_shared(&mut self, file: std::sync::Arc<ModelFile>) -> u32 {
         while self.files.len() >= Self::CAPACITY {
             self.files.pop_first();
         }
@@ -5976,7 +5988,7 @@ impl ModelManagerHandle {
         self.bump_epoch();
         run(|| {
             let namespace = file.namespace().to_string();
-            self.manager.add_model_file(file)?;
+            self.manager.add_shared_model_file(file)?;
             self.manager
                 .model_file_id(&namespace)
                 .map(|id| Some(ModelFileId::index(id)))
@@ -6009,13 +6021,18 @@ impl ModelManagerHandle {
         // hands the file back, and it stays staged under the same id, as
         // before; the epoch moves once validation has passed, as
         // `commit_staged_model_file` moves it.
-        match self.manager.validate_and_add_model_file(file) {
+        // P5-77: a file staged shared (a DecoratorManager result) is
+        // copied here, as it was copied when it was staged before.
+        match self
+            .manager
+            .validate_and_add_model_file(std::sync::Arc::unwrap_or_clone(file))
+        {
             Ok(id) => {
                 self.bump_epoch();
                 Ok(Some(ModelFileId::index(id)))
             }
             Err((err, Some(file))) => {
-                self.staged.files.insert(stage, *file);
+                self.staged.files.insert(stage, std::sync::Arc::new(*file));
                 run(|| Err(err.into()))
             }
             Err((err, None)) => {
@@ -7645,9 +7662,14 @@ fn staged_header(ast: &Value) -> Option<Value> {
 /// file not staged, or `[stageId, header]` ([`staged_header`], `null` when
 /// the view must read the header itself). Staging never changes `target`'s
 /// manager or epoch.
+///
+/// P5-77 (accordproject/concerto-rust#419): each file is staged shared with
+/// `result` ([`ModelManager::shared_model_files`]), not deep-copied; every
+/// caller drops `result` (or keeps it unchanged, in the extract memo) once
+/// the call returns.
 fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<Value> {
     result
-        .model_files()
+        .shared_model_files()
         .map(|mf| {
             if DCS_EXCLUDE_NS.contains(&mf.namespace())
                 || target.staged.files.len() >= StagedModelFiles::CAPACITY
@@ -7655,7 +7677,7 @@ fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<V
                 return Value::Null;
             }
             let header = staged_header(mf.ast()).unwrap_or(Value::Null);
-            let id = target.staged.insert(mf.clone());
+            let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
             json!([id, header])
         })
         .collect()
@@ -7827,8 +7849,8 @@ fn staged_extract(
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let opts = extract_options_from_js(&options_json);
     let result = dcs::extract_encoded(manager, &opts, action)?;
-    let staged = stage_result(target, &result.model_manager);
-    Ok(extract_result_js(&result, Some(staged)))
+    // P5-77: staged shared, with the result's ASTs kept as text.
+    Ok(compacted_extract_js(target, result, Vec::new()).0)
 }
 
 // ---------------------------------------------------------------------------
@@ -7931,21 +7953,68 @@ impl ModelManagerHandle {
 //   `extract_encoded` reports ahead of the transform's, so a repeated call
 //   throws what a full one throws.
 // - Nothing shared is returned: the JS result is parsed from new text on
-//   every call, and each staged model file is a new clone.
+//   every call. P5-77: each staged model file is shared with the kept
+//   result manager (a model file never changes once built), not cloned.
+//
+// P5-77 (accordproject/concerto-rust#419): with `removeDecoratorsFromModel`
+// true, the result models are the handle's own models, resolved, with the
+// decorators the action strips removed: they depend on the action, but not
+// on the locale, and the command sets and vocabularies are read before any
+// decorator is stripped ([`dcs::encode_extract_source`]). So the same memo
+// serves that case too, keyed by the action as well; everything above
+// holds for it unchanged.
 // ---------------------------------------------------------------------------
 
 /// A [`ModelManagerHandle`]'s extract memo (P5-56): its key, and the kept
 /// result once the second call at that key has filled it.
 struct DcsExtractMemo {
-    /// `(epoch, system models walked)`: `ExtractAll` and `ExtractVocab` walk
-    /// the system models too, `ExtractNonVocab` does not
-    /// ([`dcs::extract_encoded`]).
-    key: (u64, bool),
+    /// `(epoch, system models walked, stripping action)`: `ExtractAll` and
+    /// `ExtractVocab` walk the system models too, `ExtractNonVocab` does not
+    /// ([`dcs::extract_encoded`]); the stripping action is the action when
+    /// `removeDecoratorsFromModel` is true (P5-77), and `None` when it is
+    /// false, since then every action gives the same result models.
+    key: (u64, bool, Option<dcs::extractor::Action>),
     /// `None` after the first call at `key`, `Some` from the second on.
     kept: Option<DcsExtractKept>,
 }
 
-/// What a repeated `removeDecoratorsFromModel: false` extract reuses.
+/// [`ModelManagerAstView`]'s text, from each model's own AST text
+/// ([`ModelManager::compact_model_asts`]): the same compact envelope, byte
+/// for byte (P5-77).
+fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
+    let mut out = String::with_capacity(64 + texts.iter().map(|t| t.len() + 1).sum::<usize>());
+    out.push_str("{\"$class\":\"concerto.metamodel@1.0.0.Models\",\"models\":[");
+    for (i, text) in texts.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(text);
+    }
+    out.push_str("]}");
+    out
+}
+
+/// P5-77: [`stage_result`] then [`extract_result_js`] for a result the
+/// caller drops once the call returns, through [`DcsExtractKept`], so the
+/// files staged into `target` keep their ASTs as text
+/// ([`DcsExtractKept::new`]). The same JS value, the same stages.
+fn compacted_extract_js(
+    target: &mut ModelManagerHandle,
+    result: dcs::extractor::EncodedExtractResult,
+    source: Vec<Value>,
+) -> (JsValue, DcsExtractKept) {
+    let dcs::extractor::EncodedExtractResult {
+        model_manager,
+        decorator_command_set,
+        vocabularies,
+    } = result;
+    let kept = DcsExtractKept::new(source, model_manager);
+    let staged = kept.stage(target);
+    let js = kept.result_js(&decorator_command_set, &vocabularies, staged);
+    (js, kept)
+}
+
+/// What a repeated extract at the same key reuses.
 struct DcsExtractKept {
     /// The resolved source models the extractor walks.
     source: Vec<Value>,
@@ -7958,12 +8027,25 @@ struct DcsExtractKept {
 }
 
 impl DcsExtractKept {
-    fn new(source: Vec<Value>, result: ModelManager) -> Self {
-        let ast_text = serde_json::to_string(&ModelManagerAstView(&result)).unwrap_or_default();
+    /// P5-77 (accordproject/concerto-rust#419): the staged headers are read
+    /// from the result's parsed ASTs first, then the ASTs are compacted
+    /// ([`ModelManager::compact_model_asts`]): each result model file keeps
+    /// its AST as the JSON text [`ModelManagerAstView`] writes for it, and
+    /// [`Self::ast_text`] is spliced from those texts, byte for byte that
+    /// view's text. So the files staged from it (shared, see
+    /// [`Self::stage`]) hold text, not a parsed tree, for as long as the
+    /// result ModelManager lives. Should the compaction fail, `ast_text` is
+    /// left empty and [`Self::result_js`] takes its fallback, as before
+    /// when the view's text failed.
+    fn new(source: Vec<Value>, mut result: ModelManager) -> Self {
         let headers = result
             .model_files()
             .map(|mf| staged_header(mf.ast()).unwrap_or(Value::Null))
             .collect();
+        let ast_text = result
+            .compact_model_asts()
+            .map(|texts| models_envelope_text(&texts))
+            .unwrap_or_default();
         Self {
             source,
             result,
@@ -7973,9 +8055,11 @@ impl DcsExtractKept {
     }
 
     /// [`stage_result`] from the kept result manager, with its kept headers.
+    /// P5-77: each file is staged shared with the kept manager, which never
+    /// changes, so a repeated extract copies no model file.
     fn stage(&self, target: &mut ModelManagerHandle) -> Vec<Value> {
         self.result
-            .model_files()
+            .shared_model_files()
             .zip(&self.headers)
             .map(|(mf, header)| {
                 if DCS_EXCLUDE_NS.contains(&mf.namespace())
@@ -7983,7 +8067,7 @@ impl DcsExtractKept {
                 {
                     return Value::Null;
                 }
-                let id = target.staged.insert(mf.clone());
+                let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
                 json!([id, header])
             })
             .collect()
@@ -8041,7 +8125,7 @@ impl DcsExtractKept {
 
 impl ModelManagerHandle {
     /// [`staged_extract`] on this handle's own manager, through the
-    /// per-epoch memo when `removeDecoratorsFromModel` is false (P5-56).
+    /// per-epoch memo (P5-56; P5-77 for `removeDecoratorsFromModel` true).
     fn memo_extract(
         &self,
         target: &mut ModelManagerHandle,
@@ -8050,14 +8134,10 @@ impl ModelManagerHandle {
     ) -> Result<JsValue> {
         let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
         let opts = extract_options_from_js(&options_json);
-        if opts.remove_decorators_from_model {
-            let result = dcs::extract_encoded(&self.manager, &opts, action)?;
-            let staged = stage_result(target, &result.model_manager);
-            return Ok(extract_result_js(&result, Some(staged)));
-        }
         let key = (
             self.epoch,
             action != dcs::extractor::Action::ExtractNonVocab,
+            opts.remove_decorators_from_model.then_some(action),
         );
         let mut memo = self.dcs_memo.borrow_mut();
         match memo.as_mut() {
@@ -8076,17 +8156,15 @@ impl ModelManagerHandle {
             }) if *memo_key == key => {
                 let (result, source) =
                     dcs::extract_encoded_keeping_source(&self.manager, &opts, action)?;
-                let staged = stage_result(target, &result.model_manager);
-                let js = extract_result_js(&result, Some(staged));
-                *kept = Some(DcsExtractKept::new(source, result.model_manager));
+                let (js, filled) = compacted_extract_js(target, result, source);
+                *kept = Some(filled);
                 Ok(js)
             }
             _ => {
                 *memo = Some(DcsExtractMemo { key, kept: None });
                 drop(memo);
                 let result = dcs::extract_encoded(&self.manager, &opts, action)?;
-                let staged = stage_result(target, &result.model_manager);
-                Ok(extract_result_js(&result, Some(staged)))
+                Ok(compacted_extract_js(target, result, Vec::new()).0)
             }
         }
     }
@@ -8118,7 +8196,9 @@ mod tests {
     /// P5-56 (T2, F-A2): a repeated extract through the memo writes, byte
     /// for byte, the text a full extract writes (result AST, command sets,
     /// vocabularies, staged ids and headers), for every action and locale,
-    /// and stages new clones; moving the epoch drops the memo.
+    /// with `removeDecoratorsFromModel` false and (P5-77) true, and stages
+    /// files whose ASTs equal the full extract's; moving the epoch drops the
+    /// memo.
     #[test]
     fn the_extract_memo_writes_what_a_full_extract_writes() {
         let mm =
@@ -8144,18 +8224,24 @@ mod tests {
                 None,
             )
             .unwrap();
-        for action in [
+        for (action, remove) in [
             dcs::extractor::Action::ExtractAll,
             dcs::extractor::Action::ExtractVocab,
             dcs::extractor::Action::ExtractNonVocab,
-        ] {
-            let fill = dcs::ExtractOptions::default();
+        ]
+        .into_iter()
+        .flat_map(|action| [(action, false), (action, true)])
+        {
+            let fill = dcs::ExtractOptions {
+                remove_decorators_from_model: remove,
+                ..dcs::ExtractOptions::default()
+            };
             let (result, source) =
                 dcs::extract_encoded_keeping_source(&handle.manager, &fill, action).unwrap();
             let kept = DcsExtractKept::new(source, result.model_manager);
             for locale in ["en", "fr"] {
                 let opts = dcs::ExtractOptions {
-                    remove_decorators_from_model: false,
+                    remove_decorators_from_model: remove,
                     locale: locale.to_string(),
                 };
                 let full = dcs::extract_encoded(&handle.manager, &opts, action).unwrap();
@@ -8167,13 +8253,17 @@ mod tests {
                     dcs::encode_extract_source(&kept.source, &opts, action).unwrap();
                 let staged = kept.stage(&mut t2);
                 let got = kept.result_text(&sets, &vocabularies, &staged).unwrap();
-                assert_eq!(got, expected, "{action:?} {locale}");
+                assert_eq!(got, expected, "{action:?} {remove} {locale}");
                 assert_eq!(t2.staged.files.len(), t1.staged.files.len());
                 assert!(!t2.staged.files.is_empty());
+                for (a, b) in t1.staged.files.values().zip(t2.staged.files.values()) {
+                    assert_eq!(a.namespace(), b.namespace());
+                    assert_eq!(a.ast(), b.ast(), "{action:?} {remove} {locale}");
+                }
             }
         }
         *handle.dcs_memo.get_mut() = Some(DcsExtractMemo {
-            key: (handle.epoch, true),
+            key: (handle.epoch, true, None),
             kept: None,
         });
         handle.bump_epoch();
