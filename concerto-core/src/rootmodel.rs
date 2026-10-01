@@ -57,9 +57,63 @@ pub fn decorator_model_ast() -> serde_json::Value {
         .expect("Decorator model could not be converted to JSON.")
 }
 
+js_compat_pub! {
+    /// P5-73 (accordproject/concerto-rust#414): the two system models' ASTs
+    /// as compact JSON text, decorator model first, each with the file name
+    /// TS `addDecoratorModel`/`addRootModel` give it. Each text is the
+    /// vendored JSON written out again without whitespace, in its own key
+    /// order, which is what JS `JSON.stringify` gives for concerto-core's own
+    /// copies of the same files (`src/decoratormodelhelper.ts`,
+    /// `src/rootmodelhelper.ts`). concerto-wasm recognises exactly these
+    /// texts, so the verdict of their load is computed once
+    /// (`systemModelFileHeader`). Computed on first use.
+    pub fn system_model_json_texts() -> [(&'static str, &'static str); 2] {
+        static TEXTS: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
+        let [decorator, root] = TEXTS
+            .get_or_init(|| [compact(DECORATOR_MODEL_JSON), compact(ROOT_MODEL_JSON)]);
+        [
+            ("concerto_decorator_1.0.0.cto", decorator.as_str()),
+            ("concerto_1.0.0.cto", root.as_str()),
+        ]
+    }
+}
+
+/// `json` (a vendored system model) without whitespace, in its own key order.
+#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+fn compact(json: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(json).expect("A system model could not be parsed as JSON.");
+    serde_json::to_string(&value).expect("A system model could not be written as JSON.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P5-73: the compact texts are the vendored models, unchanged but for
+    /// whitespace, and keep the files' key order (`$class` first).
+    #[test]
+    fn system_model_json_texts_are_the_vendored_models_without_whitespace() {
+        let [(decorator_file, decorator), (root_file, root)] = system_model_json_texts();
+        assert_eq!(decorator_file, "concerto_decorator_1.0.0.cto");
+        assert_eq!(root_file, "concerto_1.0.0.cto");
+        for (text, json) in [(decorator, DECORATOR_MODEL_JSON), (root, ROOT_MODEL_JSON)] {
+            assert!(text.starts_with(r#"{"$class":"concerto.metamodel@1.0.0.Model","#));
+            assert!(!text.contains('\n') && !text.contains(": "));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(text).unwrap(),
+                serde_json::from_str::<serde_json::Value>(json).unwrap()
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(decorator).unwrap()["namespace"],
+            "concerto.decorator@1.0.0"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(root).unwrap()["namespace"],
+            "concerto@1.0.0"
+        );
+    }
 
     #[test]
     fn root_model_defines_five_base_types() {
