@@ -5939,6 +5939,25 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-73 (accordproject/concerto-rust#414): a precomputed verdict for
+    /// the two fixed system models, which the TS `BaseModelManager`
+    /// constructor and `clearModelFiles` build a `ModelFile` for on every
+    /// call, from the same constant ASTs. When `ast` is exactly the text of
+    /// one of them ([`concerto_core::rootmodel::system_model_json_texts`]),
+    /// returns the JSON text of the header [`Self::stage_model_file_checked`]
+    /// returns for it (`null` when there is none), without loading or
+    /// checking it again: that load, with BC-19's shape check, ran once on
+    /// first use, and its verdict holds for the same text. Nothing is staged
+    /// (the caller never commits a system model file, which this handle
+    /// already holds). Any other text, including any other AST of a system
+    /// namespace, returns `undefined`, and the caller loads and checks it as
+    /// before, so no AST skips the check by this binding. Does not change
+    /// the manager or its epoch. Additive.
+    #[wasm_bindgen(js_name = systemModelFileHeader)]
+    pub fn system_model_file_header(&self, ast: &str) -> Option<String> {
+        system_model_header(ast)
+    }
+
     /// P5-06a: registers a staged model file, as
     /// [`Self::add_model_with_definitions`] with `validate: false` would
     /// register the AST it was staged from (the same duplicate-namespace
@@ -6716,6 +6735,48 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
         Ok(())
     };
     body().map_err(|e| throw(e, Some(&view)))
+}
+
+thread_local! {
+    /// P5-73: for each fixed system model text
+    /// ([`concerto_core::rootmodel::system_model_json_texts`]), the header
+    /// text [`ModelManagerHandle::system_model_file_header`] returns, or
+    /// `None` when its checked load failed (never expected; that text is then
+    /// loaded and checked every time, as any other). Filled on first use.
+    static SYSTEM_MODEL_HEADERS: std::cell::OnceCell<Vec<(&'static str, Option<String>)>> =
+        const { std::cell::OnceCell::new() };
+}
+
+/// [`ModelManagerHandle::system_model_file_header`]: the header text of the
+/// fixed system model whose AST is exactly `ast`, from one checked load of
+/// that text ([`ModelFile::from_json_text_checked_with_imports`], what
+/// `stageModelFileChecked` runs) on first use. `None` for any other text.
+fn system_model_header(ast: &str) -> Option<String> {
+    SYSTEM_MODEL_HEADERS.with(|cell| {
+        cell.get_or_init(|| {
+            concerto_core::rootmodel::system_model_json_texts()
+                .into_iter()
+                .map(|(file_name, text)| {
+                    let header = match ModelFile::from_json_text_checked_with_imports(
+                        text,
+                        None,
+                        Some(file_name.to_string()),
+                    ) {
+                        Ok(Ok((file, imports))) => serde_json::to_string(
+                            &staged_header_from_parts(file.namespace(), imports.as_ref())
+                                .unwrap_or(Value::Null),
+                        )
+                        .ok(),
+                        _ => None,
+                    };
+                    (text, header)
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(text, _)| *text == ast)
+        .and_then(|(_, header)| header.clone())
+    })
 }
 
 /// P5-28 (accordproject/concerto-rust#333): what [`model_file_from_ast_header`]
@@ -8718,5 +8779,30 @@ mod tests {
         for ast in cases {
             assert_eq!(staged_header(&ast), None, "{ast}");
         }
+    }
+
+    /// P5-73 (accordproject/concerto-rust#414): the two fixed system model
+    /// texts get the header a load of them gives, and any other text, even the same model with other whitespace, key
+    /// order or a malformed node, gets none, so it is loaded and checked.
+    #[test]
+    fn system_model_header_is_only_for_the_exact_system_texts() {
+        let texts = concerto_core::rootmodel::system_model_json_texts();
+        for (file_name, text) in texts {
+            let (file, imports) =
+                ModelFile::from_json_text_with_imports(text, None, Some(file_name.into()))
+                    .unwrap()
+                    .unwrap();
+            let expected = staged_header_from_parts(file.namespace(), imports.as_ref()).unwrap();
+            let header = system_model_header(text).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&header).unwrap(), expected);
+
+            let mut value: Value = serde_json::from_str(text).unwrap();
+            let pretty = serde_json::to_string_pretty(&value).unwrap();
+            assert_eq!(system_model_header(&pretty), None);
+            value["decorators"] = json!("x");
+            assert_eq!(system_model_header(&value.to_string()), None);
+        }
+        assert_eq!(system_model_header(""), None);
+        assert_eq!(system_model_header(&format!("{} ", texts[1].1)), None);
     }
 }

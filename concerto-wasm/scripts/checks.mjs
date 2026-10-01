@@ -1136,6 +1136,22 @@ export function runChecks(engine) {
     assert(thrown(() => h.stageModelFileChecked('{', undefined, undefined)) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
   });
 
+  // P5-73 (accordproject/concerto-rust#414): the precomputed verdict is only
+  // for the exact fixed system model texts (the host test
+  // `system_model_header_is_only_for_the_exact_system_texts` covers those);
+  // any other text, a malformed one or one that is not JSON included, gets
+  // none, so the caller loads and checks it, and nothing is staged.
+  check('systemModelFileHeader gives no verdict for any other text (P5-73)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    const rootLike = { ...MODEL, namespace: 'concerto@1.0.0' };
+    for (const text of ['', '{', JSON.stringify(MODEL), JSON.stringify(rootLike), JSON.stringify({ ...rootLike, decorators: 'x' })]) {
+      const header = h.systemModelFileHeader(text);
+      assert(header === undefined, `${text}: ${header}`);
+    }
+    assert(h.epoch() === epoch, 'does not move the epoch');
+  });
+
   // P5-61 (BR-09, maintainer decision 2026-09-30): with the shape check off
   // (`metamodelValidation: false`), a malformed AST reaches the engine's
   // typed read, the only model loader. It must throw an error (the
