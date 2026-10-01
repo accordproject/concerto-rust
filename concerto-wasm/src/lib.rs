@@ -5909,6 +5909,36 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-69 (BC-19-b, R1; accordproject/concerto-rust#408):
+    /// [`Self::stage_model_file_with_header`] with BC-19's AST shape check
+    /// folded into the same load: one parse of the AST text and one strict
+    /// decode ([`ModelFile::from_json_text_checked_with_imports`]), where the
+    /// TS `ModelFile` constructor used to call [`Self::check_ast_shape`]
+    /// first and then stage the same text. An AST the check rejects throws
+    /// that check's `IllegalModelException` (one of its
+    /// `modelfile-load-astshape`, `-decoratorsnotarray`, `-supertypename`,
+    /// `-namenotstring` or `-nodenotobject` codes) before any part of the
+    /// load runs; otherwise the file is staged, or the load's error thrown,
+    /// exactly as [`Self::stage_model_file_with_header`] does. Returns the
+    /// same JSON text. Does not change the manager or its epoch. Additive.
+    #[wasm_bindgen(js_name = stageModelFileChecked)]
+    pub fn stage_model_file_checked(
+        &mut self,
+        ast: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let (file, imports) =
+                ModelFile::from_json_text_checked_with_imports(ast, definitions, file_name)
+                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
+            let header =
+                staged_header_from_parts(file.namespace(), imports.as_ref()).unwrap_or(Value::Null);
+            let id = self.staged.insert(file);
+            snapshot(&json!({ "id": id, "header": header }))
+        })
+    }
+
     /// P5-06a: registers a staged model file, as
     /// [`Self::add_model_with_definitions`] with `validate: false` would
     /// register the AST it was staged from (the same duplicate-namespace

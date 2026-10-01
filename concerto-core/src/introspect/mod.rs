@@ -35,6 +35,7 @@ pub mod import;
 pub mod model_file;
 pub mod property;
 pub mod scalar;
+pub(crate) mod shape;
 mod traits;
 mod typed_ast;
 pub mod validators;

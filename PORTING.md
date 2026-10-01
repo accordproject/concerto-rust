@@ -597,7 +597,8 @@ Catalogue rules the trial added:
   expression, which the port writes as TS spells it (`imp.types.forEach`).
   **Since BC-19 (R1, P5-49)** a model load checks the AST's shape first
   (`instance::metamodel::check_ast_shape`, on unless a manager opts out with
-  `metamodelValidation: false`), so an AST-walk site reaches one of these
+  `metamodelValidation: false`; folded into the strict typed read since
+  P5-69, BC-19-b), so an AST-walk site reaches one of these
   entries only on the opt-out path. That path is an escape hatch for trusted
   input (maintainer decision 2026-09-30 on #370): a malformed AST there is an
   error, never a WASM trap or a process crash, with no guarantee of its class

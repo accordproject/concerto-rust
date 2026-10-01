@@ -96,6 +96,12 @@ impl ClassNode {
         class_field!(self, d => d.identified = identity(d.identified.take()));
     }
 
+    /// The node's `name` and `superType`, for BC-19's shape check
+    /// ([`crate::introspect::shape`]).
+    pub(crate) fn name_and_super_type(&self) -> (&str, Option<&mm::TypeIdentifier>) {
+        class_field!(self, d => (d.name.as_str(), d.super_type.as_ref()))
+    }
+
     /// Sets the node's `location`.
     pub(crate) fn set_location(&mut self, location: Option<mm::Range>) {
         class_field!(self, d => d.location = location);
@@ -1140,6 +1146,7 @@ impl Declaration {
                 properties,
                 decorators,
                 location,
+                ..
             } => {
                 check_declaration_name(
                     class_field!(&node, d => &d.name),
@@ -1186,7 +1193,10 @@ fn check_property_names(
     properties: &[TypedProperty],
     declaration: Option<&serde_json::Value>,
 ) -> Result<()> {
-    for TypedProperty { property, location } in properties {
+    for TypedProperty {
+        property, location, ..
+    } in properties
+    {
         let name = property.name();
         if is_system_property(name) {
             // The model file's name is filled in by the caller

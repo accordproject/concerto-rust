@@ -19,6 +19,7 @@ use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::decorator::{Decorated, Decorator, parse_decorators};
 use crate::introspect::import::Import;
+use crate::introspect::shape;
 use crate::introspect::typed_ast::{self, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
@@ -143,6 +144,29 @@ impl ModelFile {
         Self::load_text_with_imports(text, definitions, file_name)
     }
 
+    /// [`ModelFile::from_json_text_with_imports`] with BC-19's AST shape
+    /// check first (P5-69, BC-19-b, accordproject/concerto-rust#408): what
+    /// the TS `ModelFile` constructor runs, `instance::check_ast_shape` and
+    /// then the load, from one parse of `text` and one strict decode.
+    ///
+    /// An AST the check rejects is that check's error, with its code and
+    /// message, before any part of the load runs; any other error is the
+    /// load's, exactly as `from_json_text_with_imports` returns it. The
+    /// check is folded into the typed read (`introspect::shape`): only an
+    /// AST the read cannot vouch for is checked again, by the full check,
+    /// over a `Value` of `text`, so the verdict and the error are always
+    /// the full check's.
+    ///
+    /// Behind `js-compat`, like `from_json_text_with_imports`.
+    #[cfg(feature = "js-compat")]
+    pub fn from_json_text_checked_with_imports(
+        text: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+        Self::load_text(text, definitions, file_name, true)
+    }
+
     /// The body of [`ModelFile::from_json_text`] and of the `js-compat`
     /// `from_json_text_with_imports`: the loaded file plus the AST's own
     /// `imports` node.
@@ -150,6 +174,17 @@ impl ModelFile {
         text: &str,
         definitions: Option<String>,
         file_name: Option<String>,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+        Self::load_text(text, definitions, file_name, false)
+    }
+
+    /// [`ModelFile::load_text_with_imports`], with BC-19's shape check first
+    /// when `checked` (`from_json_text_checked_with_imports`).
+    pub(crate) fn load_text(
+        text: &str,
+        definitions: Option<String>,
+        file_name: Option<String>,
+        checked: bool,
     ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
         let model = match typed_ast::parse(text) {
             Ok(model) => model,
@@ -160,10 +195,23 @@ impl ModelFile {
                 if !err.is_data() {
                     return Err(err);
                 }
-                serde_json::from_str::<serde_json::Value>(text)?;
+                let value = serde_json::from_str::<serde_json::Value>(text)?;
+                // The check decides first: an AST it accepts but the read
+                // cannot read is the load's error, as before.
+                if checked
+                    && let Err(shape) = crate::instance::metamodel::check_ast_shape_exact(&value)
+                {
+                    return Ok(Err(shape));
+                }
                 return Ok(Err(unreadable_ast(&err, file_name.as_deref())));
             }
         };
+        if checked && !shape::conforms(&model) {
+            let value = serde_json::from_str::<serde_json::Value>(text)?;
+            if let Err(shape) = crate::instance::metamodel::check_ast_shape_exact(&value) {
+                return Ok(Err(shape));
+            }
+        }
         let mut header = model.header;
         let result = Self::load(&header, model.declarations, definitions, file_name).map(
             |mut model_file| {

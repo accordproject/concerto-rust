@@ -341,10 +341,30 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
 /// CTO still loads, a string `defaultValue` on a `DateTimeProperty` node is
 /// left out of step 2; any other `defaultValue` there is checked as before.
 ///
-/// The check reads nothing but `ast`, and runs on the resident metamodel
-/// manager ([`validate_metamodel`]'s), so it does not depend on, or change,
+/// The check reads nothing but `ast`, so it does not depend on, or change,
 /// any caller's manager.
+///
+/// **Folded into the typed read (P5-69, BC-19-b, accordproject/concerto-rust#408).**
+/// The rules above are checked first on the typed read of `ast`, the strict
+/// decode every load runs (`introspect::shape`, whose module doc says
+/// where each rule now lives), with no metamodel instance validation. Only
+/// an AST that read cannot vouch for is checked by the steps above as
+/// written (`check_ast_shape_exact`, whose step 2 runs on the resident
+/// metamodel manager, [`validate_metamodel`]'s), so the verdict and the
+/// error are always theirs. The JS API's `ModelFile` constructor runs the
+/// same fold inside its one load of the AST
+/// (`ModelFile::from_json_text_checked_with_imports`).
 pub fn check_ast_shape(ast: &Value) -> Result<()> {
+    if crate::introspect::shape::ast_conforms(ast) {
+        return Ok(());
+    }
+    check_ast_shape_exact(ast)
+}
+
+/// [`check_ast_shape`]'s steps as written, over the whole `Value`: the node
+/// rules (step 1), then `validateAst`'s strict check (step 2). The verdict
+/// and the error of every AST the typed read cannot vouch for.
+pub(crate) fn check_ast_shape_exact(ast: &Value) -> Result<()> {
     let mut parser_extras = false;
     check_node_shapes(ast, false, &mut parser_extras)?;
     let result = if parser_extras {

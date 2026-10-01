@@ -68,7 +68,9 @@
 //! P5-49): unless it is exactly `false`, every `new ModelFile(...)` a step,
 //! an op or an `mfnew` argument runs is preceded by
 //! [`concerto_core::instance::check_ast_shape`] on an object AST
-//! ([`Replayed::strict_ast`], [`shape_error`]). Any
+//! ([`Replayed::strict_ast`], [`shape_error`]); since P5-69 (BC-19-b) that
+//! is the check folded into the strict typed read, so the corpus replays
+//! the fold. Any
 //! other option with a truthy value changes TS behaviour the Rust engine
 //! does not model yet (`regExp`), so such a recipe is `unsupported`.
 //!
