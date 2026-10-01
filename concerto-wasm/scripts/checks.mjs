@@ -1136,6 +1136,47 @@ export function runChecks(engine) {
     assert(thrown(() => h.stageModelFileChecked('{', undefined, undefined)) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
   });
 
+  // P5-76 (accordproject/concerto-rust#418): the staging bindings for the
+  // AST's text as UTF-8 bytes stage and throw exactly as the string ones do
+  // for the same text, non-ASCII text included.
+  check('the UTF-8 staging bindings stage and throw as the string ones do (P5-76)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    const bytes = (text) => new TextEncoder().encode(text);
+    const withText = { ...MODEL, decorators: [{ $class: `${MM}.Decorator`, name: 'd', arguments: [{ $class: `${MM}.DecoratorString`, value: 'é — 𝄞 \u0000' }] }] };
+    for (const ast of [MODEL, withText]) {
+      const text = JSON.stringify(ast);
+      for (const [name, utf8] of [['stageModelFileChecked', 'stageModelFileCheckedUtf8'], ['stageModelFileWithHeader', 'stageModelFileWithHeaderUtf8']]) {
+        const fromText = JSON.parse(h[name](text, 'def', 'm.cto'));
+        const fromBytes = JSON.parse(h[utf8](bytes(text), 'def', 'm.cto'));
+        assert(fromBytes.id === fromText.id + 1, `${utf8}: stage ids ${fromText.id} ${fromBytes.id}`);
+        assert(JSON.stringify(fromBytes.header) === JSON.stringify(fromText.header), `${utf8}: the same header`);
+        h.dropStagedModelFile(fromText.id);
+        h.dropStagedModelFile(fromBytes.id);
+      }
+    }
+    const bad = [
+      JSON.stringify({ ...MODEL, decorators: 'x' }),
+      JSON.stringify({ ...MODEL, undeclared: [] }),
+      JSON.stringify({ $class: `${MM}.TypeIdentifier`, name: 'X' }),
+      '{',
+    ];
+    for (const text of bad) {
+      for (const [name, utf8] of [['stageModelFileChecked', 'stageModelFileCheckedUtf8'], ['stageModelFileWithHeader', 'stageModelFileWithHeaderUtf8']]) {
+        const expected = thrown(() => h[name](text, undefined, 'bad.cto'));
+        const err = thrown(() => h[utf8](bytes(text), undefined, 'bad.cto'));
+        assert(err !== undefined && err.constructor === expected.constructor, `${utf8} ${text}: threw ${err}, not ${expected}`);
+        assert(err.message === expected.message, `${utf8} ${text}: message ${err.message}`);
+        if (expected instanceof EngineError) {
+          assert(err.payload.code === expected.payload.code, `${utf8} ${text}: code ${err.payload.code}`);
+        }
+      }
+    }
+    const notUtf8 = thrown(() => h.stageModelFileCheckedUtf8(new Uint8Array([0x7b, 0xff, 0x7d]), undefined, undefined));
+    assert(notUtf8 instanceof TypeError, `bytes that are not UTF-8: ${notUtf8}`);
+    assert(h.epoch() === epoch, 'staging does not move the epoch');
+  });
+
   // P5-73 (accordproject/concerto-rust#414): the precomputed verdict is only
   // for the exact fixed system model texts (the host test
   // `system_model_header_is_only_for_the_exact_system_texts` covers those);

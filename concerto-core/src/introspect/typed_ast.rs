@@ -87,13 +87,16 @@ use std::fmt;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::Deserialize;
-use serde::de::value::{BorrowedStrDeserializer, MapAccessDeserializer, StringDeserializer};
+use serde::de::value::{
+    BorrowedStrDeserializer, MapAccessDeserializer, MapDeserializer, StringDeserializer,
+};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use crate::introspect::METAMODEL_NAMESPACE;
 use crate::introspect::declaration::{ClassKind, ClassNode};
 use crate::introspect::decorator::{WithDecorators, parse_decorator_list};
+use crate::introspect::kept::{Kept, KeptSeed, Location, LocationSeed};
 use crate::introspect::property::{Property, property_kind};
 
 type Error = serde_json::Error;
@@ -106,32 +109,33 @@ pub(crate) struct TypedModel {
     pub(crate) declarations: Vec<TypedDeclaration>,
 }
 
-/// One declaration read by [`parse`] or [`from_value`].
-#[allow(clippy::large_enum_variant)]
+/// One declaration read by [`parse`] or [`from_value`]. The generated
+/// nodes are boxed (P5-76): the declarations are collected into a `Vec`
+/// that grows as they are read, one move of every element per growth.
 pub(crate) enum TypedDeclaration {
     /// A class-like declaration, read straight into its generated struct.
     /// The node's own `properties` is left empty; they are in `properties`.
     Class {
         kind: ClassKind,
-        node: ClassNode,
+        node: Box<ClassNode>,
         properties: Vec<TypedProperty>,
         /// The node's `decorators` value, if it has that key.
-        decorators: Option<Value>,
+        decorators: Option<Kept>,
         /// The node's `location` value, as given (for an error).
-        location: Option<Value>,
+        location: Option<Location>,
         /// The node's `identified` value, as given (for BC-19's shape
         /// check, [`crate::introspect::shape`]).
-        identified: Option<Value>,
+        identified: Option<Kept>,
     },
     /// An enum declaration, read straight into its generated struct, whose
     /// `properties` are the enum values' own nodes.
     Enum {
-        node: mm::EnumDeclaration,
+        node: Box<mm::EnumDeclaration>,
         values: Vec<TypedProperty>,
         /// The node's `decorators` value, if it has that key.
-        decorators: Option<Value>,
+        decorators: Option<Kept>,
         /// The node's `location` value, as given (for an error).
-        location: Option<Value>,
+        location: Option<Location>,
     },
     /// Any other declaration (a scalar or map declaration, or anything
     /// unrecognised), as its JSON subtree.
@@ -143,9 +147,9 @@ pub(crate) enum TypedDeclaration {
 /// check reads ([`crate::introspect::shape`]).
 pub(crate) struct TypedProperty {
     pub(crate) property: Property,
-    pub(crate) location: Option<Value>,
+    pub(crate) location: Option<Location>,
     /// The node's `decorators` value, if it has that key.
-    pub(crate) decorators: Option<Value>,
+    pub(crate) decorators: Option<Kept>,
     /// The `defaultValue` the reference parser writes on a
     /// `DateTimeProperty`, which the generated struct does not declare.
     pub(crate) date_time_default: Option<Value>,
@@ -344,6 +348,8 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     };
     let mut properties = None;
     let mut decorators = None;
+    let mut node_decorators = None;
+    let mut node_identified = None;
     let mut location = None;
     let mut identified = None;
     let mut taken = Map::new();
@@ -351,6 +357,8 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
         inner: map,
         properties: Some(&mut properties),
         decorators: &mut decorators,
+        node_decorators: &mut node_decorators,
+        node_identified: &mut node_identified,
         location: &mut location,
         identified: Some(&mut identified),
         take: &[],
@@ -371,11 +379,13 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     };
     // The generated struct requires `properties`, so it was read.
     let properties = properties.ok_or_else(|| refuse("missing field `properties`"))?;
+    node.set_identified(node_identified);
     node.normalize_identified();
+    node.set_decorators(node_decorators);
     node.set_location(read_location(location.as_ref())?);
     Ok(TypedDeclaration::Class {
         kind,
-        node,
+        node: Box::new(node),
         properties,
         decorators,
         location,
@@ -388,12 +398,16 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
 fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDeclaration, Error> {
     let mut properties = None;
     let mut decorators = None;
+    let mut node_decorators = None;
+    let mut node_identified = None;
     let mut location = None;
     let mut taken = Map::new();
     let access = Intercept {
         inner: map,
         properties: Some(&mut properties),
         decorators: &mut decorators,
+        node_decorators: &mut node_decorators,
+        node_identified: &mut node_identified,
         location: &mut location,
         identified: None,
         take: &[],
@@ -401,6 +415,7 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
         pending: Pending::Other,
     };
     let mut node = mm::EnumDeclaration::deserialize(MapAccessDeserializer::new(access))?;
+    node.decorators = node_decorators;
     node.location = read_location(location.as_ref())?;
     let values = properties.ok_or_else(|| refuse("missing field `properties`"))?;
     // The generated struct's own `properties` is the values' nodes, which
@@ -413,7 +428,7 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
         })
         .collect::<Result<_, _>>()?;
     Ok(TypedDeclaration::Enum {
-        node,
+        node: Box::new(node),
         values,
         decorators,
         location,
@@ -422,10 +437,10 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
 
 /// The generated `location` of a node whose `location` value [`Intercept`]
 /// kept: `None` for no value (or `null`).
-fn read_location(location: Option<&Value>) -> Result<Option<mm::Range>, Error> {
+fn read_location(location: Option<&Location>) -> Result<Option<mm::Range>, Error> {
     match location {
         None => Ok(None),
-        Some(value) => strict_from_value(value),
+        Some(location) => location.decode(),
     }
 }
 
@@ -443,14 +458,13 @@ pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
     value: &Value,
 ) -> Result<T, Error> {
     match value {
-        Value::Object(map) => {
-            let rest: Map<String, Value> = map
-                .iter()
+        // P5-76: the object's other entries, read in place, where a copy of
+        // the object without `$class` used to be built and read.
+        Value::Object(map) => T::deserialize(Strict(MapDeserializer::new(
+            map.iter()
                 .filter(|(key, _)| *key != "$class")
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            T::deserialize(Strict(&Value::Object(rest)))
-        }
+                .map(|(key, value)| (key.as_str(), value)),
+        ))),
         other => T::deserialize(Strict(other)),
     }
 }
@@ -496,12 +510,16 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
         )));
     };
     let mut decorators = None;
+    let mut node_decorators = None;
+    let mut node_identified = None;
     let mut location = None;
     let mut taken = Map::new();
     let access = Intercept {
         inner: map,
         properties: None,
         decorators: &mut decorators,
+        node_decorators: &mut node_decorators,
+        node_identified: &mut node_identified,
         location: &mut location,
         identified: None,
         // The reference parser writes a `defaultValue` on a
@@ -518,7 +536,8 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     };
     macro_rules! read {
         ($variant:ident, $node:ty) => {{
-            let node = <$node>::deserialize(MapAccessDeserializer::new(access))?;
+            let mut node = <$node>::deserialize(MapAccessDeserializer::new(access))?;
+            node.decorators = node_decorators;
             Property::$variant(WithDecorators::new(
                 node,
                 parse_decorator_list(decorators.as_ref()),
@@ -540,7 +559,8 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
                 class: Some(class.clone()),
                 inner: access,
             };
-            let node = mm::EnumProperty::deserialize(MapAccessDeserializer::new(replay))?;
+            let mut node = mm::EnumProperty::deserialize(MapAccessDeserializer::new(replay))?;
+            node.decorators = node_decorators;
             Property::Enum(WithDecorators::new(
                 node,
                 parse_decorator_list(decorators.as_ref()),
@@ -573,13 +593,17 @@ enum Pending {
 /// with some keys intercepted on the way:
 /// - `properties`, when `properties` is set: read as [`Property`]s (the
 ///   struct sees `[]`);
-/// - `decorators`: read as a `Value`, which both the struct (strictly) and
-///   [`parse_decorator_list`] then read;
-/// - `location`: read as a `Value`, kept as given for an error's location;
-///   the struct is handed `null` for it, and [`read_location`] reads it;
-/// - `identified`, when `identified` is set: read as a `Value`, kept as
-///   given for BC-19's shape check, and handed to the struct (through
-///   [`Strict`]);
+/// - `decorators`: read as a [`Kept`] (P5-76; before, a `Value`), decoded
+///   strictly once for the caller to set on the node (the struct is handed
+///   `null` for it; before P5-76 it decoded a copy of the value again), and
+///   kept for [`parse_decorator_list`] and BC-19's shape check;
+/// - `location`: read as a [`Location`] (P5-76; before, a `Value`), kept as
+///   given for an error's location; the struct is handed `null` for it, and
+///   [`read_location`] reads it;
+/// - `identified`, when `identified` is set: read as a [`Kept`] (P5-76;
+///   before, a `Value`), kept as given for BC-19's shape check, and decoded
+///   strictly (through [`Strict`]) once, for the caller to set on the node
+///   (the struct is handed `null` for it);
 /// - every key in `take`: read as a `Value` into `taken` (a repeated key
 ///   replaces the earlier value, as in a `Value`), and kept from the struct,
 ///   for the loader to read as TS does (the module doc, "Strictness").
@@ -589,10 +613,16 @@ struct Intercept<'a, A> {
     inner: A,
     /// Where the properties go, or `None` to pass `properties` through.
     properties: Option<&'a mut Option<Vec<TypedProperty>>>,
-    decorators: &'a mut Option<Value>,
-    location: &'a mut Option<Value>,
+    decorators: &'a mut Option<Kept>,
+    /// The generated `decorators` of the node, decoded from `decorators`
+    /// (the struct is handed `null` for it, and the caller sets it).
+    node_decorators: &'a mut Option<Vec<mm::Decorator>>,
+    location: &'a mut Option<Location>,
     /// Where the `identified` value goes, or `None` to pass it through.
-    identified: Option<&'a mut Option<Value>>,
+    identified: Option<&'a mut Option<Kept>>,
+    /// The generated `identified` of the node, decoded from `identified`
+    /// (the struct is handed `null` for it, and the caller sets it).
+    node_identified: &'a mut Option<mm::Identified>,
     take: &'static [&'static str],
     taken: &'a mut Map<String, Value>,
     pending: Pending,
@@ -647,11 +677,14 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 if self.decorators.is_some() {
                     return Err(refuse("duplicate decorators"));
                 }
-                let value: Value = self.inner.next_value()?;
-                // Checked through [`strict_from_value`] (as the model's own
-                // decorators are), then handed to the struct as before.
-                strict_from_value::<Option<Vec<mm::Decorator>>>(&value)?;
-                let read = seed.deserialize(value.clone())?;
+                // P5-76: kept as a [`Kept`], not a `Value` (the `kept`
+                // module doc), and decoded strictly (as the model's own
+                // decorators are) once, for the caller to set on the node,
+                // where the struct used to decode a copy of the value again
+                // (it is handed `null`, as for `location`).
+                let value = self.inner.next_value_seed(KeptSeed)?;
+                *self.node_decorators = value.strict_decode()?;
+                let read = seed.deserialize(Value::Null)?;
                 *self.decorators = Some(value);
                 Ok(read)
             }
@@ -661,13 +694,19 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 }
                 // The struct is handed `null`, and its `location` is read
                 // from this value once it has been read ([`read_location`]),
-                // so the value is kept without a copy.
-                *self.location = Some(self.inner.next_value()?);
+                // so the value is kept without a copy. P5-76: kept as a
+                // [`Location`], not a `Value` (the `kept` module doc).
+                *self.location = Some(self.inner.next_value_seed(LocationSeed)?);
                 seed.deserialize(Value::Null)
             }
             Pending::Identified => {
-                let value: Value = self.inner.next_value()?;
-                let read = Strict(seed).deserialize(value.clone())?;
+                // P5-76: kept as a [`Kept`], not a `Value`, and decoded
+                // strictly once, for the caller to set on the node, where
+                // the struct used to decode a copy of the value (it is
+                // handed `null`, as for `location`).
+                let value = self.inner.next_value_seed(KeptSeed)?;
+                *self.node_identified = value.strict_decode()?;
+                let read = seed.deserialize(Value::Null)?;
                 if let Some(slot) = self.identified.as_deref_mut() {
                     *slot = Some(value);
                 }
@@ -770,7 +809,7 @@ impl<'de> Visitor<'de> for StrSeed {
 /// Wraps a deserializer, at every depth, so that a value its visitor would
 /// skip (`deserialize_ignored_any`) is parsed into a `Value` and dropped
 /// instead (module doc, "JSON syntax").
-struct Strict<T>(T);
+pub(crate) struct Strict<T>(pub(crate) T);
 
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Strict<S> {
     type Value = S::Value;
@@ -1647,5 +1686,55 @@ mod tests {
             unread[0]
         );
         assert!(loaded > 0);
+    }
+
+    /// P5-76: a scalar or map declaration's variant struct is read from the
+    /// object's entries in place, with the same result as from a copy of
+    /// the object without `$class` (what the read built before).
+    #[test]
+    fn a_variant_is_read_as_from_a_copy_without_its_class() {
+        use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+
+        use super::{strict_from_value, strict_variant_from_value};
+
+        fn both<T: serde::de::DeserializeOwned + std::fmt::Debug>(value: &Value) {
+            let mut copy = value.clone();
+            if let Some(map) = copy.as_object_mut() {
+                map.shift_remove("$class");
+            }
+            let in_place = strict_variant_from_value::<T>(value).map(|t| format!("{t:?}"));
+            let from_copy = strict_from_value::<T>(&copy).map(|t| format!("{t:?}"));
+            assert_eq!(in_place.is_ok(), from_copy.is_ok(), "{value}");
+            if let (Ok(a), Ok(b)) = (in_place, from_copy) {
+                assert_eq!(a, b, "{value}");
+            }
+        }
+        let class = "concerto.metamodel@1.0.0.StringScalar";
+        for value in [
+            json!({"$class": class, "name": "S"}),
+            json!({"name": "S", "$class": class, "defaultValue": "x",
+                   "validator": {"$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "a", "flags": ""}}),
+            json!({"$class": class, "name": "S", "extra": 1}),
+            json!({"$class": class, "name": 1}),
+            json!({"$class": class}),
+            json!({"$class": class, "name": "S", "validator": null, "decorators": []}),
+            json!({"name": "S"}),
+            json!([class, "S"]),
+            json!("S"),
+        ] {
+            both::<mm::StringScalar>(&value);
+        }
+        let class = "concerto.metamodel@1.0.0.MapDeclaration";
+        for value in [
+            json!({"$class": class, "name": "M",
+                   "key": {"$class": "concerto.metamodel@1.0.0.StringMapKeyType"},
+                   "value": {"$class": "concerto.metamodel@1.0.0.StringMapValueType"}}),
+            json!({"$class": class, "name": "M",
+                   "key": {"$class": "concerto.metamodel@1.0.0.StringMapKeyType", "x": 1},
+                   "value": {"$class": "concerto.metamodel@1.0.0.StringMapValueType"}}),
+            json!({"$class": class, "name": "M"}),
+        ] {
+            both::<mm::MapDeclaration>(&value);
+        }
     }
 }

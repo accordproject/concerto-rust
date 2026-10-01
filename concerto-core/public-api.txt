@@ -536,13 +536,13 @@ pub fn concerto_core::introspect::decorator::WithDecorators<T>::fmt(&self, &mut 
 impl<T> core::ops::deref::Deref for concerto_core::introspect::decorator::WithDecorators<T>
 pub type concerto_core::introspect::decorator::WithDecorators<T>::Target = T
 pub fn concerto_core::introspect::decorator::WithDecorators<T>::deref(&self) -> &T
-impl<T> core::marker::Freeze for concerto_core::introspect::decorator::WithDecorators<T> where T: core::marker::Freeze
-impl<T> core::marker::Send for concerto_core::introspect::decorator::WithDecorators<T> where T: core::marker::Send
-impl<T> core::marker::Sync for concerto_core::introspect::decorator::WithDecorators<T> where T: core::marker::Sync
-impl<T> core::marker::Unpin for concerto_core::introspect::decorator::WithDecorators<T> where T: core::marker::Unpin
-impl<T> core::marker::UnsafeUnpin for concerto_core::introspect::decorator::WithDecorators<T> where T: core::marker::UnsafeUnpin
-impl<T> core::panic::unwind_safe::RefUnwindSafe for concerto_core::introspect::decorator::WithDecorators<T> where T: core::panic::unwind_safe::RefUnwindSafe
-impl<T> core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::decorator::WithDecorators<T> where T: core::panic::unwind_safe::UnwindSafe
+impl<T> core::marker::Freeze for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::marker::Freeze
+impl<T> core::marker::Send for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::marker::Send
+impl<T> core::marker::Sync for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::marker::Sync
+impl<T> core::marker::Unpin for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::marker::Unpin
+impl<T> core::marker::UnsafeUnpin for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::marker::UnsafeUnpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::decorator::WithDecorators<T> where alloc::boxed::Box<T>: core::panic::unwind_safe::UnwindSafe
 pub trait concerto_core::introspect::decorator::Decorated
 pub fn concerto_core::introspect::decorator::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::decorator::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]

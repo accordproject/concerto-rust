@@ -51,6 +51,7 @@
 //! Strings cross the boundary as UTF-8, so a lone UTF-16 surrogate becomes
 //! U+FFFD. No oracle fixture or unit test passes one.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -78,6 +79,7 @@ use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions, generator
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
+use serde::Serialize;
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 
@@ -246,6 +248,14 @@ fn throw_naming_file(err: Error, model_files: &JsValue, namespace: &str) -> JsVa
         None
     };
     throw(err, model_file.as_ref().filter(|mf| !nullish(mf)))
+}
+
+/// P5-76: text a binding was given as UTF-8 bytes (a JS `TextEncoder`'s
+/// output); a `TypeError` for bytes that are not UTF-8, which a
+/// `TextEncoder` never writes.
+fn utf8_text(bytes: &[u8]) -> std::result::Result<&str, JsValue> {
+    std::str::from_utf8(bytes)
+        .map_err(|e| js_sys::TypeError::new(&format!("the text is not UTF-8: {e}")).into())
 }
 
 /// Runs a binding body and maps its error.
@@ -5402,6 +5412,11 @@ impl StagedModelFiles {
     /// The most staged files kept at once.
     const CAPACITY: usize = 256;
 
+    /// The id the next [`Self::insert`] gives.
+    fn next_id(&self) -> u32 {
+        self.next
+    }
+
     fn insert(&mut self, file: ModelFile) -> u32 {
         while self.files.len() >= Self::CAPACITY {
             self.files.pop_first();
@@ -5902,10 +5917,14 @@ impl ModelManagerHandle {
             let (file, imports) =
                 ModelFile::from_json_text_with_imports(ast, definitions, file_name)
                     .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            let header =
-                staged_header_from_parts(file.namespace(), imports.as_ref()).unwrap_or(Value::Null);
-            let id = self.staged.insert(file);
-            snapshot(&json!({ "id": id, "header": header }))
+            let header = staged_header_from_parts(file.namespace(), imports.as_ref());
+            let text = StagedResult {
+                id: self.staged.next_id(),
+                header,
+            }
+            .to_text()?;
+            self.staged.insert(file);
+            Ok(text)
         })
     }
 
@@ -5932,11 +5951,47 @@ impl ModelManagerHandle {
             let (file, imports) =
                 ModelFile::from_json_text_checked_with_imports(ast, definitions, file_name)
                     .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            let header =
-                staged_header_from_parts(file.namespace(), imports.as_ref()).unwrap_or(Value::Null);
-            let id = self.staged.insert(file);
-            snapshot(&json!({ "id": id, "header": header }))
+            let header = staged_header_from_parts(file.namespace(), imports.as_ref());
+            let text = StagedResult {
+                id: self.staged.next_id(),
+                header,
+            }
+            .to_text()?;
+            self.staged.insert(file);
+            Ok(text)
         })
+    }
+
+    /// P5-76 (accordproject/concerto-rust#418): [`Self::stage_model_file_checked`]
+    /// for the AST's JSON text as UTF-8 bytes (a JS `TextEncoder`'s
+    /// `encode`), which cross into WASM as one copy, where a JS string
+    /// crosses one character at a time. The same load, the same result and
+    /// the same errors as for that text. Bytes that are not UTF-8 (which a
+    /// `TextEncoder` never writes) throw a `TypeError`. Additive.
+    #[wasm_bindgen(js_name = stageModelFileCheckedUtf8)]
+    pub fn stage_model_file_checked_utf8(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        let ast = utf8_text(ast)?;
+        self.stage_model_file_checked(ast, definitions, file_name)
+    }
+
+    /// P5-76 (accordproject/concerto-rust#418): [`Self::stage_model_file_with_header`]
+    /// for the AST's JSON text as UTF-8 bytes, as
+    /// [`Self::stage_model_file_checked_utf8`] takes it. The same load, the
+    /// same result and the same errors as for that text. Additive.
+    #[wasm_bindgen(js_name = stageModelFileWithHeaderUtf8)]
+    pub fn stage_model_file_with_header_utf8(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        let ast = utf8_text(ast)?;
+        self.stage_model_file_with_header(ast, definitions, file_name)
     }
 
     /// P5-73 (accordproject/concerto-rust#414): a precomputed verdict for
@@ -6763,8 +6818,7 @@ fn system_model_header(ast: &str) -> Option<String> {
                         Some(file_name.to_string()),
                     ) {
                         Ok(Ok((file, imports))) => serde_json::to_string(
-                            &staged_header_from_parts(file.namespace(), imports.as_ref())
-                                .unwrap_or(Value::Null),
+                            &staged_header_from_parts(file.namespace(), imports.as_ref()),
                         )
                         .ok(),
                         _ => None,
@@ -6798,7 +6852,10 @@ fn system_model_header(ast: &str) -> Option<String> {
 /// `types` or `aliasedTypes`, a URI on an import with no first name, an
 /// unrecognised import class). The caller then runs that binding over the
 /// JS values, as before, so every error and every oddity keeps its path.
-fn staged_header_from_parts(namespace: &str, imports: Option<&Value>) -> Option<Value> {
+fn staged_header_from_parts<'a>(
+    namespace: &'a str,
+    imports: Option<&'a Value>,
+) -> Option<StagedHeader<'a>> {
     let version = match mu::parse_namespace_with(Some(namespace), false).ok()? {
         mu::ParsedNamespace::Full { name, version, .. } => {
             if !name.split('.').all(mu::is_valid_identifier) {
@@ -6817,18 +6874,11 @@ fn staged_header_from_parts(namespace: &str, imports: Option<&Value>) -> Option<
         Some(Value::Array(items)) => items,
         Some(_) => return None,
     };
-    let implicit = (!system).then(|| {
-        json!({
-            "$class": format!("{METAMODEL_NAMESPACE}.ImportTypes"),
-            "namespace": "concerto@1.0.0",
-            "types": ["Concept", "Asset", "Transaction", "Participant", "Event"],
-        })
-    });
     let import_types = format!("{METAMODEL_NAMESPACE}.ImportTypes");
     let import_type = format!("{METAMODEL_NAMESPACE}.ImportType");
-    let mut short_names: Vec<Value> = Vec::new();
-    let mut uri_map: Vec<Value> = Vec::new();
-    for imp in ast_imports.iter().chain(implicit.as_ref()) {
+    let mut short_names: Vec<(Cow<'a, str>, Cow<'a, str>)> = Vec::new();
+    let mut uri_map: Vec<(Cow<'a, str>, &'a str)> = Vec::new();
+    for imp in ast_imports {
         let imp = imp.as_object()?;
         let class = imp.get("$class")?.as_str()?;
         let ns = imp.get("namespace")?.as_str()?;
@@ -6862,7 +6912,7 @@ fn staged_header_from_parts(namespace: &str, imports: Option<&Value>) -> Option<
                 Some(_) => return None,
             }
             let types = imp.get("types")?.as_array()?;
-            let mut first = None;
+            let mut first: Option<Cow<'a, str>> = None;
             for type_name in types {
                 let type_name = type_name.as_str()?;
                 let fqn = format!("{ns}.{type_name}");
@@ -6870,33 +6920,86 @@ fn staged_header_from_parts(namespace: &str, imports: Option<&Value>) -> Option<
                     .iter()
                     .find(|(n, _)| *n == type_name)
                     .map_or(type_name, |(_, alias)| alias);
-                short_names.push(json!([key, fqn]));
-                first.get_or_insert(fqn);
+                if first.is_none() {
+                    first = Some(Cow::Owned(fqn.clone()));
+                }
+                short_names.push((Cow::Borrowed(key), Cow::Owned(fqn)));
             }
             first
         } else if class == import_type {
             let name = imp.get("name")?.as_str()?;
             let fqn = format!("{ns}.{name}");
-            short_names.push(json!([name, fqn]));
-            Some(fqn)
+            short_names.push((Cow::Borrowed(name), Cow::Owned(fqn.clone())));
+            Some(Cow::Owned(fqn))
         } else {
             return None;
         };
         match imp.get("uri") {
             None | Some(Value::Null) => {}
             Some(Value::String(uri)) if uri.is_empty() => {}
-            Some(Value::String(uri)) => uri_map.push(json!([first?, uri])),
+            Some(Value::String(uri)) => uri_map.push((first?, uri)),
             Some(Value::Bool(false)) => {}
             Some(_) => return None,
         }
     }
-    Some(json!({
-        "namespace": namespace,
-        "version": version,
-        "system": system,
-        "shortNames": short_names,
-        "uriMap": uri_map,
-    }))
+    // The implicit import of the system types every non-system file gets
+    // (`ModelFile.fromAst`), last: always versioned, with no aliases and no
+    // URI, so it adds exactly these short names (P5-76: without building
+    // its node and running the loop above over it).
+    if !system {
+        short_names.extend(
+            IMPLICIT_IMPORT_SHORT_NAMES
+                .iter()
+                .map(|(key, fqn)| (Cow::Borrowed(*key), Cow::Borrowed(*fqn))),
+        );
+    }
+    Some(StagedHeader {
+        namespace,
+        version,
+        system,
+        short_names,
+        uri_map,
+    })
+}
+
+/// The short names the implicit import of the system types
+/// (`concerto@1.0.0`'s `Concept`, `Asset`, `Transaction`, `Participant` and
+/// `Event`, in that order) adds to a non-system file's header.
+const IMPLICIT_IMPORT_SHORT_NAMES: [(&str, &str); 5] = [
+    ("Concept", "concerto@1.0.0.Concept"),
+    ("Asset", "concerto@1.0.0.Asset"),
+    ("Transaction", "concerto@1.0.0.Transaction"),
+    ("Participant", "concerto@1.0.0.Participant"),
+    ("Event", "concerto@1.0.0.Event"),
+];
+
+/// [`staged_header_from_parts`]'s header (P5-76: serialized straight to its
+/// JSON text, `{namespace, version, system, shortNames, uriMap}`, without a
+/// `Value`). `shortNames` and `uriMap` are arrays of `[key, value]` pairs.
+#[derive(Debug, Serialize)]
+struct StagedHeader<'a> {
+    namespace: &'a str,
+    version: Option<String>,
+    system: bool,
+    #[serde(rename = "shortNames")]
+    short_names: Vec<(Cow<'a, str>, Cow<'a, str>)>,
+    #[serde(rename = "uriMap")]
+    uri_map: Vec<(Cow<'a, str>, &'a str)>,
+}
+
+/// What the staging bindings return: `{"id": <stage id>, "header": <header
+/// or null>}` (P5-76: serialized without a `Value`).
+#[derive(Serialize)]
+struct StagedResult<'a> {
+    id: u32,
+    header: Option<StagedHeader<'a>>,
+}
+
+impl StagedResult<'_> {
+    fn to_text(&self) -> Result<String> {
+        serde_json::to_string(self)
+            .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    }
 }
 
 /// `value.length`: a string primitive's own length (UTF-16 code units),
@@ -8115,6 +8218,13 @@ mod tests {
 
     use super::*;
 
+    /// [`staged_header_from_parts`]'s header as a `Value` (P5-76: it is
+    /// serialized without one).
+    fn header_value(namespace: &str, imports: Option<&Value>) -> Option<Value> {
+        staged_header_from_parts(namespace, imports)
+            .map(|header| serde_json::to_value(header).expect("a header serializes"))
+    }
+
     /// P5-56 (T2, F-A2): a repeated extract through the memo writes, byte
     /// for byte, the text a full extract writes (result AST, command sets,
     /// vocabularies, staged ids and headers), for every action and locale,
@@ -8290,7 +8400,7 @@ mod tests {
              "aliasedTypes": [{"$class": "concerto.metamodel@1.0.0.AliasedType", "name": "C", "aliasedName": "D"}],
              "uri": "https://b"},
         ]);
-        let header = staged_header_from_parts("org.x@1.0.0", Some(&imports)).unwrap();
+        let header = header_value("org.x@1.0.0", Some(&imports)).unwrap();
         assert_eq!(
             header,
             json!({
@@ -8316,12 +8426,12 @@ mod tests {
     /// system namespace gives a `null` version; no `imports` node is none.
     #[test]
     fn staged_header_reads_a_system_file() {
-        let header = staged_header_from_parts("concerto", None).unwrap();
+        let header = header_value("concerto", None).unwrap();
         assert_eq!(
             header,
             json!({"namespace": "concerto", "version": null, "system": true, "shortNames": [], "uriMap": []})
         );
-        let header = staged_header_from_parts("concerto@1.0.0", Some(&Value::Null)).unwrap();
+        let header = header_value("concerto@1.0.0", Some(&Value::Null)).unwrap();
         assert_eq!(header["version"], json!("1.0.0"));
         assert_eq!(header["shortNames"], json!([]));
     }
@@ -8331,17 +8441,17 @@ mod tests {
     /// view calls that binding over the JS values as before.
     #[test]
     fn staged_header_declines_what_the_binding_would_not_simply_set() {
-        let one = |imp: Value| staged_header_from_parts("org.x@1.0.0", Some(&json!([imp])));
+        let one = |imp: Value| header_value("org.x@1.0.0", Some(&json!([imp])));
         assert!(
-            staged_header_from_parts("org.x", None).is_none(),
+            header_value("org.x", None).is_none(),
             "unversioned namespace"
         );
         assert!(
-            staged_header_from_parts("org.1x@1.0.0", None).is_none(),
+            header_value("org.1x@1.0.0", None).is_none(),
             "invalid namespace part"
         );
         assert!(
-            staged_header_from_parts("org.x@1.0.0", Some(&json!({}))).is_none(),
+            header_value("org.x@1.0.0", Some(&json!({}))).is_none(),
             "non-array imports"
         );
         assert!(
@@ -8792,7 +8902,7 @@ mod tests {
                 ModelFile::from_json_text_with_imports(text, None, Some(file_name.into()))
                     .unwrap()
                     .unwrap();
-            let expected = staged_header_from_parts(file.namespace(), imports.as_ref()).unwrap();
+            let expected = header_value(file.namespace(), imports.as_ref()).unwrap();
             let header = system_model_header(text).unwrap();
             assert_eq!(serde_json::from_str::<Value>(&header).unwrap(), expected);
 

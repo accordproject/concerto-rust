@@ -16,6 +16,7 @@ use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::decorator::{
     Decorator, WithDecorators, parse_decorator_list, parse_decorators,
 };
+use crate::introspect::kept::Location;
 use crate::introspect::model_file::unreadable_ast;
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
@@ -100,6 +101,18 @@ impl ClassNode {
     /// ([`crate::introspect::shape`]).
     pub(crate) fn name_and_super_type(&self) -> (&str, Option<&mm::TypeIdentifier>) {
         class_field!(self, d => (d.name.as_str(), d.super_type.as_ref()))
+    }
+
+    /// Sets the node's `identified`, which the typed read decodes apart
+    /// from the node's own decode (`crate::introspect::typed_ast`, P5-76).
+    pub(crate) fn set_identified(&mut self, identified: Option<mm::Identified>) {
+        class_field!(self, d => d.identified = identified);
+    }
+
+    /// Sets the node's `decorators`, which the typed read decodes apart
+    /// from the node's own decode (`crate::introspect::typed_ast`, P5-76).
+    pub(crate) fn set_decorators(&mut self, decorators: Option<Vec<mm::Decorator>>) {
+        class_field!(self, d => d.decorators = decorators);
     }
 
     /// Sets the node's `location`.
@@ -683,7 +696,7 @@ fn load_scalar(
         ),
     };
     let name = scalar::node_name(&node);
-    check_declaration_name(name, value.get("location"), file_name)?;
+    check_declaration_name(name, || value.get("location").cloned(), file_name)?;
     let fqn = qualify(namespace, name);
     let processed = ScalarDeclaration::process(value, file_name, &|| Ok::<_, Error>(fqn.clone()))?;
     let scalar = ScalarDeclaration::new(node, processed, parse_decorators(value));
@@ -1104,7 +1117,7 @@ impl Declaration {
         match kind {
             "MapDeclaration" => {
                 let map = MapDeclaration::from_json(value, file_name)?;
-                check_declaration_name(map.name(), value.get("location"), file_name)?;
+                check_declaration_name(map.name(), || value.get("location").cloned(), file_name)?;
                 Ok(Self::Map(map))
             }
             "EnumDeclaration" => Self::from_typed(
@@ -1149,15 +1162,15 @@ impl Declaration {
                 ..
             } => {
                 check_declaration_name(
-                    class_field!(&node, d => &d.name),
-                    location.as_ref(),
+                    class_field!(&*node, d => &d.name),
+                    || location.as_ref().map(Location::to_value),
                     file_name,
                 )?;
                 check_property_names(&properties, location.as_ref())
                     .and_then(|()| {
                         ClassDeclaration::finish(
                             kind,
-                            node,
+                            *node,
                             properties.into_iter().map(|p| p.property).collect(),
                             parse_decorator_list(decorators.as_ref()),
                             namespace,
@@ -1172,11 +1185,15 @@ impl Declaration {
                 decorators,
                 location,
             } => {
-                check_declaration_name(&node.name, location.as_ref(), file_name)?;
+                check_declaration_name(
+                    &node.name,
+                    || location.as_ref().map(Location::to_value),
+                    file_name,
+                )?;
                 check_property_names(&values, location.as_ref())
                     .map_err(|e| with_model_file(e, file_name))?;
                 Ok(Self::Enum(EnumDeclaration {
-                    inner: WithDecorators::new(node, parse_decorator_list(decorators.as_ref())),
+                    inner: WithDecorators::new(*node, parse_decorator_list(decorators.as_ref())),
                     values: values.into_iter().map(|p| p.property).collect(),
                 }))
             }
@@ -1191,7 +1208,7 @@ impl Declaration {
 /// identifier, with the property's own.
 fn check_property_names(
     properties: &[TypedProperty],
-    declaration: Option<&serde_json::Value>,
+    declaration: Option<&Location>,
 ) -> Result<()> {
     for TypedProperty {
         property, location, ..
@@ -1204,7 +1221,7 @@ fn check_property_names(
             return Err(ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Invalid field name '{name}'"),
-                declaration.cloned(),
+                declaration.map(Location::to_value),
             )
             .into());
         }
@@ -1214,7 +1231,7 @@ fn check_property_names(
                 "property-process-invalidname",
                 vec![("name", name.to_string())],
             );
-            err.location = location.clone();
+            err.location = location.as_ref().map(Location::to_value);
             return Err(err.into());
         }
     }
@@ -1257,7 +1274,7 @@ fn is_recognised_kind(kind: &str) -> bool {
 /// fails. The typed read has already required a string `name`.
 fn check_declaration_name(
     name: &str,
-    location: Option<&serde_json::Value>,
+    location: impl FnOnce() -> Option<serde_json::Value>,
     file_name: Option<&str>,
 ) -> Result<()> {
     if is_valid_identifier(name) {
@@ -1266,7 +1283,7 @@ fn check_declaration_name(
     let mut err = ContractError::pre_port(
         ErrorKind::IllegalModel,
         format!("Invalid class name '{name}'"),
-        location.cloned(),
+        location(),
     );
     err.model_file = Some(file_name.map(str::to_string));
     Err(err.into())

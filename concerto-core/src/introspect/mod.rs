@@ -32,6 +32,7 @@ pub mod declaration;
 pub mod decorator;
 pub mod field;
 pub mod import;
+mod kept;
 pub mod model_file;
 pub mod property;
 pub mod scalar;
