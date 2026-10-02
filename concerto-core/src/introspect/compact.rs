@@ -49,7 +49,12 @@
 //! Bytes that are not in this layout (truncated, trailing bytes, an unknown
 //! tag, a string that is not UTF-8, a number that is not finite, or nested
 //! past [`MAX_DEPTH`]) are an error, which [`to_value`] tells apart from a
-//! data error of the typed read; the TS writer never writes them.
+//! data error of the typed read; the TS writer never writes them. Every
+//! read checks them, the skip of a value the typed read ignores included
+//! (P5-95, accordproject/concerto-rust#445), so bytes the typed read
+//! accepts are bytes [`to_value`] accepts, and no count in them makes a
+//! visitor reserve more than the bytes left can hold: malformed bytes are
+//! an error, never a panic (a trap in WASM).
 
 use serde::Deserialize;
 use serde::de::value::BorrowedStrDeserializer;
@@ -70,6 +75,15 @@ const OBJECT: u8 = 7;
 
 /// How deep the bytes may nest (a stack guard; module doc, "Depth").
 const MAX_DEPTH: usize = 512;
+
+/// The fewest bytes an array item (a tag) and an object entry (a key's
+/// length, then a value's tag) take. P5-95: an array's or an object's
+/// `size_hint` is its count bounded by the bytes left over these, so a
+/// visitor that reserves its size hint (`kept::KeptSeed`) never reserves
+/// more than the bytes can hold, whatever count bytes not written by the TS
+/// writer give.
+const MIN_ITEM_LEN: usize = 1;
+const MIN_ENTRY_LEN: usize = 5;
 
 /// `2^53`, past which not every integer is a double.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0;
@@ -164,6 +178,11 @@ impl<'de> Compact<'de> {
         }
     }
 
+    /// How many bytes are left to read.
+    fn left(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
+    }
+
     fn take(&mut self, n: usize) -> Result<&'de [u8], Error> {
         let end = self
             .pos
@@ -252,7 +271,12 @@ impl<'de> Compact<'de> {
         match tag {
             NULL | FALSE | TRUE => {}
             F64 => {
-                self.take(8)?;
+                // P5-95: the finiteness check `number` makes, so that bytes
+                // the typed read accepts are bytes `to_value` accepts.
+                let v = f64::from_le_bytes(self.array()?);
+                if !v.is_finite() {
+                    return Err(malformed("a number that is not finite"));
+                }
             }
             I32 => {
                 self.take(4)?;
@@ -344,7 +368,7 @@ impl<'de> SeqAccess<'de> for Items<'_, 'de> {
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.remaining)
+        Some(self.remaining.min(self.de.left() / MIN_ITEM_LEN))
     }
 }
 
@@ -375,7 +399,7 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.remaining)
+        Some(self.remaining.min(self.de.left() / MIN_ENTRY_LEN))
     }
 }
 
@@ -658,6 +682,264 @@ pub(crate) mod tests {
         let mut deep = [ARRAY, 1, 0, 0, 0].repeat(600);
         deep.push(NULL);
         assert!(to_value(&deep).is_err());
+    }
+
+    /// P5-95 (accordproject/concerto-rust#445): a skipped value
+    /// (`deserialize_ignored_any`, which no generated struct reaches: the
+    /// typed read refuses an unknown key before its value) is checked as a
+    /// read one is, a double's finiteness included, so that bytes the typed
+    /// read accepts are bytes [`to_value`] accepts.
+    #[test]
+    fn a_skipped_value_is_checked_as_a_read_one() {
+        use serde::Deserialize;
+        use serde::de::IgnoredAny;
+
+        use super::Compact;
+
+        let skip = |bytes: &[u8]| {
+            let mut compact = Compact::new(bytes);
+            IgnoredAny::deserialize(&mut compact).and_then(|_| compact.end())
+        };
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut bytes = vec![ARRAY, 2, 0, 0, 0, I32, 1, 0, 0, 0, F64];
+            bytes.extend_from_slice(&v.to_le_bytes());
+            assert!(skip(&bytes).is_err(), "{v}");
+            assert!(to_value(&bytes).is_err(), "{v}");
+        }
+        let mut bytes = vec![OBJECT, 1, 0, 0, 0, 1, 0, 0, 0, b'k', F64];
+        bytes.extend_from_slice(&1.5f64.to_le_bytes());
+        assert!(skip(&bytes).is_ok());
+        for bytes in [
+            &[F64, 0, 0][..],
+            &[9][..],
+            &[STR, 0xff, 0xff, 0xff, 0xff][..],
+            &[ARRAY, 0xff, 0xff, 0xff, 0xff, NULL][..],
+            &[OBJECT, 1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff][..],
+        ] {
+            assert!(skip(bytes).is_err(), "{bytes:?}");
+        }
+    }
+
+    /// P5-95: an array's or an object's size hint is its count bounded by
+    /// the bytes left, so a visitor that reserves it (`kept::KeptSeed`)
+    /// never reserves for a count the bytes cannot hold (in WASM, a count
+    /// of `u32::MAX` times a `Kept` overflowed the reservation: a trap).
+    #[test]
+    fn a_size_hint_is_bounded_by_the_bytes_left() {
+        use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
+
+        use super::Compact;
+
+        // The hint the visitor is given (the read then fails: it leaves
+        // the items unread).
+        struct Hint<'a>(&'a std::cell::Cell<Option<usize>>);
+        impl<'de> Visitor<'de> for Hint<'_> {
+            type Value = ();
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a container")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<(), A::Error> {
+                self.0.set(seq.size_hint());
+                Ok(())
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
+                self.0.set(map.size_hint());
+                Ok(())
+            }
+        }
+        let hint = |bytes: &[u8]| {
+            let given = std::cell::Cell::new(None);
+            let _ = (&mut Compact::new(bytes)).deserialize_any(Hint(&given));
+            given.get()
+        };
+        assert_eq!(hint(&[ARRAY, 0xff, 0xff, 0xff, 0xff, NULL, NULL]), Some(2));
+        assert_eq!(hint(&[ARRAY, 2, 0, 0, 0, NULL, NULL]), Some(2));
+        assert_eq!(hint(&[ARRAY, 2, 0, 0, 0, NULL, NULL, NULL]), Some(2));
+        let mut entries = vec![OBJECT, 0xff, 0xff, 0xff, 0xff];
+        entries.extend_from_slice(&[0; 11]);
+        assert_eq!(hint(&entries), Some(2));
+        assert_eq!(hint(&[OBJECT, 0xff, 0xff, 0xff, 0xff]), Some(0));
+    }
+
+    /// P5-95 (accordproject/concerto-rust#445): bytes not in the layout,
+    /// written by hand, with each malformed value at each place a model
+    /// reads one (the whole AST, its namespace, an unknown key, a decorator
+    /// argument's value, a declaration's kept `location`). Each is the outer
+    /// error of both staging paths (a `TypeError` at the JS boundary), never
+    /// a load and never a panic. An oversized array count in a `location`
+    /// used to make `KeptSeed` reserve it.
+    #[test]
+    fn malformed_bytes_are_an_error_at_every_place() {
+        use crate::introspect::ModelFile;
+
+        let u32le = |n: u32| n.to_le_bytes().to_vec();
+        let key = |k: &str| {
+            [
+                u32le(u32::try_from(k.len()).unwrap()),
+                k.as_bytes().to_vec(),
+            ]
+            .concat()
+        };
+        let string = |v: &str| [vec![STR], key(v)].concat();
+        let object = |entries: &[(&str, Vec<u8>)]| {
+            let mut out = vec![OBJECT];
+            out.extend(u32le(u32::try_from(entries.len()).unwrap()));
+            for (k, v) in entries {
+                out.extend(key(k));
+                out.extend(v.iter().copied());
+            }
+            out
+        };
+        let array = |items: &[Vec<u8>]| {
+            let mut out = vec![ARRAY];
+            out.extend(u32le(u32::try_from(items.len()).unwrap()));
+            for item in items {
+                out.extend(item.iter().copied());
+            }
+            out
+        };
+        let double = |v: f64| [vec![F64], v.to_le_bytes().to_vec()].concat();
+        let mm = |name: &str| string(&format!("concerto.metamodel@1.0.0.{name}"));
+
+        // The model, with `inject` at `place`.
+        let model = |place: &str, inject: &[u8]| -> Vec<u8> {
+            if place == "ast" {
+                return inject.to_vec();
+            }
+            let at = |p: &str, valid: Vec<u8>| if place == p { inject.to_vec() } else { valid };
+            let argument = object(&[
+                ("$class", mm("DecoratorNumber")),
+                ("value", at("argument", double(1.5))),
+            ]);
+            let decorator = object(&[
+                ("$class", mm("Decorator")),
+                ("name", string("d")),
+                ("arguments", array(&[argument])),
+            ]);
+            let declaration = object(&[
+                ("$class", mm("ConceptDeclaration")),
+                ("name", string("C")),
+                ("isAbstract", vec![FALSE]),
+                ("properties", array(&[])),
+                ("location", at("location", vec![NULL])),
+            ]);
+            let mut entries = vec![
+                ("$class", mm("Model")),
+                ("namespace", at("namespace", string("org.malformed@1.0.0"))),
+                ("imports", array(&[])),
+                ("decorators", array(&[decorator])),
+                ("declarations", array(&[declaration])),
+            ];
+            if place == "unknownKey" {
+                entries.push(("unknownKey", inject.to_vec()));
+            }
+            object(&entries)
+        };
+        let load = |bytes: &[u8], checked: bool| {
+            if checked {
+                ModelFile::from_compact_checked_with_imports(bytes, None, None)
+            } else {
+                ModelFile::from_compact_with_imports(bytes, None, None)
+            }
+        };
+
+        // Each place is read: a valid value there loads, or, for an
+        // unknown key, is the typed read's data error, not the layout one.
+        for (place, valid) in [
+            ("ast", model("", &[])),
+            ("namespace", string("org.valid@1.0.0")),
+            (
+                "unknownKey",
+                array(&[double(0.5), object(&[("k", vec![TRUE])])]),
+            ),
+            ("argument", double(-2.5)),
+            ("location", vec![NULL]),
+        ] {
+            let bytes = model(place, &valid);
+            let loaded = load(&bytes, false);
+            if place == "unknownKey" {
+                assert!(matches!(loaded, Ok(Err(_))), "{place}");
+            } else {
+                assert!(matches!(loaded, Ok(Ok(_))), "{place}");
+            }
+        }
+
+        let mut deep = [ARRAY, 1, 0, 0, 0].repeat(600);
+        deep.push(NULL);
+        let malformed: Vec<(&str, Vec<u8>)> = vec![
+            ("NaN", double(f64::NAN)),
+            ("+Inf", double(f64::INFINITY)),
+            ("-Inf", double(f64::NEG_INFINITY)),
+            ("a NaN item", array(&[double(f64::NAN)])),
+            ("a truncated double", vec![F64, 0, 0, 0]),
+            ("a truncated i32", vec![I32, 0]),
+            ("a missing value", vec![]),
+            ("an unknown tag", vec![8]),
+            ("an unknown tag 0xff", vec![0xff]),
+            ("an unknown tag in an array", array(&[vec![9]])),
+            (
+                "an oversized string length",
+                [vec![STR], u32le(u32::MAX), b"x".to_vec()].concat(),
+            ),
+            (
+                "an oversized array count",
+                [vec![ARRAY], u32le(u32::MAX), vec![NULL]].concat(),
+            ),
+            (
+                "an oversized object count",
+                [vec![OBJECT], u32le(u32::MAX)].concat(),
+            ),
+            (
+                "an oversized key length",
+                [vec![OBJECT], u32le(1), u32le(u32::MAX)].concat(),
+            ),
+            (
+                "a string that is not UTF-8",
+                [vec![STR], u32le(2), vec![0xc3, 0x28]].concat(),
+            ),
+            (
+                "a key that is not UTF-8",
+                [vec![OBJECT], u32le(1), u32le(1), vec![0xff, NULL]].concat(),
+            ),
+            ("nested too deeply", deep),
+        ];
+        for place in ["ast", "namespace", "unknownKey", "argument", "location"] {
+            for (what, inject) in &malformed {
+                let bytes = model(place, inject);
+                for checked in [false, true] {
+                    assert!(
+                        load(&bytes, checked).is_err(),
+                        "{what} at {place} (checked: {checked}) is not the layout error"
+                    );
+                }
+            }
+        }
+
+        // Trailing bytes, and every proper prefix of a valid model.
+        let valid = model("", &[]);
+        let mut trailing = valid.clone();
+        trailing.push(NULL);
+        for checked in [false, true] {
+            assert!(load(&trailing, checked).is_err(), "trailing bytes");
+            for len in 0..valid.len() {
+                assert!(load(&valid[..len], checked).is_err(), "truncated to {len}");
+            }
+        }
+
+        // Each byte of a valid model replaced by a tag, a count's or a
+        // double's byte, or an unknown tag: never a panic, and a load gives
+        // the `ast()` the bytes hold.
+        for at in 0..valid.len() {
+            for byte in [NULL, F64, OBJECT, 8, 0x7f, 0xf0, 0xff] {
+                let mut bytes = valid.clone();
+                bytes[at] = byte;
+                for checked in [false, true] {
+                    if let Ok(Ok((model_file, _))) = load(&bytes, checked) {
+                        assert_eq!(model_file.ast(), &to_value(&bytes).unwrap(), "{at} {byte}");
+                    }
+                }
+            }
+        }
     }
 
     /// P5-92 property test: the same ASTs through both staging paths,

@@ -1262,6 +1262,95 @@ export function runChecks(engine) {
     assert(h.epoch() === epoch, 'staging does not move the epoch');
   });
 
+  // P5-95 (accordproject/concerto-rust#445): bytes not in the compact
+  // layout, written by hand, with each malformed value (a non-finite
+  // double, a truncated value, an unknown tag, an oversized length or
+  // count, bytes that are not UTF-8, nesting past the limit) at each place
+  // a model reads one, throw a TypeError from every compact staging
+  // binding, never trap: the handle keeps working afterwards. Every proper
+  // prefix of a valid model, and trailing bytes, do too.
+  check('malformed compact AST bytes throw a TypeError, never trap (P5-95)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    const u32 = (n) => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff];
+    const key = (k) => {
+      const b = [...new TextEncoder().encode(k)];
+      return [...u32(b.length), ...b];
+    };
+    const string = (v) => [5, ...key(v)];
+    const double = (v) => [3, ...new Uint8Array(new Float64Array([v]).buffer)];
+    const array = (items) => [6, ...u32(items.length), ...items.flat()];
+    const object = (entries) => [7, ...u32(entries.length), ...entries.flatMap(([k, v]) => [...key(k), ...v])];
+    const mm = (name) => string(`${MM}.${name}`);
+    const model = (place, inject) => {
+      if (place === 'ast') {
+        return inject;
+      }
+      const at = (p, valid) => (place === p ? inject : valid);
+      const argument = object([['$class', mm('DecoratorNumber')], ['value', at('argument', double(1.5))]]);
+      const decorator = object([['$class', mm('Decorator')], ['name', string('d')], ['arguments', array([argument])]]);
+      const declaration = object([
+        ['$class', mm('ConceptDeclaration')], ['name', string('C')], ['isAbstract', [1]],
+        ['properties', array([])], ['location', at('location', [0])],
+      ]);
+      const entries = [
+        ['$class', mm('Model')], ['namespace', at('namespace', string('org.malformed@1.0.0'))],
+        ['imports', array([])], ['decorators', array([decorator])], ['declarations', array([declaration])],
+      ];
+      if (place === 'unknownKey') {
+        entries.push(['unknownKey', inject]);
+      }
+      return object(entries);
+    };
+    const bindings = ['stageModelFileCheckedCompact', 'stageModelFileWithHeaderCompact', 'stageModelFileCheckedCompactFlat', 'stageModelFileWithHeaderCompactFlat']
+      .filter((name) => typeof h[name] === 'function');
+    assert(bindings.length === 4, `the compact staging bindings: ${bindings}`);
+    const valid = model('', []);
+    for (const name of bindings) {
+      const staged = JSON.parse(h[name](new Uint8Array(valid), undefined, 'm.cto'));
+      h.dropStagedModelFile(Array.isArray(staged) ? staged[0] : staged.id);
+    }
+    const deep = [];
+    for (let i = 0; i < 600; i++) {
+      deep.push(6, ...u32(1));
+    }
+    deep.push(0);
+    const malformed = [
+      ['NaN', double(NaN)], ['+Inf', double(Infinity)], ['-Inf', double(-Infinity)],
+      ['a NaN item', array([double(NaN)])], ['a truncated double', [3, 0, 0, 0]], ['a truncated i32', [4, 0]],
+      ['a missing value', []], ['an unknown tag', [8]], ['an unknown tag 0xff', [0xff]],
+      ['an unknown tag in an array', array([[9]])],
+      ['an oversized string length', [5, ...u32(0xffffffff), 0x78]],
+      ['an oversized array count', [6, ...u32(0xffffffff), 0]],
+      ['an oversized object count', [7, ...u32(0xffffffff)]],
+      ['an oversized key length', [7, ...u32(1), ...u32(0xffffffff)]],
+      ['a string that is not UTF-8', [5, ...u32(2), 0xc3, 0x28]],
+      ['a key that is not UTF-8', [7, ...u32(1), ...u32(1), 0xff, 0]],
+      ['nested too deeply', deep],
+    ];
+    const cases = [];
+    for (const place of ['ast', 'namespace', 'unknownKey', 'argument', 'location']) {
+      for (const [what, inject] of malformed) {
+        cases.push([`${what} at ${place}`, model(place, inject)]);
+      }
+    }
+    cases.push(['trailing bytes', [...valid, 0]]);
+    for (let len = 0; len < valid.length; len++) {
+      cases.push([`truncated to ${len}`, valid.slice(0, len)]);
+    }
+    for (const [what, bytes] of cases) {
+      for (const name of bindings) {
+        const err = thrown(() => h[name](new Uint8Array(bytes), undefined, 'bad.cto'));
+        assert(err instanceof TypeError, `${name}, ${what}: threw ${err}`);
+      }
+    }
+    for (const name of bindings) {
+      const staged = JSON.parse(h[name](new Uint8Array(valid), undefined, 'm.cto'));
+      h.dropStagedModelFile(Array.isArray(staged) ? staged[0] : staged.id);
+    }
+    assert(h.epoch() === epoch, 'staging does not move the epoch');
+  });
+
   // P5-73 (accordproject/concerto-rust#414): the precomputed verdict is only
   // for the exact fixed system model texts (the host test
   // `system_model_header_is_only_for_the_exact_system_texts` covers those);
