@@ -200,6 +200,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for concerto_core::instance::Severi
 impl core::panic::unwind_safe::UnwindSafe for concerto_core::instance::Severity
 #[non_exhaustive] pub struct concerto_core::instance::Diagnostic
 pub concerto_core::instance::Diagnostic::code: concerto_core::instance::DiagnosticCode
+pub concerto_core::instance::Diagnostic::expected: core::option::Option<alloc::string::String>
 pub concerto_core::instance::Diagnostic::message: alloc::string::String
 pub concerto_core::instance::Diagnostic::pointer: alloc::string::String
 pub concerto_core::instance::Diagnostic::severity: concerto_core::instance::Severity

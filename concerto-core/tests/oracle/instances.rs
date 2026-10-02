@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use concerto_core::Error;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{FromJsonOptions, from_json};
-use concerto_core::instance::{InstanceEnv, ValidateOptions};
+use concerto_core::instance::{InstanceEnv, ValidateOptions, diagnose, diagnostics_of_error};
 use concerto_core_js::value::{Instance, InstanceKind, JsValue};
 use concerto_core_js::{Serializer, SerializerOptions, factory, resource};
 use serde_json::{Map, Value, json};
@@ -451,6 +451,7 @@ fn serializer_op(session: &mut Session, member: &str, inputs: &Inputs) -> Faulty
         "fromJSON" => {
             let result = serializer.from_json(mm, &value, options.as_ref(), &mut HarnessEnv);
             native_from_json_agrees(mm, &serializer, &value, options.as_ref())?;
+            diagnose_agrees(mm, &serializer, &value, options.as_ref())?;
             outcome(result.map(|i| encode_instance(&i)))
         }
         "toJSON" => outcome(
@@ -581,6 +582,78 @@ fn native_from_json_agrees(
         Err(Fault::Harness(format!(
             "the native Serializer.fromJSON route disagrees with the JS layer's: \
              {js_populated:?} (JS layer) vs {native_populated:?} (native)"
+        )))
+    }
+}
+
+/// How many recorded `Serializer.fromJSON` documents [`diagnose_agrees`]
+/// checked, and how many of those were invalid.
+pub static DIAGNOSE_CHECKED: AtomicU64 = AtomicU64::new(0);
+/// See [`DIAGNOSE_CHECKED`].
+pub static DIAGNOSE_INVALID: AtomicU64 = AtomicU64::new(0);
+
+/// The accordproject/concerto#1239 consistency rule (task P5-89,
+/// accordproject/concerto-rust#435), over every recorded `Serializer.fromJSON`
+/// call whose document is plain JSON: `validateInstance` (the binding's
+/// [`diagnose`], with and without `collectAll`) finds the document invalid
+/// exactly when `Serializer.fromJSON` with `validate: true` and the same
+/// options throws; its error is that same error (kind, catalogue code,
+/// parameters and #1273 details, so the same TS exception class, which
+/// `validateInstanceOrThrow` throws); its first diagnostic is the one for
+/// that error, the same as the details the binding attaches to the
+/// exception ([`diagnostics_of_error`]); and the first-error report is the
+/// start of the collect-all one. A disagreement is a harness error, which
+/// fails the run.
+fn diagnose_agrees(
+    mm: &concerto_core::ModelManager,
+    serializer: &Serializer,
+    value: &JsValue,
+    options: Option<&SerializerOptions>,
+) -> Faulty<()> {
+    let Some(plain) = plain_json(value) else {
+        return Ok(());
+    };
+    let mut checked = options.cloned().unwrap_or_default();
+    checked.insert("validate".to_string(), JsValue::Bool(true));
+    let thrown = serializer
+        .from_json(
+            mm,
+            &JsValue::from_json(&plain),
+            Some(&checked),
+            &mut SameEnv(0),
+        )
+        .err();
+    let native = native_options(serializer, Some(&checked));
+    let all = diagnose(mm, None, &plain, &native, true);
+    let first = diagnose(mm, None, &plain, &native, false);
+    DIAGNOSE_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let same_error = |a: &Error, b: &Error| {
+        a.kind() == b.kind()
+            && a.code() == b.code()
+            && a.params() == b.params()
+            && a.details() == b.details()
+    };
+    let agree = match (&thrown, &all.error, &first.error) {
+        (None, None, None) => all.report.is_valid() && first.report.is_valid(),
+        (Some(thrown), Some(a), Some(b)) => {
+            DIAGNOSE_INVALID.fetch_add(1, Ordering::Relaxed);
+            let details = diagnostics_of_error(mm, None, &plain, &native, thrown);
+            same_error(thrown, a)
+                && same_error(thrown, b)
+                && !all.report.is_valid()
+                && !details.is_empty()
+                && first.report.diagnostics() == details.as_slice()
+                && all.report.diagnostics().starts_with(&details)
+        }
+        _ => false,
+    };
+    if agree {
+        Ok(())
+    } else {
+        Err(Fault::Harness(format!(
+            "validateInstance (diagnose) disagrees with Serializer.fromJSON: {thrown:?} \
+             (fromJSON) vs {:?} / {:?} (diagnose)",
+            all.error, all.report
         )))
     }
 }
