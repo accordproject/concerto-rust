@@ -38,7 +38,7 @@ export function sizes(buf) {
     };
 }
 
-const DE = /(serde_core\S*::de::|Deserializ|Visitor|MapAccess|SeqAccess|EnumAccess|deserialize|visit_|serde_json\S*::de::|serde_json\S*::read::)/;
+const DE = /(serde_core\S*::de::|Deserializ|Visitor|MapAccess|SeqAccess|EnumAccess|deserialize|serde_json\S*::de::|serde_json\S*::read::)/;
 const TYPED = /(introspect::typed_ast|introspect::kept|concerto_metamodel\S*::table)/;
 const MM = /concerto_metamodel\S*::concerto_metamodel_1_0_0/;
 

@@ -1132,9 +1132,7 @@ fn tag(mut json: Value, class: &str) -> Value {
 /// P5-81 spike: `serde_json::from_value` of a generated metamodel type, by
 /// the table decoder with the `table-decoder` feature.
 #[cfg(feature = "table-decoder")]
-fn decode_mm<T: concerto_metamodel::table::TableDecode>(
-    value: &Value,
-) -> serde_json::Result<T> {
+fn decode_mm<T: concerto_metamodel::table::TableDecode>(value: &Value) -> serde_json::Result<T> {
     T::decode(value, concerto_metamodel::table::Mode::Lenient)
 }
 
