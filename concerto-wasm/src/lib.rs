@@ -6340,6 +6340,52 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-94 (accordproject/concerto-rust#444): [`Self::stage_model_file_checked_compact`]
+    /// with its result in the flat layout of [`flat_staged_text`] instead
+    /// of `{"id", "header"}`, so the TS side parses one array per file
+    /// rather than two objects and an array per short name. The same load,
+    /// the same stage and the same errors. Additive.
+    #[wasm_bindgen(js_name = stageModelFileCheckedCompactFlat)]
+    pub fn stage_model_file_checked_compact_flat(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let loaded = ModelFile::from_compact_checked_with_imports(ast, definitions, file_name)
+                .map_err(compact_layout_error)??;
+            self.stage_loaded_flat(loaded)
+        })
+    }
+
+    /// P5-94: [`Self::stage_model_file_with_header_compact`] with its result
+    /// in the flat layout of [`flat_staged_text`]. Additive.
+    #[wasm_bindgen(js_name = stageModelFileWithHeaderCompactFlat)]
+    pub fn stage_model_file_with_header_compact_flat(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let loaded = ModelFile::from_compact_with_imports(ast, definitions, file_name)
+                .map_err(compact_layout_error)??;
+            self.stage_loaded_flat(loaded)
+        })
+    }
+
+    /// P5-94: [`Self::stage_loaded`], with the result in the flat layout
+    /// ([`flat_staged_text`]).
+    fn stage_loaded_flat(&mut self, loaded: (ModelFile, Option<Value>)) -> Result<String> {
+        let (file, imports) = loaded;
+        let header = staged_header_from_parts(file.namespace(), imports.as_ref());
+        let text = flat_staged_text(self.staged.next_id(), header.as_ref())
+            .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?;
+        self.staged.insert(file);
+        Ok(text)
+    }
+
     /// Stages a model file the staging bindings have just loaded, with the
     /// AST's own `imports` node, and returns their JSON text `{"id": <stage
     /// id>, "header": <header>}` ([`Self::stage_model_file_with_header`]).
@@ -7351,6 +7397,59 @@ struct StagedHeader<'a> {
     short_names: Vec<(Cow<'a, str>, Cow<'a, str>)>,
     #[serde(rename = "uriMap")]
     uri_map: Vec<(Cow<'a, str>, &'a str)>,
+}
+
+/// P5-94 (accordproject/concerto-rust#444): a staging result in the flat
+/// layout the `...Flat` staging bindings return, as JSON text: `[id]` when
+/// there is no header, otherwise
+///
+/// ```text
+/// [id, namespace, version, system, n, key_1, name_1, ..., key_n, name_n,
+///  uriKey_1, uri_1, ...]
+/// ```
+///
+/// where the `n` key/name pairs are the header's `shortNames` without the
+/// implicit system import's five, which every non-system header ends with
+/// ([`IMPLICIT_IMPORT_SHORT_NAMES`]) and the TS side appends itself, and
+/// the pairs after them are its `uriMap`, in order.
+fn flat_staged_text(id: u32, header: Option<&StagedHeader<'_>>) -> serde_json::Result<String> {
+    let mut out = Vec::with_capacity(64);
+    out.push(b'[');
+    serde_json::to_writer(&mut out, &id)?;
+    if let Some(header) = header {
+        let implicit = if header.system {
+            0
+        } else {
+            IMPLICIT_IMPORT_SHORT_NAMES.len()
+        };
+        let explicit = header
+            .short_names
+            .get(..header.short_names.len().saturating_sub(implicit))
+            .unwrap_or_default();
+        out.push(b',');
+        serde_json::to_writer(&mut out, header.namespace)?;
+        out.push(b',');
+        serde_json::to_writer(&mut out, &header.version)?;
+        out.push(b',');
+        serde_json::to_writer(&mut out, &header.system)?;
+        out.push(b',');
+        serde_json::to_writer(&mut out, &explicit.len())?;
+        for (key, name) in explicit {
+            out.push(b',');
+            serde_json::to_writer(&mut out, key)?;
+            out.push(b',');
+            serde_json::to_writer(&mut out, name)?;
+        }
+        for (key, uri) in &header.uri_map {
+            out.push(b',');
+            serde_json::to_writer(&mut out, key)?;
+            out.push(b',');
+            serde_json::to_writer(&mut out, uri)?;
+        }
+    }
+    out.push(b']');
+    // Every piece is serde_json output: valid UTF-8.
+    String::from_utf8(out).map_err(serde::ser::Error::custom)
 }
 
 /// What the staging bindings return: `{"id": <stage id>, "header": <header
@@ -8825,6 +8924,73 @@ mod tests {
                 serde_json::to_string(&old).unwrap()
             );
         }
+    }
+
+    /// P5-94: the flat staging result, read back the way the TS side reads
+    /// it (the implicit import's short names appended for a non-system
+    /// file), is the `{"id", "header"}` result, for a canonical file, a
+    /// system file, an unversioned system file and a file with no header.
+    #[test]
+    fn flat_staged_text_reads_back_as_the_staged_result() {
+        fn read_back(text: &str) -> Value {
+            let flat: Vec<Value> = serde_json::from_str(text).unwrap();
+            if flat.len() == 1 {
+                return json!({"id": flat[0], "header": null});
+            }
+            let system = flat[3].as_bool().unwrap();
+            let n = flat[4].as_u64().unwrap() as usize;
+            let mut short_names: Vec<Value> = (0..n)
+                .map(|i| json!([flat[5 + 2 * i], flat[6 + 2 * i]]))
+                .collect();
+            if !system {
+                short_names.extend(
+                    IMPLICIT_IMPORT_SHORT_NAMES
+                        .iter()
+                        .map(|(key, name)| json!([key, name])),
+                );
+            }
+            let uri_map: Vec<Value> = flat[5 + 2 * n..]
+                .chunks(2)
+                .map(|pair| json!([pair[0], pair[1]]))
+                .collect();
+            json!({"id": flat[0], "header": {
+                "namespace": flat[1], "version": flat[2], "system": system,
+                "shortNames": short_names, "uriMap": uri_map,
+            }})
+        }
+        let imports = json!([
+            {"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.a@1.0.0", "name": "A", "uri": "https://a"},
+            {"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "org.b@2.0.0", "types": ["B", "C"],
+             "aliasedTypes": [{"$class": "concerto.metamodel@1.0.0.AliasedType", "name": "C", "aliasedName": "D"}],
+             "uri": "https://b"},
+        ]);
+        let system_imports = json!([
+            {"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "concerto.decorator@1.0.0", "name": "DotNetNamespace"},
+        ]);
+        let cases: [(&str, Option<&Value>); 5] = [
+            ("org.x@1.0.0", Some(&imports)),
+            ("org.y@1.0.0", None),
+            ("concerto@1.0.0", Some(&system_imports)),
+            ("concerto", None),
+            ("org.unversioned", None),
+        ];
+        for (id, (namespace, imports)) in cases.into_iter().enumerate() {
+            let id = id as u32;
+            let header = staged_header_from_parts(namespace, imports);
+            let object = StagedResult {
+                id,
+                header: staged_header_from_parts(namespace, imports),
+            }
+            .to_text()
+            .unwrap_or_else(|_| panic!("a staged result serializes"));
+            let flat = flat_staged_text(id, header.as_ref()).unwrap();
+            assert_eq!(
+                read_back(&flat),
+                serde_json::from_str::<Value>(&object).unwrap(),
+                "{namespace}"
+            );
+        }
+        assert_eq!(flat_staged_text(7, None).unwrap(), "[7]");
     }
 
     /// P5-28: [`staged_header`] of a canonical file gives what
