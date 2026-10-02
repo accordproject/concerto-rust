@@ -11,9 +11,10 @@
 //! Concerto v4.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+use concerto_metamodel::utils::class_name;
 
 use crate::error::{Error, Result};
-use crate::introspect::{declared_class, qualified_class};
+use crate::introspect::declared_class;
 use crate::model_util::{qualify, short_name};
 
 /// A single import statement in a model file. Wildcard imports (`import ns.*`)
@@ -213,8 +214,8 @@ fn aliased_type(entry: &serde_json::Value) -> Option<mm::AliasedType> {
     let aliased_name = entry.get("aliasedName").and_then(|v| v.as_str())?;
     let name = entry.get("name").and_then(|v| v.as_str())?;
     let class = match declared_class(entry) {
-        "" => qualified_class("AliasedType"),
-        class => class.to_string(),
+        "" => "concerto.metamodel@1.0.0.AliasedType".into(),
+        class => class_name(class),
     };
     Some(mm::AliasedType {
         _class: class,

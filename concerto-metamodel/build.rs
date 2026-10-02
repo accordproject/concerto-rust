@@ -9,7 +9,10 @@
 //! The Rust types are generated here, from the model ASTs, into `OUT_DIR`:
 //!
 //! - a concept with no super type and no sub types becomes a struct that keeps
-//!   its `$class`;
+//!   its `$class`, as a [`ClassName`](crate::ClassName) that borrows a static
+//!   string for every declared type's name (`utils::deserialize_class`);
+//! - the `name` of a metamodel node (but an import's) is a
+//!   [`Name`](crate::Name), which shares the JSON text it is read from;
 //! - an abstract concept becomes an enum tagged by `$class`, with one variant
 //!   for every concrete type that extends it, directly or not;
 //! - a concrete concept that has sub types and is used as a field type also
@@ -89,6 +92,19 @@ fn main() {
         .collect();
 
     let types = TypeTable::new(&models);
+    // Every declared type's fully qualified name: the `$class` values
+    // `utils::intern_class` interns, sorted by length and then by bytes
+    // (most comparisons are then decided by the length alone).
+    let mut classes: Vec<&str> = types.declared.keys().map(String::as_str).collect();
+    classes.sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    let mut table = String::from(
+        "/// Every declared type's `$class`, sorted by length and then by bytes.\npub(crate) const CLASSES: &[&str] = &[\n",
+    );
+    for class in classes {
+        let _ = writeln!(table, "    {class:?},");
+    }
+    table.push_str("];\n");
+    fs::write(out.join("classes.rs"), table).expect("failed to write generated source");
     for model in &models {
         let namespace = str_field(model, "namespace");
         let code = types.generate(namespace);
@@ -391,11 +407,21 @@ impl<'a> TypeTable<'a> {
                 // (accordproject/concerto-rust#262). Accept that, and write
                 // the node back without one, so the AST round-trips as given.
                 code.push_str(concat!(
-                    "    #[serde(rename = \"$class\", default, skip_serializing_if = \"String::is_empty\")]\n",
-                    "    pub _class: String,\n",
+                    "    #[serde(\n",
+                    "        rename = \"$class\",\n",
+                    "        default,\n",
+                    "        skip_serializing_if = \"crate::utils::is_empty_class\",\n",
+                    "        deserialize_with = \"crate::utils::deserialize_class\"\n",
+                    "    )]\n",
+                    "    pub _class: crate::ClassName,\n",
                 ));
             } else {
-                code.push_str("    #[serde(rename = \"$class\")]\n    pub _class: String,\n");
+                // The `$class` of a node is one of a few dozen names, so it
+                // is interned (`crate::utils::deserialize_class`).
+                code.push_str(concat!(
+                    "    #[serde(rename = \"$class\", deserialize_with = \"crate::utils::deserialize_class\")]\n",
+                    "    pub _class: crate::ClassName,\n",
+                ));
             }
         }
         if d.ast
@@ -424,6 +450,16 @@ impl<'a> TypeTable<'a> {
         let name = str_field(property, "name");
         let kind = short_name(str_field(property, "$class"));
         let mut rust = match kind {
+            // The `name` of a metamodel node (but an import's, which the
+            // typed read never reads into a generated struct) is a
+            // `crate::Name`, which shares the text it is read from.
+            "StringProperty"
+                if name == "name"
+                    && self.get(fqn).namespace == METAMODEL
+                    && !matches!(self.get(fqn).name, "ImportType" | "AliasedType") =>
+            {
+                "crate::Name".to_string()
+            }
             "StringProperty" => "String".to_string(),
             "BooleanProperty" => "bool".to_string(),
             // Integer and Long AST fields are widened to `f64`: TS reads

@@ -76,7 +76,13 @@ fn header_conforms(header: &ModelHeader) -> bool {
         .into_iter()
         .zip(MODEL)
         .all(|(value, (_, ty, need))| field_conforms(value.as_ref(), *ty, *need))
-        && header.decorators.as_ref().is_none_or(decorators_conform)
+        && header
+            .decorators
+            .as_ref()
+            .is_none_or(|decorators| match decorators {
+                Ok(decorators) => decorators.conforms,
+                Err(value) => decorators_conform(value),
+            })
 }
 
 fn declaration_conforms(declaration: &TypedDeclaration) -> bool {

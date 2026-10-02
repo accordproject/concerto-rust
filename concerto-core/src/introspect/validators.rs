@@ -15,6 +15,7 @@
 use std::fmt;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+use concerto_metamodel::utils::class_name;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -194,7 +195,7 @@ js_compat_pub! {
     pub fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
         let raw = raw.filter(|value| !value.is_null())?;
         Some(mm::CollectionSizeValidator {
-            _class: validator_string_field(raw, "$class"),
+            _class: class_name(&validator_string_field(raw, "$class")),
             min_size: validator_number_field(raw, "minSize"),
             max_size: validator_number_field(raw, "maxSize"),
         })
@@ -210,7 +211,7 @@ js_compat_pub! {
     pub fn length_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringLengthValidator> {
         let raw = raw.filter(|value| !value.is_null())?;
         Some(mm::StringLengthValidator {
-            _class: validator_string_field(raw, "$class"),
+            _class: class_name(&validator_string_field(raw, "$class")),
             min_length: length_bound_field(raw, "minLength"),
             max_length: length_bound_field(raw, "maxLength"),
         })
@@ -244,7 +245,7 @@ js_compat_pub! {
     pub fn regex_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringRegexValidator> {
         let raw = raw.filter(|value| !value.is_null())?;
         Some(mm::StringRegexValidator {
-            _class: validator_string_field(raw, "$class"),
+            _class: class_name(&validator_string_field(raw, "$class")),
             pattern: validator_string_field(raw, "pattern"),
             flags: validator_string_field(raw, "flags"),
         })

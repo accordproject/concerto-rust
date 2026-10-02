@@ -11,7 +11,8 @@
 //! says: its key order, its `null`s and its numbers exactly as given. The typed
 //! declarations and imports are a view of it, used for the runtime's logic.
 
-use std::sync::{Arc, OnceLock};
+use std::borrow::Cow;
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use indexmap::IndexMap;
 
@@ -40,8 +41,13 @@ const LOCAL_SCAN_MAX: usize = 8;
 #[derive(Debug, Clone)]
 pub struct ModelFile {
     namespace: String,
-    version: String,
-    imports: Vec<Import>,
+    /// Where the version starts in `namespace` (P5-93: the version is the
+    /// namespace's own suffix, not a copy of it).
+    version_start: usize,
+    /// P5-93: the one shared copy of the built-in import alone
+    /// ([`built_in_imports`]) for a file that imports nothing else (most
+    /// files), where every load used to append its own copy.
+    imports: Cow<'static, [Import]>,
     declarations: Vec<Declaration>,
     /// Declaration names to their index, for `getLocalType` (FxHash,
     /// P5-13: only ever looked up, never iterated). P5-93: keyed by the
@@ -271,7 +277,11 @@ impl ModelFile {
         file_name: Option<String>,
         checked: bool,
     ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
-        let model = match typed_ast::parse(text) {
+        // P5-93: the copy of the text the file keeps (`ModelFile::ast`) is
+        // made first, and read, so the names the read reads share it
+        // (`concerto_metamodel::Name`) rather than each being copied.
+        let source: Arc<str> = Arc::from(text);
+        let model = match concerto_metamodel::with_source(&source, || typed_ast::parse(&source)) {
             Ok(model) => model,
             Err(err) => {
                 // Text that is JSON, but not a model the reader can read,
@@ -300,7 +310,7 @@ impl ModelFile {
         let mut header = model.header;
         let result = Self::load(&mut header, model.declarations, definitions, file_name).map(
             |mut model_file| {
-                model_file.ast = Ast::from_text(text);
+                model_file.ast = Ast::from_text(source);
                 (model_file, header.imports)
             },
         );
@@ -330,7 +340,7 @@ impl ModelFile {
     /// read. Leaves [`ModelFile::ast`] `Null` for the caller to fill in.
     fn load(
         header: &mut ModelHeader,
-        typed: Vec<TypedDeclaration>,
+        mut typed: Vec<TypedDeclaration>,
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
@@ -347,7 +357,8 @@ impl ModelFile {
         // a declaration's are), where its `Value` used to be read twice.
         let decorators = match header.decorators.take() {
             None => Vec::new(),
-            Some(value) => {
+            Some(Ok(decorators)) => decorators.list,
+            Some(Err(value)) => {
                 let decorators = parse_decorator_list(Some(&value));
                 value
                     .into_decorators()
@@ -373,7 +384,8 @@ impl ModelFile {
         // of the name is a valid identifier, and then a version requirement
         // (P2-08), for every model file since BC-02 (R1, P5-50).
         let is_system_namespace = namespace.starts_with("concerto@") || namespace == "concerto";
-        let version = parse_namespace_version(&namespace, &file_name)?;
+        let version_start =
+            namespace.len() - parse_namespace_version(&namespace, &file_name)?.len();
 
         let mut imports = match &header.imports {
             None => Vec::new(),
@@ -390,22 +402,14 @@ impl ModelFile {
             }
         };
 
-        // Every non-system model file imports the system types implicitly.
-        // TS: ModelFile.fromAst (src/introspect/modelfile.ts), the built-in
-        // import; ported here because the trial's oracle fixtures load models
-        // that use them (P0-04b).
-        let is_system = is_system_namespace;
-        if !is_system {
-            imports.push(built_in_import_typed()?);
-        }
-
         // TS: `ModelFile.fromAst`'s `imports.forEach` loop (modelfile.ts)
-        // runs two checks over every import, including the built-in one just
-        // pushed above (it is always versioned, so `enforceImportVersioning`
-        // never rejects it): an aliased type's alias may not itself name a
+        // runs two checks over every import, including the built-in one
+        // appended below: an aliased type's alias may not itself name a
         // primitive, and — `enforceImportVersioning` — the imported namespace
         // must carry a version. Both throw a plain `Error`, not an
-        // `IllegalModelException`.
+        // `IllegalModelException`. The built-in import passes both (it has
+        // no alias, and is versioned), so P5-93 checks only the AST's own,
+        // before the built-in one is appended.
         for imp in &imports {
             for alias in imp.aliased_types() {
                 if is_primitive_type(&alias.aliased_name) {
@@ -424,6 +428,20 @@ impl ModelFile {
             }
         }
 
+        // Every non-system model file imports the system types implicitly.
+        // TS: ModelFile.fromAst (src/introspect/modelfile.ts), the built-in
+        // import; ported here because the trial's oracle fixtures load models
+        // that use them (P0-04b).
+        let is_system = is_system_namespace;
+        let imports: Cow<'static, [Import]> = if is_system {
+            Cow::Owned(imports)
+        } else if imports.is_empty() {
+            built_in_imports()?
+        } else {
+            imports.push(built_in_import_typed()?);
+            Cow::Owned(imports)
+        };
+
         // TS: the constructor's `localTypes` loop is a plain `Map.set` per
         // declaration, so a second declaration of the same name is accepted
         // here and simply replaces the first in the lookup (the last one
@@ -436,7 +454,7 @@ impl ModelFile {
         if indexed {
             local_types.reserve(typed.len());
         }
-        for raw in typed {
+        for raw in typed.drain(..) {
             let decl = Declaration::from_typed(raw, &namespace, file_name.as_deref())
                 .map_err(|e| annotate(e, &file_name))?;
             let index = declarations.len();
@@ -455,6 +473,7 @@ impl ModelFile {
             }
             declarations.push(decl);
         }
+        typed_ast::recycle_declarations(typed);
 
         // TS: `ModelFile.isCompatibleVersion`, run from the constructor right
         // after `fromAst` has populated the imports and declarations, before
@@ -466,7 +485,7 @@ impl ModelFile {
 
         Ok(Self {
             namespace,
-            version,
+            version_start,
             imports,
             declarations,
             local_types,
@@ -529,7 +548,7 @@ impl ModelFile {
 
     /// The version part of the namespace.
     pub fn version(&self) -> &str {
-        &self.version
+        self.namespace.get(self.version_start..).unwrap_or_default()
     }
 
     /// The JSON AST this model file was built from, exactly as it was given.
@@ -704,7 +723,7 @@ impl ModelFile {
     /// no `HashMap` iteration on an observable path).
     pub fn external_imports(&self) -> IndexMap<String, String> {
         let mut out = IndexMap::new();
-        for imp in &self.imports {
+        for imp in self.imports.iter() {
             let Some(uri) = imp.uri() else { continue };
             let Some(first) = imp.imported_names().first() else {
                 continue;
@@ -1157,10 +1176,10 @@ impl Ast {
         }
     }
 
-    fn from_text(text: &str) -> Self {
+    fn from_text(text: Arc<str>) -> Self {
         Self {
             value: OnceLock::new(),
-            text: Some(Arc::from(text)),
+            text: Some(text),
             compact: None,
         }
     }
@@ -1206,18 +1225,31 @@ fn built_in_import() -> serde_json::Value {
     })
 }
 
-thread_local! {
-    /// [`built_in_import`], read once per thread (P5-48: every non-system
-    /// model load appends it).
-    static BUILT_IN_IMPORT: Option<Import> = Import::try_from(&built_in_import()).ok();
-}
+/// [`built_in_import`], read once (P5-48: every non-system model load
+/// appends it), as the whole import list of a file that imports nothing
+/// else.
+static BUILT_IN_IMPORTS: LazyLock<Option<[Import; 1]>> = LazyLock::new(|| {
+    Import::try_from(&built_in_import())
+        .ok()
+        .map(|import| [import])
+});
 
 /// [`built_in_import`] as an [`Import`]: the cached copy, or, if it could
 /// not be read (it always can), the error reading it gives.
 fn built_in_import_typed() -> Result<Import> {
-    match BUILT_IN_IMPORT.with(Clone::clone) {
-        Some(import) => Ok(import),
+    match &*BUILT_IN_IMPORTS {
+        Some([import]) => Ok(import.clone()),
         None => Import::try_from(&built_in_import()),
+    }
+}
+
+/// The imports of a non-system file that imports nothing else: the cached
+/// built-in import alone, shared (P5-93), or, if it could not be read (it
+/// always can), the error reading it gives.
+fn built_in_imports() -> Result<Cow<'static, [Import]>> {
+    match &*BUILT_IN_IMPORTS {
+        Some(imports) => Ok(Cow::Borrowed(imports)),
+        None => Import::try_from(&built_in_import()).map(|import| Cow::Owned(vec![import])),
     }
 }
 
@@ -1310,7 +1342,7 @@ fn plain_error(message: String) -> Error {
 /// TS 5.0.0 exempted a system model file (a bare `concerto` namespace) from
 /// that last check; since BC-02 (R1, P5-50; DV-003 closed) every model file
 /// needs a version. Returns the version.
-fn parse_namespace_version(namespace: &str, file_name: &Option<String>) -> Result<String> {
+fn parse_namespace_version<'a>(namespace: &'a str, file_name: &Option<String>) -> Result<&'a str> {
     let (name, version) = model_util::split_namespace(namespace)?;
     for part in name.split('.') {
         if !is_valid_identifier(part) {
@@ -1335,7 +1367,7 @@ fn parse_namespace_version(namespace: &str, file_name: &Option<String>) -> Resul
              models must specify a version (e.g., @1.0.0)."
         )));
     }
-    Ok(version.unwrap_or_default().to_string())
+    Ok(version.unwrap_or_default())
 }
 
 /// Stamps this file's name onto an `IllegalModel` error that came up while
@@ -1352,6 +1384,32 @@ fn annotate(err: Error, file_name: &Option<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P5-93: the names a load reads from JSON text share the copy of the
+    /// text the file keeps (`concerto_metamodel::Name`), where each used to
+    /// be copied; an escaped one is a copy of its own.
+    #[test]
+    fn names_read_from_text_share_the_text_the_file_keeps() {
+        let text = r#"{"$class":"concerto.metamodel@1.0.0.Model","namespace":"org.acme@1.0.0","declarations":[{"$class":"concerto.metamodel@1.0.0.ConceptDeclaration","name":"Person","isAbstract":false,"properties":[{"$class":"concerto.metamodel@1.0.0.StringProperty","name":"first","isArray":false,"isOptional":false},{"$class":"concerto.metamodel@1.0.0.ObjectProperty","name":"l\u0061st","type":{"$class":"concerto.metamodel@1.0.0.TypeIdentifier","name":"Person"},"isArray":false,"isOptional":false}]}]}"#;
+        let (file, _) = ModelFile::from_json_text_checked_with_imports(text, None, None)
+            .unwrap()
+            .unwrap();
+        let kept = file.ast.text.as_deref().unwrap();
+        let within = |name: &str| {
+            let start = kept.as_ptr() as usize;
+            let at = name.as_ptr() as usize;
+            at >= start && at + name.len() <= start + kept.len()
+        };
+        let class = file.declarations()[0].as_class().unwrap();
+        assert!(within(class.name()));
+        let [first, last, ..] = class.own_properties() else {
+            panic!("two properties");
+        };
+        assert!(within(first.name()));
+        assert_eq!(last.name(), "last");
+        assert!(!within(last.name()));
+        assert!(within(last.type_name().unwrap()));
+    }
 
     fn sample() -> ModelFile {
         ModelFile::from_json(

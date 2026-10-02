@@ -9,6 +9,7 @@
 //! variants of the [`Declaration`] sum type. Each variant is selected by
 //! matching on the node's `$class`.
 
+use concerto_metamodel::Name;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::derive::{DeclarationKind, Named};
@@ -189,13 +190,28 @@ pub struct ClassDeclaration {
     decorators: Vec<Decorator>,
 }
 
+/// The names of the system properties a class is given
+/// (`ClassDeclaration::finish`), each read once and shared (P5-93).
+static IDENTIFIER_NAME: std::sync::LazyLock<Name> =
+    std::sync::LazyLock::new(|| Name::from("$identifier"));
+static TIMESTAMP_NAME: std::sync::LazyLock<Name> =
+    std::sync::LazyLock::new(|| Name::from("$timestamp"));
+
+/// A shared system property name: a clone, which counts a reference.
+fn system_name(name: &std::sync::LazyLock<Name>) -> Name {
+    Name::clone(name)
+}
+
+/// A `TypeIdentifier`'s `$class`.
+const TYPE_IDENTIFIER_CLASS: &str = "concerto.metamodel@1.0.0.TypeIdentifier";
+
 /// The implicit super type nodes: `Concept`, `Asset`, `Participant`,
 /// `Transaction` and `Event` (`ClassDeclaration::finish`).
 fn implicit_super_types() -> &'static [mm::TypeIdentifier; 5] {
     static NODES: std::sync::LazyLock<[mm::TypeIdentifier; 5]> = std::sync::LazyLock::new(|| {
         ["Concept", "Asset", "Participant", "Transaction", "Event"].map(|name| mm::TypeIdentifier {
-            _class: qualified_class("TypeIdentifier"),
-            name: name.to_string(),
+            _class: TYPE_IDENTIFIER_CLASS.into(),
+            name: name.into(),
             namespace: None,
             resolved_name: None,
         })
@@ -584,7 +600,7 @@ impl ClassDeclaration {
         ) {
             properties.push(Property::String(WithDecorators::new(
                 mm::StringProperty {
-                    name: "$identifier".to_string(),
+                    name: system_name(&IDENTIFIER_NAME),
                     is_array: false,
                     is_optional: false,
                     size_validator: None,
@@ -612,7 +628,7 @@ impl ClassDeclaration {
         if is_system_model_namespace(namespace) && (name == "Transaction" || name == "Event") {
             properties.push(Property::DateTime(WithDecorators::new(
                 mm::DateTimeProperty {
-                    name: "$timestamp".to_string(),
+                    name: system_name(&TIMESTAMP_NAME),
                     is_array: false,
                     is_optional: false,
                     size_validator: None,
@@ -859,8 +875,8 @@ impl EnumDeclaration {
     /// unchanged (src/introspect/classdeclaration.ts).
     pub fn implicit_super_type(&self) -> mm::TypeIdentifier {
         mm::TypeIdentifier {
-            _class: qualified_class("TypeIdentifier"),
-            name: "Concept".to_string(),
+            _class: TYPE_IDENTIFIER_CLASS.into(),
+            name: "Concept".into(),
             namespace: None,
             resolved_name: None,
         }
