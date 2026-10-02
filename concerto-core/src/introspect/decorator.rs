@@ -647,7 +647,13 @@ fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
 /// ever sees an array of decorator nodes, or `null` (P5-61: before BC-19 it
 /// also reproduced TS's iteration of a string by UTF-16 code unit, #218).
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
-    match ast.get("decorators") {
+    decorators_of(ast.get("decorators"))
+}
+
+/// [`parse_decorators`] given the node's `decorators` value itself (`None`
+/// when the node has no such key).
+pub(crate) fn decorators_of(decorators: Option<&Value>) -> Vec<Decorator> {
+    match decorators {
         Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
         _ => Vec::new(),
     }
@@ -686,30 +692,23 @@ js_compat_pub! {
 /// works.
 #[derive(Debug, Clone)]
 pub struct WithDecorators<T> {
-    /// Boxed (P5-76): a generated node is a few hundred bytes, and a
-    /// [`super::property::Property`] is moved several times while a model
-    /// is loaded.
-    node: Box<T>,
+    /// Held inline (P5-93; boxed from P5-76): a generated node is a few
+    /// hundred bytes, but a box was one allocation per property, and the
+    /// typed read now collects a declaration's properties into a `Vec` of
+    /// exactly their number (`typed_ast`), so they are no longer moved
+    /// element by element as it grows.
+    node: T,
     decorators: Vec<Decorator>,
 }
 
 impl<T> WithDecorators<T> {
     pub(crate) fn new(node: T, decorators: Vec<Decorator>) -> Self {
-        Self {
-            node: Box::new(node),
-            decorators,
-        }
+        Self { node, decorators }
     }
 
     /// The decorators processed for this node.
     pub fn decorators(&self) -> &[Decorator] {
         &self.decorators
-    }
-
-    /// The wrapped node, for a loader that fills in fields it reads apart
-    /// from the node's own decode (its `location`, `Property::set_location`).
-    pub(crate) fn node_mut(&mut self) -> &mut T {
-        &mut self.node
     }
 }
 

@@ -95,6 +95,24 @@ impl Kept {
         matches!(self, Kept::Other(Value::Null))
     }
 
+    /// [`Kept::strict_decode`], for the generated struct of one variant of
+    /// a polymorphic type (a map declaration), which has no `$class` field
+    /// of its own: as `typed_ast`'s `strict_variant_from_value` decodes it
+    /// from [`Kept::to_value`], the object's `$class` left out.
+    pub(crate) fn strict_variant_decode<T: de::DeserializeOwned>(&self) -> Result<T, Error> {
+        match self {
+            Kept::Object(entries) => {
+                T::deserialize(super::typed_ast::Strict(MapDeserializer::<_, Error>::new(
+                    entries
+                        .iter()
+                        .filter(|(key, _)| key != "$class")
+                        .map(|(key, value)| (BorrowedKey(key.as_ref()), value)),
+                )))
+            }
+            other => other.strict_decode(),
+        }
+    }
+
     /// Decodes a generated struct from this node as `typed_ast`'s
     /// `strict_from_value` decodes it from [`Kept::to_value`]: the same
     /// `serde` code over the same entries, with every value the struct
@@ -255,8 +273,11 @@ const POSITION_CLASS: &str = "concerto.metamodel@1.0.0.Position";
 /// numbers, and a string or `null` `source`). Any other value is a [`Kept`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Location {
-    /// The `Range` object, field by field.
-    Range(Box<RangeRead>),
+    /// The `Range` object, field by field (P5-93: held inline, boxed from
+    /// P5-76: the read now keeps a property's `location` in a list apart
+    /// from the properties, which has an element only when some property
+    /// of the declaration has one, `typed_ast::TypedProperties`).
+    Range(RangeRead),
     /// Any other value.
     Kept(Kept),
 }
@@ -750,7 +771,309 @@ impl<'de> Visitor<'de> for LocationSeed {
             insert_entry(&mut entries, key, value);
             return read_entries(entries, map).map(Location::Kept);
         }
-        Ok(Location::Range(Box::new(read)))
+        Ok(Location::Range(read))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A class's `identified`, read field by field (P5-93)
+// ---------------------------------------------------------------------------
+
+/// The metamodel's `Identified` and `IdentifiedBy` `$class`es.
+const IDENTIFIED_CLASS: &str = "concerto.metamodel@1.0.0.Identified";
+const IDENTIFIED_BY_CLASS: &str = "concerto.metamodel@1.0.0.IdentifiedBy";
+
+/// A class's `identified` value, as the typed read reads it: one of the
+/// metamodel's own two nodes, read field by field without an allocation
+/// but for the name, or any other value as a [`Kept`].
+pub(crate) enum IdentifiedRead {
+    /// `{"$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": <a
+    /// string>}`, its two keys in either order.
+    By(String),
+    /// `{"$class": "concerto.metamodel@1.0.0.Identified"}`.
+    System,
+    /// Any other value.
+    Kept(Kept),
+}
+
+impl IdentifiedRead {
+    /// The generated `identified`, as [`Kept::strict_decode`] decodes it
+    /// from the same JSON, and the value as a [`Kept`] unless it is one of
+    /// the metamodel's own two nodes (which BC-19's shape check accepts).
+    pub(crate) fn decode(self) -> Result<(Option<mm::Identified>, Option<Kept>), Error> {
+        match self {
+            IdentifiedRead::By(name) => Ok((
+                Some(mm::Identified::IdentifiedBy(mm::IdentifiedBy { name })),
+                None,
+            )),
+            IdentifiedRead::System => Ok((Some(mm::Identified::Identified), None)),
+            IdentifiedRead::Kept(kept) => Ok((kept.strict_decode()?, Some(kept))),
+        }
+    }
+}
+
+/// The entries an `identified` object read so far holds, in the order
+/// read: its `$class` (`by`: `IdentifiedBy`'s, or `Identified`'s) and its
+/// `name`.
+fn identified_entries(
+    by: Option<bool>,
+    name: Option<String>,
+    class_first: bool,
+) -> Vec<(Cow<'static, str>, Kept)> {
+    let class = by.map(|by| {
+        let class = if by {
+            IDENTIFIED_BY_CLASS
+        } else {
+            IDENTIFIED_CLASS
+        };
+        (
+            Cow::Borrowed("$class"),
+            Kept::Other(Value::String(class.to_string())),
+        )
+    });
+    let name = name.map(|name| (Cow::Borrowed("name"), Kept::Other(Value::String(name))));
+    let (first, second) = if class_first {
+        (class, name)
+    } else {
+        (name, class)
+    };
+    first.into_iter().chain(second).collect()
+}
+
+/// Reads an [`IdentifiedRead`].
+#[derive(Clone, Copy)]
+pub(crate) struct IdentifiedSeed;
+
+impl<'de> DeserializeSeed<'de> for IdentifiedSeed {
+    type Value = IdentifiedRead;
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<IdentifiedRead, D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for IdentifiedSeed {
+    type Value = IdentifiedRead;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("any valid JSON value")
+    }
+
+    kept_arms! {
+        IdentifiedRead::Kept;
+        visit_bool(bool);
+        visit_i64(i64);
+        visit_u64(u64);
+        visit_f64(f64);
+        visit_str(&str);
+        visit_string(String);
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<IdentifiedRead, E> {
+        KeptSeed.visit_none().map(IdentifiedRead::Kept)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<IdentifiedRead, D::Error> {
+        KeptSeed.visit_some(d).map(IdentifiedRead::Kept)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<IdentifiedRead, E> {
+        KeptSeed.visit_unit().map(IdentifiedRead::Kept)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<IdentifiedRead, A::Error> {
+        KeptSeed.visit_seq(seq).map(IdentifiedRead::Kept)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<IdentifiedRead, A::Error> {
+        // The `$class` read (`Some(true)` for `IdentifiedBy`'s, `Some(false)`
+        // for `Identified`'s) and the `name`, each once.
+        let mut by = None;
+        let mut name = None;
+        let mut class_first = false;
+        while let Some(key) = map.next_key_seed(KeySeed)? {
+            let value = match &*key {
+                "$class" if by.is_none() => match map.next_value_seed(LeafSeed)? {
+                    Leaf::Str(class)
+                        if class == IDENTIFIED_BY_CLASS || class == IDENTIFIED_CLASS =>
+                    {
+                        by = Some(class == IDENTIFIED_BY_CLASS);
+                        class_first = name.is_none();
+                        continue;
+                    }
+                    leaf => leaf.into_kept(),
+                },
+                "name" if name.is_none() => match map.next_value_seed(LeafSeed)? {
+                    Leaf::Str(value) => {
+                        name = Some(value.into_owned());
+                        continue;
+                    }
+                    leaf => leaf.into_kept(),
+                },
+                // Not an `identified` key, or one already read: read as a
+                // `Kept` from here on.
+                _ => map.next_value_seed(KeptSeed)?,
+            };
+            let mut entries = identified_entries(by, name, class_first);
+            insert_entry(&mut entries, key, value);
+            return read_entries(entries, map).map(IdentifiedRead::Kept);
+        }
+        Ok(match (by, name) {
+            (Some(true), Some(name)) => IdentifiedRead::By(name),
+            (Some(false), None) => IdentifiedRead::System,
+            (by, name) => {
+                IdentifiedRead::Kept(Kept::Object(identified_entries(by, name, class_first)))
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A `decorators` value, decoded by moving its strings out (P5-93)
+// ---------------------------------------------------------------------------
+
+/// The metamodel's `DecoratorString`, `DecoratorNumber` and
+/// `DecoratorBoolean` `$class`es.
+const DECORATOR_STRING_CLASS: &str = "concerto.metamodel@1.0.0.DecoratorString";
+const DECORATOR_NUMBER_CLASS: &str = "concerto.metamodel@1.0.0.DecoratorNumber";
+const DECORATOR_BOOLEAN_CLASS: &str = "concerto.metamodel@1.0.0.DecoratorBoolean";
+
+impl Kept {
+    /// A node's `decorators` value, decoded as [`Kept::strict_decode`]
+    /// decodes it into the generated structs, but by moving the value's
+    /// strings into them where it is an array of plain decorator nodes
+    /// ([`plain_decorator`]), as every AST of the reference parser's
+    /// holds; any other value is decoded by [`Kept::strict_decode`].
+    pub(crate) fn into_decorators(self) -> Result<Option<Vec<mm::Decorator>>, Error> {
+        match self {
+            Kept::Array(items) if items.iter().all(plain_decorator) => {
+                Ok(Some(items.into_iter().map(into_decorator).collect()))
+            }
+            other => other.strict_decode(),
+        }
+    }
+
+    /// This value's string, if it is one.
+    fn into_string(self) -> String {
+        match self {
+            Kept::Other(Value::String(s)) => s,
+            // Never reached: [`plain_decorator`] has checked the value.
+            _ => String::new(),
+        }
+    }
+}
+
+/// A `Decorator` node the generated struct decodes field by field as it
+/// is: an object of a string `$class`, a string `name`, and, if any, an
+/// `arguments` that is `null` or an array of plain arguments
+/// ([`plain_argument`]), and no other key.
+fn plain_decorator(node: &Kept) -> bool {
+    let Kept::Object(entries) = node else {
+        return false;
+    };
+    let mut required = 0;
+    entries
+        .iter()
+        .all(|(key, value)| match (key.as_ref(), value) {
+            ("$class" | "name", Kept::Other(Value::String(_))) => {
+                required += 1;
+                true
+            }
+            ("arguments", Kept::Other(Value::Null)) => true,
+            ("arguments", Kept::Array(arguments)) => arguments.iter().all(plain_argument),
+            _ => false,
+        })
+        && required == 2
+}
+
+/// A decorator argument of the metamodel's `DecoratorString`,
+/// `DecoratorNumber` or `DecoratorBoolean` `$class` and a `value` of its
+/// JSON type, and no other key.
+fn plain_argument(node: &Kept) -> bool {
+    let Kept::Object(entries) = node else {
+        return false;
+    };
+    let [(k1, v1), (k2, v2)] = entries.as_slice() else {
+        return false;
+    };
+    let (class, value) = match (k1.as_ref(), k2.as_ref()) {
+        ("$class", "value") => (v1, v2),
+        ("value", "$class") => (v2, v1),
+        _ => return false,
+    };
+    matches!(
+        (class, value),
+        (Kept::Other(Value::String(class)), Kept::Other(Value::String(_)))
+            if class == DECORATOR_STRING_CLASS
+    ) || matches!(
+        (class, value),
+        (Kept::Other(Value::String(class)), Kept::Other(Value::Number(n)))
+            if class == DECORATOR_NUMBER_CLASS && n.as_f64().is_some()
+    ) || matches!(
+        (class, value),
+        (Kept::Other(Value::String(class)), Kept::Other(Value::Bool(_)))
+            if class == DECORATOR_BOOLEAN_CLASS
+    )
+}
+
+/// The generated `Decorator` of a [`plain_decorator`] node.
+fn into_decorator(node: Kept) -> mm::Decorator {
+    let mut decorator = mm::Decorator {
+        _class: String::new(),
+        name: String::new(),
+        arguments: None,
+        location: None,
+    };
+    if let Kept::Object(entries) = node {
+        for (key, value) in entries {
+            match (key.as_ref(), value) {
+                ("$class", value) => decorator._class = value.into_string(),
+                ("name", value) => decorator.name = value.into_string(),
+                ("arguments", Kept::Array(arguments)) => {
+                    decorator.arguments =
+                        Some(arguments.into_iter().filter_map(into_argument).collect());
+                }
+                _ => {}
+            }
+        }
+    }
+    decorator
+}
+
+/// The generated argument of a [`plain_argument`] node (always `Some`).
+fn into_argument(node: Kept) -> Option<mm::DecoratorLiteral> {
+    let Kept::Object(entries) = node else {
+        return None;
+    };
+    let mut class = String::new();
+    let mut value = None;
+    for (key, item) in entries {
+        match (key.as_ref(), item) {
+            ("$class", item) => class = item.into_string(),
+            (_, Kept::Other(item)) => value = Some(item),
+            _ => {}
+        }
+    }
+    match (class.as_str(), value?) {
+        (DECORATOR_STRING_CLASS, Value::String(value)) => {
+            Some(mm::DecoratorLiteral::DecoratorString(mm::DecoratorString {
+                location: None,
+                value,
+            }))
+        }
+        (DECORATOR_NUMBER_CLASS, Value::Number(value)) => {
+            Some(mm::DecoratorLiteral::DecoratorNumber(mm::DecoratorNumber {
+                location: None,
+                value: value.as_f64()?,
+            }))
+        }
+        (DECORATOR_BOOLEAN_CLASS, Value::Bool(value)) => Some(
+            mm::DecoratorLiteral::DecoratorBoolean(mm::DecoratorBoolean {
+                location: None,
+                value,
+            }),
+        ),
+        _ => None,
     }
 }
 
@@ -1055,7 +1378,7 @@ pub(crate) mod tests {
 
     /// `decorators` values: the usual lists, and every way one can differ
     /// from them.
-    pub(crate) const DECORATOR_CASES: [&str; 20] = [
+    pub(crate) const DECORATOR_CASES: [&str; 28] = [
         r#"[]"#,
         r#"null"#,
         r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d"}]"#,
@@ -1076,10 +1399,20 @@ pub(crate) mod tests {
         r#"[null]"#,
         r#""ab""#,
         r#"{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d"}"#,
+        // P5-93: lists `Kept::into_decorators` reads by moving strings out,
+        // and ones it leaves to the strict decode.
+        r#"[{"name":"d","arguments":null,"$class":"concerto.metamodel@1.0.0.Decorator"},{"$class":"Decorator","name":"e\u0021","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorNumber","value":18446744073709551615},{"value":-3,"$class":"concerto.metamodel@1.0.0.DecoratorNumber"},{"$class":"concerto.metamodel@1.0.0.DecoratorBoolean","value":false}]}]"#,
+        r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorNumber","value":1e300},{"$class":"concerto.metamodel@1.0.0.DecoratorString","value":"\ud83d\ude00"}]}]"#,
+        r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorString","value":1}]}]"#,
+        r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorBoolean","value":"true"}]}]"#,
+        r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorString"}]}]"#,
+        r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorString","value":"x","value":"y"}]}]"#,
+        r#"[{"$class":7,"name":"d"}]"#,
+        r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":null}]"#,
     ];
 
     /// `identified` values.
-    pub(crate) const IDENTIFIED_CASES: [&str; 10] = [
+    pub(crate) const IDENTIFIED_CASES: [&str; 20] = [
         r#"{"$class":"concerto.metamodel@1.0.0.IdentifiedBy","name":"id"}"#,
         r#"{"$class":"concerto.metamodel@1.0.0.Identified"}"#,
         r#"null"#,
@@ -1090,6 +1423,18 @@ pub(crate) mod tests {
         r#"{"$class":"x","name":"id"}"#,
         r#"[]"#,
         r#"0"#,
+        // P5-93: values `IdentifiedSeed` reads field by field, or as far
+        // as it can before reading the rest as a `Kept`.
+        r#"{"name":"id"}"#,
+        r#"{"$class":"concerto.metamodel@1.0.0.Identified","name":"id"}"#,
+        r#"{"name":"id","$class":"concerto.metamodel@1.0.0.Identified"}"#,
+        r#"{"name":1,"$class":"concerto.metamodel@1.0.0.IdentifiedBy"}"#,
+        r#"{"$class":"concerto.metamodel@1.0.0.IdentifiedBy","name":null}"#,
+        r#"{"$class":"concerto.metamodel@1.0.0.IdentifiedBy","$class":"concerto.metamodel@1.0.0.Identified"}"#,
+        r#"{"$class":"concerto.metamodel@1.0.0.IdentifiedBy","name":"a","name":"b"}"#,
+        r#"{"n\u0061me":"id","$cl\u0061ss":"concerto.metamodel@1.0.0.IdentifiedBy"}"#,
+        r#"{"$class":"concerto.metamodel@1.0.0.IdentifiedBy","name":"\u0069d"}"#,
+        r#"{"extra":1,"$class":"concerto.metamodel@1.0.0.Identified"}"#,
     ];
 
     /// P5-76: a `decorators` value read as a [`Kept`] is its `Value`, and
@@ -1118,6 +1463,12 @@ pub(crate) mod tests {
                 parse_decorators(&serde_json::json!({ "decorators": value })),
                 "{text}"
             );
+            // P5-93: decoded by moving the strings out, the same result.
+            let moved = kept
+                .into_decorators()
+                .map(|d| format!("{d:?}"))
+                .map_err(|_| ());
+            assert_eq!(moved, from_value, "{text}");
         }
     }
 
@@ -1137,5 +1488,59 @@ pub(crate) mod tests {
                 .map_err(|_| ());
             assert_eq!(decoded, from_value, "{text}");
         }
+    }
+
+    /// P5-93: an `identified` value read by [`IdentifiedSeed`], from the
+    /// text and from its `Value`, decodes as its `Value` does; it is kept
+    /// as a [`Kept`] (its `Value`) unless it is one of the metamodel's own
+    /// two nodes, which BC-19's shape check accepts.
+    ///
+    /// [`IdentifiedSeed`]: super::IdentifiedSeed
+    #[test]
+    fn identified_is_read_field_by_field_and_decodes_as_its_value() {
+        use super::{IdentifiedRead, IdentifiedSeed};
+        use crate::instance::metamodel::check_ast_shape;
+
+        let mut field_by_field = 0;
+        for text in IDENTIFIED_CASES {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let from_value = strict_from_value::<Option<mm::Identified>>(&value)
+                .map(|d| format!("{d:?}"))
+                .map_err(|_| ());
+            let mut d = serde_json::Deserializer::from_str(text);
+            for read in [
+                IdentifiedSeed.deserialize(&mut d).unwrap(),
+                IdentifiedSeed.deserialize(&value).unwrap(),
+            ] {
+                if !matches!(read, IdentifiedRead::Kept(_)) {
+                    field_by_field += 1;
+                }
+                match read.decode() {
+                    Ok((identified, kept)) => {
+                        assert_eq!(Ok(format!("{identified:?}")), from_value, "{text}");
+                        match kept {
+                            Some(kept) => assert_eq!(kept.to_value(), value, "{text}"),
+                            None => {
+                                let ast = serde_json::json!({
+                                    "$class": "concerto.metamodel@1.0.0.Model",
+                                    "namespace": "org.acme@1.0.0",
+                                    "declarations": [{
+                                        "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
+                                        "name": "A", "isAbstract": false, "properties": [],
+                                        "identified": value,
+                                    }],
+                                });
+                                assert!(check_ast_shape(&ast).is_ok(), "{text}");
+                            }
+                        }
+                    }
+                    Err(_) => assert_eq!(from_value, Err(()), "{text}"),
+                }
+            }
+        }
+        // From both reads: the two nodes, `IdentifiedBy` in the other key
+        // order, with an escaped name, and with escaped keys; from the
+        // `Value`, the two with a repeated key (it has only the last).
+        assert_eq!(field_by_field, 12);
     }
 }

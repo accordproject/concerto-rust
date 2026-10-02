@@ -17,23 +17,24 @@ use indexmap::IndexMap;
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
-use crate::introspect::decorator::{Decorated, Decorator, parse_decorators};
+use crate::introspect::decorator::{Decorated, Decorator, parse_decorator_list};
 use crate::introspect::import::Import;
 use crate::introspect::shape;
-use crate::introspect::typed_ast::{self, TypedDeclaration};
+use crate::introspect::typed_ast::{self, ModelHeader, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
-/// The keys of the generated `Model` struct, which are all a model AST's
-/// top level may hold.
-const MODEL_KEYS: [&str; 7] = [
-    "$class",
-    "namespace",
-    "sourceUri",
-    "concertoVersion",
-    "imports",
-    "declarations",
-    "decorators",
-];
+/// The key of a declaration name in [`ModelFile`]'s `local_types`.
+fn name_hash(name: &str) -> u64 {
+    use std::hash::BuildHasher;
+    rustc_hash::FxBuildHasher.hash_one(name)
+}
+
+/// `local_types`' value for a hash two different declaration names share.
+const SHARED_HASH: usize = usize::MAX;
+
+/// The most declarations a [`ModelFile`] finds a name among by scanning
+/// them, with no `local_types` map.
+const LOCAL_SCAN_MAX: usize = 8;
 
 /// A parsed model file for one namespace.
 #[derive(Debug, Clone)]
@@ -43,8 +44,12 @@ pub struct ModelFile {
     imports: Vec<Import>,
     declarations: Vec<Declaration>,
     /// Declaration names to their index, for `getLocalType` (FxHash,
-    /// P5-13: only ever looked up, never iterated).
-    local_types: rustc_hash::FxHashMap<String, usize>,
+    /// P5-13: only ever looked up, never iterated). P5-93: keyed by the
+    /// name's hash ([`name_hash`]), not a copy of the name; a hash two
+    /// different names share maps to [`SHARED_HASH`]. Empty, and the
+    /// declarations scanned instead, for a file of at most
+    /// [`LOCAL_SCAN_MAX`] declarations ([`ModelFile::local_index`]).
+    local_types: rustc_hash::FxHashMap<u64, usize>,
     file_name: Option<String>,
     ast: Ast,
     decorators: Vec<Decorator>,
@@ -238,11 +243,10 @@ impl ModelFile {
             }
         }
         let mut header = model.header;
-        let result = Self::load(&header, model.declarations, definitions, file_name).map(
+        let result = Self::load(&mut header, model.declarations, definitions, file_name).map(
             |mut model_file| {
                 model_file.ast = Ast::from_compact(bytes);
-                let imports = header.as_object_mut().and_then(|h| h.remove("imports"));
-                (model_file, imports)
+                (model_file, header.imports)
             },
         );
         Ok(result)
@@ -294,11 +298,10 @@ impl ModelFile {
             }
         }
         let mut header = model.header;
-        let result = Self::load(&header, model.declarations, definitions, file_name).map(
+        let result = Self::load(&mut header, model.declarations, definitions, file_name).map(
             |mut model_file| {
                 model_file.ast = Ast::from_text(text);
-                let imports = header.as_object_mut().and_then(|h| h.remove("imports"));
-                (model_file, imports)
+                (model_file, header.imports)
             },
         );
         Ok(result)
@@ -311,17 +314,22 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
-        let model = typed_ast::from_value(value)
+        let mut model = typed_ast::from_value(value)
             .map_err(|err| unreadable_ast(&err, file_name.as_deref()))?;
-        Self::load(&model.header, model.declarations, definitions, file_name)
+        Self::load(
+            &mut model.header,
+            model.declarations,
+            definitions,
+            file_name,
+        )
     }
 
-    /// Builds the model file from the model the typed read gave: `value`
-    /// is the AST's header (every top-level key but `declarations`), and
-    /// `declarations` its declarations, already read. Leaves
-    /// [`ModelFile::ast`] `Null` for the caller to fill in.
+    /// Builds the model file from the model the typed read gave: `header`
+    /// is the AST's header (every top-level key but `declarations`; its
+    /// `namespace` is taken), and `declarations` its declarations, already
+    /// read. Leaves [`ModelFile::ast`] `Null` for the caller to fill in.
     fn load(
-        value: &serde_json::Value,
+        header: &mut ModelHeader,
         typed: Vec<TypedDeclaration>,
         definitions: Option<String>,
         file_name: Option<String>,
@@ -329,29 +337,36 @@ impl ModelFile {
         // The model's own keys, read as strictly as every other node's
         // (`typed_ast`'s module doc, "Unknown keys"): only the generated
         // `Model`'s, and its decorators decoded into the generated struct.
-        if let Some(key) = value.as_object().and_then(|header| {
-            header
-                .keys()
-                .find(|key| !MODEL_KEYS.contains(&key.as_str()))
-        }) {
+        if let Some(key) = &header.unknown {
             return Err(unreadable_ast(
                 &serde::de::Error::custom(format_args!("unknown field `{key}`")),
                 file_name.as_deref(),
             ));
         }
-        if let Some(decorators) = value.get("decorators") {
-            let _: Option<Vec<concerto_metamodel::concerto_metamodel_1_0_0::Decorator>> =
-                typed_ast::strict_from_value(decorators)
+        // P5-93: the decorators taken from the value as it is checked (as
+        // a declaration's are), where its `Value` used to be read twice.
+        let decorators = match header.decorators.take() {
+            None => Vec::new(),
+            Some(value) => {
+                let decorators = parse_decorator_list(Some(&value));
+                value
+                    .into_decorators()
                     .map_err(|err| unreadable_ast(&err, file_name.as_deref()))?;
-        }
+                decorators
+            }
+        };
 
-        let namespace = value
-            .get("namespace")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                Error::illegal_model("model missing 'namespace'", file_name.clone(), None)
-            })?
-            .to_string();
+        // P5-93: the header's own string, taken rather than copied.
+        let namespace = match header.namespace.take() {
+            Some(serde_json::Value::String(namespace)) => namespace,
+            _ => {
+                return Err(Error::illegal_model(
+                    "model missing 'namespace'",
+                    file_name.clone(),
+                    None,
+                ));
+            }
+        };
 
         // TS: `ModelFile.fromAst`'s own namespace handling (modelfile.ts) —
         // `ModelUtil.parseNamespace`, a check that every dot-separated part
@@ -360,7 +375,7 @@ impl ModelFile {
         let is_system_namespace = namespace.starts_with("concerto@") || namespace == "concerto";
         let version = parse_namespace_version(&namespace, &file_name)?;
 
-        let mut imports = match value.get("imports") {
+        let mut imports = match &header.imports {
             None => Vec::new(),
             Some(serde_json::Value::Array(arr)) => arr
                 .iter()
@@ -415,12 +430,29 @@ impl ModelFile {
         // wins), while `getAllDeclarations()` still lists both. Only
         // `ModelFile.validate()`'s duplicate-name scan rejects it
         // (`ModelManager::validate_model_file`, P2-08).
-        let mut declarations = Vec::with_capacity(typed.len());
+        let mut declarations: Vec<Declaration> = Vec::with_capacity(typed.len());
         let mut local_types = rustc_hash::FxHashMap::default();
+        let indexed = typed.len() > LOCAL_SCAN_MAX;
+        if indexed {
+            local_types.reserve(typed.len());
+        }
         for raw in typed {
             let decl = Declaration::from_typed(raw, &namespace, file_name.as_deref())
                 .map_err(|e| annotate(e, &file_name))?;
-            local_types.insert(decl.name().to_string(), declarations.len());
+            let index = declarations.len();
+            if indexed {
+                local_types
+                    .entry(name_hash(decl.name()))
+                    .and_modify(|slot: &mut usize| {
+                        *slot = if *slot != SHARED_HASH && declarations[*slot].name() == decl.name()
+                        {
+                            index
+                        } else {
+                            SHARED_HASH
+                        };
+                    })
+                    .or_insert(index);
+            }
             declarations.push(decl);
         }
 
@@ -428,7 +460,7 @@ impl ModelFile {
         // after `fromAst` has populated the imports and declarations, before
         // `localTypes` is built — so a bad declaration is still reported
         // ahead of an incompatible `concertoVersion` when a model has both.
-        let concerto_version = check_compatible_version(value)?;
+        let concerto_version = check_compatible_version(header.concerto_version.as_ref())?;
 
         let external = file_name.as_deref().is_some_and(|n| n.starts_with('@'));
 
@@ -439,7 +471,7 @@ impl ModelFile {
             declarations,
             local_types,
             file_name,
-            decorators: parse_decorators(value),
+            decorators,
             ast: Ast::from_value(serde_json::Value::Null),
             concerto_version,
             definitions,
@@ -576,7 +608,17 @@ impl ModelFile {
     /// this short name. The model manager's arena addresses a declaration by
     /// its file and this position.
     pub(crate) fn local_index(&self, short: &str) -> Option<usize> {
-        self.local_types.get(short).copied()
+        if self.local_types.is_empty() {
+            // At most `LOCAL_SCAN_MAX` declarations (or none): the last
+            // declaration of the name.
+            return self.declarations.iter().rposition(|d| d.name() == short);
+        }
+        match *self.local_types.get(&name_hash(short))? {
+            // Two different names share this hash: the last declaration of
+            // the name, as the map of names held it.
+            SHARED_HASH => self.declarations.iter().rposition(|d| d.name() == short),
+            index => (self.declarations[index].name() == short).then_some(index),
+        }
     }
 
     /// True if this is the built-in `concerto` system namespace.
@@ -607,7 +649,7 @@ impl ModelFile {
         if let Some(fqn) = self.imports.iter().find_map(|imp| imp.resolve(short)) {
             return Some(fqn);
         }
-        if self.local_types.contains_key(short) {
+        if self.local_index(short).is_some() {
             return Some(qualify(&self.namespace, short));
         }
         None
@@ -1211,12 +1253,8 @@ impl ModelFile {
 /// `semver` crate's requirement syntax: the two disagree on space-separated
 /// AND comparators (`>=3.0.0 <6.0.0`), hyphen ranges (`1.2.3 - 2.3.4`) and
 /// what a bare version means (exact in node-semver, caret in Cargo).
-fn check_compatible_version(value: &serde_json::Value) -> Result<Option<String>> {
-    let Some(range) = value
-        .get("concertoVersion")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    else {
+fn check_compatible_version(value: Option<&serde_json::Value>) -> Result<Option<String>> {
+    let Some(range) = value.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
     compatible_concerto_version(range).map(Some)
@@ -1389,6 +1427,50 @@ mod tests {
         assert_eq!(mf.imports()[1].namespace(), "concerto@1.0.0");
         assert!(mf.local_declaration("Person").is_some());
         assert!(!mf.is_system_namespace());
+    }
+
+    /// P5-93: `local_types` holds each name's hash. The last declaration of
+    /// a name wins (TS's `Map.set`), and a hash two names share is resolved
+    /// by name.
+    #[test]
+    fn local_types_find_the_last_declaration_of_a_name() {
+        let concept = |name: &str| {
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": name, "isAbstract": false, "properties": [] })
+        };
+        let model = |declarations: Vec<serde_json::Value>| {
+            serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.example@1.0.0",
+                "declarations": declarations,
+            })
+        };
+        // Scanned: a file of at most `LOCAL_SCAN_MAX` declarations.
+        let mf = ModelFile::from_json(&model(vec![concept("A"), concept("B"), concept("A")]), None)
+            .unwrap();
+        assert!(mf.local_types.is_empty());
+        assert_eq!(mf.local_index("A"), Some(2));
+        assert_eq!(mf.local_index("B"), Some(1));
+        assert_eq!(mf.local_index("C"), None);
+        assert!(mf.is_local_type("B") && !mf.is_local_type("C"));
+        // Hashed.
+        let mut declarations = vec![concept("A"), concept("B"), concept("A")];
+        declarations.extend((0..LOCAL_SCAN_MAX).map(|i| concept(&format!("D{i}"))));
+        let mut mf = ModelFile::from_json(&model(declarations), None).unwrap();
+        assert!(!mf.local_types.is_empty());
+        assert_eq!(mf.local_index("A"), Some(2));
+        assert_eq!(mf.local_index("B"), Some(1));
+        assert_eq!(mf.local_index("D7"), Some(10));
+        assert_eq!(mf.local_index("C"), None);
+        assert!(mf.is_local_type("B") && !mf.is_local_type("C"));
+        // As if "A" and "C" shared a hash.
+        mf.local_types.insert(name_hash("A"), SHARED_HASH);
+        mf.local_types.insert(name_hash("C"), SHARED_HASH);
+        assert_eq!(mf.local_index("A"), Some(2));
+        assert_eq!(mf.local_index("C"), None);
+        // As if "C" had "B"'s hash.
+        mf.local_types.insert(name_hash("C"), 1);
+        assert_eq!(mf.local_index("C"), None);
     }
 
     #[test]

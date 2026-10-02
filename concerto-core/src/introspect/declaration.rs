@@ -16,11 +16,11 @@ use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::decorator::{
     Decorator, WithDecorators, parse_decorator_list, parse_decorators,
 };
-use crate::introspect::kept::Location;
+use crate::introspect::kept::{Kept, Location};
 use crate::introspect::model_file::unreadable_ast;
 use crate::introspect::property::Property;
 use crate::introspect::scalar::{self, ScalarDeclaration};
-use crate::introspect::typed_ast::{self, TypedDeclaration, TypedProperty};
+use crate::introspect::typed_ast::{self, PropertyKept, TypedDeclaration, TypedProperties};
 use crate::introspect::{
     DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
 };
@@ -103,6 +103,16 @@ impl ClassNode {
         class_field!(self, d => (d.name.as_str(), d.super_type.as_ref()))
     }
 
+    /// Whether the node's `identified` is the system identifier
+    /// (`Identified`), for which the loader adds an `$identifier` property
+    /// (`ClassDeclaration::finish`).
+    pub(crate) fn is_system_identified(&self) -> bool {
+        matches!(
+            class_field!(self, d => d.identified.as_ref()),
+            Some(mm::Identified::Identified)
+        )
+    }
+
     /// Sets the node's `identified`, which the typed read decodes apart
     /// from the node's own decode (`crate::introspect::typed_ast`, P5-76).
     pub(crate) fn set_identified(&mut self, identified: Option<mm::Identified>) {
@@ -173,8 +183,24 @@ pub(crate) fn identity(identified: Option<mm::Identified>) -> Option<mm::Identif
 pub struct ClassDeclaration {
     node: ClassNode,
     properties: Vec<Property>,
-    implicit_super_type: Option<mm::TypeIdentifier>,
+    /// P5-93: one of [`implicit_super_types`]' nodes, shared, where each
+    /// class used to build its own.
+    implicit_super_type: Option<&'static mm::TypeIdentifier>,
     decorators: Vec<Decorator>,
+}
+
+/// The implicit super type nodes: `Concept`, `Asset`, `Participant`,
+/// `Transaction` and `Event` (`ClassDeclaration::finish`).
+fn implicit_super_types() -> &'static [mm::TypeIdentifier; 5] {
+    static NODES: std::sync::LazyLock<[mm::TypeIdentifier; 5]> = std::sync::LazyLock::new(|| {
+        ["Concept", "Asset", "Participant", "Transaction", "Event"].map(|name| mm::TypeIdentifier {
+            _class: qualified_class("TypeIdentifier"),
+            name: name.to_string(),
+            namespace: None,
+            resolved_name: None,
+        })
+    });
+    &NODES
 }
 
 js_compat_pub! {
@@ -222,7 +248,7 @@ impl ClassDeclaration {
     /// TS: after `ClassDeclaration.process` has run, `this.superType`
     /// (src/introspect/classdeclaration.ts).
     pub fn super_type(&self) -> Option<&mm::TypeIdentifier> {
-        class_field!(&self.node, d => d.super_type.as_ref()).or(self.implicit_super_type.as_ref())
+        class_field!(&self.node, d => d.super_type.as_ref()).or(self.implicit_super_type)
     }
 
     /// The properties declared directly on this type. Inherited properties are
@@ -537,19 +563,14 @@ impl ClassDeclaration {
             // this.ast.superType.name`), not this one. Only `kind ==
             // ClassKind::Concept` reaches `process`'s own fallback, unset by
             // `fromAst` (its `case ConceptDeclaration` injects nothing).
-            let implicit_name = match kind {
-                ClassKind::Concept => "Concept",
-                ClassKind::Asset => "Asset",
-                ClassKind::Participant => "Participant",
-                ClassKind::Transaction => "Transaction",
-                ClassKind::Event => "Event",
+            let index = match kind {
+                ClassKind::Concept => 0,
+                ClassKind::Asset => 1,
+                ClassKind::Participant => 2,
+                ClassKind::Transaction => 3,
+                ClassKind::Event => 4,
             };
-            Some(mm::TypeIdentifier {
-                _class: qualified_class("TypeIdentifier"),
-                name: implicit_name.to_string(),
-                namespace: None,
-                resolved_name: None,
-            })
+            Some(&implicit_super_types()[index])
         };
 
         // TS: ClassDeclaration.addIdentifierField, called from `process`
@@ -997,6 +1018,24 @@ impl MapDeclaration {
             value_decorators: value.get("value").map(parse_decorators).unwrap_or_default(),
         })
     }
+
+    /// [`MapDeclaration::from_json`], for the node as the typed read keeps
+    /// it (a [`Kept`], P5-93): the same declaration as from its `Value`.
+    fn from_kept(value: &Kept, file_name: Option<&str>) -> Result<Self> {
+        let node: mm::MapDeclaration = value
+            .strict_variant_decode()
+            .map_err(|e| unreadable_ast(&e, file_name))?;
+        let decorators_of = |node: Option<&Kept>| {
+            node.map(|node| parse_decorator_list(node.get("decorators")))
+                .unwrap_or_default()
+        };
+        Ok(Self {
+            node,
+            decorators: decorators_of(Some(value)),
+            key_decorators: decorators_of(value.get("key")),
+            value_decorators: decorators_of(value.get("value")),
+        })
+    }
 }
 
 impl Declaration {
@@ -1153,6 +1192,16 @@ impl Declaration {
     ) -> Result<Self> {
         match declaration {
             TypedDeclaration::Ast(value) => Self::from_model_json(&value, namespace, file_name),
+            // As `from_model_json` loads a map declaration's `Value`.
+            TypedDeclaration::Map(node) => {
+                let map = MapDeclaration::from_kept(&node, file_name)?;
+                check_declaration_name(
+                    map.name(),
+                    || node.get("location").map(Kept::to_value),
+                    file_name,
+                )?;
+                Ok(Self::Map(map))
+            }
             TypedDeclaration::Class {
                 kind,
                 node,
@@ -1162,7 +1211,7 @@ impl Declaration {
                 ..
             } => {
                 check_declaration_name(
-                    class_field!(&*node, d => &d.name),
+                    class_field!(&node, d => &d.name),
                     || location.as_ref().map(Location::to_value),
                     file_name,
                 )?;
@@ -1170,9 +1219,9 @@ impl Declaration {
                     .and_then(|()| {
                         ClassDeclaration::finish(
                             kind,
-                            *node,
-                            properties.into_iter().map(|p| p.property).collect(),
-                            parse_decorator_list(decorators.as_ref()),
+                            node,
+                            properties.properties,
+                            decorators.map(|read| read.list).unwrap_or_default(),
                             namespace,
                         )
                     })
@@ -1193,8 +1242,11 @@ impl Declaration {
                 check_property_names(&values, location.as_ref())
                     .map_err(|e| with_model_file(e, file_name))?;
                 Ok(Self::Enum(EnumDeclaration {
-                    inner: WithDecorators::new(*node, parse_decorator_list(decorators.as_ref())),
-                    values: values.into_iter().map(|p| p.property).collect(),
+                    inner: WithDecorators::new(
+                        node,
+                        decorators.map(|read| read.list).unwrap_or_default(),
+                    ),
+                    values: values.properties,
                 }))
             }
         }
@@ -1207,13 +1259,10 @@ impl Declaration {
 /// location; then `Property.process` rejects a name that is not a valid
 /// identifier, with the property's own.
 fn check_property_names(
-    properties: &[TypedProperty],
+    properties: &TypedProperties,
     declaration: Option<&Location>,
 ) -> Result<()> {
-    for TypedProperty {
-        property, location, ..
-    } in properties
-    {
+    for (property, PropertyKept { location, .. }) in properties.iter() {
         let name = property.name();
         if is_system_property(name) {
             // The model file's name is filled in by the caller
