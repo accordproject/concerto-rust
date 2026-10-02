@@ -1198,6 +1198,8 @@ impl Ast {
             #[cfg(feature = "js-compat")]
             if let Some(bytes) = &self.compact {
                 return crate::introspect::compact::to_value(bytes)
+                    // P5-95: the typed read checks every byte as `to_value`
+                    // does, a value it skips included (`Compact::skip`).
                     .expect("the typed read accepted these bytes, so they are in the layout");
             }
             // The typed path only accepts text that also parses as a `Value`
