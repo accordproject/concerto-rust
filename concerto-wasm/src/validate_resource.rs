@@ -64,7 +64,9 @@ use std::cell::RefCell;
 
 use concerto_core::error::ErrorKind;
 use concerto_core::instance::ValidateOptions;
-use concerto_core::instance::validate::{validate_instance_from, validate_property_value};
+use concerto_core::instance::validate::{
+    validate_instance_from, validate_property_value, validate_property_value_planned,
+};
 use serde_json::{Map, Number, Value};
 use wasm_bindgen::prelude::*;
 
@@ -283,6 +285,22 @@ impl ModelManagerHandle {
         flags: u32,
     ) -> u32 {
         code_of(decode(bytes).and_then(|value| {
+            // P5-80 (accordproject/concerto-rust#424) prototype: the
+            // property from the plan's name index, validated over the plan.
+            if let Some(class_plan) =
+                concerto_core::instance::plan::class_plan_by_name(&self.manager, class_fqn)
+                && let Some(index) = class_plan.find(prop_name)
+            {
+                return Ok(validate_property_value_planned(
+                    &self.manager,
+                    &class_plan,
+                    index,
+                    &value,
+                    root_id.to_string(),
+                    &options_from_flags(flags),
+                )
+                .map_err(Error::from));
+            }
             let Ok(Some((owner_fqn, property))) = self.manager.property(class_fqn, prop_name)
             else {
                 return Err(unsupported("no such property in the engine's model"));

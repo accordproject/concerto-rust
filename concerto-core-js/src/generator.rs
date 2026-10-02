@@ -16,6 +16,7 @@ use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::UtcOffset;
 use concerto_core::instance::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
+use concerto_core::instance::plan;
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::model_util;
@@ -184,10 +185,33 @@ impl<'a> Generator<'a> {
         {
             result.insert("$id".to_string(), JsValue::String(id));
         }
-        for (owner_fqn, property) in class_declaration
-            .properties("classDeclaration.getProperties")?
-            .iter()
-        {
+        // P5-80 (#424) prototype: the property table and field types from
+        // the plan, when there is one.
+        let class_properties = class_declaration.properties("classDeclaration.getProperties")?;
+        if let Some(class_plan) = plan::class_plan(self.mm, class_declaration.id) {
+            for index in 0..class_plan.props.len() {
+                let (owner_fqn, property) = class_plan.property(self.mm, index);
+                let name = concerto_core::Named::name(property).to_string();
+                let value = resource.get(&name).clone();
+                if value.is_nullish() {
+                    continue;
+                }
+                let field = match class_plan.field(self.mm, index) {
+                    Some(field) => field,
+                    None => model::field(self.mm, owner_fqn, property)?,
+                };
+                let converted = match &field.field_type {
+                    FieldType::Relationship(_) => {
+                        self.visit_relationship_declaration(&field, &value)?
+                    }
+                    FieldType::EnumValue => return Err(model::unrecognised_field(&field)),
+                    _ => self.visit_field(&field, &value)?,
+                };
+                result.insert(name, converted);
+            }
+            return Ok(JsValue::Object(result));
+        }
+        for (owner_fqn, property) in class_properties.iter() {
             let name = concerto_core::Named::name(property).to_string();
             let value = resource.get(&name).clone();
             if value.is_nullish() {

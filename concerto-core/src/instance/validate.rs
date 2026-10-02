@@ -109,6 +109,8 @@ use crate::introspect::{Declaration, FullyQualified, Property};
 use crate::model_manager::{ModelManager, ValidatedElement};
 use crate::model_util;
 
+use super::plan::{self, ClassPlan, PlanKind, PlanProp, Prepared, ValueValidator};
+
 /// TS `SerializerOptions`, the two fields `ResourceValidator`'s constructor
 /// reads (`resourcevalidator.ts` lines 53-58).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -215,6 +217,28 @@ js_compat_pub! {
     }
 }
 
+js_compat_pub! {
+    /// P5-80 (#424) prototype: [`validate_property_value`] for the property
+    /// at `index` of a [`ClassPlan`].
+    pub fn validate_property_value_planned(
+        mm: &ModelManager,
+        class_plan: &ClassPlan,
+        index: usize,
+        value: &Value,
+        root_resource_identifier: String,
+        options: &ValidateOptions,
+    ) -> Result<()> {
+        let mut params = Params {
+            mm,
+            options,
+            root_resource_identifier,
+            current_identifier: None,
+        };
+        let (owner_fqn, property) = class_plan.property(mm, index);
+        visit_property_planned(&mut params, owner_fqn, property, &class_plan.props[index], value)
+    }
+}
+
 // ---------------------------------------------------------------------
 // visitClassDeclaration
 // ---------------------------------------------------------------------
@@ -305,6 +329,11 @@ fn visit_class_declaration_dispatch(
         )
         .into());
     };
+    // P5-80 (#424) prototype: the planned walk, when the plan is on and
+    // the declaration has one.
+    if let Some(class_plan) = plan::class_plan(p.mm, to_be_assigned_id) {
+        return visit_class_planned(p, declared_fqn, own_fqn, obj, &class_plan);
+    }
     let identifier_field_name = p.mm.identifier_field_of(to_be_assigned_id)?;
 
     // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
@@ -380,6 +409,82 @@ fn visit_class_declaration_dispatch(
         match value {
             Some(v) if !is_js_null(v) => {
                 visit_property(p, owner_fqn, property, v)?;
+            }
+            _ => {
+                if !property.is_optional() {
+                    if property.name() == "$identifier"
+                        && identifier_field_name != Some("$identifier")
+                    {
+                        continue;
+                    }
+                    if property_has_default_value(property) {
+                        continue;
+                    }
+                    return Err(missing_required_property(
+                        &p.root_resource_identifier,
+                        property,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// P5-80 (#424) prototype: [`visit_class_declaration_dispatch`] after its
+/// `$class` lookup, over the declaration's [`ClassPlan`]: the same checks in
+/// the same order, with the inherited facts read from the plan.
+fn visit_class_planned(
+    p: &mut Params,
+    declared_fqn: &str,
+    own_fqn: &str,
+    obj: &serde_json::Map<String, Value>,
+    class_plan: &ClassPlan,
+) -> Result<()> {
+    let identifier_field_name = class_plan.identifier_field(p.mm);
+    let own_id_field = identifier_field_name.unwrap_or("$identifier");
+    let own_id = obj.get(own_id_field).and_then(Value::as_str);
+    write_fully_qualified_identifier(&mut p.root_resource_identifier, own_fqn, own_id);
+    if class_plan.is_abstract {
+        return Err(abstract_class(own_fqn));
+    }
+    let declared_is_identified = if declared_fqn == own_fqn {
+        identifier_field_name.is_some()
+    } else {
+        match plan::class_plan_by_name(p.mm, declared_fqn) {
+            Some(declared) => declared.identifier_field(p.mm).is_some(),
+            None => p.mm.identifier_field(declared_fqn)?.is_some(),
+        }
+    };
+    for key in obj.keys() {
+        if model_util::is_system_property(key) || class_plan.contains(key) {
+            continue;
+        }
+        let resource_id = if declared_is_identified && key != "$identifier" {
+            let id = identifier_field_name
+                .and_then(|f| obj.get(f))
+                .and_then(Value::as_str);
+            js_id_display(id)
+        } else {
+            p.current_identifier
+                .clone()
+                .unwrap_or_else(|| "undefined".to_string())
+        };
+        return Err(undeclared_field(&resource_id, key, own_fqn));
+    }
+    if declared_is_identified {
+        let id_field = identifier_field_name.unwrap_or("$identifier");
+        let id = obj.get(id_field).and_then(Value::as_str).unwrap_or("");
+        if id.trim().is_empty() {
+            return Err(empty_identifier(&p.root_resource_identifier));
+        }
+        p.current_identifier = Some(format!("{own_fqn}#{id}"));
+    }
+    for (i, pp) in class_plan.props.iter().enumerate() {
+        let (owner_fqn, property) = class_plan.property(p.mm, i);
+        match obj.get(property.name()) {
+            Some(v) if !is_js_null(v) => {
+                visit_property_planned(p, owner_fqn, property, pp, v)?;
             }
             _ => {
                 if !property.is_optional() {
@@ -575,21 +680,45 @@ fn visit_property(
     if let Property::Object(op) = property {
         match resolve_object_target(p.mm, owner_fqn, &op.type_)? {
             ObjectTarget::Enum(enum_fqn) => {
-                return visit_field(p, owner_fqn, property, value, &Kind::Enum(enum_fqn));
+                return visit_field(p, owner_fqn, property, value, &Kind::Enum(enum_fqn), None);
             }
             ObjectTarget::Scalar(scalar_fqn) => {
-                return visit_field(p, owner_fqn, property, value, &Kind::Scalar(scalar_fqn));
+                return visit_field(p, owner_fqn, property, value, &Kind::Scalar(scalar_fqn), None);
             }
             ObjectTarget::Map(map_fqn) => {
-                return visit_field(p, owner_fqn, property, value, &Kind::MapTyped(map_fqn));
+                return visit_field(p, owner_fqn, property, value, &Kind::MapTyped(map_fqn), None);
             }
             ObjectTarget::Class(class_fqn) => {
-                return visit_field(p, owner_fqn, property, value, &Kind::Class(class_fqn));
+                return visit_field(p, owner_fqn, property, value, &Kind::Class(class_fqn), None);
             }
         }
     }
 
-    visit_field(p, owner_fqn, property, value, &Kind::Primitive)
+    visit_field(p, owner_fqn, property, value, &Kind::Primitive, None)
+}
+
+/// P5-80 (#424) prototype: [`visit_property`] with the property's
+/// [`PlanProp`]: its type already resolved and its validators built.
+fn visit_property_planned(
+    p: &mut Params,
+    owner_fqn: &str,
+    property: &Property,
+    pp: &PlanProp,
+    value: &Value,
+) -> Result<()> {
+    let target = |d: crate::model_manager::DeclId| p.mm.decl_fqn(d);
+    let kind = match (&pp.kind, property) {
+        (PlanKind::Relationship(declared), Property::Relationship(rp)) => {
+            return visit_relationship_with(p, owner_fqn, property, &rp.type_, value, Some(pp), Some(declared));
+        }
+        (PlanKind::Enum { decl, .. }, Property::Object(_)) => Kind::Enum(target(*decl)?),
+        (PlanKind::Scalar { decl, .. }, Property::Object(_)) => Kind::Scalar(target(*decl)?),
+        (PlanKind::Map(decl), Property::Object(_)) => Kind::MapTyped(target(*decl)?),
+        (PlanKind::Class(decl), Property::Object(_)) => Kind::Class(target(*decl)?),
+        (PlanKind::Primitive(_), _) => Kind::Primitive,
+        _ => return visit_property(p, owner_fqn, property, value),
+    };
+    visit_field(p, owner_fqn, property, value, &kind, Some(pp))
 }
 
 /// What a field's declared type turns out to be, once `isTypeEnum`/
@@ -616,6 +745,7 @@ fn visit_field(
     property: &Property,
     value: &Value,
     kind: &Kind,
+    pp: Option<&PlanProp>,
 ) -> Result<()> {
     // `if (dataType === 'undefined' || dataType === 'symbol')`. Not reached
     // from `visit_class_declaration`, which skips an `undefined` field
@@ -624,27 +754,48 @@ fn visit_field(
         return Err(field_type_violation(p, owner_fqn, property, value));
     }
     if let Kind::Enum(enum_fqn) = kind {
-        return check_enum(p, owner_fqn, property, enum_fqn, value);
+        return check_enum(p, owner_fqn, property, enum_fqn, value, pp);
     }
 
     if property.is_array() {
-        return check_array(p, owner_fqn, property, kind, value);
+        return check_array(p, owner_fqn, property, kind, value, pp);
     }
 
     // `if(field.getSizeValidator() && obj instanceof Map)`: only reachable
     // when the field's own declared type is itself a map (`Kind::MapTyped`).
-    if let (Some(sv), Kind::MapTyped(_)) = (property.size_validator(), kind)
+    if let (Some(_), Kind::MapTyped(_)) = (property.size_validator(), kind)
         && let Some(entries) = map_entries(value)
     {
-        let elem = FieldElement::new(p.mm, owner_fqn, property);
-        CollectionSizeValidator::new(&elem, sv, None)?.validate(
-            &elem,
-            Some(p.root_resource_identifier.as_str()),
-            entries.len() as f64,
-        )?;
+        check_size(p, owner_fqn, property, pp, entries.len())?;
     }
 
-    check_item(p, owner_fqn, property, kind, value)
+    check_item(p, owner_fqn, property, kind, value, pp)
+}
+
+/// The field's `CollectionSizeValidator` over `len` items: the plan's, or
+/// built for this call (P5-80 prototype).
+fn check_size(
+    p: &Params,
+    owner_fqn: &str,
+    property: &Property,
+    pp: Option<&PlanProp>,
+    len: usize,
+) -> Result<()> {
+    let elem = FieldElement::new(p.mm, owner_fqn, property);
+    match pp.map(|pp| &pp.size) {
+        Some(Prepared::Built(v)) => {
+            v.validate(&elem, Some(p.root_resource_identifier.as_str()), len as f64)
+        }
+        Some(Prepared::None) => Ok(()),
+        _ => match property.size_validator() {
+            Some(sv) => CollectionSizeValidator::new(&elem, sv, None)?.validate(
+                &elem,
+                Some(p.root_resource_identifier.as_str()),
+                len as f64,
+            ),
+            None => Ok(()),
+        },
+    }
 }
 
 /// TS: `ResourceValidator.checkEnum` (resourcevalidator.ts:335).
@@ -654,25 +805,29 @@ fn check_enum(
     property: &Property,
     enum_fqn: &str,
     value: &Value,
+    pp: Option<&PlanProp>,
 ) -> Result<()> {
     if property.is_array() && !value.is_array() {
         return Err(field_type_violation(p, owner_fqn, property, value));
     }
+    let planned = match pp.map(|pp| &pp.kind) {
+        Some(PlanKind::Enum { decl, values }) => Some((*decl, values)),
+        _ => None,
+    };
+    let check = |p: &Params, item: &Value| match planned {
+        Some((decl, values)) => visit_enum_planned(p, decl, values, item),
+        None => visit_enum_declaration(p, enum_fqn, item),
+    };
     if property.is_array() {
         let items = value.as_array().expect("just checked is_array");
-        if let Some(sv) = property.size_validator() {
-            let elem = FieldElement::new(p.mm, owner_fqn, property);
-            CollectionSizeValidator::new(&elem, sv, None)?.validate(
-                &elem,
-                Some(p.root_resource_identifier.as_str()),
-                items.len() as f64,
-            )?;
+        if property.size_validator().is_some() {
+            check_size(p, owner_fqn, property, pp, items.len())?;
         }
         for item in items {
-            visit_enum_declaration(p, enum_fqn, item)?;
+            check(p, item)?;
         }
     } else {
-        visit_enum_declaration(p, enum_fqn, value)?;
+        check(p, value)?;
     }
     Ok(())
 }
@@ -684,21 +839,17 @@ fn check_array(
     property: &Property,
     kind: &Kind,
     value: &Value,
+    pp: Option<&PlanProp>,
 ) -> Result<()> {
     if !value.is_array() {
         return Err(field_type_violation(p, owner_fqn, property, value));
     }
     let items = value.as_array().expect("just checked is_array");
-    if let Some(sv) = property.size_validator() {
-        let elem = FieldElement::new(p.mm, owner_fqn, property);
-        CollectionSizeValidator::new(&elem, sv, None)?.validate(
-            &elem,
-            Some(p.root_resource_identifier.as_str()),
-            items.len() as f64,
-        )?;
+    if property.size_validator().is_some() {
+        check_size(p, owner_fqn, property, pp, items.len())?;
     }
     for item in items {
-        check_item(p, owner_fqn, property, kind, item)?;
+        check_item(p, owner_fqn, property, kind, item, pp)?;
     }
     Ok(())
 }
@@ -710,6 +861,7 @@ fn check_item(
     property: &Property,
     kind: &Kind,
     value: &Value,
+    pp: Option<&PlanProp>,
 ) -> Result<()> {
     // `if (dataType === 'undefined' || dataType === 'symbol')`: an
     // `undefined` array element (`["a", undefined, "b"]`) is reported here,
@@ -718,10 +870,22 @@ fn check_item(
         return Err(field_type_violation(p, owner_fqn, property, value));
     }
     match kind {
-        Kind::Primitive => check_primitive_item(p, owner_fqn, property, value),
-        Kind::Scalar(scalar_fqn) => check_scalar_item(p, owner_fqn, property, scalar_fqn, value),
+        Kind::Primitive => match pp.map(|pp| &pp.validator) {
+            Some(Prepared::None) | Some(Prepared::Built(_)) => {
+                check_primitive_planned(p, owner_fqn, property, pp.map(|pp| &pp.validator), value)
+            }
+            _ => check_primitive_item(p, owner_fqn, property, value),
+        },
+        Kind::Scalar(scalar_fqn) => match pp {
+            Some(pp) if !matches!(pp.validator, Prepared::Unplanned) => {
+                check_scalar_planned(p, owner_fqn, property, pp, value)
+            }
+            _ => check_scalar_item(p, owner_fqn, property, scalar_fqn, value),
+        },
         Kind::MapTyped(map_fqn) => visit_map_declaration(p, map_fqn, value),
-        Kind::Class(class_fqn) => check_object_item(p, owner_fqn, property, class_fqn, value),
+        Kind::Class(class_fqn) => {
+            check_object_item(p, owner_fqn, property, class_fqn, value, pp.is_some())
+        }
         Kind::Enum(_) => unreachable!("check_enum handles the Enum kind before check_item"),
     }
 }
@@ -785,6 +949,67 @@ fn check_primitive_item(
         }
         Property::Boolean(_) | Property::DateTime(_) => {}
         _ => unreachable!("check_primitive_item is only reached for primitive properties"),
+    }
+    Ok(())
+}
+
+/// P5-80 (#424) prototype: [`check_primitive_item`] with the field's
+/// validator built once.
+fn check_primitive_planned(
+    p: &mut Params,
+    owner_fqn: &str,
+    property: &Property,
+    validator: Option<&Prepared<ValueValidator>>,
+    value: &Value,
+) -> Result<()> {
+    let type_name = property.type_name().unwrap_or_default();
+    if !primitive_type_matches(type_name, value) {
+        return Err(field_type_violation(p, owner_fqn, property, value));
+    }
+    let elem = FieldElement::new(p.mm, owner_fqn, property);
+    let identifier = p.current_identifier.as_deref();
+    match validator {
+        Some(Prepared::Built(ValueValidator::String(sv))) => {
+            sv.validate(&elem, identifier, value.as_str())?;
+        }
+        Some(Prepared::Built(ValueValidator::Number(nv))) => {
+            nv.validate(&elem, identifier, value.as_f64())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// P5-80 (#424) prototype: [`check_scalar_item`] with the scalar resolved
+/// and its validator built once.
+fn check_scalar_planned(
+    p: &mut Params,
+    owner_fqn: &str,
+    property: &Property,
+    pp: &PlanProp,
+    value: &Value,
+) -> Result<()> {
+    let PlanKind::Scalar { decl, primitive } = &pp.kind else {
+        unreachable!("check_scalar_planned is only reached for a scalar field");
+    };
+    let type_name = primitive.unwrap_or_default();
+    if !primitive_type_matches(type_name, value) {
+        return Err(field_type_violation(p, owner_fqn, property, value));
+    }
+    let elem = FieldElement::new(p.mm, owner_fqn, property);
+    let identifier = p.current_identifier.as_deref();
+    match &pp.validator {
+        Prepared::Built(ValueValidator::String(sv)) => {
+            sv.validate(&elem, identifier, value.as_str())?;
+        }
+        Prepared::Built(ValueValidator::ScalarNumber) => {
+            if let Some(Declaration::Scalar(s)) = p.mm.declaration(*decl)
+                && let Some(ScalarValidator::Number(nv)) = s.validator()
+            {
+                nv.validate(&elem, identifier, value.as_f64())?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1070,7 +1295,7 @@ fn parses_as_dayjs(value: &Value) -> bool {
 /// validators.rs): a bound the typed metamodel struct already collapsed
 /// "absent" and "explicit null" into `None` for alike (OD-3), so this
 /// serialises back to exactly what `bound()` expects either way.
-fn number_validator_ast(lower: Option<f64>, upper: Option<f64>) -> Value {
+pub(crate) fn number_validator_ast(lower: Option<f64>, upper: Option<f64>) -> Value {
     serde_json::json!({ "lower": lower, "upper": upper })
 }
 
@@ -1133,6 +1358,7 @@ fn check_object_item(
     property: &Property,
     declared_class_fqn: &str,
     value: &Value,
+    planned: bool,
 ) -> Result<()> {
     // TS resolves `classDeclaration` from `obj.getFullyQualifiedType()` when
     // `obj` is `Identifiable`, and reports a field type violation if that
@@ -1157,7 +1383,7 @@ fn check_object_item(
         .as_object()
         .and_then(|o| o.get("$class"))
         .and_then(Value::as_str)
-        && !p.mm.is_assignable_to(own_fqn, declared_class_fqn)?
+        && !is_assignable_planned(p.mm, own_fqn, declared_class_fqn, planned)?
     {
         return Err(invalid_field_assignment(p, owner_fqn, property, own_fqn));
     }
@@ -1167,6 +1393,26 @@ fn check_object_item(
         value,
     )
     .map_err(|e| retarget_not_resource(e, p, owner_fqn, property, value))
+}
+
+/// [`ModelManager::is_assignable_to`], from `sub_fqn`'s plan when it is a
+/// class declaration with one (P5-80 prototype).
+fn is_assignable_planned(
+    mm: &ModelManager,
+    sub_fqn: &str,
+    super_fqn: &str,
+    planned: bool,
+) -> Result<bool> {
+    if sub_fqn == super_fqn {
+        return Ok(true);
+    }
+    if planned
+        && let Some(sub) = plan::class_plan_by_name(mm, sub_fqn)
+        && mm.declaration(sub.decl).is_some_and(|d| d.as_class().is_some())
+    {
+        return Ok(sub.is_assignable_to(mm, super_fqn));
+    }
+    mm.is_assignable_to(sub_fqn, super_fqn)
 }
 
 /// TS passes `classDeclaration` itself (the field's declared type) into the
@@ -1227,6 +1473,25 @@ fn visit_enum_declaration(p: &Params, enum_fqn: &str, value: &Value) -> Result<(
     Ok(())
 }
 
+/// P5-80 (#424) prototype: [`visit_enum_declaration`] with the enum
+/// resolved and its value names in a set.
+fn visit_enum_planned(
+    p: &Params,
+    decl: crate::model_manager::DeclId,
+    values: &rustc_hash::FxHashSet<Box<str>>,
+    value: &Value,
+) -> Result<()> {
+    if value.as_str().is_some_and(|obj| values.contains(obj)) {
+        return Ok(());
+    }
+    let name = p.mm.declaration(decl).map(|d| d.name()).unwrap_or_default();
+    Err(invalid_enum_value(
+        &p.root_resource_identifier,
+        name,
+        &identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value)),
+    ))
+}
+
 // ---------------------------------------------------------------------
 // visitRelationshipDeclaration
 // ---------------------------------------------------------------------
@@ -1239,6 +1504,20 @@ fn visit_relationship(
     type_id: &mm::TypeIdentifier,
     value: &Value,
 ) -> Result<()> {
+    visit_relationship_with(p, owner_fqn, property, type_id, value, None, None)
+}
+
+/// [`visit_relationship`], with the property's plan and its resolved
+/// target type when there is one (P5-80 prototype).
+fn visit_relationship_with(
+    p: &mut Params,
+    owner_fqn: &str,
+    property: &Property,
+    type_id: &mm::TypeIdentifier,
+    value: &Value,
+    pp: Option<&PlanProp>,
+    declared: Option<&str>,
+) -> Result<()> {
     if property.is_array() {
         if !value.is_array() {
             return Err(invalid_field_assignment_shape(
@@ -1246,20 +1525,17 @@ fn visit_relationship(
             ));
         }
         let items = value.as_array().expect("just checked is_array");
-        if let Some(sv) = property.size_validator() {
-            let elem = FieldElement::new(p.mm, owner_fqn, property);
-            CollectionSizeValidator::new(&elem, sv, None)?.validate(
-                &elem,
-                Some(p.root_resource_identifier.as_str()),
-                items.len() as f64,
-            )?;
+        if property.size_validator().is_some() {
+            check_size(p, owner_fqn, property, pp, items.len())?;
         }
-        let holder = RelationshipHolder::of_property(owner_fqn, property, type_id);
+        let mut holder = RelationshipHolder::of_property(owner_fqn, property, type_id);
+        holder.declared = declared;
         for item in items {
             check_relationship(p, &holder, item)?;
         }
     } else {
-        let holder = RelationshipHolder::of_property(owner_fqn, property, type_id);
+        let mut holder = RelationshipHolder::of_property(owner_fqn, property, type_id);
+        holder.declared = declared;
         check_relationship(p, &holder, value)?;
     }
     Ok(())
@@ -1280,6 +1556,8 @@ struct RelationshipHolder<'a> {
     type_name: &'a str,
     /// TS `isArray()`: `false` for a map value.
     is_array: bool,
+    /// The declared target type, resolved by the plan (P5-80 prototype).
+    declared: Option<&'a str>,
 }
 
 impl<'a> RelationshipHolder<'a> {
@@ -1293,6 +1571,7 @@ impl<'a> RelationshipHolder<'a> {
             name: property.name(),
             type_name: &type_id.name,
             is_array: property.is_array(),
+            declared: None,
         }
     }
 }
@@ -1326,6 +1605,33 @@ fn check_relationship(p: &mut Params, holder: &RelationshipHolder, value: &Value
     let Some(target_fqn) = target_fqn else {
         return Err(not_relationship_violation(p, holder, value));
     };
+
+    // P5-80 (#424) prototype: the target's plan, when the holder's type
+    // came from a plan and the target is a class declaration with one.
+    if let Some(declared) = holder.declared
+        && let Some(target) = plan::class_plan_by_name(p.mm, &target_fqn)
+        && p.mm.declaration(target.decl).is_some_and(|d| d.as_class().is_some())
+    {
+        if target.identifier_field(p.mm).is_none() {
+            return Err(ContractError::new(
+                ErrorKind::InvalidArgument,
+                "resourcevalidator-checkrelationship-notidentifiable",
+                Vec::new(),
+            )
+            .into());
+        }
+        if target_fqn != declared && !target.is_assignable_to(p.mm, declared) {
+            return Err(invalid_assignment(
+                p,
+                holder.owner_fqn,
+                holder.name,
+                holder.type_name,
+                holder.is_array,
+                &target_fqn,
+            ));
+        }
+        return Ok(());
+    }
 
     let relationship_type =
         p.mm.get_declaration(&target_fqn)
@@ -1414,6 +1720,7 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
                 name: decl.name(),
                 type_name: &type_id.name,
                 is_array: false,
+                declared: None,
             };
             check_relationship(p, &holder, value)?;
             continue;
@@ -1572,13 +1879,13 @@ fn visit_enum_declaration_value(p: &Params, enum_fqn: &str, value: &Value) -> Re
 /// `CollectionSizeValidator` is attached to: a `Property`, read here for its
 /// own AST `defaultValue` and for `getFullyQualifiedName()`
 /// (`getParent().getFullyQualifiedName() + '.' + getName()`).
-struct FieldElement<'a> {
+pub(crate) struct FieldElement<'a> {
     owner_fqn: &'a str,
     property: &'a Property,
 }
 
 impl<'a> FieldElement<'a> {
-    fn new(_mm: &'a ModelManager, owner_fqn: &'a str, property: &'a Property) -> Self {
+    pub(crate) fn new(_mm: &'a ModelManager, owner_fqn: &'a str, property: &'a Property) -> Self {
         Self {
             owner_fqn,
             property,

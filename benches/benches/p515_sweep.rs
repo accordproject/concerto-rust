@@ -207,6 +207,11 @@ fn user_files<'m>(mm: &'m ModelManager, d: &SetData) -> Vec<&'m ModelFile> {
 }
 
 fn bench(c: &mut Criterion) {
+    // P5-80 (#424, analysis only): the validation-plan prototype's switch,
+    // so p580-run.sh times the plan off and on with one binary.
+    if let Ok(v) = std::env::var("CONCERTO_VALIDATION_PLAN") {
+        concerto_core::instance::plan::set_enabled(v != "0");
+    }
     let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
     let mut g = c.benchmark_group("p515");
     g.sample_size(20);

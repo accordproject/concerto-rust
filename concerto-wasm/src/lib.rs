@@ -111,6 +111,26 @@ pub fn set_host(error_factory: Function, semver_parse: Function) {
     });
 }
 
+/// P5-80 (accordproject/concerto-rust#424) prototype, analysis only: turns
+/// the cached validation plan (`concerto_core::instance::plan`) on or off
+/// for this module instance, so a benchmark can time both in one build.
+/// Not called by the shim; on by default.
+#[wasm_bindgen(js_name = setValidationPlan)]
+pub fn set_validation_plan(on: bool) {
+    concerto_core::instance::plan::set_enabled(on);
+}
+
+/// P5-80 prototype: the number of validation plans a manager holds, and of
+/// their properties (`[plans, properties]`).
+#[wasm_bindgen(js_name = validationPlanStats)]
+pub fn validation_plan_stats(handle: &ModelManagerHandle) -> Vec<u32> {
+    let (plans, props) = concerto_core::instance::plan::stats(&handle.manager);
+    vec![
+        u32::try_from(plans).unwrap_or(u32::MAX),
+        u32::try_from(props).unwrap_or(u32::MAX),
+    ]
+}
+
 /// What a binding can fail with: a JS exception raised by a callback (passed
 /// through unchanged), or a core error to map.
 enum Error {

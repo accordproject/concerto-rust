@@ -411,6 +411,11 @@ pub struct ModelManager {
     /// found this manager's system model files to be the resident
     /// metamodel manager's own (P5-13); 0 before any such check.
     system_files_checked: std::sync::atomic::AtomicU64,
+    /// P5-80 (#424) prototype: the validation plan of each declaration
+    /// built so far ([`crate::instance::plan`]), by declaration handle;
+    /// `Some(None)` records a declaration with no plan. Cleared with
+    /// [`Self::class_cache`].
+    plan_cache: Mutex<Vec<Option<Option<Arc<crate::instance::plan::ClassPlan>>>>>,
 }
 
 /// Options for [`ModelManager::ast`].
@@ -2533,6 +2538,81 @@ impl ModelManager {
             Ok(cache) => cache.clear(),
             Err(poisoned) => poisoned.into_inner().clear(),
         }
+        match self.plan_cache.get_mut() {
+            Ok(cache) => cache.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+
+    /// P5-80 (#424) prototype: declaration `id`'s validation plan, built
+    /// by `build` on first use and cached until the registered files
+    /// change. The lock is not held while building.
+    pub(crate) fn cached_plan(
+        &self,
+        id: DeclId,
+        build: impl FnOnce() -> Option<crate::instance::plan::ClassPlan>,
+    ) -> Option<Arc<crate::instance::plan::ClassPlan>> {
+        {
+            let cache = match self.plan_cache.lock() {
+                Ok(cache) => cache,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(Some(slot)) = cache.get(id.slot()) {
+                return slot.clone();
+            }
+        }
+        let plan = build().map(Arc::new);
+        let mut cache = match self.plan_cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if cache.len() <= id.slot() {
+            cache.resize(id.slot() + 1, None);
+        }
+        cache[id.slot()] = Some(plan.clone());
+        plan
+    }
+
+    /// P5-80 (#424) prototype: the number of plans cached, and of their
+    /// properties.
+    pub(crate) fn plan_cache_stats(&self) -> (usize, usize) {
+        let cache = match self.plan_cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        cache
+            .iter()
+            .flatten()
+            .flatten()
+            .fold((0, 0), |(n, p), plan| (n + 1, p + plan.props.len()))
+    }
+
+    /// P5-80 (#424) prototype: a class-like declaration's chain and its
+    /// properties (own, then inherited), from the inheritance cache.
+    pub(crate) fn class_chain_and_properties(
+        &self,
+        id: DeclId,
+    ) -> Result<(Vec<DeclId>, Vec<PropId>)> {
+        let info = self.class_info_of(id)?;
+        Ok((info.chain.to_vec(), info.properties.to_vec()))
+    }
+
+    /// P5-80 (#424) prototype: the identifier field a class-like
+    /// declaration itself declares, if any.
+    pub(crate) fn own_identifier_field_name_of(&self, id: DeclId) -> Option<&str> {
+        self.declaration(id)
+            .and_then(ClassLike::from_declaration)
+            .and_then(|class| class.own_identifier_field_name())
+    }
+
+    /// P5-80 (#424) prototype: the declaration that declares a property.
+    pub(crate) fn property_owner_of(&self, id: PropId) -> Option<DeclId> {
+        self.properties.get(id.slot()).map(|slot| slot.declaration)
+    }
+
+    /// P5-80 (#424) prototype: [`Self::property_with_owner`].
+    pub(crate) fn property_with_owner_of(&self, id: PropId) -> Option<(&str, &Property)> {
+        self.property_with_owner(id)
     }
 
     /// Works out the full name of a class's direct super type, resolved in the
