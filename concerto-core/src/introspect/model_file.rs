@@ -167,6 +167,87 @@ impl ModelFile {
         Self::load_text(text, definitions, file_name, true)
     }
 
+    /// [`ModelFile::from_json_text_with_imports`] for the AST in the compact
+    /// binary layout (P5-92, accordproject/concerto-rust#438; the module doc
+    /// of `introspect::compact`), which the TS `ModelFile` constructor
+    /// writes straight from an AST that exists as a JS object, where it used
+    /// to `JSON.stringify` it for the engine to parse. The bytes are read
+    /// straight into the typed model, without JSON text or a `Value` of the
+    /// whole document. The result, and the error, are those of
+    /// `from_json_text_with_imports` for `JSON.stringify`'s text of the same
+    /// AST; the outer `Err` is for bytes not in the layout, which the TS
+    /// side never writes. [`ModelFile::ast`] is decoded from the kept bytes
+    /// on first use.
+    ///
+    /// Behind `js-compat`, like `from_json_text_with_imports`.
+    #[cfg(feature = "js-compat")]
+    pub fn from_compact_with_imports(
+        bytes: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+        Self::load_compact(bytes, definitions, file_name, false)
+    }
+
+    /// [`ModelFile::from_compact_with_imports`] with BC-19's AST shape check
+    /// first, folded into the typed read exactly as
+    /// [`ModelFile::from_json_text_checked_with_imports`] folds it: the same
+    /// verdict, and the same error, as that function gives for
+    /// `JSON.stringify`'s text of the same AST (P5-92).
+    ///
+    /// Behind `js-compat`, like `from_json_text_with_imports`.
+    #[cfg(feature = "js-compat")]
+    pub fn from_compact_checked_with_imports(
+        bytes: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+        Self::load_compact(bytes, definitions, file_name, true)
+    }
+
+    /// [`ModelFile::load_text`] for the AST in the compact binary layout
+    /// (`from_compact_with_imports`), step by step: where `load_text`
+    /// parses its text into a `Value`, this decodes the bytes into one
+    /// (`compact::to_value`), and an error there is the outer one.
+    #[cfg(feature = "js-compat")]
+    fn load_compact(
+        bytes: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+        checked: bool,
+    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+        use crate::introspect::compact;
+        let model = match typed_ast::from_compact(bytes) {
+            Ok(model) => model,
+            Err(err) => {
+                // Bytes not in the layout are the outer error; any other
+                // error is the read's, as `load_text` handles it.
+                let value = compact::to_value(bytes)?;
+                if checked
+                    && let Err(shape) = crate::instance::metamodel::check_ast_shape_exact(&value)
+                {
+                    return Ok(Err(shape));
+                }
+                return Ok(Err(unreadable_ast(&err, file_name.as_deref())));
+            }
+        };
+        if checked && !shape::conforms(&model) {
+            let value = compact::to_value(bytes)?;
+            if let Err(shape) = crate::instance::metamodel::check_ast_shape_exact(&value) {
+                return Ok(Err(shape));
+            }
+        }
+        let mut header = model.header;
+        let result = Self::load(&header, model.declarations, definitions, file_name).map(
+            |mut model_file| {
+                model_file.ast = Ast::from_compact(bytes);
+                let imports = header.as_object_mut().and_then(|h| h.remove("imports"));
+                (model_file, imports)
+            },
+        );
+        Ok(result)
+    }
+
     /// The body of [`ModelFile::from_json_text`] and of the `js-compat`
     /// `from_json_text_with_imports`: the loaded file plus the AST's own
     /// `imports` node.
@@ -430,14 +511,17 @@ impl ModelFile {
         /// parsed AST then keeps that text in place of the parsed AST, which
         /// is parsed again from it on first use, as for a file read from text
         /// (P5-06c); with `float_roundtrip` and `preserve_order` that gives
-        /// an AST equal to the one it replaces. A file read from text is
-        /// left as it is (its own text is the caller's, not this one).
+        /// an AST equal to the one it replaces (P5-92: so does a file read
+        /// from the compact layout, in place of its bytes). A file read from
+        /// text is left as it is (its own text is the caller's, not this
+        /// one).
         pub fn compact_ast(&mut self) -> serde_json::Result<Arc<str>> {
             let text: Arc<str> = Arc::from(serde_json::to_string(self.ast())?);
             if self.ast.text.is_none() {
                 self.ast = Ast {
                     value: OnceLock::new(),
                     text: Some(Arc::clone(&text)),
+                    compact: None,
                 };
             }
             Ok(text)
@@ -456,6 +540,11 @@ impl ModelFile {
     /// ([`ModelFile::from_json_text`]).
     pub(crate) fn same_ast(&self, other: &ModelFile) -> bool {
         if let (Some(a), Some(b)) = (&self.ast.text, &other.ast.text)
+            && a == b
+        {
+            return true;
+        }
+        if let (Some(a), Some(b)) = (&self.ast.compact, &other.ast.compact)
             && a == b
         {
             return true;
@@ -1012,6 +1101,9 @@ pub(crate) fn unreadable_ast(err: &serde_json::Error, file_name: Option<&str>) -
 struct Ast {
     value: OnceLock<serde_json::Value>,
     text: Option<Arc<str>>,
+    /// P5-92: the AST in the compact binary layout
+    /// ([`ModelFile::from_compact_with_imports`]), decoded on first use.
+    compact: Option<Arc<[u8]>>,
 }
 
 impl Ast {
@@ -1019,6 +1111,7 @@ impl Ast {
         Self {
             value: OnceLock::from(value),
             text: None,
+            compact: None,
         }
     }
 
@@ -1026,11 +1119,26 @@ impl Ast {
         Self {
             value: OnceLock::new(),
             text: Some(Arc::from(text)),
+            compact: None,
+        }
+    }
+
+    #[cfg(feature = "js-compat")]
+    fn from_compact(bytes: &[u8]) -> Self {
+        Self {
+            value: OnceLock::new(),
+            text: None,
+            compact: Some(Arc::from(bytes)),
         }
     }
 
     fn get(&self) -> &serde_json::Value {
         self.value.get_or_init(|| {
+            #[cfg(feature = "js-compat")]
+            if let Some(bytes) = &self.compact {
+                return crate::introspect::compact::to_value(bytes)
+                    .expect("the typed read accepted these bytes, so they are in the layout");
+            }
             // The typed path only accepts text that also parses as a `Value`
             // (typed_ast's module doc, "JSON syntax").
             serde_json::from_str(self.text.as_deref().unwrap_or("null"))

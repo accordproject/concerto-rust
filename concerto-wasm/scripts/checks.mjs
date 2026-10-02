@@ -1177,6 +1177,91 @@ export function runChecks(engine) {
     assert(h.epoch() === epoch, 'staging does not move the epoch');
   });
 
+  // P5-92 (accordproject/concerto-rust#438): the staging bindings for the
+  // AST in the compact binary layout (concerto-core src/engine/ast-codec.ts
+  // writes it from the JS object) stage as the text ones do for
+  // `JSON.stringify`'s text of the same AST, and throw the same class with
+  // the same code; bytes not in the layout are a TypeError.
+  check('the compact staging bindings stage and throw as the text ones do (P5-92)', () => {
+    const h = new engine.ModelManagerHandle();
+    const epoch = h.epoch();
+    const out = [];
+    const u32 = (n) => out.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+    const str = (s) => {
+      const b = new TextEncoder().encode(s);
+      u32(b.length);
+      out.push(...b);
+    };
+    const write = (v) => {
+      if (v === null) {
+        out.push(0);
+      } else if (typeof v === 'boolean') {
+        out.push(v ? 2 : 1);
+      } else if (typeof v === 'number') {
+        if ((v | 0) === v) {
+          out.push(4);
+          u32(v);
+        } else {
+          out.push(3, ...new Uint8Array(new Float64Array([v]).buffer));
+        }
+      } else if (typeof v === 'string') {
+        out.push(5);
+        str(v);
+      } else if (Array.isArray(v)) {
+        out.push(6);
+        u32(v.length);
+        v.forEach(write);
+      } else {
+        const keys = Object.keys(v);
+        out.push(7);
+        u32(keys.length);
+        for (const key of keys) {
+          str(key);
+          write(v[key]);
+        }
+      }
+    };
+    const compact = (ast) => {
+      out.length = 0;
+      write(ast);
+      return new Uint8Array(out);
+    };
+    const withText = { ...MODEL, decorators: [{ $class: `${MM}.Decorator`, name: 'd', arguments: [{ $class: `${MM}.DecoratorNumber`, value: -2.5 }, { $class: `${MM}.DecoratorString`, value: 'é — 𝄞 \u0000' }] }] };
+    const pairs = [['stageModelFileChecked', 'stageModelFileCheckedCompact'], ['stageModelFileWithHeader', 'stageModelFileWithHeaderCompact']];
+    for (const ast of [MODEL, withText]) {
+      const text = JSON.stringify(ast);
+      for (const [name, bin] of pairs) {
+        const fromText = JSON.parse(h[name](text, 'def', 'm.cto'));
+        const fromBytes = JSON.parse(h[bin](compact(ast), 'def', 'm.cto'));
+        assert(fromBytes.id === fromText.id + 1, `${bin}: stage ids ${fromText.id} ${fromBytes.id}`);
+        assert(JSON.stringify(fromBytes.header) === JSON.stringify(fromText.header), `${bin}: the same header`);
+        h.dropStagedModelFile(fromText.id);
+        h.dropStagedModelFile(fromBytes.id);
+      }
+    }
+    const bad = [
+      { ...MODEL, decorators: 'x' },
+      { ...MODEL, undeclared: [] },
+      { $class: `${MM}.TypeIdentifier`, name: 'X' },
+      [],
+    ];
+    for (const ast of bad) {
+      for (const [name, bin] of pairs) {
+        const expected = thrown(() => h[name](JSON.stringify(ast), undefined, 'bad.cto'));
+        const err = thrown(() => h[bin](compact(ast), undefined, 'bad.cto'));
+        assert(err !== undefined && err.constructor === expected.constructor, `${bin} ${JSON.stringify(ast)}: threw ${err}, not ${expected}`);
+        if (expected instanceof EngineError) {
+          assert(err.payload.code === expected.payload.code, `${bin} ${JSON.stringify(ast)}: code ${err.payload.code}`);
+        }
+      }
+    }
+    for (const bytes of [new Uint8Array([]), new Uint8Array([9]), new Uint8Array([0, 0]), new Uint8Array([5, 1, 0, 0, 0, 0xff])]) {
+      const err = thrown(() => h.stageModelFileCheckedCompact(bytes, undefined, undefined));
+      assert(err instanceof TypeError, `bytes not in the layout: ${err}`);
+    }
+    assert(h.epoch() === epoch, 'staging does not move the epoch');
+  });
+
   // P5-73 (accordproject/concerto-rust#414): the precomputed verdict is only
   // for the exact fixed system model texts (the host test
   // `system_model_header_is_only_for_the_exact_system_texts` covers those);
