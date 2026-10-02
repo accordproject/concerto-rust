@@ -765,6 +765,54 @@ impl ModelManager {
         }
     }
 
+    js_compat_pub! {
+        /// [`ModelManager::add_model_file`] for a model file that may also
+        /// be registered in another manager (P5-77,
+        /// accordproject/concerto-rust#419): the same duplicate-namespace
+        /// check and the same errors, but the file is shared, not copied,
+        /// as [`ModelManager::shared_model_files`] hands it out.
+        pub fn add_shared_model_file(&mut self, mf: Arc<ModelFile>) -> Result<()> {
+            if let Some(existing) = self
+                .namespaces
+                .get(mf.namespace())
+                .and_then(|id| self.file(*id))
+            {
+                return Err(already_exists(mf.namespace(), mf.file_name(), existing));
+            }
+            self.insert_shared(mf).map(drop)
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::model_files`], as the shared handles this manager
+        /// keeps them in (P5-77): a model file never changes once
+        /// registered, so another manager can register the same file
+        /// ([`ModelManager::add_shared_model_file`]) without copying it.
+        pub fn shared_model_files(&self) -> impl Iterator<Item = &Arc<ModelFile>> {
+            self.files.iter().map(|slot| &slot.model_file)
+        }
+    }
+
+    js_compat_pub! {
+        /// P5-77: each model file's AST as compact JSON text, in
+        /// [`ModelManager::model_files`] order ([`ModelFile::compact_ast`]).
+        /// A file only this manager holds keeps its AST as that text from
+        /// then on, so a manager that is kept but whose ASTs are rarely read
+        /// again holds the text instead of the parsed tree; a file shared
+        /// with another manager is serialised and left as it is. Every
+        /// [`ModelFile::ast`] stays equal to what it was, so nothing a
+        /// caller can read changes, and the caches stay valid.
+        pub fn compact_model_asts(&mut self) -> serde_json::Result<Vec<Arc<str>>> {
+            self.files
+                .iter_mut()
+                .map(|slot| match Arc::get_mut(&mut slot.model_file) {
+                    Some(model_file) => model_file.compact_ast(),
+                    None => Ok(Arc::from(serde_json::to_string(slot.model_file.ast())?)),
+                })
+                .collect()
+        }
+    }
+
     /// The duplicate-namespace check and registration
     /// [`ModelManager::add_model_with_definitions`] runs once the file is
     /// loaded.
@@ -3816,6 +3864,54 @@ mod tests {
         )
         .unwrap();
         mgr
+    }
+
+    /// P5-77 (accordproject/concerto-rust#419): a file registered shared
+    /// in a second manager is the same file, with the same duplicate
+    /// namespace error as `add_model_file`; `compact_model_asts` returns
+    /// each file's AST text, compacts a file only this manager holds and
+    /// leaves a shared one as it is, and every AST reads back equal.
+    #[test]
+    fn shared_model_files_and_compact_model_asts() {
+        let mut source = manager();
+        let before: Vec<Value> = source.model_files().map(|mf| mf.ast().clone()).collect();
+        let mut other = ModelManager::new().unwrap();
+        let shared = source
+            .shared_model_files()
+            .find(|mf| mf.namespace() == "org.example@1.0.0")
+            .cloned()
+            .unwrap();
+        other.add_shared_model_file(Arc::clone(&shared)).unwrap();
+        let held = other
+            .shared_model_files()
+            .find(|mf| mf.namespace() == "org.example@1.0.0")
+            .unwrap();
+        assert!(Arc::ptr_eq(held, &shared));
+        let dup = other
+            .add_shared_model_file(Arc::clone(&shared))
+            .unwrap_err();
+        let dup_owned = other.add_model_file((*shared).clone()).unwrap_err();
+        assert_eq!(dup.to_string(), dup_owned.to_string());
+        drop(shared);
+
+        let texts = source.compact_model_asts().unwrap();
+        assert_eq!(texts.len(), before.len());
+        for ((text, mf), ast) in texts.iter().zip(source.model_files()).zip(&before) {
+            assert_eq!(&**text, serde_json::to_string(ast).unwrap());
+            assert_eq!(mf.ast(), ast);
+        }
+        let mut alone = manager();
+        let texts = alone.compact_model_asts().unwrap();
+        for (text, ast) in texts.iter().zip(&before) {
+            assert_eq!(&**text, serde_json::to_string(ast).unwrap());
+        }
+        assert_eq!(
+            alone
+                .model_files()
+                .map(|mf| mf.ast().clone())
+                .collect::<Vec<_>>(),
+            before
+        );
     }
 
     /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
