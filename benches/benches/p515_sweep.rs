@@ -41,6 +41,13 @@
 //!   `validate` / `set_property_value` / `add_array_value`:
 //!   `concerto_core_js::resource` over `from_json` instances (the WASM
 //!   binding adds the binary encode of the live object and the crossing).
+//! - `validate_instance` / `validate_instance_or_throw` (added by P5-96,
+//!   accordproject/concerto-rust#446): `instance::diagnose` (collect-all)
+//!   and `ModelManager::validate_instance` (first error) over the
+//!   instances' plain JSON: the engine check behind P5-89's
+//!   `validateInstance`. `validateInstanceOrThrow` by default also builds
+//!   the Resource (through `fromJSON`), which this row does not; its
+//!   engine work is closer to `from_json`.
 
 // A benchmark binary, not library code: panicking on a broken fixture is
 // the right failure mode.
@@ -52,7 +59,8 @@ use std::collections::BTreeMap;
 use std::hint::black_box;
 
 use concerto_core::dcs::{self, DecorateOptions, ExtractOptions};
-use concerto_core::instance::InstanceEnv;
+use concerto_core::instance::from_json::FromJsonOptions;
+use concerto_core::instance::{InstanceEnv, ValidationOptions, diagnose};
 use concerto_core::{Decorated, ModelFile, ModelManager};
 use concerto_core_js::value::Instance;
 use concerto_core_js::{JsValue, Serializer, factory, resource};
@@ -307,6 +315,37 @@ fn bench(c: &mut Criterion) {
             b.iter(|| {
                 for inst in &mut insts {
                     resource::validate(&mm, inst).unwrap();
+                }
+            })
+        });
+        // ---- validateInstance (P5-96, #446) -------------------------------
+        // The engine work behind P5-89's TS API, over the plain JSON
+        // documents of the same instances: `validate_instance` is
+        // `instance::diagnose` with collect-all (concerto-wasm
+        // `validateInstance`, mode 2: `validateInstance`'s default), and
+        // `validate_instance_or_throw` the public first-error check,
+        // `ModelManager::validate_instance` (docs/public-api.md section 5.7),
+        // without building a resource: the TS API's validateInstanceOrThrow
+        // returns the Resource and so runs `fromJSON` (see `from_json`).
+        // The binding adds the encode and the crossing.
+        let docs: Vec<&Value> = d.instances.iter().map(|(_, _, j)| j).collect();
+        let from_json_options = FromJsonOptions::default();
+        n("validate_instance", docs.len());
+        g.bench_function(format!("validate_instance/{set}"), |b| {
+            b.iter(|| {
+                for doc in &docs {
+                    let diagnosis = diagnose(&mm, None, doc, &from_json_options, true);
+                    assert!(diagnosis.error.is_none(), "fixture instance is valid");
+                    black_box(diagnosis);
+                }
+            })
+        });
+        let validation_options = ValidationOptions::default();
+        n("validate_instance_or_throw", docs.len());
+        g.bench_function(format!("validate_instance_or_throw/{set}"), |b| {
+            b.iter(|| {
+                for doc in &docs {
+                    mm.validate_instance(doc, &validation_options).unwrap();
                 }
             })
         });
