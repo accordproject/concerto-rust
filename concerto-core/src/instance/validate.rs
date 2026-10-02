@@ -109,7 +109,7 @@ use crate::introspect::{Declaration, FullyQualified, Property};
 use crate::model_manager::{ModelManager, ValidatedElement};
 use crate::model_util;
 
-use super::plan::{self, ClassPlan, PlanKind, PlanProp, Prepared, ValueValidator};
+use super::plan::{self, ClassPlan, MapPlan, MapSlot, PlanKind, PlanProp, Prepared, ValueValidator};
 
 /// TS `SerializerOptions`, the two fields `ResourceValidator`'s constructor
 /// reads (`resourcevalidator.ts` lines 53-58).
@@ -713,7 +713,7 @@ fn visit_property_planned(
         }
         (PlanKind::Enum { decl, .. }, Property::Object(_)) => Kind::Enum(target(*decl)?),
         (PlanKind::Scalar { decl, .. }, Property::Object(_)) => Kind::Scalar(target(*decl)?),
-        (PlanKind::Map(decl), Property::Object(_)) => Kind::MapTyped(target(*decl)?),
+        (PlanKind::Map { decl, .. }, Property::Object(_)) => Kind::MapTyped(target(*decl)?),
         (PlanKind::Class(decl), Property::Object(_)) => Kind::Class(target(*decl)?),
         (PlanKind::Primitive(_), _) => Kind::Primitive,
         _ => return visit_property(p, owner_fqn, property, value),
@@ -882,7 +882,13 @@ fn check_item(
             }
             _ => check_scalar_item(p, owner_fqn, property, scalar_fqn, value),
         },
-        Kind::MapTyped(map_fqn) => visit_map_declaration(p, map_fqn, value),
+        Kind::MapTyped(map_fqn) => match pp.map(|pp| &pp.kind) {
+            Some(PlanKind::Map {
+                decl,
+                entries: Some(entries),
+            }) => visit_map_declaration_planned(p, map_fqn, *decl, entries, value),
+            _ => visit_map_declaration(p, map_fqn, value),
+        },
         Kind::Class(class_fqn) => {
             check_object_item(p, owner_fqn, property, class_fqn, value, pp.is_some())
         }
@@ -1673,17 +1679,7 @@ fn check_relationship(p: &mut Params, holder: &RelationshipHolder, value: &Value
 fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result<()> {
     // `if (!((obj instanceof Map)))`: only a [`MAP_TAG`] value is a `Map`.
     let Some(entries) = map_entries(value) else {
-        // `'Expected a Map, but found ' + JSON.stringify(obj)`:
-        // `JSON.stringify(undefined)` is `undefined`, which `+` spells out.
-        return Err(ContractError::new(
-            ErrorKind::InvalidArgument,
-            "resourcevalidator-visitmapdeclaration-notamap",
-            vec![(
-                "obj",
-                js_json_stringify(value).unwrap_or_else(|| "undefined".to_string()),
-            )],
-        )
-        .into());
+        return Err(not_a_map(value));
     };
     let decl = p.mm.get_declaration(map_fqn)?;
     let Some(map) = decl.as_map() else {
@@ -1737,13 +1733,79 @@ fn visit_map_declaration(p: &mut Params, map_fqn: &str, value: &Value) -> Result
     Ok(())
 }
 
+/// `'Expected a Map, but found ' + JSON.stringify(obj)`:
+/// `JSON.stringify(undefined)` is `undefined`, which `+` spells out.
+fn not_a_map(value: &Value) -> Error {
+    ContractError::new(
+        ErrorKind::InvalidArgument,
+        "resourcevalidator-visitmapdeclaration-notamap",
+        vec![(
+            "obj",
+            js_json_stringify(value).unwrap_or_else(|| "undefined".to_string()),
+        )],
+    )
+    .into()
+}
+
+/// P5-80 (#424) prototype: [`visit_map_declaration`] with the map's key
+/// and value kinds already resolved by the plan ([`MapPlan`]), in the same
+/// order, raising the same errors.
+fn visit_map_declaration_planned(
+    p: &mut Params,
+    map_fqn: &str,
+    map_id: crate::model_manager::DeclId,
+    plan: &MapPlan,
+    value: &Value,
+) -> Result<()> {
+    let Some(entries) = map_entries(value) else {
+        return Err(not_a_map(value));
+    };
+    let Some(decl) = p.mm.declaration(map_id) else {
+        return visit_map_declaration(p, map_fqn, value);
+    };
+    for (key, value) in entries {
+        if key.as_str().is_some_and(model_util::is_system_property) {
+            continue;
+        }
+        check_map_slot(p, map_fqn, &plan.key, key)?;
+        if let MapSlot::Relationship = plan.value
+            && let Some(type_id) = decl.as_map().and_then(|m| m.value_type())
+        {
+            let holder = RelationshipHolder {
+                owner_fqn: map_fqn,
+                name: decl.name(),
+                type_name: &type_id.name,
+                is_array: false,
+                declared: None,
+            };
+            check_relationship(p, &holder, value)?;
+            continue;
+        }
+        check_map_slot(p, map_fqn, &plan.value, value)?;
+    }
+    Ok(())
+}
+
+/// [`check_map_type`] for a slot the plan resolved.
+fn check_map_slot(p: &mut Params, map_fqn: &str, slot: &MapSlot, value: &Value) -> Result<()> {
+    match slot {
+        MapSlot::Primitive(name) => check_map_primitive(map_fqn, name, value),
+        MapSlot::Enum(id) => visit_enum_declaration_value(p, p.mm.decl_fqn(*id)?, value),
+        MapSlot::Class(id) => {
+            let mm = p.mm;
+            visit_map_value_class_declaration(p, mm.decl_fqn(*id)?, value)
+        }
+        MapSlot::Relationship | MapSlot::Skip => Ok(()),
+    }
+}
+
 /// `ModelUtil.isScalar(mapDeclaration.getKey())`: ported verbatim, including
 /// TS's own quirk of always asking about the *key*'s scalar-ness, even
 /// while validating the *value* (PORTING.md: faithful port, no
 /// improvements) — `checkMapType`'s own `if
 /// (ModelUtil.isScalar(mapDeclaration.getKey())) { type = thing.getType(); }`
 /// runs unconditionally for both the key and the value slot.
-fn map_key_is_scalar(
+pub(super) fn map_key_is_scalar(
     mm: &ModelManager,
     map_fqn: &str,
     map: &crate::introspect::declaration::MapDeclaration,
@@ -1768,10 +1830,7 @@ fn check_map_type(
     key_is_scalar: bool,
     value: &Value,
 ) -> Result<()> {
-    let is_primitive_kind = !matches!(
-        kind,
-        "ObjectMapKeyType" | "ObjectMapValueType" | "RelationshipMapValueType"
-    );
+    let is_primitive_kind = !is_object_map_kind(kind);
 
     let primitive_type_name: String = if !is_primitive_kind {
         let Some(ti) = type_id else {
@@ -1806,7 +1865,20 @@ fn check_map_type(
         kind_primitive_name(kind)
     };
 
-    match primitive_type_name.as_str() {
+    check_map_primitive(map_fqn, &primitive_type_name, value)
+}
+
+/// Whether a map key/value `$class` short kind names a declared type.
+pub(super) fn is_object_map_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ObjectMapKeyType" | "ObjectMapValueType" | "RelationshipMapValueType"
+    )
+}
+
+/// `checkMapType`'s `switch` over the primitive type name.
+fn check_map_primitive(map_fqn: &str, primitive_type_name: &str, value: &Value) -> Result<()> {
+    match primitive_type_name {
         "String" if !value.is_string() => {
             return Err(ContractError::new(
                 ErrorKind::InvalidArgument,
@@ -1856,7 +1928,7 @@ fn mm_resolve(mm: &ModelManager, namespace: &str, short: &str) -> Result<String>
 
 /// The primitive name a primitive map key/value `$class` short kind
 /// implies, e.g. `StringMapKeyType` -> `"String"`.
-fn kind_primitive_name(kind: &str) -> String {
+pub(super) fn kind_primitive_name(kind: &str) -> String {
     kind.strip_suffix("MapKeyType")
         .or_else(|| kind.strip_suffix("MapValueType"))
         .unwrap_or(kind)
@@ -3381,6 +3453,68 @@ mod tests {
             "-Infinity"
         );
         assert_eq!(js_typeof(&js_special_number("NaN")), "number");
+    }
+
+    /// P5-80 (#424) prototype: every map in the fixture resolves to a
+    /// [`MapPlan`], and the planned walk gives exactly the unplanned walk's
+    /// answer (same success, same error kind and text) for valid and
+    /// invalid keys and values of every slot kind.
+    #[test]
+    fn the_planned_map_walk_matches_the_unplanned_one() {
+        let mgr = fixture();
+        let relationship =
+            json!({ "$$relationship": true, "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12" });
+        let item = json!({ "$class": "org.acme@1.0.0.Item", "name": "x" });
+        let values = [
+            json!("RED"),
+            json!("PURPLE"),
+            json!("ABC12"),
+            json!("abc"),
+            json!(1),
+            json!(true),
+            json!("2024-01-01T00:00:00Z"),
+            json!("not a date"),
+            item,
+            json!({ "$class": "org.acme@1.0.0.Item" }),
+            relationship,
+        ];
+        let keys = [json!("a"), json!("ABC12"), json!("abc"), json!(1)];
+        let options = ValidateOptions::default();
+        for name in [
+            "StringMap",
+            "ColorMap",
+            "ItemMap",
+            "VehicleMap",
+            "ScalarKeyMap",
+            "PlainKeyScalarValueMap",
+            "DateTimeMap",
+            "BooleanMap",
+        ] {
+            let map_fqn = format!("org.acme@1.0.0.{name}");
+            let id = mgr.declaration_id(&map_fqn).unwrap();
+            let map_plan = super::super::plan::map_plan(&mgr, id)
+                .unwrap_or_else(|| panic!("{name} has a map plan"));
+            let mut cases = vec![json!("not a map"), js_map(vec![])];
+            for key in &keys {
+                for value in &values {
+                    cases.push(js_map(vec![(key.clone(), value.clone())]));
+                }
+            }
+            for case in cases {
+                let mut params = Params {
+                    mm: &mgr,
+                    options: &options,
+                    root_resource_identifier: String::new(),
+                    current_identifier: None,
+                };
+                let planned =
+                    visit_map_declaration_planned(&mut params, &map_fqn, id, &map_plan, &case)
+                        .map_err(|e| (e.kind(), e.to_string()));
+                let unplanned = validate_map(&mgr, &map_fqn, &case)
+                    .map_err(|e| (e.kind(), e.to_string()));
+                assert_eq!(planned, unplanned, "{name}: {case}");
+            }
+        }
     }
 
     /// Bug fix (plan §1.2 gap list): a map value whose declared type

@@ -18,7 +18,10 @@
 //! - the declaration in the chain that gives the identifier field, and
 //!   whether the class is abstract;
 //! - the inheritance chain, for `$class` assignability checks;
-//! - an enum's value set.
+//! - an enum's value set;
+//! - a map-typed field's key and value kinds ([`MapPlan`]): each slot's
+//!   type resolved in the map's namespace, once, to the primitive it checks,
+//!   the enum or class declaration it visits, or a relationship.
 //!
 //! # Behaviour
 //!
@@ -94,7 +97,14 @@ pub enum PlanKind {
         values: FxHashSet<Box<str>>,
     },
     /// A field whose type is a map.
-    Map(DeclId),
+    Map {
+        /// The map declaration.
+        decl: DeclId,
+        /// Its key and value kinds, resolved once; `None` when either did
+        /// not resolve, and the caller takes the unplanned path, which
+        /// raises the same error (or none, for an empty map) it always did.
+        entries: Option<MapPlan>,
+    },
     /// A field whose type is a concept-like declaration.
     Class(DeclId),
     /// A relationship, with its resolved target's fully-qualified name.
@@ -104,6 +114,33 @@ pub enum PlanKind {
     /// The type did not resolve: the caller takes the unplanned path, which
     /// raises the same error it always did.
     Unresolved,
+}
+
+/// What `ResourceValidator.checkMapType` does with one map key or value,
+/// resolved once from the map declaration.
+#[derive(Debug)]
+pub enum MapSlot {
+    /// The primitive type name its value is checked against (`String`,
+    /// `DateTime`, `Boolean`; any other name checks nothing, as in TS).
+    Primitive(Box<str>),
+    /// An enum declaration: `visitEnumDeclaration`.
+    Enum(DeclId),
+    /// A class declaration: `visitClassDeclaration`.
+    Class(DeclId),
+    /// A relationship map value: `checkRelationship`.
+    Relationship,
+    /// Nothing is checked (an object slot whose type is neither an enum, a
+    /// class nor, under a scalar key, a scalar).
+    Skip,
+}
+
+/// A map declaration's resolved key and value kinds.
+#[derive(Debug)]
+pub struct MapPlan {
+    /// The key's.
+    pub key: MapSlot,
+    /// The value's.
+    pub value: MapSlot,
 }
 
 /// A validator built once for a property.
@@ -214,7 +251,7 @@ impl ClassPlan {
                 }
             }
             PlanKind::Enum { decl, .. } => FieldType::Enum(mm.decl_fqn(*decl).ok()?),
-            PlanKind::Map(d) => FieldType::Map(mm.decl_fqn(*d).ok()?),
+            PlanKind::Map { decl, .. } => FieldType::Map(mm.decl_fqn(*decl).ok()?),
             PlanKind::Class(d) => FieldType::Class(mm.decl_fqn(*d).ok()?),
             PlanKind::Relationship(t) => FieldType::Relationship(t.to_string()),
             PlanKind::EnumValue => FieldType::EnumValue,
@@ -312,7 +349,10 @@ fn resolve_kind(mm: &ModelManager, owner_fqn: &str, property: &Property) -> Plan
                     decl: id,
                     primitive: s.processed_type(),
                 },
-                Some(Declaration::Map(_)) => PlanKind::Map(id),
+                Some(Declaration::Map(_)) => PlanKind::Map {
+                    decl: id,
+                    entries: map_plan(mm, id),
+                },
                 Some(Declaration::Class(_)) => PlanKind::Class(id),
                 None => PlanKind::Unresolved,
             }
@@ -325,6 +365,53 @@ fn resolve_kind(mm: &ModelManager, owner_fqn: &str, property: &Property) -> Plan
         Property::Double(_) => PlanKind::Primitive("Double"),
         Property::DateTime(_) => PlanKind::Primitive("DateTime"),
     }
+}
+
+/// The map declaration `id`'s key and value kinds, resolved the way
+/// `visit_map_declaration` and `check_map_type` resolve them for each entry;
+/// `None` when any resolution fails.
+pub(super) fn map_plan(mm: &ModelManager, id: DeclId) -> Option<MapPlan> {
+    let Some(Declaration::Map(map)) = mm.declaration(id) else {
+        return None;
+    };
+    let map_fqn = mm.decl_fqn(id).ok()?;
+    let key_is_scalar = super::validate::map_key_is_scalar(mm, map_fqn, map).ok()?;
+    let key = map_slot(mm, map_fqn, map.key_kind(), map.key_type(), key_is_scalar)?;
+    let value = if map.value_kind() == "RelationshipMapValueType" && map.value_type().is_some() {
+        MapSlot::Relationship
+    } else {
+        map_slot(mm, map_fqn, map.value_kind(), map.value_type(), key_is_scalar)?
+    };
+    Some(MapPlan { key, value })
+}
+
+/// One slot of [`map_plan`], mirroring `check_map_type`'s resolution.
+fn map_slot(
+    mm: &ModelManager,
+    map_fqn: &str,
+    kind: &str,
+    type_id: Option<&concerto_metamodel::concerto_metamodel_1_0_0::TypeIdentifier>,
+    key_is_scalar: bool,
+) -> Option<MapSlot> {
+    if !super::validate::is_object_map_kind(kind) {
+        return Some(MapSlot::Primitive(super::validate::kind_primitive_name(kind).into()));
+    }
+    let Some(ti) = type_id else {
+        return Some(MapSlot::Skip);
+    };
+    let namespace = model_util::get_namespace(Some(map_fqn)).ok()?;
+    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None).ok()?;
+    let id = mm.declaration_id(&fqn)?;
+    let decl = mm.declaration(id)?;
+    Some(if key_is_scalar && let Some(scalar) = decl.as_scalar() {
+        MapSlot::Primitive(scalar.processed_type().unwrap_or_default().into())
+    } else if decl.is_enum_declaration() {
+        MapSlot::Enum(id)
+    } else if decl.is_class_declaration() {
+        MapSlot::Class(id)
+    } else {
+        MapSlot::Skip
+    })
 }
 
 fn prepared<T>(r: crate::error::Result<T>) -> Prepared<T> {
