@@ -463,8 +463,19 @@ js_compat_pub! {
                     ns_and_type(),
                 ));
             }
-            // `if (id)`: a non-empty string here.
-            if let Some(regex) = model::identifier_regex(class_decl, id_field)?
+            // `if (id)`: a non-empty string here. The regex validator comes
+            // from the validation plan, built once (P5-88).
+            let planned = super::plan::class_plan(class_decl.mm, class_decl.id);
+            let computed;
+            let regex = match planned.as_deref().map(|p| &p.id_regex) {
+                Some(super::plan::Prepared::Built(v)) => Some(v),
+                Some(super::plan::Prepared::None) => None,
+                _ => {
+                    computed = model::identifier_regex(class_decl, id_field)?;
+                    computed.as_ref()
+                }
+            };
+            if let Some(regex) = regex
                 && !regex.matches_regex(id_text)
             {
                 return Err(plain_error(
@@ -924,7 +935,13 @@ impl Populator<'_> {
         // `validateProperties` and each `getProperty` below (the same answer
         // every time: the model does not change mid-walk).
         let class_properties = class_declaration.properties("classDeclaration.getProperties")?;
-        validate_properties(&properties, class_declaration, &class_properties)?;
+        // Validation plan (P5-88): the property lookups and field types from
+        // the plan, when there is one.
+        let class_plan = super::plan::class_plan(self.mm, class_declaration.id);
+        match &class_plan {
+            Some(cp) => validate_properties_planned(&properties, class_declaration, cp)?,
+            None => validate_properties(&properties, class_declaration, &class_properties)?,
+        }
         if self.options.reject_required_null {
             self.reject_required_null(json, class_declaration)?;
         }
@@ -932,10 +949,19 @@ impl Populator<'_> {
             let value = get_property(json, &property)?;
             if value.as_deref() != Some(&Value::Null) {
                 self.push_path(format_args!(".{property}"));
-                let (owner_fqn, class_property) = class_properties
-                    .find(&property)
-                    .expect("validateProperties found every property");
-                let field = model::field(self.mm, owner_fqn, class_property)?;
+                let planned = class_plan.as_deref().and_then(|cp| {
+                    let index = cp.find(&property)?;
+                    cp.field(self.mm, index)
+                });
+                let field = match planned {
+                    Some(field) => field,
+                    None => {
+                        let (owner_fqn, class_property) = class_properties
+                            .find(&property)
+                            .expect("validateProperties found every property");
+                        model::field(self.mm, owner_fqn, class_property)?
+                    }
+                };
                 let populated = self.visit_property(&field, value.as_deref())?;
                 resource
                     .invalid_defaults
@@ -1512,6 +1538,29 @@ fn validate_properties(
         ));
     }
     Ok(())
+}
+
+/// [`validate_properties`] against a plan's name index (validation plan, P5-88).
+fn validate_properties_planned(
+    properties: &[Cow<'_, str>],
+    class_declaration: &TypeRef,
+    class_plan: &super::plan::ClassPlan,
+) -> Result<()> {
+    if properties.iter().all(|p| class_plan.contains(p)) {
+        return Ok(());
+    }
+    let invalid: Vec<&str> = properties
+        .iter()
+        .filter(|p| !class_plan.contains(p))
+        .map(|p| &**p)
+        .collect();
+    Err(validation(
+        "jsonpopulator-validateproperties-unexpectedproperties",
+        vec![
+            ("fqn", class_declaration.fqn().to_string()),
+            ("properties", invalid.join(", ")),
+        ],
+    ))
 }
 
 /// `map.set(key, value)`: a key seen before keeps its place.

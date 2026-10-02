@@ -60,6 +60,8 @@ js_compat_mod!(from_json);
 js_compat_mod!(metamodel);
 js_compat_mod!(model);
 mod options;
+// P5-88: the cached per-generation validation plan of the instance paths.
+js_compat_mod!(plan);
 js_compat_mod!(resource_id);
 js_compat_mod!(validate);
 

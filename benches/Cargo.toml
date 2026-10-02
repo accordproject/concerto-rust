@@ -56,6 +56,10 @@ concerto-validator-rs = { path = "../../concerto-validate-rs", optional = true }
 [features]
 default = []
 validate-rs = ["concerto-validator-rs"]
+# P5-88: the plan counts in `examples/p588_plan_cost.rs`'s `mem` output
+# (concerto-core's dev-only `validation-plan-testing`). Never enabled for
+# the timed benchmarks.
+plan-stats = ["accordproject-concerto-core/validation-plan-testing"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

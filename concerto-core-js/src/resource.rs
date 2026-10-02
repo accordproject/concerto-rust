@@ -12,6 +12,7 @@
 use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::model;
+use concerto_core::instance::plan;
 use concerto_core::instance::validate::{self, validate_instance_from};
 use concerto_core::model_manager::ModelManager;
 
@@ -39,6 +40,22 @@ pub fn set_property_value(
 ) -> Result<()> {
     if instance.kind == InstanceKind::ValidatedResource {
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
+        // Validation plan (P5-88): the plan's name index and field.
+        if let Some(class_plan) = plan::class_plan(mm, class_declaration.id) {
+            let Some(index) = class_plan.find(prop_name) else {
+                return Err(undeclared(instance, prop_name));
+            };
+            validate::validate_property_value_planned(
+                mm,
+                &class_plan,
+                index,
+                &value.to_validator_value(),
+                instance.fully_qualified_identifier(),
+                &instance.validator_options,
+            )?;
+            instance.set(prop_name, value);
+            return Ok(());
+        }
         let Some((owner_fqn, field)) = class_declaration.property(prop_name)? else {
             return Err(undeclared(instance, prop_name));
         };
@@ -81,7 +98,18 @@ pub fn add_array_value(
 ) -> Result<()> {
     if instance.kind == InstanceKind::ValidatedResource {
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
-        let Some((owner_fqn, field)) = class_declaration.property(prop_name)? else {
+        // Validation plan (P5-88): the plan's name index and field.
+        let class_plan = plan::class_plan(mm, class_declaration.id);
+        let found = match &class_plan {
+            Some(cp) => cp.find(prop_name).map(|i| {
+                let (owner_fqn, field) = cp.property(mm, i);
+                (owner_fqn, field, Some(i))
+            }),
+            None => class_declaration
+                .property(prop_name)?
+                .map(|(owner_fqn, field)| (owner_fqn, field, None)),
+        };
+        let Some((owner_fqn, field, index)) = found else {
             return Err(undeclared(instance, prop_name));
         };
         if !field.is_array() {
@@ -106,14 +134,24 @@ pub fn add_array_value(
             Vec::new()
         };
         new_array.push(value.clone());
-        validate::validate_property_value(
-            mm,
-            owner_fqn,
-            field,
-            &JsValue::Array(new_array).to_validator_value(),
-            instance.fully_qualified_identifier(),
-            &instance.validator_options,
-        )?;
+        match (&class_plan, index) {
+            (Some(cp), Some(index)) => validate::validate_property_value_planned(
+                mm,
+                cp,
+                index,
+                &JsValue::Array(new_array).to_validator_value(),
+                instance.fully_qualified_identifier(),
+                &instance.validator_options,
+            )?,
+            _ => validate::validate_property_value(
+                mm,
+                owner_fqn,
+                field,
+                &JsValue::Array(new_array).to_validator_value(),
+                instance.fully_qualified_identifier(),
+                &instance.validator_options,
+            )?,
+        }
     }
     typed_add_array_value(instance, prop_name, value)
 }
@@ -140,7 +178,12 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if instance.kind == InstanceKind::Relationship {
         return Ok(());
     }
-    if let Some(field) = mm.identifier_field(&instance.class_fqn)?
+    // Validation plan (P5-88): the identifier field from the plan.
+    let identifier = match plan::class_plan_by_name(mm, &instance.class_fqn) {
+        Some(class_plan) => class_plan.identifier_field(mm),
+        None => mm.identifier_field(&instance.class_fqn)?,
+    };
+    if let Some(field) = identifier
         && field != "$identifier"
     {
         // Already the same value (the usual case: the constructor set both):
