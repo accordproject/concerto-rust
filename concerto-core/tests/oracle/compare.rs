@@ -466,7 +466,7 @@ fn instant(text: &str) -> f64 {
 }
 
 /// `canon.js` `normaliseString`, over every string in `value`.
-fn canonicalise(
+pub fn canonicalise(
     value: &Value,
     inputs: &super::fixture::Inputs,
     window: Option<(f64, f64)>,

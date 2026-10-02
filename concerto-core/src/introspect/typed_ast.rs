@@ -165,6 +165,18 @@ pub(crate) fn parse(text: &str) -> Result<TypedModel, Error> {
     Ok(model)
 }
 
+/// Reads a model AST from the compact binary layout (P5-92,
+/// `introspect::compact`), as [`from_value`] reads the document the bytes
+/// hold. An error for bytes not in the layout too, which the caller tells
+/// apart with `compact::to_value`.
+#[cfg(feature = "js-compat")]
+pub(crate) fn from_compact(bytes: &[u8]) -> Result<TypedModel, Error> {
+    let mut deserializer = crate::introspect::compact::Compact::new(bytes);
+    let model = ModelSeed.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(model)
+}
+
 /// Reads a model AST from a parsed `Value`, as [`parse`] reads its text.
 pub(crate) fn from_value(value: &Value) -> Result<TypedModel, Error> {
     ModelSeed.deserialize(value)

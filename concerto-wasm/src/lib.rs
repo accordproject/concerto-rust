@@ -271,6 +271,14 @@ fn utf8_text(bytes: &[u8]) -> std::result::Result<&str, JsValue> {
         .map_err(|e| js_sys::TypeError::new(&format!("the text is not UTF-8: {e}")).into())
 }
 
+/// P5-92: the error for an AST in the compact binary layout whose bytes are
+/// not in that layout (`stageModelFileCheckedCompact`), which the TS side
+/// never writes: a `TypeError`, as for bytes that are not UTF-8
+/// ([`utf8_text`]).
+fn compact_layout_error(e: serde_json::Error) -> Error {
+    Error::Js(js_sys::TypeError::new(&e.to_string()).into())
+}
+
 /// Runs a binding body and maps its error.
 fn run<T>(body: impl FnOnce() -> Result<T>) -> std::result::Result<T, JsValue> {
     body().map_err(|e| throw(e, None))
@@ -6222,17 +6230,9 @@ impl ModelManagerHandle {
         file_name: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let (file, imports) =
-                ModelFile::from_json_text_with_imports(ast, definitions, file_name)
-                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            let header = staged_header_from_parts(file.namespace(), imports.as_ref());
-            let text = StagedResult {
-                id: self.staged.next_id(),
-                header,
-            }
-            .to_text()?;
-            self.staged.insert(file);
-            Ok(text)
+            let loaded = ModelFile::from_json_text_with_imports(ast, definitions, file_name)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
+            self.stage_loaded(loaded)
         })
     }
 
@@ -6256,17 +6256,10 @@ impl ModelManagerHandle {
         file_name: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let (file, imports) =
+            let loaded =
                 ModelFile::from_json_text_checked_with_imports(ast, definitions, file_name)
                     .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            let header = staged_header_from_parts(file.namespace(), imports.as_ref());
-            let text = StagedResult {
-                id: self.staged.next_id(),
-                header,
-            }
-            .to_text()?;
-            self.staged.insert(file);
-            Ok(text)
+            self.stage_loaded(loaded)
         })
     }
 
@@ -6300,6 +6293,66 @@ impl ModelManagerHandle {
     ) -> std::result::Result<String, JsValue> {
         let ast = utf8_text(ast)?;
         self.stage_model_file_with_header(ast, definitions, file_name)
+    }
+
+    /// P5-92 (accordproject/concerto-rust#438): [`Self::stage_model_file_checked`]
+    /// for the AST in the compact binary layout (concerto-core
+    /// `introspect::compact`, the layout of the instance fast path), which
+    /// the TS `ModelFile` constructor writes straight from an AST that
+    /// exists as a JS object (concerto-core src/engine/ast-codec.ts) where
+    /// it used to `JSON.stringify` it. The bytes are read straight into the
+    /// typed model ([`ModelFile::from_compact_checked_with_imports`]), with
+    /// BC-19's shape check folded in: the same result and the same errors as
+    /// [`Self::stage_model_file_checked`] for that AST's JSON text. Bytes not
+    /// in the layout (which the TS side never writes) throw a `TypeError`.
+    /// Does not change the manager or its epoch. Additive.
+    #[wasm_bindgen(js_name = stageModelFileCheckedCompact)]
+    pub fn stage_model_file_checked_compact(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let loaded = ModelFile::from_compact_checked_with_imports(ast, definitions, file_name)
+                .map_err(compact_layout_error)??;
+            self.stage_loaded(loaded)
+        })
+    }
+
+    /// P5-92 (accordproject/concerto-rust#438): [`Self::stage_model_file_with_header`]
+    /// for the AST in the compact binary layout, as
+    /// [`Self::stage_model_file_checked_compact`] takes it, for a manager
+    /// with BC-19's shape check off (`metamodelValidation: false`): the
+    /// same result and the same errors as for that AST's JSON text
+    /// ([`ModelFile::from_compact_with_imports`]). Additive.
+    #[wasm_bindgen(js_name = stageModelFileWithHeaderCompact)]
+    pub fn stage_model_file_with_header_compact(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let loaded = ModelFile::from_compact_with_imports(ast, definitions, file_name)
+                .map_err(compact_layout_error)??;
+            self.stage_loaded(loaded)
+        })
+    }
+
+    /// Stages a model file the staging bindings have just loaded, with the
+    /// AST's own `imports` node, and returns their JSON text `{"id": <stage
+    /// id>, "header": <header>}` ([`Self::stage_model_file_with_header`]).
+    fn stage_loaded(&mut self, loaded: (ModelFile, Option<Value>)) -> Result<String> {
+        let (file, imports) = loaded;
+        let header = staged_header_from_parts(file.namespace(), imports.as_ref());
+        let text = StagedResult {
+            id: self.staged.next_id(),
+            header,
+        }
+        .to_text()?;
+        self.staged.insert(file);
+        Ok(text)
     }
 
     /// P5-73 (accordproject/concerto-rust#414): a precomputed verdict for

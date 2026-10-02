@@ -28,6 +28,8 @@
 //! ([`DeclarationKind`]) or decorators ([`Decorated`]), is a trait, derived
 //! where it is the same over every variant (see [`crate::derive`]).
 
+#[cfg(feature = "js-compat")]
+mod compact;
 pub mod declaration;
 pub mod decorator;
 pub mod field;

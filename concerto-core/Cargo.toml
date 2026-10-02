@@ -62,11 +62,19 @@ rustc-hash = "2"
 # items carry no stability promise. The code is compiled either way (the
 # native API is built on it), and is crate-private without the feature.
 js-compat = []
+# P5-88 (accordproject/concerto-rust#434): dev-only access to the instance
+# validation plan (`instance::plan::testing`): run a closure with the plan
+# off on the current thread, so a test can compare planned and unplanned
+# outcomes, and count the plans a manager holds. Only this crate's own
+# dev-dependency (the oracle harness's plan parity test) and the benches'
+# opt-in `plan-stats` feature enable it; no release build does, and it
+# carries no stability promise.
+validation-plan-testing = ["js-compat"]
 
 [dev-dependencies]
 # The tests (the native oracle harness among them) drive the JS layer, as the
 # WASM binding does.
-accordproject-concerto-core = { path = ".", features = ["js-compat"] }
+accordproject-concerto-core = { path = ".", features = ["js-compat", "validation-plan-testing"] }
 # The JS object model (`Serializer`, `Factory`, the `Resource` state), which
 # the native oracle harness replays the TS instance ops over (P6-01 step 5
 # moved it out of this crate).
