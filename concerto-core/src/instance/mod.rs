@@ -60,6 +60,8 @@ js_compat_mod!(from_json);
 js_compat_mod!(metamodel);
 js_compat_mod!(model);
 mod options;
+// P5-80 (#424) prototype, analysis only: the cached validation plan.
+js_compat_mod!(plan);
 js_compat_mod!(resource_id);
 js_compat_mod!(validate);
 
