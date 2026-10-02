@@ -30,13 +30,26 @@ const DECORATOR_MODEL_JSON: &str = include_str!("decoratormodel.json");
 /// The `concerto@1.0.0` system model, deserialized directly into the
 /// metamodel crate's own [`mm::Model`].
 pub fn root_model() -> mm::Model {
-    serde_json::from_str(ROOT_MODEL_JSON).expect("Root model could not be parsed as `mm::Model`.")
+    #[cfg(feature = "alt-value-only")]
+    return crate::introspect::typed_ast::lenient_from_value(
+        &serde_json::from_str(ROOT_MODEL_JSON).expect("JSON"),
+    )
+    .expect("Root model could not be parsed as `mm::Model`.");
+    #[allow(unreachable_code)]
+    crate::introspect::typed_ast::lenient_from_str(ROOT_MODEL_JSON)
+        .expect("Root model could not be parsed as `mm::Model`.")
 }
 
 /// The `concerto.decorator@1.0.0` model, deserialized directly into the
 /// metamodel crate's own [`mm::Model`].
 pub fn decorator_model() -> mm::Model {
-    serde_json::from_str(DECORATOR_MODEL_JSON)
+    #[cfg(feature = "alt-value-only")]
+    return crate::introspect::typed_ast::lenient_from_value(
+        &serde_json::from_str(DECORATOR_MODEL_JSON).expect("JSON"),
+    )
+    .expect("Decorator model could not be parsed as `mm::Model`.");
+    #[allow(unreachable_code)]
+    crate::introspect::typed_ast::lenient_from_str(DECORATOR_MODEL_JSON)
         .expect("Decorator model could not be parsed as `mm::Model`.")
 }
 

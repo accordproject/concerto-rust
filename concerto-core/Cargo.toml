@@ -51,6 +51,18 @@ semver = "1"
 rustc-hash = "2"
 
 [features]
+# P5-81 spike (accordproject/concerto-rust#425): decode the generated
+# metamodel structs with the table-driven decoder
+# (`concerto_metamodel::table`) instead of their derived `Deserialize`
+# impls. Analysis only; not for merge.
+table-decoder = ["accordproject-concerto-metamodel/table-decoder"]
+# P5-81 spike, size-only alternatives to the table decoder (not for merge,
+# not behaviour-checked): `alt-value-only` reads JSON text through one
+# `serde_json::Value` (the derived impls then see one input type);
+# `alt-deny-unknown` makes the derived impls strict themselves
+# (`deny_unknown_fields`) instead of the `Strict` wrapper.
+alt-value-only = []
+alt-deny-unknown = ["accordproject-concerto-metamodel/alt-deny-unknown"]
 # P6-01 (accordproject/concerto-rust#83, docs/public-api.md section 4.6):
 # the seam the JS-compatibility layer is built on. The JS object model is the
 # concerto-core-js crate, which enables this feature, as the WASM binding

@@ -101,6 +101,147 @@ use crate::introspect::property::{Property, property_kind};
 
 type Error = serde_json::Error;
 
+// ---------------------------------------------------------------------------
+// P5-81 spike (accordproject/concerto-rust#425): with the `table-decoder`
+// feature, every generated metamodel struct is decoded by the table-driven
+// decoder (`concerto_metamodel::table`) instead of its derived `Deserialize`
+// impl. Analysis only; not for merge.
+// ---------------------------------------------------------------------------
+
+/// The table decoder's trait, with `table-decoder`; otherwise a trait every
+/// type has, so the same bounds hold in both builds.
+#[cfg(feature = "table-decoder")]
+pub(crate) use concerto_metamodel::table::TableDecode as MmDecode;
+
+/// See the `table-decoder` definition.
+#[cfg(not(feature = "table-decoder"))]
+pub(crate) trait MmDecode {}
+
+#[cfg(not(feature = "table-decoder"))]
+impl<T> MmDecode for T {}
+
+#[cfg(all(test, feature = "table-decoder"))]
+thread_local! {
+    /// Test only: decode with the derived impls in a `table-decoder`
+    /// build, so the equivalence test (`table_equiv`) runs both decoders
+    /// over the same inputs in one binary.
+    pub(crate) static USE_DERIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test only: whether the table decoder decodes (outside tests, always).
+#[cfg(all(test, feature = "table-decoder"))]
+fn use_table() -> bool {
+    !USE_DERIVED.with(std::cell::Cell::get)
+}
+
+/// Decodes a generated type strictly, as `T::deserialize(Strict(d))`.
+pub(crate) fn decode_strict<'de, T, D>(d: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + MmDecode,
+    D: Deserializer<'de>,
+{
+    #[cfg(feature = "table-decoder")]
+    {
+        #[cfg(test)]
+        if !use_table() {
+            return T::deserialize(Strict(d));
+        }
+        T::decode(d, concerto_metamodel::table::Mode::Strict)
+    }
+    #[cfg(all(not(feature = "table-decoder"), feature = "alt-deny-unknown"))]
+    {
+        T::deserialize(d)
+    }
+    #[cfg(all(not(feature = "table-decoder"), not(feature = "alt-deny-unknown")))]
+    {
+        T::deserialize(Strict(d))
+    }
+}
+
+/// Decodes a generated type from an [`Intercept`]ed map, which is strict
+/// already (it wraps every value it hands on in [`Strict`]; with the table
+/// decoder, the table refuses an unknown key itself).
+fn decode_intercepted<'de, T, D>(d: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + MmDecode,
+    D: Deserializer<'de>,
+{
+    #[cfg(feature = "table-decoder")]
+    {
+        #[cfg(test)]
+        if !use_table() {
+            return T::deserialize(d);
+        }
+        T::decode(d, concerto_metamodel::table::Mode::Strict)
+    }
+    #[cfg(not(feature = "table-decoder"))]
+    {
+        T::deserialize(d)
+    }
+}
+
+/// Decodes a generated type leniently (an unknown key is skipped), as
+/// `T::deserialize(d)`.
+#[cfg(all(test, feature = "table-decoder"))]
+pub(crate) fn decode_lenient<'de, T, D>(d: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + MmDecode,
+    D: Deserializer<'de>,
+{
+    #[cfg(feature = "table-decoder")]
+    {
+        #[cfg(test)]
+        if !use_table() {
+            return T::deserialize(d);
+        }
+        T::decode(d, concerto_metamodel::table::Mode::Lenient)
+    }
+    #[cfg(not(feature = "table-decoder"))]
+    {
+        T::deserialize(d)
+    }
+}
+
+/// `serde_json::from_str` of a generated type (lenient), by the table
+/// decoder with `table-decoder`.
+pub(crate) fn lenient_from_str<T: de::DeserializeOwned + MmDecode>(text: &str) -> Result<T, Error> {
+    #[cfg(feature = "table-decoder")]
+    {
+        #[cfg(test)]
+        if !use_table() {
+            return serde_json::from_str(text);
+        }
+        let mut d = serde_json::Deserializer::from_str(text);
+        let value = T::decode(&mut d, concerto_metamodel::table::Mode::Lenient)?;
+        d.end()?;
+        Ok(value)
+    }
+    #[cfg(not(feature = "table-decoder"))]
+    {
+        serde_json::from_str(text)
+    }
+}
+
+/// `serde_json::from_value` of a generated type (lenient) from a copy of
+/// `value`, by the table decoder (from `value` itself) with
+/// `table-decoder`.
+pub(crate) fn lenient_from_value<T: de::DeserializeOwned + MmDecode>(
+    value: &Value,
+) -> Result<T, Error> {
+    #[cfg(feature = "table-decoder")]
+    {
+        #[cfg(test)]
+        if !use_table() {
+            return serde_json::from_value(value.clone());
+        }
+        T::decode(value, concerto_metamodel::table::Mode::Lenient)
+    }
+    #[cfg(not(feature = "table-decoder"))]
+    {
+        serde_json::from_value(value.clone())
+    }
+}
+
 /// A model AST read by [`parse`] or [`from_value`].
 pub(crate) struct TypedModel {
     /// Every top-level key but `declarations`.
@@ -159,6 +300,13 @@ pub(crate) struct TypedProperty {
 /// error when `text` is not JSON, and a data error when it is JSON but not
 /// in the model's shape.
 pub(crate) fn parse(text: &str) -> Result<TypedModel, Error> {
+    #[cfg(feature = "alt-value-only")]
+    {
+        // P5-81 size-only alternative: through one `Value`.
+        let value: Value = serde_json::from_str(text)?;
+        return from_value(&value);
+    }
+    #[allow(unreachable_code)]
     let mut deserializer = serde_json::Deserializer::from_str(text);
     let model = ModelSeed.deserialize(&mut deserializer)?;
     deserializer.end()?;
@@ -367,15 +515,17 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     };
     let de = MapAccessDeserializer::new(access);
     let mut node = match kind {
-        ClassKind::Concept => ClassNode::Concept(mm::ConceptDeclaration::deserialize(de)?),
-        ClassKind::Asset => ClassNode::Asset(mm::AssetDeclaration::deserialize(de)?),
+        ClassKind::Concept => {
+            ClassNode::Concept(decode_intercepted::<mm::ConceptDeclaration, _>(de)?)
+        }
+        ClassKind::Asset => ClassNode::Asset(decode_intercepted::<mm::AssetDeclaration, _>(de)?),
         ClassKind::Participant => {
-            ClassNode::Participant(mm::ParticipantDeclaration::deserialize(de)?)
+            ClassNode::Participant(decode_intercepted::<mm::ParticipantDeclaration, _>(de)?)
         }
         ClassKind::Transaction => {
-            ClassNode::Transaction(mm::TransactionDeclaration::deserialize(de)?)
+            ClassNode::Transaction(decode_intercepted::<mm::TransactionDeclaration, _>(de)?)
         }
-        ClassKind::Event => ClassNode::Event(mm::EventDeclaration::deserialize(de)?),
+        ClassKind::Event => ClassNode::Event(decode_intercepted::<mm::EventDeclaration, _>(de)?),
     };
     // The generated struct requires `properties`, so it was read.
     let properties = properties.ok_or_else(|| refuse("missing field `properties`"))?;
@@ -414,7 +564,7 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
         taken: &mut taken,
         pending: Pending::Other,
     };
-    let mut node = mm::EnumDeclaration::deserialize(MapAccessDeserializer::new(access))?;
+    let mut node: mm::EnumDeclaration = decode_intercepted(MapAccessDeserializer::new(access))?;
     node.decorators = node_decorators;
     node.location = read_location(location.as_ref())?;
     let values = properties.ok_or_else(|| refuse("missing field `properties`"))?;
@@ -446,26 +596,28 @@ fn read_location(location: Option<&Location>) -> Result<Option<mm::Range>, Error
 
 /// Decodes `value` into a generated struct as the typed read decodes a node:
 /// through [`Strict`], so a key the struct does not declare is an error.
-pub(crate) fn strict_from_value<'de, T: Deserialize<'de>>(value: &'de Value) -> Result<T, Error> {
-    T::deserialize(Strict(value))
+pub(crate) fn strict_from_value<'de, T: Deserialize<'de> + MmDecode>(
+    value: &'de Value,
+) -> Result<T, Error> {
+    decode_strict(value)
 }
 
 /// [`strict_from_value`], for the generated struct of one variant of a
 /// polymorphic type (a scalar or map declaration), which has no `$class`
 /// field of its own: `value`'s `$class` (which picked the variant) is left
 /// out.
-pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
+pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned + MmDecode>(
     value: &Value,
 ) -> Result<T, Error> {
     match value {
         // P5-76: the object's other entries, read in place, where a copy of
         // the object without `$class` used to be built and read.
-        Value::Object(map) => T::deserialize(Strict(MapDeserializer::new(
+        Value::Object(map) => decode_strict(MapDeserializer::new(
             map.iter()
                 .filter(|(key, _)| *key != "$class")
                 .map(|(key, value)| (key.as_str(), value)),
-        ))),
-        other => T::deserialize(Strict(other)),
+        )),
+        other => decode_strict(other),
     }
 }
 
@@ -536,7 +688,7 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     };
     macro_rules! read {
         ($variant:ident, $node:ty) => {{
-            let mut node = <$node>::deserialize(MapAccessDeserializer::new(access))?;
+            let mut node: $node = decode_intercepted(MapAccessDeserializer::new(access))?;
             node.decorators = node_decorators;
             Property::$variant(WithDecorators::new(
                 node,
@@ -559,7 +711,8 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
                 class: Some(class.clone()),
                 inner: access,
             };
-            let mut node = mm::EnumProperty::deserialize(MapAccessDeserializer::new(replay))?;
+            let mut node: mm::EnumProperty =
+                decode_intercepted(MapAccessDeserializer::new(replay))?;
             node.decorators = node_decorators;
             Property::Enum(WithDecorators::new(
                 node,
@@ -712,7 +865,16 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 }
                 Ok(read)
             }
+            #[cfg(all(not(feature = "table-decoder"), feature = "alt-deny-unknown"))]
+            Pending::Other => self.inner.next_value_seed(seed),
+            #[cfg(all(not(feature = "table-decoder"), not(feature = "alt-deny-unknown")))]
             Pending::Other => self.inner.next_value_seed(Strict(seed)),
+            // The table refuses an unknown key itself, and never skips a
+            // value, so it needs no `Strict` wrapper.
+            #[cfg(all(test, feature = "table-decoder"))]
+            Pending::Other if !use_table() => self.inner.next_value_seed(Strict(seed)),
+            #[cfg(feature = "table-decoder")]
+            Pending::Other => self.inner.next_value_seed(seed),
         }
     }
 }
@@ -809,6 +971,13 @@ impl<'de> Visitor<'de> for StrSeed {
 /// Wraps a deserializer, at every depth, so that a value its visitor would
 /// skip (`deserialize_ignored_any`) is parsed into a `Value` and dropped
 /// instead (module doc, "JSON syntax").
+#[cfg_attr(
+    any(
+        all(feature = "table-decoder", not(test)),
+        feature = "alt-deny-unknown"
+    ),
+    allow(dead_code)
+)]
 pub(crate) struct Strict<T>(pub(crate) T);
 
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Strict<S> {
@@ -1697,7 +1866,7 @@ mod tests {
 
         use super::{strict_from_value, strict_variant_from_value};
 
-        fn both<T: serde::de::DeserializeOwned + std::fmt::Debug>(value: &Value) {
+        fn both<T: serde::de::DeserializeOwned + super::MmDecode + std::fmt::Debug>(value: &Value) {
             let mut copy = value.clone();
             if let Some(map) = copy.as_object_mut() {
                 map.shift_remove("$class");

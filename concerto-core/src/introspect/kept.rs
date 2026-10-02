@@ -99,8 +99,10 @@ impl Kept {
     /// `strict_from_value` decodes it from [`Kept::to_value`]: the same
     /// `serde` code over the same entries, with every value the struct
     /// would skip an error.
-    pub(crate) fn strict_decode<T: de::DeserializeOwned>(&self) -> Result<T, Error> {
-        T::deserialize(super::typed_ast::Strict(self))
+    pub(crate) fn strict_decode<T: de::DeserializeOwned + super::typed_ast::MmDecode>(
+        &self,
+    ) -> Result<T, Error> {
+        super::typed_ast::decode_strict(self)
     }
 }
 

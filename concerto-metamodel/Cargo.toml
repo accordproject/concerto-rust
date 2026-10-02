@@ -17,6 +17,17 @@ name = "concerto_metamodel"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 chrono = { workspace = true }
+# P5-81 spike: the table decoder buffers an out-of-order tagged node as a
+# `Value`.
+serde_json = { workspace = true, optional = true }
+
+[features]
+# P5-81 spike (accordproject/concerto-rust#425): the table-driven decoder,
+# `src/table.rs`. Analysis only; not for merge.
+table-decoder = ["dep:serde_json"]
+# P5-81 spike, size-only alternative: generated metamodel structs derive
+# `#[serde(deny_unknown_fields)]`. Not for merge.
+alt-deny-unknown = []
 
 [build-dependencies]
 serde_json = { workspace = true }

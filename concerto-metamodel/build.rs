@@ -61,6 +61,10 @@ const SOURCES: &[Source] = &[
     },
 ];
 
+/// The most fields a struct may have for the table decoder (`src/table.rs`
+/// keeps a node's fields in a fixed array of this size).
+const MAX_FIELDS: usize = 16;
+
 /// The root namespace, whose transaction and event carry a timestamp.
 const ROOT: &str = "concerto@1.0.0";
 
@@ -95,6 +99,14 @@ fn main() {
         fs::write(out.join(format!("{}.rs", module_name(namespace))), code)
             .expect("failed to write generated source");
     }
+    // P5-81 spike (accordproject/concerto-rust#425): the type tables and
+    // per-type constructors of the table-driven decoder (`src/table.rs`,
+    // behind the `table-decoder` feature), for the metamodel namespace.
+    fs::write(
+        out.join("table_metamodel.rs"),
+        types.generate_table(METAMODEL),
+    )
+    .expect("failed to write generated source");
 }
 
 /// The source's bytes, downloaded or else vendored, after checking the pinned
@@ -193,6 +205,22 @@ impl<'a> Declared<'a> {
     fn super_type(&self) -> Option<String> {
         self.ast.get("superType").map(|t| self.resolve(t))
     }
+}
+
+/// P5-81 spike: one field of a struct in the decoder's table.
+struct TableField {
+    /// The JSON key.
+    json: String,
+    /// The Rust field name.
+    rust: String,
+    /// `Str`, `F64`, `Bool` or `Node(index)`.
+    kind: String,
+    /// The Rust type of a node field.
+    node: Option<String>,
+    array: bool,
+    optional: bool,
+    /// `#[serde(default)]`.
+    default: bool,
 }
 
 struct TypeTable<'a> {
@@ -382,6 +410,13 @@ impl<'a> TypeTable<'a> {
         let d = self.get(fqn);
         let _ = writeln!(code, "/// `{fqn}`");
         code.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+        // P5-81 spike, size-only alternative: strictness by the derive
+        // (`deny_unknown_fields`) instead of the typed read's `Strict`
+        // wrapper. Changes behaviour (a tagged node's payload and every
+        // lenient caller become strict); not for merge.
+        if d.namespace == METAMODEL && env::var_os("CARGO_FEATURE_ALT_DENY_UNKNOWN").is_some() {
+            code.push_str("#[serde(deny_unknown_fields)]\n");
+        }
         let _ = writeln!(code, "pub struct {} {{", d.name);
         if !self.is_variant(fqn) {
             if d.namespace == METAMODEL && matches!(d.name, "Range" | "Position") {
@@ -461,6 +496,187 @@ impl<'a> TypeTable<'a> {
         }
         let _ = writeln!(code, "    #[serde({})]", attributes.join(", "));
         let _ = writeln!(code, "    pub {}: {rust},", field_name(name));
+    }
+
+    // -----------------------------------------------------------------------
+    // P5-81 spike: the tables of the table-driven decoder
+    // -----------------------------------------------------------------------
+
+    /// The fields of a struct as the decoder's table lists them, in the
+    /// same order as [`Self::generate_struct`] declares them.
+    fn table_fields(&self, fqn: &str, index: &BTreeMap<String, usize>) -> Vec<TableField> {
+        let d = self.get(fqn);
+        let mut fields = Vec::new();
+        if !self.is_variant(fqn) {
+            let default = d.namespace == METAMODEL && matches!(d.name, "Range" | "Position");
+            fields.push(TableField {
+                json: "$class".to_string(),
+                rust: "_class".to_string(),
+                kind: "Str".to_string(),
+                node: None,
+                array: false,
+                optional: false,
+                default,
+            });
+        }
+        let identifier = d
+            .ast
+            .get("identified")
+            .is_some_and(|i| short_name(str_field(i, "$class")) == "Identified");
+        assert!(
+            !identifier,
+            "{fqn}: `$identifier` is not supported by the table generator"
+        );
+        for (owner, property) in self.fields(fqn) {
+            let name = str_field(property, "name");
+            let (kind, node) = match short_name(str_field(property, "$class")) {
+                "StringProperty" => ("Str".to_string(), None),
+                "BooleanProperty" => ("Bool".to_string(), None),
+                "IntegerProperty" | "LongProperty" | "DoubleProperty" => ("F64".to_string(), None),
+                "ObjectProperty" => {
+                    let target = owner.resolve(&property["type"]);
+                    let i = *index.get(&target).unwrap_or_else(|| {
+                        panic!("{fqn}.{name}: {target} is not in the table's namespace")
+                    });
+                    (
+                        format!("Node({i})"),
+                        Some(format!("mm::{}", self.get(&target).name)),
+                    )
+                }
+                other => panic!("{fqn}.{name}: {other} is not supported by the table generator"),
+            };
+            let array = property["isArray"].as_bool().unwrap_or(false);
+            let optional = property["isOptional"].as_bool().unwrap_or(false);
+            let default = !optional && property.get("defaultValue").is_some();
+            fields.push(TableField {
+                json: name.to_string(),
+                rust: field_name(name),
+                kind,
+                node,
+                array,
+                optional,
+                default,
+            });
+        }
+        fields
+    }
+
+    /// The decoder tables for `namespace`: one `TypeDesc` per generated
+    /// struct or `$class`-tagged enum, its constructor, and a `TableDecode`
+    /// impl for its type.
+    fn generate_table(&self, namespace: &str) -> String {
+        let types: Vec<&String> = self
+            .order
+            .iter()
+            .filter(|fqn| self.get(fqn).namespace == namespace)
+            .collect();
+        assert!(
+            types.iter().all(|fqn| !self.get(fqn).is_enum()),
+            "Concerto enums are not supported by the table generator"
+        );
+        let index: BTreeMap<String, usize> = types
+            .iter()
+            .enumerate()
+            .map(|(i, fqn)| ((*fqn).clone(), i))
+            .collect();
+        let mut code = String::new();
+        let mut descs = String::new();
+        for (i, fqn) in types.iter().enumerate() {
+            let d = self.get(fqn);
+            let name = d.name;
+            if self.is_tagged_enum(fqn) {
+                let mut variants = Vec::new();
+                if !d.is_abstract() {
+                    variants.push(((*fqn).clone(), None));
+                }
+                for variant in self.concrete_descendants(fqn) {
+                    let p = index[&variant];
+                    variants.push((variant, Some(p)));
+                }
+                let _ = writeln!(
+                    code,
+                    "fn wrap_{i}(variant: usize, payload: Option<Erased>) -> Erased {{\n    Box::new(match variant {{"
+                );
+                let mut list = String::new();
+                for (v, (class, payload)) in variants.iter().enumerate() {
+                    let short = short_name(class);
+                    match payload {
+                        None => {
+                            let _ = writeln!(code, "        {v} => mm::{name}::{short},");
+                            let _ =
+                                write!(list, "Variant {{ class: \"{class}\", payload: None }}, ");
+                        }
+                        Some(p) => {
+                            let _ = writeln!(
+                                code,
+                                "        {v} => mm::{name}::{short}(unerase(payload.expect(\"a payload\"))),"
+                            );
+                            let _ = write!(
+                                list,
+                                "Variant {{ class: \"{class}\", payload: Some({p}) }}, "
+                            );
+                        }
+                    }
+                }
+                code.push_str(
+                    "        _ => unreachable!(\"the table lists every variant\"),\n    })\n}\n\n",
+                );
+                let names: Vec<String> = variants.iter().map(|(c, _)| format!("\"{c}\"")).collect();
+                let _ = writeln!(
+                    descs,
+                    "    TypeDesc {{ name: \"{name}\", shape: Shape::Union {{ variants: &[{list}], names: &[{}], wrap: wrap_{i} }} }},",
+                    names.join(", ")
+                );
+            } else {
+                let fields = self.table_fields(fqn, &index);
+                assert!(fields.len() <= MAX_FIELDS, "{fqn} has too many fields");
+                let _ = writeln!(
+                    code,
+                    "fn build_{i}(s: &mut [Slot]) -> Erased {{\n    Box::new(mm::{name} {{"
+                );
+                let mut list = String::new();
+                for (k, field) in fields.iter().enumerate() {
+                    let TableField {
+                        json,
+                        rust,
+                        kind,
+                        node,
+                        array,
+                        optional,
+                        default,
+                    } = field;
+                    let take = match (node, *array, *optional) {
+                        (None, false, false) => format!("{}()", kind.to_lowercase()),
+                        (None, false, true) => format!("opt_{}()", kind.to_lowercase()),
+                        (None, true, false) => format!("list_{}()", kind.to_lowercase()),
+                        (None, true, true) => format!("opt_list_{}()", kind.to_lowercase()),
+                        (Some(t), false, false) => format!("node::<{t}>()"),
+                        (Some(t), false, true) => format!("opt_node::<{t}>()"),
+                        (Some(t), true, false) => format!("list_node::<{t}>()"),
+                        (Some(t), true, true) => format!("opt_list_node::<{t}>()"),
+                    };
+                    let _ = writeln!(code, "        {rust}: s[{k}].{take},");
+                    let _ = write!(
+                        list,
+                        "Field {{ name: \"{json}\", kind: Kind::{kind}, array: {array}, optional: {optional}, default: {default} }}, "
+                    );
+                }
+                code.push_str("    })\n}\n\n");
+                let names: Vec<String> = fields.iter().map(|f| format!("\"{}\"", f.json)).collect();
+                let _ = writeln!(
+                    descs,
+                    "    TypeDesc {{ name: \"{name}\", shape: Shape::Struct {{ fields: &[{list}], names: &[{}], build: build_{i} }} }},",
+                    names.join(", ")
+                );
+            }
+            let _ = writeln!(
+                code,
+                "impl TableDecode for mm::{name} {{\n    fn decode<'de, D: Deserializer<'de>>(d: D, mode: Mode) -> Result<Self, D::Error> {{\n        decode_node(d, {i}, mode).map(unerase)\n    }}\n}}\n"
+            );
+        }
+        let _ = writeln!(code, "/// The table: one entry per type, by index.");
+        let _ = writeln!(code, "pub static TYPES: &[TypeDesc] = &[\n{descs}];");
+        code
     }
 
     /// The path to a generated type from the module of `namespace`.
