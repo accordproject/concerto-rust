@@ -46,7 +46,9 @@ use serde_json::{Map, Value};
 
 use crate::introspect::kept::{Kept, Location};
 use crate::introspect::property::Property;
-use crate::introspect::typed_ast::{TypedDeclaration, TypedModel, TypedProperty};
+use crate::introspect::typed_ast::{
+    ModelClass, ModelHeader, PropertyKept, ReadDecorators, TypedDeclaration, TypedModel,
+};
 
 /// The metamodel namespace, as a `$class` prefix.
 const MM: &str = "concerto.metamodel@1.0.0.";
@@ -58,31 +60,52 @@ pub(crate) fn conforms(model: &TypedModel) -> bool {
 }
 
 /// The model's own keys (every top-level key but `declarations`).
-fn header_conforms(header: &Value) -> bool {
-    let Value::Object(map) = header else {
-        return false;
-    };
-    class_is(map.get("$class"), "Model") && object_conforms(map, MODEL)
+fn header_conforms(header: &ModelHeader) -> bool {
+    header.unknown.is_none()
+        && match &header.class {
+            Some(ModelClass::Model) => true,
+            Some(ModelClass::Other(class)) => class_is(Some(class), "Model"),
+            None => false,
+        }
+        && [
+            &header.namespace,
+            &header.source_uri,
+            &header.concerto_version,
+            &header.imports,
+        ]
+        .into_iter()
+        .zip(MODEL)
+        .all(|(value, (_, ty, need))| field_conforms(value.as_ref(), *ty, *need))
+        && header
+            .decorators
+            .as_ref()
+            .is_none_or(|decorators| match decorators {
+                Ok(decorators) => decorators.conforms,
+                Err(value) => decorators_conform(value),
+            })
 }
 
 fn declaration_conforms(declaration: &TypedDeclaration) -> bool {
     match declaration {
         TypedDeclaration::Ast(value) => node_conforms(value, OTHER_DECLARATIONS),
+        TypedDeclaration::Map(node) => kept_node_conforms(node, OTHER_DECLARATIONS),
         TypedDeclaration::Class {
             node,
             properties,
             decorators,
             location,
-            identified,
+            identified_conforms,
             ..
         } => {
             let (name, super_type) = node.name_and_super_type();
             is_name(name)
                 && super_type.is_none_or(|t| type_identifier(t) && !t.name.is_empty())
-                && optional_node(identified.as_ref(), IDENTIFIED)
-                && optional_nodes(decorators.as_ref(), DECORATOR)
+                && *identified_conforms
+                && ReadDecorators::conforms(decorators.as_ref())
                 && optional_location(location.as_ref())
-                && properties.iter().all(|p| property_conforms(p, false))
+                && properties
+                    .iter()
+                    .all(|(property, kept)| property_conforms(property, kept, false))
         }
         TypedDeclaration::Enum {
             node,
@@ -91,31 +114,31 @@ fn declaration_conforms(declaration: &TypedDeclaration) -> bool {
             location,
         } => {
             is_name(&node.name)
-                && optional_nodes(decorators.as_ref(), DECORATOR)
+                && ReadDecorators::conforms(decorators.as_ref())
                 && optional_location(location.as_ref())
-                && values.iter().all(|p| property_conforms(p, true))
+                && values
+                    .iter()
+                    .all(|(property, kept)| property_conforms(property, kept, true))
         }
     }
 }
 
 /// One property of a class-like declaration, or one value of an enum
 /// declaration (`in_enum`).
-fn property_conforms(property: &TypedProperty, in_enum: bool) -> bool {
-    if !(optional_nodes(property.decorators.as_ref(), DECORATOR)
-        && optional_location(property.location.as_ref()))
-    {
+fn property_conforms(property: &Property, kept: &PropertyKept, in_enum: bool) -> bool {
+    if kept.unusual_decorators || !optional_location(kept.location.as_ref()) {
         return false;
     }
     // Only a `DateTimeProperty` keeps a `defaultValue` apart, and only a
     // string one is BC-19's tolerance.
-    if property
+    if kept
         .date_time_default
         .as_ref()
         .is_some_and(|value| !value.is_string())
     {
         return false;
     }
-    match &property.property {
+    match property {
         Property::Enum(p) => in_enum && is(&p._class, "EnumProperty") && is_name(&p.name),
         _ if in_enum => false,
         Property::Boolean(p) => is_name(&p.name) && size(p.size_validator.as_ref()),
@@ -264,7 +287,8 @@ const DECORATOR_LITERAL: &[&str] = &[
 ];
 const IMPORT: &[&str] = &["ImportAll", "ImportType", "ImportTypes"];
 const ALIASED_TYPE: &[&str] = &["AliasedType"];
-/// The declarations the typed read keeps as a `Value`.
+/// The declarations the typed read keeps as a `Value` (or, a map
+/// declaration, as a [`Kept`]).
 const OTHER_DECLARATIONS: &[&str] = &[
     "MapDeclaration",
     "BooleanScalar",
@@ -289,13 +313,14 @@ const MAP_VALUE_TYPE: &[&str] = &[
 use Need::{Defaulted, Optional, Required};
 use Ty::{Bool, Double, Integer, Name, Node, Nodes, Str, Strs};
 
-/// `Model`, but for its `declarations`, which the typed read reads.
+/// `Model`, but for its `declarations`, which the typed read reads, and
+/// its `decorators`, which it keeps as a [`Kept`] ([`decorators_conform`]),
+/// in [`ModelHeader`]'s field order.
 const MODEL: Fields = &[
     ("namespace", Str, Required),
     ("sourceUri", Str, Optional),
     ("concertoVersion", Str, Optional),
     ("imports", Nodes(IMPORT), Optional),
-    ("decorators", Nodes(DECORATOR), Optional),
 ];
 
 /// The fields of the concrete metamodel type `short`, inherited ones
@@ -446,11 +471,18 @@ fn node_conforms(value: &Value, allowed: &[&str]) -> bool {
 fn object_conforms(map: &Map<String, Value>, fields: Fields) -> bool {
     map.keys()
         .all(|key| key == "$class" || fields.iter().any(|(name, ..)| name == key))
-        && fields.iter().all(|(key, ty, need)| match map.get(*key) {
-            None => *need != Required,
-            Some(Value::Null) => *need == Optional,
-            Some(value) => value_conforms(value, *ty),
-        })
+        && fields
+            .iter()
+            .all(|(key, ty, need)| field_conforms(map.get(*key), *ty, *need))
+}
+
+/// A declared field's value (`None` when missing) is as declared.
+fn field_conforms(value: Option<&Value>, ty: Ty, need: Need) -> bool {
+    match value {
+        None => need != Required,
+        Some(Value::Null) => need == Optional,
+        Some(value) => value_conforms(value, ty),
+    }
 }
 
 fn value_conforms(value: &Value, ty: Ty) -> bool {
@@ -470,16 +502,21 @@ fn value_conforms(value: &Value, ty: Ty) -> bool {
     }
 }
 
-/// An optional node field the read kept as given (a class's `identified`):
-/// missing, `null`, or a node of one of the types `allowed`. Since P5-76 the
-/// read keeps it as a [`Kept`], not a `Value`; the verdict is the same.
-fn optional_node(value: Option<&Kept>, allowed: &[&str]) -> bool {
-    value.is_none_or(|value| {
-        matches!(value, Kept::Other(Value::Null)) || kept_node_conforms(value, allowed)
-    })
+/// A class's `identified` value, as the read reads it (P5-76: as a
+/// [`Kept`], not a `Value`; the verdict is the same): `null`, or a node of
+/// the metamodel's `Identified` or `IdentifiedBy`.
+pub(crate) fn identified_conforms(value: &Kept) -> bool {
+    matches!(value, Kept::Other(Value::Null)) || kept_node_conforms(value, IDENTIFIED)
 }
 
-/// [`optional_node`] for a `location` (a [`Location`], P5-76): the same
+/// A node's `decorators` value, as the read reads it (P5-76: as a [`Kept`],
+/// not a `Value`; the verdict is the same): `null`, or an array of
+/// `Decorator` nodes.
+pub(crate) fn decorators_conform(value: &Kept) -> bool {
+    optional_nodes(Some(value), DECORATOR)
+}
+
+/// A node's optional `location` (a [`Location`], P5-76): the same
 /// verdict as for its `Value`.
 fn optional_location(value: Option<&Location>) -> bool {
     value.is_none_or(|value| match value {
@@ -681,7 +718,7 @@ mod tests {
             ),
             (
                 "node rule: identified",
-                "shape::optional_node (IDENTIFIED)",
+                "shape::identified_conforms",
                 with_declaration("identified", json!({})),
                 "modelfile-load-nodenotobject",
             ),
@@ -727,7 +764,7 @@ mod tests {
             ),
             (
                 "metamodel: unknown key in identified",
-                "shape::optional_node (IDENTIFIED)",
+                "shape::identified_conforms",
                 with_declaration(
                     "identified",
                     json!({"$class": "concerto.metamodel@1.0.0.Identified", "x": 1}),
@@ -1040,7 +1077,9 @@ mod tests {
     fn kept_decorators_and_identified_conform_as_their_values_do() {
         use serde::de::DeserializeSeed;
 
-        use super::{DECORATOR, IDENTIFIED, Nodes, optional_node, optional_nodes, value_conforms};
+        use super::{
+            DECORATOR, IDENTIFIED, Nodes, decorators_conform, identified_conforms, value_conforms,
+        };
         use crate::introspect::kept::KeptSeed;
         use crate::introspect::kept::tests::{DECORATOR_CASES, IDENTIFIED_CASES};
 
@@ -1052,28 +1091,22 @@ mod tests {
         for text in DECORATOR_CASES {
             let value: Value = serde_json::from_str(text).unwrap();
             let expected = value.is_null() || value_conforms(&value, Nodes(DECORATOR));
-            assert_eq!(
-                optional_nodes(Some(&read(text)), DECORATOR),
-                expected,
-                "{text}"
-            );
+            assert_eq!(decorators_conform(&read(text)), expected, "{text}");
             accepted += usize::from(expected);
         }
-        // The first six lists, and the three that differ from them only in
-        // key order, a repeated key or an escaped key.
-        assert_eq!(accepted, 9);
+        // The first six lists, the three that differ from them only in
+        // key order, a repeated key or an escaped key, and two of P5-93's.
+        assert_eq!(accepted, 11);
         let mut accepted = 0;
         for text in IDENTIFIED_CASES {
             let value: Value = serde_json::from_str(text).unwrap();
             let expected = value.is_null() || node_conforms(&value, IDENTIFIED);
-            assert_eq!(
-                optional_node(Some(&read(text)), IDENTIFIED),
-                expected,
-                "{text}"
-            );
+            assert_eq!(identified_conforms(&read(text)), expected, "{text}");
             accepted += usize::from(expected);
         }
-        // Both kinds, `null`, and an `IdentifiedBy` in another key order.
-        assert_eq!(accepted, 4);
+        // Both kinds, `null`, and an `IdentifiedBy` in another key order;
+        // and P5-93's two with a repeated key, one with escaped keys and one
+        // with an escaped name.
+        assert_eq!(accepted, 8);
     }
 }

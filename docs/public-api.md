@@ -983,6 +983,27 @@ this design:
   | Rust native `ModelFile::from_json*`, `ModelManager::add_model_ast*`, `load_model*`, `update_model_ast` | Not checked (BR-10): the strict typed read. |
   | A detached file (`validate_detached_model_file`) | Takes a `ModelFile` already built by one of the above. |
 
+- **P5-93 (accordproject/concerto-rust#443): two field types of the
+  generated `concerto-metamodel` structs.** These are `concerto-metamodel`
+  types, not core's API (as for BR-02), but every `mm::*` accessor returns
+  them:
+  - a struct's `_class` is a `concerto_metamodel::ClassName`
+    (`Cow<'static, str>`): a declared type's `$class` is read as a borrowed
+    static string, any other as an owned copy;
+  - the `name` of a metamodel node (a declaration, a property, a decorator,
+    a type reference, an `IdentifiedBy`; not an import's, which the typed
+    read never decodes into a generated struct) is a
+    `concerto_metamodel::Name`, which reads as a `str` (`Deref`,
+    `as_str`), compares, hashes and orders as one, and serializes as one.
+    Read from JSON text inside `concerto_metamodel::with_source` (as
+    `ModelFile::from_json_text*` reads it), it shares the copy of the text
+    the model file keeps (an `Arc<str>`) instead of copying it, so it keeps
+    that text alive as long as it lives.
+
+  A caller that builds one of these structs writes `.into()` (from a `&str`
+  or a `String`) where it wrote a `String`. Nothing else changes: the same
+  JSON reads to the same values, and writes back the same.
+
 ---
 
 ## 7. Implementation plan

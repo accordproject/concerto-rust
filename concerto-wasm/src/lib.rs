@@ -1201,7 +1201,7 @@ fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
     let json = to_json(value)?.unwrap_or(Value::Null);
     Ok(
         validators::size_validator_from_ast(Some(&json)).unwrap_or(mm::CollectionSizeValidator {
-            _class: String::new(),
+            _class: Default::default(),
             min_size: None,
             max_size: None,
         }),
@@ -1769,7 +1769,7 @@ fn size_validator_view_snapshot(name: &str, ast: Option<&Value>) -> Option<Value
     let ast = ast.filter(|v| json_truthy(Some(v)))?;
     let typed =
         validators::size_validator_from_ast(Some(ast)).unwrap_or(mm::CollectionSizeValidator {
-            _class: String::new(),
+            _class: Default::default(),
             min_size: None,
             max_size: None,
         });

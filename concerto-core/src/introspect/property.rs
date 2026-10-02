@@ -392,24 +392,6 @@ pub(crate) fn property_kind(class: &str) -> Option<&str> {
     PROPERTY_KINDS.contains(&kind).then_some(kind)
 }
 
-impl Property {
-    /// Sets the node's `location`, which the typed read reads apart from the
-    /// node's own decode (`crate::introspect::typed_ast`).
-    pub(crate) fn set_location(&mut self, location: Option<mm::Range>) {
-        match self {
-            Self::Boolean(p) => p.node_mut().location = location,
-            Self::String(p) => p.node_mut().location = location,
-            Self::Integer(p) => p.node_mut().location = location,
-            Self::Long(p) => p.node_mut().location = location,
-            Self::Double(p) => p.node_mut().location = location,
-            Self::DateTime(p) => p.node_mut().location = location,
-            Self::Object(p) => p.node_mut().location = location,
-            Self::Relationship(p) => p.node_mut().location = location,
-            Self::Enum(p) => p.node_mut().location = location,
-        }
-    }
-}
-
 impl TryFrom<&serde_json::Value> for Property {
     type Error = Error;
 

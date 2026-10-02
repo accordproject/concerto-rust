@@ -131,12 +131,17 @@ impl ScalarDeclaration {
                 return Err(err.into());
             }
 
-            let class = ast.get("$class").and_then(Value::as_str);
+            // P5-93: the `$class` taken apart, where each candidate's own
+            // `$class` used to be formatted to compare it with.
+            let primitive_of_class = ast.get("$class").and_then(Value::as_str).and_then(|class| {
+                class
+                    .strip_prefix(METAMODEL_NAMESPACE)?
+                    .strip_prefix('.')?
+                    .strip_suffix("Scalar")
+            });
             let scalar_type = ["Boolean", "Integer", "Long", "Double", "String", "DateTime"]
                 .into_iter()
-                .find(|primitive| {
-                    class == Some(format!("{METAMODEL_NAMESPACE}.{primitive}Scalar").as_str())
-                });
+                .find(|primitive| primitive_of_class == Some(*primitive));
 
             let truthy = |key: &str| ast.get(key).is_some_and(ecma::is_truthy);
             let validator = match scalar_type {

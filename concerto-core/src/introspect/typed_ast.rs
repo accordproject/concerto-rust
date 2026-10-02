@@ -16,6 +16,17 @@
 //! and map declaration, each of which its own loader decodes into its
 //! generated struct ([`crate::introspect::Declaration`]).
 //!
+//! Since P5-93 (accordproject/concerto-rust#443) the read allocates as
+//! little as it can: a node's `$class` is interned
+//! (`concerto_metamodel::ClassName`); a `name` read from JSON text shares
+//! the copy of the text the model file keeps (`concerto_metamodel::Name`,
+//! [`parse`] is run inside `concerto_metamodel::with_source`); a decorator
+//! list is read straight into its generated and processed decorators
+//! (`kept::DecoratorsSeed`); and a property node's own keys are read by
+//! [`read_property`] itself, the generated struct reading only what else a
+//! node has. Each reads exactly what the generated structs read, and fails
+//! as they fail.
+//!
 //! # Strictness (BC-19, BR-09)
 //!
 //! Since BC-19 (P5-49) a model loaded through the JS API has its shape
@@ -83,76 +94,261 @@
 //!   (the generated structs read every number as `f64`).
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::fmt;
+use std::marker::PhantomData;
+use std::thread::LocalKey;
 
+use concerto_metamodel::Name;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::Deserialize;
 use serde::de::value::{
-    BorrowedStrDeserializer, MapAccessDeserializer, MapDeserializer, StringDeserializer,
+    BoolDeserializer, BorrowedStrDeserializer, MapAccessDeserializer, MapDeserializer,
+    StringDeserializer,
 };
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use crate::introspect::METAMODEL_NAMESPACE;
 use crate::introspect::declaration::{ClassKind, ClassNode};
-use crate::introspect::decorator::{WithDecorators, parse_decorator_list};
-use crate::introspect::kept::{Kept, KeptSeed, Location, LocationSeed};
+use crate::introspect::decorator::{Decorator, WithDecorators};
+use crate::introspect::kept::{
+    Decorators, DecoratorsSeed, IdentifiedSeed, Kept, KeptSeed, Location, LocationSeed,
+};
 use crate::introspect::property::{Property, property_kind};
+use crate::introspect::shape;
 
 type Error = serde_json::Error;
 
 /// A model AST read by [`parse`] or [`from_value`].
 pub(crate) struct TypedModel {
     /// Every top-level key but `declarations`.
-    pub(crate) header: Value,
+    pub(crate) header: ModelHeader,
     /// The declarations, in order; empty when the AST has none.
     pub(crate) declarations: Vec<TypedDeclaration>,
 }
 
-/// One declaration read by [`parse`] or [`from_value`]. The generated
-/// nodes are boxed (P5-76): the declarations are collected into a `Vec`
-/// that grows as they are read, one move of every element per growth.
+/// A model's own keys (every top-level key but `declarations`), each the
+/// `Value` a `Value` parse builds for it, or `None` when the AST has no
+/// such key (a repeated key's last value, as in a `Value`). P5-93: read
+/// into its own fields, where a `Map` of every key (each key an owned
+/// `String`) used to be built.
+#[derive(Default)]
+pub(crate) struct ModelHeader {
+    pub(crate) class: Option<ModelClass>,
+    pub(crate) namespace: Option<Value>,
+    pub(crate) source_uri: Option<Value>,
+    pub(crate) concerto_version: Option<Value>,
+    pub(crate) imports: Option<Value>,
+    /// The model's `decorators`, as a declaration's are read (P5-93;
+    /// before, a `Value`): its decorators ([`DecoratorsSeed`]), or else the
+    /// value as a [`Kept`], decoded by the loader.
+    pub(crate) decorators: Option<Result<Decorators, Kept>>,
+    /// The first key the metamodel's `Model` does not declare, if any (its
+    /// value is read as JSON, and dropped).
+    pub(crate) unknown: Option<String>,
+}
+
+/// A model's `$class` value, as the read keeps it for BC-19's shape check
+/// (P5-93: the metamodel's own without an allocation).
+pub(crate) enum ModelClass {
+    /// The string `concerto.metamodel@1.0.0.Model`.
+    Model,
+    /// Any other value, as a `Value` parse builds it.
+    Other(Value),
+}
+
+/// The metamodel's `Model` `$class`.
+const MODEL_CLASS: &str = "concerto.metamodel@1.0.0.Model";
+
+/// Reads a [`ModelClass`].
+struct ModelClassSeed;
+
+impl<'de> DeserializeSeed<'de> for ModelClassSeed {
+    type Value = ModelClass;
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<ModelClass, D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+/// `serde_json`'s own `Value` visitor, but for the `Model` string.
+impl<'de> Visitor<'de> for ModelClassSeed {
+    type Value = ModelClass;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("any valid JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<ModelClass, E> {
+        Ok(ModelClass::Other(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<ModelClass, E> {
+        Ok(ModelClass::Other(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<ModelClass, E> {
+        Ok(ModelClass::Other(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<ModelClass, E> {
+        Ok(ModelClass::Other(
+            serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number),
+        ))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<ModelClass, E> {
+        Ok(if value == MODEL_CLASS {
+            ModelClass::Model
+        } else {
+            ModelClass::Other(Value::String(value.to_owned()))
+        })
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<ModelClass, E> {
+        Ok(if value == MODEL_CLASS {
+            ModelClass::Model
+        } else {
+            ModelClass::Other(Value::String(value))
+        })
+    }
+
+    fn visit_none<E>(self) -> Result<ModelClass, E> {
+        Ok(ModelClass::Other(Value::Null))
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<ModelClass, D::Error> {
+        ModelClassSeed.deserialize(d)
+    }
+
+    fn visit_unit<E>(self) -> Result<ModelClass, E> {
+        Ok(ModelClass::Other(Value::Null))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<ModelClass, A::Error> {
+        Value::deserialize(de::value::SeqAccessDeserializer::new(seq)).map(ModelClass::Other)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<ModelClass, A::Error> {
+        Value::deserialize(MapAccessDeserializer::new(map)).map(ModelClass::Other)
+    }
+}
+
+/// One declaration read by [`parse`] or [`from_value`]. P5-93: the
+/// generated nodes are held inline (boxed from P5-76): the declarations
+/// are read into a per-thread buffer the loader hands back once it has
+/// taken them ([`recycle_declarations`]), and each declaration's
+/// properties are collected into a `Vec` of exactly their number
+/// ([`exact`]), not one that grows (and moves every element) as they are
+/// read.
 pub(crate) enum TypedDeclaration {
     /// A class-like declaration, read straight into its generated struct.
     /// The node's own `properties` is left empty; they are in `properties`.
     Class {
         kind: ClassKind,
-        node: Box<ClassNode>,
-        properties: Vec<TypedProperty>,
-        /// The node's `decorators` value, if it has that key.
-        decorators: Option<Kept>,
+        node: ClassNode,
+        properties: TypedProperties,
+        /// The node's `decorators`, if it has that key.
+        decorators: Option<ReadDecorators>,
         /// The node's `location` value, as given (for an error).
         location: Option<Location>,
-        /// The node's `identified` value, as given (for BC-19's shape
-        /// check, [`crate::introspect::shape`]).
-        identified: Option<Kept>,
+        /// Whether BC-19's shape check certainly accepts the node's
+        /// `identified` value ([`crate::introspect::shape`]; P5-93: decided
+        /// as it is read, where the value used to be kept for it).
+        identified_conforms: bool,
     },
     /// An enum declaration, read straight into its generated struct, whose
-    /// `properties` are the enum values' own nodes.
+    /// `properties` are the enum values' own nodes (in `values`; the
+    /// node's own `properties` is left empty).
     Enum {
-        node: Box<mm::EnumDeclaration>,
-        values: Vec<TypedProperty>,
-        /// The node's `decorators` value, if it has that key.
-        decorators: Option<Kept>,
+        node: mm::EnumDeclaration,
+        values: TypedProperties,
+        /// The node's `decorators`, if it has that key.
+        decorators: Option<ReadDecorators>,
         /// The node's `location` value, as given (for an error).
         location: Option<Location>,
     },
-    /// Any other declaration (a scalar or map declaration, or anything
+    /// A map declaration, as its JSON node (P5-93: a [`Kept`], whose
+    /// objects are each one list of entries where a `Value`'s are each a
+    /// hash map, every key an owned `String`; before, an `Ast` `Value`).
+    Map(Kept),
+    /// Any other declaration (a scalar declaration, or anything
     /// unrecognised), as its JSON subtree.
     Ast(Value),
 }
 
-/// One property read by [`parse`] or [`from_value`], with its node's
-/// `location` value as given (for an error), and the values BC-19's shape
-/// check reads ([`crate::introspect::shape`]).
-pub(crate) struct TypedProperty {
-    pub(crate) property: Property,
+/// The properties of a class-like declaration, or the values of an enum
+/// declaration, read by [`parse`] or [`from_value`]: each [`Property`], and
+/// what the read kept of each property's node.
+pub(crate) struct TypedProperties {
+    pub(crate) properties: Vec<Property>,
+    /// In step with `properties`, or empty when the read kept nothing of
+    /// any of them (P5-93: no allocation for a declaration whose
+    /// properties have no `location`, `decorators` or `defaultValue`).
+    kept: Vec<PropertyKept>,
+}
+
+impl TypedProperties {
+    /// Each property, with what the read kept of its node.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Property, &PropertyKept)> {
+        const NOTHING: &PropertyKept = &PropertyKept {
+            location: None,
+            unusual_decorators: false,
+            date_time_default: None,
+        };
+        self.properties
+            .iter()
+            .enumerate()
+            .map(|(i, property)| (property, self.kept.get(i).unwrap_or(NOTHING)))
+    }
+}
+
+/// A node's `decorators` value, as the read keeps it (P5-93; the value
+/// itself, as a [`Kept`], from P5-76): the decorators it gives
+/// ([`crate::introspect::decorator::parse_decorator_list`]), and whether
+/// BC-19's shape check certainly
+/// accepts it ([`crate::introspect::shape`]).
+pub(crate) struct ReadDecorators {
+    pub(crate) list: Vec<Decorator>,
+    pub(crate) conforms: bool,
+}
+
+impl ReadDecorators {
+    /// The decorators of a node (none when it has no `decorators` key),
+    /// taken from `read`: `parse_decorator_list` of the value.
+    pub(crate) fn list(read: &mut Option<ReadDecorators>) -> Vec<Decorator> {
+        read.as_mut()
+            .map(|read| std::mem::take(&mut read.list))
+            .unwrap_or_default()
+    }
+
+    /// Whether the shape check certainly accepts a node's `decorators`
+    /// (`true` when it has no such key).
+    pub(crate) fn conforms(read: Option<&ReadDecorators>) -> bool {
+        read.is_none_or(|read| read.conforms)
+    }
+}
+
+/// What the read keeps of a property's node: its `location` value as given
+/// (for an error), and the values BC-19's shape check reads
+/// ([`crate::introspect::shape`]).
+#[derive(Default)]
+pub(crate) struct PropertyKept {
     pub(crate) location: Option<Location>,
-    /// The node's `decorators` value, if it has that key.
-    pub(crate) decorators: Option<Kept>,
+    /// Whether the node has a `decorators` value BC-19's shape check may
+    /// reject (P5-93: decided as it is read, where the value used to be
+    /// kept for it).
+    pub(crate) unusual_decorators: bool,
     /// The `defaultValue` the reference parser writes on a
     /// `DateTimeProperty`, which the generated struct does not declare.
     pub(crate) date_time_default: Option<Value>,
+}
+
+impl PropertyKept {
+    fn is_empty(&self) -> bool {
+        self.location.is_none() && !self.unusual_decorators && self.date_time_default.is_none()
+    }
 }
 
 /// Reads a model AST from JSON text. The error is a `serde_json` syntax
@@ -185,13 +381,21 @@ pub(crate) fn from_value(value: &Value) -> Result<TypedModel, Error> {
 /// Reads one declaration node, as [`from_value`] reads each element of a
 /// model's `declarations`.
 pub(crate) fn declaration_from_value(value: &Value) -> Result<TypedDeclaration, Error> {
-    DeclarationSeed.deserialize(value)
+    let mut out = Vec::with_capacity(1);
+    DeclarationSeed { out: &mut out }.deserialize(value)?;
+    out.pop().ok_or_else(|| refuse("no declaration"))
 }
 
 /// Reads one property node, as [`from_value`] reads each element of a
 /// class-like or enum declaration's `properties`.
 pub(crate) fn property_from_value(value: &Value) -> Result<Property, Error> {
-    PropertySeed.deserialize(value).map(|read| read.property)
+    let mut properties = Vec::with_capacity(1);
+    PropertySeed {
+        properties: &mut properties,
+        kept: &mut Vec::new(),
+    }
+    .deserialize(value)?;
+    properties.pop().ok_or_else(|| refuse("no property"))
 }
 
 /// The error the reader raises for a node it cannot read.
@@ -221,50 +425,160 @@ impl<'de> Visitor<'de> for ModelSeed {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<TypedModel, A::Error> {
-        let mut header = Map::new();
+        let mut header = ModelHeader::default();
         let mut declarations = None;
-        while let Some(key) = map.next_key::<String>()? {
-            if key == "declarations" {
-                if declarations.is_some() {
-                    return Err(de::Error::custom("duplicate declarations"));
+        while let Some(key) = map.next_key_seed(StrSeed)? {
+            // A duplicate key replaces the earlier value, as in a `Value`.
+            let slot = match &*key {
+                "declarations" => {
+                    if declarations.is_some() {
+                        return Err(de::Error::custom("duplicate declarations"));
+                    }
+                    declarations = Some(map.next_value_seed(DeclarationsSeed)?);
+                    continue;
                 }
-                declarations = Some(map.next_value_seed(SeqOf(DeclarationSeed))?);
-            } else {
-                // A duplicate key replaces the earlier value, as in a `Value`.
-                header.insert(key, map.next_value::<Value>()?);
-            }
+                "$class" => {
+                    header.class = Some(map.next_value_seed(ModelClassSeed)?);
+                    continue;
+                }
+                "namespace" => &mut header.namespace,
+                "sourceUri" => &mut header.source_uri,
+                "concertoVersion" => &mut header.concerto_version,
+                "imports" => &mut header.imports,
+                "decorators" => {
+                    header.decorators = Some(map.next_value_seed(DecoratorsSeed)?);
+                    continue;
+                }
+                _ => {
+                    map.next_value::<Value>()?;
+                    if header.unknown.is_none() {
+                        header.unknown = Some(key.into_owned());
+                    }
+                    continue;
+                }
+            };
+            *slot = Some(map.next_value::<Value>()?);
         }
         Ok(TypedModel {
-            header: Value::Object(header),
+            header,
             declarations: declarations.unwrap_or_default(),
         })
     }
 }
 
-/// A JSON array of whatever `S` reads.
-struct SeqOf<S>(S);
+/// A model's declarations, once the loader has taken them all: the
+/// (empty) per-thread buffer [`DeclarationsSeed`] read them into, kept for
+/// the next read unless it has grown past [`BUFFER_BYTES`] (P5-93: the
+/// declarations are only ever moved out of it one by one, so they are
+/// never copied into a `Vec` of their own).
+pub(crate) fn recycle_declarations(mut items: Vec<TypedDeclaration>) {
+    items.clear();
+    if items.capacity() * std::mem::size_of::<TypedDeclaration>() <= BUFFER_BYTES {
+        DECLARATIONS.set(items);
+    }
+}
 
-impl<'de, S: DeserializeSeed<'de> + Copy> DeserializeSeed<'de> for SeqOf<S> {
-    type Value = Vec<S::Value>;
+/// The items of `items` (a buffer filled by the read), in a `Vec` of
+/// exactly their number plus `reserve`; `items` goes back to `buffer`
+/// empty, unless it has grown past [`BUFFER_BYTES`].
+fn exact<T: 'static>(
+    buffer: &'static LocalKey<Cell<Vec<T>>>,
+    mut items: Vec<T>,
+    reserve: usize,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    if !items.is_empty() || reserve > 0 {
+        out.reserve_exact(items.len() + reserve);
+        out.append(&mut items);
+    }
+    if items.capacity() * std::mem::size_of::<T>() <= BUFFER_BYTES {
+        buffer.set(items);
+    }
+    out
+}
+
+/// The largest buffer [`exact`] keeps for the next read.
+const BUFFER_BYTES: usize = 1024 * 1024;
+
+thread_local! {
+    /// [`DeclarationsSeed`]'s buffer for a model's declarations.
+    static DECLARATIONS: Cell<Vec<TypedDeclaration>> = const { Cell::new(Vec::new()) };
+    /// [`PropertiesSeed`]'s buffer for a declaration's properties.
+    static PROPERTIES: Cell<Vec<Property>> = const { Cell::new(Vec::new()) };
+}
+
+/// A model's `declarations` array.
+struct DeclarationsSeed;
+
+impl<'de> DeserializeSeed<'de> for DeclarationsSeed {
+    type Value = Vec<TypedDeclaration>;
 
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
         d.deserialize_seq(self)
     }
 }
 
-impl<'de, S: DeserializeSeed<'de> + Copy> Visitor<'de> for SeqOf<S> {
-    type Value = Vec<S::Value>;
+impl<'de> Visitor<'de> for DeclarationsSeed {
+    type Value = Vec<TypedDeclaration>;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("an array")
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(item) = seq.next_element_seed(self.0)? {
-            items.push(item);
-        }
-        Ok(items)
+        let mut out = DECLARATIONS.take();
+        while seq
+            .next_element_seed(DeclarationSeed { out: &mut out })?
+            .is_some()
+        {}
+        Ok(out)
+    }
+}
+
+/// A class-like or enum declaration's `properties` array, as read: the
+/// properties in [`PROPERTIES`]' buffer (for the declaration's reader to
+/// pass to [`exact`] once it knows how many system properties the loader
+/// will add), and what the read kept of each, as [`TypedProperties`] holds
+/// it.
+struct PropertiesSeed;
+
+type ReadProperties = (Vec<Property>, Vec<PropertyKept>);
+
+impl<'de> DeserializeSeed<'de> for PropertiesSeed {
+    type Value = ReadProperties;
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PropertiesSeed {
+    type Value = ReadProperties;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("an array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut properties = PROPERTIES.take();
+        let mut kept = Vec::new();
+        while seq
+            .next_element_seed(PropertySeed {
+                properties: &mut properties,
+                kept: &mut kept,
+            })?
+            .is_some()
+        {}
+        Ok((properties, kept))
+    }
+}
+
+/// [`TypedProperties`] from what [`PropertiesSeed`] read, with room for
+/// `reserve` more properties.
+fn typed_properties((properties, kept): ReadProperties, reserve: usize) -> TypedProperties {
+    TypedProperties {
+        properties: exact(&PROPERTIES, properties, reserve),
+        kept,
     }
 }
 
@@ -306,28 +620,32 @@ fn read_class<'de, A: MapAccess<'de, Error = Error>>(map: &mut A) -> Result<Clas
     }
 }
 
-#[derive(Clone, Copy)]
-struct DeclarationSeed;
+/// Reads one declaration onto `out` (P5-93: pushed where it is read, not
+/// returned through each layer of the read, a move of the whole node at
+/// each).
+struct DeclarationSeed<'a> {
+    out: &'a mut Vec<TypedDeclaration>,
+}
 
-impl<'de> DeserializeSeed<'de> for DeclarationSeed {
-    type Value = TypedDeclaration;
+impl<'de> DeserializeSeed<'de> for DeclarationSeed<'_> {
+    type Value = ();
 
-    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<TypedDeclaration, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
         d.deserialize_map(self)
     }
 }
 
-impl<'de> Visitor<'de> for DeclarationSeed {
-    type Value = TypedDeclaration;
+impl<'de> Visitor<'de> for DeclarationSeed<'_> {
+    type Value = ();
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("a declaration object")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<TypedDeclaration, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
         // The generic `A` has only its own error type; every map this
         // reader is handed comes from `serde_json`, so go through that.
-        read_declaration(ErrorBridge(map)).map_err(de::Error::custom)
+        read_declaration(ErrorBridge(map), self.out).map_err(de::Error::custom)
     }
 }
 
@@ -340,30 +658,38 @@ fn metamodel_kind(class: &str) -> Option<&str> {
 
 fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     mut map: A,
-) -> Result<TypedDeclaration, Error> {
+    out: &mut Vec<TypedDeclaration>,
+) -> Result<(), Error> {
     let class = match read_class(&mut map)? {
         Class::First(class) => class,
-        Class::Reordered(node) => return DeclarationSeed.deserialize(&node),
+        Class::Reordered(node) => return DeclarationSeed { out }.deserialize(&node),
     };
     let short = metamodel_kind(&class);
     if short == Some("EnumDeclaration") {
-        return read_enum(map);
+        return read_enum(map, out);
     }
     let Some(kind) = short.and_then(ClassKind::from_short) else {
         // Neither class-like nor an enum: the subtree, `$class` first, for
-        // `Declaration::from_model_json`.
-        let replay = Replay {
+        // `Declaration::from_model_json`; a map declaration's as a `Kept`
+        // (P5-93; before, a `Value`), for `Declaration::from_typed`.
+        let is_map = short == Some("MapDeclaration");
+        let replay = MapAccessDeserializer::new(Replay {
             class: Some(class),
             inner: map,
-        };
-        return Value::deserialize(MapAccessDeserializer::new(replay)).map(TypedDeclaration::Ast);
+        });
+        out.push(if is_map {
+            TypedDeclaration::Map(KeptSeed.deserialize(replay)?)
+        } else {
+            TypedDeclaration::Ast(Value::deserialize(replay)?)
+        });
+        return Ok(());
     };
     let mut properties = None;
     let mut decorators = None;
     let mut node_decorators = None;
     let mut node_identified = None;
     let mut location = None;
-    let mut identified = None;
+    let mut identified_conforms = true;
     let mut taken = Map::new();
     let access = Intercept {
         inner: map,
@@ -372,7 +698,7 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
         node_decorators: &mut node_decorators,
         node_identified: &mut node_identified,
         location: &mut location,
-        identified: Some(&mut identified),
+        identified_conforms: Some(&mut identified_conforms),
         take: &[],
         taken: &mut taken,
         pending: Pending::Other,
@@ -395,19 +721,26 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     node.normalize_identified();
     node.set_decorators(node_decorators);
     node.set_location(read_location(location.as_ref())?);
-    Ok(TypedDeclaration::Class {
+    // Room for the `$identifier` property the loader adds to a class with
+    // a system identifier (`ClassDeclaration::finish`).
+    let properties = typed_properties(properties, usize::from(node.is_system_identified()));
+    out.push(TypedDeclaration::Class {
         kind,
-        node: Box::new(node),
+        node,
         properties,
         decorators,
         location,
-        identified,
-    })
+        identified_conforms,
+    });
+    Ok(())
 }
 
 /// An enum declaration, after its `$class`, whose values are each an
 /// `EnumProperty`.
-fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDeclaration, Error> {
+fn read_enum<'de, A: MapAccess<'de, Error = Error>>(
+    map: A,
+    out: &mut Vec<TypedDeclaration>,
+) -> Result<(), Error> {
     let mut properties = None;
     let mut decorators = None;
     let mut node_decorators = None;
@@ -421,7 +754,7 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
         node_decorators: &mut node_decorators,
         node_identified: &mut node_identified,
         location: &mut location,
-        identified: None,
+        identified_conforms: None,
         take: &[],
         taken: &mut taken,
         pending: Pending::Other,
@@ -429,22 +762,27 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(map: A) -> Result<TypedDecla
     let mut node = mm::EnumDeclaration::deserialize(MapAccessDeserializer::new(access))?;
     node.decorators = node_decorators;
     node.location = read_location(location.as_ref())?;
-    let values = properties.ok_or_else(|| refuse("missing field `properties`"))?;
-    // The generated struct's own `properties` is the values' nodes, which
-    // `read_property` read into each `Property::Enum`.
-    node.properties = values
+    let values = typed_properties(
+        properties.ok_or_else(|| refuse("missing field `properties`"))?,
+        0,
+    );
+    // The values' nodes are each `Property::Enum`'s, which `read_property`
+    // read; the generated struct's own `properties` is left empty (P5-93:
+    // it used to hold a copy of each, which nothing read).
+    if values
+        .properties
         .iter()
-        .map(|value| match &value.property {
-            Property::Enum(value) => Ok((**value).clone()),
-            _ => Err(refuse("an enum value is not an EnumProperty")),
-        })
-        .collect::<Result<_, _>>()?;
-    Ok(TypedDeclaration::Enum {
-        node: Box::new(node),
+        .any(|value| !matches!(value, Property::Enum(_)))
+    {
+        return Err(refuse("an enum value is not an EnumProperty"));
+    }
+    out.push(TypedDeclaration::Enum {
+        node,
         values,
         decorators,
         location,
-    })
+    });
+    Ok(())
 }
 
 /// The generated `location` of a node whose `location` value [`Intercept`]
@@ -458,11 +796,14 @@ fn read_location(location: Option<&Location>) -> Result<Option<mm::Range>, Error
 
 /// Decodes `value` into a generated struct as the typed read decodes a node:
 /// through [`Strict`], so a key the struct does not declare is an error.
+/// (P5-93: only the tests' reference since the model's own decorators are
+/// read as a [`Kept`].)
+#[cfg(test)]
 pub(crate) fn strict_from_value<'de, T: Deserialize<'de>>(value: &'de Value) -> Result<T, Error> {
     T::deserialize(Strict(value))
 }
 
-/// [`strict_from_value`], for the generated struct of one variant of a
+/// `strict_from_value`, for the generated struct of one variant of a
 /// polymorphic type (a scalar or map declaration), which has no `$class`
 /// field of its own: `value`'s `$class` (which picked the variant) is left
 /// out.
@@ -481,26 +822,46 @@ pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
     }
 }
 
-#[derive(Clone, Copy)]
-struct PropertySeed;
+/// Reads one property onto `properties`, and what the read keeps of its
+/// node onto `kept` (P5-93: pushed where they are read, as
+/// [`DeclarationSeed`] pushes a declaration). `kept` is in step with
+/// `properties` from the first property that has anything kept, and empty
+/// until then.
+struct PropertySeed<'a> {
+    properties: &'a mut Vec<Property>,
+    kept: &'a mut Vec<PropertyKept>,
+}
 
-impl<'de> DeserializeSeed<'de> for PropertySeed {
-    type Value = TypedProperty;
+impl PropertySeed<'_> {
+    /// What the read keeps of the property just pushed onto `properties`.
+    fn push_kept(self, kept: PropertyKept) {
+        if !kept.is_empty() && self.kept.is_empty() {
+            self.kept
+                .resize_with(self.properties.len() - 1, PropertyKept::default);
+        }
+        if !self.kept.is_empty() || !kept.is_empty() {
+            self.kept.push(kept);
+        }
+    }
+}
 
-    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+impl<'de> DeserializeSeed<'de> for PropertySeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
         d.deserialize_map(self)
     }
 }
 
-impl<'de> Visitor<'de> for PropertySeed {
-    type Value = TypedProperty;
+impl<'de> Visitor<'de> for PropertySeed<'_> {
+    type Value = ();
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("a property object")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-        read_property(ErrorBridge(map)).map_err(de::Error::custom)
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
+        read_property(ErrorBridge(map), self).map_err(de::Error::custom)
     }
 }
 
@@ -508,12 +869,23 @@ impl<'de> Visitor<'de> for PropertySeed {
 /// generated struct its full metamodel `$class` names. The name checks
 /// (identifier, reserved system name) are the loader's, after the read
 /// ([`crate::introspect::Declaration`]).
+///
+/// P5-93: the keys almost every property node has (`name`, `isArray`,
+/// `isOptional`, an object or relationship property's `type`, `decorators`
+/// and `location`) are read here, each value through the very call the
+/// generated struct would make for it (so with the same result, and the
+/// same error), and the struct is built from them. From the first other
+/// key (a validator, a `defaultValue`, a key the struct does not declare),
+/// the node is read on by the generated struct, as before, with the
+/// values read so far handed back to it first ([`Resume`]), so it
+/// accepts and rejects exactly what it always has.
 fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     mut map: A,
-) -> Result<TypedProperty, Error> {
+    out: PropertySeed<'_>,
+) -> Result<(), Error> {
     let class = match read_class(&mut map)? {
         Class::First(class) => class,
-        Class::Reordered(node) => return PropertySeed.deserialize(&node),
+        Class::Reordered(node) => return out.deserialize(&node),
     };
     // TS matches the full metamodel `$class` (accordproject/concerto-rust#285).
     let Some(kind) = property_kind(&class) else {
@@ -523,17 +895,141 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     };
     let mut decorators = None;
     let mut node_decorators = None;
-    let mut node_identified = None;
     let mut location = None;
+    let mut read = PropertyKeys::default();
+    // Which of the keys read here the generated struct declares.
+    let flags = kind != "EnumProperty";
+    let typed = matches!(kind, "ObjectProperty" | "RelationshipProperty");
+    let next = loop {
+        let Some(key) = map.next_key_seed(StrSeed)? else {
+            break None;
+        };
+        match &*key {
+            "name" => {
+                if read.name.is_some() {
+                    return Err(de::Error::duplicate_field("name"));
+                }
+                read.name = Some(map.next_value_seed(Strict(PhantomData::<Name>))?);
+                read.order.push(KEY_NAME);
+            }
+            "isArray" if flags => {
+                if read.is_array.is_some() {
+                    return Err(de::Error::duplicate_field("isArray"));
+                }
+                read.is_array = Some(map.next_value_seed(Strict(PhantomData::<bool>))?);
+                read.order.push(KEY_IS_ARRAY);
+            }
+            "isOptional" if flags => {
+                if read.is_optional.is_some() {
+                    return Err(de::Error::duplicate_field("isOptional"));
+                }
+                read.is_optional = Some(map.next_value_seed(Strict(PhantomData::<bool>))?);
+                read.order.push(KEY_IS_OPTIONAL);
+            }
+            "type" if typed => {
+                if read.type_.is_some() {
+                    return Err(de::Error::duplicate_field("type"));
+                }
+                read.type_ = Some(map.next_value_seed(Strict(PhantomData::<mm::TypeIdentifier>))?);
+                read.order.push(KEY_TYPE);
+            }
+            // As `Intercept` reads them.
+            "decorators" => {
+                // The generated struct's error for a repeated key.
+                if decorators.is_some() {
+                    return Err(de::Error::duplicate_field("decorators"));
+                }
+                let decoded = read_decorators(&mut map)?;
+                node_decorators = decoded.node;
+                decorators = Some(ReadDecorators {
+                    list: decoded.list,
+                    conforms: decoded.conforms,
+                });
+            }
+            "location" => {
+                if location.is_some() {
+                    return Err(de::Error::duplicate_field("location"));
+                }
+                location = Some(map.next_value_seed(LocationSeed)?);
+            }
+            _ => break Some(key),
+        }
+    };
+    let date_time_default = match next {
+        None => {
+            read.build(
+                out.properties,
+                &class,
+                kind,
+                node_decorators,
+                &location,
+                &mut decorators,
+            )?;
+            None
+        }
+        Some(key) => {
+            let resume = Resume {
+                read: Some(read),
+                next: 0,
+                pending: None,
+                key: Some(key),
+                inner: map,
+            };
+            let (property, date_time_default) = read_property_struct(
+                resume,
+                &class,
+                kind,
+                &mut decorators,
+                node_decorators,
+                &mut location,
+            )?;
+            out.properties.push(property);
+            date_time_default
+        }
+    };
+    out.push_kept(PropertyKept {
+        location,
+        unusual_decorators: !ReadDecorators::conforms(decorators.as_ref()),
+        date_time_default,
+    });
+    Ok(())
+}
+
+/// A node's `decorators` value, as [`Intercept`] reads it.
+fn read_decorators<'de, A: MapAccess<'de, Error = Error>>(
+    map: &mut A,
+) -> Result<Decorators, Error> {
+    match map.next_value_seed(DecoratorsSeed)? {
+        Ok(decoded) => Ok(decoded),
+        Err(value) => Decorators::from_kept(value),
+    }
+}
+
+/// The rest of a property node after the keys [`read_property`] read,
+/// read by its generated struct through [`Intercept`], as every property
+/// node was before P5-93: the property and the `defaultValue` the read
+/// keeps of a `DateTimeProperty`.
+// `class` is the `Cow` the read gave, which `Replay` hands back as it is
+// (borrowed from the text, or owned).
+#[allow(clippy::ptr_arg)]
+fn read_property_struct<'de, A: MapAccess<'de, Error = Error>>(
+    map: A,
+    class: &Cow<'de, str>,
+    kind: &str,
+    decorators: &mut Option<ReadDecorators>,
+    mut node_decorators: Option<Vec<mm::Decorator>>,
+    location: &mut Option<Location>,
+) -> Result<(Property, Option<Value>), Error> {
+    let mut node_identified = None;
     let mut taken = Map::new();
     let access = Intercept {
         inner: map,
         properties: None,
-        decorators: &mut decorators,
+        decorators,
         node_decorators: &mut node_decorators,
         node_identified: &mut node_identified,
-        location: &mut location,
-        identified: None,
+        location,
+        identified_conforms: None,
         // The reference parser writes a `defaultValue` on a
         // `DateTimeProperty`, which the metamodel does not declare (BC-19's
         // one tolerance, `instance::check_ast_shape`). It is kept out of the
@@ -550,13 +1046,11 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
         ($variant:ident, $node:ty) => {{
             let mut node = <$node>::deserialize(MapAccessDeserializer::new(access))?;
             node.decorators = node_decorators;
-            Property::$variant(WithDecorators::new(
-                node,
-                parse_decorator_list(decorators.as_ref()),
-            ))
+            node.location = read_location(location.as_ref())?;
+            Property::$variant(WithDecorators::new(node, ReadDecorators::list(decorators)))
         }};
     }
-    let mut property = match kind {
+    let property = match kind {
         "BooleanProperty" => read!(Boolean, mm::BooleanProperty),
         "StringProperty" => read!(String, mm::StringProperty),
         "IntegerProperty" => read!(Integer, mm::IntegerProperty),
@@ -573,19 +1067,248 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
             };
             let mut node = mm::EnumProperty::deserialize(MapAccessDeserializer::new(replay))?;
             node.decorators = node_decorators;
-            Property::Enum(WithDecorators::new(
-                node,
-                parse_decorator_list(decorators.as_ref()),
-            ))
+            node.location = read_location(location.as_ref())?;
+            Property::Enum(WithDecorators::new(node, ReadDecorators::list(decorators)))
         }
     };
-    property.set_location(read_location(location.as_ref())?);
-    Ok(TypedProperty {
-        property,
-        location,
-        decorators,
-        date_time_default: taken.shift_remove("defaultValue"),
-    })
+    Ok((property, taken.shift_remove("defaultValue")))
+}
+
+/// The keys [`read_property`] reads itself, by their index in
+/// [`PROPERTY_KEYS`].
+const KEY_NAME: u8 = 0;
+const KEY_IS_ARRAY: u8 = 1;
+const KEY_IS_OPTIONAL: u8 = 2;
+const KEY_TYPE: u8 = 3;
+const PROPERTY_KEYS: [&str; 4] = ["name", "isArray", "isOptional", "type"];
+
+/// The values [`read_property`] has read of a property node's own keys,
+/// and the order it read them in.
+#[derive(Default)]
+struct PropertyKeys {
+    order: KeyOrder,
+    name: Option<Name>,
+    is_array: Option<bool>,
+    is_optional: Option<bool>,
+    type_: Option<mm::TypeIdentifier>,
+}
+
+/// The keys read, in order, each once.
+#[derive(Default, Clone, Copy)]
+struct KeyOrder {
+    keys: [u8; 4],
+    len: u8,
+}
+
+impl KeyOrder {
+    fn push(&mut self, key: u8) {
+        if let Some(slot) = self.keys.get_mut(usize::from(self.len)) {
+            *slot = key;
+            self.len += 1;
+        }
+    }
+
+    fn get(&self, index: u8) -> Option<u8> {
+        (index < self.len)
+            .then(|| self.keys.get(usize::from(index)).copied())
+            .flatten()
+    }
+}
+
+impl PropertyKeys {
+    /// The property, from a node that has no key but those
+    /// [`read_property`] reads: the generated struct of `kind` as it
+    /// decodes such a node (the same fields, the same missing-field
+    /// errors, in its field order), with the node's decorators and
+    /// location as [`read_property_struct`] sets them.
+    fn build(
+        self,
+        out: &mut Vec<Property>,
+        class: &str,
+        kind: &str,
+        node_decorators: Option<Vec<mm::Decorator>>,
+        location: &Option<Location>,
+        decorators: &mut Option<ReadDecorators>,
+    ) -> Result<(), Error> {
+        let name = self.name.ok_or_else(|| de::Error::missing_field("name"))?;
+        let is_array = self.is_array.unwrap_or_default();
+        let is_optional = self.is_optional.unwrap_or_default();
+        let type_ = match kind {
+            "ObjectProperty" | "RelationshipProperty" => {
+                Some(self.type_.ok_or_else(|| de::Error::missing_field("type"))?)
+            }
+            _ => None,
+        };
+        let location = read_location(location.as_ref())?;
+        let list = ReadDecorators::list(decorators);
+        out.reserve(1);
+        macro_rules! scalar {
+            ($variant:ident, $node:ident { $($field:ident),* }) => {
+                Property::$variant(WithDecorators::new(
+                    mm::$node {
+                        name,
+                        is_array,
+                        is_optional,
+                        size_validator: None,
+                        decorators: node_decorators,
+                        location,
+                        $($field: None,)*
+                    },
+                    list,
+                ))
+            };
+        }
+        out.push(match (kind, type_) {
+            ("BooleanProperty", _) => scalar!(Boolean, BooleanProperty { default_value }),
+            ("StringProperty", _) => scalar!(
+                String,
+                StringProperty {
+                    default_value,
+                    validator,
+                    length_validator
+                }
+            ),
+            ("IntegerProperty", _) => {
+                scalar!(
+                    Integer,
+                    IntegerProperty {
+                        default_value,
+                        validator
+                    }
+                )
+            }
+            ("LongProperty", _) => scalar!(
+                Long,
+                LongProperty {
+                    default_value,
+                    validator
+                }
+            ),
+            ("DoubleProperty", _) => scalar!(
+                Double,
+                DoubleProperty {
+                    default_value,
+                    validator
+                }
+            ),
+            ("DateTimeProperty", _) => scalar!(DateTime, DateTimeProperty {}),
+            ("ObjectProperty", Some(type_)) => Property::Object(WithDecorators::new(
+                mm::ObjectProperty {
+                    name,
+                    is_array,
+                    is_optional,
+                    size_validator: None,
+                    decorators: node_decorators,
+                    location,
+                    default_value: None,
+                    type_,
+                },
+                list,
+            )),
+            ("RelationshipProperty", Some(type_)) => Property::Relationship(WithDecorators::new(
+                mm::RelationshipProperty {
+                    name,
+                    is_array,
+                    is_optional,
+                    size_validator: None,
+                    decorators: node_decorators,
+                    location,
+                    type_,
+                },
+                list,
+            )),
+            _ => Property::Enum(WithDecorators::new(
+                mm::EnumProperty {
+                    _class: class_name(class),
+                    name,
+                    decorators: node_decorators,
+                    location,
+                },
+                list,
+            )),
+        });
+        Ok(())
+    }
+
+    /// The value read for `key`, taken, to hand back to the generated
+    /// struct ([`Resume`]).
+    fn take(&mut self, key: u8) -> Result<Resumed, Error> {
+        Ok(match key {
+            KEY_NAME => Resumed::Str(self.name.take().unwrap_or_default().into_string()),
+            KEY_IS_ARRAY => Resumed::Bool(self.is_array.unwrap_or_default()),
+            KEY_IS_OPTIONAL => Resumed::Bool(self.is_optional.unwrap_or_default()),
+            // An already-decoded node, handed back as the `Value` it
+            // serializes to, which decodes to the same node.
+            _ => Resumed::Value(serde_json::to_value(self.type_.take())?),
+        })
+    }
+}
+
+/// `class` as a generated struct's `$class` (interned).
+fn class_name(class: &str) -> concerto_metamodel::ClassName {
+    concerto_metamodel::utils::class_name(class)
+}
+
+/// A value [`read_property`] read, handed back to the generated struct.
+enum Resumed {
+    Str(String),
+    Bool(bool),
+    Value(Value),
+}
+
+/// A property node's entries for its generated struct, after
+/// [`read_property`] has read some of them: the keys it read (but for
+/// `decorators` and `location`, which `Intercept` would hand the struct as
+/// `null`, and which the caller sets on the node), each with its value, in
+/// the order read, then the key it stopped at, then the rest of the node.
+struct Resume<'de, A> {
+    read: Option<PropertyKeys>,
+    /// The next of `read`'s keys to hand over.
+    next: u8,
+    /// The value of the key just handed over, if it is one of `read`'s.
+    pending: Option<Resumed>,
+    /// The key [`read_property`] stopped at.
+    key: Option<Cow<'de, str>>,
+    inner: A,
+}
+
+impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Resume<'de, A> {
+    type Error = Error;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Error> {
+        if let Some(read) = self.read.as_mut() {
+            match read.order.get(self.next) {
+                Some(key) => {
+                    self.next += 1;
+                    self.pending = Some(read.take(key)?);
+                    let name = PROPERTY_KEYS.get(usize::from(key)).copied().unwrap_or("");
+                    return seed
+                        .deserialize(BorrowedStrDeserializer::new(name))
+                        .map(Some);
+                }
+                None => self.read = None,
+            }
+        }
+        match self.key.take() {
+            Some(Cow::Borrowed(key)) => seed
+                .deserialize(BorrowedStrDeserializer::new(key))
+                .map(Some),
+            Some(Cow::Owned(key)) => seed.deserialize(StringDeserializer::new(key)).map(Some),
+            None => self.inner.next_key_seed(seed),
+        }
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
+        match self.pending.take() {
+            Some(Resumed::Str(value)) => seed.deserialize(StringDeserializer::new(value)),
+            Some(Resumed::Bool(value)) => seed.deserialize(BoolDeserializer::new(value)),
+            Some(Resumed::Value(value)) => seed.deserialize(value),
+            None => self.inner.next_value_seed(seed),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -605,10 +1328,11 @@ enum Pending {
 /// with some keys intercepted on the way:
 /// - `properties`, when `properties` is set: read as [`Property`]s (the
 ///   struct sees `[]`);
-/// - `decorators`: read as a [`Kept`] (P5-76; before, a `Value`), decoded
-///   strictly once for the caller to set on the node (the struct is handed
-///   `null` for it; before P5-76 it decoded a copy of the value again), and
-///   kept for [`parse_decorator_list`] and BC-19's shape check;
+/// - `decorators`: read by [`DecoratorsSeed`] (P5-93; a [`Kept`] from P5-76,
+///   a `Value` before), decoded strictly once for the caller to set on the
+///   node (the struct is handed `null` for it; before P5-76 it decoded a
+///   copy of the value again), with its processed decorators and BC-19's
+///   verdict on it;
 /// - `location`: read as a [`Location`] (P5-76; before, a `Value`), kept as
 ///   given for an error's location; the struct is handed `null` for it, and
 ///   [`read_location`] reads it;
@@ -624,14 +1348,15 @@ enum Pending {
 struct Intercept<'a, A> {
     inner: A,
     /// Where the properties go, or `None` to pass `properties` through.
-    properties: Option<&'a mut Option<Vec<TypedProperty>>>,
-    decorators: &'a mut Option<Kept>,
+    properties: Option<&'a mut Option<ReadProperties>>,
+    decorators: &'a mut Option<ReadDecorators>,
     /// The generated `decorators` of the node, decoded from `decorators`
     /// (the struct is handed `null` for it, and the caller sets it).
     node_decorators: &'a mut Option<Vec<mm::Decorator>>,
     location: &'a mut Option<Location>,
-    /// Where the `identified` value goes, or `None` to pass it through.
-    identified: Option<&'a mut Option<Kept>>,
+    /// Where the shape check's verdict on the `identified` value goes, or
+    /// `None` to pass `identified` through.
+    identified_conforms: Option<&'a mut bool>,
     /// The generated `identified` of the node, decoded from `identified`
     /// (the struct is handed `null` for it, and the caller sets it).
     node_identified: &'a mut Option<mm::Identified>,
@@ -662,7 +1387,7 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
             "properties" if self.properties.is_some() => Pending::Properties,
             "decorators" => Pending::Decorators,
             "location" => Pending::Location,
-            "identified" if self.identified.is_some() => Pending::Identified,
+            "identified" if self.identified_conforms.is_some() => Pending::Identified,
             _ => Pending::Other,
         };
         match key {
@@ -682,27 +1407,41 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 if slot.is_some() {
                     return Err(refuse("duplicate properties"));
                 }
-                *slot = Some(self.inner.next_value_seed(SeqOf(PropertySeed))?);
+                *slot = Some(self.inner.next_value_seed(PropertiesSeed)?);
                 seed.deserialize(Value::Array(Vec::new()))
             }
             Pending::Decorators => {
+                // The generated struct's own error for a repeated key, which
+                // it raises first, unless `read_property` read the first
+                // one (P5-93).
                 if self.decorators.is_some() {
-                    return Err(refuse("duplicate decorators"));
+                    return Err(de::Error::duplicate_field("decorators"));
                 }
-                // P5-76: kept as a [`Kept`], not a `Value` (the `kept`
+                // P5-76: read as a [`Kept`], not a `Value` (the `kept`
                 // module doc), and decoded strictly (as the model's own
                 // decorators are) once, for the caller to set on the node,
                 // where the struct used to decode a copy of the value again
-                // (it is handed `null`, as for `location`).
-                let value = self.inner.next_value_seed(KeptSeed)?;
-                *self.node_decorators = value.strict_decode()?;
-                let read = seed.deserialize(Value::Null)?;
-                *self.decorators = Some(value);
-                Ok(read)
+                // (it is handed `null`, as for `location`). P5-93: the
+                // decorators and the shape check's verdict are taken from
+                // it here, and the decode moves its strings out.
+                // From P5-93, an array of plain decorator nodes is read
+                // field by field into both, each string once
+                // (`DecoratorsSeed`), with no `Kept` of it.
+                let decoded = match self.inner.next_value_seed(DecoratorsSeed)? {
+                    Ok(decoded) => decoded,
+                    Err(value) => Decorators::from_kept(value)?,
+                };
+                *self.node_decorators = decoded.node;
+                *self.decorators = Some(ReadDecorators {
+                    list: decoded.list,
+                    conforms: decoded.conforms,
+                });
+                seed.deserialize(Value::Null)
             }
             Pending::Location => {
+                // As for `decorators`.
                 if self.location.is_some() {
-                    return Err(refuse("duplicate location"));
+                    return Err(de::Error::duplicate_field("location"));
                 }
                 // The struct is handed `null`, and its `location` is read
                 // from this value once it has been read ([`read_location`]),
@@ -712,17 +1451,18 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 seed.deserialize(Value::Null)
             }
             Pending::Identified => {
-                // P5-76: kept as a [`Kept`], not a `Value`, and decoded
-                // strictly once, for the caller to set on the node, where
-                // the struct used to decode a copy of the value (it is
-                // handed `null`, as for `location`).
-                let value = self.inner.next_value_seed(KeptSeed)?;
-                *self.node_identified = value.strict_decode()?;
-                let read = seed.deserialize(Value::Null)?;
-                if let Some(slot) = self.identified.as_deref_mut() {
-                    *slot = Some(value);
+                // P5-76: decoded strictly once, for the caller to set on the
+                // node, where the struct used to decode a copy of the value
+                // (it is handed `null`, as for `location`). P5-93: the
+                // metamodel's own two nodes are read field by field
+                // ([`IdentifiedSeed`]), and the shape check's verdict is
+                // taken here, where the value used to be kept for it.
+                let (identified, kept) = self.inner.next_value_seed(IdentifiedSeed)?.decode()?;
+                *self.node_identified = identified;
+                if let Some(slot) = self.identified_conforms.as_deref_mut() {
+                    *slot = kept.as_ref().is_none_or(shape::identified_conforms);
                 }
-                Ok(read)
+                seed.deserialize(Value::Null)
             }
             Pending::Other => self.inner.next_value_seed(Strict(seed)),
         }
@@ -753,7 +1493,10 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Replay<'de, A> {
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
         match self.class.take() {
-            Some(class) => seed.deserialize(StringDeserializer::new(class.into_owned())),
+            // P5-93: a `$class` borrowed from the text is replayed as it
+            // is (a generated struct interns it), not copied.
+            Some(Cow::Borrowed(class)) => seed.deserialize(BorrowedStrDeserializer::new(class)),
+            Some(Cow::Owned(class)) => seed.deserialize(StringDeserializer::new(class)),
             None => self.inner.next_value_seed(seed),
         }
     }
@@ -1747,6 +2490,159 @@ mod tests {
             json!({"$class": class, "name": "M"}),
         ] {
             both::<mm::MapDeclaration>(&value);
+        }
+    }
+}
+#[cfg(test)]
+mod property_read_tests {
+    use std::borrow::Cow;
+    use std::fmt;
+
+    use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, Visitor};
+
+    use super::{
+        Class, ErrorBridge, PropertySeed, property_kind, read_class, read_property_struct,
+    };
+
+    /// Reads one property node as every property node was read before
+    /// P5-93: `$class`, then the rest by its generated struct.
+    struct ByStruct;
+
+    impl<'de> DeserializeSeed<'de> for ByStruct {
+        type Value = String;
+
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<String, D::Error> {
+            d.deserialize_map(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for ByStruct {
+        type Value = String;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a property object")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<String, A::Error> {
+            let mut map = ErrorBridge(map);
+            let mut read = || -> Result<String, serde_json::Error> {
+                let class: Cow<'de, str> = match read_class(&mut map)? {
+                    Class::First(class) => class,
+                    Class::Reordered(_) => return Ok("reordered".to_string()),
+                };
+                let Some(kind) = property_kind(&class) else {
+                    return Err(de::Error::custom(format_args!(
+                        "unrecognised property $class {class}"
+                    )));
+                };
+                let mut decorators = None;
+                let mut location = None;
+                let (property, taken) = read_property_struct(
+                    &mut map,
+                    &class,
+                    kind,
+                    &mut decorators,
+                    None,
+                    &mut location,
+                )?;
+                Ok(format!("{:?} {taken:?} {location:?}", Some(property)))
+            };
+            read().map_err(de::Error::custom)
+        }
+    }
+
+    /// Reads one property node as the typed read reads it.
+    fn as_read(text: &str) -> String {
+        let mut properties = Vec::new();
+        let mut kept = Vec::new();
+        let read = PropertySeed {
+            properties: &mut properties,
+            kept: &mut kept,
+        }
+        .deserialize(&mut serde_json::Deserializer::from_str(text));
+        match read {
+            Ok(()) => {
+                let kept = kept.pop().unwrap_or_default();
+                format!(
+                    "{:?} {:?} {:?}",
+                    properties.pop(),
+                    kept.date_time_default,
+                    kept.location
+                )
+            }
+            Err(err) => format!("error {err}"),
+        }
+    }
+
+    fn by_struct(text: &str) -> String {
+        match ByStruct.deserialize(&mut serde_json::Deserializer::from_str(text)) {
+            Ok(read) => read,
+            Err(err) => format!("error {err}"),
+        }
+    }
+
+    const MM: &str = "concerto.metamodel@1.0.0";
+
+    /// P5-93: a property node's own keys, read by `read_property` itself,
+    /// give exactly the property, and the error, its generated struct
+    /// gives, whatever the node; from the first other key the struct reads
+    /// the rest, handed the values read before it.
+    #[test]
+    fn a_property_reads_as_its_generated_struct_reads_it() {
+        let range = r#"{"$class":"concerto.metamodel@1.0.0.Range","start":{"offset":1,"line":1,"column":1,"$class":"concerto.metamodel@1.0.0.Position"},"end":{"offset":2,"line":1,"column":2,"$class":"concerto.metamodel@1.0.0.Position"}}"#;
+        let decorators = r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"D","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorString","value":"x"}]}]"#;
+        let type_ = r#"{"$class":"concerto.metamodel@1.0.0.TypeIdentifier","name":"T","namespace":"org.x@1.0.0"}"#;
+        let nodes = [
+            ("StringProperty", r#""name":"a","isArray":false,"isOptional":true"#.to_string()),
+            ("StringProperty", r#""isOptional":true,"name":"a""#.to_string()),
+            ("StringProperty", r#""name":"ab","isArray":true"#.to_string()),
+            ("StringProperty", format!(r#""name":"a","decorators":{decorators},"location":{range}"#)),
+            ("StringProperty", format!(r#""location":{range},"name":"a","decorators":[]"#)),
+            ("StringProperty", r#""name":"a","decorators":null,"location":null"#.to_string()),
+            ("StringProperty", r#""name":"a","location":{"start":1}"#.to_string()),
+            ("StringProperty", r#""name":"a","decorators":[{"name":"D"}]"#.to_string()),
+            ("StringProperty", r#""name":"a","validator":{"$class":"concerto.metamodel@1.0.0.StringRegexValidator","pattern":"x","flags":""},"isArray":true"#.to_string()),
+            ("StringProperty", format!(r#""isArray":true,"name":"a","decorators":{decorators},"lengthValidator":{{"$class":"concerto.metamodel@1.0.0.StringLengthValidator","maxLength":3}},"isOptional":true"#)),
+            ("StringProperty", r#""name":"a","defaultValue":"x""#.to_string()),
+            ("StringProperty", r#""name":"a","sizeValidator":{"$class":"concerto.metamodel@1.0.0.CollectionSizeValidator","minSize":1},"name":"b""#.to_string()),
+            ("StringProperty", r#""name":"a","name":"b""#.to_string()),
+            ("StringProperty", r#""name":"a","isArray":true,"isArray":false"#.to_string()),
+            ("StringProperty", r#""name":"a","decorators":[],"decorators":[]"#.to_string()),
+            ("StringProperty", r#""decorators":[],"defaultValue":"x","decorators":[]"#.to_string()),
+            ("StringProperty", format!(r#""location":{range},"defaultValue":"x","name":"a","location":null"#)),
+            ("StringProperty", format!(r#""name":"a","location":{range},"location":null"#)),
+            ("StringProperty", r#""isArray":false"#.to_string()),
+            ("StringProperty", r#""name":1"#.to_string()),
+            ("StringProperty", r#""name":"a","isArray":"yes""#.to_string()),
+            ("StringProperty", r#""name":"a","isOptional":null"#.to_string()),
+            ("StringProperty", r#""name":"a","extra":1"#.to_string()),
+            ("StringProperty", r#""extra":1,"name":"a""#.to_string()),
+            ("StringProperty", r#""name":"a","$class":"x""#.to_string()),
+            ("StringProperty", r#""name":"a","type":{}"#.to_string()),
+            ("BooleanProperty", r#""name":"a","defaultValue":true"#.to_string()),
+            ("IntegerProperty", r#""name":"a","validator":{"$class":"concerto.metamodel@1.0.0.IntegerDomainValidator","lower":1},"isOptional":true"#.to_string()),
+            ("LongProperty", r#""name":"a","isArray":true"#.to_string()),
+            ("DoubleProperty", r#""name":"a","defaultValue":1.5"#.to_string()),
+            ("DateTimeProperty", r#""name":"a","defaultValue":"2020-01-01T00:00:00Z","isOptional":true"#.to_string()),
+            ("DateTimeProperty", r#""name":"a","isOptional":true"#.to_string()),
+            ("ObjectProperty", format!(r#""name":"a","type":{type_},"isArray":true"#)),
+            ("ObjectProperty", format!(r#""type":{type_},"name":"a","defaultValue":"x""#)),
+            ("ObjectProperty", format!(r#""type":{type_},"type":{type_},"name":"a""#)),
+            ("ObjectProperty", r#""name":"a""#.to_string()),
+            ("ObjectProperty", r#""isArray":true"#.to_string()),
+            ("ObjectProperty", r#""name":"a","type":{"name":"T"}"#.to_string()),
+            ("ObjectProperty", r#""name":"a","type":{"$class":"concerto.metamodel@1.0.0.TypeIdentifier","name":"T","extra":1}"#.to_string()),
+            ("ObjectProperty", r#""name":"a","type":"T""#.to_string()),
+            ("RelationshipProperty", format!(r#""name":"a","type":{type_},"decorators":{decorators}"#)),
+            ("RelationshipProperty", format!(r#""name":"a","type":{type_},"defaultValue":"x""#)),
+            ("EnumProperty", r#""name":"A""#.to_string()),
+            ("EnumProperty", format!(r#""name":"A","decorators":{decorators},"location":{range}"#)),
+            ("EnumProperty", r#""name":"A","isArray":false"#.to_string()),
+            ("EnumProperty", r#""decorators":[],"name":"A","type":{}"#.to_string()),
+        ];
+        for (kind, rest) in nodes {
+            let text = format!(r#"{{"$class":"{MM}.{kind}",{rest}}}"#);
+            assert_eq!(as_read(&text), by_struct(&text), "{text}");
         }
     }
 }

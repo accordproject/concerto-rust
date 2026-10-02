@@ -25,6 +25,7 @@
 //! every [`super::property::Property`] variant); [`ClassDeclaration`] and
 //! `ModelFile` have room for the same `Vec<Decorator>` as an ordinary field.
 
+use concerto_metamodel::Name;
 use serde_json::Value;
 
 use crate::ecma::number_to_string;
@@ -73,7 +74,9 @@ pub enum DecoratorArgument {
 /// TS: `Decorator` (src/introspect/decorator.ts).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decorator {
-    name: String,
+    /// P5-93: a [`Name`], which shares the text the decorator is read
+    /// from, as the generated node's does.
+    name: Name,
     /// Whether the AST node has a `name` at all. TS's `this.name =
     /// ast.name` leaves `name` `undefined` for a node without one, which
     /// includes every element a malformed, non-array `decorators` value
@@ -104,7 +107,7 @@ impl Decorator {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default()
-            .to_string();
+            .into();
         let arguments = ast
             .get("arguments")
             .and_then(Value::as_array)
@@ -128,12 +131,25 @@ impl Decorator {
         };
         Decorator {
             name: match name {
-                Some(Kept::Other(Value::String(name))) => name.clone(),
-                _ => String::new(),
+                Some(Kept::Other(Value::String(name))) => Name::from(name),
+                _ => Name::default(),
             },
             name_present: name.is_some(),
             arguments,
             location: ast.get("location").map(Kept::to_value),
+        }
+    }
+
+    /// A decorator node of a string `name` and the given arguments, with
+    /// no `location`, as [`Decorator::from_kept`] builds it from such a
+    /// node (P5-93: for a decorator the typed read reads field by field,
+    /// `kept::DecoratorsSeed`).
+    pub(crate) fn from_read(name: Name, arguments: Vec<DecoratorArgument>) -> Self {
+        Decorator {
+            name,
+            name_present: true,
+            arguments,
+            location: None,
         }
     }
 
@@ -304,7 +320,7 @@ impl Decorator {
         context: Option<&str>,
     ) -> std::result::Result<String, Error> {
         if is_primitive_type(&self.name) {
-            return Ok(self.name.clone());
+            return Ok(self.name.to_string());
         }
         manager
             .resolve_type_name_at(namespace, &self.name, self.location.clone())
@@ -313,7 +329,7 @@ impl Decorator {
                     ErrorKind::IllegalModel,
                     "modelfile-resolvetype-undecltype",
                     vec![
-                        ("type", self.name.clone()),
+                        ("type", self.name.to_string()),
                         ("context", context.unwrap_or("undefined").to_string()),
                     ],
                 )
@@ -647,7 +663,13 @@ fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
 /// ever sees an array of decorator nodes, or `null` (P5-61: before BC-19 it
 /// also reproduced TS's iteration of a string by UTF-16 code unit, #218).
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
-    match ast.get("decorators") {
+    decorators_of(ast.get("decorators"))
+}
+
+/// [`parse_decorators`] given the node's `decorators` value itself (`None`
+/// when the node has no such key).
+pub(crate) fn decorators_of(decorators: Option<&Value>) -> Vec<Decorator> {
+    match decorators {
         Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
         _ => Vec::new(),
     }
@@ -686,30 +708,23 @@ js_compat_pub! {
 /// works.
 #[derive(Debug, Clone)]
 pub struct WithDecorators<T> {
-    /// Boxed (P5-76): a generated node is a few hundred bytes, and a
-    /// [`super::property::Property`] is moved several times while a model
-    /// is loaded.
-    node: Box<T>,
+    /// Held inline (P5-93; boxed from P5-76): a generated node is a few
+    /// hundred bytes, but a box was one allocation per property, and the
+    /// typed read now collects a declaration's properties into a `Vec` of
+    /// exactly their number (`typed_ast`), so they are no longer moved
+    /// element by element as it grows.
+    node: T,
     decorators: Vec<Decorator>,
 }
 
 impl<T> WithDecorators<T> {
     pub(crate) fn new(node: T, decorators: Vec<Decorator>) -> Self {
-        Self {
-            node: Box::new(node),
-            decorators,
-        }
+        Self { node, decorators }
     }
 
     /// The decorators processed for this node.
     pub fn decorators(&self) -> &[Decorator] {
         &self.decorators
-    }
-
-    /// The wrapped node, for a loader that fills in fields it reads apart
-    /// from the node's own decode (its `location`, `Property::set_location`).
-    pub(crate) fn node_mut(&mut self) -> &mut T {
-        &mut self.node
     }
 }
 
