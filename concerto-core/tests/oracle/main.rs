@@ -83,6 +83,7 @@ mod fixture;
 mod instances;
 mod ledger;
 mod ops;
+mod plan_parity;
 mod recipe;
 mod report;
 mod self_test;
@@ -170,6 +171,48 @@ fn replays_the_oracle_corpus() {
         fixtures_dir.display()
     );
     run(&fixtures_dir);
+}
+
+/// P5-88 (accordproject/concerto-rust#434): the validation plan's parity
+/// property (`plan_parity.rs`): every instance fixture of the corpus gives
+/// the same outcome with the plan on and off. Located, and skipped, like
+/// [`replays_the_oracle_corpus`].
+#[test]
+#[cfg_attr(
+    concerto_oracle_skip,
+    ignore = "CONCERTO_ORACLE_SKIP=1: the oracle corpus was not replayed"
+)]
+fn the_validation_plan_matches_the_unplanned_path_on_the_corpus() {
+    let (fixtures_dir, source) = match find_fixtures_dir() {
+        Ok(found) => found,
+        Err(tried) => panic!(
+            "oracle harness: no fixture corpus found for the plan parity test. \
+             CONCERTO_ORACLE_FIXTURES and CONCERTO_ORACLE_DIR are unset, and none of these \
+             exists:\n{tried}\n{NO_CORPUS_HELP}"
+        ),
+    };
+    let (fixtures, _) = fixture::load_all(&fixtures_dir);
+    let harness = Harness {
+        cache: cto_cache::CtoCache::locate(&fixtures_dir),
+        ledger: ledger::Ledger::load(&fixtures_dir),
+    };
+    let (compared, differences) = plan_parity::compare(&harness, &fixtures);
+    println!(
+        "plan parity: {compared} instance fixtures compared (corpus {} from {source}), {} differ",
+        fixtures_dir.display(),
+        differences.len()
+    );
+    assert!(
+        compared > 0,
+        "plan parity: no instance fixture in {}",
+        fixtures_dir.display()
+    );
+    assert!(
+        differences.is_empty(),
+        "plan parity: {} of {compared} instance fixtures differ with the plan on and off:\n{}",
+        differences.len(),
+        differences.join("\n")
+    );
 }
 
 /// Split out from the `#[test]` so a fixed, hand-authored corpus can drive

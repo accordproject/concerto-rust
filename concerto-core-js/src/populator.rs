@@ -21,6 +21,7 @@ use concerto_core::instance::from_json::{
     required_null_error, strict_qualified_date_time, unknown_keys_error,
 };
 use concerto_core::instance::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
+use concerto_core::instance::plan;
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::{Error, model_util};
@@ -500,6 +501,17 @@ impl<'a> Populator<'a> {
         // `validateProperties` and each `getProperty` below (the same
         // answer every time: the model does not change mid-walk).
         let class_properties = class_declaration.properties("classDeclaration.getProperties")?;
+        // Validation plan (P5-88): the lookups and field types from the
+        // plan, when there is one.
+        if let Some(class_plan) = plan::class_plan(self.mm, class_declaration.id) {
+            return self.visit_class_planned(
+                class_declaration,
+                json,
+                resource,
+                entries,
+                &class_plan,
+            );
+        }
         // `validateProperties`, then each `getProperty` below: one lookup
         // per property serves both (P5-16).
         let declared: Vec<_> = entries
@@ -529,6 +541,48 @@ impl<'a> Populator<'a> {
         }
         // P5-24 (BC-45, R1): a non-strict `DateTime` default the document
         // did not replace is applied, so it throws.
+        factory::check_populated_date_time_defaults(class_declaration, &resource)?;
+        Ok(resource)
+    }
+
+    /// Validation plan (P5-88): the rest of [`Self::visit_class_declaration`]
+    /// over the declaration's plan.
+    fn visit_class_planned(
+        &mut self,
+        class_declaration: &TypeRef,
+        json: &JsValue,
+        mut resource: Instance,
+        entries: Vec<(Cow<'_, str>, Cow<'_, JsValue>)>,
+        class_plan: &plan::ClassPlan,
+    ) -> Result<Instance> {
+        let declared: Vec<Option<usize>> =
+            entries.iter().map(|(p, _)| class_plan.find(p)).collect();
+        validate_properties(
+            entries
+                .iter()
+                .zip(&declared)
+                .map(|((p, _), found)| (&**p, found.is_some())),
+            class_declaration,
+        )?;
+        if self.options.deserialize.reject_required_null {
+            self.reject_required_null(json, class_declaration)?;
+        }
+        for ((property, value), found) in entries.iter().zip(declared) {
+            if **value != JsValue::Null {
+                self.push_path_property(property);
+                let index = found.expect("validateProperties found every property");
+                let field = match class_plan.field(self.mm, index) {
+                    Some(field) => field,
+                    None => {
+                        let (owner_fqn, class_property) = class_plan.property(self.mm, index);
+                        model::field(self.mm, owner_fqn, class_property)?
+                    }
+                };
+                let populated = self.visit_property(&field, value)?;
+                resource.set(property, populated);
+                self.pop_path();
+            }
+        }
         factory::check_populated_date_time_defaults(class_declaration, &resource)?;
         Ok(resource)
     }
