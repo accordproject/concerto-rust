@@ -865,9 +865,17 @@ impl<'a> IntoIterator for &'a ValidationReport { /* &Diagnostic */ }
   collect-all walk or by what the error names, when the error itself has no
   path); with `collect_all`, the walk's other diagnostics follow. The oracle
   harness checks this over every plain-JSON `Serializer.fromJSON` fixture
-  (`diagnose_agrees`). `instance::diagnostics_of_error` gives the same
+  (`diagnose_agrees`). A document that is not plain JSON (an `undefined`
+  field, `-0`, `NaN`, a `Map`, ...), which reaches the engine in
+  `fromJSON`'s own wire encoding, runs `instance::diagnose_read` (js-compat)
+  instead: the verdict and the error are those of `fromJSON`'s own engine
+  read, and the walk reads the document in the validator's tagged form,
+  keeping its codes, paths, `expected` types and collect-all report wherever
+  it raises that same error (the oracle harness checks this too,
+  `diagnose_read_agrees`). `instance::diagnostics_of_error` gives the same
   diagnostics for an error `fromJSON` threw, which concerto-wasm attaches to
-  the exception as `details`. `Diagnostic::expected` (additive) is the type
+  the exception as `details` (read the same way as `validateInstance` reads
+  the document). `Diagnostic::expected` (additive) is the type
   the model declares at the pointer (`String`, `String[]`, an FQN, `--> FQN`
   for a relationship); `diagnose` fills it in, and `check_instance` leaves it
   `None`. It is read from the model alone, so like `pointer` and `code` it

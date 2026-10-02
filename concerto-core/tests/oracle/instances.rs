@@ -27,7 +27,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use concerto_core::Error;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{FromJsonOptions, from_json};
-use concerto_core::instance::{InstanceEnv, ValidateOptions, diagnose, diagnostics_of_error};
+use concerto_core::instance::{
+    InstanceEnv, ValidateOptions, diagnose, diagnose_read, diagnostics_of_error,
+};
 use concerto_core_js::value::{Instance, InstanceKind, JsValue};
 use concerto_core_js::{Serializer, SerializerOptions, factory, resource};
 use serde_json::{Map, Value, json};
@@ -611,7 +613,7 @@ fn diagnose_agrees(
     options: Option<&SerializerOptions>,
 ) -> Faulty<()> {
     let Some(plain) = plain_json(value) else {
-        return Ok(());
+        return diagnose_read_agrees(mm, serializer, value, options);
     };
     let mut checked = options.cloned().unwrap_or_default();
     checked.insert("validate".to_string(), JsValue::Bool(true));
@@ -655,6 +657,96 @@ fn diagnose_agrees(
              (fromJSON) vs {:?} / {:?} (diagnose)",
             all.error, all.report
         )))
+    }
+}
+
+/// How many recorded `Serializer.fromJSON` documents that are not plain
+/// JSON (an `undefined` field, `-0`, `NaN`, a `Map`, ...)
+/// [`diagnose_read_agrees`] checked, and how many of those were invalid.
+pub static DIAGNOSE_READ_CHECKED: AtomicU64 = AtomicU64::new(0);
+/// See [`DIAGNOSE_READ_CHECKED`].
+pub static DIAGNOSE_READ_INVALID: AtomicU64 = AtomicU64::new(0);
+
+/// [`diagnose_agrees`] for a document that is not plain JSON (task P5-89's
+/// fix round, accordproject/concerto-rust#435): the JS binding's
+/// `validateInstance` reads it with `Serializer.fromJSON`'s own engine, and
+/// the walk reads it in the validator's tagged form, both ways JSON can spell
+/// an `undefined` field (concerto-wasm `validator_readings`). Its error must
+/// be the one `Serializer.fromJSON` throws (and none for a valid document),
+/// its first diagnostic the one for that error (the exception's `details`),
+/// and the first-error report the start of the collect-all one.
+fn diagnose_read_agrees(
+    mm: &concerto_core::ModelManager,
+    serializer: &Serializer,
+    value: &JsValue,
+    options: Option<&SerializerOptions>,
+) -> Faulty<()> {
+    let mut checked = options.cloned().unwrap_or_default();
+    checked.insert("validate".to_string(), JsValue::Bool(true));
+    let read = || {
+        serializer
+            .from_json(mm, value, Some(&checked), &mut SameEnv(0))
+            .map(|_| ())
+    };
+    let thrown = read().err();
+    let mut has_undefined_field = false;
+    let left_out = without_undefined_fields(value, &mut has_undefined_field);
+    let mut readings = vec![left_out.to_validator_value()];
+    if has_undefined_field {
+        readings.push(value.to_validator_value());
+    }
+    let native = native_options(serializer, Some(&checked));
+    let all = diagnose_read(mm, None, &readings, &native, true, read);
+    let first = diagnose_read(mm, None, &readings, &native, false, read);
+    DIAGNOSE_READ_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let agree = match (&thrown, &all.error, &first.error) {
+        (None, None, None) => all.report.is_valid() && first.report.is_valid(),
+        (Some(thrown), Some(a), Some(b)) => {
+            DIAGNOSE_READ_INVALID.fetch_add(1, Ordering::Relaxed);
+            a == thrown
+                && b == thrown
+                && !first.report.is_valid()
+                && all
+                    .report
+                    .diagnostics()
+                    .starts_with(first.report.diagnostics())
+        }
+        _ => false,
+    };
+    if agree {
+        Ok(())
+    } else {
+        Err(Fault::Harness(format!(
+            "validateInstance (diagnose_read) disagrees with Serializer.fromJSON: {thrown:?} \
+             (fromJSON) vs {:?} / {:?} (diagnose_read)",
+            all.error, all.report
+        )))
+    }
+}
+
+/// `value` with every `undefined` field of a plain object left out, at any
+/// depth (concerto-wasm's own `without_undefined_fields`); `found` is set
+/// when there was one.
+fn without_undefined_fields(value: &JsValue, found: &mut bool) -> JsValue {
+    match value {
+        JsValue::Object(map) => {
+            let mut out = SerializerOptions::default();
+            for (key, item) in map {
+                if matches!(item, JsValue::Undefined) {
+                    *found = true;
+                } else {
+                    out.insert(key.clone(), without_undefined_fields(item, found));
+                }
+            }
+            JsValue::Object(out)
+        }
+        JsValue::Array(items) => JsValue::Array(
+            items
+                .iter()
+                .map(|item| without_undefined_fields(item, found))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 

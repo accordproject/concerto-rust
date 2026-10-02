@@ -455,6 +455,79 @@ pub fn diagnostics_of_error(
     diagnostics
 }
 
+/// [`diagnose`] for a document whose verdict `read` gives: a JS document
+/// that is not plain JSON (an `undefined` field, `-0`, `NaN`, a `Map`, a
+/// dayjs, ...; task P5-89, accordproject/concerto-rust#435), which the JS
+/// binding reads with `Serializer.fromJSON`'s own engine (`read` returns
+/// that read's error, with `validate: true`). `readings` are the same
+/// document in the validator's tagged form (`JsValue::to_validator_value`),
+/// as many ways as JSON can spell it (an `undefined` field left out, or
+/// kept as its tag), the first being the one to locate an error in when
+/// none of them gives that error.
+///
+/// With `fqn`, the document's own `$class` is first checked to be `fqn` or
+/// a subtype of it, as [`diagnose`] checks it; `read` then decides. The
+/// error is always `read`'s (so the same exception class as
+/// `Serializer.fromJSON` throws for the document). The diagnostics are
+/// [`diagnose`]'s over the first reading whose first-error walk raises that
+/// same error (kind, catalogue code, parameters and #1273 details), so the
+/// codes, paths, `expected` types and collect-all report are kept;
+/// otherwise they are the error's own ([`diagnostics_of_error`]). Either
+/// way the first diagnostic is the one for the error.
+///
+/// # Panics
+///
+/// When `readings` is empty.
+#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+pub fn diagnose_read(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    readings: &[Value],
+    options: &from_json::FromJsonOptions,
+    collect_all: bool,
+    read: impl FnOnce() -> Result<()>,
+) -> Diagnosis {
+    let primary = &readings[0];
+    let checked = match fqn {
+        Some(fqn) => {
+            validate::check_assignable_to_declaration(mm, fqn, primary).and_then(|()| read())
+        }
+        None => read(),
+    };
+    let Err(error) = checked else {
+        return Diagnosis {
+            report: ValidationReport::default(),
+            error: None,
+        };
+    };
+    let report = readings
+        .iter()
+        .map(|reading| diagnose(mm, fqn, reading, options, collect_all))
+        .find(|native| {
+            native
+                .error
+                .as_ref()
+                .is_some_and(|found| same_error(found, &error))
+        })
+        .map_or_else(
+            || ValidationReport::new(diagnostics_of_error(mm, fqn, primary, options, &error)),
+            |native| native.report,
+        );
+    Diagnosis {
+        report,
+        error: Some(error),
+    }
+}
+
+/// Whether two errors are the same error: kind (so the same TS exception
+/// class), catalogue code, parameters and #1273 details.
+fn same_error(a: &Error, b: &Error) -> bool {
+    a.kind() == b.kind()
+        && a.code() == b.code()
+        && a.params() == b.params()
+        && a.details() == b.details()
+}
+
 /// The diagnostics of the first error, `err`. A `ResourceValidator` error
 /// names no path, so its location is that of the first diagnostic of the
 /// same code (and, when the error names one, the same property) the
@@ -1191,6 +1264,71 @@ mod tests {
             find_object(&json!([{ "a": 1 }, { "b": { "c": 1 } }]), "", &|m| m
                 .contains_key("c")),
             Some("/1/b".to_string())
+        );
+    }
+
+    #[test]
+    fn diagnose_read_takes_the_verdict_and_error_from_the_read() {
+        let mm = manager();
+        let bad =
+            person(json!({ "address": { "$class": "org.acme@1.0.0.Address" }, "colour": "BLUE" }));
+        let native = diagnose(&mm, None, &bad, &options(), true);
+        let error = native.error.clone().unwrap();
+        // The read raises the walk's own error: the walk's whole report is
+        // kept, from the first reading that raises it.
+        let readings = [person(json!({})), bad.clone()];
+        let d = diagnose_read(
+            &mm,
+            None,
+            &readings,
+            &options(),
+            true,
+            || Err(error.clone()),
+        );
+        assert_eq!(d, native);
+        // The read finds the document valid: no diagnostics, whatever the
+        // walk would say.
+        let d = diagnose_read(
+            &mm,
+            None,
+            std::slice::from_ref(&bad),
+            &options(),
+            true,
+            || Ok(()),
+        );
+        assert!(d.error.is_none() && d.report.is_valid());
+        // A read error no reading raises: the error's own diagnostics,
+        // located in the first reading.
+        let other = person(json!({ "colour": "BLUE" }));
+        let other_error = diagnose(&mm, None, &other, &options(), false)
+            .error
+            .unwrap();
+        let d = diagnose_read(
+            &mm,
+            None,
+            std::slice::from_ref(&bad),
+            &options(),
+            true,
+            || Err(other_error.clone()),
+        );
+        assert_eq!(d.error.as_ref(), Some(&other_error));
+        assert_eq!(
+            d.report.into_diagnostics(),
+            diagnostics_of_error(&mm, None, &bad, &options(), &other_error)
+        );
+        // With a named type, the class check comes first, before the read.
+        let car = [json!({ "$class": "org.acme@1.0.0.Car", "vin": "1" })];
+        let d = diagnose_read(
+            &mm,
+            Some("org.acme@1.0.0.Person"),
+            &car,
+            &options(),
+            true,
+            || panic!("read after a failed class check"),
+        );
+        assert_eq!(
+            d.report.diagnostics()[0].code,
+            DiagnosticCode::NotAssignable
         );
     }
 }

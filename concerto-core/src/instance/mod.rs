@@ -73,7 +73,7 @@ pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, ValidationReport};
 pub use options::ValidationOptions;
 
 #[cfg(feature = "js-compat")]
-pub use diagnostic::{Diagnosis, diagnose, diagnostics_of_error};
+pub use diagnostic::{Diagnosis, diagnose, diagnose_read, diagnostics_of_error};
 #[cfg(feature = "js-compat")]
 pub use from_json::InstanceEnv;
 #[cfg(feature = "js-compat")]
