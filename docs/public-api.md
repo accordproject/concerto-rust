@@ -806,7 +806,7 @@ impl ValidationReport {
 impl IntoIterator for ValidationReport { /* Diagnostic */ }
 impl<'a> IntoIterator for &'a ValidationReport { /* &Diagnostic */ }
 
-#[non_exhaustive] pub struct Diagnostic { pub pointer: String, pub code: DiagnosticCode, pub severity: Severity, pub message: String }
+#[non_exhaustive] pub struct Diagnostic { pub pointer: String, pub code: DiagnosticCode, pub severity: Severity, pub message: String, pub expected: Option<String> }
 #[non_exhaustive] pub enum DiagnosticCode { /* the 11 P3-03 codes */ }
 #[non_exhaustive] pub enum Severity { Error, Warning }
 ```
@@ -855,6 +855,31 @@ impl<'a> IntoIterator for &'a ValidationReport { /* &Diagnostic */ }
   the free `validate_instance` over the tagged shape, `DeserializeOptions`
   and `STRICT_VALIDATE_OPTIONS` leave the default API: the first two are
   the seam, the last two moved to `concerto-core-js` with the populator.
+- **The JS `validateInstance` (P5-89, #435; concerto#1239, #1325).**
+  concerto-core's TS `ModelManager.validateInstance` and
+  `ClassDeclaration.validateInstance` (with their `OrThrow` forms) run
+  `instance::diagnose`, a seam function (js-compat) over `from_json`'s
+  options: the verdict and the error are the first-error walk's, so a
+  document is valid exactly when `fromJSON` would not throw, and the first
+  diagnostic is the one for that error (located in the document, by the
+  collect-all walk or by what the error names, when the error itself has no
+  path); with `collect_all`, the walk's other diagnostics follow. The oracle
+  harness checks this over every plain-JSON `Serializer.fromJSON` fixture
+  (`diagnose_agrees`). A document that is not plain JSON (an `undefined`
+  field, `-0`, `NaN`, a `Map`, ...), which reaches the engine in
+  `fromJSON`'s own wire encoding, runs `instance::diagnose_read` (js-compat)
+  instead: the verdict and the error are those of `fromJSON`'s own engine
+  read, and the walk reads the document in the validator's tagged form,
+  keeping its codes, paths, `expected` types and collect-all report wherever
+  it raises that same error (the oracle harness checks this too,
+  `diagnose_read_agrees`). `instance::diagnostics_of_error` gives the same
+  diagnostics for an error `fromJSON` threw, which concerto-wasm attaches to
+  the exception as `details` (read the same way as `validateInstance` reads
+  the document). `Diagnostic::expected` (additive) is the type
+  the model declares at the pointer (`String`, `String[]`, an FQN, `--> FQN`
+  for a relationship); `diagnose` fills it in, and `check_instance` leaves it
+  `None`. It is read from the model alone, so like `pointer` and `code` it
+  never quotes the instance (#1325); `message` may.
 
 ### 5.8 `main`'s names (R4)
 

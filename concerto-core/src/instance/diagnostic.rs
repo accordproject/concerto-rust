@@ -133,6 +133,15 @@ pub struct Diagnostic {
     /// value that is not `Resource`-shaped) gets its own short description
     /// instead, since it has no ported TS message to reuse.
     pub message: String,
+    /// What the model expects at [`pointer`](Self::pointer), when it
+    /// expects a type there (accordproject/concerto#1239, #1325): the
+    /// declared type, as the model spells it (`String`, `String[]`,
+    /// `org.acme@1.0.0.Address`, `--> org.acme@1.0.0.Person` for a
+    /// relationship). Read from the model alone, it never quotes the
+    /// instance. Only the JS binding's `validateInstance` (the js-compat
+    /// `diagnose`, task P5-89) fills it in;
+    /// [`ModelManager::check_instance`] leaves it `None`.
+    pub expected: Option<String>,
 }
 
 impl Diagnostic {
@@ -145,6 +154,7 @@ impl Diagnostic {
             code,
             severity: Severity::Error,
             message,
+            expected: None,
         }
     }
 }
@@ -267,17 +277,7 @@ impl ModelManager {
         instance: &Value,
         options: &ValidationOptions,
     ) -> ValidationReport {
-        match self.populate(None, instance, options.populate_options(false)) {
-            Ok(populated) => {
-                let fqn = populated
-                    .get("$class")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                validate::collect_diagnostics(self, &fqn, &populated, &options.validate_options())
-            }
-            Err(err) => report_of_error(&err),
-        }
+        collect(self, None, instance, &options.populate_options(false))
     }
 
     /// [`check_instance`](Self::check_instance) against the type `fqn`
@@ -289,15 +289,7 @@ impl ModelManager {
         instance: &Value,
         options: &ValidationOptions,
     ) -> ValidationReport {
-        if let Some(report) = validate::assignability_diagnostic(self, fqn, instance) {
-            return report;
-        }
-        match self.populate(Some(fqn), instance, options.populate_options(false)) {
-            Ok(populated) => {
-                validate::collect_diagnostics(self, fqn, &populated, &options.validate_options())
-            }
-            Err(err) => report_of_error(&err),
-        }
+        collect(self, Some(fqn), instance, &options.populate_options(false))
     }
 
     /// Reads `instance` as `Serializer.fromJSON` does: as its own `$class`
@@ -316,6 +308,504 @@ impl ModelManager {
             _ => from_json::from_json(self, instance, &options, &mut FixedEnv),
         }
     }
+}
+
+/// The collect-all walk: `instance` read as `Serializer.fromJSON` reads it
+/// (`options`, never validating), then every violation found
+/// ([`ModelManager::check_instance`] and its `_as` form). A document that
+/// cannot be read is reported by that failure alone.
+fn collect(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    options: &from_json::FromJsonOptions,
+) -> ValidationReport {
+    walk(mm, fqn, instance, options).0
+}
+
+/// [`collect`], and whether the document could be read (and so was
+/// walked): `false` when the report is that of the error that stopped the
+/// read, or of the named type's own check.
+fn walk(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    options: &from_json::FromJsonOptions,
+) -> (ValidationReport, bool) {
+    if let Some(fqn) = fqn
+        && let Some(report) = validate::assignability_diagnostic(mm, fqn, instance)
+    {
+        return (report, false);
+    }
+    let unvalidated = from_json::FromJsonOptions {
+        validate: false,
+        ..options.clone()
+    };
+    match mm.populate(fqn, instance, unvalidated) {
+        Ok(populated) => {
+            let target = match fqn {
+                Some(fqn) => fqn.to_string(),
+                None => populated
+                    .get("$class")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            };
+            let report = validate::collect_diagnostics(mm, &target, &populated, &options.validator);
+            (report, true)
+        }
+        Err(err) => (report_of_error(&err), false),
+    }
+}
+
+/// What [`diagnose`] found: the report and, when the instance is not valid,
+/// the error the first-error walk raised for it.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Diagnosis {
+    /// Every diagnostic, the first error's own first.
+    pub report: ValidationReport,
+    /// The error `Serializer.fromJSON` (with `validate: true` and the same
+    /// options) throws for the instance, or `None` when it is valid.
+    pub error: Option<Error>,
+}
+
+/// The accordproject/concerto#1239 entry point of the JS binding
+/// (concerto-wasm `validateInstance`): validates `instance`, a plain JSON
+/// document, as `Serializer.fromJSON` does with `options` (and
+/// `validate: true`), as the type `fqn` when one is given (its own `$class`
+/// must then be `fqn` or a subtype of it) and as its own `$class` otherwise.
+///
+/// The verdict is the first-error walk's
+/// ([`ModelManager::validate_instance`]), so the instance is valid exactly
+/// when `Serializer.fromJSON` would not throw, and an invalid instance's
+/// first diagnostic is the one for [`Diagnosis::error`], the error
+/// `Serializer.fromJSON` throws ([`diagnostics_of_error`]). With
+/// `collect_all`, every other violation the collect-all walk finds follows
+/// it. A valid instance costs one walk; the collect-all walk only runs for
+/// an invalid one. Every diagnostic gets its
+/// [`expected`](Diagnostic::expected) type where the model gives one.
+#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+pub fn diagnose(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    options: &from_json::FromJsonOptions,
+    collect_all: bool,
+) -> Diagnosis {
+    let checked = from_json::FromJsonOptions {
+        validate: true,
+        ..options.clone()
+    };
+    let first = match fqn {
+        Some(fqn) => validate::check_assignable_to_declaration(mm, fqn, instance)
+            .and_then(|()| mm.populate(Some(fqn), instance, checked)),
+        None => mm.populate(None, instance, checked),
+    };
+    let Err(error) = first else {
+        return Diagnosis {
+            report: ValidationReport::default(),
+            error: None,
+        };
+    };
+    let mut collected = None;
+    let mut diagnostics = first_diagnostics(mm, fqn, instance, options, &error, &mut collected);
+    if collect_all {
+        let (collected, walked) = collected.get_or_insert_with(|| walk(mm, fqn, instance, options));
+        // A document that could not be read fails the read (or the named
+        // type's check) with the first error itself: there is nothing more
+        // to report.
+        let more = if *walked {
+            collected.diagnostics()
+        } else {
+            &[]
+        };
+        for diagnostic in more {
+            if !diagnostics
+                .iter()
+                .any(|d| d.pointer == diagnostic.pointer && d.code == diagnostic.code)
+            {
+                diagnostics.push(diagnostic.clone());
+            }
+        }
+    }
+    fill_expected(mm, fqn, instance, &mut diagnostics);
+    Diagnosis {
+        report: ValidationReport::new(diagnostics),
+        error: Some(error),
+    }
+}
+
+/// The diagnostics of `err`, an error `Serializer.fromJSON` (or
+/// [`diagnose`]'s first-error walk) raised for `instance` with `options`:
+/// what the JS binding attaches to the exception as its `details`
+/// (accordproject/concerto#1325). One per #1273 detail, or one for the
+/// error, located by the collect-all walk when the error itself names no
+/// path, and with its [`expected`](Diagnostic::expected) type.
+#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+pub fn diagnostics_of_error(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    options: &from_json::FromJsonOptions,
+    err: &Error,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = first_diagnostics(mm, fqn, instance, options, err, &mut None);
+    fill_expected(mm, fqn, instance, &mut diagnostics);
+    diagnostics
+}
+
+/// [`diagnose`] for a document whose verdict `read` gives: a JS document
+/// that is not plain JSON (an `undefined` field, `-0`, `NaN`, a `Map`, a
+/// dayjs, ...; task P5-89, accordproject/concerto-rust#435), which the JS
+/// binding reads with `Serializer.fromJSON`'s own engine (`read` returns
+/// that read's error, with `validate: true`). `readings` are the same
+/// document in the validator's tagged form (`JsValue::to_validator_value`),
+/// as many ways as JSON can spell it (an `undefined` field left out, or
+/// kept as its tag), the first being the one to locate an error in when
+/// none of them gives that error.
+///
+/// With `fqn`, the document's own `$class` is first checked to be `fqn` or
+/// a subtype of it, as [`diagnose`] checks it; `read` then decides. The
+/// error is always `read`'s (so the same exception class as
+/// `Serializer.fromJSON` throws for the document). The diagnostics are
+/// [`diagnose`]'s over the first reading whose first-error walk raises that
+/// same error (kind, catalogue code, parameters and #1273 details), so the
+/// codes, paths, `expected` types and collect-all report are kept;
+/// otherwise they are the error's own ([`diagnostics_of_error`]). Either
+/// way the first diagnostic is the one for the error.
+///
+/// # Panics
+///
+/// When `readings` is empty.
+#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+pub fn diagnose_read(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    readings: &[Value],
+    options: &from_json::FromJsonOptions,
+    collect_all: bool,
+    read: impl FnOnce() -> Result<()>,
+) -> Diagnosis {
+    let primary = &readings[0];
+    let checked = match fqn {
+        Some(fqn) => {
+            validate::check_assignable_to_declaration(mm, fqn, primary).and_then(|()| read())
+        }
+        None => read(),
+    };
+    let Err(error) = checked else {
+        return Diagnosis {
+            report: ValidationReport::default(),
+            error: None,
+        };
+    };
+    let report = readings
+        .iter()
+        .map(|reading| diagnose(mm, fqn, reading, options, collect_all))
+        .find(|native| {
+            native
+                .error
+                .as_ref()
+                .is_some_and(|found| same_error(found, &error))
+        })
+        .map_or_else(
+            || ValidationReport::new(diagnostics_of_error(mm, fqn, primary, options, &error)),
+            |native| native.report,
+        );
+    Diagnosis {
+        report,
+        error: Some(error),
+    }
+}
+
+/// Whether two errors are the same error: kind (so the same TS exception
+/// class), catalogue code, parameters and #1273 details.
+fn same_error(a: &Error, b: &Error) -> bool {
+    a.kind() == b.kind()
+        && a.code() == b.code()
+        && a.params() == b.params()
+        && a.details() == b.details()
+}
+
+/// The diagnostics of the first error, `err`. A `ResourceValidator` error
+/// names no path, so its location is that of the first diagnostic of the
+/// same code (and, when the error names one, the same property) the
+/// collect-all walk finds, which `collected` keeps for the caller ([`walk`]). The
+/// message stays the error's own.
+fn first_diagnostics(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    options: &from_json::FromJsonOptions,
+    err: &Error,
+    collected: &mut Option<(ValidationReport, bool)>,
+) -> Vec<Diagnostic> {
+    // The named type is checked first: an instance of another type fails
+    // there, whatever else is wrong with it.
+    if let Some(fqn) = fqn
+        && let Some(report) = validate::assignability_diagnostic(mm, fqn, instance)
+    {
+        let mut diagnostics = report.into_diagnostics();
+        for diagnostic in &mut diagnostics {
+            diagnostic.message = err.to_string();
+        }
+        return diagnostics;
+    }
+    let mut diagnostics = report_of_error(err).into_diagnostics();
+    if !err.details().is_empty() {
+        // One diagnostic per #1273 detail, in order (`report_of_error`).
+        for (diagnostic, detail) in diagnostics.iter_mut().zip(err.details()) {
+            diagnostic.expected.clone_from(&detail.expected);
+        }
+        return diagnostics;
+    }
+    let param = |wanted: &str| {
+        err.params()
+            .iter()
+            .find(|(name, _)| *name == wanted)
+            .map(|(_, value)| value.as_str())
+    };
+    let [diagnostic] = diagnostics.as_mut_slice() else {
+        return diagnostics;
+    };
+    if err.kind() == crate::ErrorKind::TypeNotFound {
+        diagnostic.code = DiagnosticCode::TypeNotFound;
+    }
+    // A populator error names its path, and the type it expected there.
+    if param("path").is_some() {
+        diagnostic.expected = param("type").map(str::to_string);
+        return diagnostics;
+    }
+    // An error that names the object (or the key) it is about.
+    if let Some(pointers) = locate(err, instance) {
+        let template = diagnostic.clone();
+        return pointers
+            .into_iter()
+            .map(|pointer| Diagnostic {
+                pointer,
+                ..template.clone()
+            })
+            .collect();
+    }
+    // A `ResourceValidator` error: the collect-all walk's diagnostic of the
+    // same code, for the property the error names when that is one.
+    let property = param("fieldName").or_else(|| param("propertyName"));
+    let (collected, _) = collected.get_or_insert_with(|| walk(mm, fqn, instance, options));
+    let same_code = |d: &&Diagnostic| d.code == diagnostic.code;
+    let found = collected
+        .diagnostics()
+        .iter()
+        .filter(same_code)
+        .find(|d| property.is_some_and(|name| last_segment(&d.pointer).as_deref() == Some(name)))
+        .or_else(|| collected.diagnostics().iter().find(same_code));
+    if let Some(found) = found {
+        diagnostic.pointer.clone_from(&found.pointer);
+    }
+    diagnostics
+}
+
+/// Where in `instance` an error that names no path is, from what it names
+/// instead: the type of the object it is about (an abstract type, a missing
+/// identifier, a type that is not found), or the keys it rejects (an
+/// unexpected property, the relationship a value is not one for). One
+/// pointer per rejected key; `None` when the error names nothing to find.
+fn locate(err: &Error, instance: &Value) -> Option<Vec<String>> {
+    let param = |wanted: &str| {
+        err.params()
+            .iter()
+            .find(|(name, _)| *name == wanted)
+            .map(|(_, value)| value.as_str())
+    };
+    match err.code() {
+        "jsonpopulator-validateproperties-unexpectedproperties"
+        | "jsonpopulator-getassignableproperties-reservedproperties"
+        | "jsonpopulator-getassignableproperties-timestamp" => {
+            let owner = param("fqn")?;
+            let names: Vec<&str> = match param("properties") {
+                Some(list) => list.split(", ").collect(),
+                None => vec!["$timestamp"],
+            };
+            let first = *names.first()?;
+            let object = find_object(instance, "", &|map| {
+                map.contains_key(first) && class_of(map).is_none_or(|class| class == owner)
+            })?;
+            Some(
+                names
+                    .iter()
+                    .map(|name| child_pointer(&object, name))
+                    .collect(),
+            )
+        }
+        "factory-newinstance-abstracttype"
+        | "factory-newinstance-missingidentifier"
+        | "factory-newinstance-invalididentifier" => {
+            let fqn = format!("{}.{}", param("namespace")?, param("type")?);
+            find_object(instance, "", &|map| class_of(map) == Some(fqn.as_str())).map(|p| vec![p])
+        }
+        "jsonpopulator-visitrelationshipdeclaration-notstringorobject"
+        | "jsonpopulator-visitrelationshipdeclaration-notastring"
+        | "jsonpopulator-visitrelationshipdeclaration-noclass" => {
+            // `RelationshipDeclaration {name=friend, type=..., ...}`.
+            let name = param("relationship")?
+                .split_once("name=")?
+                .1
+                .split([',', '}'])
+                .next()?;
+            let object = find_object(instance, "", &|map| map.contains_key(name))?;
+            Some(vec![child_pointer(&object, name)])
+        }
+        _ if err.kind() == crate::ErrorKind::TypeNotFound => {
+            let type_name = param("typeName")?;
+            let suffix = format!(".{type_name}");
+            find_object(instance, "", &|map| {
+                class_of(map).is_some_and(|class| class == type_name || class.ends_with(&suffix))
+            })
+            .map(|p| vec![p])
+        }
+        _ => None,
+    }
+}
+
+/// The `$class` of an object, when it is a string.
+fn class_of(map: &serde_json::Map<String, Value>) -> Option<&str> {
+    map.get("$class").and_then(Value::as_str)
+}
+
+/// The pointer of the first object (depth first, the root first) in `value`
+/// that `wanted` accepts.
+fn find_object(
+    value: &Value,
+    pointer: &str,
+    wanted: &dyn Fn(&serde_json::Map<String, Value>) -> bool,
+) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if wanted(map) {
+                return Some(pointer.to_string());
+            }
+            map.iter()
+                .find_map(|(key, child)| find_object(child, &child_pointer(pointer, key), wanted))
+        }
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(i, child)| find_object(child, &format!("{pointer}/{i}"), wanted)),
+        _ => None,
+    }
+}
+
+/// A JSON Pointer one key deeper than `pointer`, escaped as RFC 6901 says.
+fn child_pointer(pointer: &str, key: &str) -> String {
+    format!("{pointer}/{}", key.replace('~', "~0").replace('/', "~1"))
+}
+
+/// The last reference token of a JSON Pointer, unescaped; `None` for the
+/// root pointer.
+fn last_segment(pointer: &str) -> Option<String> {
+    let (_, last) = pointer.rsplit_once('/')?;
+    Some(last.replace("~1", "/").replace("~0", "~"))
+}
+
+/// Fills in each diagnostic's [`expected`](Diagnostic::expected) type that
+/// is still `None`, from the model ([`expected_at`]), for the codes that
+/// are about a value's type.
+fn fill_expected(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    diagnostics: &mut [Diagnostic],
+) {
+    for diagnostic in diagnostics {
+        if diagnostic.expected.is_some()
+            || matches!(
+                diagnostic.code,
+                DiagnosticCode::UndeclaredField
+                    | DiagnosticCode::TypeNotFound
+                    | DiagnosticCode::EmptyIdentifier
+                    | DiagnosticCode::AbstractClass
+            )
+        {
+            continue;
+        }
+        diagnostic.expected = expected_at(mm, fqn, instance, &diagnostic.pointer);
+    }
+}
+
+/// The type the model declares at `pointer` in `instance`: `fqn` itself for
+/// the root, and otherwise the declared type of the property (or array
+/// element) the pointer names, found by walking the declarations down the
+/// pointer, each nested object as its own `$class` when it has one. `None`
+/// where the pointer leaves the declared properties, or goes through a map
+/// or a relationship.
+fn expected_at(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    pointer: &str,
+) -> Option<String> {
+    if pointer.is_empty() {
+        return fqn.map(str::to_string);
+    }
+    let own_class = |value: &Value| {
+        value
+            .get("$class")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let mut class = own_class(instance).or_else(|| fqn.map(str::to_string))?;
+    let mut value = Some(instance);
+    let mut segments = pointer
+        .strip_prefix('/')?
+        .split('/')
+        .map(|s| s.replace("~1", "/").replace("~0", "~"))
+        .peekable();
+    while let Some(name) = segments.next() {
+        let properties = mm.properties(&class).ok()?;
+        let (owner, property) = properties.iter().find(|(_, p)| p.name() == name)?;
+        let element_type = spell_type(mm, owner, property)?;
+        let mut child = value.and_then(|v| v.get(name.as_str()));
+        if property.is_array() {
+            let Some(index) = segments.next() else {
+                return Some(format!("{element_type}[]"));
+            };
+            child = child.and_then(|v| v.get(index.parse::<usize>().ok()?));
+        }
+        if segments.peek().is_none() {
+            return Some(element_type);
+        }
+        if property.is_primitive() || property.is_relationship() {
+            return None;
+        }
+        class = child
+            .and_then(own_class)
+            .unwrap_or_else(|| element_type.clone());
+        value = child;
+    }
+    None
+}
+
+/// A property's declared type as the model spells it: the primitive, or the
+/// fully qualified name of the type it names (`--> ` before a
+/// relationship's). `None` for an enum value, which has no type.
+fn spell_type(
+    mm: &ModelManager,
+    owner_fqn: &str,
+    property: &crate::introspect::Property,
+) -> Option<String> {
+    let name = property.type_name()?;
+    if property.is_primitive() {
+        return Some(name.to_string());
+    }
+    let resolved = crate::model_util::get_namespace(Some(owner_fqn))
+        .ok()
+        .and_then(|ns| mm.resolve_type_name_at(ns, name, None).ok())
+        .unwrap_or_else(|| name.to_string());
+    Some(if property.is_relationship() {
+        format!("--> {resolved}")
+    } else {
+        resolved
+    })
 }
 
 /// The diagnostics of a document that could not be read as an instance: one
@@ -451,5 +941,394 @@ mod tests {
         assert_eq!((&report).into_iter().count(), 1);
         let report = report.into_result().unwrap_err();
         assert_eq!(report.into_iter().next().unwrap().pointer, "/name");
+    }
+
+    // ---- `diagnose` (task P5-89, accordproject/concerto#1239) ----
+
+    use crate::ErrorKind;
+    use serde_json::json;
+
+    const MM: &str = "concerto.metamodel@1.0.0";
+
+    fn prop(class: &str, name: &str, extra: Value) -> Value {
+        let mut node = json!({
+            "$class": format!("{MM}.{class}"),
+            "name": name,
+            "isArray": false,
+            "isOptional": false,
+        });
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            node[k] = v.clone();
+        }
+        node
+    }
+
+    fn type_ref(name: &str) -> Value {
+        json!({ "type": { "$class": format!("{MM}.TypeIdentifier"), "name": name } })
+    }
+
+    /// `org.acme@1.0.0`: `Address { city }`, `Person` identified by
+    /// `email`, with an `address`, `tags: String[]`, an optional `age`, a
+    /// `colour` enum and a `friend` relationship; `Employee extends Person`;
+    /// an asset `Car`.
+    fn manager() -> ModelManager {
+        let mut mm = ModelManager::new().unwrap();
+        mm.load_model(
+            &json!({
+                "$class": format!("{MM}.Model"),
+                "namespace": "org.acme@1.0.0",
+                "declarations": [
+                    { "$class": format!("{MM}.ConceptDeclaration"), "name": "Address", "isAbstract": false,
+                      "properties": [prop("StringProperty", "city", json!({}))] },
+                    { "$class": format!("{MM}.EnumDeclaration"), "name": "Colour",
+                      "properties": [{ "$class": format!("{MM}.EnumProperty"), "name": "RED" }] },
+                    { "$class": format!("{MM}.ParticipantDeclaration"), "name": "Person", "isAbstract": false,
+                      "identified": { "$class": format!("{MM}.IdentifiedBy"), "name": "email" },
+                      "properties": [
+                        prop("StringProperty", "email", json!({})),
+                        prop("ObjectProperty", "address", type_ref("Address")),
+                        prop("StringProperty", "tags", json!({ "isArray": true, "isOptional": true })),
+                        prop("IntegerProperty", "age", json!({ "isOptional": true })),
+                        prop("ObjectProperty", "colour", { let mut t = type_ref("Colour"); t["isOptional"] = json!(true); t }),
+                        prop("RelationshipProperty", "friend", { let mut t = type_ref("Person"); t["isOptional"] = json!(true); t }),
+                      ] },
+                    { "$class": format!("{MM}.ParticipantDeclaration"), "name": "Employee", "isAbstract": false,
+                      "superType": { "$class": format!("{MM}.TypeIdentifier"), "name": "Person" },
+                      "properties": [] },
+                    { "$class": format!("{MM}.AssetDeclaration"), "name": "Car", "isAbstract": false,
+                      "identified": { "$class": format!("{MM}.IdentifiedBy"), "name": "vin" },
+                      "properties": [prop("StringProperty", "vin", json!({}))] },
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        mm
+    }
+
+    fn person(extra: Value) -> Value {
+        let mut p = json!({
+            "$class": "org.acme@1.0.0.Person",
+            "email": "a@example.com",
+            "address": { "$class": "org.acme@1.0.0.Address", "city": "Paris" }
+        });
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            p[k] = v.clone();
+        }
+        p
+    }
+
+    fn options() -> from_json::FromJsonOptions {
+        from_json::FromJsonOptions::default()
+    }
+
+    #[test]
+    fn diagnose_a_valid_instance_reports_nothing() {
+        let mm = manager();
+        let d = diagnose(&mm, None, &person(json!({})), &options(), true);
+        assert!(d.report.is_valid() && d.report.diagnostics().is_empty());
+        assert!(d.error.is_none());
+        let d = diagnose(
+            &mm,
+            Some("org.acme@1.0.0.Person"),
+            &json!({ "$class": "org.acme@1.0.0.Employee", "email": "e@x", "address": { "city": "Rome" } }),
+            &options(),
+            true,
+        );
+        assert!(d.error.is_none(), "{:?}", d.error);
+    }
+
+    #[test]
+    fn diagnose_puts_the_thrown_error_first_and_locates_it() {
+        let mm = manager();
+        // `address.city` is missing and `colour` is not a `Colour`: the
+        // first-error walk stops at one, the collect-all walk finds both.
+        let instance =
+            person(json!({ "address": { "$class": "org.acme@1.0.0.Address" }, "colour": "BLUE" }));
+        let thrown = mm
+            .validate_instance(&instance, &crate::instance::ValidationOptions::default())
+            .unwrap_err();
+        let all = diagnose(&mm, None, &instance, &options(), true);
+        let first = diagnose(&mm, None, &instance, &options(), false);
+        let error = all.error.clone().unwrap();
+        assert_eq!(error, thrown);
+        assert_eq!(first.report.diagnostics().len(), 1);
+        assert_eq!(first.report.diagnostics()[0], all.report.diagnostics()[0]);
+        let code = report_of_error(&thrown).diagnostics()[0].code;
+        assert_eq!(all.report.diagnostics()[0].code, code);
+        assert_eq!(all.report.diagnostics()[0].message, thrown.to_string());
+        assert!(all.report.diagnostics().len() >= 2, "{:?}", all.report);
+        // No two diagnostics share a location and a code.
+        let d = all.report.diagnostics();
+        for (i, a) in d.iter().enumerate() {
+            assert!(
+                !d[i + 1..]
+                    .iter()
+                    .any(|b| a.pointer == b.pointer && a.code == b.code)
+            );
+        }
+        assert_eq!(
+            diagnostics_of_error(&mm, None, &instance, &options(), &error),
+            first.report.into_diagnostics()
+        );
+    }
+
+    #[test]
+    fn diagnose_a_missing_nested_property_names_its_path_and_type() {
+        let mm = manager();
+        let instance = person(json!({ "address": { "$class": "org.acme@1.0.0.Address" } }));
+        let d = diagnose(&mm, None, &instance, &options(), true);
+        assert_eq!(d.error.unwrap().kind(), ErrorKind::Validation);
+        let first = &d.report.diagnostics()[0];
+        assert_eq!(first.code, DiagnosticCode::MissingRequiredProperty);
+        assert_eq!(first.pointer, "/address/city");
+        assert_eq!(first.expected.as_deref(), Some("String"));
+        assert_eq!(first.severity, Severity::Error);
+    }
+
+    #[test]
+    fn diagnose_spells_the_expected_type_of_arrays_relationships_and_enums() {
+        let mm = manager();
+        let expected =
+            |pointer: &str| expected_at(&mm, None, &person(json!({ "tags": ["a"] })), pointer);
+        assert_eq!(expected("/tags").as_deref(), Some("String[]"));
+        assert_eq!(expected("/tags/0").as_deref(), Some("String"));
+        assert_eq!(
+            expected("/friend").as_deref(),
+            Some("--> org.acme@1.0.0.Person")
+        );
+        assert_eq!(
+            expected("/colour").as_deref(),
+            Some("org.acme@1.0.0.Colour")
+        );
+        assert_eq!(
+            expected("/address").as_deref(),
+            Some("org.acme@1.0.0.Address")
+        );
+        assert_eq!(expected("/address/city").as_deref(), Some("String"));
+        assert_eq!(expected("/email/x"), None);
+        assert_eq!(expected("/undeclared"), None);
+        assert_eq!(expected(""), None);
+        assert_eq!(
+            expected_at(&mm, Some("org.acme@1.0.0.Person"), &json!({}), "").as_deref(),
+            Some("org.acme@1.0.0.Person")
+        );
+        assert_eq!(last_segment("/a~1b/c~0d").as_deref(), Some("c~d"));
+        assert_eq!(last_segment(""), None);
+    }
+
+    #[test]
+    fn diagnose_a_wrong_type_takes_the_populator_path_and_type() {
+        let mm = manager();
+        let d = diagnose(
+            &mm,
+            None,
+            &person(json!({ "age": "old" })),
+            &options(),
+            true,
+        );
+        let first = &d.report.diagnostics()[0];
+        assert_eq!(first.code, DiagnosticCode::TypeViolation);
+        assert_eq!(first.pointer, "/age");
+        assert_eq!(first.expected.as_deref(), Some("Integer"));
+    }
+
+    #[test]
+    fn diagnose_checks_the_class_against_the_named_type() {
+        let mm = manager();
+        let car = json!({ "$class": "org.acme@1.0.0.Car", "vin": "1" });
+        let d = diagnose(&mm, Some("org.acme@1.0.0.Person"), &car, &options(), true);
+        assert_eq!(d.error.unwrap().kind(), ErrorKind::Validation);
+        assert_eq!(d.report.diagnostics().len(), 1);
+        let first = &d.report.diagnostics()[0];
+        assert_eq!(first.code, DiagnosticCode::NotAssignable);
+        assert_eq!(first.pointer, "");
+        assert_eq!(first.expected.as_deref(), Some("org.acme@1.0.0.Person"));
+        let unknown = json!({ "$class": "org.acme@1.0.0.Nope" });
+        let d = diagnose(
+            &mm,
+            Some("org.acme@1.0.0.Person"),
+            &unknown,
+            &options(),
+            true,
+        );
+        assert_eq!(d.error.unwrap().kind(), ErrorKind::TypeNotFound);
+        assert_eq!(d.report.diagnostics()[0].code, DiagnosticCode::TypeNotFound);
+        assert_eq!(d.report.diagnostics()[0].expected, None);
+    }
+
+    #[test]
+    fn diagnose_reports_each_1273_detail_with_its_expected_type() {
+        let mm = manager();
+        let strict = from_json::FromJsonOptions {
+            reject_unknown_keys: true,
+            reject_required_null: true,
+            ..options()
+        };
+        let d = diagnose(
+            &mm,
+            None,
+            &person(json!({ "address": { "city": null } })),
+            &strict,
+            false,
+        );
+        assert_eq!(d.error.as_ref().unwrap().details().len(), 1);
+        let first = &d.report.diagnostics()[0];
+        assert_eq!(first.code, DiagnosticCode::TypeViolation);
+        assert_eq!(first.pointer, "/address/city");
+        assert_eq!(first.expected.as_deref(), Some("String"));
+        let d = diagnose(
+            &mm,
+            None,
+            &person(json!({ "zip": 1, "zap": 2 })),
+            &strict,
+            false,
+        );
+        let codes: Vec<_> = d.report.diagnostics().iter().map(|d| d.code).collect();
+        assert_eq!(
+            codes,
+            [
+                DiagnosticCode::UndeclaredField,
+                DiagnosticCode::UndeclaredField
+            ]
+        );
+        assert_eq!(d.report.diagnostics()[0].expected, None);
+    }
+
+    #[test]
+    fn diagnose_an_instance_with_no_class() {
+        let mm = manager();
+        let d = diagnose(&mm, None, &json!({ "email": "a" }), &options(), true);
+        assert_eq!(d.error.unwrap().kind(), ErrorKind::InvalidArgument);
+        assert_eq!(d.report.diagnostics()[0].code, DiagnosticCode::NotResource);
+        // Read as the named type instead.
+        let d = diagnose(
+            &mm,
+            Some("org.acme@1.0.0.Address"),
+            &json!({ "city": "Oslo" }),
+            &options(),
+            true,
+        );
+        assert!(d.error.is_none());
+    }
+    #[test]
+    fn diagnose_locates_an_error_that_names_no_path() {
+        let mm = manager();
+        let first = |instance: Value| {
+            let d = diagnose(&mm, None, &instance, &options(), false);
+            d.report
+                .diagnostics()
+                .iter()
+                .map(|d| (d.code, d.pointer.clone()))
+                .collect::<Vec<_>>()
+        };
+        // Undeclared keys, nested, one diagnostic each.
+        assert_eq!(
+            first(person(
+                json!({ "address": { "$class": "org.acme@1.0.0.Address", "city": "P", "a/b": 1, "c": 2 } })
+            )),
+            [
+                (DiagnosticCode::UndeclaredField, "/address/a~1b".to_string()),
+                (DiagnosticCode::UndeclaredField, "/address/c".to_string()),
+            ]
+        );
+        // A type that is not found, nested.
+        assert_eq!(
+            first(person(
+                json!({ "address": { "$class": "org.acme@1.0.0.Nope" } })
+            )),
+            [(DiagnosticCode::TypeNotFound, "/address".to_string())]
+        );
+        // A value that is not a relationship.
+        assert_eq!(
+            first(person(json!({ "friend": 42 }))),
+            [(DiagnosticCode::NotRelationship, "/friend".to_string())]
+        );
+        // An invalid enum value: the TS error names the enum, not the
+        // property, so the walk's diagnostic of the same code is used.
+        assert_eq!(
+            first(person(json!({ "colour": "BLUE" }))),
+            [(DiagnosticCode::InvalidEnumValue, "/colour".to_string())]
+        );
+        // An abstract type and a missing identifier, at the root.
+        assert_eq!(
+            first(json!({ "$class": "org.acme@1.0.0.Car", "vin": "" })),
+            [(DiagnosticCode::EmptyIdentifier, String::new())]
+        );
+        let unknown = json!({ "$class": "org.acme@1.0.0.Nope" });
+        assert_eq!(
+            first(unknown),
+            [(DiagnosticCode::TypeNotFound, String::new())]
+        );
+        assert_eq!(
+            find_object(&json!([{ "a": 1 }, { "b": { "c": 1 } }]), "", &|m| m
+                .contains_key("c")),
+            Some("/1/b".to_string())
+        );
+    }
+
+    #[test]
+    fn diagnose_read_takes_the_verdict_and_error_from_the_read() {
+        let mm = manager();
+        let bad =
+            person(json!({ "address": { "$class": "org.acme@1.0.0.Address" }, "colour": "BLUE" }));
+        let native = diagnose(&mm, None, &bad, &options(), true);
+        let error = native.error.clone().unwrap();
+        // The read raises the walk's own error: the walk's whole report is
+        // kept, from the first reading that raises it.
+        let readings = [person(json!({})), bad.clone()];
+        let d = diagnose_read(
+            &mm,
+            None,
+            &readings,
+            &options(),
+            true,
+            || Err(error.clone()),
+        );
+        assert_eq!(d, native);
+        // The read finds the document valid: no diagnostics, whatever the
+        // walk would say.
+        let d = diagnose_read(
+            &mm,
+            None,
+            std::slice::from_ref(&bad),
+            &options(),
+            true,
+            || Ok(()),
+        );
+        assert!(d.error.is_none() && d.report.is_valid());
+        // A read error no reading raises: the error's own diagnostics,
+        // located in the first reading.
+        let other = person(json!({ "colour": "BLUE" }));
+        let other_error = diagnose(&mm, None, &other, &options(), false)
+            .error
+            .unwrap();
+        let d = diagnose_read(
+            &mm,
+            None,
+            std::slice::from_ref(&bad),
+            &options(),
+            true,
+            || Err(other_error.clone()),
+        );
+        assert_eq!(d.error.as_ref(), Some(&other_error));
+        assert_eq!(
+            d.report.into_diagnostics(),
+            diagnostics_of_error(&mm, None, &bad, &options(), &other_error)
+        );
+        // With a named type, the class check comes first, before the read.
+        let car = [json!({ "$class": "org.acme@1.0.0.Car", "vin": "1" })];
+        let d = diagnose_read(
+            &mm,
+            Some("org.acme@1.0.0.Person"),
+            &car,
+            &options(),
+            true,
+            || panic!("read after a failed class check"),
+        );
+        assert_eq!(
+            d.report.diagnostics()[0].code,
+            DiagnosticCode::NotAssignable
+        );
     }
 }

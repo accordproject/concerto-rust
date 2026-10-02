@@ -27,7 +27,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use concerto_core::Error;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{FromJsonOptions, from_json};
-use concerto_core::instance::{InstanceEnv, ValidateOptions};
+use concerto_core::instance::{
+    InstanceEnv, ValidateOptions, diagnose, diagnose_read, diagnostics_of_error,
+};
 use concerto_core_js::value::{Instance, InstanceKind, JsValue};
 use concerto_core_js::{Serializer, SerializerOptions, factory, resource};
 use serde_json::{Map, Value, json};
@@ -451,6 +453,7 @@ fn serializer_op(session: &mut Session, member: &str, inputs: &Inputs) -> Faulty
         "fromJSON" => {
             let result = serializer.from_json(mm, &value, options.as_ref(), &mut HarnessEnv);
             native_from_json_agrees(mm, &serializer, &value, options.as_ref())?;
+            diagnose_agrees(mm, &serializer, &value, options.as_ref())?;
             outcome(result.map(|i| encode_instance(&i)))
         }
         "toJSON" => outcome(
@@ -582,6 +585,168 @@ fn native_from_json_agrees(
             "the native Serializer.fromJSON route disagrees with the JS layer's: \
              {js_populated:?} (JS layer) vs {native_populated:?} (native)"
         )))
+    }
+}
+
+/// How many recorded `Serializer.fromJSON` documents [`diagnose_agrees`]
+/// checked, and how many of those were invalid.
+pub static DIAGNOSE_CHECKED: AtomicU64 = AtomicU64::new(0);
+/// See [`DIAGNOSE_CHECKED`].
+pub static DIAGNOSE_INVALID: AtomicU64 = AtomicU64::new(0);
+
+/// The accordproject/concerto#1239 consistency rule (task P5-89,
+/// accordproject/concerto-rust#435), over every recorded `Serializer.fromJSON`
+/// call whose document is plain JSON: `validateInstance` (the binding's
+/// [`diagnose`], with and without `collectAll`) finds the document invalid
+/// exactly when `Serializer.fromJSON` with `validate: true` and the same
+/// options throws; its error is that same error (kind, catalogue code,
+/// parameters and #1273 details, so the same TS exception class, which
+/// `validateInstanceOrThrow` throws); its first diagnostic is the one for
+/// that error, the same as the details the binding attaches to the
+/// exception ([`diagnostics_of_error`]); and the first-error report is the
+/// start of the collect-all one. A disagreement is a harness error, which
+/// fails the run.
+fn diagnose_agrees(
+    mm: &concerto_core::ModelManager,
+    serializer: &Serializer,
+    value: &JsValue,
+    options: Option<&SerializerOptions>,
+) -> Faulty<()> {
+    let Some(plain) = plain_json(value) else {
+        return diagnose_read_agrees(mm, serializer, value, options);
+    };
+    let mut checked = options.cloned().unwrap_or_default();
+    checked.insert("validate".to_string(), JsValue::Bool(true));
+    let thrown = serializer
+        .from_json(
+            mm,
+            &JsValue::from_json(&plain),
+            Some(&checked),
+            &mut SameEnv(0),
+        )
+        .err();
+    let native = native_options(serializer, Some(&checked));
+    let all = diagnose(mm, None, &plain, &native, true);
+    let first = diagnose(mm, None, &plain, &native, false);
+    DIAGNOSE_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let same_error = |a: &Error, b: &Error| {
+        a.kind() == b.kind()
+            && a.code() == b.code()
+            && a.params() == b.params()
+            && a.details() == b.details()
+    };
+    let agree = match (&thrown, &all.error, &first.error) {
+        (None, None, None) => all.report.is_valid() && first.report.is_valid(),
+        (Some(thrown), Some(a), Some(b)) => {
+            DIAGNOSE_INVALID.fetch_add(1, Ordering::Relaxed);
+            let details = diagnostics_of_error(mm, None, &plain, &native, thrown);
+            same_error(thrown, a)
+                && same_error(thrown, b)
+                && !all.report.is_valid()
+                && !details.is_empty()
+                && first.report.diagnostics() == details.as_slice()
+                && all.report.diagnostics().starts_with(&details)
+        }
+        _ => false,
+    };
+    if agree {
+        Ok(())
+    } else {
+        Err(Fault::Harness(format!(
+            "validateInstance (diagnose) disagrees with Serializer.fromJSON: {thrown:?} \
+             (fromJSON) vs {:?} / {:?} (diagnose)",
+            all.error, all.report
+        )))
+    }
+}
+
+/// How many recorded `Serializer.fromJSON` documents that are not plain
+/// JSON (an `undefined` field, `-0`, `NaN`, a `Map`, ...)
+/// [`diagnose_read_agrees`] checked, and how many of those were invalid.
+pub static DIAGNOSE_READ_CHECKED: AtomicU64 = AtomicU64::new(0);
+/// See [`DIAGNOSE_READ_CHECKED`].
+pub static DIAGNOSE_READ_INVALID: AtomicU64 = AtomicU64::new(0);
+
+/// [`diagnose_agrees`] for a document that is not plain JSON (task P5-89's
+/// fix round, accordproject/concerto-rust#435): the JS binding's
+/// `validateInstance` reads it with `Serializer.fromJSON`'s own engine, and
+/// the walk reads it in the validator's tagged form, both ways JSON can spell
+/// an `undefined` field (concerto-wasm `validator_readings`). Its error must
+/// be the one `Serializer.fromJSON` throws (and none for a valid document),
+/// its first diagnostic the one for that error (the exception's `details`),
+/// and the first-error report the start of the collect-all one.
+fn diagnose_read_agrees(
+    mm: &concerto_core::ModelManager,
+    serializer: &Serializer,
+    value: &JsValue,
+    options: Option<&SerializerOptions>,
+) -> Faulty<()> {
+    let mut checked = options.cloned().unwrap_or_default();
+    checked.insert("validate".to_string(), JsValue::Bool(true));
+    let read = || {
+        serializer
+            .from_json(mm, value, Some(&checked), &mut SameEnv(0))
+            .map(|_| ())
+    };
+    let thrown = read().err();
+    let mut has_undefined_field = false;
+    let left_out = without_undefined_fields(value, &mut has_undefined_field);
+    let mut readings = vec![left_out.to_validator_value()];
+    if has_undefined_field {
+        readings.push(value.to_validator_value());
+    }
+    let native = native_options(serializer, Some(&checked));
+    let all = diagnose_read(mm, None, &readings, &native, true, read);
+    let first = diagnose_read(mm, None, &readings, &native, false, read);
+    DIAGNOSE_READ_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let agree = match (&thrown, &all.error, &first.error) {
+        (None, None, None) => all.report.is_valid() && first.report.is_valid(),
+        (Some(thrown), Some(a), Some(b)) => {
+            DIAGNOSE_READ_INVALID.fetch_add(1, Ordering::Relaxed);
+            a == thrown
+                && b == thrown
+                && !first.report.is_valid()
+                && all
+                    .report
+                    .diagnostics()
+                    .starts_with(first.report.diagnostics())
+        }
+        _ => false,
+    };
+    if agree {
+        Ok(())
+    } else {
+        Err(Fault::Harness(format!(
+            "validateInstance (diagnose_read) disagrees with Serializer.fromJSON: {thrown:?} \
+             (fromJSON) vs {:?} / {:?} (diagnose_read)",
+            all.error, all.report
+        )))
+    }
+}
+
+/// `value` with every `undefined` field of a plain object left out, at any
+/// depth (concerto-wasm's own `without_undefined_fields`); `found` is set
+/// when there was one.
+fn without_undefined_fields(value: &JsValue, found: &mut bool) -> JsValue {
+    match value {
+        JsValue::Object(map) => {
+            let mut out = SerializerOptions::default();
+            for (key, item) in map {
+                if matches!(item, JsValue::Undefined) {
+                    *found = true;
+                } else {
+                    out.insert(key.clone(), without_undefined_fields(item, found));
+                }
+            }
+            JsValue::Object(out)
+        }
+        JsValue::Array(items) => JsValue::Array(
+            items
+                .iter()
+                .map(|item| without_undefined_fields(item, found))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 

@@ -39,6 +39,8 @@
 //! - **the error mapping** (2.3): an error leaves as the payload
 //!   `{kind, code, params, message, location, errorType, modelFile}`, which
 //!   the error factory the shim registers at load turns into the TS exception;
+//!   an error about an instance (`serializerFromJson`, `validateInstance`)
+//!   also carries its diagnostics as `details` (P5-89, #1325);
 //! - **JS object construction**: `semver.parse` builds `versionParsed`, through
 //!   a function the shim registers at load.
 //!
@@ -57,9 +59,12 @@ use std::collections::HashSet;
 
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
-use concerto_core::instance::InstanceEnv;
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
+use concerto_core::instance::from_json::FromJsonOptions as NativeFromJsonOptions;
 use concerto_core::instance::resource_id::ResourceId;
+use concerto_core::instance::{
+    Diagnostic, InstanceEnv, Severity, ValidateOptions, diagnose, diagnose_read,
+};
 use concerto_core::introspect::FullyQualified;
 use concerto_core::introspect::decorator::{
     self, Decorator, DecoratorArgument, DecoratorValidationOptions,
@@ -116,6 +121,10 @@ pub fn set_host(error_factory: Function, semver_parse: Function) {
 enum Error {
     Js(JsValue),
     Contract(Box<ContractError>),
+    /// A core error about an instance (P5-89, accordproject/concerto#1325),
+    /// with its diagnostics as the JSON array the payload carries as
+    /// `details` ([`diagnostics_json`]).
+    Instance(Box<ContractError>, Value),
 }
 
 impl From<ContractError> for Error {
@@ -170,11 +179,15 @@ fn to_js(value: &Value) -> JsValue {
 /// file TS passes to an `IllegalModelException`, when the core error says TS
 /// passes one.
 fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
-    let err = match err {
+    let (err, details) = match err {
         Error::Js(value) => return value,
-        Error::Contract(err) => err,
+        Error::Contract(err) => (err, None),
+        Error::Instance(err, details) => (err, Some(details)),
     };
     let payload = Object::new();
+    if let Some(details) = &details {
+        set(&payload, "details", &to_js(details));
+    }
     set(&payload, "kind", &JsValue::from_str(kind_name(err.kind)));
     set(&payload, "code", &JsValue::from_str(err.code));
     let params = Object::new();
@@ -4324,7 +4337,7 @@ pub fn decorator_validate(
         match try_validate_decorator(&view, &model_file, context_name.as_deref(), &invalid) {
             Ok(()) => Ok(()),
             Err(Error::Js(caught)) => handle_error(&view, &missing, &caught),
-            Err(err @ Error::Contract(_)) => {
+            Err(err @ (Error::Contract(_) | Error::Instance(..))) => {
                 let caught = throw(err, Some(&model_file));
                 handle_error(&view, &missing, &caught)
             }
@@ -5331,7 +5344,290 @@ impl ModelManagerHandle {
         let resource =
             serializer.from_json_prepared(&self.manager, &object, &prepared, &mut js_env);
         FROM_JSON_SERIALIZER.with(|slot| *slot.borrow_mut() = Some((text, serializer, prepared)));
-        Ok(resource?)
+        resource.map_err(|err| self.instance_error(err, json_text, options_text))
+    }
+
+    /// `err`, an error `serializerFromJson` raised for the document
+    /// `json_text` with the options `options_text`, with its diagnostics
+    /// attached as the exception's `details` (P5-89,
+    /// accordproject/concerto#1325): the same as `validateInstance`'s first
+    /// diagnostic for the document, read from the same wire encoding the
+    /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
+    /// a failure, so a success costs nothing more.
+    fn instance_error(&self, err: CoreError, json_text: &str, options_text: &str) -> Error {
+        let read = validator_readings_of(json_text).zip(validator_options(options_text));
+        match read {
+            Some((readings, options)) => {
+                let options = native_from_json_options(&options);
+                let diagnosis =
+                    diagnose_read(&self.manager, None, &readings, &options, false, || {
+                        Err(err.clone())
+                    });
+                Error::Instance(
+                    Box::new(err.into_contract()),
+                    diagnostics_json(diagnosis.report.diagnostics()),
+                )
+            }
+            None => err.into(),
+        }
+    }
+}
+
+/// The document `json_text` (a wire encoding, module doc above "Serializer
+/// fast path") as the diagnostics walk reads it: plain JSON as itself, and a
+/// document with a wire tag (an `undefined` field, `-0`, `NaN`, a `Map`, a
+/// dayjs, ...) decoded as `serializerFromJson` decodes it, in the
+/// validator's tagged form ([`validator_readings`]). `None` when the text is
+/// not a wire encoding.
+fn validator_readings_of(json_text: &str) -> Option<Vec<Value>> {
+    let wire = serde_json::from_str::<Value>(json_text).ok()?;
+    if !has_wire_tag(&wire) {
+        return Some(vec![wire]);
+    }
+    decode_wire(&wire).ok().map(|v| validator_readings(&v))
+}
+
+/// A decoded document in the validator's tagged form
+/// (`JsValue::to_validator_value`), both ways [`diagnose_read`] reads it: an
+/// `undefined` field of a plain object left out (as `JSON.stringify` and
+/// TS's `obj.x === undefined` see it), and then kept as its tag (as
+/// `Object.keys`, so a `rejectUnknownKeys` check, sees it). The second is
+/// only given when the document has such a field.
+fn validator_readings(document: &CoreValue) -> Vec<Value> {
+    let mut has_undefined_field = false;
+    let left_out = without_undefined_fields(document, &mut has_undefined_field);
+    let mut readings = vec![left_out.to_validator_value()];
+    if has_undefined_field {
+        readings.push(document.to_validator_value());
+    }
+    readings
+}
+
+/// `value` with every `undefined` field of a plain object left out, at any
+/// depth (array items and the values of a `Map` or an instance are kept as
+/// they are); `found` is set when there was one.
+fn without_undefined_fields(value: &CoreValue, found: &mut bool) -> CoreValue {
+    match value {
+        CoreValue::Object(map) => {
+            let mut out = SerializerOptions::default();
+            for (key, item) in map {
+                if matches!(item, CoreValue::Undefined) {
+                    *found = true;
+                } else {
+                    out.insert(key.clone(), without_undefined_fields(item, found));
+                }
+            }
+            CoreValue::Object(out)
+        }
+        CoreValue::Array(items) => CoreValue::Array(
+            items
+                .iter()
+                .map(|item| without_undefined_fields(item, found))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The merged options `options_text` (a wire encoding, or `"null"`) as the
+/// plain JSON [`native_from_json_options`] reads: an `undefined` option is
+/// left out, as `Serializer.fromJSON` reads it (`options.x` is `undefined`
+/// either way).
+fn validator_options(options_text: &str) -> Option<Value> {
+    let wire = serde_json::from_str::<Value>(options_text).ok()?;
+    if !has_wire_tag(&wire) {
+        return Some(wire);
+    }
+    let options = decode_wire_options(options_text).ok()?;
+    Some(Value::Object(
+        options
+            .iter()
+            .flatten()
+            .filter(|(_, v)| !matches!(v, CoreValue::Undefined))
+            .map(|(k, v)| (k.clone(), v.to_validator_value()))
+            .collect(),
+    ))
+}
+
+/// The document `Serializer.fromJSON` is given for the type `fqn` (the TS
+/// `validateInstance` layer's `withClass`): an object without a truthy
+/// `$class` gets `fqn` as its `$class`, first, as
+/// `Object.assign({ $class: fqn }, object)` builds it.
+fn with_class(object: CoreValue, fqn: Option<&str>) -> CoreValue {
+    match (fqn, object) {
+        (Some(fqn), CoreValue::Object(map))
+            if !map.get("$class").is_some_and(CoreValue::is_truthy) =>
+        {
+            let mut out = SerializerOptions::default();
+            out.insert("$class".to_string(), CoreValue::String(fqn.to_string()));
+            for (key, value) in map {
+                out.insert(key, value);
+            }
+            CoreValue::Object(out)
+        }
+        (_, object) => object,
+    }
+}
+
+/// The environment `validateInstance`'s engine read runs in: a fixed
+/// identifier and clock, the same as the native walk's (no verdict depends
+/// on either; they appear only in some message texts).
+struct ValidationEnv;
+
+impl InstanceEnv for ValidationEnv {
+    fn new_id(&mut self) -> String {
+        "00000000-0000-4000-8000-000000000000".into()
+    }
+
+    fn now_ms(&mut self) -> f64 {
+        0.0
+    }
+}
+
+/// Whether `value` holds a wire-tagged value (module doc above "Serializer
+/// fast path"): one JSON cannot hold, which the walk reads only once
+/// decoded ([`validator_readings`]).
+fn has_wire_tag(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.contains_key(WIRE_TAG) || map.values().any(has_wire_tag),
+        Value::Array(items) => items.iter().any(has_wire_tag),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// accordproject/concerto#1239: validateInstance (P5-89)
+// ---------------------------------------------------------------------------
+
+/// The options [`diagnose`] reads, from a `fromJSON` call's merged options
+/// as plain JSON, the way `Serializer.fromJSON` reads them (concerto-core-js
+/// `populator_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
+/// true`, `acceptResourcesForRelationships === true`, the two #1273 options
+/// for their truthiness, and the validator's own defaults, as
+/// `ValidatedResource.validate` has them.
+fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
+    let get = |key: &str| options.get(key);
+    let utc_offset = match get("utcOffset") {
+        v if !json_truthy(v) => UtcOffset::Number(0.0),
+        Some(Value::String(s)) => UtcOffset::String(s.clone()),
+        Some(Value::Number(n)) => UtcOffset::Number(n.as_f64().unwrap_or(f64::NAN)),
+        Some(Value::Bool(_)) => UtcOffset::Number(1.0),
+        _ => UtcOffset::Number(f64::NAN),
+    };
+    NativeFromJsonOptions {
+        validate: json_truthy(get("validate")),
+        utc_offset,
+        strict_qualified_date_times: get("strictQualifiedDateTimes") == Some(&Value::Bool(true)),
+        accept_resources_for_relationships: get("acceptResourcesForRelationships")
+            == Some(&Value::Bool(true)),
+        reject_unknown_keys: json_truthy(get("rejectUnknownKeys")),
+        reject_required_null: json_truthy(get("rejectRequiredNull")),
+        validator: ValidateOptions::default(),
+    }
+}
+
+/// Diagnostics as the plain objects the TS layer hands its callers:
+/// `{code, path, expected?, severity, message}`.
+fn diagnostics_json(diagnostics: &[Diagnostic]) -> Value {
+    Value::Array(
+        diagnostics
+            .iter()
+            .map(|d| {
+                let mut out = serde_json::Map::new();
+                out.insert("code".into(), json!(d.code.as_str()));
+                out.insert("path".into(), json!(d.pointer));
+                if let Some(expected) = &d.expected {
+                    out.insert("expected".into(), json!(expected));
+                }
+                let severity = if d.severity == Severity::Warning {
+                    "warning"
+                } else {
+                    "error"
+                };
+                out.insert("severity".into(), json!(severity));
+                out.insert("message".into(), json!(d.message));
+                Value::Object(out)
+            })
+            .collect(),
+    )
+}
+
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// accordproject/concerto#1239 `validateInstance` (P5-89,
+    /// accordproject/concerto-rust#435): validates `json_text`, the
+    /// document in `Serializer.fromJSON`'s own wire encoding (module doc
+    /// above "Serializer fast path"; plain JSON is its own encoding), as
+    /// `Serializer.fromJSON` with `validate: true` and the options
+    /// `options_text` (plain JSON: a `fromJSON` call's merged options) would,
+    /// without handing any resource back. Plain JSON is checked by the
+    /// native walk alone ([`diagnose`]); a document with a wire tag (an
+    /// `undefined` field, `-0`, `NaN`, ...) is read by `serializerFromJson`'s
+    /// engine for the verdict and the error, with the walk's codes, paths and
+    /// collect-all report kept wherever it raises that same error
+    /// ([`diagnose_read`]). A wire shape the codec does not know throws the
+    /// error `serializerFromJson` throws for it. With `fqn`, the document is
+    /// checked as that type, which its own `$class` (when it has one) must be
+    /// or extend.
+    ///
+    /// `mode` 0 throws the error `Serializer.fromJSON` would throw, with its
+    /// diagnostics as the exception's `details`, and returns `""` for a valid
+    /// document; 1 returns `{"diagnostics": [...]}` with the first error's
+    /// diagnostics only, and 2 with every violation found, the first
+    /// error's first. A valid document has no diagnostics. Malformed JSON
+    /// throws a JS `SyntaxError`. Additive.
+    #[wasm_bindgen(js_name = validateInstance)]
+    pub fn validate_instance(
+        &self,
+        json_text: &str,
+        options_text: &str,
+        fqn: Option<String>,
+        mode: u32,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let parse = |text: &str| {
+                serde_json::from_str::<Value>(text)
+                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))
+            };
+            let wire = parse(json_text)?;
+            let options = native_from_json_options(&parse(options_text)?);
+            let diagnosis = if has_wire_tag(&wire) {
+                // Not plain JSON: read by `Serializer.fromJSON`'s own engine,
+                // from the same decoded document, for the verdict and the
+                // error; the walk reads its validator form.
+                let object = decode_wire(&wire)?;
+                let readings = validator_readings(&object);
+                let js_options = decode_wire_options(options_text)?;
+                diagnose_read(
+                    &self.manager,
+                    fqn.as_deref(),
+                    &readings,
+                    &options,
+                    mode == 2,
+                    || {
+                        let serializer = Serializer::new(true, true, js_options.as_ref())?;
+                        serializer
+                            .from_json(
+                                &self.manager,
+                                &with_class(object, fqn.as_deref()),
+                                js_options.as_ref(),
+                                &mut ValidationEnv,
+                            )
+                            .map(|_| ())
+                    },
+                )
+            } else {
+                diagnose(&self.manager, fqn.as_deref(), &wire, &options, mode == 2)
+            };
+            let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
+            if mode == 0 {
+                return match diagnosis.error {
+                    Some(err) => Err(Error::Instance(Box::new(err.into_contract()), diagnostics)),
+                    None => Ok(String::new()),
+                };
+            }
+            snapshot(&json!({ "diagnostics": diagnostics }))
+        })
     }
 }
 

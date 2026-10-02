@@ -257,6 +257,16 @@ fn run(fixtures_dir: &Path) {
         let verdict = compare::judge_at(fx, dispatch, Some((start, end)));
         recorder.record(fx, verdict, &harness.ledger);
     }
+    println!(
+        "oracle harness: #1239 consistency (validateInstance vs fromJSON): {} documents checked, {} invalid",
+        instances::DIAGNOSE_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
+        instances::DIAGNOSE_INVALID.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    println!(
+        "oracle harness: #1239 consistency for documents that are not plain JSON (validateInstance vs fromJSON): {} documents checked, {} invalid",
+        instances::DIAGNOSE_READ_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
+        instances::DIAGNOSE_READ_INVALID.load(std::sync::atomic::Ordering::Relaxed),
+    );
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let baseline_path = manifest_dir

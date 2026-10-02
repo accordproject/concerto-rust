@@ -29,7 +29,11 @@
 //!   `isX()`), with TS's semantics for each declaration kind;
 //! - `dayjs` and `resource_id`: the `DateTime` and relationship URI
 //!   semantics `from_json` reads plain JSON with, which the JS object model
-//!   shares.
+//!   shares;
+//! - `diagnose` and `diagnostics_of_error` (task P5-89,
+//!   accordproject/concerto-rust#435): the accordproject/concerto#1239
+//!   `validateInstance` of the JS binding, whose first diagnostic is the
+//!   error `Serializer.fromJSON` throws, over `from_json`'s options.
 //!
 //! The JS object model itself (task P3-01b, accordproject/concerto-rust#124:
 //! the TS `Resource` objects, the JS values they hold, and the `Serializer`,
@@ -70,6 +74,8 @@ pub use diagnostic::ValidationResult;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, ValidationReport};
 pub use options::ValidationOptions;
 
+#[cfg(feature = "js-compat")]
+pub use diagnostic::{Diagnosis, diagnose, diagnose_read, diagnostics_of_error};
 #[cfg(feature = "js-compat")]
 pub use from_json::InstanceEnv;
 #[cfg(feature = "js-compat")]
