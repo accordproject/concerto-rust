@@ -1111,11 +1111,11 @@ fn check_scalar_item(
             };
             let validator = validator
                 .as_ref()
-                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
+                .map(|v| crate::introspect::typed_ast::lenient_from_value(v).map_err(bad))
                 .transpose()?;
             let length_validator = length_validator
                 .as_ref()
-                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
+                .map(|v| crate::introspect::typed_ast::lenient_from_value(v).map_err(bad))
                 .transpose()?;
             StringValidator::new(&elem, validator.as_ref(), length_validator.as_ref(), None)?
                 .validate(&elem, identifier.as_deref(), value.as_str())?;

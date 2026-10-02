@@ -37,8 +37,11 @@ pub mod model_file;
 pub mod property;
 pub mod scalar;
 pub(crate) mod shape;
+/// P5-81 spike: the table decoder against the derived one.
+#[cfg(all(test, feature = "table-decoder"))]
+mod table_equiv;
 mod traits;
-mod typed_ast;
+pub(crate) mod typed_ast;
 pub mod validators;
 
 pub use declaration::{ClassDeclaration, ClassKind, Declaration, MapDeclaration};

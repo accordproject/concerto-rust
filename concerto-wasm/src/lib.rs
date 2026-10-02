@@ -1129,6 +1129,20 @@ fn tag(mut json: Value, class: &str) -> Value {
     json
 }
 
+/// P5-81 spike: `serde_json::from_value` of a generated metamodel type, by
+/// the table decoder with the `table-decoder` feature.
+#[cfg(feature = "table-decoder")]
+fn decode_mm<T: concerto_metamodel::table::TableDecode>(
+    value: &Value,
+) -> serde_json::Result<T> {
+    T::decode(value, concerto_metamodel::table::Mode::Lenient)
+}
+
+#[cfg(not(feature = "table-decoder"))]
+fn decode_mm<T: serde::de::DeserializeOwned>(value: &Value) -> serde_json::Result<T> {
+    serde_json::from_value(value.clone())
+}
+
 /// `{pattern, flags}`, or `None` for a nullish value. Built through
 /// `validators::regex_validator_from_ast`, which reads `pattern`/`flags`
 /// completely untyped — a plain `ToString`-style coercion, matching `new
@@ -1247,7 +1261,7 @@ fn string_validator(view: &JsValue) -> Result<StringValidator> {
             "concerto.metamodel@1.0.0.StringLengthValidator",
         );
         Some(
-            serde_json::from_value::<mm::StringLengthValidator>(json)
+            decode_mm::<mm::StringLengthValidator>(&json)
                 .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?,
         )
     };

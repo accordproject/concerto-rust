@@ -56,6 +56,9 @@ concerto-validator-rs = { path = "../../concerto-validate-rs", optional = true }
 [features]
 default = []
 validate-rs = ["concerto-validator-rs"]
+# P5-81 spike (accordproject/concerto-rust#425): bench the table-driven
+# metamodel decoder. Analysis only; not for merge.
+table-decoder = ["accordproject-concerto-core/table-decoder"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

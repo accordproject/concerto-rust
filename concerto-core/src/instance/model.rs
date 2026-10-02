@@ -498,10 +498,10 @@ pub fn identifier_regex(
                     None,
                 ))
             };
-            let regex = serde_json::from_value(regex.clone()).map_err(bad)?;
+            let regex = crate::introspect::typed_ast::lenient_from_value(regex).map_err(bad)?;
             let length = length_validator
                 .as_ref()
-                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
+                .map(|v| crate::introspect::typed_ast::lenient_from_value(v).map_err(bad))
                 .transpose()?;
             StringValidator::new(&element, Some(&regex), length.as_ref(), None)?
         }

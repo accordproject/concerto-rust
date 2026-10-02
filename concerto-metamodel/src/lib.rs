@@ -32,3 +32,7 @@ pub mod org_accordproject_decoratorcommands_0_4_0 {
 }
 
 pub mod utils;
+
+/// P5-81 spike: the table-driven decoder (analysis only, not for merge).
+#[cfg(feature = "table-decoder")]
+pub mod table;
