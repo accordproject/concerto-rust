@@ -30,6 +30,7 @@ use serde_json::Value;
 use crate::ecma::number_to_string;
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::declaration::ClassDeclaration;
+use crate::introspect::kept::Kept;
 use crate::introspect::property::Property;
 use crate::introspect::qualified_class;
 use crate::model_manager::ModelManager;
@@ -114,6 +115,25 @@ impl Decorator {
             name_present,
             arguments,
             location: ast.get("location").cloned(),
+        }
+    }
+
+    /// [`Decorator::from_ast`], for a node the typed read kept as a
+    /// [`Kept`] (P5-76): the same decorator as from its `Value`.
+    pub(crate) fn from_kept(ast: &Kept) -> Self {
+        let name = ast.get("name");
+        let arguments = match ast.get("arguments") {
+            Some(Kept::Array(items)) => items.iter().filter_map(decode_kept_argument).collect(),
+            _ => Vec::new(),
+        };
+        Decorator {
+            name: match name {
+                Some(Kept::Other(Value::String(name))) => name.clone(),
+                _ => String::new(),
+            },
+            name_present: name.is_some(),
+            arguments,
+            location: ast.get("location").map(Kept::to_value),
         }
     }
 
@@ -584,6 +604,39 @@ fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
     }
 }
 
+/// [`decode_argument`], for a node the typed read kept as a [`Kept`]
+/// (P5-76): the same argument as from its `Value`.
+fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
+    fn string(value: Option<&Kept>) -> Option<&str> {
+        match value {
+            Some(Kept::Other(Value::String(s))) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    if matches!(node, Kept::Other(Value::Null)) {
+        return None;
+    }
+    let class = string(node.get("$class")).unwrap_or("");
+    if class == qualified_class("DecoratorTypeReference") || class == "DecoratorTypeReference" {
+        let type_name = string(node.get("type")?.get("name"))?.to_string();
+        let array = match node.get("isArray") {
+            Some(Kept::Other(Value::Bool(b))) => Some(*b),
+            _ => None,
+        };
+        return Some(DecoratorArgument::TypeReference(TypeReferenceArgument {
+            name: type_name,
+            array,
+        }));
+    }
+    match node.get("value")? {
+        Kept::Other(Value::String(s)) => Some(DecoratorArgument::String(s.clone())),
+        Kept::Other(Value::Number(n)) => Some(DecoratorArgument::Number(n.as_f64()?)),
+        Kept::Other(Value::Bool(b)) => Some(DecoratorArgument::Boolean(*b)),
+        _ => None,
+    }
+}
+
 /// The decorators found on an AST node's `decorators` value, or empty if it
 /// has none.
 ///
@@ -594,15 +647,19 @@ fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
 /// ever sees an array of decorator nodes, or `null` (P5-61: before BC-19 it
 /// also reproduced TS's iteration of a string by UTF-16 code unit, #218).
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
-    parse_decorator_list(ast.get("decorators"))
+    match ast.get("decorators") {
+        Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// [`parse_decorators`] given the node's `decorators` value itself (`None`
 /// when the node has no such key), for a loader that has read that value
-/// on its own (the typed AST path, P5-06c).
-pub(crate) fn parse_decorator_list(decorators: Option<&Value>) -> Vec<Decorator> {
+/// on its own (the typed AST path, P5-06c), as a [`Kept`] (P5-76): the same
+/// decorators as from its `Value`.
+pub(crate) fn parse_decorator_list(decorators: Option<&Kept>) -> Vec<Decorator> {
     match decorators {
-        Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
+        Some(Kept::Array(items)) => items.iter().map(Decorator::from_kept).collect(),
         _ => Vec::new(),
     }
 }
@@ -629,13 +686,19 @@ js_compat_pub! {
 /// works.
 #[derive(Debug, Clone)]
 pub struct WithDecorators<T> {
-    node: T,
+    /// Boxed (P5-76): a generated node is a few hundred bytes, and a
+    /// [`super::property::Property`] is moved several times while a model
+    /// is loaded.
+    node: Box<T>,
     decorators: Vec<Decorator>,
 }
 
 impl<T> WithDecorators<T> {
     pub(crate) fn new(node: T, decorators: Vec<Decorator>) -> Self {
-        Self { node, decorators }
+        Self {
+            node: Box::new(node),
+            decorators,
+        }
     }
 
     /// The decorators processed for this node.

@@ -44,6 +44,7 @@
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::{Map, Value};
 
+use crate::introspect::kept::{Kept, Location};
 use crate::introspect::property::Property;
 use crate::introspect::typed_ast::{TypedDeclaration, TypedModel, TypedProperty};
 
@@ -80,7 +81,7 @@ fn declaration_conforms(declaration: &TypedDeclaration) -> bool {
                 && super_type.is_none_or(|t| type_identifier(t) && !t.name.is_empty())
                 && optional_node(identified.as_ref(), IDENTIFIED)
                 && optional_nodes(decorators.as_ref(), DECORATOR)
-                && optional_node(location.as_ref(), RANGE)
+                && optional_location(location.as_ref())
                 && properties.iter().all(|p| property_conforms(p, false))
         }
         TypedDeclaration::Enum {
@@ -91,7 +92,7 @@ fn declaration_conforms(declaration: &TypedDeclaration) -> bool {
         } => {
             is_name(&node.name)
                 && optional_nodes(decorators.as_ref(), DECORATOR)
-                && optional_node(location.as_ref(), RANGE)
+                && optional_location(location.as_ref())
                 && values.iter().all(|p| property_conforms(p, true))
         }
     }
@@ -101,7 +102,7 @@ fn declaration_conforms(declaration: &TypedDeclaration) -> bool {
 /// declaration (`in_enum`).
 fn property_conforms(property: &TypedProperty, in_enum: bool) -> bool {
     if !(optional_nodes(property.decorators.as_ref(), DECORATOR)
-        && optional_node(property.location.as_ref(), RANGE))
+        && optional_location(property.location.as_ref()))
     {
         return false;
     }
@@ -469,15 +470,73 @@ fn value_conforms(value: &Value, ty: Ty) -> bool {
     }
 }
 
-/// An optional node field the read kept as given: missing, `null`, or a
-/// node of one of the types `allowed`.
-fn optional_node(value: Option<&Value>, allowed: &[&str]) -> bool {
-    value.is_none_or(|value| value.is_null() || node_conforms(value, allowed))
+/// An optional node field the read kept as given (a class's `identified`):
+/// missing, `null`, or a node of one of the types `allowed`. Since P5-76 the
+/// read keeps it as a [`Kept`], not a `Value`; the verdict is the same.
+fn optional_node(value: Option<&Kept>, allowed: &[&str]) -> bool {
+    value.is_none_or(|value| {
+        matches!(value, Kept::Other(Value::Null)) || kept_node_conforms(value, allowed)
+    })
 }
 
-/// An optional array-of-nodes field the read kept as given.
-fn optional_nodes(value: Option<&Value>, allowed: &'static [&'static str]) -> bool {
-    value.is_none_or(|value| value.is_null() || value_conforms(value, Nodes(allowed)))
+/// [`optional_node`] for a `location` (a [`Location`], P5-76): the same
+/// verdict as for its `Value`.
+fn optional_location(value: Option<&Location>) -> bool {
+    value.is_none_or(|value| match value {
+        Location::Range(range) => range.conforms(),
+        Location::Kept(kept) => kept.is_null() || kept_node_conforms(kept, RANGE),
+    })
+}
+
+/// [`node_conforms`], for a [`Kept`]: the same verdict as for its `Value`.
+fn kept_node_conforms(value: &Kept, allowed: &[&str]) -> bool {
+    let Kept::Object(entries) = value else {
+        // Not an object: no node at all.
+        return false;
+    };
+    let Some(short) = (match value.get("$class") {
+        Some(Kept::Other(Value::String(class))) => class.strip_prefix(MM),
+        _ => None,
+    }) else {
+        return false;
+    };
+    allowed.contains(&short)
+        && fields(short).is_some_and(|fields| {
+            entries
+                .iter()
+                .all(|(key, _)| key == "$class" || fields.iter().any(|(name, ..)| name == key))
+                && fields.iter().all(|(key, ty, need)| match value.get(key) {
+                    None => *need != Required,
+                    Some(Kept::Other(Value::Null)) => *need == Optional,
+                    Some(value) => kept_value_conforms(value, *ty),
+                })
+        })
+}
+
+/// [`value_conforms`], for a [`Kept`]: the same verdict as for its `Value`.
+fn kept_value_conforms(value: &Kept, ty: Ty) -> bool {
+    match (value, ty) {
+        (Kept::Other(value), _) => value_conforms(value, ty),
+        (Kept::Object(_), Node(allowed)) => kept_node_conforms(value, allowed),
+        (Kept::Array(items), Strs) => items
+            .iter()
+            .all(|item| matches!(item, Kept::Other(Value::String(_)))),
+        (Kept::Array(items), Nodes(allowed)) => {
+            items.iter().all(|item| kept_node_conforms(item, allowed))
+        }
+        // An object or an array of any other type.
+        _ => false,
+    }
+}
+
+/// An optional array-of-nodes field the read kept as given (a
+/// `decorators`): missing, `null`, or an array of nodes of the types
+/// `allowed`. Since P5-76 the read keeps it as a [`Kept`], not a `Value`;
+/// the verdict is the same.
+fn optional_nodes(value: Option<&Kept>, allowed: &'static [&'static str]) -> bool {
+    value.is_none_or(|value| {
+        matches!(value, Kept::Other(Value::Null)) || kept_value_conforms(value, Nodes(allowed))
+    })
 }
 
 /// [`conforms`], for an AST given as a `Value`: the typed read of `ast`
@@ -493,7 +552,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::ast_conforms;
+    use super::{RANGE, ast_conforms, node_conforms, optional_location};
     use crate::error::Error;
     use crate::instance::metamodel::{check_ast_shape, check_ast_shape_exact};
     use crate::introspect::model_file::ModelFile;
@@ -947,5 +1006,74 @@ mod tests {
             not_vouched.len(),
             not_vouched.first().map(String::as_str).unwrap_or_default()
         );
+    }
+
+    /// P5-76: a `location` read as a `Location` gets the verdict its
+    /// `Value` gets, from both reads.
+    #[test]
+    fn a_location_conforms_as_its_value_does() {
+        use serde::de::DeserializeSeed;
+
+        use crate::introspect::kept::LocationSeed;
+        use crate::introspect::kept::tests::CASES;
+
+        let mut accepted = 0;
+        for text in CASES {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let expected = value.is_null() || node_conforms(&value, RANGE);
+            let mut d = serde_json::Deserializer::from_str(text);
+            let from_text = LocationSeed.deserialize(&mut d).unwrap();
+            let from_value = LocationSeed.deserialize(&value).unwrap();
+            assert_eq!(optional_location(Some(&from_text)), expected, "{text}");
+            assert_eq!(optional_location(Some(&from_value)), expected, "{text}");
+            accepted += usize::from(expected);
+        }
+        // The usual `Range`, and `null`.
+        assert_eq!(accepted, 2);
+    }
+
+    /// P5-76: a `decorators` or `identified` value read as a [`Kept`] gets
+    /// the verdict its `Value` gets.
+    ///
+    /// [`Kept`]: crate::introspect::kept::Kept
+    #[test]
+    fn kept_decorators_and_identified_conform_as_their_values_do() {
+        use serde::de::DeserializeSeed;
+
+        use super::{DECORATOR, IDENTIFIED, Nodes, optional_node, optional_nodes, value_conforms};
+        use crate::introspect::kept::KeptSeed;
+        use crate::introspect::kept::tests::{DECORATOR_CASES, IDENTIFIED_CASES};
+
+        let read = |text: &str| {
+            let mut d = serde_json::Deserializer::from_str(text);
+            KeptSeed.deserialize(&mut d).unwrap()
+        };
+        let mut accepted = 0;
+        for text in DECORATOR_CASES {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let expected = value.is_null() || value_conforms(&value, Nodes(DECORATOR));
+            assert_eq!(
+                optional_nodes(Some(&read(text)), DECORATOR),
+                expected,
+                "{text}"
+            );
+            accepted += usize::from(expected);
+        }
+        // The first six lists, and the three that differ from them only in
+        // key order, a repeated key or an escaped key.
+        assert_eq!(accepted, 9);
+        let mut accepted = 0;
+        for text in IDENTIFIED_CASES {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let expected = value.is_null() || node_conforms(&value, IDENTIFIED);
+            assert_eq!(
+                optional_node(Some(&read(text)), IDENTIFIED),
+                expected,
+                "{text}"
+            );
+            accepted += usize::from(expected);
+        }
+        // Both kinds, `null`, and an `IdentifiedBy` in another key order.
+        assert_eq!(accepted, 4);
     }
 }
