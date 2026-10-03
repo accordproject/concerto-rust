@@ -14,9 +14,7 @@ use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::derive::{DeclarationKind, Named};
 use crate::error::{ContractError, Error, ErrorKind, Result};
-use crate::introspect::decorator::{
-    Decorator, WithDecorators, parse_decorator_list, parse_decorators,
-};
+use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorator_list};
 use crate::introspect::kept::{Kept, Location};
 use crate::introspect::model_file::unreadable_ast;
 use crate::introspect::property::Property;
@@ -701,42 +699,49 @@ impl ClassDeclaration {
     }
 }
 
-/// Loads a scalar declaration: the generated node for its `$class` (a
-/// strict read), the name check (TS `Declaration.process`), then the ported
-/// `ScalarDeclaration.process`.
+/// Loads a scalar declaration from its node as the typed read keeps it (a
+/// [`Kept`], as a map declaration's, A-10): the generated node for its
+/// `$class` (a strict read), the name check (TS `Declaration.process`), then
+/// the ported `ScalarDeclaration.process`, over the typed node
+/// ([`ScalarDeclaration::process_loaded`]).
 fn load_scalar(
     short: &str,
-    value: &serde_json::Value,
+    value: &Kept,
     namespace: &str,
     file_name: Option<&str>,
 ) -> Result<ScalarDeclaration> {
     let bad = |e: serde_json::Error| unreadable_ast(&e, file_name);
-    let v = value;
     let node = match short {
-        "BooleanScalar" => mm::ScalarDeclaration::BooleanScalar(
-            typed_ast::strict_variant_from_value(v).map_err(bad)?,
-        ),
-        "IntegerScalar" => mm::ScalarDeclaration::IntegerScalar(
-            typed_ast::strict_variant_from_value(v).map_err(bad)?,
-        ),
-        "LongScalar" => {
-            mm::ScalarDeclaration::LongScalar(typed_ast::strict_variant_from_value(v).map_err(bad)?)
+        "BooleanScalar" => {
+            mm::ScalarDeclaration::BooleanScalar(value.strict_variant_decode().map_err(bad)?)
         }
-        "DoubleScalar" => mm::ScalarDeclaration::DoubleScalar(
-            typed_ast::strict_variant_from_value(v).map_err(bad)?,
-        ),
-        "StringScalar" => mm::ScalarDeclaration::StringScalar(
-            typed_ast::strict_variant_from_value(v).map_err(bad)?,
-        ),
-        _ => mm::ScalarDeclaration::DateTimeScalar(
-            typed_ast::strict_variant_from_value(v).map_err(bad)?,
-        ),
+        "IntegerScalar" => {
+            mm::ScalarDeclaration::IntegerScalar(value.strict_variant_decode().map_err(bad)?)
+        }
+        "LongScalar" => {
+            mm::ScalarDeclaration::LongScalar(value.strict_variant_decode().map_err(bad)?)
+        }
+        "DoubleScalar" => {
+            mm::ScalarDeclaration::DoubleScalar(value.strict_variant_decode().map_err(bad)?)
+        }
+        "StringScalar" => {
+            mm::ScalarDeclaration::StringScalar(value.strict_variant_decode().map_err(bad)?)
+        }
+        _ => mm::ScalarDeclaration::DateTimeScalar(value.strict_variant_decode().map_err(bad)?),
     };
     let name = scalar::node_name(&node);
-    check_declaration_name(name, || value.get("location").cloned(), file_name)?;
+    check_declaration_name(
+        name,
+        || value.get("location").map(Kept::to_value),
+        file_name,
+    )?;
     let fqn = qualify(namespace, name);
-    let processed = ScalarDeclaration::process(value, file_name, &|| Ok::<_, Error>(fqn.clone()))?;
-    let scalar = ScalarDeclaration::new(node, processed, parse_decorators(value));
+    let processed = ScalarDeclaration::process_loaded(&node, value, file_name, &fqn)?;
+    let scalar = ScalarDeclaration::new(
+        node,
+        processed,
+        parse_decorator_list(value.get("decorators")),
+    );
     scalar.check_validators()?;
     Ok(scalar)
 }
@@ -1020,23 +1025,12 @@ impl MapDeclaration {
         }
     }
 
-    /// Reads a map declaration node into the generated struct (a strict
-    /// read: a key or value of a kind the metamodel does not declare, or
-    /// without the `type` its kind requires, is an error), with the
-    /// decorators of the map and of its key and value.
-    fn from_json(value: &serde_json::Value, file_name: Option<&str>) -> Result<Self> {
-        let node: mm::MapDeclaration = typed_ast::strict_variant_from_value(value)
-            .map_err(|e| unreadable_ast(&e, file_name))?;
-        Ok(Self {
-            node,
-            decorators: parse_decorators(value),
-            key_decorators: value.get("key").map(parse_decorators).unwrap_or_default(),
-            value_decorators: value.get("value").map(parse_decorators).unwrap_or_default(),
-        })
-    }
-
-    /// [`MapDeclaration::from_json`], for the node as the typed read keeps
-    /// it (a [`Kept`], P5-93): the same declaration as from its `Value`.
+    /// Reads a map declaration node, as the typed read keeps it (a
+    /// [`Kept`], P5-93), into the generated struct (a strict read: a key or
+    /// value of a kind the metamodel does not declare, or without the
+    /// `type` its kind requires, is an error), with the decorators of the
+    /// map and of its key and value. A map declaration given as a `Value`
+    /// is read into a `Kept` first ([`Declaration::from_model_json`], A-10).
     fn from_kept(value: &Kept, file_name: Option<&str>) -> Result<Self> {
         let node: mm::MapDeclaration = value
             .strict_variant_decode()
@@ -1151,10 +1145,10 @@ impl Declaration {
         // namespace's, to its `default` case before any declaration is
         // constructed.
         let class = declared_class(value);
-        let Some(kind) = class
+        if !class
             .strip_prefix("concerto.metamodel@1.0.0.")
-            .filter(|kind| is_recognised_kind(kind))
-        else {
+            .is_some_and(is_recognised_kind)
+        {
             // The catalogue's own `{type}` is `thing.$class` verbatim,
             // interpolated as JS does (`undefined` when absent); TS passes
             // the model file but no location.
@@ -1168,29 +1162,15 @@ impl Declaration {
             );
             err.model_file = Some(file_name.map(str::to_string));
             return Err(err.into());
-        };
-        match kind {
-            "MapDeclaration" => {
-                let map = MapDeclaration::from_json(value, file_name)?;
-                check_declaration_name(map.name(), || value.get("location").cloned(), file_name)?;
-                Ok(Self::Map(map))
-            }
-            "EnumDeclaration" => Self::from_typed(
-                typed_ast::declaration_from_value(value)
-                    .map_err(|e| unreadable_ast(&e, file_name))?,
-                namespace,
-                file_name,
-            ),
-            kind if ClassKind::from_short(kind).is_some() => Self::from_typed(
-                typed_ast::declaration_from_value(value)
-                    .map_err(|e| unreadable_ast(&e, file_name))?,
-                namespace,
-                file_name,
-            ),
-            scalar => Ok(Self::Scalar(load_scalar(
-                scalar, value, namespace, file_name,
-            )?)),
         }
+        // Every recognised kind is read the way the typed AST path reads it
+        // (A-10): a class-like or enum declaration into its generated
+        // struct, a map or scalar declaration into a `Kept`.
+        Self::from_typed(
+            typed_ast::declaration_from_value(value).map_err(|e| unreadable_ast(&e, file_name))?,
+            namespace,
+            file_name,
+        )
     }
 
     /// A declaration read by the typed AST path
@@ -1209,6 +1189,18 @@ impl Declaration {
         match declaration {
             TypedDeclaration::Ast(value) => Self::from_model_json(&value, namespace, file_name),
             // As `from_model_json` loads a map declaration's `Value`.
+            TypedDeclaration::Scalar(node) => {
+                let short = match node.get("$class") {
+                    Some(Kept::Other(serde_json::Value::String(class))) => class
+                        .strip_prefix("concerto.metamodel@1.0.0.")
+                        .unwrap_or_default()
+                        .to_string(),
+                    _ => String::new(),
+                };
+                Ok(Self::Scalar(load_scalar(
+                    &short, &node, namespace, file_name,
+                )?))
+            }
             TypedDeclaration::Map(node) => {
                 let map = MapDeclaration::from_kept(&node, file_name)?;
                 check_declaration_name(

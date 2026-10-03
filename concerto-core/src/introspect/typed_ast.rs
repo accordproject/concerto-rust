@@ -103,8 +103,7 @@ use concerto_metamodel::Name;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::Deserialize;
 use serde::de::value::{
-    BoolDeserializer, BorrowedStrDeserializer, MapAccessDeserializer, MapDeserializer,
-    StringDeserializer,
+    BoolDeserializer, BorrowedStrDeserializer, MapAccessDeserializer, StringDeserializer,
 };
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
@@ -273,8 +272,11 @@ pub(crate) enum TypedDeclaration {
     /// objects are each one list of entries where a `Value`'s are each a
     /// hash map, every key an owned `String`; before, an `Ast` `Value`).
     Map(Kept),
-    /// Any other declaration (a scalar declaration, or anything
-    /// unrecognised), as its JSON subtree.
+    /// A scalar declaration of one of the six metamodel scalar kinds, as
+    /// its JSON node, read the way a map declaration is (A-10,
+    /// accordproject/concerto-rust#458; before, an `Ast` `Value`).
+    Scalar(Kept),
+    /// Any other declaration (anything unrecognised), as its JSON subtree.
     Ast(Value),
 }
 
@@ -649,6 +651,19 @@ impl<'de> Visitor<'de> for DeclarationSeed<'_> {
     }
 }
 
+/// Whether `short` is one of the six metamodel scalar declaration kinds.
+pub(crate) fn is_scalar_kind(short: &str) -> bool {
+    matches!(
+        short,
+        "BooleanScalar"
+            | "IntegerScalar"
+            | "LongScalar"
+            | "DoubleScalar"
+            | "StringScalar"
+            | "DateTimeScalar"
+    )
+}
+
 /// A declaration's short `$class` name, when it is a metamodel one.
 fn metamodel_kind(class: &str) -> Option<&str> {
     class
@@ -670,15 +685,19 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
     }
     let Some(kind) = short.and_then(ClassKind::from_short) else {
         // Neither class-like nor an enum: the subtree, `$class` first, for
-        // `Declaration::from_model_json`; a map declaration's as a `Kept`
-        // (P5-93; before, a `Value`), for `Declaration::from_typed`.
+        // `Declaration::from_model_json`; a map or scalar declaration's as a
+        // `Kept` (P5-93, A-10; before, a `Value`), for
+        // `Declaration::from_typed`.
         let is_map = short == Some("MapDeclaration");
+        let is_scalar = short.is_some_and(is_scalar_kind);
         let replay = MapAccessDeserializer::new(Replay {
             class: Some(class),
             inner: map,
         });
         out.push(if is_map {
             TypedDeclaration::Map(KeptSeed.deserialize(replay)?)
+        } else if is_scalar {
+            TypedDeclaration::Scalar(KeptSeed.deserialize(replay)?)
         } else {
             TypedDeclaration::Ast(Value::deserialize(replay)?)
         });
@@ -806,14 +825,16 @@ pub(crate) fn strict_from_value<'de, T: Deserialize<'de>>(value: &'de Value) -> 
 /// `strict_from_value`, for the generated struct of one variant of a
 /// polymorphic type (a scalar or map declaration), which has no `$class`
 /// field of its own: `value`'s `$class` (which picked the variant) is left
-/// out.
+/// out. A test helper: the loader decodes the node as a [`Kept`]
+/// (`Kept::strict_variant_decode`, A-10).
+#[cfg(test)]
 pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
     value: &Value,
 ) -> Result<T, Error> {
     match value {
         // P5-76: the object's other entries, read in place, where a copy of
         // the object without `$class` used to be built and read.
-        Value::Object(map) => T::deserialize(Strict(MapDeserializer::new(
+        Value::Object(map) => T::deserialize(Strict(serde::de::value::MapDeserializer::new(
             map.iter()
                 .filter(|(key, _)| *key != "$class")
                 .map(|(key, value)| (key.as_str(), value)),

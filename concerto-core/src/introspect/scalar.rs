@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::decorator::{Decorated, Decorator};
+use crate::introspect::kept::Kept;
 use crate::introspect::validators;
 use crate::introspect::validators::{NumberValidator, StringValidator};
 use crate::introspect::{DeclarationKind, FullyQualified, HasValidators, Named, Typed};
@@ -89,6 +90,33 @@ impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string())
+    }
+}
+
+/// [`ScalarElement`] on the load path ([`ScalarDeclaration::process_loaded`]):
+/// the scalar's node as the typed read keeps it, its name and its
+/// fully-qualified name.
+struct LoadedScalarElement<'a> {
+    node: &'a Kept,
+    name: &'a str,
+    fully_qualified_name: &'a str,
+}
+
+impl FullyQualified for LoadedScalarElement<'_> {
+    type Error = crate::error::Error;
+
+    fn fully_qualified_name(&self) -> crate::error::Result<String> {
+        Ok(self.fully_qualified_name.to_string())
+    }
+}
+
+impl ValidatedElement for LoadedScalarElement<'_> {
+    fn default_value(&self) -> crate::error::Result<Option<Value>> {
+        Ok(self.node.get("defaultValue").map(Kept::to_value))
+    }
+
+    fn name(&self) -> crate::error::Result<String> {
+        Ok(self.name.to_string())
     }
 }
 
@@ -209,6 +237,87 @@ impl ScalarDeclaration {
         }
     }
 
+    /// [`ScalarDeclaration::process`] on the model-file load path (A-10,
+    /// accordproject/concerto-rust#458): over the strictly read typed
+    /// `node`, with `kept` (the node as the typed read keeps it) only for
+    /// what TS reads off the raw AST: its `location`, the element's
+    /// `defaultValue` and the validator values the result records. The
+    /// checks, their order and their errors are `process`'s; the validators
+    /// are built from the typed nodes, as a property's are, instead of
+    /// re-reading the raw AST untyped. `process` stays for an AST that never
+    /// went through the loader (`build_standalone`, the WASM standalone
+    /// bindings).
+    pub(crate) fn process_loaded(
+        node: &mm::ScalarDeclaration,
+        kept: &Kept,
+        model_file_name: Option<&str>,
+        fully_qualified_name: &str,
+    ) -> crate::error::Result<ProcessedScalar> {
+        let name = node_name(node);
+        if is_primitive_type(name) {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "scalardeclaration-process-primitivename",
+                vec![("scalarName", name.to_string())],
+            );
+            err.model_file = Some(model_file_name.map(str::to_string));
+            err.location = kept.get("location").map(Kept::to_value);
+            return Err(err.into());
+        }
+        let element = LoadedScalarElement {
+            node: kept,
+            name,
+            fully_qualified_name,
+        };
+        let raw = |key: &str| kept.get(key).map(Kept::to_value);
+        let validator = match node {
+            mm::ScalarDeclaration::IntegerScalar(mm::IntegerScalar {
+                validator: Some(v), ..
+            }) => Some((v.lower, v.upper)),
+            mm::ScalarDeclaration::LongScalar(mm::LongScalar {
+                validator: Some(v), ..
+            }) => Some((v.lower, v.upper)),
+            mm::ScalarDeclaration::DoubleScalar(mm::DoubleScalar {
+                validator: Some(v), ..
+            }) => Some((v.lower, v.upper)),
+            _ => None,
+        }
+        .map(|(lower, upper)| {
+            NumberValidator::from_bounds(&element, lower, upper).map(ScalarValidator::Number)
+        })
+        .transpose()?;
+        let validator = match node {
+            mm::ScalarDeclaration::StringScalar(string)
+                if string.validator.is_some() || string.length_validator.is_some() =>
+            {
+                // TS: `this.validator = new StringValidator(this,
+                // this.ast.validator, this.ast.lengthValidator)`, built for
+                // its checks; the result records the arguments.
+                StringValidator::new(
+                    &element,
+                    string.validator.as_ref(),
+                    string.length_validator.as_ref(),
+                    raw("lengthValidator").as_ref(),
+                )?;
+                Some(ScalarValidator::String {
+                    validator: raw("validator"),
+                    length_validator: raw("lengthValidator"),
+                })
+            }
+            _ => validator,
+        };
+        // `!Util.isNull(this.ast.defaultValue)`.
+        let default_value = kept
+            .get("defaultValue")
+            .filter(|value| !value.is_null())
+            .map(Kept::to_value);
+        Ok(ProcessedScalar {
+            scalar_type: Some(scalar_type_of(node)),
+            validator,
+            default_value,
+        })
+    }
+
     /// Wraps a loaded node with what [`ScalarDeclaration::process`] computed
     /// from the same AST, and its processed decorators (module doc on
     /// [`crate::introspect::decorator::WithDecorators`]; a scalar keeps them
@@ -297,14 +406,7 @@ impl ScalarDeclaration {
     /// `None` (JS `null`) when the AST's `$class` is not one of the six
     /// fully-qualified scalar classes.
     pub fn scalar_type(&self) -> &'static str {
-        match &self.node {
-            mm::ScalarDeclaration::BooleanScalar(_) => "Boolean",
-            mm::ScalarDeclaration::IntegerScalar(_) => "Integer",
-            mm::ScalarDeclaration::LongScalar(_) => "Long",
-            mm::ScalarDeclaration::DoubleScalar(_) => "Double",
-            mm::ScalarDeclaration::StringScalar(_) => "String",
-            mm::ScalarDeclaration::DateTimeScalar(_) => "DateTime",
-        }
+        scalar_type_of(&self.node)
     }
 
     /// The primitive type, or `None` (JS `null`) when the AST's `$class` is
@@ -367,6 +469,18 @@ impl ScalarDeclaration {
 }
 
 /// The short name of a generated scalar node.
+/// The primitive type a scalar node aliases, by its variant.
+fn scalar_type_of(node: &mm::ScalarDeclaration) -> &'static str {
+    match node {
+        mm::ScalarDeclaration::BooleanScalar(_) => "Boolean",
+        mm::ScalarDeclaration::IntegerScalar(_) => "Integer",
+        mm::ScalarDeclaration::LongScalar(_) => "Long",
+        mm::ScalarDeclaration::DoubleScalar(_) => "Double",
+        mm::ScalarDeclaration::StringScalar(_) => "String",
+        mm::ScalarDeclaration::DateTimeScalar(_) => "DateTime",
+    }
+}
+
 pub(crate) fn node_name(node: &mm::ScalarDeclaration) -> &str {
     match node {
         mm::ScalarDeclaration::BooleanScalar(s) => &s.name,

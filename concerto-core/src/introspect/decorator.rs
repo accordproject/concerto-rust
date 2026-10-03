@@ -654,7 +654,8 @@ fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
 }
 
 /// The decorators found on an AST node's `decorators` value, or empty if it
-/// has none.
+/// has none: a test helper since every loader reads the node as a [`Kept`]
+/// ([`parse_decorator_list`], A-10).
 ///
 /// TS: `Decorated.process` (src/introspect/decorated.ts), the part that is
 /// not about picking a `DecoratorFactory`'s decorator over the default (that
@@ -662,12 +663,14 @@ fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
 /// first (the generated structs' `Option<Vec<Decorator>>`), so this only
 /// ever sees an array of decorator nodes, or `null` (P5-61: before BC-19 it
 /// also reproduced TS's iteration of a string by UTF-16 code unit, #218).
+#[cfg(test)]
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
     decorators_of(ast.get("decorators"))
 }
 
 /// [`parse_decorators`] given the node's `decorators` value itself (`None`
 /// when the node has no such key).
+#[cfg(test)]
 pub(crate) fn decorators_of(decorators: Option<&Value>) -> Vec<Decorator> {
     match decorators {
         Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),

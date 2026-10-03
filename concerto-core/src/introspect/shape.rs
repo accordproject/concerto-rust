@@ -88,7 +88,9 @@ fn header_conforms(header: &ModelHeader) -> bool {
 fn declaration_conforms(declaration: &TypedDeclaration) -> bool {
     match declaration {
         TypedDeclaration::Ast(value) => node_conforms(value, OTHER_DECLARATIONS),
-        TypedDeclaration::Map(node) => kept_node_conforms(node, OTHER_DECLARATIONS),
+        TypedDeclaration::Map(node) | TypedDeclaration::Scalar(node) => {
+            kept_node_conforms(node, OTHER_DECLARATIONS)
+        }
         TypedDeclaration::Class {
             node,
             properties,
