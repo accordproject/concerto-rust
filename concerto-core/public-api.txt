@@ -473,7 +473,7 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::decorat
 pub struct concerto_core::introspect::decorator::Decorator
 impl concerto_core::introspect::decorator::Decorator
 pub fn concerto_core::introspect::decorator::Decorator::arguments(&self) -> &[concerto_core::introspect::decorator::DecoratorArgument]
-pub fn concerto_core::introspect::decorator::Decorator::from_ast(&serde_json::value::Value) -> Self
+pub fn concerto_core::introspect::decorator::Decorator::from_ast<N: concerto_core::introspect::decorator::AstNode>(&N) -> Self
 pub fn concerto_core::introspect::decorator::Decorator::name(&self) -> &str
 impl core::clone::Clone for concerto_core::introspect::decorator::Decorator
 pub fn concerto_core::introspect::decorator::Decorator::clone(&self) -> Self
@@ -545,6 +545,24 @@ impl<T> core::marker::Unpin for concerto_core::introspect::decorator::WithDecora
 impl<T> core::marker::UnsafeUnpin for concerto_core::introspect::decorator::WithDecorators<T> where T: core::marker::UnsafeUnpin
 impl<T> core::panic::unwind_safe::RefUnwindSafe for concerto_core::introspect::decorator::WithDecorators<T> where T: core::panic::unwind_safe::RefUnwindSafe
 impl<T> core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::decorator::WithDecorators<T> where T: core::panic::unwind_safe::UnwindSafe
+pub trait concerto_core::introspect::decorator::AstNode: concerto_core::introspect::decorator::sealed::Sealed + core::marker::Sized
+pub fn concerto_core::introspect::decorator::AstNode::boolean(&self) -> core::option::Option<bool>
+pub fn concerto_core::introspect::decorator::AstNode::field(&self, &str) -> core::option::Option<&Self>
+pub fn concerto_core::introspect::decorator::AstNode::is_null_node(&self) -> bool
+pub fn concerto_core::introspect::decorator::AstNode::is_number(&self) -> bool
+pub fn concerto_core::introspect::decorator::AstNode::items(&self) -> core::option::Option<&[Self]>
+pub fn concerto_core::introspect::decorator::AstNode::number(&self) -> core::option::Option<f64>
+pub fn concerto_core::introspect::decorator::AstNode::text(&self) -> core::option::Option<&str>
+pub fn concerto_core::introspect::decorator::AstNode::to_json(&self) -> serde_json::value::Value
+impl concerto_core::introspect::decorator::AstNode for serde_json::value::Value
+pub fn serde_json::value::Value::boolean(&self) -> core::option::Option<bool>
+pub fn serde_json::value::Value::field(&self, &str) -> core::option::Option<&Self>
+pub fn serde_json::value::Value::is_null_node(&self) -> bool
+pub fn serde_json::value::Value::is_number(&self) -> bool
+pub fn serde_json::value::Value::items(&self) -> core::option::Option<&[Self]>
+pub fn serde_json::value::Value::number(&self) -> core::option::Option<f64>
+pub fn serde_json::value::Value::text(&self) -> core::option::Option<&str>
+pub fn serde_json::value::Value::to_json(&self) -> serde_json::value::Value
 pub trait concerto_core::introspect::decorator::Decorated
 pub fn concerto_core::introspect::decorator::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::decorator::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
@@ -740,9 +758,7 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::propert
 pub mod concerto_core::introspect::scalar
 pub enum concerto_core::introspect::scalar::ScalarValidator
 pub concerto_core::introspect::scalar::ScalarValidator::Number(concerto_core::introspect::validators::NumberValidator)
-pub concerto_core::introspect::scalar::ScalarValidator::String
-pub concerto_core::introspect::scalar::ScalarValidator::String::length_validator: core::option::Option<serde_json::value::Value>
-pub concerto_core::introspect::scalar::ScalarValidator::String::validator: core::option::Option<serde_json::value::Value>
+pub concerto_core::introspect::scalar::ScalarValidator::String(concerto_core::introspect::validators::StringValidator)
 impl core::clone::Clone for concerto_core::introspect::scalar::ScalarValidator
 pub fn concerto_core::introspect::scalar::ScalarValidator::clone(&self) -> Self
 impl core::cmp::PartialEq for concerto_core::introspect::scalar::ScalarValidator
@@ -1078,7 +1094,7 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::declara
 pub struct concerto_core::introspect::Decorator
 impl concerto_core::introspect::decorator::Decorator
 pub fn concerto_core::introspect::decorator::Decorator::arguments(&self) -> &[concerto_core::introspect::decorator::DecoratorArgument]
-pub fn concerto_core::introspect::decorator::Decorator::from_ast(&serde_json::value::Value) -> Self
+pub fn concerto_core::introspect::decorator::Decorator::from_ast<N: concerto_core::introspect::decorator::AstNode>(&N) -> Self
 pub fn concerto_core::introspect::decorator::Decorator::name(&self) -> &str
 impl core::clone::Clone for concerto_core::introspect::decorator::Decorator
 pub fn concerto_core::introspect::decorator::Decorator::clone(&self) -> Self
@@ -1425,58 +1441,61 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::model_manager::Mode
 pub struct concerto_core::model_manager::ModelManager
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::add_metamodel(&mut self) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::add_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::add_model_ast_text(&mut self, &str, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::add_model_asts<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<&'a str>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
-pub fn concerto_core::model_manager::ModelManager::add_models<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<alloc::string::String>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
-pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<serde_json::value::Value>
 pub fn concerto_core::model_manager::ModelManager::builder() -> concerto_core::model_manager::ModelManagerBuilder
-pub fn concerto_core::model_manager::ModelManager::class_declarations_of_kind(&self, concerto_core::introspect::declaration::ClassKind) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::ClassDeclaration)>
-pub fn concerto_core::model_manager::ModelManager::declaration(&self, concerto_core::model_manager::DeclId) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::model_manager::ModelManager::declaration_id(&self, &str) -> core::option::Option<concerto_core::model_manager::DeclId>
-pub fn concerto_core::model_manager::ModelManager::declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::Declaration)>
 pub fn concerto_core::model_manager::ModelManager::decorator_validation(&self) -> &concerto_core::introspect::decorator::DecoratorValidationOptions
-pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
-pub fn concerto_core::model_manager::ModelManager::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::EnumDeclaration)>
-pub fn concerto_core::model_manager::ModelManager::file(&self, concerto_core::model_manager::ModelFileId) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
 pub fn concerto_core::model_manager::ModelManager::filter(&self, impl core::ops::function::Fn(&str, &concerto_core::introspect::declaration::Declaration) -> bool) -> concerto_core::error::Result<Self>
-pub fn concerto_core::model_manager::ModelManager::get_all_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<&concerto_core::introspect::property::Property>>
+pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
+pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
+pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
+pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
+impl concerto_core::model_manager::ModelManager
+pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::add_models<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<alloc::string::String>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
 pub fn concerto_core::model_manager::ModelManager::get_all_super_type_names(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn concerto_core::model_manager::ModelManager::get_assignable_class_declarations(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn concerto_core::model_manager::ModelManager::get_ast(&self, bool, bool) -> concerto_core::error::Result<serde_json::value::Value>
-pub fn concerto_core::model_manager::ModelManager::get_declaration(&self, &str) -> concerto_core::error::Result<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::model_manager::ModelManager::get_direct_subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn concerto_core::model_manager::ModelManager::get_nested_property(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, concerto_core::introspect::property::Property)>
 pub fn concerto_core::model_manager::ModelManager::get_own_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::introspect::property::Property>>
 pub fn concerto_core::model_manager::ModelManager::get_property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, concerto_core::introspect::property::Property)>>
 pub fn concerto_core::model_manager::ModelManager::get_super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::identifier_field(&self, &str) -> concerto_core::error::Result<core::option::Option<&str>>
 pub fn concerto_core::model_manager::ModelManager::identifier_field_name(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
+impl concerto_core::model_manager::ModelManager
+pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
+pub fn concerto_core::model_manager::ModelManager::get_all_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<&concerto_core::introspect::property::Property>>
+pub fn concerto_core::model_manager::ModelManager::identifier_field(&self, &str) -> concerto_core::error::Result<core::option::Option<&str>>
 pub fn concerto_core::model_manager::ModelManager::is_assignable_to(&self, &str, &str) -> concerto_core::error::Result<bool>
 pub fn concerto_core::model_manager::ModelManager::is_identified(&self, &str) -> concerto_core::error::Result<bool>
 pub fn concerto_core::model_manager::ModelManager::is_system_identified(&self, &str) -> concerto_core::error::Result<bool>
-pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
+pub fn concerto_core::model_manager::ModelManager::own_properties(&self, &str) -> concerto_core::error::Result<&[concerto_core::introspect::property::Property]>
+pub fn concerto_core::model_manager::ModelManager::properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::property::Property)>>
+pub fn concerto_core::model_manager::ModelManager::property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::property::Property)>>
+pub fn concerto_core::model_manager::ModelManager::property_path(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, &concerto_core::introspect::property::Property)>
+pub fn concerto_core::model_manager::ModelManager::subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+pub fn concerto_core::model_manager::ModelManager::super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+pub fn concerto_core::model_manager::ModelManager::super_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+impl concerto_core::model_manager::ModelManager
+pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<serde_json::value::Value>
+pub fn concerto_core::model_manager::ModelManager::class_declarations_of_kind(&self, concerto_core::introspect::declaration::ClassKind) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::ClassDeclaration)>
+pub fn concerto_core::model_manager::ModelManager::declaration(&self, concerto_core::model_manager::DeclId) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
+pub fn concerto_core::model_manager::ModelManager::declaration_id(&self, &str) -> core::option::Option<concerto_core::model_manager::DeclId>
+pub fn concerto_core::model_manager::ModelManager::declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::Declaration)>
+pub fn concerto_core::model_manager::ModelManager::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::EnumDeclaration)>
+pub fn concerto_core::model_manager::ModelManager::file(&self, concerto_core::model_manager::ModelFileId) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
+pub fn concerto_core::model_manager::ModelManager::get_declaration(&self, &str) -> concerto_core::error::Result<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::model_manager::ModelManager::model_file(&self, &str) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
 pub fn concerto_core::model_manager::ModelManager::model_file_by_file_name(&self, &str) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
 pub fn concerto_core::model_manager::ModelManager::model_file_fully_qualified_type_name(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::model_file_id(&self, &str) -> core::option::Option<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::model_files(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::model_file::ModelFile>
-pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
-pub fn concerto_core::model_manager::ModelManager::own_properties(&self, &str) -> concerto_core::error::Result<&[concerto_core::introspect::property::Property]>
-pub fn concerto_core::model_manager::ModelManager::properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::property::Property)>>
-pub fn concerto_core::model_manager::ModelManager::property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::property::Property)>>
-pub fn concerto_core::model_manager::ModelManager::property_path(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, &concerto_core::introspect::property::Property)>
-pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::resolve_meta_model(&self, &serde_json::value::Value) -> concerto_core::error::Result<serde_json::value::Value>
 pub fn concerto_core::model_manager::ModelManager::resolve_type(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::resolve_type_name(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::model_manager::ModelManager::subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::super_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
-pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::check_instance(&self, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
 pub fn concerto_core::model_manager::ModelManager::check_instance_as(&self, &str, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
@@ -1923,7 +1942,7 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::declara
 pub struct concerto_core::Decorator
 impl concerto_core::introspect::decorator::Decorator
 pub fn concerto_core::introspect::decorator::Decorator::arguments(&self) -> &[concerto_core::introspect::decorator::DecoratorArgument]
-pub fn concerto_core::introspect::decorator::Decorator::from_ast(&serde_json::value::Value) -> Self
+pub fn concerto_core::introspect::decorator::Decorator::from_ast<N: concerto_core::introspect::decorator::AstNode>(&N) -> Self
 pub fn concerto_core::introspect::decorator::Decorator::name(&self) -> &str
 impl core::clone::Clone for concerto_core::introspect::decorator::Decorator
 pub fn concerto_core::introspect::decorator::Decorator::clone(&self) -> Self
@@ -2066,58 +2085,61 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::model_f
 pub struct concerto_core::ModelManager
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::add_metamodel(&mut self) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::add_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::add_model_ast_text(&mut self, &str, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::add_model_asts<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<&'a str>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
-pub fn concerto_core::model_manager::ModelManager::add_models<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<alloc::string::String>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
-pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<serde_json::value::Value>
 pub fn concerto_core::model_manager::ModelManager::builder() -> concerto_core::model_manager::ModelManagerBuilder
-pub fn concerto_core::model_manager::ModelManager::class_declarations_of_kind(&self, concerto_core::introspect::declaration::ClassKind) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::ClassDeclaration)>
-pub fn concerto_core::model_manager::ModelManager::declaration(&self, concerto_core::model_manager::DeclId) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::model_manager::ModelManager::declaration_id(&self, &str) -> core::option::Option<concerto_core::model_manager::DeclId>
-pub fn concerto_core::model_manager::ModelManager::declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::Declaration)>
 pub fn concerto_core::model_manager::ModelManager::decorator_validation(&self) -> &concerto_core::introspect::decorator::DecoratorValidationOptions
-pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
-pub fn concerto_core::model_manager::ModelManager::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::EnumDeclaration)>
-pub fn concerto_core::model_manager::ModelManager::file(&self, concerto_core::model_manager::ModelFileId) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
 pub fn concerto_core::model_manager::ModelManager::filter(&self, impl core::ops::function::Fn(&str, &concerto_core::introspect::declaration::Declaration) -> bool) -> concerto_core::error::Result<Self>
-pub fn concerto_core::model_manager::ModelManager::get_all_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<&concerto_core::introspect::property::Property>>
+pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
+pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
+pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
+pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
+impl concerto_core::model_manager::ModelManager
+pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::add_models<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<alloc::string::String>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
 pub fn concerto_core::model_manager::ModelManager::get_all_super_type_names(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn concerto_core::model_manager::ModelManager::get_assignable_class_declarations(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn concerto_core::model_manager::ModelManager::get_ast(&self, bool, bool) -> concerto_core::error::Result<serde_json::value::Value>
-pub fn concerto_core::model_manager::ModelManager::get_declaration(&self, &str) -> concerto_core::error::Result<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::model_manager::ModelManager::get_direct_subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn concerto_core::model_manager::ModelManager::get_nested_property(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, concerto_core::introspect::property::Property)>
 pub fn concerto_core::model_manager::ModelManager::get_own_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::introspect::property::Property>>
 pub fn concerto_core::model_manager::ModelManager::get_property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, concerto_core::introspect::property::Property)>>
 pub fn concerto_core::model_manager::ModelManager::get_super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::identifier_field(&self, &str) -> concerto_core::error::Result<core::option::Option<&str>>
 pub fn concerto_core::model_manager::ModelManager::identifier_field_name(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
+impl concerto_core::model_manager::ModelManager
+pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
+pub fn concerto_core::model_manager::ModelManager::get_all_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<&concerto_core::introspect::property::Property>>
+pub fn concerto_core::model_manager::ModelManager::identifier_field(&self, &str) -> concerto_core::error::Result<core::option::Option<&str>>
 pub fn concerto_core::model_manager::ModelManager::is_assignable_to(&self, &str, &str) -> concerto_core::error::Result<bool>
 pub fn concerto_core::model_manager::ModelManager::is_identified(&self, &str) -> concerto_core::error::Result<bool>
 pub fn concerto_core::model_manager::ModelManager::is_system_identified(&self, &str) -> concerto_core::error::Result<bool>
-pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
+pub fn concerto_core::model_manager::ModelManager::own_properties(&self, &str) -> concerto_core::error::Result<&[concerto_core::introspect::property::Property]>
+pub fn concerto_core::model_manager::ModelManager::properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::property::Property)>>
+pub fn concerto_core::model_manager::ModelManager::property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::property::Property)>>
+pub fn concerto_core::model_manager::ModelManager::property_path(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, &concerto_core::introspect::property::Property)>
+pub fn concerto_core::model_manager::ModelManager::subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+pub fn concerto_core::model_manager::ModelManager::super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+pub fn concerto_core::model_manager::ModelManager::super_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
+impl concerto_core::model_manager::ModelManager
+pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<serde_json::value::Value>
+pub fn concerto_core::model_manager::ModelManager::class_declarations_of_kind(&self, concerto_core::introspect::declaration::ClassKind) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::ClassDeclaration)>
+pub fn concerto_core::model_manager::ModelManager::declaration(&self, concerto_core::model_manager::DeclId) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
+pub fn concerto_core::model_manager::ModelManager::declaration_id(&self, &str) -> core::option::Option<concerto_core::model_manager::DeclId>
+pub fn concerto_core::model_manager::ModelManager::declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::Declaration)>
+pub fn concerto_core::model_manager::ModelManager::enum_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::EnumDeclaration)>
+pub fn concerto_core::model_manager::ModelManager::file(&self, concerto_core::model_manager::ModelFileId) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
+pub fn concerto_core::model_manager::ModelManager::get_declaration(&self, &str) -> concerto_core::error::Result<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::model_manager::ModelManager::model_file(&self, &str) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
 pub fn concerto_core::model_manager::ModelManager::model_file_by_file_name(&self, &str) -> core::option::Option<&concerto_core::introspect::model_file::ModelFile>
 pub fn concerto_core::model_manager::ModelManager::model_file_fully_qualified_type_name(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::model_file_id(&self, &str) -> core::option::Option<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::model_files(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::model_file::ModelFile>
-pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
-pub fn concerto_core::model_manager::ModelManager::own_properties(&self, &str) -> concerto_core::error::Result<&[concerto_core::introspect::property::Property]>
-pub fn concerto_core::model_manager::ModelManager::properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::property::Property)>>
-pub fn concerto_core::model_manager::ModelManager::property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::property::Property)>>
-pub fn concerto_core::model_manager::ModelManager::property_path(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, &concerto_core::introspect::property::Property)>
-pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::resolve_meta_model(&self, &serde_json::value::Value) -> concerto_core::error::Result<serde_json::value::Value>
 pub fn concerto_core::model_manager::ModelManager::resolve_type(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::resolve_type_name(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::model_manager::ModelManager::subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::super_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
-pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
-pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::check_instance(&self, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
 pub fn concerto_core::model_manager::ModelManager::check_instance_as(&self, &str, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
