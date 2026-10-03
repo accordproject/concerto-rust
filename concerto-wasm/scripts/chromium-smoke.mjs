@@ -118,7 +118,7 @@ async function asyncFallback() {
 async function timeCalls() {
   const engine = await import('/pkg/concerto-engine.mjs');
   const mm = new engine.ModelManagerHandle();
-  const concept = mm.declarationId('concerto@1.0.0.Concept');
+  const file = mm.modelFileId('concerto@1.0.0');
   const N = 20000;
   const time = (fn) => {
     let best = Infinity;
@@ -130,11 +130,11 @@ async function timeCalls() {
     return +((best * 1e6) / N).toFixed(0); // ns per call, best of 3
   };
   const rows = {
-    'generation()': time(() => mm.generation()),
-    'declarationId(fqn)': time(() => mm.declarationId('concerto@1.0.0.Concept')),
-    'propertyIds(decl)': time(() => mm.propertyIds(concept)),
-    'declarationSnapshot(decl)': time(() => mm.declarationSnapshot(concept)),
-    'JSON.parse(declarationSnapshot(decl))': time(() => JSON.parse(mm.declarationSnapshot(concept))),
+    'epoch()': time(() => mm.epoch()),
+    'modelFileId(namespace)': time(() => mm.modelFileId('concerto@1.0.0')),
+    'getTypeName(fqn)': time(() => mm.getTypeName('concerto@1.0.0.Concept')),
+    'modelFileSnapshot(file)': time(() => mm.modelFileSnapshot(file)),
+    'JSON.parse(modelFileSnapshot(file))': time(() => JSON.parse(mm.modelFileSnapshot(file))),
   };
   mm.free();
   return rows;

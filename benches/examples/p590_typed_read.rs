@@ -1,6 +1,7 @@
 //! P5-90 (accordproject/concerto-rust#436), Phase 0, measure only: the
 //! native typed read that the WASM binding `stageModelFileChecked(Utf8)`
-//! runs per `new ModelFile` (`ModelFile::from_json_text_checked_with_imports`:
+//! (since P5-101, `stageModelFileBytes` with `STAGE_CHECKED`) runs per
+//! `new ModelFile` (`ModelFile::from_json_text_checked_with_imports`:
 //! BC-19's folded shape check and the strict typed load, from one parse),
 //! over the P5-15 sweep's inputs (`migration/bench/fixtures/p515/<set>.json`
 //! in the concerto repo).

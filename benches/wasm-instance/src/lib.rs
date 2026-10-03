@@ -11,7 +11,7 @@
 //!   `ResourceValidator` walk over a prepared value (the "validator floor"
 //!   P5-12b measured at 3.9 µs, accordproject/concerto-rust#292).
 //! - `runFromJson`: concerto-core-js's `Serializer::from_json` (populate,
-//!   then validate), what the engine's `serializerFromJson` runs.
+//!   then validate), what the engine's `serializerFromJsonCompact` runs.
 //! - `runValidateInstanceNative`: `ModelManager::validate_instance`, the
 //!   native plain-JSON route.
 

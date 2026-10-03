@@ -59,8 +59,9 @@ rustc-hash = "2"
 # tag encoding of JS values, the `DateTime` and relationship URI semantics,
 # the TS exception-class mapping (`ErrorKind::ts_class`) and the collaborator
 # traits. Off by default, so none of it is in the crate's public API; its
-# items carry no stability promise. The code is compiled either way (the
-# native API is built on it), and is crate-private without the feature.
+# items carry no stability promise. Most of that code is compiled either way
+# (the native API is built on it) and is crate-private without the feature;
+# the decorator command sets (`dcs`) exist only with it (P5-103, C-1).
 js-compat = []
 # P5-88 (accordproject/concerto-rust#434): dev-only access to the instance
 # validation plan (`instance::plan::testing`): run a closure with every plan

@@ -366,30 +366,19 @@ impl ErrorKind {
     /// The TS class name the shim throws for this kind, as the oracle records
     /// it in `error.class`. Only for the JS binding (the `js-compat`
     /// feature).
+    /// PORTING.md table 2.3.
     #[cfg(feature = "js-compat")]
     pub fn ts_class(self) -> &'static str {
-        ts_class(self)
-    }
-
-    /// The TS class name for this kind; see the `js-compat` build's
-    /// `ErrorKind::ts_class`.
-    #[cfg(not(feature = "js-compat"))]
-    pub(crate) fn ts_class(self) -> &'static str {
-        ts_class(self)
-    }
-}
-
-/// PORTING.md table 2.3: the TS exception class of each kind.
-fn ts_class(kind: ErrorKind) -> &'static str {
-    match kind {
-        ErrorKind::IllegalModel => "IllegalModelException",
-        ErrorKind::TypeNotFound => "TypeNotFoundException",
-        ErrorKind::Validator => "BaseException",
-        ErrorKind::Validation => "ValidationException",
-        ErrorKind::InvalidArgument => "Error",
-        ErrorKind::MalformedInput => "TypeError",
-        ErrorKind::RecursionLimit => "RangeError",
-        ErrorKind::Metamodel => "MetamodelException",
+        match self {
+            ErrorKind::IllegalModel => "IllegalModelException",
+            ErrorKind::TypeNotFound => "TypeNotFoundException",
+            ErrorKind::Validator => "BaseException",
+            ErrorKind::Validation => "ValidationException",
+            ErrorKind::InvalidArgument => "Error",
+            ErrorKind::MalformedInput => "TypeError",
+            ErrorKind::RecursionLimit => "RangeError",
+            ErrorKind::Metamodel => "MetamodelException",
+        }
     }
 }
 

@@ -27,12 +27,11 @@ thread_local! {
     /// The JS functions the shim registers at load ([`crate::set_host`]).
     pub(crate) static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
 
-    /// The options of the last serializer call (`serializerFromJson`,
-    /// `serializerFromJsonCompact`, `serializerToJson`, `validateInstance`)
-    /// as read from its options text ([`SerializerOptionsEntry`], P5-16,
-    /// P5-101 D-3). Keyed by that text; any call with other text replaces
-    /// it. Taken out for the length of a call
-    /// ([`crate::with_serializer_options`]).
+    /// The options of the last serializer call (`serializerFromJsonCompact`,
+    /// `serializerToJson`, `validateInstance`) as read from its options
+    /// text ([`SerializerOptionsEntry`], P5-16, P5-101 D-3). Keyed by that
+    /// text; any call with other text replaces it. Taken out for the
+    /// length of a call ([`crate::with_serializer_options`]).
     pub(crate) static SERIALIZER_OPTIONS: RefCell<Option<SerializerOptionsEntry>> =
         const { RefCell::new(None) };
 

@@ -3550,6 +3550,7 @@ impl ModelManager {
     /// each with the [`ValidityProof`] it came with, if any), validated
     /// together unless `validate` is false. The shape `filter`'s result and
     /// the empty-input result of `crate::dcs::decorate_models` share.
+    #[cfg(feature = "js-compat")]
     pub(crate) fn new_like_with(
         &self,
         files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
@@ -3574,6 +3575,7 @@ impl ModelManager {
     /// manager registers to hold the same models without copying or, where
     /// the proof holds there, validating them again
     /// ([`ModelManager::insert_models`]).
+    #[cfg(feature = "js-compat")]
     pub(crate) fn user_files_with_proofs(
         &self,
     ) -> Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)> {
