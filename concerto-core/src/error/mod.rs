@@ -426,11 +426,27 @@ js_compat_pub! {
     }
 }
 
+/// Debug-asserts that a call site's `code` has a catalogue entry (P5-98,
+/// B-11): the completeness test only checks catalogue entry -> golden test,
+/// so nothing else catches a mistyped code, which [`render`] would show as
+/// the message itself.
+#[inline]
+fn debug_assert_catalogued(code: &str) {
+    debug_assert!(
+        catalogue_entry(code).is_some(),
+        "error code {code:?} has no catalogue entry"
+    );
+}
+
 /// Renders a template with its params.
 fn render(code: &str, params: &[(&'static str, String)]) -> String {
     let Some(entry) = catalogue_entry(code) else {
-        // Unreachable for errors built through `ContractError::new`, which
-        // only takes codes from the catalogue (see the completeness test).
+        // Not reached in a debug build for an error built through
+        // `ContractError::new` or `ContractError::type_not_found`: both
+        // debug-assert that their code has a catalogue entry (P5-98, B-11),
+        // so the unit and oracle suites catch a mistyped call-site code. A
+        // release build, or a `ContractError` built by hand, falls back to
+        // the code itself.
         return code.to_string();
     };
     match entry.renderer {
@@ -646,7 +662,11 @@ impl ContractError {
     }
 
     /// An error with no location and no model file.
+    ///
+    /// `code` must be a catalogue key ([`catalogue_entry`]); a debug build
+    /// asserts it (P5-98, B-11).
     pub fn new(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Self {
+        debug_assert_catalogued(code);
         Self {
             kind,
             code,
@@ -668,6 +688,7 @@ impl ContractError {
         type_name: String,
         location: Option<serde_json::Value>,
     ) -> Self {
+        debug_assert_catalogued(code);
         params.push(("typeName", type_name));
         Self {
             kind: ErrorKind::TypeNotFound,
@@ -2528,6 +2549,113 @@ mod tests {
             contract("resourcevalidator-checkrelationship-notidentifiable", &[]).message(),
             "Cannot have a relationship to a field that is not identifiable."
         );
+    }
+
+    // ---- P5-98 additions (B-10): the model-validation checks' own TS
+    //      hardcoded strings, checked against the frozen TS 5.0.0
+    //      reference ----
+
+    // TS: `ModelFile.validate`'s duplicate-name check
+    // (src/introspect/modelfile.ts:293).
+    #[test]
+    fn golden_modelfile_validate_duplicateclassname() {
+        assert_eq!(
+            contract(
+                "modelfile-validate-duplicateclassname",
+                &[("fqn", "org.acme@1.0.0.A")]
+            )
+            .message(),
+            "Duplicate class name org.acme@1.0.0.A"
+        );
+    }
+
+    // TS: `Declaration.validate` (src/introspect/declaration.ts:91).
+    #[test]
+    fn golden_declaration_validate_importclash() {
+        assert_eq!(
+            contract("declaration-validate-importclash", &[("name", "Address")]).message(),
+            "Type 'Address' clashes with an imported type with the same name."
+        );
+    }
+
+    // TS: `Decorated.validate` (src/introspect/decorated.ts:143); a
+    // decorator with no name reads `undefined`.
+    #[test]
+    fn golden_decorated_validate_duplicatedecorator() {
+        assert_eq!(
+            contract("decorated-validate-duplicatedecorator", &[("name", "Term")]).message(),
+            "Duplicate decorator Term"
+        );
+        assert_eq!(
+            contract(
+                "decorated-validate-duplicatedecorator",
+                &[("name", "undefined")]
+            )
+            .message(),
+            "Duplicate decorator undefined"
+        );
+    }
+
+    // TS: `ClassDeclaration._resolveSuperType` and `getSuperTypeDeclaration`
+    // (src/introspect/classdeclaration.ts:184,190,553).
+    #[test]
+    fn golden_classdeclaration_resolvesupertype_notfound() {
+        assert_eq!(
+            contract(
+                "classdeclaration-resolvesupertype-notfound",
+                &[("superType", "Vehicle")]
+            )
+            .message(),
+            "Could not find super type Vehicle"
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_resolvesupertype_kindmismatch() {
+        assert_eq!(
+            contract(
+                "classdeclaration-resolvesupertype-kindmismatch",
+                &[
+                    ("kind", "AssetDeclaration"),
+                    ("name", "Car"),
+                    ("superKind", "ParticipantDeclaration"),
+                    ("superName", "Person"),
+                ]
+            )
+            .message(),
+            "AssetDeclaration (Car) cannot extend ParticipantDeclaration (Person)"
+        );
+    }
+
+    // TS: `ClassDeclaration.validate` (src/introspect/classdeclaration.ts:249,
+    // 258, 263).
+    #[test]
+    fn golden_classdeclaration_validate_identifieroptional() {
+        assert_eq!(
+            contract("classdeclaration-validate-identifieroptional", &[]).message(),
+            "Identifying fields cannot be optional."
+        );
+    }
+
+    #[test]
+    fn golden_classdeclaration_validate_redeclaredidentifier() {
+        assert_eq!(
+            contract(
+                "classdeclaration-validate-redeclaredidentifier",
+                &[("superType", "org.acme@1.0.0.Base"), ("idField", "id")]
+            )
+            .message(),
+            "Super class org.acme@1.0.0.Base has an explicit identifier id that cannot be redeclared."
+        );
+    }
+
+    /// P5-98 (B-11): a call-site code with no catalogue entry fails a debug
+    /// build instead of rendering the code itself as the message.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "has no catalogue entry")]
+    fn an_uncatalogued_code_fails_a_debug_build() {
+        let _ = ContractError::new(ErrorKind::IllegalModel, "no-such-code", vec![]);
     }
 
     /// The one non-catalogue renderer: [`ContractError::pre_port`] carries a

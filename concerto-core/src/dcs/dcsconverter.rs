@@ -23,7 +23,7 @@
 //! `render_scalar_failsafe`'s quoting decision (plain vs. `JSON.stringify`
 //! double-quoted) matches the reference for every value these two functions
 //! ever build or accept: DCS identifiers, namespaces, decorator argument
-//! text stringified with `js_value_to_string`. It diverges, documented,
+//! text stringified with `to_js_string`. It diverges, documented,
 //! from `yaml.stringify`'s own choice of *style* — a single-quoted
 //! rendering when a value has more `"` than `'`, or a block-literal (`|-`)
 //! rendering for an embedded newline or a document-marker-like value
@@ -31,6 +31,7 @@
 //! is expected to contain; see `yaml_quote::needs_quoting_failsafe`.
 use serde_json::{Map, Number, Value};
 
+use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::model_util::{self, ParsedNamespace};
 
@@ -55,28 +56,13 @@ fn pre_port(message: impl Into<String>) -> ContractError {
 // jsonToYaml
 // ---------------------------------------------------------------------
 
-/// `String(value)` (`dcsconverter.ts`'s `handleArguments`/`handleTarget`
-/// call sites, JS's implicit coercion in a template-ish position): the JS
-/// stringification of a decorator argument's `value`, which is always a
-/// JSON string, number or boolean by construction of the AST
-/// (`DecoratorString`/`DecoratorNumber`/`DecoratorBoolean`). Matches
-/// `Number.prototype.toString()`/`Boolean.prototype.toString()` for every
-/// finite value these argument types actually carry (whole and decimal
-/// literals as the CTO grammar accepts them); not a general `Number#toString`
-/// port (`NaN`/`Infinity`/exponent notation never reach a decorator
-/// argument).
-fn js_value_to_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        // Not part of the reference's domain (a DecoratorString/Number/Boolean
-        // argument's `value` is always one of the above); render `null`/
-        // arrays/objects the way `String()` would rather than panic.
-        Value::Null => "null".to_string(),
-        other => other.to_string(),
-    }
-}
+// `String(value)` (`dcsconverter.ts`'s `handleArguments`/`handleTarget`
+// call sites, JS's implicit coercion in a template-ish position) is
+// [`to_js_string`]: a decorator argument's `value` is always a JSON string,
+// number or boolean by construction of the AST
+// (`DecoratorString`/`DecoratorNumber`/`DecoratorBoolean`), and a number is
+// written the way `Number.prototype.toString()` writes it (`0.000001`,
+// `1e+21`), not serde_json's shortest form (P5-98, C-11).
 
 /// `handleTarget` (`src/dcsconverter.ts`): `target`'s own keys, in order,
 /// minus `$class`.
@@ -99,7 +85,7 @@ fn value_to_yaml(value: &Value) -> Yaml {
     match value {
         Value::Array(items) => Yaml::Seq(items.iter().map(value_to_yaml).collect()),
         Value::Object(_) => handle_target(value),
-        other => Yaml::Scalar(js_value_to_string(other)),
+        other => Yaml::Scalar(to_js_string(other)),
     }
 }
 
@@ -114,24 +100,18 @@ fn handle_arguments(argument: &Value) -> Yaml {
         let mut type_reference = Vec::new();
         type_reference.push((
             "name".to_string(),
-            Yaml::Scalar(js_value_to_string(ty.get("name").unwrap_or(&Value::Null))),
+            Yaml::Scalar(to_js_string(ty.get("name").unwrap_or(&Value::Null))),
         ));
         if let Some(ns) = ty.get("namespace") {
-            type_reference.push((
-                "namespace".to_string(),
-                Yaml::Scalar(js_value_to_string(ns)),
-            ));
+            type_reference.push(("namespace".to_string(), Yaml::Scalar(to_js_string(ns))));
         }
         if let Some(rn) = ty.get("resolvedName") {
-            type_reference.push((
-                "resolvedName".to_string(),
-                Yaml::Scalar(js_value_to_string(rn)),
-            ));
+            type_reference.push(("resolvedName".to_string(), Yaml::Scalar(to_js_string(rn))));
         }
         // `String(argument.isArray)`: `"undefined"` when it has none.
         let is_array = argument
             .get("isArray")
-            .map_or_else(|| "undefined".to_string(), js_value_to_string);
+            .map_or_else(|| "undefined".to_string(), to_js_string);
         type_reference.push(("isArray".to_string(), Yaml::Scalar(is_array)));
         return Yaml::Map(vec![(
             "typeReference".to_string(),
@@ -147,10 +127,7 @@ fn handle_arguments(argument: &Value) -> Yaml {
     let value = argument.get("value").cloned().unwrap_or(Value::Null);
     Yaml::Map(vec![
         ("type".to_string(), Yaml::Scalar(type_name.to_string())),
-        (
-            "value".to_string(),
-            Yaml::Scalar(js_value_to_string(&value)),
-        ),
+        ("value".to_string(), Yaml::Scalar(to_js_string(&value))),
     ])
 }
 
@@ -256,7 +233,7 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     }
     for key in ["name", "version"] {
         if let Some(v) = dcs_json.get(key) {
-            entries.push((key.to_string(), Yaml::Scalar(js_value_to_string(v))));
+            entries.push((key.to_string(), Yaml::Scalar(to_js_string(v))));
         }
     }
     entries.push((
@@ -615,7 +592,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
 
 /// `Number(value)` (`restoreArguments`, `src/dcsconverter.ts`), for the
 /// decimal literal text a DCS decorator's `Number` argument round-trips as
-/// (see [`js_value_to_string`]); not a general `Number()` port.
+/// (see [`to_js_string`]); not a general `Number()` port.
 fn parse_js_number(raw: &str) -> Result<Value> {
     if let Ok(i) = raw.parse::<i64>() {
         return Ok(Value::Number(Number::from(i)));
@@ -987,6 +964,48 @@ mod tests {
         // `Number`/`Boolean` argument values as their JSON types (not the
         // stringified form the YAML carries them as in between).
         assert_eq!(yaml_to_json(&yaml).unwrap(), dcs_json);
+    }
+
+    /// P5-98 (C-11): a `DecoratorNumber` value is written as JS `String(value)`
+    /// writes it — TS 5.0.0 `jsonToYaml` gives `0.000001` and `1e+21`, where
+    /// serde_json's own `Display` gave `1e-6` and `1e21`.
+    #[test]
+    fn json_to_yaml_writes_a_number_argument_as_js_string_does() {
+        let dcs_json = serde_json::json!({
+            "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+            "name": "n",
+            "version": "1.0.0",
+            "commands": [{
+                "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+                "type": "APPEND",
+                "target": { "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget", "namespace": "test@1.0.0" },
+                "decorator": {
+                    "$class": "concerto.metamodel@1.0.0.Decorator",
+                    "name": "d",
+                    "arguments": [
+                        { "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 0.000001 },
+                        { "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 1e21 }
+                    ]
+                }
+            }]
+        });
+        assert_eq!(
+            json_to_yaml(&dcs_json).unwrap(),
+            "decoratorCommandsVersion: 0.4.0\n\
+             name: n\n\
+             version: 1.0.0\n\
+             commands:\n\
+             \x20 - action: APPEND\n\
+             \x20   target:\n\
+             \x20     namespace: test@1.0.0\n\
+             \x20   decorator:\n\
+             \x20     name: d\n\
+             \x20     arguments:\n\
+             \x20       - type: Number\n\
+             \x20         value: 0.000001\n\
+             \x20       - type: Number\n\
+             \x20         value: 1e+21\n"
+        );
     }
 
     #[test]
