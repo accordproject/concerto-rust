@@ -1471,6 +1471,134 @@ export function runChecks(engine) {
     h.free();
   });
 
+  // P5-101 (E-11): a value the wire codec cannot carry is reported with
+  // `fastPathUnsupported: true` in the payload, whatever its message; any
+  // other error is not. P5-101 (D-3): serializerToJson reads its document in
+  // one pass and gives the same text for the same document again (the
+  // options read once, then reused).
+  check('a wire value the codec cannot carry is flagged fastPathUnsupported (P5-101)', () => {
+    const h = new engine.ModelManagerHandle();
+    const unknownKind = thrown(() => h.serializerToJson('{"@@oracle":"nope"}', 'null'));
+    assert(unknownKind.payload?.fastPathUnsupported === true, `kind: ${JSON.stringify(unknownKind.payload)}`);
+    const badOptions = thrown(() => h.serializerFromJson('{}', '{"a":{"@@oracle":"number","value":"x"}}', { newId: () => 'x', nowMs: () => 0 }));
+    assert(badOptions.payload?.fastPathUnsupported === true, `options: ${JSON.stringify(badOptions.payload)}`);
+    const noClass = thrown(() => h.serializerFromJson('{}', 'null', { newId: () => 'x', nowMs: () => 0 }));
+    assert(noClass.payload && noClass.payload.fastPathUnsupported === undefined, `no class: ${JSON.stringify(noClass.payload)}`);
+    assert(thrown(() => h.serializerToJson('{', 'null')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
+    h.free();
+  });
+
+  // P5-101 (D-9): with `metamodel`, validateAstStaged's check runs first in
+  // the same call: an AST the metamodel rejects throws what
+  // validateAstStaged throws, marked `metamodelCheck` (not enumerable), and
+  // stays staged.
+  check('validateAndCommitStagedModelFile runs the metamodel check first (P5-101)', () => {
+    const h = new engine.ModelManagerHandle();
+    const text = JSON.stringify({ ...MODEL, namespace: 'org.mm@1.0.0' });
+    const id = h.validateAndCommitStagedModelFile(h.stageModelFile(text, undefined, 'mm.cto'), true);
+    assert(id === h.modelFileId('org.mm@1.0.0'), `returned ${id}`);
+    const wrongVersion = JSON.stringify({ ...MODEL, $class: 'concerto.metamodel@0.4.0.Model', namespace: 'org.v@1.0.0' });
+    const s1 = h.stageModelFile(wrongVersion, undefined, 'v.cto');
+    const s2 = h.stageModelFile(wrongVersion, undefined, 'v.cto');
+    const viaCommit = thrown(() => h.validateAndCommitStagedModelFile(s1, true));
+    const viaStaged = thrown(() => h.validateAstStaged(s2));
+    assert(viaCommit && viaStaged && viaCommit.constructor === viaStaged.constructor, `${viaCommit} vs ${viaStaged}`);
+    assert(viaCommit.metamodelCheck === true && !Object.keys(viaCommit).includes('metamodelCheck'), 'marked, not enumerable');
+    assert(thrown(() => h.validateAstStaged(s1)) !== undefined, 'still staged');
+    assert(h.modelFileId('org.v@1.0.0') === undefined, 'not registered');
+    h.free();
+  });
+
+  // P5-101 (D-4, D-10): the one staging binding stages as the bindings it
+  // stands for, from UTF-8 text or the compact layout, checked or not, and
+  // returns the stage in the flat layout.
+  check('stageModelFileBytes stages as the bindings it stands for (P5-101)', () => {
+    const h = new engine.ModelManagerHandle();
+    const text = JSON.stringify(MODEL);
+    const utf8 = new TextEncoder().encode(text);
+    for (const [flags, legacy] of [[0, 'stageModelFileWithHeaderUtf8'], [1, 'stageModelFileCheckedUtf8']]) {
+      const flat = JSON.parse(h.stageModelFileBytes(utf8, undefined, 'm.cto', flags));
+      const object = JSON.parse(h[legacy](utf8, undefined, 'm.cto'));
+      assert(Array.isArray(flat) && flat[1] === object.header.namespace && flat[2] === object.header.version, `flags ${flags}: ${JSON.stringify(flat)}`);
+      h.dropStagedModelFile(flat[0]);
+      h.dropStagedModelFile(object.id);
+    }
+    const notUtf8 = thrown(() => h.stageModelFileBytes(new Uint8Array([0xff]), undefined, undefined, 0));
+    assert(notUtf8 instanceof TypeError, `not UTF-8: ${notUtf8}`);
+    assert(thrown(() => h.stageModelFileBytes(new TextEncoder().encode('{'), undefined, undefined, 1)) instanceof SyntaxError, 'malformed JSON');
+    assert(thrown(() => h.stageModelFileBytes(new Uint8Array([9]), undefined, undefined, 2)) instanceof TypeError, 'not the compact layout');
+    h.free();
+  });
+
+  // P5-101 review round: the batch commit (M5), the free shape-check and
+  // system-header functions (D-7), the by-slot property check with its
+  // outcome in the same call (D-10), and the Serializer bindings over the
+  // compact binary layout (E-7).
+  check('commitStagedModelFiles, free checkAstShape, validatePropertyById and the *Bytes serializer bindings (P5-101)', () => {
+    const compact = (v) => {
+      const out = [];
+      const u32 = (n) => out.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+      const str = (t) => { const b = new TextEncoder().encode(t); u32(b.length); out.push(...b); };
+      const write = (x) => {
+        if (x === null) { out.push(0); } else if (x === false) { out.push(1); } else if (x === true) { out.push(2); }
+        else if (typeof x === 'number') {
+          if ((x | 0) === x) { out.push(4); u32(x); } else { out.push(3); out.push(...new Uint8Array(new Float64Array([x]).buffer)); }
+        } else if (typeof x === 'string') { out.push(5); str(x); }
+        else if (Array.isArray(x)) { out.push(6); u32(x.length); x.forEach(write); }
+        else { const keys = Object.keys(x); out.push(7); u32(keys.length); for (const k of keys) { str(k); write(x[k]); } }
+      };
+      write(v);
+      return new Uint8Array(out);
+    };
+    // M5: several stages registered in one call, their handles written
+    // back in place; an unknown stage changes nothing.
+    const h = new engine.ModelManagerHandle();
+    const a = JSON.parse(h.stageModelFileBytes(new TextEncoder().encode(JSON.stringify(MODEL)), undefined, 'a.cto', 1))[0];
+    const b = JSON.parse(h.stageModelFileBytes(new TextEncoder().encode(JSON.stringify({ ...MODEL, namespace: 'org.second@1.0.0' })), undefined, 'b.cto', 1))[0];
+    const unknown = new Uint32Array([a, 999999]);
+    const epoch = h.epoch();
+    assert(h.commitStagedModelFiles(unknown) === false && unknown[0] === a && h.epoch() === epoch, 'unknown stage: nothing changed');
+    const ids = new Uint32Array([a, b]);
+    assert(h.commitStagedModelFiles(ids) === true, 'committed');
+    assert(ids[0] === h.modelFileId('org.example@1.0.0') && ids[1] === h.modelFileId('org.second@1.0.0'), `ids ${ids}`);
+    assert(h.epoch() !== epoch, 'the epoch moved');
+    // D-7: the free functions answer as the handle methods.
+    engine.checkAstShape(JSON.stringify(MODEL));
+    const bad = JSON.stringify({ ...MODEL, declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 1 }] });
+    const viaFree = thrown(() => engine.checkAstShape(bad));
+    const viaHandle = thrown(() => h.checkAstShape(bad));
+    assert(viaFree && viaHandle && viaFree.message === viaHandle.message, `${viaFree} vs ${viaHandle}`);
+    assert(engine.systemModelFileHeader('{}') === undefined && h.systemModelFileHeader('{}') === undefined, 'no header');
+    // D-10: by slot, a valid value is 0, a validation error its message, a
+    // stale slot 4; no slot for a missing property.
+    const slot = h.validationPropertySlot('org.example@1.0.0.Person', 'name');
+    assert(slot && slot.length === 3, `slot ${slot}`);
+    assert(h.validationPropertySlot('org.example@1.0.0.Person', 'nope') === undefined, 'no such property');
+    const root = 'org.example@1.0.0.Person';
+    assert(h.validatePropertyById(compact('x'), slot[0], slot[1], slot[2], root, 0) === 0, 'valid');
+    const byName = h.validatePropertyBinary(compact(1), 'org.example@1.0.0.Person', 'name', root, 0);
+    const message = engine.validateErrorMessage();
+    assert(byName === 1 && h.validatePropertyById(compact(1), slot[0], slot[1], slot[2], root, 0) === message, `message ${message}`);
+    h.addModel(JSON.stringify({ ...MODEL, namespace: 'org.third@1.0.0' }));
+    assert(h.validatePropertyById(compact('x'), slot[0], slot[1], slot[2], root, 0) === 4, 'stale');
+    // E-7: the same results, and the same errors, from the compact layout
+    // as from the text.
+    const env = { newId: () => 'id', nowMs: () => 0 };
+    const plain = { $class: 'org.example@1.0.0.Employee', name: 'n', salary: 2.5 };
+    const doc = { ...plain, salary: 'x' };
+    const fromText = h.serializerFromJsonCompact(JSON.stringify(plain), 'null', env);
+    const fromBytes = h.serializerFromJsonCompactBytes(compact(plain), 'null', env);
+    assert(fromText === fromBytes, `${fromText} vs ${fromBytes}`);
+    const errText = thrown(() => h.serializerFromJsonCompact(JSON.stringify(doc), 'null', env));
+    const errBytes = thrown(() => h.serializerFromJsonCompactBytes(compact(doc), 'null', env));
+    assert(errText && errBytes && errText.message === errBytes.message && JSON.stringify(errText.payload) === JSON.stringify(errBytes.payload), `${errText} vs ${errBytes}`);
+    const built = JSON.parse(h.serializerFromJson(JSON.stringify({ $class: 'org.example@1.0.0.Employee', name: 'n', salary: 2.5 }), 'null', env));
+    assert(h.serializerToJson(JSON.stringify(built), 'null') === h.serializerToJsonBytes(compact(built), 'null'), 'toJSON');
+    const notLayout = thrown(() => h.serializerToJsonBytes(new Uint8Array([9]), 'null'));
+    assert(notLayout.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayout.payload)}`);
+    h.free();
+  });
+
   // P5-10a lazy views: the per-file view snapshot gives each declaration
   // the decisions the per-element bindings give its view, and each property
   // the modelFilePropertySnapshots entry.
@@ -1687,13 +1815,22 @@ export function runChecks(engine) {
     assert(user.length === 2 && user.every(([, s]) => Array.isArray(s)), `staged ${JSON.stringify(result.staged)}`);
     const team = user[1][0].declarations[0];
     assert(team.decorators?.[0]?.name === 'Smoke', 'decorated');
-    for (const [model, [stage, header]] of user) {
+    // P5-101 (D-4): each entry is the stage in the one header format, the
+    // flat layout every staging binding returns: [id, namespace, version,
+    // system, n, key/name pairs (the implicit system import's five left
+    // out), uri pairs].
+    const IMPLICIT = ['Concept', 'Asset', 'Transaction', 'Participant', 'Event'].flatMap((t) => [t, `concerto@1.0.0.${t}`]);
+    for (const [model, entry] of user) {
+      const [stage, namespace, version, system, n] = entry;
       // What modelFileFromAstHeader sets on a stand-in ModelFile.
       const view = { ast: model, importShortNames: new Map(), importUriMap: {}, isSystemModelFile: () => false, enforceImportVersioning: (imp) => engine.modelFileEnforceImportVersioning(imp) };
       engine.modelFileFromAstHeader(view, model);
-      assert(header[0] === view.version, `version ${header[0]}`);
-      assert(JSON.stringify(header[1]) === JSON.stringify([...view.importShortNames].flat()), `short names ${JSON.stringify(header[1])}`);
-      assert(JSON.stringify(header[2]) === JSON.stringify(Object.entries(view.importUriMap).flat()), `uris ${JSON.stringify(header[2])}`);
+      assert(namespace === model.namespace && system === false, `namespace ${namespace}`);
+      assert(version === view.version, `version ${version}`);
+      const names = entry.slice(5, 5 + 2 * n).concat(IMPLICIT);
+      assert(JSON.stringify(names) === JSON.stringify([...view.importShortNames].flat()), `short names ${JSON.stringify(names)}`);
+      const uris = entry.slice(5 + 2 * n);
+      assert(JSON.stringify(uris) === JSON.stringify(Object.entries(view.importUriMap).flat()), `uris ${JSON.stringify(uris)}`);
       assert(typeof target.commitStagedModelFile(stage) === 'number', 'the stage commits');
     }
     target.validateModelFiles({});
@@ -1759,6 +1896,18 @@ export function runChecks(engine) {
       t1.free();
       t2.free();
     }
+    // P5-101 (D-10): the one extract binding of each, by action, gives
+    // what the binding for that action gives.
+    for (const [action, own, resident] of [[0, 'dcsExtractDecorators', 'extractDecorators'], [1, 'dcsExtractVocabularies', 'extractVocabularies'], [2, 'dcsExtractNonVocabDecorators', 'extractNonVocabDecorators']]) {
+      const options = { removeDecoratorsFromModel: action !== 1, locale: 'en' };
+      const ts = [0, 1, 2, 3].map(() => new engine.ModelManagerHandle());
+      const viaOne = JSON.stringify(h.dcsExtract(ts[0], structuredClone(options), action));
+      assert(viaOne === JSON.stringify(h[own](ts[1], structuredClone(options))), `dcsExtract ${action}`);
+      const viaResident = JSON.stringify(dcs.extract(ts[2], structuredClone(options), action));
+      assert(viaResident === JSON.stringify(dcs[resident](ts[3], structuredClone(options))), `extract ${action}`);
+      ts.forEach((x) => x.free());
+    }
+    assert(thrown(() => h.dcsExtract(new engine.ModelManagerHandle(), {}, 3)) instanceof Error, 'an unknown action throws');
     assert(h.epoch() === epoch, 'the handle is unchanged');
     // A resolution error throws what the resident handle throws.
     const bad = {
