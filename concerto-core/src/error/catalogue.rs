@@ -1132,6 +1132,57 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust P5-61 / BR-09: no TS throw site (the typed AST read, the only model loader, fails on a node it cannot read; with BC-19's shape check on, the check rejects such an AST first)",
         ],
     },
+    // ---- P5-98 additions (B-10): the model-validation checks
+    //      `validation.rs` raised as `pre-port` though each message was
+    //      already TS's own hardcoded string, verbatim ----
+    CatalogueEntry {
+        code: "modelfile-validate-duplicateclassname",
+        template: "Duplicate class name {fqn}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/modelfile.ts:293"],
+    },
+    CatalogueEntry {
+        code: "declaration-validate-importclash",
+        template: "Type '{name}' clashes with an imported type with the same name.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/declaration.ts:91"],
+    },
+    CatalogueEntry {
+        code: "decorated-validate-duplicatedecorator",
+        template: "Duplicate decorator {name}",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/decorated.ts:143"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-resolvesupertype-notfound",
+        template: "Could not find super type {superType}",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/introspect/classdeclaration.ts:184",
+            "src/introspect/classdeclaration.ts:553",
+        ],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-resolvesupertype-kindmismatch",
+        template: "{kind} ({name}) cannot extend {superKind} ({superName})",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/classdeclaration.ts:190"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-identifieroptional",
+        template: "Identifying fields cannot be optional.",
+        renderer: Renderer::Inline,
+        sources: &["src/introspect/classdeclaration.ts:249"],
+    },
+    CatalogueEntry {
+        code: "classdeclaration-validate-redeclaredidentifier",
+        template: "Super class {superType} has an explicit identifier {idField} that cannot be redeclared.",
+        renderer: Renderer::Inline,
+        sources: &[
+            "src/introspect/classdeclaration.ts:258",
+            "src/introspect/classdeclaration.ts:263",
+        ],
+    },
     // Not a TS template: see the module doc and `ContractError::pre_port`.
     CatalogueEntry {
         code: "pre-port",

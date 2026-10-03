@@ -48,6 +48,14 @@ pub struct ModelFile {
     /// ([`built_in_imports`]) for a file that imports nothing else (most
     /// files), where every load used to append its own copy.
     imports: Cow<'static, [Import]>,
+    /// TS `ModelFile.importShortNames`: every name an import makes visible
+    /// here, to the import and the position in its `imported_names` it
+    /// names, built once at load with one forward pass over `imports`, so a
+    /// later import of the same local name replaces an earlier one, as
+    /// `Map.set` does (P5-98, A-2). Every import lookup reads it
+    /// ([`ModelFile::import_target`]). Shared, like `imports`, for a file
+    /// whose only import is the built-in one.
+    import_short_names: Cow<'static, ImportShortNames>,
     declarations: Vec<Declaration>,
     /// Declaration names to their index, for `getLocalType` (FxHash,
     /// P5-13: only ever looked up, never iterated). P5-93: keyed by the
@@ -441,6 +449,10 @@ impl ModelFile {
             imports.push(built_in_import_typed()?);
             Cow::Owned(imports)
         };
+        let import_short_names = match &imports {
+            Cow::Borrowed(_) => Cow::Borrowed(&*BUILT_IN_SHORT_NAMES),
+            Cow::Owned(imports) => Cow::Owned(import_short_names(imports)),
+        };
 
         // TS: the constructor's `localTypes` loop is a plain `Map.set` per
         // declaration, so a second declaration of the same name is accepted
@@ -487,6 +499,7 @@ impl ModelFile {
             namespace,
             version_start,
             imports,
+            import_short_names,
             declarations,
             local_types,
             file_name,
@@ -665,7 +678,7 @@ impl ModelFile {
         if is_primitive_type(short) {
             return Some(short.to_string());
         }
-        if let Some(fqn) = self.imports.iter().find_map(|imp| imp.resolve(short)) {
+        if let Some(fqn) = self.find_import(short) {
             return Some(fqn);
         }
         if self.local_index(short).is_some() {
@@ -781,19 +794,27 @@ impl ModelFile {
         !type_name.is_empty() && self.local_type(type_name).is_some()
     }
 
-    /// The fully-qualified name a locally-visible import name resolves to
-    /// (an alias counts under its alias only, not its declared name — P2-08
-    /// review carry-over (a) from P2-04's review, #48). Later imports
-    /// overwrite earlier ones for the same local name, as `Map.set` does
-    /// (TS builds `importShortNames` with one forward pass over `this.imports`).
-    fn find_import(&self, type_name: &str) -> Option<String> {
-        self.imports.iter().rev().find_map(|imp| {
-            imp.local_names()
-                .into_iter()
-                .zip(imp.imported_names())
-                .rfind(|(local, _)| *local == type_name)
-                .map(|(_, imported)| qualify(imp.namespace(), imported))
-        })
+    /// The namespace and declared name a locally-visible import name
+    /// resolves to (an alias counts under its alias only, not its declared
+    /// name — P2-08 review carry-over (a) from P2-04's review, #48), read
+    /// from the `importShortNames` map built at load: a later import of the
+    /// same local name replaces an earlier one, as `Map.set` does (TS builds
+    /// `importShortNames` with one forward pass over `this.imports`). That
+    /// holds for a user import of a system type name too: the built-in
+    /// import `fromAst` appends last wins (P5-98, A-2).
+    pub(crate) fn import_target(&self, type_name: &str) -> Option<(&str, &str)> {
+        let &(import, position) = self.import_short_names.get(type_name)?;
+        let import = &self.imports[import as usize];
+        Some((
+            import.namespace(),
+            import.imported_names()[position as usize].as_str(),
+        ))
+    }
+
+    /// [`ModelFile::import_target`], fully qualified.
+    pub(crate) fn find_import(&self, type_name: &str) -> Option<String> {
+        self.import_target(type_name)
+            .map(|(namespace, name)| qualify(namespace, name))
     }
 
     /// TS: `ModelFile.isImportedType`.
@@ -1244,6 +1265,31 @@ fn built_in_import_typed() -> Result<Import> {
         None => Import::try_from(&built_in_import()),
     }
 }
+
+/// TS `ModelFile.importShortNames`' shape: a local name to the import (its
+/// index in the file's imports) and the position in that import's
+/// `imported_names` it stands for.
+type ImportShortNames = rustc_hash::FxHashMap<Box<str>, (u32, u32)>;
+
+/// TS `ModelFile.fromAst`'s `importShortNames.set` loop: one forward pass
+/// over `imports`, so the last import of a local name wins.
+fn import_short_names(imports: &[Import]) -> ImportShortNames {
+    let mut map = ImportShortNames::default();
+    for (index, import) in imports.iter().enumerate() {
+        for (position, local) in import.local_names().into_iter().enumerate() {
+            map.insert(local.into(), (index as u32, position as u32));
+        }
+    }
+    map
+}
+
+/// [`import_short_names`] of [`built_in_imports`]' shared list, built once.
+static BUILT_IN_SHORT_NAMES: LazyLock<ImportShortNames> = LazyLock::new(|| {
+    BUILT_IN_IMPORTS
+        .as_ref()
+        .map(|imports| import_short_names(imports))
+        .unwrap_or_default()
+});
 
 /// The imports of a non-system file that imports nothing else: the cached
 /// built-in import alone, shared (P5-93), or, if it could not be read (it

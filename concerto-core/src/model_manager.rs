@@ -518,23 +518,6 @@ fn unknown(node: Node) -> Error {
     Error::type_not_found(format!("{node:?}"))
 }
 
-/// The fully qualified name a short name is imported as, if it is imported.
-/// Later imports overwrite earlier ones, as `Map.set` does.
-///
-/// TS: ModelFile.isImportedType, ModelFile.resolveImport
-/// (src/introspect/modelfile.ts), over the `importShortNames` map that
-/// ModelFile.fromAst builds
-fn imported_type(model_file: &ModelFile, type_name: &str) -> Option<String> {
-    model_file.imports().iter().rev().find_map(|import| {
-        import
-            .local_names()
-            .into_iter()
-            .zip(import.imported_names())
-            .rfind(|(local, _)| *local == type_name)
-            .map(|(_, imported)| qualify(import.namespace(), imported))
-    })
-}
-
 /// The class-like facts a `ClassDeclaration` or an `EnumDeclaration` carries,
 /// unified for the members TS defines once on `ClassDeclaration` and
 /// `EnumDeclaration` inherits unchanged (enumdeclaration.ts overrides only
@@ -1845,7 +1828,7 @@ impl ModelManager {
         if crate::model_util::is_primitive_type(type_name) {
             return Some(type_name.to_string());
         }
-        if let Some(fqn) = imported_type(mf, type_name) {
+        if let Some(fqn) = mf.find_import(type_name) {
             return Some(fqn);
         }
         let file = self.model_file_id(namespace)?;
@@ -2246,7 +2229,11 @@ impl ModelManager {
         if sub_fqn == super_fqn {
             return Ok(true);
         }
-        match self.get_declaration(sub_fqn)?.as_class() {
+        // Every class-like declaration walks its chain, an enum included:
+        // TS `EnumDeclaration extends ClassDeclaration`, so its implicit
+        // `Concept` super type is on `getSuperTypeDeclaration()`'s chain too
+        // (P5-98, A-1). Only a scalar or map declaration has no chain.
+        match ClassLike::from_declaration(self.get_declaration(sub_fqn)?) {
             None => Ok(false),
             Some(_) => {
                 let info = self.class_info(sub_fqn)?;
@@ -2381,7 +2368,7 @@ impl ModelManager {
                 return Ok(());
             }
             let mf = self.file(file).ok_or_else(|| unknown(Node::ModelFile(file)))?;
-            if let Some(fqn) = imported_type(mf, type_name) {
+            if let Some(fqn) = mf.find_import(type_name) {
                 return self.resolve_type(context, &fqn).map(|_| ());
             }
             if mf.is_local_type(type_name) {
@@ -3306,7 +3293,7 @@ impl ResolutionContext for ModelManager {
         if let Some(&primitive) = PRIMITIVE_TYPES.iter().find(|&&p| p == type_name) {
             return Ok(Some(Node::Primitive(primitive)));
         }
-        if let Some(fqn) = imported_type(mf, type_name) {
+        if let Some(fqn) = mf.find_import(type_name) {
             // `getModelManager().getModelFile(getNamespace(fqn))`, then that
             // file's `getLocalType(fqn)`.
             return Ok(self
@@ -3380,7 +3367,7 @@ impl ResolutionContext for ModelManager {
         // TS: ModelFile.getFullyQualifiedTypeName (src/introspect/modelfile.ts)
         let resolved = match type_name {
             None => None,
-            Some(type_name) => match imported_type(mf, type_name) {
+            Some(type_name) => match mf.find_import(type_name) {
                 Some(fqn) => Some(fqn),
                 None => self
                     .local_type(file, type_name)
@@ -5299,6 +5286,182 @@ mod tests {
             mgr.derives_from("org.example@1.0.0.Nope", "org.example@1.0.0.Person")
                 .is_err()
         );
+    }
+
+    /// P5-98 (A-1): TS 5.0.0 `derivesFrom('test@1.0.0.Color',
+    /// 'concerto@1.0.0.Concept')` is `true` for an enum — `EnumDeclaration
+    /// extends ClassDeclaration`, so `getSuperTypeDeclaration()` gives its
+    /// implicit `Concept` — and so is `isAssignableTo`. A scalar has no
+    /// super type at all (`false`).
+    #[test]
+    fn an_enum_derives_from_its_implicit_concept_super_type() {
+        let mut mgr = manager();
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.scalar@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "SSN" }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let color = "org.example@1.0.0.Color";
+        let concept = "concerto@1.0.0.Concept";
+        assert!(mgr.derives_from(color, concept).unwrap());
+        assert!(mgr.is_assignable_to(color, concept).unwrap());
+        assert!(mgr.is_type_assignable_to(color, concept));
+        assert!(!mgr.derives_from(color, "org.example@1.0.0.Person").unwrap());
+        assert!(!mgr.derives_from("org.scalar@1.0.0.SSN", concept).unwrap());
+    }
+
+    fn concept_with(name: &str, super_type: Option<&str>, properties: Value) -> Value {
+        let mut decl = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": name, "isAbstract": false, "properties": properties
+        });
+        if let Some(super_type) = super_type {
+            decl["superType"] = serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": super_type
+            });
+        }
+        decl
+    }
+
+    fn model(namespace: &str, imports: Value, declarations: Value) -> Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": namespace,
+            "imports": imports,
+            "declarations": declarations
+        })
+    }
+
+    fn string_property(name: &str) -> Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": name, "isArray": false, "isOptional": false
+        })
+    }
+
+    fn object_property(name: &str, type_name: &str) -> Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ObjectProperty",
+            "name": name, "isArray": false, "isOptional": false,
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": type_name }
+        })
+    }
+
+    fn import_type(namespace: &str, name: &str) -> Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": namespace, "name": name
+        })
+    }
+
+    /// `c@1.0.0.Bar extends Foo { o Foo f }`'s super type, its inherited
+    /// properties' names, and what its field's type `Foo` resolves to, by
+    /// both the field-type resolvers (`getFullyQualifiedTypeName`, and the
+    /// lookup the validator and `resolveType` use).
+    fn bar_resolution(mgr: &ModelManager, short: &str) -> (String, Vec<String>, String, String) {
+        let (super_fqn, _) = mgr.super_type("c@1.0.0.Bar").unwrap().unwrap();
+        let names = mgr
+            .properties("c@1.0.0.Bar")
+            .unwrap()
+            .into_iter()
+            .map(|(_, p)| p.name().to_string())
+            .collect();
+        let field = mgr
+            .model_file_fully_qualified_type_name("c@1.0.0", short)
+            .unwrap();
+        let resolved = mgr.resolve_type_name("c@1.0.0", short).unwrap();
+        (super_fqn, names, field, resolved)
+    }
+
+    /// P5-98 (A-2), case 1: two imports of the same local name — the last
+    /// one wins for `extends` and for a field type alike, as TS 5.0.0's
+    /// `importShortNames` `Map.set` does (TS: super type `b@1.0.0.Foo`,
+    /// properties `[f, b]`, field type `b@1.0.0.Foo`).
+    #[test]
+    fn the_last_of_two_imports_of_one_name_wins_for_extends_and_field_types() {
+        let mut mgr = ModelManager::new().unwrap();
+        for m in [
+            model(
+                "a@1.0.0",
+                serde_json::json!([]),
+                serde_json::json!([concept_with(
+                    "Foo",
+                    None,
+                    serde_json::json!([string_property("a")])
+                )]),
+            ),
+            model(
+                "b@1.0.0",
+                serde_json::json!([]),
+                serde_json::json!([concept_with(
+                    "Foo",
+                    None,
+                    serde_json::json!([string_property("b")])
+                )]),
+            ),
+            model(
+                "c@1.0.0",
+                serde_json::json!([import_type("a@1.0.0", "Foo"), import_type("b@1.0.0", "Foo")]),
+                serde_json::json!([concept_with(
+                    "Bar",
+                    Some("Foo"),
+                    serde_json::json!([object_property("f", "Foo")])
+                )]),
+            ),
+        ] {
+            mgr.load_model(&m, None).unwrap();
+        }
+        let (super_fqn, names, field, resolved) = bar_resolution(&mgr, "Foo");
+        assert_eq!(super_fqn, "b@1.0.0.Foo");
+        assert_eq!(names, ["f", "b"]);
+        assert_eq!(field, "b@1.0.0.Foo");
+        assert_eq!(resolved, "b@1.0.0.Foo");
+        assert!(mgr.derives_from("c@1.0.0.Bar", "b@1.0.0.Foo").unwrap());
+        assert!(!mgr.derives_from("c@1.0.0.Bar", "a@1.0.0.Foo").unwrap());
+    }
+
+    /// P5-98 (A-2), case 2: a user import of a system type name. The
+    /// built-in import `fromAst` appends comes last, so it wins for
+    /// `extends` and for a field type alike (TS 5.0.0, with
+    /// `dangerouslyAllowReservedSystemTypeNamesInUserModels`: super type
+    /// `concerto@1.0.0.Concept`, properties `[f]`, field type
+    /// `concerto@1.0.0.Concept`).
+    #[test]
+    fn the_built_in_import_wins_over_a_user_import_of_a_system_name() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
+        for m in [
+            model(
+                "x@1.0.0",
+                serde_json::json!([]),
+                serde_json::json!([concept_with(
+                    "Concept",
+                    None,
+                    serde_json::json!([string_property("x")])
+                )]),
+            ),
+            model(
+                "c@1.0.0",
+                serde_json::json!([import_type("x@1.0.0", "Concept")]),
+                serde_json::json!([concept_with(
+                    "Bar",
+                    Some("Concept"),
+                    serde_json::json!([object_property("f", "Concept")])
+                )]),
+            ),
+        ] {
+            mgr.load_model(&m, None).unwrap();
+        }
+        let (super_fqn, names, field, resolved) = bar_resolution(&mgr, "Concept");
+        assert_eq!(super_fqn, "concerto@1.0.0.Concept");
+        assert_eq!(names, ["f"]);
+        assert_eq!(field, "concerto@1.0.0.Concept");
+        assert_eq!(resolved, "concerto@1.0.0.Concept");
     }
 
     #[test]
