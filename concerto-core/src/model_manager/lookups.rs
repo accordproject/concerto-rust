@@ -555,14 +555,8 @@ impl ModelManager {
         .into())
     }
 
-    /// TS `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`
-    /// (basemodelmanager.ts): every registered model file's own AST
-    /// ([`ModelFile::ast`]), in [`ModelManager::model_files`] order, wrapped
-    /// in the metamodel's `Models` envelope; a system namespace
-    /// (`EXCLUDE_NS`) is left out unless `include_concerto_namespaces`.
-    /// `resolve` runs each model through [`ModelManager::resolve_meta_model`]
-    /// first — the only way this can fail, the same as TS's uncaught throw
-    /// from `resolveMetaModel`.
+    /// The body of [`ModelManager::ast`] and the deprecated
+    /// [`ModelManager::get_ast`], whose docs say what it returns (A-11).
     pub(crate) fn models_ast(
         &self,
         resolve: bool,

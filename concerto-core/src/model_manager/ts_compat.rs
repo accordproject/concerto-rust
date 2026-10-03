@@ -1,7 +1,15 @@
 //! The TS-parity members of the JS-compatibility seam (`js-compat`): TS
 //! `BaseModelManager` methods the binding and the oracle harness replay.
+//!
+//! The members only the oracle harness and this crate's tests call (the
+//! `get<Kind>Declarations`, `getModels`, `getAssignableConcreteTypes`,
+//! `getSuperTypeDeclaration` and `filter_by_fqn`) exist only with the
+//! `js-compat` feature (A-11, accordproject/concerto-rust#458): no binding
+//! calls them, and the native API has its own forms.
 
 use super::*;
+#[cfg(feature = "js-compat")]
+use crate::introspect::DeclarationKind;
 
 js_compat_pub! {
     /// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
@@ -19,18 +27,17 @@ js_compat_pub! {
 }
 
 impl ModelManager {
-    js_compat_pub! {
-        /// The [`DeclId`] of `fqn`'s direct super type, or `None` when it has
-        /// none.
-        ///
-        /// TS: `ClassDeclaration.getSuperTypeDeclaration`, inherited unchanged by
-        /// `EnumDeclaration`.
-        pub fn get_super_type_declaration(&self, fqn: &str) -> Result<Option<DeclId>> {
-            let Some(super_fqn) = self.super_type_name(fqn)? else {
-                return Ok(None);
-            };
-            Ok(self.declaration_id(&super_fqn))
-        }
+    /// The [`DeclId`] of `fqn`'s direct super type, or `None` when it has
+    /// none.
+    ///
+    /// TS: `ClassDeclaration.getSuperTypeDeclaration`, inherited unchanged by
+    /// `EnumDeclaration`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_super_type_declaration(&self, fqn: &str) -> Result<Option<DeclId>> {
+        let Some(super_fqn) = self.super_type_name(fqn)? else {
+            return Ok(None);
+        };
+        Ok(self.declaration_id(&super_fqn))
     }
 
     js_compat_pub! {
@@ -63,33 +70,33 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`
-        /// (basemodelmanager.ts): every concrete (non-abstract) declaration
-        /// assignable to `baseFqn`, `baseFqn` itself included when it is
-        /// concrete; empty when `baseFqn` is not in the model (TS catches
-        /// `getType`'s error and returns `[]`).
-        pub fn get_assignable_concrete_types(&self, base_fqn: &str) -> Vec<DeclId> {
-            let Ok(names) = self.assignable_type_names(base_fqn) else {
-                return Vec::new();
-            };
-            names
-                .into_iter()
-                .filter_map(|fqn| self.declaration_id(&fqn))
-                .filter(|id| {
-                    !self
-                        .declaration(*id)
-                        .and_then(Declaration::as_class)
-                        .is_some_and(|class| class.is_abstract())
-                })
-                .collect()
-        }
+    /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`
+    /// (basemodelmanager.ts): every concrete (non-abstract) declaration
+    /// assignable to `baseFqn`, `baseFqn` itself included when it is
+    /// concrete; empty when `baseFqn` is not in the model (TS catches
+    /// `getType`'s error and returns `[]`).
+    #[cfg(feature = "js-compat")]
+    pub fn get_assignable_concrete_types(&self, base_fqn: &str) -> Vec<DeclId> {
+        let Ok(names) = self.assignable_type_names(base_fqn) else {
+            return Vec::new();
+        };
+        names
+            .into_iter()
+            .filter_map(|fqn| self.declaration_id(&fqn))
+            .filter(|id| {
+                !self
+                    .declaration(*id)
+                    .and_then(Declaration::as_class)
+                    .is_some_and(|class| class.is_abstract())
+            })
+            .collect()
     }
 
     /// TS `getFileNameFromIdentifier` (basemodelmanager.ts, module-private):
     /// the last non-empty `/`- or `\`-delimited segment of `file_identifier`
     /// once its trailing separators are stripped; `file_identifier` itself
     /// when that leaves nothing.
+    #[cfg(feature = "js-compat")]
     pub(super) fn file_name_from_identifier(file_identifier: &str) -> String {
         let trimmed = file_identifier.trim_end_matches(['/', '\\']);
         trimmed
@@ -99,26 +106,25 @@ impl ModelManager {
             .unwrap_or_else(|| file_identifier.to_string())
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getModels(options)` (basemodelmanager.ts): every
-        /// registered model file but the root and decorator models
-        /// (`this.getModelFiles()`'s default excludes `EXCLUDE_NS`), as a
-        /// `(name, content)` pair — `content` is `None` exactly where TS's
-        /// `file.definitions` is `undefined`. `include_external_models` is TS's
-        /// `options.includeExternalModels` (`true` by default there; the oracle
-        /// harness always passes it explicitly).
-        pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
-            self.user_model_files()
-                .filter(|mf| include_external_models || !mf.is_external())
-                .map(|mf| {
-                    let name = match mf.file_name() {
-                        None | Some("UNKNOWN") | Some("") => format!("{}.cto", mf.namespace()),
-                        Some(identifier) => Self::file_name_from_identifier(identifier),
-                    };
-                    (name, mf.definitions().map(str::to_string))
-                })
-                .collect()
-        }
+    /// TS `BaseModelManager.getModels(options)` (basemodelmanager.ts): every
+    /// registered model file but the root and decorator models
+    /// (`this.getModelFiles()`'s default excludes `EXCLUDE_NS`), as a
+    /// `(name, content)` pair — `content` is `None` exactly where TS's
+    /// `file.definitions` is `undefined`. `include_external_models` is TS's
+    /// `options.includeExternalModels` (`true` by default there; the oracle
+    /// harness always passes it explicitly).
+    #[cfg(feature = "js-compat")]
+    pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
+        self.user_model_files()
+            .filter(|mf| include_external_models || !mf.is_external())
+            .map(|mf| {
+                let name = match mf.file_name() {
+                    None | Some("UNKNOWN") | Some("") => format!("{}.cto", mf.namespace()),
+                    Some(identifier) => Self::file_name_from_identifier(identifier),
+                };
+                (name, mf.definitions().map(str::to_string))
+            })
+            .collect()
     }
 
     /// TS `BaseModelManager.get<Kind>Declarations()` (basemodelmanager.ts,
@@ -129,6 +135,7 @@ impl ModelManager {
     /// inheritance, the same way every other `{ctor, fqn}` summary in this
     /// port already does (P2-08 review) — concatenated in registration
     /// order.
+    #[cfg(feature = "js-compat")]
     pub(super) fn declarations_by_ctor(&self, ctor: &str) -> Vec<DeclId> {
         self.declarations_in(self.user_file_slots())
             .filter(|(_, _, d)| match d {
@@ -141,74 +148,67 @@ impl ModelManager {
             .collect()
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getAssetDeclarations()`.
-        pub fn get_asset_declarations(&self) -> Vec<DeclId> {
-            self.declarations_by_ctor("AssetDeclaration")
-        }
+    /// TS `BaseModelManager.getAssetDeclarations()`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_asset_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("AssetDeclaration")
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getTransactionDeclarations()`.
-        pub fn get_transaction_declarations(&self) -> Vec<DeclId> {
-            self.declarations_by_ctor("TransactionDeclaration")
-        }
+    /// TS `BaseModelManager.getTransactionDeclarations()`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_transaction_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("TransactionDeclaration")
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getEventDeclarations()`.
-        pub fn get_event_declarations(&self) -> Vec<DeclId> {
-            self.declarations_by_ctor("EventDeclaration")
-        }
+    /// TS `BaseModelManager.getEventDeclarations()`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_event_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("EventDeclaration")
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getParticipantDeclarations()`.
-        pub fn get_participant_declarations(&self) -> Vec<DeclId> {
-            self.declarations_by_ctor("ParticipantDeclaration")
-        }
+    /// TS `BaseModelManager.getParticipantDeclarations()`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_participant_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("ParticipantDeclaration")
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getConceptDeclarations()`.
-        pub fn get_concept_declarations(&self) -> Vec<DeclId> {
-            self.declarations_by_ctor("ConceptDeclaration")
-        }
+    /// TS `BaseModelManager.getConceptDeclarations()`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_concept_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("ConceptDeclaration")
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getEnumDeclarations()`.
-        pub fn get_enum_declarations(&self) -> Vec<DeclId> {
-            self.declarations_by_ctor("EnumDeclaration")
-        }
+    /// TS `BaseModelManager.getEnumDeclarations()`.
+    #[cfg(feature = "js-compat")]
+    pub fn get_enum_declarations(&self) -> Vec<DeclId> {
+        self.declarations_by_ctor("EnumDeclaration")
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.filter(predicate, options)` (basemodelmanager.ts):
-        /// a scratch manager holding every registered model file's declarations
-        /// for which `keep_fqn` is true, filtering each file's own imports the
-        /// same way ([`crate::introspect::model_file::ModelFile::filter`]'s
-        /// module doc); a file with nothing left is dropped. `predicate` is a
-        /// `Declaration -> bool` in TS, keyed here by fully-qualified name
-        /// instead, since that is all the oracle's own `predicate` encoding
-        /// carries (`tests/oracle/ops.rs`). Every file the fresh result already
-        /// holds from its constructor (the decorator and root models) is
-        /// skipped, so the result keeps its own copy whole whatever `keep_fqn`
-        /// says about its declarations (BC-53, P5-108,
-        /// accordproject/concerto-rust#466: TS 5.0.0 skipped only the root
-        /// model and threw re-adding the decorator model, so `filter(() =>
-        /// true)` failed). The result always starts from a fresh `BaseModelManager`
-        /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
-        /// never the receiver's own kind. `disable_validation` is TS's
-        /// `options?.disableValidation`; unless set, the filtered files are
-        /// validated once, together (TS: `modelManager.addModelFiles(...)`).
-        pub fn filter_by_fqn(
-            &self,
-            keep_fqn: impl Fn(&str) -> bool,
-            disable_validation: bool,
-        ) -> Result<Self> {
-            self.filter_declarations(|fqn, _| keep_fqn(fqn), disable_validation)
-        }
+    /// TS `BaseModelManager.filter(predicate, options)` (basemodelmanager.ts):
+    /// a scratch manager holding every registered model file's declarations
+    /// for which `keep_fqn` is true, filtering each file's own imports the
+    /// same way ([`crate::introspect::model_file::ModelFile::filter`]'s
+    /// module doc); a file with nothing left is dropped. `predicate` is a
+    /// `Declaration -> bool` in TS, keyed here by fully-qualified name
+    /// instead, since that is all the oracle's own `predicate` encoding
+    /// carries (`tests/oracle/ops.rs`). Every file the fresh result already
+    /// holds from its constructor (the decorator and root models) is
+    /// skipped, so the result keeps its own copy whole whatever `keep_fqn`
+    /// says about its declarations (BC-53, P5-108,
+    /// accordproject/concerto-rust#466: TS 5.0.0 skipped only the root
+    /// model and threw re-adding the decorator model, so `filter(() =>
+    /// true)` failed). The result always starts from a fresh `BaseModelManager`
+    /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
+    /// never the receiver's own kind. `disable_validation` is TS's
+    /// `options?.disableValidation`; unless set, the filtered files are
+    /// validated once, together (TS: `modelManager.addModelFiles(...)`).
+    #[cfg(feature = "js-compat")]
+    pub fn filter_by_fqn(
+        &self,
+        keep_fqn: impl Fn(&str) -> bool,
+        disable_validation: bool,
+    ) -> Result<Self> {
+        self.filter_declarations(|fqn, _| keep_fqn(fqn), disable_validation)
     }
 
     js_compat_pub! {

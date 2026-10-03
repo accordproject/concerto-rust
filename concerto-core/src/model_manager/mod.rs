@@ -47,10 +47,10 @@ use serde_json::Value;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
+use crate::introspect::FullyQualified;
 use crate::introspect::declaration::{ClassDeclaration, ClassKind, Declaration, EnumDeclaration};
 use crate::introspect::model_file::ModelFile;
 use crate::introspect::property::Property;
-use crate::introspect::{DeclarationKind, FullyQualified};
 use crate::model_util::{
     self, PRIMITIVE_TYPES, get_namespace, is_primitive_type, namespace_of, qualify, short_name,
 };

@@ -233,31 +233,30 @@ impl ScalarDeclaration {
         &self.decorators
     }
 
-    js_compat_pub! {
-        /// Validates a scalar declaration's AST the way TS
-        /// `new ScalarDeclaration(modelFile, ast)` does, and returns its fully
-        /// qualified name (`Declaration`'s constructor: `super(ast); this.modelFile
-        /// = modelFile; this.process();`, where `super(ast)` only stores the AST
-        /// and reads `ast.name`).
-        ///
-        /// This does not build a [`ScalarDeclaration`]: unlike the loader
-        /// (`introspect::declaration`), which only ever sees an AST the metamodel
-        /// crate's generated `mm::ScalarDeclaration` accepts, this runs over
-        /// whatever AST the caller has, including one with no `$class` a real
-        /// scalar carries (PORTING.md 1.2, OD-3: "a member that TS runs over any
-        /// JS object reads the AST as `serde_json::Value`", exactly like
-        /// [`ScalarDeclaration::process`]) — the oracle harness replays
-        /// `ScalarDeclaration.new` fixtures recorded from a `ModelFile` built
-        /// directly, before `ModelManager.addModelFiles` runs, and several unit
-        /// tests build the AST by hand (PORTING.md 6.2: "a recipe the pre-port
-        /// loader cannot replay is the unit's problem").
-        pub fn validate_new(
-            namespace: &str,
-            file_name: Option<&str>,
-            ast: &Value,
-        ) -> crate::error::Result<String> {
-            Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
-        }
+    /// Validates a scalar declaration's AST the way TS
+    /// `new ScalarDeclaration(modelFile, ast)` does, and returns its fully
+    /// qualified name (`Declaration`'s constructor: `super(ast); this.modelFile
+    /// = modelFile; this.process();`, where `super(ast)` only stores the AST
+    /// and reads `ast.name`).
+    ///
+    /// This does not build a [`ScalarDeclaration`]: unlike the loader
+    /// (`introspect::declaration`), which only ever sees an AST the metamodel
+    /// crate's generated `mm::ScalarDeclaration` accepts, this runs over
+    /// whatever AST the caller has, including one with no `$class` a real
+    /// scalar carries (PORTING.md 1.2, OD-3: "a member that TS runs over any
+    /// JS object reads the AST as `serde_json::Value`", exactly like
+    /// [`ScalarDeclaration::process`]) — the oracle harness replays
+    /// `ScalarDeclaration.new` fixtures recorded from a `ModelFile` built
+    /// directly, before `ModelManager.addModelFiles` runs, and several unit
+    /// tests build the AST by hand (PORTING.md 6.2: "a recipe the pre-port
+    /// loader cannot replay is the unit's problem").
+    #[cfg(feature = "js-compat")]
+    pub fn validate_new(
+        namespace: &str,
+        file_name: Option<&str>,
+        ast: &Value,
+    ) -> crate::error::Result<String> {
+        Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
     }
 
     js_compat_pub! {

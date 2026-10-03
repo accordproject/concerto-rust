@@ -388,25 +388,16 @@ impl ModelManager {
             .find(|id| self.property_by_id(*id).is_some_and(|p| p.name() == name)))
     }
 
-    /// The FQN of `fqn`'s direct super type, or `None` when it has none (only
-    /// the system model's own `Concept`).
-    ///
-    /// TS: `ClassDeclaration.getSuperType` (src/introspect/classdeclaration.ts),
-    /// inherited unchanged by `EnumDeclaration`.
+    /// The body of the deprecated [`ModelManager::get_super_type`], whose
+    /// docs say what it returns (A-11).
     pub(super) fn super_type_name(&self, fqn: &str) -> Result<Option<String>> {
         let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
             .ok_or_else(|| not_a_class_like(fqn))?;
         self.super_type_fqn(&class, namespace_of(fqn))
     }
 
-    /// Every super type of `fqn`, from its direct super type up to the root,
-    /// as fully-qualified names.
-    ///
-    /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
-    /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `class_info`, so it returns the same `IllegalModelException` naming
-    /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
-    /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
+    /// The body of the deprecated [`ModelManager::get_all_super_type_names`],
+    /// whose docs say what it returns (A-11).
     pub(super) fn super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         // The chain starts with the type itself.
         let info = self.class_info(fqn)?;
@@ -576,11 +567,8 @@ impl ModelManager {
         Ok(found)
     }
 
-    /// Just the declarations that directly extend `fqn`, excluding `fqn`
-    /// itself.
-    ///
-    /// TS: `ClassDeclaration.getDirectSubclasses`, inherited unchanged by
-    /// `EnumDeclaration`.
+    /// The body of the deprecated [`ModelManager::get_direct_subclasses`],
+    /// whose docs say what it returns (A-11).
     pub(super) fn direct_subclass_names(&self, fqn: &str) -> Result<Vec<String>> {
         let id = self.declaration_id(fqn);
         let Some(children) = self.direct_subclass_ids(id)? else {
