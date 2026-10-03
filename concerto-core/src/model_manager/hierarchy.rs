@@ -334,10 +334,7 @@ impl ModelManager {
                 return Err(ContractError::new(
                     ErrorKind::IllegalModel,
                     "classdeclaration-getnestedproperty-doesnotexist",
-                    vec![
-                        ("propertyName", (*name).to_string()),
-                        ("fqn", search_root.clone()),
-                    ],
+                    vec![("propertyName", (*name).to_string()), ("fqn", search_root)],
                 )
                 .into());
             };

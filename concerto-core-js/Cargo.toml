@@ -17,7 +17,13 @@ name = "concerto_core_js"
 # `js-compat` (docs/public-api.md section 4.6): the seam this crate is built
 # on, which is not in core's default API.
 accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
-indexmap = "2"
-# P5-16: the hasher of `JsObject` (src/value.rs).
-foldhash = "0.1"
-serde_json = { workspace = true, features = ["preserve_order"] }
+indexmap = { workspace = true }
+# P5-16: the hasher of `JsObject` (src/value.rs); P5-104 (C-14): the
+# workspace's one fast hasher, FxHash, as in concerto-core.
+rustc-hash = { workspace = true }
+# `preserve_order` (the JS objects' key order) comes with
+# accordproject-concerto-core, which turns it on for the whole graph.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

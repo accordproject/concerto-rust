@@ -82,7 +82,7 @@ fn a_widened_long_bound_round_trips_exactly() {
         "lower": 0,
         "upper": 1e19
     });
-    let validator: mm::LongDomainValidator = serde_json::from_value(ast.clone()).unwrap();
+    let validator: mm::LongDomainValidator = serde_json::from_value(ast).unwrap();
     let back = serde_json::to_value(&validator).unwrap();
     assert_eq!(back["upper"].as_f64(), Some(1e19));
 }

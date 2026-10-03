@@ -44,6 +44,7 @@
 //! run (README: "A harness error is never a pass").
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -607,7 +608,8 @@ impl Report {
                 Status::Fail(_) => fails += 1,
                 Status::Unsupported | Status::HarnessError => continue,
             }
-            text.push_str(&format!("{op}\t{id}\t{}\n", status.as_string()));
+            // Writing to a `String` cannot fail.
+            let _ = writeln!(text, "{op}\t{id}\t{}", status.as_string());
         }
         fs::write(path, text).expect("write baseline.tsv");
         println!(

@@ -2270,7 +2270,7 @@ fn validate_detached_model_file_names_the_file_it_was_actually_asked_to_validate
     let orig = ModelFile::from_json(&ast, Some("orig.cto".into())).unwrap();
     let manager = ModelManager::new()
         .unwrap()
-        .with_model_file_registered(std::sync::Arc::new(orig.clone()))
+        .with_model_file_registered(std::sync::Arc::new(orig))
         .unwrap();
 
     let renamed = ModelFile::from_json(&ast, Some("renamed.cto".into())).unwrap();

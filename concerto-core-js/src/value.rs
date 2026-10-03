@@ -25,15 +25,16 @@ use serde_json::Value;
 
 /// The key-ordered map behind a plain object ([`JsValue::Object`]), an
 /// instance's own properties ([`Instance::props`]) and the serializer
-/// options (`SerializerOptions`): an `IndexMap` hashed with foldhash's
-/// per-map seeded hasher rather than the standard library's SipHash.
-/// P5-16 (accordproject/concerto-rust#310): these maps are small, built
-/// and probed several times per property on every `fromJSON`, and SipHash
-/// was the largest single cost in the populate and validate steps.
-/// foldhash seeds each map differently (from a global seed and a per-map
-/// value that changes from one map to the next). Unlike SipHash, it is not
-/// designed to resist crafted colliding keys.
-pub type JsObject = IndexMap<String, JsValue, foldhash::fast::RandomState>;
+/// options (`SerializerOptions`): an `IndexMap` hashed with FxHash rather
+/// than the standard library's SipHash. P5-16
+/// (accordproject/concerto-rust#310): these maps are small, built and
+/// probed several times per property on every `fromJSON`, and SipHash was
+/// the largest single cost in the populate and validate steps. P5-104
+/// (C-14): FxHash, the hasher concerto-core's lookup maps use, in place of
+/// foldhash, so the workspace has one. Unlike SipHash, it is not designed
+/// to resist crafted colliding keys; the iteration order is the
+/// insertion order either way.
+pub type JsObject = IndexMap<String, JsValue, rustc_hash::FxBuildHasher>;
 
 use concerto_core::error::Result;
 use concerto_core::instance::dayjs::Dayjs;

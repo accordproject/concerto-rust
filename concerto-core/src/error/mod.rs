@@ -22,6 +22,8 @@
 
 mod catalogue;
 
+use std::fmt::Write as _;
+
 #[cfg(not(feature = "js-compat"))]
 use catalogue::catalogue_entry;
 /// The message catalogue and its lookup (PORTING.md section 2.2).
@@ -678,13 +680,15 @@ impl ContractError {
                             .pointer(pointer)
                             .map_or_else(|| "undefined".to_string(), crate::ecma::to_js_string)
                     };
-                    suffix.push_str(&format!(
+                    // Writing to a `String` cannot fail.
+                    let _ = write!(
+                        suffix,
                         "line {} column {}, to line {} column {}. ",
                         at("/start/line"),
                         at("/start/column"),
                         at("/end/line"),
                         at("/end/column")
-                    ));
+                    );
                 }
                 format!(
                     "{message} {}",

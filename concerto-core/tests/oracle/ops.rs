@@ -3220,7 +3220,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 }
                 o
             });
-            let before = [None, sets_arg.clone(), options_arg.clone()];
+            let before = [None, sets_arg, options_arg];
             let mut model_validation = None;
             let after = [None, sets_after, options_after];
             let prepared = prepared.and_then(|applies| {

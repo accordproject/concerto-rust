@@ -19,28 +19,37 @@
 pub type ClassName = std::borrow::Cow<'static, str>;
 
 /// Types for the `concerto@1.0.0` namespace.
-#[allow(unused_imports)]
+// Generated from the vendored ASTs, which carry no doc comments.
+#[allow(unused_imports, missing_docs)]
 #[path = "generated/concerto_1_0_0.rs"]
 pub mod concerto_1_0_0;
 
 /// Types for the `concerto.decorator@1.0.0` namespace.
-#[allow(unused_imports)]
+// Generated from the vendored ASTs, which carry no doc comments.
+#[allow(unused_imports, missing_docs)]
 #[path = "generated/concerto_decorator_1_0_0.rs"]
 pub mod concerto_decorator_1_0_0;
 
 /// Types for the `concerto.metamodel@1.0.0` namespace.
-#[allow(unused_imports)]
+// Generated from the vendored ASTs, which carry no doc comments.
+#[allow(unused_imports, missing_docs)]
 #[path = "generated/concerto_metamodel_1_0_0.rs"]
 pub mod concerto_metamodel_1_0_0;
 
 /// Types for the `org.accordproject.decoratorcommands@0.4.0` namespace.
-#[allow(unused_imports)]
+// Generated from the vendored ASTs, which carry no doc comments.
+#[allow(unused_imports, missing_docs)]
 #[path = "generated/org_accordproject_decoratorcommands_0_4_0.rs"]
 pub mod org_accordproject_decoratorcommands_0_4_0;
 
 /// concerto-codegen's serde helpers, re-exported by [`utils`]. Generated
 /// as is, so the lints its code trips are allowed here.
-#[allow(clippy::needless_borrow, clippy::ptr_arg, clippy::type_complexity)]
+#[allow(
+    missing_docs,
+    clippy::needless_borrow,
+    clippy::ptr_arg,
+    clippy::type_complexity
+)]
 #[path = "generated/utils.rs"]
 mod codegen_utils;
 

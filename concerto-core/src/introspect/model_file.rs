@@ -381,7 +381,7 @@ impl ModelFile {
             _ => {
                 return Err(Error::illegal_model(
                     "model missing 'namespace'",
-                    file_name.clone(),
+                    file_name,
                     None,
                 ));
             }
@@ -404,7 +404,7 @@ impl ModelFile {
             Some(_) => {
                 return Err(Error::illegal_model(
                     "model 'imports' must be an array",
-                    file_name.clone(),
+                    file_name,
                     None,
                 ));
             }

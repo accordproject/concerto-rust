@@ -86,8 +86,8 @@ name = "concerto-core-js"
 version = "0.0.0"
 dependencies = [
  "accordproject-concerto-core",
- "foldhash",
  "indexmap",
+ "rustc-hash",
  "serde_json",
 ]
 
