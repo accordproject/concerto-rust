@@ -5503,7 +5503,7 @@ fn has_wire_tag(value: &Value) -> bool {
 
 /// The options [`diagnose`] reads, from a `fromJSON` call's merged options
 /// as plain JSON, the way `Serializer.fromJSON` reads them (concerto-core-js
-/// `populator_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
+/// `from_json_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
 /// true`, `acceptResourcesForRelationships === true`, the two #1273 options
 /// for their truthiness, and the validator's own defaults, as
 /// `ValidatedResource.validate` has them.

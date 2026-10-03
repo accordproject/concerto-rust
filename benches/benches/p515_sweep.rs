@@ -203,14 +203,16 @@ fn extract_options() -> ExtractOptions {
 /// The model files the fixture itself loaded (what the WASM binding's
 /// `model_manager_from_asts_with_user_ns` keeps): not the system,
 /// decorator or root models `ModelManager::new` preloads.
-fn user_files<'m>(mm: &'m ModelManager, d: &SetData) -> Vec<&'m ModelFile> {
+fn user_files(mm: &ModelManager, d: &SetData) -> Vec<std::sync::Arc<ModelFile>> {
     let user: std::collections::HashSet<&str> = d
         .models
         .iter()
         .filter_map(|m| m.1["namespace"].as_str())
         .collect();
-    mm.model_files()
+    // P5-102: `dcs::validate` shares the files it is given.
+    mm.shared_model_files()
         .filter(|mf| user.contains(mf.namespace()))
+        .cloned()
         .collect()
 }
 
