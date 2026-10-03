@@ -8,10 +8,11 @@ use std::borrow::Cow;
 use super::resource;
 use crate::factory::{self, InstanceEnv};
 use crate::generator::{Generator, generator_options};
-use crate::populator::{Populator, PopulatorOptions, get_property, populator_options};
+use crate::populator::{Populator, from_json_options, get_property};
 use crate::value::{Instance, JsValue};
 use concerto_core::Error;
 use concerto_core::error::{ContractError, ErrorKind, Result};
+use concerto_core::instance::from_json::FromJsonOptions;
 use concerto_core::instance::model;
 use concerto_core::instance::validate::{ValidateOptions, validate_instance_from};
 use concerto_core::introspect::Declaration;
@@ -20,24 +21,6 @@ use concerto_core::model_manager::ModelManager;
 /// A serializer options object (`SerializerOptions`), its keys in
 /// insertion order.
 pub type SerializerOptions = crate::value::JsObject;
-
-/// What [`Serializer::from_json`] reads from its merged options: the
-/// populator's options and `validate` (P5-16).
-#[derive(Debug, Clone, PartialEq)]
-pub struct FromJsonOptions {
-    populator: PopulatorOptions,
-    validate: bool,
-}
-
-impl FromJsonOptions {
-    /// Reads `options`, a `fromJSON` call's merged options.
-    pub fn new(options: &SerializerOptions) -> Self {
-        Self {
-            populator: populator_options(options),
-            validate: options.get("validate").is_some_and(JsValue::is_truthy),
-        }
-    }
-}
 
 /// A `Serializer`: its default options. The factory and the model manager
 /// it holds in TS are the caller's (every call takes the model manager).
@@ -110,11 +93,11 @@ impl Serializer {
         env: &mut dyn InstanceEnv,
     ) -> Result<Instance> {
         let options = self.options(options);
-        self.from_json_prepared(mm, json_object, &FromJsonOptions::new(&options), env)
+        self.from_json_prepared(mm, json_object, &from_json_options(&options), env)
     }
 
     /// [`Self::from_json`] with its merged options already read
-    /// ([`FromJsonOptions`]): a caller that makes many calls with the same
+    /// ([`from_json_options`]): a caller that makes many calls with the same
     /// options reads them once (P5-16, accordproject/concerto-rust#310).
     pub fn from_json_prepared(
         &self,
@@ -167,7 +150,7 @@ impl Serializer {
             factory::new_resource_of(&class_declaration, id, false, env)?
         };
 
-        let mut populator = Populator::new(mm, env, &options.populator);
+        let mut populator = Populator::new(mm, env, options);
         let mut resource =
             populator.visit_class_declaration(&class_declaration, json_object, resource)?;
 
@@ -189,7 +172,10 @@ impl Serializer {
         };
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
         let options = self.options(options);
-        let mut instance = (**instance).clone();
+        // P5-102 (C-6): the resource is read in place. It is copied only
+        // when validation's write-back (`sync_identifiers`) changes it,
+        // which it seldom does, and never when `validate` is off.
+        let mut synced: Option<JsValue> = None;
         if options.get("validate").is_some_and(JsValue::is_truthy) {
             // `classDeclaration.accept(validator, parameters)`:
             // `ResourceValidator.visit` sends a class declaration to
@@ -207,11 +193,15 @@ impl Serializer {
                     };
                     validate_instance_from(
                         mm,
-                        &instance.to_validator_value(),
+                        resource,
                         &validate_options,
                         "undefined".to_string(),
                     )?;
-                    resource::sync_identifiers(mm, &mut instance)?;
+                    if resource::sync_needed(mm, instance)? {
+                        let mut instance = (**instance).clone();
+                        resource::sync_identifiers(mm, &mut instance)?;
+                        synced = Some(JsValue::Instance(Box::new(instance)));
+                    }
                 }
                 Declaration::Scalar(_) => {}
                 // `visitEnumDeclaration`/`visitMapDeclaration` over a
@@ -231,7 +221,7 @@ impl Serializer {
         }
         let generator_options = generator_options(&options);
         let mut generator = Generator::new(mm, &generator_options);
-        generator.accept_declaration(&class_declaration, &JsValue::Instance(Box::new(instance)))
+        generator.accept_declaration(&class_declaration, synced.as_ref().unwrap_or(resource))
     }
 }
 
@@ -240,9 +230,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::deserialize::{DeserializeOptions, STRICT_VALIDATE_OPTIONS};
+    use crate::deserialize::{STRICT_VALIDATE_OPTIONS, serializer_options};
     use crate::value::InstanceKind;
     use concerto_core::error::{Detail, DetailCode};
+    use concerto_core::instance::ValidationOptions;
     use concerto_core::instance::dayjs::Dayjs;
 
     struct Env;
@@ -827,10 +818,10 @@ mod tests {
     /// `from_json` with `options`' flags, plus `validate`.
     fn deserialize(
         json: serde_json::Value,
-        options: DeserializeOptions,
+        options: ValidationOptions,
         validate: bool,
     ) -> Result<Instance> {
-        let mut options = options.serializer_options();
+        let mut options = serializer_options(options);
         options.insert("validate".to_string(), JsValue::Bool(validate));
         serializer().from_json(
             &model(),
@@ -840,17 +831,21 @@ mod tests {
         )
     }
 
-    const DEFAULT: DeserializeOptions = DeserializeOptions {
-        reject_unknown_keys: false,
-        reject_required_null: false,
+    const DEFAULT: ValidationOptions = {
+        let mut options = ValidationOptions::STRICT;
+        options.reject_unknown_keys = false;
+        options.reject_required_null = false;
+        options
     };
-    const UNKNOWN_KEYS: DeserializeOptions = DeserializeOptions {
-        reject_unknown_keys: true,
-        reject_required_null: false,
+    const UNKNOWN_KEYS: ValidationOptions = {
+        let mut options = DEFAULT;
+        options.reject_unknown_keys = true;
+        options
     };
-    const REQUIRED_NULL: DeserializeOptions = DeserializeOptions {
-        reject_unknown_keys: false,
-        reject_required_null: true,
+    const REQUIRED_NULL: ValidationOptions = {
+        let mut options = DEFAULT;
+        options.reject_required_null = true;
+        options
     };
 
     /// A detail as `(path, code, expected, actual)`: `Detail` is
@@ -1005,7 +1000,7 @@ mod tests {
             REQUIRED_NULL,
             STRICT_VALIDATE_OPTIONS,
         ] {
-            let mut serializer_options = options.serializer_options();
+            let mut serializer_options = serializer_options(options);
             serializer_options.insert("validate".to_string(), JsValue::Bool(true));
             let car = serializer()
                 .from_json(&model(), &car_json(), Some(&serializer_options), &mut Env)
@@ -1165,5 +1160,272 @@ mod tests {
         // An optional `null` is not rejected.
         from(json!({ "$class": "org.acme@1.0.0.Car", "vin": "A", "wheels": null }))
             .expect("an optional null is allowed");
+    }
+
+    // ---- P5-102 (accordproject/concerto-rust#456, C-6) ----
+
+    /// An asset with array fields, for `addArrayValue`.
+    fn bag_model() -> ModelManager {
+        let ast = json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.bag@1.0.0",
+            "imports": [],
+            "declarations": [{
+                "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
+                "name": "Bag",
+                "isAbstract": false,
+                "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+                "properties": [
+                    property("StringProperty", "id", json!({})),
+                    property("StringProperty", "tags", json!({ "isArray": true, "isOptional": true })),
+                    property("IntegerProperty", "counts", json!({ "isArray": true, "isOptional": true })),
+                ]
+            }]
+        });
+        let mut mm = ModelManager::new().expect("a model manager");
+        mm.add_model_with_definitions(&ast, None, Some("bag.cto".into()))
+            .expect("the model loads");
+        mm
+    }
+
+    /// `addArrayValue` pushes onto the property's own array, validating it
+    /// with the new item as TS does, and leaves a rejected item out.
+    #[test]
+    fn add_array_value_pushes_in_place_and_leaves_a_rejected_item_out() {
+        let mm = bag_model();
+        let mut bag = serializer()
+            .from_json(
+                &mm,
+                &JsValue::from_json(
+                    &json!({ "$class": "org.bag@1.0.0.Bag", "id": "b", "tags": ["a"] }),
+                ),
+                None,
+                &mut Env,
+            )
+            .expect("a bag");
+        assert_eq!(bag.kind, InstanceKind::ValidatedResource);
+        let strings = |items: &[&str]| {
+            JsValue::Array(items.iter().map(|s| JsValue::String((*s).into())).collect())
+        };
+        resource::add_array_value(&mm, &mut bag, "tags", JsValue::String("b".into()))
+            .expect("a string");
+        assert_eq!(bag.get("tags"), &strings(&["a", "b"]));
+        let wrong = message(resource::add_array_value(
+            &mm,
+            &mut bag,
+            "tags",
+            JsValue::Number(1.0),
+        ));
+        assert!(wrong.contains("tags"), "{wrong}");
+        assert_eq!(bag.get("tags"), &strings(&["a", "b"]));
+        // A property with no array yet gets a new one, appended last.
+        resource::add_array_value(&mm, &mut bag, "counts", JsValue::Number(1.0))
+            .expect("an integer");
+        assert_eq!(
+            bag.get("counts"),
+            &JsValue::Array(vec![JsValue::Number(1.0)])
+        );
+        assert_eq!(bag.props.keys().last().map(String::as_str), Some("counts"));
+        // A rejected first item leaves the property as it was.
+        bag.props.shift_remove("counts");
+        message(resource::add_array_value(
+            &mm,
+            &mut bag,
+            "counts",
+            JsValue::String("x".into()),
+        ));
+        assert!(!bag.props.contains_key("counts"));
+        // A truthy non-array is TS's `slice` TypeError, and changes nothing.
+        bag.set("tags", JsValue::String("x".into()));
+        assert!(
+            resource::add_array_value(&mm, &mut bag, "tags", JsValue::String("y".into())).is_err()
+        );
+        assert_eq!(bag.get("tags"), &JsValue::String("x".into()));
+    }
+
+    /// The validator reads an instance in place exactly as it reads the
+    /// instance's plain-JSON shape: the same verdict and the same error,
+    /// for a valid car and for each way a field can be wrong.
+    #[test]
+    fn validation_in_place_matches_the_plain_json_shape() {
+        let mm = model();
+        let car = serializer()
+            .from_json(&mm, &car_json(), None, &mut Env)
+            .expect("a car");
+        let person = |id: &str, kind: InstanceKind| {
+            JsValue::Instance(Box::new(Instance::new(
+                kind,
+                "org.acme@1.0.0.Person",
+                "org.acme@1.0.0",
+                "Person",
+                Some("email".into()),
+                JsValue::String(id.into()),
+                JsValue::Undefined,
+            )))
+        };
+        let plain = |v: serde_json::Value| JsValue::from_json(&v);
+        let variants: Vec<(&str, JsValue)> = vec![
+            ("wheels", JsValue::String("x".into())),
+            ("wheels", JsValue::Number(f64::NAN)),
+            ("wheels", JsValue::Number(f64::INFINITY)),
+            ("wheels", JsValue::Number(-0.0)),
+            ("wheels", JsValue::BigInt("12".into())),
+            ("wheels", JsValue::Array(vec![JsValue::Undefined])),
+            ("wheels", plain(json!({ "$$undefined": true }))),
+            ("wheels", plain(json!({ "$$number": "NaN" }))),
+            ("built", JsValue::String("2021-01-01T10:00:00Z".into())),
+            (
+                "built",
+                plain(json!({ "$$dayjs": "2021-01-01T10:00:00.000Z" })),
+            ),
+            ("address", person("bob", InstanceKind::Resource)),
+            ("address", person("bob", InstanceKind::Relationship)),
+            (
+                "address",
+                plain(json!({ "$class": "org.acme@1.0.0.Address", "city": 1 })),
+            ),
+            ("address", plain(json!({ "city": "Paris" }))),
+            ("address", JsValue::Map(vec![])),
+            ("color", JsValue::String("BLUE".into())),
+            ("color", person("bob", InstanceKind::Relationship)),
+            ("owner", person("bob", InstanceKind::Resource)),
+            (
+                "owner",
+                plain(
+                    json!({ "$$relationship": true, "$class": "org.acme@1.0.0.Person", "email": "x" }),
+                ),
+            ),
+            (
+                "owner",
+                JsValue::String("resource:org.acme@1.0.0.Person#bob".into()),
+            ),
+            (
+                "drivers",
+                JsValue::Map(vec![(
+                    JsValue::String("x".into()),
+                    person("bob", InstanceKind::Relationship),
+                )]),
+            ),
+            (
+                "drivers",
+                JsValue::Map(vec![(JsValue::Number(1.0), JsValue::String("x".into()))]),
+            ),
+            ("drivers", plain(json!({ "$$map": [["x", 1]] }))),
+            ("drivers", plain(json!({ "x": 1 }))),
+            ("vin", JsValue::String(" ".into())),
+            ("extra", JsValue::Number(1.0)),
+            ("$class", JsValue::String("org.acme@1.0.0.Address".into())),
+        ];
+        let mut cars = vec![car.clone()];
+        for (name, value) in variants {
+            let mut variant = car.clone();
+            variant.set(name, value);
+            cars.push(variant);
+        }
+        for options in [
+            ValidateOptions::default(),
+            ValidateOptions {
+                convert_resources_to_relationships: true,
+                permit_resources_for_relationships: false,
+            },
+        ] {
+            for car in &cars {
+                let in_place = validate_instance_from(
+                    &mm,
+                    &JsValue::Instance(Box::new(car.clone())),
+                    &options,
+                    car.fully_qualified_identifier(),
+                );
+                let plain_json = validate_instance_from(
+                    &mm,
+                    &car.to_validator_value(),
+                    &options,
+                    car.fully_qualified_identifier(),
+                );
+                assert_eq!(
+                    format!("{in_place:?}"),
+                    format!("{plain_json:?}"),
+                    "{:?}",
+                    car.props
+                );
+            }
+        }
+    }
+
+    /// `toJSON` writes what it wrote when it synced a copy of the resource
+    /// every time, and never changes the resource it is given.
+    #[test]
+    fn to_json_reads_the_resource_in_place() {
+        let mm = model();
+        let car = serializer()
+            .from_json(&mm, &car_json(), None, &mut Env)
+            .expect("a car");
+        let mut stale = car.clone();
+        stale.set("$identifier", JsValue::String("old".into()));
+        let mut synced = stale.clone();
+        resource::sync_identifiers(&mm, &mut synced).expect("synced");
+        assert_ne!(synced, stale);
+        assert!(resource::sync_needed(&mm, &stale).unwrap());
+        assert!(!resource::sync_needed(&mm, &synced).unwrap());
+        let stale = JsValue::Instance(Box::new(stale));
+        let before = stale.clone();
+        let written = serializer().to_json(&mm, &stale, None).expect("JSON");
+        assert_eq!(stale, before);
+        let expected = serializer()
+            .to_json(&mm, &JsValue::Instance(Box::new(synced)), None)
+            .expect("JSON");
+        assert_eq!(written, expected);
+    }
+
+    /// A map value whose keys stringify alike: `Object.fromEntries` keeps
+    /// the first key's place and the last value.
+    #[test]
+    fn to_json_writes_a_map_key_set_twice_once() {
+        let mm = model();
+        let mut car = serializer()
+            .from_json(&mm, &car_json(), None, &mut Env)
+            .expect("a car");
+        let JsValue::Instance(owner) = car.get("owner").clone() else {
+            panic!("a relationship");
+        };
+        let relationship = |id: &str| {
+            let mut r = (*owner).clone();
+            r.set_identifier(JsValue::String(id.into()));
+            JsValue::Instance(Box::new(r))
+        };
+        car.set(
+            "drivers",
+            JsValue::Map(vec![
+                (JsValue::Number(1.0), relationship("a")),
+                (JsValue::String("x".into()), relationship("b")),
+                (JsValue::String("1".into()), relationship("c")),
+            ]),
+        );
+        let options: SerializerOptions = [("validate".to_string(), JsValue::Bool(false))]
+            .into_iter()
+            .collect();
+        let JsValue::Object(json) = serializer()
+            .to_json(&mm, &JsValue::Instance(Box::new(car)), Some(&options))
+            .expect("JSON")
+        else {
+            panic!("an object");
+        };
+        let JsValue::Object(drivers) = json.get("drivers").expect("drivers") else {
+            panic!("an object");
+        };
+        let entries: Vec<(&str, &JsValue)> = drivers.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        assert_eq!(
+            entries,
+            [
+                (
+                    "1",
+                    &JsValue::String("resource:org.acme@1.0.0.Person#c".into())
+                ),
+                (
+                    "x",
+                    &JsValue::String("resource:org.acme@1.0.0.Person#b".into())
+                ),
+            ]
+        );
     }
 }

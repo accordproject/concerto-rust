@@ -64,7 +64,7 @@ use std::collections::HashSet;
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
-use concerto_core::instance::from_json::FromJsonOptions as NativeFromJsonOptions;
+use concerto_core::instance::from_json::FromJsonOptions;
 use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::instance::{
     Diagnostic, InstanceEnv, Severity, ValidateOptions, diagnose, diagnose_read,
@@ -84,8 +84,8 @@ use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, P
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
-use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions};
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
+use concerto_core_js::{Serializer, SerializerOptions, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde::Serialize;
@@ -5317,7 +5317,7 @@ pub(crate) struct SerializerOptionsEntry {
     from_json: FromJsonOptions,
     /// The merged options as `validateInstance`'s walk reads them
     /// ([`native_from_json_options`] of [`validator_options`]).
-    native: NativeFromJsonOptions,
+    native: FromJsonOptions,
 }
 
 impl SerializerOptionsEntry {
@@ -5327,7 +5327,7 @@ impl SerializerOptionsEntry {
     fn new(text: &str) -> Result<Self> {
         let options = decode_wire_options(text)?;
         let serializer = Serializer::new(true, true, options.as_ref())?;
-        let from_json = FromJsonOptions::new(&serializer.default_options);
+        let from_json = populator::from_json_options(&serializer.default_options);
         // The text has just decoded, so it reads as plain JSON too.
         let native = native_from_json_options(&validator_options(text).unwrap_or(Value::Null));
         Ok(Self {
@@ -5429,12 +5429,7 @@ impl ModelManagerHandle {
     /// diagnostic for the document, read from the same wire encoding the
     /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
     /// a failure, so a success costs nothing more.
-    fn instance_error(
-        &self,
-        err: CoreError,
-        doc: WireDoc,
-        options: &NativeFromJsonOptions,
-    ) -> Error {
+    fn instance_error(&self, err: CoreError, doc: WireDoc, options: &FromJsonOptions) -> Error {
         match validator_readings_of(doc) {
             Some(readings) => {
                 let diagnosis =
@@ -5449,6 +5444,61 @@ impl ModelManagerHandle {
             None => err.into(),
         }
     }
+}
+
+/// TS `validateMetaModel(input)` (`src/introspect/metamodel.ts`) and the
+/// other metamodel-instance checks, in one engine call on the engine's one
+/// resident metamodel manager
+/// (`concerto_core::instance::with_resident_metamodel_manager`; P5-102,
+/// F-7, accordproject/concerto-rust#456), so TS keeps no metamodel
+/// `ModelManagerHandle` of its own. Validates `json_text`, the instance in
+/// `Serializer.fromJSON`'s wire encoding (module doc above "Serializer fast
+/// path"; plain JSON is its own encoding), as `Serializer.fromJSON` over a
+/// metamodel manager would with the options `preset` names:
+///
+/// - `"strict"`: accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`
+///   (`validateAst`'s check);
+/// - `"default"`: the manager's serializer defaults, `baseDefaultOptions`;
+/// - `"serializer"`: a `new Serializer(factory, modelManager)`'s own
+///   defaults (`validateMetaModel`'s), the same options as `"default"`.
+///
+/// Throws what `validateInstance` (mode 0) throws for the same document and
+/// options, which is what `serializerFromJson` throws for them, unwrapped
+/// (`validateAst`'s `MetamodelException` wrapping is its caller's), with
+/// the same diagnostics attached, without building a resource (P5-101,
+/// D-3); an unknown `preset` is a plain `Error`. Additive: no other binding
+/// changes.
+#[wasm_bindgen(js_name = validateMetaModelInstance)]
+pub fn validate_meta_model_instance(
+    json_text: &str,
+    preset: &str,
+) -> std::result::Result<(), JsValue> {
+    use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
+    run(|| {
+        let preset = match preset {
+            "strict" => MetaModelPreset::Strict,
+            "default" => MetaModelPreset::Default,
+            "serializer" => MetaModelPreset::Serializer,
+            other => {
+                return Err(CoreError::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("unknown metamodel preset: {other}"),
+                    None,
+                ))
+                .into());
+            }
+        };
+        let wire = serde_json::from_str::<Value>(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let options = preset.from_json_options();
+        let serializer = Serializer::new(true, true, None)?;
+        let mut outcome = Ok(String::new());
+        with_resident_metamodel_manager(|mm| {
+            outcome = validate_wire(mm, &wire, &serializer, &options, &options, None, 0);
+            Ok(())
+        })?;
+        outcome.map(|_| ())
+    })
 }
 
 /// The document `doc` (a wire encoding, module doc above "Serializer
@@ -5579,11 +5629,11 @@ fn has_wire_tag(value: &Value) -> bool {
 
 /// The options [`diagnose`] reads, from a `fromJSON` call's merged options
 /// as plain JSON, the way `Serializer.fromJSON` reads them (concerto-core-js
-/// `populator_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
+/// `from_json_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
 /// true`, `acceptResourcesForRelationships === true`, the two #1273 options
 /// for their truthiness, and the validator's own defaults, as
 /// `ValidatedResource.validate` has them.
-fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
+fn native_from_json_options(options: &Value) -> FromJsonOptions {
     let get = |key: &str| options.get(key);
     let utc_offset = match get("utcOffset") {
         v if !json_truthy(v) => UtcOffset::Number(0.0),
@@ -5592,7 +5642,7 @@ fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
         Some(Value::Bool(_)) => UtcOffset::Number(1.0),
         _ => UtcOffset::Number(f64::NAN),
     };
-    NativeFromJsonOptions {
+    FromJsonOptions {
         validate: json_truthy(get("validate")),
         utc_offset,
         strict_qualified_date_times: get("strictQualifiedDateTimes") == Some(&Value::Bool(true)),
@@ -5670,48 +5720,60 @@ impl ModelManagerHandle {
             // the serializer built from them reused, as `serializerFromJson`
             // reuses them ([`with_serializer_options`]).
             with_serializer_options(options_text, |entry| {
-                let options = &entry.native;
-                let diagnosis = if has_wire_tag(&wire) {
-                    // Not plain JSON: read by `Serializer.fromJSON`'s own
-                    // engine, from the same decoded document, for the
-                    // verdict and the error; the walk reads its validator
-                    // form.
-                    let object = decode_wire(&wire)?;
-                    let readings = validator_readings(&object);
-                    diagnose_read(
-                        &self.manager,
-                        fqn.as_deref(),
-                        &readings,
-                        options,
-                        mode == 2,
-                        || {
-                            entry
-                                .serializer
-                                .from_json_prepared(
-                                    &self.manager,
-                                    &with_class(object, fqn.as_deref()),
-                                    &entry.from_json,
-                                    &mut ValidationEnv,
-                                )
-                                .map(|_| ())
-                        },
-                    )
-                } else {
-                    diagnose(&self.manager, fqn.as_deref(), &wire, options, mode == 2)
-                };
-                let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
-                if mode == 0 {
-                    return match diagnosis.error {
-                        Some(err) => {
-                            Err(Error::Instance(Box::new(err.into_contract()), diagnostics))
-                        }
-                        None => Ok(String::new()),
-                    };
-                }
-                snapshot(&json!({ "diagnostics": diagnostics }))
+                validate_wire(
+                    &self.manager,
+                    &wire,
+                    &entry.serializer,
+                    &entry.from_json,
+                    &entry.native,
+                    fqn.as_deref(),
+                    mode,
+                )
             })?
         })
     }
+}
+
+/// [`ModelManagerHandle::validate_instance`]'s check of the wire document
+/// `wire` on `manager`, with `serializer` and the merged options as
+/// `from_json` (`from_json`) and the walk (`options`) read them; shared
+/// with `validateMetaModelInstance` (P5-102, F-7).
+fn validate_wire(
+    manager: &ModelManager,
+    wire: &Value,
+    serializer: &Serializer,
+    from_json: &FromJsonOptions,
+    options: &FromJsonOptions,
+    fqn: Option<&str>,
+    mode: u32,
+) -> Result<String> {
+    let diagnosis = if has_wire_tag(wire) {
+        // Not plain JSON: read by `Serializer.fromJSON`'s own engine, from
+        // the same decoded document, for the verdict and the error; the
+        // walk reads its validator form.
+        let object = decode_wire(wire)?;
+        let readings = validator_readings(&object);
+        diagnose_read(manager, fqn, &readings, options, mode == 2, || {
+            serializer
+                .from_json_prepared(
+                    manager,
+                    &with_class(object, fqn),
+                    from_json,
+                    &mut ValidationEnv,
+                )
+                .map(|_| ())
+        })
+    } else {
+        diagnose(manager, fqn, wire, options, mode == 2)
+    };
+    let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
+    if mode == 0 {
+        return match diagnosis.error {
+            Some(err) => Err(Error::Instance(Box::new(err.into_contract()), diagnostics)),
+            None => Ok(String::new()),
+        };
+    }
+    snapshot(&json!({ "diagnostics": diagnostics }))
 }
 
 /// Calls back the view's `env.newId()`/`env.nowMs()` (D7: the identifier
@@ -8087,6 +8149,7 @@ impl ModelManagerHandle {
 /// off `ModelManager.getAst(resolve, false).models`, or a per-file
 /// `getModelFiles(false).map(mf => mf.getAst())`) added the way
 /// `fromAst`/`add_model` do (P4-09).
+#[cfg(test)]
 fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     for model in models {
@@ -8095,7 +8158,7 @@ fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// [`model_manager_from_asts`], taking the `models` array itself (anything
+/// `model_manager_from_asts`, taking the `models` array itself (anything
 /// but an array loads nothing, as `as_array().unwrap_or_default()` read it)
 /// and moving each AST into its model file
 /// ([`ModelManager::add_owned_model_with_definitions`]: same result, same
@@ -8111,7 +8174,7 @@ fn model_manager_from_owned_asts(models: Value) -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// [`model_manager_from_asts`], plus the namespaces of the models it added
+/// `model_manager_from_asts`, plus the namespaces of the models it added
 /// (as distinct from the system ones `ModelManager::new()` pre-loads) — for
 /// [`decorator_manager_validate`], which must hand [`dcs::validate`] only
 /// the caller's own model files: re-adding a system one to the fresh
@@ -8353,11 +8416,13 @@ pub fn decorator_manager_validate(
             Some(models) => {
                 let models = models.as_array().cloned().unwrap_or_default();
                 let (mm, user_ns) = model_manager_from_asts_with_user_ns(&models)?;
-                let files: Vec<&ModelFile> = mm
-                    .model_files()
+                // Shared with the validation manager, not copied (P5-102).
+                let files: Vec<std::sync::Arc<ModelFile>> = mm
+                    .shared_model_files()
                     .filter(|mf| user_ns.contains(mf.namespace()))
+                    .cloned()
                     .collect();
-                let refs: Option<&[&ModelFile]> =
+                let refs: Option<&[std::sync::Arc<ModelFile>]> =
                     if files.is_empty() { None } else { Some(&files) };
                 dcs::validate(&command_set, refs)?;
             }
@@ -8400,17 +8465,25 @@ pub fn decorator_manager_decorate_models(
     options: JsValue,
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
+        // P5-102 (D-5): the ASTs and the command sets are moved out of
+        // their `Value`s, not copied, and the result is written as text
+        // straight from its model ASTs ([`ModelManagerAstView`]), as
+        // extract's is, with the intermediate `Value` only as the fallback.
         let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let models_vec = models_json.as_array().cloned().unwrap_or_default();
-        let mm = model_manager_from_asts(&models_vec)?;
+        let mm = model_manager_from_owned_asts(models_json)?;
 
-        let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-        let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+        let mut sets = owned_array(to_json(&decorator_command_sets)?);
 
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let mut opts = decorate_options_from_js(&options_json);
 
         let decorated = dcs::decorate_models(&mm, &mut sets, &mut opts)?;
+        if let Some(js) = serde_json::to_string(&ModelManagerAstView(&decorated))
+            .ok()
+            .and_then(|text| JSON::parse(&text).ok())
+        {
+            return Ok(js);
+        }
         Ok(to_js(&model_manager_to_ast(&decorated)))
     })
 }
@@ -8714,8 +8787,7 @@ fn staged_decorate_models(
     decorator_command_sets: &JsValue,
     options: &JsValue,
 ) -> Result<JsValue> {
-    let sets_json = to_json(decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-    let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+    let mut sets = owned_array(to_json(decorator_command_sets)?);
 
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let mut opts = decorate_options_from_js(&options_json);
@@ -8726,12 +8798,64 @@ fn staged_decorate_models(
     let applied = !sets.is_empty();
     let decorated = dcs::decorate_models(manager, &mut sets, &mut opts)?;
     let validated = applied && opts.disable_metamodel_validation != Some(true);
+    // P5-102 (D-5, C-3): extract's writer. `{ast, staged, validated}` is
+    // written as text straight from the result's model ASTs
+    // ([`ModelManagerAstView`]), then parsed once; the intermediate `Value`
+    // (every AST deep-copied by `model_manager_to_ast`, then `to_js`) is
+    // only the fallback. The result's ASTs are not compacted as extract's
+    // are (P5-77): a decorated manager is usually read again (extracted
+    // from, validated, serialised), and re-parsing every compacted AST in
+    // WASM then cost far more than compaction saved (P5-102 measured the
+    // `extract_cold` row 3.7x slower on the synthetic-large set).
     let staged = stage_result(target, &decorated);
-    Ok(to_js(&json!({
-        "ast": model_manager_to_ast(&decorated),
+    Ok(decorate_result_js(&decorated, staged, validated))
+}
+
+/// A JS array argument's elements, moved out of its `Value` rather than
+/// copied (P5-102): anything but an array (`undefined` included) gives
+/// none, as `as_array().cloned().unwrap_or_default()` read it.
+fn owned_array(value: Option<Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
+/// The JSON text of `{ast, staged, validated}` for a decorate result:
+/// byte for byte `serde_json`'s text of [`staged_decorate_models`]'s former
+/// intermediate `Value`, written without copying any AST.
+fn decorate_result_text(
+    decorated: &ModelManager,
+    staged: &[Value],
+    validated: bool,
+) -> serde_json::Result<String> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"{\"ast\":");
+    serde_json::to_writer(&mut out, &ModelManagerAstView(decorated))?;
+    out.extend_from_slice(b",\"staged\":");
+    serde_json::to_writer(&mut out, staged)?;
+    out.extend_from_slice(if validated {
+        b",\"validated\":true}"
+    } else {
+        b",\"validated\":false}"
+    });
+    String::from_utf8(out).map_err(serde::ser::Error::custom)
+}
+
+/// The JS value of a decorate result: [`decorate_result_text`], parsed, or
+/// the intermediate-`Value` fallback, which gives the same value.
+fn decorate_result_js(decorated: &ModelManager, staged: Vec<Value>, validated: bool) -> JsValue {
+    if let Some(js) = decorate_result_text(decorated, &staged, validated)
+        .ok()
+        .and_then(|text| JSON::parse(&text).ok())
+    {
+        return js;
+    }
+    to_js(&json!({
+        "ast": model_manager_to_ast(decorated),
         "staged": staged,
         "validated": validated,
-    })))
+    }))
 }
 
 /// [`DcsManagerHandle::extract`]'s body, on `manager`: one extract
@@ -9590,7 +9714,7 @@ mod tests {
         assert!(wire.native.validate && wire.native.reject_unknown_keys);
         assert_eq!(
             wire.from_json,
-            FromJsonOptions::new(&wire.serializer.default_options)
+            populator::from_json_options(&wire.serializer.default_options)
         );
         let none = SerializerOptionsEntry::new("null").unwrap_or_else(|_| panic!("null reads"));
         assert_eq!(

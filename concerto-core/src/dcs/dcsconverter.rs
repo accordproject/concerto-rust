@@ -35,7 +35,8 @@ use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::model_util::{self, ParsedNamespace};
 
-use super::{META_MODEL_NAMESPACE, yaml_quote};
+use super::yaml_quote;
+use crate::instance::metamodel::metamodel_class;
 
 /// A parsed/to-be-rendered YAML document value: exactly the shapes
 /// `jsonToYaml`'s output (and a `yamlToJson` input) ever takes — a block
@@ -119,9 +120,9 @@ fn handle_arguments(argument: &Value) -> Yaml {
         )]);
     }
     let type_name = match class {
-        c if c == format!("{META_MODEL_NAMESPACE}.DecoratorString") => "String",
-        c if c == format!("{META_MODEL_NAMESPACE}.DecoratorNumber") => "Number",
-        c if c == format!("{META_MODEL_NAMESPACE}.DecoratorBoolean") => "Boolean",
+        metamodel_class!("DecoratorString") => "String",
+        metamodel_class!("DecoratorNumber") => "Number",
+        metamodel_class!("DecoratorBoolean") => "Boolean",
         _ => "",
     };
     let value = argument.get("value").cloned().unwrap_or(Value::Null);
@@ -543,7 +544,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         let mut type_obj = Map::new();
         type_obj.insert(
             "$class".to_string(),
-            Value::String(model_util::qualify(META_MODEL_NAMESPACE, "TypeIdentifier")),
+            Value::String(metamodel_class!("TypeIdentifier").to_string()),
         );
         type_obj.insert("name".to_string(), Value::String(yaml_scalar(tr, "name")?));
         if let Some(Yaml::Scalar(ns)) = yaml_get(tr, "namespace") {
@@ -556,10 +557,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         let mut out = Map::new();
         out.insert(
             "$class".to_string(),
-            Value::String(model_util::qualify(
-                META_MODEL_NAMESPACE,
-                "DecoratorTypeReference",
-            )),
+            Value::String(metamodel_class!("DecoratorTypeReference").to_string()),
         );
         out.insert("type".to_string(), Value::Object(type_obj));
         out.insert("isArray".to_string(), Value::Bool(is_array));
@@ -569,9 +567,9 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
     let type_name = yaml_scalar(entries, "type")?;
     let raw_value = yaml_scalar(entries, "value")?;
     let class = match type_name.as_str() {
-        "String" => format!("{META_MODEL_NAMESPACE}.DecoratorString"),
-        "Number" => format!("{META_MODEL_NAMESPACE}.DecoratorNumber"),
-        "Boolean" => format!("{META_MODEL_NAMESPACE}.DecoratorBoolean"),
+        "String" => metamodel_class!("DecoratorString"),
+        "Number" => metamodel_class!("DecoratorNumber"),
+        "Boolean" => metamodel_class!("DecoratorBoolean"),
         other => {
             return Err(pre_port(format!(
                 "dcsconverter.yamlToJson: unknown decorator argument type \"{other}\""
@@ -585,7 +583,7 @@ fn restore_argument(argument: &Yaml) -> Result<Value> {
         _ => Value::String(raw_value),
     };
     let mut out = Map::new();
-    out.insert("$class".to_string(), Value::String(class));
+    out.insert("$class".to_string(), Value::String(class.to_string()));
     out.insert("value".to_string(), value);
     Ok(Value::Object(out))
 }
@@ -624,7 +622,7 @@ fn restore_decorator(decorator: &Yaml) -> Result<Value> {
     let mut out = Map::new();
     out.insert(
         "$class".to_string(),
-        Value::String(model_util::qualify(META_MODEL_NAMESPACE, "Decorator")),
+        Value::String(metamodel_class!("Decorator").to_string()),
     );
     out.insert("name".to_string(), Value::String(name));
     out.insert("arguments".to_string(), Value::Array(arguments));

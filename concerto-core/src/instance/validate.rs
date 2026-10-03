@@ -102,6 +102,8 @@
 //! the same order, so the first violation collected is the error the
 //! first-error walk returns (class, code and message).
 
+use std::borrow::Cow;
+
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::Value;
 
@@ -255,13 +257,13 @@ impl<'a> Params<'a> {
 
     /// [`Params::enter_key`] for a map key, which keeps its JS type: a
     /// string as itself, any other key as its JS `String()`.
-    fn enter_map_key(&mut self, key: &Value) -> usize {
+    fn enter_map_key<V: ValidatorInput>(&mut self, key: &V) -> usize {
         if !self.collecting() {
             return self.pointer.len();
         }
         match key.as_str() {
             Some(k) => self.enter_key(k),
-            None => self.enter_key(&js_to_string(key)),
+            None => self.enter_key(&js_to_string(&key.to_value())),
         }
     }
 
@@ -301,9 +303,12 @@ js_compat_pub! {
     /// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
     /// sets none, which a report made before the walk sets one prints as
     /// `undefined`.
-    pub fn validate_instance_from(
+    ///
+    /// Generic over the value it reads ([`ValidatorInput`], P5-102): plain
+    /// JSON here, or the JS layer's own values, read in place.
+    pub fn validate_instance_from<V: ValidatorInput>(
         mm: &ModelManager,
-        value: &Value,
+        value: &V,
         options: &ValidateOptions,
         root_resource_identifier: String,
     ) -> Result<()> {
@@ -335,10 +340,10 @@ pub(crate) fn collect_instance_violations(
 }
 
 /// The root value: its own `$class` is the declared type.
-fn visit_root(p: &mut Params, value: &Value) -> Result<()> {
+fn visit_root<V: ValidatorInput>(p: &mut Params, value: &V) -> Result<()> {
     let declared_fqn = value
-        .get("$class")
-        .and_then(Value::as_str)
+        .as_object()
+        .and_then(|o| o.class())
         .ok_or_else(|| {
             // Not a TS-reachable path: a real `Resource` always has a
             // `$class` (it is how `getFullyQualifiedType()` answers at
@@ -367,11 +372,11 @@ js_compat_pub! {
     /// `ValidatedResource.setPropertyValue`/`addArrayValue`
     /// (src/model/validatedresource.ts), which dispatches to
     /// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
-    pub fn validate_property_value(
+    pub fn validate_property_value<V: ValidatorInput>(
         mm: &ModelManager,
         class_plan: &ClassPlan,
         index: usize,
-        value: &Value,
+        value: &V,
         root_resource_identifier: String,
         options: &ValidateOptions,
     ) -> Result<()> {
@@ -389,7 +394,11 @@ js_compat_pub! {
 /// `declared_fqn` is TS's `classDeclaration` argument: the *declared* type
 /// in scope (the field's declared type, or the root's own type), which may
 /// differ from `value`'s own, more specific `$class`.
-fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) -> Result<()> {
+fn visit_class_declaration<V: ValidatorInput>(
+    p: &mut Params,
+    declared_fqn: &str,
+    value: &V,
+) -> Result<()> {
     visit_class_declaration_dispatch(p, declared_fqn, value, false)
 }
 
@@ -410,27 +419,27 @@ fn visit_class_declaration(p: &mut Params, declared_fqn: &str, value: &Value) ->
 /// wire-JSON stand-in for one, module doc "Scope"), where an unresolvable
 /// own `$class` is a real `TypeNotFoundException`, so this distinction is
 /// scoped to the map-value call alone.
-fn visit_map_value_class_declaration(
+fn visit_map_value_class_declaration<V: ValidatorInput>(
     p: &mut Params,
     declared_fqn: &str,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     visit_class_declaration_dispatch(p, declared_fqn, value, true)
 }
 
-fn visit_class_declaration_dispatch(
+fn visit_class_declaration_dispatch<V: ValidatorInput>(
     p: &mut Params,
     declared_fqn: &str,
-    value: &Value,
+    value: &V,
     is_map_value: bool,
 ) -> Result<()> {
     // `obj instanceof Resource`: a `Relationship` ([`RELATIONSHIP_TAG`]) is
     // `Identifiable` but not a `Resource`.
-    let Some(obj) = as_js_object(value).filter(|o| !o.contains_key(RELATIONSHIP_TAG)) else {
-        return Err(not_resource_violation(p, declared_fqn, value));
+    let Some(obj) = value.as_object().filter(|o| !o.is_relationship()) else {
+        return Err(not_resource_violation(p, declared_fqn, &value.to_value()));
     };
-    let Some(own_fqn) = obj.get("$class").and_then(Value::as_str) else {
-        return Err(not_resource_violation(p, declared_fqn, value));
+    let Some(own_fqn) = obj.class() else {
+        return Err(not_resource_violation(p, declared_fqn, &value.to_value()));
     };
 
     // `toBeAssignedClassDeclaration = modelManager.getType(obj.getFullyQualifiedType())`
@@ -440,7 +449,12 @@ fn visit_class_declaration_dispatch(
     let Some(id) = p.mm.declaration_id(own_fqn) else {
         // See `visit_map_value_class_declaration`'s doc.
         if is_map_value {
-            return Err(not_resource_violation_with(p, declared_fqn, value, false));
+            return Err(not_resource_violation_with(
+                p,
+                declared_fqn,
+                &value.to_value(),
+                false,
+            ));
         }
         return Err(type_not_found(own_fqn));
     };
@@ -458,16 +472,16 @@ fn visit_class_declaration_dispatch(
     // The validation plan (P5-88); its chain's error, when it does not
     // resolve, is the one `getIdentifierFieldName()` raises.
     let class_plan = plan::class_plan(p.mm, id)?;
-    visit_class(p, declared_fqn, own_fqn, obj, &class_plan)
+    visit_class::<V>(p, declared_fqn, own_fqn, obj, &class_plan)
 }
 
 /// [`visit_class_declaration_dispatch`] after its `$class` lookup, over the
 /// declaration's [`ClassPlan`].
-fn visit_class(
+fn visit_class<'v, V: ValidatorInput + 'v>(
     p: &mut Params,
     declared_fqn: &str,
     own_fqn: &str,
-    obj: &serde_json::Map<String, Value>,
+    obj: V::Object<'v>,
     class_plan: &ClassPlan,
 ) -> Result<()> {
     // `if(obj instanceof Identifiable) { parameters.rootResourceIdentifier =
@@ -483,7 +497,7 @@ fn visit_class(
     let identifier_field_name = class_plan.identifier_field(p.mm);
     let own_id = obj
         .get(identifier_field_name.unwrap_or("$identifier"))
-        .and_then(Value::as_str);
+        .and_then(V::as_str);
     write_fully_qualified_identifier(&mut p.root_resource_identifier, own_fqn, own_id);
 
     // `if(toBeAssignedClassDeclaration.isAbstract())` — bug fix (abstract
@@ -518,7 +532,7 @@ fn visit_class(
         let resource_id = if declared_is_identified && key != "$identifier" {
             let id = identifier_field_name
                 .and_then(|f| obj.get(f))
-                .and_then(Value::as_str);
+                .and_then(V::as_str);
             js_id_display(id)
         } else {
             p.current_identifier()
@@ -531,7 +545,7 @@ fn visit_class(
     if declared_is_identified {
         let id = obj
             .get(identifier_field_name.unwrap_or("$identifier"))
-            .and_then(Value::as_str)
+            .and_then(V::as_str)
             .unwrap_or("");
         if id.trim().is_empty() {
             let err = empty_identifier(&p.root_resource_identifier);
@@ -572,8 +586,8 @@ fn visit_class(
 
 /// `Util.isNull`: `undefined` or `null` ([`UNDEFINED_TAG`] stands for
 /// `undefined`).
-fn is_js_null(value: &Value) -> bool {
-    value.is_null() || is_js_undefined(value)
+fn is_js_null<V: ValidatorInput>(value: &V) -> bool {
+    value.is_null() || value.is_undefined()
 }
 
 /// TS `Identifiable.getFullyQualifiedIdentifier`: `this.getIdentifier() ?
@@ -672,12 +686,12 @@ fn property_has_default_value(property: &Property) -> bool {
 /// property's type already resolved by the plan (`isTypeEnum`,
 /// `isTypeScalar`, `getFullyQualifiedTypeName`), and the error resolving it
 /// raised here when it does not resolve.
-fn visit_property(
+fn visit_property<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     match (&pp.kind, property) {
         (PlanKind::Relationship(declared), Property::Relationship(rp)) => {
@@ -703,18 +717,18 @@ fn visit_property(
 }
 
 /// TS: `ResourceValidator.visitField` (resourcevalidator.ts:300).
-fn visit_field(
+fn visit_field<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     // `if (dataType === 'undefined' || dataType === 'symbol')`. Not reached
     // from `visit_class_declaration`, which skips an `undefined` field
     // (`Util.isNull`), but ported as TS has it.
-    if is_js_undefined(value) {
-        return Err(field_type_violation(p, property, value));
+    if value.is_undefined() {
+        return Err(field_type_violation(p, property, &value.to_value()));
     }
     if let PlanKind::Enum(enum_plan) = &pp.kind {
         return check_enum(p, owner_fqn, property, pp, enum_plan, value);
@@ -727,7 +741,7 @@ fn visit_field(
     // `if(field.getSizeValidator() && obj instanceof Map)`: only reachable
     // when the field's own declared type is itself a map.
     if let (Some(_), PlanKind::Map { .. }) = (property.size_validator(), &pp.kind)
-        && let Some(entries) = map_entries(value)
+        && let Some(entries) = value.map_entries()
     {
         check_size(p, owner_fqn, property, pp, entries.len())?;
     }
@@ -756,10 +770,10 @@ fn check_size(
 }
 
 /// Each element of an array value: checked at its own pointer, collecting.
-fn check_elements(
+fn check_elements<V: ValidatorInput>(
     p: &mut Params,
-    items: &[Value],
-    mut check: impl FnMut(&mut Params, &Value) -> Result<()>,
+    items: &[V],
+    mut check: impl FnMut(&mut Params, &V) -> Result<()>,
 ) -> Result<()> {
     for (i, item) in items.iter().enumerate() {
         let mark = p.enter_index(i);
@@ -772,16 +786,16 @@ fn check_elements(
 }
 
 /// TS: `ResourceValidator.checkEnum` (resourcevalidator.ts:335).
-fn check_enum(
+fn check_enum<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
     enum_plan: &EnumPlan,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
-    if property.is_array() && !value.is_array() {
-        return Err(field_type_violation(p, property, value));
+    if property.is_array() && value.as_array().is_none() {
+        return Err(field_type_violation(p, property, &value.to_value()));
     }
     if let Some(items) = value.as_array().filter(|_| property.is_array()) {
         if property.size_validator().is_some() {
@@ -795,15 +809,15 @@ fn check_enum(
 }
 
 /// TS: `ResourceValidator.checkArray` (resourcevalidator.ts:365).
-fn check_array(
+fn check_array<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     let Some(items) = value.as_array() else {
-        return Err(field_type_violation(p, property, value));
+        return Err(field_type_violation(p, property, &value.to_value()));
     };
     if property.size_validator().is_some() {
         let outcome = check_size(p, owner_fqn, property, pp, items.len());
@@ -813,18 +827,18 @@ fn check_array(
 }
 
 /// TS: `ResourceValidator.checkItem` (resourcevalidator.ts:386).
-fn check_item(
+fn check_item<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     // `if (dataType === 'undefined' || dataType === 'symbol')`: an
     // `undefined` array element (`["a", undefined, "b"]`) is reported here,
     // with value and type both `undefined`.
-    if is_js_undefined(value) {
-        return Err(field_type_violation(p, property, value));
+    if value.is_undefined() {
+        return Err(field_type_violation(p, property, &value.to_value()));
     }
     match &pp.kind {
         PlanKind::Primitive(_) => check_primitive(p, owner_fqn, property, pp, value),
@@ -847,16 +861,16 @@ fn check_item(
 
 /// `field.isPrimitive()` branch of `checkItem`, for the six primitive
 /// property kinds, with the field's validator built once by the plan.
-fn check_primitive(
+fn check_primitive<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     let type_name = property.type_name().unwrap_or_default();
     if !primitive_type_matches(type_name, value) {
-        return Err(field_type_violation(p, property, value));
+        return Err(field_type_violation(p, property, &value.to_value()));
     }
     // `if(field.getValidator() !== null) { field.getValidator().validate(...) }`.
     check_value_validator(p, owner_fqn, property, pp, None, value)
@@ -865,29 +879,30 @@ fn check_primitive(
 /// `isTypeScalar()`: the field's declared type is a scalar, so it is
 /// checked as the scalar's own underlying primitive type, with the
 /// scalar's own validator (TS `Field.getScalarField()`).
-fn check_scalar(
+#[allow(clippy::too_many_arguments)]
+fn check_scalar<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
     decl: DeclId,
     primitive: Option<&'static str>,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     if !primitive_type_matches(primitive.unwrap_or_default(), value) {
-        return Err(field_type_violation(p, property, value));
+        return Err(field_type_violation(p, property, &value.to_value()));
     }
     check_value_validator(p, owner_fqn, property, pp, Some(decl), value)
 }
 
 /// The field's (or its scalar's) value validator, over `value`.
-fn check_value_validator(
+fn check_value_validator<V: ValidatorInput>(
     p: &Params,
     owner_fqn: &str,
     property: &Property,
     pp: &PlanProp,
     scalar: Option<DeclId>,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     let elem = FieldElement::new(owner_fqn, property);
     let identifier = p.current_identifier();
@@ -916,24 +931,24 @@ fn check_value_validator(
 
 /// TS `checkItem`'s primitive `switch(field.getType())`, over the *value*
 /// (JSONPopulator's wire representation, module doc "Scope").
-fn primitive_type_matches(type_name: &str, value: &Value) -> bool {
+fn primitive_type_matches<V: ValidatorInput>(type_name: &str, value: &V) -> bool {
     match type_name {
-        "String" => value.is_string(),
+        "String" => value.as_str().is_some(),
         "Long" | "Integer" | "Double" => value.as_f64().is_some_and(f64::is_finite),
         "Boolean" => value.is_boolean(),
-        "DateTime" => is_populated_datetime(value),
+        "DateTime" => value.is_dayjs(),
         _ => false,
     }
 }
 
 /// The `else` branch of `checkItem`: a field pointing at a transaction,
 /// asset, participant, concept... (a concept-like reference).
-fn check_object_item(
+fn check_object_item<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     declared_class_fqn: &str,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     // TS resolves `classDeclaration` from `obj.getFullyQualifiedType()` when
     // `obj` is `Identifiable`, and reports a field type violation if that
@@ -950,10 +965,7 @@ fn check_object_item(
     // Every `$class`-tagged object reaching this point is `Identifiable`
     // (`Resource` extends it unconditionally in TS, module doc "Scope"), so
     // the check always runs.
-    if let Some(own_fqn) = value
-        .as_object()
-        .and_then(|o| o.get("$class"))
-        .and_then(Value::as_str)
+    if let Some(own_fqn) = value.as_object().and_then(|o| o.class())
         && !is_assignable(p.mm, own_fqn, declared_class_fqn)?
     {
         return Err(invalid_field_assignment(p, owner_fqn, property, own_fqn));
@@ -991,7 +1003,7 @@ fn is_assignable(mm: &ModelManager, sub_fqn: &str, super_fqn: &str) -> Result<bo
 /// (`enumDeclaration.getName()`, e.g. `Color`), not the name of the property
 /// holding the value; and `value` is the raw `obj`, which the formatter's
 /// `String.prototype.replace` converts with `String()` (`1`, `undefined`).
-fn visit_enum(p: &Params, enum_plan: &EnumPlan, value: &Value) -> Result<()> {
+fn visit_enum<V: ValidatorInput>(p: &Params, enum_plan: &EnumPlan, value: &V) -> Result<()> {
     // `property.getName() === obj`: only a string can match.
     if value
         .as_str()
@@ -1004,10 +1016,11 @@ fn visit_enum(p: &Params, enum_plan: &EnumPlan, value: &Value) -> Result<()> {
         .declaration(enum_plan.decl)
         .map(Declaration::name)
         .unwrap_or_default();
+    let value = value.to_value();
     Err(invalid_enum_value(
         &p.root_resource_identifier,
         name,
-        &identifiable_to_string(p, value).unwrap_or_else(|| js_to_string(value)),
+        &identifiable_to_string(p, &value).unwrap_or_else(|| js_to_string(&value)),
     ))
 }
 
@@ -1171,6 +1184,129 @@ js_compat_pub! {
     }
 }
 
+js_compat_pub! {
+    /// What the instance validator reads of the value it walks (P5-102,
+    /// accordproject/concerto-rust#456, C-6): the walk is generic over it,
+    /// so the JS layer (`concerto-core-js`) can have its own values
+    /// validated in place, rather than first deep-copying the whole object
+    /// graph into this module's tagged plain-JSON shape (module doc,
+    /// "Scope") on every call.
+    ///
+    /// Each method answers what that tagged shape would answer, so a value
+    /// gives the same verdict and the same error either way. The
+    /// [`serde_json::Value`] implementation is that shape itself. The
+    /// messages that print a value read it through [`Self::to_value`],
+    /// which may build the tagged shape for that one value: only an error
+    /// pays for it.
+    pub trait ValidatorInput: Sized {
+        /// A JS object's view ([`ValidatorObject`]).
+        type Object<'a>: ValidatorObject<'a, Self>
+        where
+            Self: 'a;
+        /// JS `undefined` ([`UNDEFINED_TAG`]).
+        fn is_undefined(&self) -> bool;
+        /// JS `null`.
+        fn is_null(&self) -> bool;
+        /// The value as a JS object: never a JS `undefined` or a non-finite
+        /// number (each one a one-key tagged object in the plain-JSON
+        /// shape), and never a value without own properties.
+        fn as_object(&self) -> Option<Self::Object<'_>>;
+        /// The value as a JS array.
+        fn as_array(&self) -> Option<&[Self]>;
+        /// The value as a JS string.
+        fn as_str(&self) -> Option<&str>;
+        /// The value as a finite JS number.
+        fn as_f64(&self) -> Option<f64>;
+        /// Whether the value is a JS boolean.
+        fn is_boolean(&self) -> bool;
+        /// Whether the value is a `Dayjs` ([`DAYJS_TAG`]).
+        fn is_dayjs(&self) -> bool;
+        /// A JS `Map`'s entries ([`MAP_TAG`]), in order.
+        fn map_entries(&self) -> Option<Vec<(&Self, &Self)>>;
+        /// The value in the plain-JSON shape (module doc, "Scope"), for the
+        /// messages that print it.
+        fn to_value(&self) -> Cow<'_, Value>;
+    }
+}
+
+js_compat_pub! {
+    /// A JS object, as [`ValidatorInput::as_object`] gives it.
+    pub trait ValidatorObject<'a, V: 'a>: Copy {
+        /// Its own `$class`, when that is a string.
+        fn class(&self) -> Option<&'a str>;
+        /// Whether it is a `Relationship` ([`RELATIONSHIP_TAG`]).
+        fn is_relationship(&self) -> bool;
+        /// Its own property `key`. Read only of an object with a
+        /// [`Self::class`], and never for `$class` itself.
+        fn get(&self, key: &str) -> Option<&'a V>;
+        /// Its own property names, in order (`Object.getOwnPropertyNames`),
+        /// `$class` among them or not.
+        fn keys(&self) -> impl Iterator<Item = &'a str>;
+    }
+}
+
+impl ValidatorInput for Value {
+    type Object<'a> = &'a serde_json::Map<String, Value>;
+
+    fn is_undefined(&self) -> bool {
+        is_js_undefined(self)
+    }
+
+    fn is_null(&self) -> bool {
+        self.is_null()
+    }
+
+    fn as_object(&self) -> Option<<Value as ValidatorInput>::Object<'_>> {
+        as_js_object(self)
+    }
+
+    fn as_array(&self) -> Option<&[Value]> {
+        self.as_array().map(Vec::as_slice)
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        self.as_str()
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        self.as_f64()
+    }
+
+    fn is_boolean(&self) -> bool {
+        self.is_boolean()
+    }
+
+    fn is_dayjs(&self) -> bool {
+        is_populated_datetime(self)
+    }
+
+    fn map_entries(&self) -> Option<Vec<(&Value, &Value)>> {
+        map_entries(self)
+    }
+
+    fn to_value(&self) -> Cow<'_, Value> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl<'a> ValidatorObject<'a, Value> for &'a serde_json::Map<String, Value> {
+    fn class(&self) -> Option<&'a str> {
+        self.get("$class").and_then(Value::as_str)
+    }
+
+    fn is_relationship(&self) -> bool {
+        self.contains_key(RELATIONSHIP_TAG)
+    }
+
+    fn get(&self, key: &str) -> Option<&'a Value> {
+        serde_json::Map::get(self, key)
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &'a str> {
+        serde_json::Map::keys(self).map(String::as_str)
+    }
+}
+
 /// `value` as a JS object, which a JS `undefined` ([`UNDEFINED_TAG`]) is not.
 ///
 /// Provably unreachable through any caller (P5-06: cargo-mutants found the
@@ -1266,14 +1402,13 @@ fn is_populated_datetime(value: &Value) -> bool {
 /// (P5-23's D7; DIVERGENCES.md DV-020). A number is no longer a valid
 /// `DateTime` map value, as it is not one for a field. `undefined` still
 /// passes: it is the absence of a value, not a form of one (task P3-01b).
-fn parses_as_dayjs(value: &Value) -> bool {
-    if is_js_undefined(value) {
+fn parses_as_dayjs<V: ValidatorInput>(value: &V) -> bool {
+    if value.is_undefined() {
         return true;
     }
-    match value {
-        Value::String(s) => super::dayjs::Dayjs::utc_parse(s).is_valid(),
-        _ => false,
-    }
+    value
+        .as_str()
+        .is_some_and(|s| super::dayjs::Dayjs::utc_parse(s).is_valid())
 }
 
 // ---------------------------------------------------------------------
@@ -1283,12 +1418,12 @@ fn parses_as_dayjs(value: &Value) -> bool {
 /// TS: `ResourceValidator.visitRelationshipDeclaration` (resourcevalidator.ts:463).
 /// `declared` is the declared target type the plan resolved, or the error
 /// resolving it.
-fn visit_relationship(
+fn visit_relationship<V: ValidatorInput>(
     p: &mut Params,
     owner_fqn: &str,
     property: &Property,
     type_id: &mm::TypeIdentifier,
-    value: &Value,
+    value: &V,
     pp: &PlanProp,
     declared: std::result::Result<&str, &Error>,
 ) -> Result<()> {
@@ -1304,7 +1439,10 @@ fn visit_relationship(
     }
     let Some(items) = value.as_array() else {
         return Err(invalid_field_assignment_shape(
-            p, owner_fqn, property, value,
+            p,
+            owner_fqn,
+            property,
+            &value.to_value(),
         ));
     };
     if property.size_validator().is_some() {
@@ -1335,24 +1473,25 @@ struct RelationshipHolder<'a> {
 }
 
 /// TS: `ResourceValidator.checkRelationship` (resourcevalidator.ts:491).
-fn check_relationship(p: &mut Params, holder: &RelationshipHolder, value: &Value) -> Result<()> {
+fn check_relationship<V: ValidatorInput>(
+    p: &mut Params,
+    holder: &RelationshipHolder,
+    value: &V,
+) -> Result<()> {
     // `obj instanceof Relationship`: a [`RELATIONSHIP_TAG`]-tagged object
     // (see its doc), carrying the pointed-at type as `$class`; or `obj
     // instanceof Resource && (convertResourcesToRelationships ||
     // permitResourcesForRelationships)`: a nested (untagged) object standing
     // in for the relationship. Either way the target type is the object's
     // own `$class`, borrowed from the value (P5-99).
-    let obj = as_js_object(value);
-    let is_relationship_instance = obj.is_some_and(|o| o.contains_key(RELATIONSHIP_TAG));
+    let obj = value.as_object();
+    let is_relationship_instance = obj.is_some_and(|o| o.is_relationship());
     let stands_in = is_relationship_instance
         || p.options.convert_resources_to_relationships
         || p.options.permit_resources_for_relationships;
-    let target_fqn = obj
-        .filter(|_| stands_in)
-        .and_then(|o| o.get("$class"))
-        .and_then(Value::as_str);
+    let target_fqn = obj.filter(|_| stands_in).and_then(|o| o.class());
     let Some(target_fqn) = target_fqn else {
-        return Err(not_relationship_violation(p, holder, value));
+        return Err(not_relationship_violation(p, holder, &value.to_value()));
     };
 
     // `modelManager.getType(obj.getFullyQualifiedType())`.
@@ -1360,7 +1499,7 @@ fn check_relationship(p: &mut Params, holder: &RelationshipHolder, value: &Value
         return Err(type_not_found(target_fqn));
     };
     if p.mm.declaration(target_id).and_then(Declaration::as_class).is_none() {
-        return Err(not_relationship_violation(p, holder, value));
+        return Err(not_relationship_violation(p, holder, &value.to_value()));
     }
     // The target's plan (P5-88); its chain's error, when it does not
     // resolve, is the one `isIdentified()` raises.
@@ -1396,15 +1535,15 @@ fn check_relationship(p: &mut Params, holder: &RelationshipHolder, value: &Value
 /// with the map's key and value kinds resolved once by the plan
 /// ([`MapPlan`]), or the error `ModelUtil.isScalar(mapDeclaration.getKey())`
 /// raises when the key's type does not resolve.
-fn visit_map_declaration(
+fn visit_map_declaration<V: ValidatorInput>(
     p: &mut Params,
     map_id: DeclId,
     map_plan: &std::result::Result<MapPlan, Error>,
-    value: &Value,
+    value: &V,
 ) -> Result<()> {
     // `if (!((obj instanceof Map)))`: only a [`MAP_TAG`] value is a `Map`.
-    let Some(entries) = map_entries(value) else {
-        return Err(not_a_map(value));
+    let Some(entries) = value.map_entries() else {
+        return Err(not_a_map(&value.to_value()));
     };
     let map_plan = map_plan.as_ref().map_err(Clone::clone)?;
     let map_fqn = p.mm.decl_fqn(map_id)?;
@@ -1428,13 +1567,13 @@ fn visit_map_declaration(
 }
 
 /// One entry of [`visit_map_declaration`]: its key, then its value.
-fn check_map_entry(
+fn check_map_entry<V: ValidatorInput>(
     p: &mut Params,
     map_fqn: &str,
     decl: &Declaration,
     map_plan: &MapPlan,
-    key: &Value,
-    value: &Value,
+    key: &V,
+    value: &V,
 ) -> Result<()> {
     check_map_slot(p, map_fqn, &map_plan.key, key)?;
     // P5-58 (BC-05, R1; DV-007): a relationship-typed value is checked as a
@@ -1471,7 +1610,12 @@ fn not_a_map(value: &Value) -> Error {
 
 /// TS: `ResourceValidator.checkMapType` (resourcevalidator.ts:123), for a
 /// slot the plan resolved.
-fn check_map_slot(p: &mut Params, map_fqn: &str, slot: &MapSlot, value: &Value) -> Result<()> {
+fn check_map_slot<V: ValidatorInput>(
+    p: &mut Params,
+    map_fqn: &str,
+    slot: &MapSlot,
+    value: &V,
+) -> Result<()> {
     match slot {
         MapSlot::Primitive(name) => check_map_primitive(map_fqn, name, value),
         // `thing.accept(this, parameters)`, dispatched by TS's `visit()` to
@@ -1522,15 +1666,19 @@ pub(super) fn is_object_map_kind(kind: &str) -> bool {
 }
 
 /// `checkMapType`'s `switch` over the primitive type name.
-fn check_map_primitive(map_fqn: &str, primitive_type_name: &str, value: &Value) -> Result<()> {
+fn check_map_primitive<V: ValidatorInput>(
+    map_fqn: &str,
+    primitive_type_name: &str,
+    value: &V,
+) -> Result<()> {
     match primitive_type_name {
-        "String" if !value.is_string() => {
+        "String" if value.as_str().is_none() => {
             return Err(ContractError::new(
                 ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expectedstring",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
-                    ("value", js_to_string(value)),
+                    ("value", js_to_string(&value.to_value())),
                 ],
             )
             .into());
@@ -1541,19 +1689,20 @@ fn check_map_primitive(map_fqn: &str, primitive_type_name: &str, value: &Value) 
                 "resourcevalidator-checkmaptype-expecteddatetime",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
-                    ("value", js_to_string(value)),
+                    ("value", js_to_string(&value.to_value())),
                 ],
             )
             .into());
         }
         "Boolean" if !value.is_boolean() => {
+            let value = value.to_value();
             return Err(ContractError::new(
                 ErrorKind::InvalidArgument,
                 "resourcevalidator-checkmaptype-expectedboolean",
                 vec![
                     ("mapFqn", map_fqn.to_string()),
-                    ("type", js_typeof(value).to_string()),
-                    ("value", js_to_string(value)),
+                    ("type", js_typeof(&value).to_string()),
+                    ("value", js_to_string(&value)),
                 ],
             )
             .into());

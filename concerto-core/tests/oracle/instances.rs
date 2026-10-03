@@ -876,6 +876,7 @@ fn instance_op(
             let options = options_object(&options)?;
             let serializer = Serializer::new(true, true, options.as_ref())
                 .map_err(|e| Fault::Harness(format!("the model manager's serializer: {e:?}")))?;
+            let receiver = JsValue::Instance(Box::new(receiver));
             Ok(Dispatch::Ran(outcome(
                 resource::to_json(mm, &receiver, &serializer).map(|v| encode(&v)),
             )))
