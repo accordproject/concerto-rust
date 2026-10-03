@@ -1398,7 +1398,7 @@ fn a_stand_in_rejection_where_ts_accepted_stays_the_ops_own() {
 fn a_dcs_resource_validation_error_is_no_longer_attributed_to_the_stand_in() {
     // Before P3-01b landed, `dcs::from_json_against` fell back to
     // `validate_dcs_structure`'s hand-written stand-in for a command set
-    // missing `commands`, and `attribute_stand_in` (ops.rs) treated the
+    // missing `commands`, and `attribute_stand_in` (ops.rs; both deleted by P5-103) treated the
     // resulting mismatch — its own `Error` class and text, not TS's
     // `ValidationException` — as belonging to P3-01b
     // (accordproject/concerto-rust#124). `from_json_against` now runs the

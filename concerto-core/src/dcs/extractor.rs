@@ -9,7 +9,7 @@
 //! Like [`super`], this stays on the untyped metamodel AST
 //! ([`serde_json::Value`]) throughout, matching the reference.
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 // A decorator argument's value reads in the vocabulary YAML this module
 // hand-builds as JS template-literal interpolation writes it, `String(value)`:
@@ -58,30 +58,22 @@ struct ExtractedDecorators<'a> {
 type ExtractionDictionary<'a> = Vec<(&'a str, Vec<ExtractedDecorators<'a>>)>;
 
 /// The result of [`DecoratorExtractor::extract`]: `ExtractDecoratorsResult`
-/// (`src/decoratormanager.ts`'s JSDoc typedef).
+/// (`src/decoratormanager.ts`'s JSDoc typedef), with its command sets
+/// already encoded as JSON text (P5-57, T3, accordproject/concerto-rust#378).
 pub struct ExtractResult {
     /// A model manager over the (possibly decorator-stripped) models.
     pub model_manager: ModelManager,
-    /// The extracted, non-vocabulary decorators, as `DecoratorCommandSet`
-    /// JSON objects (one per namespace that had any).
-    pub decorator_command_set: Vec<Value>,
+    /// The extracted, non-vocabulary decorators: the JSON text of the array
+    /// of `DecoratorCommandSet` objects (one per namespace that had any).
+    pub decorator_command_set: String,
     /// The extracted vocabulary (`Term`/`Term_*`) decorators, as vocabulary
     /// YAML strings (one per namespace that had any).
     pub vocabularies: Vec<String>,
-}
-
-/// The result of [`DecoratorExtractor::extract_encoded`]: an
-/// [`ExtractResult`] with its command sets already encoded as JSON text
-/// (P5-57, T3, accordproject/concerto-rust#378).
-pub struct EncodedExtractResult {
-    /// A model manager over the (possibly decorator-stripped) models.
-    pub model_manager: ModelManager,
-    /// The JSON text of [`ExtractResult::decorator_command_set`], the
-    /// array, byte for byte what `serde_json::to_string` of that
-    /// `Vec<Value>` gives.
-    pub decorator_command_set: String,
-    /// [`ExtractResult::vocabularies`].
-    pub vocabularies: Vec<String>,
+    /// A copy of the source models the walk read, taken before it, when
+    /// the extraction was asked to keep them (P5-56, T2, F-A2,
+    /// accordproject/concerto-rust#377): [`DecoratorExtractor::encode_source`]
+    /// over them gives exactly this result's command sets and vocabularies.
+    pub source_models: Option<Vec<Value>>,
 }
 
 /// The `$class` strings every command a [`DecoratorExtractor`] builds
@@ -137,219 +129,6 @@ impl DecoratorExtractor {
             .unwrap_or_default()
     }
 
-    /// `DecoratorExtractor.transformNonVocabularyDecorators`
-    /// (`src/decoratorextractor.ts`).
-    fn transform_non_vocabulary_decorators(
-        &self,
-        dcs_objects: Vec<Value>,
-        namespace: &str,
-        decorator_data: &mut Vec<Value>,
-    ) -> Result<()> {
-        if dcs_objects.is_empty() {
-            return Ok(());
-        }
-        let ParsedNamespace::Full { name, version, .. } =
-            model_util::parse_namespace_with(Some(namespace), false)?
-        else {
-            unreachable!("parse_namespace_with(_, false) always returns Full")
-        };
-        let mut m = Map::new();
-        m.insert(
-            "$class".to_string(),
-            Value::String(format!(
-                "org.accordproject.decoratorcommands@{}.DecoratorCommandSet",
-                self.dcs_version
-            )),
-        );
-        m.insert("name".to_string(), Value::String(name));
-        m.insert(
-            "version".to_string(),
-            version.map_or(Value::Null, Value::String),
-        );
-        m.insert("commands".to_string(), Value::Array(dcs_objects));
-        decorator_data.push(Value::Object(m));
-        Ok(())
-    }
-
-    /// `DecoratorExtractor.transformVocabularyDecorators`
-    /// (`src/decoratorextractor.ts`).
-    fn transform_vocabulary_decorators(
-        &self,
-        vocab_object: &Value,
-        namespace: &str,
-        vocab_data: &mut Vec<String>,
-    ) {
-        let Some(obj) = vocab_object.as_object() else {
-            return;
-        };
-        if obj.is_empty() {
-            return;
-        }
-        let mut s = String::new();
-        s.push_str(&format!("locale: {}\n", self.locale));
-        s.push_str(&format!("namespace: {namespace}\n"));
-
-        if let Some(ns_obj) = vocab_object.get("namespace").and_then(Value::as_object)
-            && !ns_obj.is_empty()
-        {
-            if let Some(term) = ns_obj.get("term") {
-                s.push_str(&format!("term: {}\n", to_js_string(term)));
-            }
-            for (key, value) in ns_obj {
-                if key != "term" {
-                    s.push_str(&format!("{key}: {}\n", to_js_string(value)));
-                }
-            }
-        }
-
-        if let Some(decls) = vocab_object.get("declarations").and_then(Value::as_object)
-            && !decls.is_empty()
-        {
-            s.push_str("declarations:\n");
-            for (decl_name, decl) in decls {
-                let Some(decl_obj) = decl.as_object() else {
-                    continue;
-                };
-                let has_term = decl_obj.contains_key("term");
-                if has_term {
-                    s.push_str(&format!(
-                        "  - {decl_name}: {}\n",
-                        to_js_string(&decl_obj["term"])
-                    ));
-                }
-                let other_props: Vec<&String> = decl_obj
-                    .keys()
-                    .filter(|k| k.as_str() != "term" && k.as_str() != "propertyVocabs")
-                    .collect();
-                // If a declaration has no Term decorator, add Term_ decorators to the YAML.
-                if !other_props.is_empty() {
-                    if !has_term {
-                        s.push_str(&format!("  - {decl_name}: {decl_name}\n"));
-                    }
-                    for key in &other_props {
-                        s.push_str(&format!(
-                            "    {key}: {}\n",
-                            to_js_string(&decl_obj[key.as_str()])
-                        ));
-                    }
-                }
-                if let Some(prop_vocabs) = decl_obj.get("propertyVocabs").and_then(Value::as_object)
-                    && !prop_vocabs.is_empty()
-                {
-                    if !has_term && other_props.is_empty() {
-                        s.push_str(&format!("  - {decl_name}: {decl_name}\n"));
-                    }
-                    s.push_str("    properties:\n");
-                    for (prop, prop_vocab) in prop_vocabs {
-                        let Some(prop_obj) = prop_vocab.as_object() else {
-                            continue;
-                        };
-                        let term_val = prop_obj
-                            .get("term")
-                            .map(to_js_string)
-                            .unwrap_or_else(|| prop.clone());
-                        s.push_str(&format!("      - {prop}: {term_val}\n"));
-                        for (key, value) in prop_obj {
-                            if key != "term" {
-                                s.push_str(&format!("        {key}: {}\n", to_js_string(value)));
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            s.push_str("declarations: []\n");
-        }
-        vocab_data.push(s);
-    }
-
-    /// `DecoratorExtractor.constructTarget` (`src/decoratorextractor.ts`).
-    fn construct_target(
-        classes: &CommandClasses,
-        namespace: &str,
-        obj: &ExtractedDecorators<'_>,
-    ) -> Value {
-        let mut m = Map::new();
-        m.insert("$class".to_string(), Value::String(classes.target.clone()));
-        m.insert(
-            "namespace".to_string(),
-            Value::String(namespace.to_string()),
-        );
-        if !obj.declaration.is_empty() {
-            m.insert(
-                "declaration".to_string(),
-                Value::String(obj.declaration.to_string()),
-            );
-        }
-        if !obj.property.is_empty() {
-            m.insert(
-                "property".to_string(),
-                Value::String(obj.property.to_string()),
-            );
-        }
-        if !obj.map_element.is_empty() {
-            m.insert(
-                "mapElement".to_string(),
-                Value::String(obj.map_element.to_string()),
-            );
-        }
-        Value::Object(m)
-    }
-
-    /// `DecoratorExtractor.parseNonVocabularyDecorators`
-    /// (`src/decoratorextractor.ts`).
-    fn parse_non_vocabulary_decorators(
-        dcs_objects: &mut Vec<Value>,
-        dcs: &Value,
-        classes: &CommandClasses,
-        target: &Value,
-    ) {
-        let mut decorator = Map::new();
-        decorator.insert(
-            "$class".to_string(),
-            Value::String(classes.decorator.to_string()),
-        );
-        decorator.insert(
-            "name".to_string(),
-            dcs.get("name").cloned().unwrap_or(Value::Null),
-        );
-        if let Some(args) = dcs.get("arguments").and_then(Value::as_array) {
-            let ported_args: Vec<Value> = args
-                .iter()
-                .map(|arg| {
-                    let mut m = Map::new();
-                    let class = arg.get("$class").cloned().unwrap_or(Value::Null);
-                    let is_type_reference = class.as_str() == Some(classes.type_reference);
-                    m.insert("$class".to_string(), class);
-                    if is_type_reference {
-                        m.insert(
-                            "type".to_string(),
-                            arg.get("type").cloned().unwrap_or(Value::Null),
-                        );
-                        m.insert(
-                            "isArray".to_string(),
-                            arg.get("isArray").cloned().unwrap_or(Value::Null),
-                        );
-                    } else {
-                        m.insert(
-                            "value".to_string(),
-                            arg.get("value").cloned().unwrap_or(Value::Null),
-                        );
-                    }
-                    Value::Object(m)
-                })
-                .collect();
-            decorator.insert("arguments".to_string(), Value::Array(ported_args));
-        }
-
-        let mut command = Map::new();
-        command.insert("$class".to_string(), Value::String(classes.command.clone()));
-        command.insert("type".to_string(), Value::String("UPSERT".to_string()));
-        command.insert("target".to_string(), target.clone());
-        command.insert("decorator".to_string(), Value::Object(decorator));
-        dcs_objects.push(Value::Object(command));
-    }
-
     /// The quoted YAML text of a vocabulary decorator's first argument, as
     /// `parseVocabularies` (`src/decoratorextractor.ts`) writes it.
     fn vocab_argument(dcs: &Value) -> String {
@@ -395,87 +174,6 @@ impl DecoratorExtractor {
         .into()
     }
 
-    /// `DecoratorExtractor.parseVocabularies` (`src/decoratorextractor.ts`).
-    fn parse_vocabularies(
-        vocab_object: &mut Value,
-        vocab_target: &ExtractedDecorators<'_>,
-        dcs: &Value,
-    ) -> Result<()> {
-        if !vocab_object.is_object() {
-            *vocab_object = Value::Object(Map::new());
-        }
-        let dcs_name = Self::decorator_name(dcs);
-        let quoted = Self::vocab_argument(dcs);
-
-        if vocab_target.declaration.is_empty() {
-            let ns = ensure_object(vocab_object, "namespace");
-            if dcs_name == "Term" {
-                ns.insert("term".to_string(), Value::String(quoted));
-            } else {
-                let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
-                if matches!(extension_key, "namespace" | "locale" | "declarations") {
-                    return Err(Self::reserved_namespace_key(extension_key));
-                }
-                ns.insert(extension_key.to_string(), Value::String(quoted));
-            }
-            return Ok(());
-        }
-
-        let declarations = ensure_object(vocab_object, "declarations");
-        let decl_entry = declarations
-            .entry(vocab_target.declaration)
-            .or_insert_with(|| {
-                let mut m = Map::new();
-                m.insert("propertyVocabs".to_string(), Value::Object(Map::new()));
-                Value::Object(m)
-            });
-        if !vocab_target.property.is_empty() {
-            let prop_vocabs = ensure_object(decl_entry, "propertyVocabs");
-            let prop_vocab = prop_vocabs
-                .entry(vocab_target.property)
-                .or_insert_with(|| Value::Object(Map::new()));
-            let prop_vocab = prop_vocab.as_object_mut().expect("just ensured object");
-            if dcs_name == "Term" {
-                prop_vocab.insert("term".to_string(), Value::String(quoted));
-            } else {
-                let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
-                if extension_key == vocab_target.property {
-                    return Err(Self::reserved_property_key(extension_key));
-                }
-                prop_vocab.insert(extension_key.to_string(), Value::String(quoted));
-            }
-        } else if !vocab_target.map_element.is_empty() {
-            let prop_vocabs = ensure_object(decl_entry, "propertyVocabs");
-            let map_vocab = prop_vocabs
-                .entry(vocab_target.map_element)
-                .or_insert_with(|| Value::Object(Map::new()));
-            let map_vocab = map_vocab.as_object_mut().expect("just ensured object");
-            if dcs_name == "Term" {
-                map_vocab.insert("term".to_string(), Value::String(quoted));
-            } else {
-                let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
-                if extension_key == vocab_target.map_element {
-                    return Err(Self::reserved_property_key(extension_key));
-                }
-                map_vocab.insert(extension_key.to_string(), Value::String(quoted));
-            }
-        } else {
-            let decl_obj = decl_entry
-                .as_object_mut()
-                .expect("declarations entries are objects");
-            if dcs_name == "Term" {
-                decl_obj.insert("term".to_string(), Value::String(quoted));
-            } else {
-                let extension_key = dcs_name.strip_prefix("Term_").unwrap_or(dcs_name);
-                if extension_key == "properties" || extension_key == vocab_target.declaration {
-                    return Err(Self::reserved_declaration_key(extension_key));
-                }
-                decl_obj.insert(extension_key.to_string(), Value::String(quoted));
-            }
-        }
-        Ok(())
-    }
-
     /// The `$class` strings of this extraction's commands.
     fn command_classes(&self) -> CommandClasses {
         let version = &self.dcs_version;
@@ -487,14 +185,14 @@ impl DecoratorExtractor {
         }
     }
 
-    /// P5-57 (T3, accordproject/concerto-rust#378): what
-    /// [`Self::transform_decorators_and_vocabularies`] computes, built
-    /// straight from the borrowed dictionary without any intermediate
-    /// [`Value`]: the command sets as the JSON text of the array that
-    /// `serde_json::to_string` of the `Value` route's `Vec<Value>` gives
-    /// (serialised through borrowed views of the AST nodes, [`CommandSetView`]),
-    /// and the vocabularies from a borrowed tree ([`VocabTree`]) in place of
-    /// the `vocabObject` `Value`. Same walk, same order, same first error.
+    /// `DecoratorExtractor.transformDecoratorsAndVocabularies`
+    /// (`src/decoratorextractor.ts`), over the borrowed dictionary
+    /// [`collect_models`] built, without any intermediate [`Value`] (P5-57,
+    /// T3, accordproject/concerto-rust#378): the command sets as the JSON
+    /// text of the `DecoratorCommandSet` array, serialised through borrowed
+    /// views of the AST nodes ([`CommandSetView`]), and the vocabularies
+    /// from a borrowed tree ([`VocabTree`]) in place of TS's `vocabObject`.
+    /// P5-103 (C-5) deleted the `Value` route this replaced.
     fn encode_decorators_and_vocabularies(
         &self,
         extraction_dictionary: &ExtractionDictionary<'_>,
@@ -552,55 +250,6 @@ impl DecoratorExtractor {
             ))
         })?;
         Ok((text, vocab_data))
-    }
-
-    /// `DecoratorExtractor.transformDecoratorsAndVocabularies`
-    /// (`src/decoratorextractor.ts`), over the borrowed dictionary
-    /// [`collect_models`] built.
-    fn transform_decorators_and_vocabularies(
-        &self,
-        extraction_dictionary: &ExtractionDictionary<'_>,
-    ) -> Result<(Vec<Value>, Vec<String>)> {
-        let classes = self.command_classes();
-        let mut decorator_data = Vec::new();
-        let mut vocab_data = Vec::new();
-        for (namespace, entries) in extraction_dictionary {
-            let mut dcs_objects = Vec::new();
-            let mut vocab_object = Value::Object(Map::new());
-            for entry in entries {
-                // TS builds the target for every entry; it is only read by
-                // the non-vocabulary commands, so it is built for the first.
-                let mut target = None;
-                for dcs in entry.decorators {
-                    let is_vocab = Self::is_vocab_decorator(Self::decorator_name(dcs));
-                    if !is_vocab && self.action != Action::ExtractVocab {
-                        let target = target.get_or_insert_with(|| {
-                            Self::construct_target(&classes, namespace, entry)
-                        });
-                        Self::parse_non_vocabulary_decorators(
-                            &mut dcs_objects,
-                            dcs,
-                            &classes,
-                            target,
-                        );
-                    }
-                    if is_vocab && self.action != Action::ExtractNonVocab {
-                        Self::parse_vocabularies(&mut vocab_object, entry, dcs)?;
-                    }
-                }
-            }
-            if self.action != Action::ExtractVocab {
-                self.transform_non_vocabulary_decorators(
-                    dcs_objects,
-                    namespace,
-                    &mut decorator_data,
-                )?;
-            }
-            if self.action != Action::ExtractNonVocab {
-                self.transform_vocabulary_decorators(&vocab_object, namespace, &mut vocab_data);
-            }
-        }
-        Ok((decorator_data, vocab_data))
     }
 
     /// `DecoratorExtractor.filterOutDecorators` (`src/decoratorextractor.ts`),
@@ -675,64 +324,11 @@ impl DecoratorExtractor {
         }
     }
 
-    /// `DecoratorExtractor.extract` (`src/decoratorextractor.ts`).
-    ///
-    /// P5-40 (F-B): the models are walked twice rather than once. The first
-    /// walk ([`collect_models`]) only borrows them, recording where each
-    /// `decorators` array is; the command sets and vocabularies are built
-    /// from those borrows before the second walk
-    /// ([`Self::process_models`]) strips the decorators in place, and the
-    /// models are then moved, not copied, into the result manager. Errors
-    /// keep TS's order: a load or validation failure of the result models
-    /// is thrown ahead of a vocabulary-key error from the transform.
-    pub fn extract(self) -> Result<ExtractResult> {
-        let (model_manager, (decorator_command_set, vocabularies)) =
-            self.extract_with(Self::transform_decorators_and_vocabularies)?;
-        Ok(ExtractResult {
-            model_manager,
-            decorator_command_set,
-            vocabularies,
-        })
-    }
-
-    /// [`Self::extract`] with the command sets and vocabularies encoded
-    /// directly from the borrowed AST nodes (P5-57, T3,
-    /// accordproject/concerto-rust#378;
-    /// [`Self::encode_decorators_and_vocabularies`]): the same result, the
-    /// same errors in the same order, with the command sets as JSON text.
-    pub fn extract_encoded(self) -> Result<EncodedExtractResult> {
-        let (model_manager, (decorator_command_set, vocabularies)) =
-            self.extract_with(Self::encode_decorators_and_vocabularies)?;
-        Ok(EncodedExtractResult {
-            model_manager,
-            decorator_command_set,
-            vocabularies,
-        })
-    }
-
-    /// [`Self::extract_encoded`], also returning a copy of the source models
-    /// its walk read (P5-56, T2, F-A2, accordproject/concerto-rust#377):
-    /// taken before the walk, so [`Self::encode_source`] over them gives
-    /// exactly this call's command sets and vocabularies. The same result
-    /// and the same errors, in the same order, as [`Self::extract_encoded`].
-    pub fn extract_encoded_keeping_source(self) -> Result<(EncodedExtractResult, Vec<Value>)> {
-        let (model_manager, (decorator_command_set, vocabularies), source) =
-            self.extract_with_source(true, Self::encode_decorators_and_vocabularies)?;
-        Ok((
-            EncodedExtractResult {
-                model_manager,
-                decorator_command_set,
-                vocabularies,
-            },
-            source.unwrap_or_default(),
-        ))
-    }
-
     /// The command sets (as JSON text) and vocabularies that
-    /// [`Self::extract_encoded`] would return for `models` (P5-56): the same
+    /// [`Self::extract`] would return for `models` (P5-56): the same
     /// walk and the same transform, with the same first error, but no
     /// result manager. `models` are the source models of an earlier
-    /// extraction ([`Self::extract_encoded_keeping_source`]); this
+    /// extraction ([`ExtractResult::source_models`]); this
     /// extractor's own source AST is not read. The command sets and
     /// vocabularies are read before any decorator is stripped, so
     /// `removeDecoratorsFromModel` does not change them.
@@ -742,33 +338,29 @@ impl DecoratorExtractor {
         self.encode_decorators_and_vocabularies(&extraction_dictionary)
     }
 
-    /// The body of [`Self::extract`] and [`Self::extract_encoded`], which
-    /// differ only in how `transform` builds the command sets and
-    /// vocabularies from the borrowed dictionary.
-    fn extract_with<T>(
-        self,
-        transform: impl FnOnce(&Self, &ExtractionDictionary<'_>) -> Result<T>,
-    ) -> Result<(ModelManager, T)> {
-        let (model_manager, transformed, _) = self.extract_with_source(false, transform)?;
-        Ok((model_manager, transformed))
-    }
-
-    /// [`Self::extract_with`], with a copy of the source models taken
-    /// before the walk when `keep_source` is set (P5-56).
-    fn extract_with_source<T>(
-        mut self,
-        keep_source: bool,
-        transform: impl FnOnce(&Self, &ExtractionDictionary<'_>) -> Result<T>,
-    ) -> Result<(ModelManager, T, Option<Vec<Value>>)> {
+    /// `DecoratorExtractor.extract` (`src/decoratorextractor.ts`), with the
+    /// command sets and vocabularies encoded directly from the borrowed AST
+    /// nodes ([`Self::encode_decorators_and_vocabularies`]), and a copy of
+    /// the source models kept in the result when `keep_source` is set.
+    ///
+    /// P5-40 (F-B): the models are walked twice rather than once. The first
+    /// walk ([`collect_models`]) only borrows them, recording where each
+    /// `decorators` array is; the command sets and vocabularies are built
+    /// from those borrows before the second walk
+    /// ([`Self::process_models`]) strips the decorators in place, and the
+    /// models are then moved, not copied, into the result manager. Errors
+    /// keep TS's order: a load or validation failure of the result models
+    /// is thrown ahead of a vocabulary-key error from the transform.
+    pub fn extract(mut self, keep_source: bool) -> Result<ExtractResult> {
         let mut models = match self.updated_model_ast.get_mut("models").map(std::mem::take) {
             Some(Value::Array(models)) => models,
             _ => Vec::new(),
         };
-        let source = keep_source.then(|| models.clone());
+        let source_models = keep_source.then(|| models.clone());
         let transformed = {
             let mut extraction_dictionary = ExtractionDictionary::new();
             collect_models(&mut extraction_dictionary, &models);
-            transform(&self, &extraction_dictionary)
+            self.encode_decorators_and_vocabularies(&extraction_dictionary)
         };
         self.process_models(&mut models);
 
@@ -784,16 +376,22 @@ impl DecoratorExtractor {
         }
         model_manager.validate_models()?;
 
-        Ok((model_manager, transformed?, source))
+        let (decorator_command_set, vocabularies) = transformed?;
+        Ok(ExtractResult {
+            model_manager,
+            decorator_command_set,
+            vocabularies,
+            source_models,
+        })
     }
 }
 
 /// `null`, for a node's missing field, borrowed.
 static NULL: Value = Value::Null;
 
-/// P5-57: one `DecoratorCommandSet`, as
-/// [`DecoratorExtractor::transform_non_vocabulary_decorators`] builds it
-/// (same keys, same order), serialised from borrows.
+/// P5-57: one `DecoratorCommandSet`, as TS's
+/// `transformNonVocabularyDecorators` builds it (same keys, same order),
+/// serialised from borrows.
 struct CommandSetView<'a> {
     class: &'a str,
     name: String,
@@ -813,9 +411,8 @@ impl serde::Serialize for CommandSetView<'_> {
     }
 }
 
-/// P5-57: one `UPSERT` command, as
-/// [`DecoratorExtractor::parse_non_vocabulary_decorators`] builds it (with
-/// [`DecoratorExtractor::construct_target`]'s target), serialised from the
+/// P5-57: one `UPSERT` command, as TS's `parseNonVocabularyDecorators`
+/// builds it (with `constructTarget`'s target), serialised from the
 /// borrowed decorator node.
 struct CommandView<'a> {
     classes: &'a CommandClasses,
@@ -836,7 +433,7 @@ impl serde::Serialize for CommandView<'_> {
     }
 }
 
-/// [`CommandView`]'s `target`: [`DecoratorExtractor::construct_target`].
+/// [`CommandView`]'s `target`: TS's `constructTarget`.
 struct TargetView<'a>(&'a CommandView<'a>);
 
 impl serde::Serialize for TargetView<'_> {
@@ -990,7 +587,8 @@ struct VocabTree<'a> {
 }
 
 impl<'a> VocabTree<'a> {
-    /// [`DecoratorExtractor::parse_vocabularies`], into this tree.
+    /// `DecoratorExtractor.parseVocabularies` (`src/decoratorextractor.ts`),
+    /// into this tree.
     fn parse(&mut self, vocab_target: &ExtractedDecorators<'a>, dcs: &'a Value) -> Result<()> {
         let dcs_name = DecoratorExtractor::decorator_name(dcs);
         let quoted = DecoratorExtractor::vocab_argument(dcs);
@@ -1042,7 +640,7 @@ impl<'a> VocabTree<'a> {
         Ok(())
     }
 
-    /// [`DecoratorExtractor::transform_vocabulary_decorators`]: the YAML of
+    /// `DecoratorExtractor.transformVocabularyDecorators`: the YAML of
     /// this tree, `None` when no vocabulary decorator was found.
     fn to_yaml(&self, locale: &str, namespace: &str) -> Option<String> {
         use std::fmt::Write;
@@ -1199,22 +797,6 @@ fn collect_models<'a>(extraction_dictionary: &mut ExtractionDictionary<'a>, mode
     }
 }
 
-/// `Object.keys(x).length > 0 ? x[key] : (x[key] = {})`, for the nested
-/// `vocabObject.namespace`/`.declarations`/`.propertyVocabs` objects
-/// `parseVocabularies` builds up incrementally (`vocabObject.namespace =
-/// vocabObject.namespace || {}`, `src/decoratorextractor.ts`).
-fn ensure_object<'a>(value: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
-    if !matches!(value.get(key), Some(Value::Object(_)))
-        && let Some(map) = value.as_object_mut()
-    {
-        map.insert(key.to_string(), Value::Object(Map::new()));
-    }
-    value
-        .get_mut(key)
-        .and_then(Value::as_object_mut)
-        .expect("just ensured an object at key")
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::DECORATOR_STRING_TYPE;
@@ -1229,6 +811,11 @@ mod tests {
                 { "$class": DECORATOR_STRING_TYPE, "value": value }
             ]
         })
+    }
+
+    /// The command sets of `result`, parsed from their JSON text.
+    fn sets(result: &ExtractResult) -> Vec<Value> {
+        serde_json::from_str(&result.decorator_command_set).expect("the command sets are JSON")
     }
 
     fn sample_models() -> Value {
@@ -1258,10 +845,11 @@ mod tests {
     fn extracts_a_vocabulary_and_a_non_vocabulary_command_set() {
         let extractor =
             DecoratorExtractor::new(true, "en", "0.4.0", sample_models(), Action::ExtractAll);
-        let result = extractor.extract().expect("extraction succeeds");
+        let result = extractor.extract(false).expect("extraction succeeds");
 
-        assert_eq!(result.decorator_command_set.len(), 1);
-        let dcs = &result.decorator_command_set[0];
+        let sets = sets(&result);
+        assert_eq!(sets.len(), 1);
+        let dcs = &sets[0];
         assert_eq!(dcs["commands"].as_array().unwrap().len(), 1);
         assert_eq!(dcs["commands"][0]["decorator"]["name"], "Custom");
 
@@ -1282,8 +870,8 @@ mod tests {
     fn extract_vocab_only_leaves_non_vocab_decorators_in_place() {
         let extractor =
             DecoratorExtractor::new(true, "en", "0.4.0", sample_models(), Action::ExtractVocab);
-        let result = extractor.extract().expect("extraction succeeds");
-        assert!(result.decorator_command_set.is_empty());
+        let result = extractor.extract(false).expect("extraction succeeds");
+        assert_eq!(result.decorator_command_set, "[]");
         assert_eq!(result.vocabularies.len(), 1);
 
         let person =
@@ -1302,8 +890,8 @@ mod tests {
         let source = sample_models();
         let extractor =
             DecoratorExtractor::new(false, "en", "0.4.0", source.clone(), Action::ExtractAll);
-        let result = extractor.extract().expect("extraction succeeds");
-        assert_eq!(result.decorator_command_set.len(), 1);
+        let result = extractor.extract(false).expect("extraction succeeds");
+        assert_eq!(sets(&result).len(), 1);
         assert_eq!(result.vocabularies.len(), 1);
         assert_eq!(
             result.model_manager.model_file("test@1.0.0").unwrap().ast(),
@@ -1322,7 +910,7 @@ mod tests {
             }]
         });
         let extractor = DecoratorExtractor::new(true, "en", "0.4.0", models, Action::ExtractAll);
-        let result = extractor.extract().expect("extraction succeeds");
+        let result = extractor.extract(false).expect("extraction succeeds");
         let ast = result.model_manager.model_file("test@1.0.0").unwrap().ast();
         assert!(ast.get("decorators").is_none());
         assert_eq!(ast["declarations"], json!([]));
@@ -1355,10 +943,9 @@ mod tests {
         });
         let extractor =
             DecoratorExtractor::new(true, "en", "0.4.0", models, Action::ExtractNonVocab);
-        let result = extractor.extract().expect("extraction succeeds");
-        let commands = result.decorator_command_set[0]["commands"]
-            .as_array()
-            .unwrap();
+        let result = extractor.extract(false).expect("extraction succeeds");
+        let sets = sets(&result);
+        let commands = sets[0]["commands"].as_array().unwrap();
         let targets: Vec<&Value> = commands
             .iter()
             .map(|c| &c["target"]["mapElement"])
@@ -1378,10 +965,12 @@ mod tests {
         assert_eq!(map["value"]["decorators"], json!([]));
     }
 
-    /// P5-57: the direct encoding and the `Value` route agree byte for byte
-    /// (command-set text, vocabularies, result models), or fail with the
-    /// same error, for every action and both `removeDecoratorsFromModel`
-    /// settings.
+    /// Every action and both `removeDecoratorsFromModel` settings succeed
+    /// (or, with `expect_ok` false, fail), and the memo route agrees with a
+    /// fresh extraction ([`assert_memo_route_agrees`]). P5-103 (C-5) deleted
+    /// the `Value` route this used to hold the encoding to; the golden text
+    /// in [`the_encoding_matches_its_golden_text`] and the oracle corpus
+    /// cover the encoding directly.
     fn assert_routes_agree(models: &Value, expect_ok: bool) {
         for action in [
             Action::ExtractAll,
@@ -1389,53 +978,44 @@ mod tests {
             Action::ExtractNonVocab,
         ] {
             for remove in [false, true] {
-                let value_route =
-                    DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
-                        .extract();
-                let direct = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
-                    .extract_encoded();
-                match (value_route, direct) {
-                    (Ok(v), Ok(d)) => {
-                        assert_eq!(
-                            d.decorator_command_set,
-                            serde_json::to_string(&v.decorator_command_set).unwrap(),
-                            "{action:?} remove={remove}"
-                        );
-                        assert_eq!(d.vocabularies, v.vocabularies, "{action:?} remove={remove}");
-                        let asts = |mm: &ModelManager| {
-                            mm.model_files()
-                                .map(|f| f.ast().clone())
-                                .collect::<Vec<_>>()
-                        };
-                        assert_eq!(asts(&d.model_manager), asts(&v.model_manager));
+                let result = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
+                    .extract(false);
+                // A reserved vocabulary key fails every action that reads
+                // the vocabulary decorators; `ExtractNonVocab` never does.
+                let expect_ok = expect_ok || action == Action::ExtractNonVocab;
+                match &result {
+                    Ok(_) => assert!(expect_ok, "{action:?} remove={remove}"),
+                    Err(e) => {
+                        assert!(!expect_ok, "{action:?} remove={remove}: {e}");
+                        assert!(e.to_string().contains("Invalid vocabulary key"), "{e}");
                     }
-                    (Err(v), Err(d)) => {
-                        assert!(!expect_ok, "{action:?} remove={remove}: {v}");
-                        assert_eq!(d, v, "{action:?} remove={remove}");
-                    }
-                    (v, d) => panic!(
-                        "{action:?} remove={remove}: the routes disagree: value ok {}, direct ok {}",
-                        v.is_ok(),
-                        d.is_ok()
-                    ),
+                }
+                if let Ok(result) = result {
+                    let parsed: Value = serde_json::from_str(&result.decorator_command_set)
+                        .expect("the command sets are JSON");
+                    assert!(parsed.is_array(), "{action:?} remove={remove}");
                 }
                 assert_memo_route_agrees(models, action, remove);
             }
         }
     }
 
-    /// P5-56 (T2, F-A2): `extract_encoded_keeping_source` is
-    /// `extract_encoded` (same result, same error), and `encode_source` over
-    /// the kept models gives the same command sets and vocabularies (or the
-    /// same error) as `extract_encoded` with any locale and either
+    /// P5-56 (T2, F-A2): `extract(true)` is `extract(false)` (same result,
+    /// same error) plus the source models, and `encode_source` over the kept
+    /// models gives the same command sets and vocabularies (or the same
+    /// error) as `extract` with any locale and either
     /// `removeDecoratorsFromModel`, every time it is called.
     fn assert_memo_route_agrees(models: &Value, action: Action, remove: bool) {
-        let direct = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
-            .extract_encoded();
-        let keeping = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
-            .extract_encoded_keeping_source();
+        let direct =
+            DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action).extract(false);
+        let keeping =
+            DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action).extract(true);
         let (kept_result, source) = match (direct, keeping) {
-            (Ok(d), Ok(k)) => (Some((d, k.0)), k.1),
+            (Ok(d), Ok(mut k)) => {
+                assert!(d.source_models.is_none());
+                let source = k.source_models.take().expect("the source models are kept");
+                (Some((d, k)), source)
+            }
             (Err(d), Err(k)) => {
                 assert_eq!(k, d, "{action:?} remove={remove}");
                 (
@@ -1466,19 +1046,19 @@ mod tests {
                     .encode_source(&source);
             let fresh =
                 DecoratorExtractor::new(other_remove, locale, "0.4.0", models.clone(), action)
-                    .extract_encoded();
+                    .extract(false);
             match (encoded, fresh) {
                 (Ok(e), Ok(f)) => {
                     assert_eq!(e.0, f.decorator_command_set, "{action:?} {locale}");
                     assert_eq!(e.1, f.vocabularies, "{action:?} {locale}");
                 }
-                // A result-model error comes first in `extract_encoded`; the
+                // A result-model error comes first in `extract`; the
                 // memo is only kept after a call that did not fail, so only
                 // the transform's own errors can reach `encode_source`.
                 (Err(e), Err(f)) => assert_eq!(e, f, "{action:?} {locale}"),
                 (Ok(_), Err(_)) if kept_result.is_none() => {}
                 (e, f) => panic!(
-                    "{action:?} {locale}: encode_source ok {}, extract_encoded ok {}",
+                    "{action:?} {locale}: encode_source ok {}, extract ok {}",
                     e.is_ok(),
                     f.is_ok()
                 ),
@@ -1486,8 +1066,12 @@ mod tests {
         }
     }
 
+    /// P5-103 (C-5): the encoding's output for a model that exercises every
+    /// argument kind, escapes, reserved-looking keys and map elements, held
+    /// to the text the `Value` route (deleted by P5-103) gave for it, so the
+    /// encoding keeps that route's bytes without the route itself.
     #[test]
-    fn the_direct_encoding_matches_the_value_route() {
+    fn the_encoding_matches_its_golden_text() {
         assert_routes_agree(&sample_models(), true);
 
         let dec = |name: Value, args: Value| {
@@ -1595,8 +1179,21 @@ mod tests {
             }]
         });
         assert_routes_agree(&models, true);
+        let result = DecoratorExtractor::new(false, "fr", "0.4.0", models, Action::ExtractAll)
+            .extract(false)
+            .unwrap();
+        assert_eq!(
+            result.decorator_command_set,
+            include_str!("testdata/p557-extract-all-fr.json")
+        );
+        assert_eq!(
+            result.vocabularies,
+            [
+                "locale: fr\nnamespace: org.p557@1.2.3\nterm: Replaced\ndescription: ns \"quoted\"\n: empty key\ndeclarations:\n  - Person: Person\n    plural: People\n    properties:\n      - name: Name\n        description: The name\n        propertyVocabs: kept\n      - age: age\n        unit: 10\n  - Overwritten: Overwritten\n    properties:\n      - before: Before\n  - Plain: Plain\n    properties:\n      - only: only\n        x: x\n  - Dictionary: Dictionary\n    properties:\n      - KEY: Word\n      - VALUE: VALUE\n        meaning: Meaning\n"
+            ]
+        );
 
-        // Each reserved-key error, from both routes.
+        // Each reserved-key error.
         for (target, name) in [
             ("model", "Term_locale"),
             ("declaration", "Term_properties"),
@@ -1646,7 +1243,7 @@ mod tests {
         });
         let result =
             DecoratorExtractor::new(false, "en", "0.4.0", models.clone(), Action::ExtractAll)
-                .extract()
+                .extract(false)
                 .unwrap();
         assert_eq!(
             result.vocabularies,
@@ -1674,7 +1271,7 @@ mod tests {
             }]
         });
         let extractor = DecoratorExtractor::new(false, "en", "0.4.0", models, Action::ExtractAll);
-        let err = match extractor.extract() {
+        let err = match extractor.extract(false) {
             Ok(_) => panic!("expected extraction to reject the reserved vocabulary key"),
             Err(e) => e,
         };

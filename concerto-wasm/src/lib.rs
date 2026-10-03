@@ -7805,9 +7805,9 @@ fn staged_extract(
 ) -> Result<JsValue> {
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let opts = extract_options_from_js(&options_json);
-    let result = dcs::extract_encoded(manager, &opts, action)?;
+    let result = dcs::extract(manager, &opts, action, false)?;
     // P5-77: staged shared, with the result's ASTs kept as text.
-    Ok(compacted_extract_js(target, result, Vec::new()).0)
+    Ok(compacted_extract_js(target, result).0)
 }
 
 // ---------------------------------------------------------------------------
@@ -7820,7 +7820,7 @@ fn staged_extract(
 // rustHandle (P4-08, P5-34), so the handle holds exactly the models a
 // [`DcsManagerHandle`] would be built from: the same ASTs, loaded the same
 // way, with the same system models. [`dcs::decorate_models`] and
-// [`dcs::extract_encoded`] resolve those models themselves
+// [`dcs::extract`] resolve those models themselves
 // (`ModelManager::models_ast`), so running them on the handle's own manager
 // skips the copy (`getAst`, then JsValue to `Value`, then the load) that a
 // cold [`DcsManagerHandle`] costs. Each operation is
@@ -7901,12 +7901,12 @@ mod tests {
     /// The JSON text of a full extract result (`{modelManager,
     /// decoratorCommandSet, vocabularies}`, then the resident path's
     /// `staged` and `validated` keys), written from the borrowed
-    /// [`dcs::extractor::EncodedExtractResult`]: the text the extract
+    /// [`dcs::extractor::ExtractResult`]: the text the extract
     /// bindings wrote before the memo (P5-41, P5-57), kept as the test
     /// oracle of [`DcsExtractKept::result_text`] (P5-103 removed the
     /// bindings).
     fn extract_result_text(
-        result: &dcs::extractor::EncodedExtractResult,
+        result: &dcs::extractor::ExtractResult,
         staged: Option<&[Value]>,
     ) -> serde_json::Result<String> {
         let mut out = Vec::new();
@@ -7968,15 +7968,14 @@ mod tests {
                 remove_decorators_from_model: remove,
                 ..dcs::ExtractOptions::default()
             };
-            let (result, source) =
-                dcs::extract_encoded_keeping_source(&handle.manager, &fill, action).unwrap();
-            let kept = DcsExtractKept::new(source, result.model_manager);
+            let result = dcs::extract(&handle.manager, &fill, action, true).unwrap();
+            let kept = DcsExtractKept::new(result.source_models.unwrap(), result.model_manager);
             for locale in ["en", "fr"] {
                 let opts = dcs::ExtractOptions {
                     remove_decorators_from_model: remove,
                     locale: locale.to_string(),
                 };
-                let full = dcs::extract_encoded(&handle.manager, &opts, action).unwrap();
+                let full = dcs::extract(&handle.manager, &opts, action, false).unwrap();
                 let mut t1 = ModelManagerHandle::new().unwrap();
                 let mut t2 = ModelManagerHandle::new().unwrap();
                 let staged = stage_result(&mut t1, &full.model_manager);

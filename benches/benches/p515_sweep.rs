@@ -58,6 +58,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
+use concerto_core::dcs::extractor::Action;
 use concerto_core::dcs::{self, DecorateOptions, ExtractOptions};
 use concerto_core::instance::from_json::FromJsonOptions;
 use concerto_core::instance::{InstanceEnv, ValidationOptions, diagnose};
@@ -475,29 +476,22 @@ fn bench(c: &mut Criterion) {
             .iter()
             .map(|mf| mf.ast().clone())
             .collect();
-        for (op, vocab) in [
-            ("extract_decorators", false),
-            ("extract_vocabularies", true),
+        // P5-103 (C-5): `dcs::extract` by action, the one extract route.
+        for (op, action) in [
+            ("extract_decorators", Action::ExtractAll),
+            ("extract_vocabularies", Action::ExtractVocab),
         ] {
             n(op, 1);
             g.bench_function(format!("{op}/{set}"), |b| {
                 b.iter(|| {
-                    black_box(if vocab {
-                        dcs::extract_vocabularies(&decorated, &extract_options()).unwrap()
-                    } else {
-                        dcs::extract_decorators(&decorated, &extract_options()).unwrap()
-                    })
+                    black_box(dcs::extract(&decorated, &extract_options(), action, false).unwrap())
                 })
             });
             n(&format!("{op}_rebuild"), 1);
             g.bench_function(format!("{op}_rebuild/{set}"), |b| {
                 b.iter(|| {
                     let mm = rebuild(&decorated_asts);
-                    black_box(if vocab {
-                        dcs::extract_vocabularies(&mm, &extract_options()).unwrap()
-                    } else {
-                        dcs::extract_decorators(&mm, &extract_options()).unwrap()
-                    })
+                    black_box(dcs::extract(&mm, &extract_options(), action, false).unwrap())
                 })
             });
         }

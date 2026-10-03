@@ -31,6 +31,50 @@ use yaml_rust2::{Yaml, YamlLoader};
 use super::*;
 use crate::introspect::Decorated;
 
+/// `ExtractDecoratorsResult`, with its command sets parsed from the JSON
+/// text [`super::extract`] gives, as the TS tests read them.
+struct Extracted {
+    model_manager: ModelManager,
+    decorator_command_set: Vec<Value>,
+    vocabularies: Vec<String>,
+}
+
+/// [`super::extract`] for `action`, with the command sets parsed.
+fn extract_by(
+    model_manager: &ModelManager,
+    options: &ExtractOptions,
+    action: extractor::Action,
+) -> Result<Extracted> {
+    let result = extract(model_manager, options, action, false)?;
+    Ok(Extracted {
+        model_manager: result.model_manager,
+        decorator_command_set: serde_json::from_str(&result.decorator_command_set)
+            .expect("the command sets are JSON"),
+        vocabularies: result.vocabularies,
+    })
+}
+
+/// `DecoratorManager.extractDecorators(modelManager, options)`.
+fn extract_decorators(model_manager: &ModelManager, options: &ExtractOptions) -> Result<Extracted> {
+    extract_by(model_manager, options, extractor::Action::ExtractAll)
+}
+
+/// `DecoratorManager.extractVocabularies(modelManager, options)`.
+fn extract_vocabularies(
+    model_manager: &ModelManager,
+    options: &ExtractOptions,
+) -> Result<Extracted> {
+    extract_by(model_manager, options, extractor::Action::ExtractVocab)
+}
+
+/// `DecoratorManager.extractNonVocabDecorators(modelManager, options)`.
+fn extract_non_vocab_decorators(
+    model_manager: &ModelManager,
+    options: &ExtractOptions,
+) -> Result<Extracted> {
+    extract_by(model_manager, options, extractor::Action::ExtractNonVocab)
+}
+
 const TEST_CTO_SKIP_LOCATION: &str =
     include_str!("testdata/decoratorcommands/test.skiplocation.ast.json");
 const MAP_DECLARATION_DCS: &str = include_str!("testdata/decoratorcommands/map-declaration.json");

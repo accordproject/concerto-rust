@@ -27,7 +27,7 @@ use super::*;
 // - Errors are never memoised: a call that throws leaves no memo, and the
 //   next call runs in full. A memo exists only after a call whose result
 //   models loaded and validated, which is the only error that
-//   `extract_encoded` reports ahead of the transform's, so a repeated call
+//   `dcs::extract` reports ahead of the transform's, so a repeated call
 //   throws what a full one throws.
 // - Nothing shared is returned: the JS result is parsed from new text on
 //   every call. P5-77: each staged model file is shared with the kept
@@ -47,7 +47,7 @@ use super::*;
 pub(crate) struct DcsExtractMemo {
     /// `(epoch, system models walked, stripping action)`: `ExtractAll` and
     /// `ExtractVocab` walk the system models too, `ExtractNonVocab` does not
-    /// ([`dcs::extract_encoded`]); the stripping action is the action when
+    /// ([`dcs::extract`]); the stripping action is the action when
     /// `removeDecoratorsFromModel` is true (P5-77), and `None` when it is
     /// false, since then every action gives the same result models.
     pub(crate) key: (u64, bool, Option<dcs::extractor::Action>),
@@ -79,15 +79,15 @@ fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
 /// as [`stage_result`] gives.
 pub(crate) fn compacted_extract_js(
     target: &mut ModelManagerHandle,
-    result: dcs::extractor::EncodedExtractResult,
-    source: Vec<Value>,
+    result: dcs::extractor::ExtractResult,
 ) -> (JsValue, DcsExtractKept) {
-    let dcs::extractor::EncodedExtractResult {
+    let dcs::extractor::ExtractResult {
         model_manager,
         decorator_command_set,
         vocabularies,
+        source_models,
     } = result;
-    let kept = DcsExtractKept::new(source, model_manager);
+    let kept = DcsExtractKept::new(source_models.unwrap_or_default(), model_manager);
     let staged = kept.stage(target);
     let js = kept.result_js(&decorator_command_set, &vocabularies, staged);
     (js, kept)
@@ -231,17 +231,16 @@ impl ModelManagerHandle {
                 key: memo_key,
                 kept: kept @ None,
             }) if *memo_key == key => {
-                let (result, source) =
-                    dcs::extract_encoded_keeping_source(&self.manager, &opts, action)?;
-                let (js, filled) = compacted_extract_js(target, result, source);
+                let result = dcs::extract(&self.manager, &opts, action, true)?;
+                let (js, filled) = compacted_extract_js(target, result);
                 *kept = Some(filled);
                 Ok(js)
             }
             _ => {
                 *memo = Some(DcsExtractMemo { key, kept: None });
                 drop(memo);
-                let result = dcs::extract_encoded(&self.manager, &opts, action)?;
-                Ok(compacted_extract_js(target, result, Vec::new()).0)
+                let result = dcs::extract(&self.manager, &opts, action, false)?;
+                Ok(compacted_extract_js(target, result).0)
             }
         }
     }
