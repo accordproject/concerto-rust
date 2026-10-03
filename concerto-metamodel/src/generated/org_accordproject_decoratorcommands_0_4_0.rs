@@ -23,12 +23,13 @@ pub struct DecoratorCommandSetReference {
     pub version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `org.accordproject.decoratorcommands@0.4.0.CommandType`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommandType {
-    #[allow(non_camel_case_types)]
-    UPSERT,
-    #[allow(non_camel_case_types)]
-    APPEND,
+    #[serde(rename = "UPSERT")]
+    Upsert,
+    #[serde(rename = "APPEND")]
+    Append,
 }
 
 /// `org.accordproject.decoratorcommands@0.4.0.CommandTarget`
@@ -59,14 +60,15 @@ pub struct CommandTarget {
     pub map_element: Option<MapElement>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `org.accordproject.decoratorcommands@0.4.0.MapElement`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MapElement {
-    #[allow(non_camel_case_types)]
-    KEY,
-    #[allow(non_camel_case_types)]
-    VALUE,
-    #[allow(non_camel_case_types)]
-    KEY_VALUE,
+    #[serde(rename = "KEY")]
+    Key,
+    #[serde(rename = "VALUE")]
+    Value,
+    #[serde(rename = "KEY_VALUE")]
+    KeyValue,
 }
 
 /// `org.accordproject.decoratorcommands@0.4.0.Command`

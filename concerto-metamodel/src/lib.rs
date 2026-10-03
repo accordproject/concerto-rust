@@ -2,8 +2,12 @@
 //!
 //! The types under `src/generated` are generated from the model ASTs in
 //! `vendor/` by concerto-codegen's Rust target, at the version recorded in
-//! `codegen.version`, through the thin wrapper in `codegen/generate.js`
-//! (see there for what it adds). Abstract types are enums tagged by
+//! `codegen.version`, through `codegen/generate.js`: a `RustVisitor`
+//! subclass that overrides `visitClassDeclaration`, `visitField`,
+//! `visitEnumDeclaration` and `toRustType` and post-processes the
+//! `FileWriter` output (see there for why). `tests/drift.rs` fails when the
+//! generated sources are not what that script produced from the
+//! checked-in inputs. Abstract types are enums tagged by
 //! `$class`, so deserialising an AST keeps each node's concrete type.
 
 /// A node's `$class`, as a generated struct keeps it: a borrowed static

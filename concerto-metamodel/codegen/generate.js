@@ -25,9 +25,19 @@
  * `codegen.version`, so routine builds need neither Node.js nor network.
  * After editing this file, run `npm ci && node generate.js` here.
  *
- * `MetamodelRustVisitor` is the thin wrapper this crate keeps on top of
- * `RustVisitor`. Each override is listed below with the reason the crate
- * still needs it (accordproject/concerto-rust#461 has the gap analysis):
+ * Drift: this script also writes `src/generated/fingerprints.tsv`, a
+ * fingerprint of every input and generated file, which `tests/drift.rs`
+ * checks on every `cargo test` (no Node.js needed); `node generate.js
+ * --check` (run by CI) regenerates into a temporary directory and fails
+ * when the result differs from `src/generated/` byte for byte.
+ *
+ * The wrapper this crate keeps is `MetamodelRustVisitor`: a `RustVisitor`
+ * subclass that overrides `visitClassDeclaration`, `visitField`,
+ * `visitEnumDeclaration` and `toRustType`, and post-processes the
+ * `FileWriter` output (drops `mod.rs`, adds the `@generated` header and
+ * `classes.rs`, runs rustfmt). Each override is listed below with the
+ * reason the crate still needs it (accordproject/concerto-rust#461 has the
+ * gap analysis):
  *
  * - `visitClassDeclaration`: an abstract type (or a concrete type with sub
  *   types that is used as a field type) is a Rust enum *named after the
@@ -47,18 +57,25 @@
  *   `crate::Name` that shares the source text (P5-93), and a field with a
  *   default value (`isArray`, `isOptional`, `isAbstract`) may be absent
  *   (`#[serde(default)]`; also in the upstream draft PR);
+ * - `visitEnumDeclaration`: a Concerto enum keeps the shape the published
+ *   crate had before concerto-codegen generated it (`Copy`, `PartialEq`,
+ *   `Eq`, PascalCase variants renamed to the value, e.g. `KeyValue` for
+ *   `KEY_VALUE`), so the `decoratorcommands` enums are not a semver break;
+ *   concerto-codegen 6.3.0 derives neither and names the variants as the
+ *   values;
  * - `toRustType`: Integer and Long AST fields are `f64`, since TS reads
  *   them as plain JS numbers (OD-3).
  *
  * Everything else is concerto-codegen's output as is: module layout and
  * imports, field naming and serde renames, `Option`/`Vec` wrapping,
- * Concerto enums, `Debug` derives, the `$identifier` and `$timestamp`
+ * `Debug` derives, the `$identifier` and `$timestamp`
  * system fields, and `utils.rs` (whose `serialize_datetime` and
  * `deserialize_datetime` the `$timestamp` fields use).
  */
 
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { isDeepStrictEqual } = require('util');
@@ -72,6 +89,8 @@ const CRATE = path.resolve(__dirname, '..');
 const VENDOR = path.join(CRATE, 'vendor');
 const OUT = path.join(CRATE, 'src', 'generated');
 const RECORD = path.join(CRATE, 'codegen.version');
+/** The fingerprints `tests/drift.rs` checks, in `src/generated/`. */
+const FINGERPRINTS = 'fingerprints.tsv';
 
 /** The models added to the model manager; it adds the other two itself. */
 const MODELS = ['concerto.metamodel@1.0.0', 'org.accordproject.decoratorcommands@0.4.0'];
@@ -242,10 +261,39 @@ class MetamodelRustVisitor extends CodeGen.RustVisitor {
         return super.visitField(field, parameters);
     }
 
+    /**
+     * As the crate's previous generator: a documented enum with `Copy`,
+     * `PartialEq` and `Eq`, whose variants are the values in PascalCase,
+     * renamed to the value, so the published types keep their API.
+     * @override
+     */
+    visitEnumDeclaration(enumDeclaration, parameters) {
+        const w = parameters.fileWriter;
+        w.writeLine(0, `/// \`${enumDeclaration.getFullyQualifiedName()}\``);
+        w.writeLine(0, '#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]');
+        w.writeLine(0, `pub enum ${enumDeclaration.getName()} {`);
+        for (const value of enumDeclaration.getOwnProperties()) {
+            const name = value.getName();
+            w.writeLine(1, `#[serde(rename = "${name}")]`);
+            w.writeLine(1, `${pascalCase(name)},`);
+        }
+        w.writeLine(0, '}');
+        w.writeLine(0, '');
+        return null;
+    }
+
     /** @override */
     toRustType(type, useUnion) {
         return type === 'Integer' || type === 'Long' ? 'f64' : super.toRustType(type, useUnion);
     }
+}
+
+/** `KEY_VALUE` -> `KeyValue`, as the crate's previous generator named enum variants. */
+function pascalCase(value) {
+    return value
+        .split('_')
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join('');
 }
 
 /**
@@ -271,7 +319,53 @@ function readJson(file) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-function main() {
+/** The checked-in files `src/generated/` is generated from, relative to the crate. */
+function inputs() {
+    return [
+        'codegen/generate.js',
+        'codegen/package.json',
+        'codegen/package-lock.json',
+        ...fs.readdirSync(VENDOR).filter((f) => f.endsWith('.json')).sort().map((f) => `vendor/${f}`),
+    ];
+}
+
+/**
+ * 64-bit FNV-1a of a file's bytes, carriage returns dropped (so a CRLF
+ * checkout fingerprints the same), as 16 hex digits. `tests/drift.rs`
+ * computes the same; it detects drift, it is not a security check.
+ */
+function fingerprint(bytes) {
+    const MASK = (1n << 64n) - 1n;
+    let hash = 0xcbf29ce484222325n;
+    for (const byte of bytes) {
+        if (byte === 0x0d) {
+            continue;
+        }
+        hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & MASK;
+    }
+    return hash.toString(16).padStart(16, '0');
+}
+
+/**
+ * The fingerprint of every input and generated file, so `tests/drift.rs`
+ * can tell, without Node.js, when either changed without a regeneration.
+ */
+function fingerprints(out) {
+    const rows = [
+        ...inputs().map((file) => [file, fs.readFileSync(path.join(CRATE, file))]),
+        ...fs.readdirSync(out).filter((f) => f !== FINGERPRINTS).sort()
+            .map((f) => [`src/generated/${f}`, fs.readFileSync(path.join(out, f))]),
+    ];
+    return [
+        '# @generated by concerto-metamodel/codegen/generate.js. Do not edit.',
+        '# FNV-1a 64 (carriage returns dropped) of each input and generated file; checked by tests/drift.rs.',
+        ...rows.map(([file, bytes]) => `${fingerprint(bytes)}\t${file}`),
+        '',
+    ].join('\n');
+}
+
+/** Generates the sources into `out`. */
+function generate(out) {
     for (const [namespace, module] of Object.entries(NPM_MODELS)) {
         assert(isDeepStrictEqual(readJson(path.join(VENDOR, `${namespace}.json`)), readJson(require.resolve(module))),
             `vendor/${namespace}.json differs from ${module}`);
@@ -284,20 +378,53 @@ function main() {
         [...MODELS, ...Object.keys(SYSTEM_MODELS)].sort()
     );
 
-    fs.rmSync(OUT, { recursive: true, force: true });
-    new MetamodelRustVisitor(modelManager).visit(modelManager, { fileWriter: new FileWriter(OUT) });
+    fs.rmSync(out, { recursive: true, force: true });
+    new MetamodelRustVisitor(modelManager).visit(modelManager, { fileWriter: new FileWriter(out) });
     // `lib.rs` declares the modules at the crate root, where the generated
     // `use crate::...` paths point.
-    fs.rmSync(path.join(OUT, 'mod.rs'));
+    fs.rmSync(path.join(out, 'mod.rs'));
     const header = `// @generated by concerto-metamodel/codegen/generate.js with @accordproject/concerto-codegen@${CODEGEN_VERSION}. Do not edit.\n\n`;
-    const files = fs.readdirSync(OUT).map((f) => path.join(OUT, f));
+    const files = fs.readdirSync(out).map((f) => path.join(out, f));
     for (const file of files) {
         fs.writeFileSync(file, header + fs.readFileSync(file, 'utf8'));
     }
-    const classes = path.join(OUT, 'classes.rs');
+    const classes = path.join(out, 'classes.rs');
     fs.writeFileSync(classes, header + classesTable(modelManager));
     execFileSync('rustfmt', ['--edition', '2024', ...files, classes], { stdio: 'inherit' });
-    fs.writeFileSync(RECORD, `${CODEGEN_VERSION}\n`);
+    fs.writeFileSync(path.join(out, FINGERPRINTS), fingerprints(out));
 }
 
-main();
+/**
+ * `--check`: regenerates into a temporary directory and fails, without
+ * touching the crate, when the result differs from `src/generated/` or the
+ * recorded version from the pinned one.
+ */
+function check() {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'concerto-metamodel-'));
+    try {
+        const out = path.join(tmp, 'generated');
+        generate(out);
+        const expected = fs.readdirSync(out).sort();
+        const actual = fs.readdirSync(OUT).sort();
+        const stale = [...new Set([...expected, ...actual])].sort().filter((f) =>
+            !expected.includes(f) || !actual.includes(f)
+            || !fs.readFileSync(path.join(out, f)).equals(fs.readFileSync(path.join(OUT, f))))
+            .map((f) => `src/generated/${f}`);
+        if (fs.readFileSync(RECORD, 'utf8') !== `${CODEGEN_VERSION}\n`) {
+            stale.push('codegen.version');
+        }
+        if (stale.length > 0) {
+            console.error(`Not what codegen/generate.js generates; run \`npm ci && node generate.js\` in concerto-metamodel/codegen:\n  ${stale.join('\n  ')}`);
+            process.exitCode = 1;
+        }
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+}
+
+if (process.argv.includes('--check')) {
+    check();
+} else {
+    generate(OUT);
+    fs.writeFileSync(RECORD, `${CODEGEN_VERSION}\n`);
+}

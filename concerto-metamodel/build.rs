@@ -6,7 +6,9 @@
 //! `codegen.version`; while it matches the version pinned in
 //! `codegen/package.json` the build does nothing, so routine builds stay
 //! offline and need no Node.js. Bumping the pin triggers a regeneration,
-//! which needs Node.js and network access.
+//! which needs Node.js and network access. Drift between the committed
+//! sources and their inputs is caught by `tests/drift.rs` and by
+//! `node codegen/generate.js --check`, not here.
 
 use std::env;
 use std::fs;
