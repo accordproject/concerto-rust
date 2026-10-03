@@ -60,7 +60,7 @@ use std::collections::HashSet;
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
-use concerto_core::instance::from_json::FromJsonOptions as NativeFromJsonOptions;
+use concerto_core::instance::from_json::FromJsonOptions;
 use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::instance::{
     Diagnostic, InstanceEnv, Severity, ValidateOptions, diagnose, diagnose_read,
@@ -82,8 +82,8 @@ use concerto_core::model_manager::{
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
-use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions, generator, populator};
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
+use concerto_core_js::{Serializer, SerializerOptions, generator, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde::Serialize;
@@ -5338,7 +5338,7 @@ impl ModelManagerHandle {
                 // serializer's defaults, which were built from the same
                 // `options` over the base defaults: merging them again
                 // changes nothing, so the defaults are the merged options.
-                let prepared = FromJsonOptions::new(&serializer.default_options);
+                let prepared = populator::from_json_options(&serializer.default_options);
                 (options_text.to_string(), serializer, prepared)
             }
         };
@@ -5507,7 +5507,7 @@ fn has_wire_tag(value: &Value) -> bool {
 /// true`, `acceptResourcesForRelationships === true`, the two #1273 options
 /// for their truthiness, and the validator's own defaults, as
 /// `ValidatedResource.validate` has them.
-fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
+fn native_from_json_options(options: &Value) -> FromJsonOptions {
     let get = |key: &str| options.get(key);
     let utc_offset = match get("utcOffset") {
         v if !json_truthy(v) => UtcOffset::Number(0.0),
@@ -5516,7 +5516,7 @@ fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
         Some(Value::Bool(_)) => UtcOffset::Number(1.0),
         _ => UtcOffset::Number(f64::NAN),
     };
-    NativeFromJsonOptions {
+    FromJsonOptions {
         validate: json_truthy(get("validate")),
         utc_offset,
         strict_qualified_date_times: get("strictQualifiedDateTimes") == Some(&Value::Bool(true)),
@@ -7711,7 +7711,7 @@ pub fn populator_convert_primitive(
             .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
         let value = decode_wire(&json_value)?;
         let options = decode_wire_options(options_text)?.unwrap_or_default();
-        let popt = populator::populator_options(&options);
+        let popt = populator::from_json_options(&options);
         let result = populator::convert_primitive(type_name, &value, &popt, path)?;
         snapshot(&encode_wire(&result))
     })
