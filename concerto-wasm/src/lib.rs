@@ -23,13 +23,11 @@
 //!   handle of the decorator's model file (`decoratorValidate`, "Arena
 //!   answers" below). `Decorated.process`'s `DecoratorFactory` selection is
 //!   not bound: that stays TS (decorator.rs module doc);
-//! - `ModelFile` (P4-08c): `getVersion`, `isSystemModelFile`, `getImports`,
-//!   `isLocalType`, `filter` and `validate`, keyed by the same `ModelFileId`
-//!   handle every other by-file lookup here already uses, plus a detached
-//!   `process`/`fromAst` constructor for a file not yet registered in any
-//!   manager (`modelFileFromAst`, near the bottom of the "ModelFile" section).
-//!   Its declarations need no new handle: they already cross as the arena's
-//!   own `DeclId` (`declarationIds`, `declarationSnapshot`).
+//! - `ModelFile` (P4-08c): `getImports`, `isLocalType`, `filter` and
+//!   `validate`, keyed by the same `ModelFileId` handle every other by-file
+//!   lookup here already uses. P5-103 removed the bindings concerto-core no
+//!   longer calls (`getVersion`, `isSystemModelFile`, the detached
+//!   `modelFileFromAst`, and the arena's per-declaration handles).
 //!
 //! Everything JS-shaped lives here, never in core (PORTING.md 4):
 //! - **argument coercion** (3.5): each binding converts its JS arguments the
@@ -41,13 +39,14 @@
 //! - **the error mapping** (2.3): an error leaves as the payload
 //!   `{kind, code, params, message, location, errorType, modelFile}`, which
 //!   the error factory the shim registers at load turns into the TS exception;
-//!   an error about an instance (`serializerFromJson`, `validateInstance`)
+//!   an error about an instance (`serializerFromJsonCompact`, `validateInstance`)
 //!   also carries its diagnostics as `details` (P5-89, #1325), and a value
 //!   the serializer fast path's wire codec cannot carry carries
 //!   `fastPathUnsupported: true` (P5-101, E-11), the TS side's fallback
 //!   signal;
-//! - **JS object construction**: `semver.parse` builds `versionParsed`, through
-//!   a function the shim registers at load.
+//! - **JS object construction**: none is left here that calls back into a
+//!   host function; P5-103 removed `semver.parse`'s registration with the
+//!   `modelUtilParseNamespace` binding that used it.
 //!
 //! Views are snapshot-based (spike REPORT §3): a call that builds an object
 //! (`ScalarDeclaration.process`, the `NumberValidator` constructor) returns
@@ -101,19 +100,14 @@ use wasm_bindgen::prelude::*;
 pub(crate) struct Host {
     /// `(payload) => Error`: builds the TS exception for an error payload.
     error_factory: Function,
-    /// `semver.parse`.
-    semver_parse: Function,
 }
 
-/// Registers the error factory and `semver.parse`. The shim calls it once,
-/// right after loading the module.
+/// Registers the error factory. The shim calls it once, right after loading
+/// the module.
 #[wasm_bindgen(js_name = setHost)]
-pub fn set_host(error_factory: Function, semver_parse: Function) {
+pub fn set_host(error_factory: Function) {
     caches::HOST.with(|h| {
-        *h.borrow_mut() = Some(Host {
-            error_factory,
-            semver_parse,
-        });
+        *h.borrow_mut() = Some(Host { error_factory });
     });
 }
 
@@ -156,14 +150,15 @@ fn kind_name(kind: ErrorKind) -> &'static str {
     match kind {
         ErrorKind::IllegalModel => "IllegalModel",
         ErrorKind::TypeNotFound => "TypeNotFound",
-        ErrorKind::Validator => "Validator",
         ErrorKind::Validation => "Validation",
         ErrorKind::InvalidArgument => "Error",
         ErrorKind::MalformedInput => "JsTypeError",
-        ErrorKind::RecursionLimit => "JsRangeError",
         ErrorKind::Metamodel => "Metamodel",
         // `ErrorKind` is `#[non_exhaustive]`; a new kind is a plain `Error`
-        // until the shim learns it.
+        // until the shim learns it. So are `Validator`, which no check has
+        // raised since BC-39, and `RecursionLimit`, raised by none since
+        // BC-11 reports a circular super type chain as an IllegalModel
+        // error (P5-103 removed their shim entries).
         _ => "Error",
     }
 }
@@ -283,7 +278,7 @@ fn utf8_text(bytes: &[u8]) -> std::result::Result<&str, JsValue> {
 }
 
 /// P5-92: the error for an AST in the compact binary layout whose bytes are
-/// not in that layout (`stageModelFileCheckedCompact`), which the TS side
+/// not in that layout (`stageModelFileBytes` with [`STAGE_COMPACT`]), which the TS side
 /// never writes: a `TypeError`, as for bytes that are not UTF-8
 /// ([`utf8_text`]).
 fn compact_layout_error(e: serde_json::Error) -> Error {
@@ -604,60 +599,10 @@ fn is_unversioned_namespace(ns: &JsValue) -> bool {
         .is_some_and(|ns| !ns.is_empty() && !ns.contains('@'))
 }
 
-/// TS: ModelUtil.parseNamespace. When the engine gives a `versionParsed`
-/// (a strict SemVer 2.0.0 version within node-semver's limits), the JS
-/// value is built by the registered `semver.parse`, so that it is a real
-/// node-semver `SemVer`; otherwise it is `null`, including for a version
-/// beyond node-semver's limits (BC-41, P5-38), where `semver.parse` gives
-/// `null` too.
-#[wasm_bindgen(js_name = modelUtilParseNamespace)]
-pub fn model_util_parse_namespace(
-    ns: JsValue,
-    options: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
-    run(|| {
-        let disable = !nullish(&options) && get(&options, "disableVersionParsing")?.is_truthy();
-        let parsed = parse_namespace_js(&ns, disable)?;
-        let out = Object::new();
-        match parsed {
-            mu::ParsedNamespace::NameOnly { name } => set(&out, "name", &JsValue::from_str(&name)),
-            mu::ParsedNamespace::Full {
-                name,
-                escaped_namespace,
-                version,
-                version_parsed,
-            } => {
-                set(&out, "name", &JsValue::from_str(&name));
-                set(
-                    &out,
-                    "escapedNamespace",
-                    &JsValue::from_str(&escaped_namespace),
-                );
-                let version_js = version.as_deref().map_or(JsValue::NULL, JsValue::from_str);
-                set(&out, "version", &version_js);
-                let parsed_js = match version_parsed {
-                    Some(semver) => caches::HOST
-                        .with(|h| {
-                            h.borrow().as_ref().map(|host| {
-                                host.semver_parse
-                                    .call1(&JsValue::NULL, &JsValue::from_str(&semver.raw))
-                            })
-                        })
-                        .unwrap_or(Ok(JsValue::NULL))
-                        .map_err(Error::Js)?,
-                    None => JsValue::NULL,
-                };
-                set(&out, "versionParsed", &parsed_js);
-            }
-        }
-        Ok(out.into())
-    })
-}
-
 /// TS: ModelUtil.parseNamespace, with the version checked in Rust only
 /// (P5-20, F4): no `semver.parse` callback, and the result comes back as
 /// one string rather than an object built property by property across the
-/// boundary. It throws what `modelUtilParseNamespace` throws. Otherwise the
+/// boundary. It throws what `ModelUtil.parseNamespace` throws. Otherwise the
 /// first character says which result it is, and the rest holds its parts
 /// separated by `@` (no part can contain one: the namespace has at most
 /// one, and `name` and `version` are the text either side of it):
@@ -1360,70 +1305,6 @@ fn field_snapshot(processed: &field::ProcessedField) -> Value {
         "validator": validator,
         "defaultValue": processed.default_value,
     })
-}
-
-/// P5-06: the [`property_process`] and [`field_process`] snapshots of every
-/// property of every declaration of a model file, computed in one call from
-/// the model's JSON AST text (`JSON.stringify(ast)`), so that a `ModelFile`
-/// view built in rust mode crosses the boundary once for all of its
-/// properties instead of twice per property. Returns JSON text: an array
-/// aligned with `ast.declarations`, holding, for a declaration with a
-/// `properties` array, an array aligned with it of `{p, f}` entries (`p`
-/// the `propertyProcess` snapshot, `f` the `fieldProcess` one for a
-/// property whose `type` is what `p` sets) and otherwise `null`.
-///
-/// Never throws: any property whose own binding would throw (or that is not
-/// a JSON object) gets `null` instead of an entry, as does a field whose
-/// `fieldProcess` would, and `undefined` comes back for text that is not a
-/// model AST, so the view falls back to the per-property bindings, which
-/// raise every error exactly as before. A property whose `p` entry leaves
-/// `type` unset (TS never assigns it) gets the `f` its fresh view would:
-/// computed with no type.
-#[wasm_bindgen(js_name = modelFilePropertySnapshots)]
-pub fn model_file_property_snapshots(ast: &str) -> Option<String> {
-    // Only the fields `property::process`/`field::process` read are parsed;
-    // anything this light shape cannot read (a declaration or property that
-    // is not an object, a `properties` that is not an array, a duplicate
-    // key) fails the whole batch, and the view falls back to the
-    // per-property bindings for every property.
-    let model: LightModel = serde_json::from_str(ast).ok()?;
-    let declarations = model.declarations?;
-    // Written out directly rather than built as a `Value` first: the
-    // entries are small and many, and building them was most of the cost.
-    let mut out = String::with_capacity(ast.len() / 4);
-    out.push('[');
-    for (i, declaration) in declarations.into_iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        match declaration.properties {
-            None => out.push_str("null"),
-            Some(properties) => {
-                out.push('[');
-                for (j, property) in properties.into_iter().enumerate() {
-                    if j > 0 {
-                        out.push(',');
-                    }
-                    write_property_entry(&mut out, &property.into_value())?;
-                }
-                out.push(']');
-            }
-        }
-    }
-    out.push(']');
-    Some(out)
-}
-
-/// A model AST, as far as [`model_file_property_snapshots`] reads it.
-#[derive(serde::Deserialize)]
-struct LightModel {
-    declarations: Option<Vec<LightDeclaration>>,
-}
-
-/// A declaration, as far as [`model_file_property_snapshots`] reads it.
-#[derive(serde::Deserialize)]
-struct LightDeclaration {
-    properties: Option<Vec<LightProperty>>,
 }
 
 /// A property node, keeping only the keys `property::process` and
@@ -2692,27 +2573,6 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
     body().map_err(|e| {
         let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
         throw(e, Some(&model_file))
-    })
-}
-
-/// TS: the kind-compatibility check in `ClassDeclaration._resolveSuperType`:
-/// `classDecl.declarationKind() !== 'ConceptDeclaration' &&
-/// this.declarationKind() !== classDecl.declarationKind()`, negated (`true`
-/// when compatible). `child_kind`/`super_kind` are each side's
-/// `declarationKind()` string; resolving `classDecl` itself stays TS (a
-/// `getModelFile()`/model manager collaborator call).
-#[wasm_bindgen(js_name = classDeclarationKindsCompatible)]
-pub fn class_declaration_kinds_compatible(
-    child_kind: JsValue,
-    super_kind: JsValue,
-) -> std::result::Result<bool, JsValue> {
-    run(|| {
-        let child_kind = js_string(&child_kind)?;
-        let super_kind = js_string(&super_kind)?;
-        Ok(concerto_core::ClassDeclaration::kinds_compatible(
-            &child_kind,
-            &super_kind,
-        ))
     })
 }
 
@@ -4731,7 +4591,7 @@ fn encode_wire(v: &CoreValue) -> Value {
     }
 }
 
-// P5-16 (accordproject/concerto-rust#310): `serializerFromJson` reads its
+// P5-16 (accordproject/concerto-rust#310): `serializerFromJsonCompact` reads its
 // document straight into a [`CoreValue`] ([`parse_wire`]) and writes its
 // result straight to JSON text ([`WireOut`]), rather than through an
 // intermediate `serde_json::Value` tree in each direction
@@ -5206,9 +5066,9 @@ impl serde::Serialize for CompactInstanceOut<'_> {
 }
 
 /// A serializer call's merged options, read once per options text (P5-16;
-/// P5-101, D-3: shared by `serializerFromJson`, `serializerFromJsonCompact`,
-/// `serializerToJson` and `validateInstance`, where only the first two
-/// kept it before): the `Serializer` built from them, what `from_json`
+/// P5-101, D-3: shared by `serializerFromJsonCompact`, `serializerToJson`
+/// and `validateInstance`, where only the `fromJSON` bindings kept it
+/// before): the `Serializer` built from them, what `from_json`
 /// reads of them, and what `validateInstance`'s walk reads of them. A
 /// caller normally passes the same merged options on every call, and all
 /// three depend on nothing else, so a call with the same text reuses them
@@ -5302,7 +5162,7 @@ impl WireDoc<'_> {
 }
 
 impl ModelManagerHandle {
-    /// The resource `serializerFromJson` and `serializerFromJsonCompact`
+    /// The resource `serializerFromJsonCompact`
     /// build (module doc above "Serializer fast path"), in one pass each way
     /// ([`parse_wire`]) and with the serializer reused while the options
     /// text is unchanged ([`with_serializer_options`], P5-16).
@@ -5320,7 +5180,7 @@ impl ModelManagerHandle {
     /// `serializerToJson`'s result text for the resource `doc` holds: one
     /// pass each way ([`WireDoc::parse`], [`WireOut`]) and the serializer
     /// reused while the options text is unchanged
-    /// ([`with_serializer_options`]), as for `serializerFromJson` (P5-101,
+    /// ([`with_serializer_options`]), as for `serializerFromJsonCompact` (P5-101,
     /// D-3).
     fn to_json_text(&self, doc: WireDoc, options_text: &str) -> Result<String> {
         let resource = doc.parse()?;
@@ -5331,7 +5191,7 @@ impl ModelManagerHandle {
             .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
     }
 
-    /// `err`, an error `serializerFromJson` raised for the document
+    /// `err`, an error `serializerFromJsonCompact` raised for the document
     /// `doc` with the merged options `options` (as the walk reads
     /// them, [`SerializerOptionsEntry::native`]), with its diagnostics
     /// attached as the exception's `details` (P5-89,
@@ -5414,7 +5274,7 @@ pub fn validate_meta_model_instance(
 /// The document `doc` (a wire encoding, module doc above "Serializer
 /// fast path") as the diagnostics walk reads it: plain JSON as itself, and a
 /// document with a wire tag (an `undefined` field, `-0`, `NaN`, a `Map`, a
-/// dayjs, ...) decoded as `serializerFromJson` decodes it, in the
+/// dayjs, ...) decoded as `serializerFromJsonCompact` decodes it, in the
 /// validator's tagged form ([`validator_readings`]). `None` when it is not
 /// a wire encoding.
 fn validator_readings_of(doc: WireDoc) -> Option<Vec<Value>> {
@@ -5598,14 +5458,14 @@ impl ModelManagerHandle {
     /// above "Serializer fast path"; plain JSON is its own encoding), as
     /// `Serializer.fromJSON` with `validate: true` and the options
     /// `options_text` (a `fromJSON` call's merged options, in the same wire
-    /// encoding as `serializerFromJson`'s, plain JSON included) would,
+    /// encoding as `serializerFromJsonCompact`'s, plain JSON included) would,
     /// without handing any resource back. Plain JSON is checked by the
     /// native walk alone ([`diagnose`]); a document with a wire tag (an
-    /// `undefined` field, `-0`, `NaN`, ...) is read by `serializerFromJson`'s
+    /// `undefined` field, `-0`, `NaN`, ...) is read by `serializerFromJsonCompact`'s
     /// engine for the verdict and the error, with the walk's codes, paths and
     /// collect-all report kept wherever it raises that same error
     /// ([`diagnose_read`]). A wire shape the codec does not know throws the
-    /// error `serializerFromJson` throws for it. With `fqn`, the document is
+    /// error `serializerFromJsonCompact` throws for it. With `fqn`, the document is
     /// checked as that type, which its own `$class` (when it has one) must be
     /// or extend.
     ///
@@ -5627,7 +5487,7 @@ impl ModelManagerHandle {
             let wire = serde_json::from_str::<Value>(json_text)
                 .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
             // P5-101 (D-3): the options are read once per options text, and
-            // the serializer built from them reused, as `serializerFromJson`
+            // the serializer built from them reused, as `serializerFromJsonCompact`
             // reuses them ([`with_serializer_options`]).
             with_serializer_options(options_text, |entry| {
                 validate_wire(
@@ -5716,7 +5576,7 @@ impl InstanceEnv for JsInstanceEnv {
 /// addressed by the arena's dense `u32` handles, which cross the boundary as
 /// plain numbers and keep naming the same element for the life of the
 /// manager (PORTING.md 1.4). An element's state crosses as a JSON snapshot,
-/// which a view caches until [`ModelManagerHandle::generation`] changes
+/// which a view caches until [`ModelManagerHandle::epoch`] changes
 /// (PORTING.md 1.5).
 ///
 /// wasm-bindgen registers a `FinalizationRegistry`, so a view need not call
@@ -5737,17 +5597,15 @@ pub struct ModelManagerHandle {
     /// `dcsDecorateModels` take `&mut self` and leave the epoch alone); a
     /// binding that changes the manager calls [`Self::bump_epoch`], and so
     /// does [`Self::model_file_filter`] for its `target`. The TS views key
-    /// their caches on the epoch only (engine/views.ts); the exported
-    /// `generation()` ([`ModelManager::state_version`]) counts only the
-    /// changes to the model files and stays exported, unused by them,
-    /// since removing it from the wasm surface is not additive.
+    /// their caches on the epoch only (engine/views.ts); P5-103 removed the
+    /// unused `generation()` export.
     epoch: u64,
-    /// Model files loaded by [`Self::stage_model_file`] and not yet
+    /// Model files loaded by [`Self::stage_model_file_bytes`] and not yet
     /// committed or dropped (lazy views: P5-06a, P5-10a).
     staged: StagedModelFiles,
     /// The per-epoch extract result memo (P5-56, T2, F-A2,
     /// [`DcsExtractMemo`]): dropped whenever the epoch moves
-    /// ([`Self::bump_epoch`]) and by [`Self::drop_dcs_memo`]. A `RefCell`,
+    /// ([`Self::bump_epoch`]). A `RefCell`,
     /// so the extract bindings keep taking `&self` and never move the epoch.
     dcs_memo: std::cell::RefCell<Option<DcsExtractMemo>>,
 }
@@ -5814,27 +5672,6 @@ impl ModelManagerHandle {
         })
     }
 
-    /// Validates every loaded user model; throws the first problem found.
-    #[wasm_bindgen(js_name = validateModels)]
-    pub fn validate_models(&self) -> std::result::Result<(), JsValue> {
-        run(|| Ok(self.manager.validate_models()?))
-    }
-
-    /// TS `this.options?.metamodelValidation` (P4-08b): whether a
-    /// validating `addModelFile` checks the new file with
-    /// [`Self::validate_ast`] first.
-    #[wasm_bindgen(js_name = metamodelValidation)]
-    pub fn metamodel_validation(&self) -> bool {
-        self.manager.metamodel_validation()
-    }
-
-    /// Sets the constructor's `options.metamodelValidation` (P4-08b).
-    #[wasm_bindgen(js_name = setMetamodelValidation)]
-    pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
-        self.bump_epoch();
-        self.manager.set_metamodel_validation(metamodel_validation);
-    }
-
     /// TS `ModelManagerOptions.decoratorValidation`
     /// (`ModelManager::set_decorator_validation`). Additive, on the same
     /// pattern as [`Self::set_dangerously_allow_reserved_system_type_names_in_user_models`]:
@@ -5866,27 +5703,6 @@ impl ModelManagerHandle {
         })
     }
 
-    /// TS `BaseModelManager.validateAst(modelFile)` (P4-08b), for a model
-    /// file given as its JSON AST text and file name: throws a
-    /// `MetamodelException` when the AST does not conform to the metamodel.
-    /// A failed check leaves the metamodel registered, as TS does, so it
-    /// may bump [`Self::generation`]. Malformed JSON throws a JS
-    /// `SyntaxError`.
-    #[wasm_bindgen(js_name = validateAst)]
-    pub fn validate_ast(
-        &mut self,
-        ast: &str,
-        file_name: Option<String>,
-    ) -> std::result::Result<(), JsValue> {
-        self.bump_epoch();
-        run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let model_file = ModelFile::from_owned_json_with_definitions(value, None, file_name)?;
-            Ok(self.manager.validate_ast(&model_file)?)
-        })
-    }
-
     /// [`Self::validate_ast`] over the AST alone (P5-13,
     /// accordproject/concerto-rust#297): the JSON AST text is checked as it
     /// is ([`concerto_core::ModelManager::validate_ast_value`]), without
@@ -5905,24 +5721,13 @@ impl ModelManagerHandle {
         })
     }
 
-    /// P5-49 (BC-19 with BC-17 and BC-20, R1): the strict AST shape check
-    /// the TS `ModelFile` constructor runs at model load
-    /// ([`concerto_core::instance::check_ast_shape`]), over the JSON AST
-    /// text. Throws an `IllegalModelException` for an AST that does not have
-    /// the metamodel's shape. Reads nothing of this handle and changes
-    /// nothing (not its epoch either). Additive; malformed JSON throws a JS
-    /// `SyntaxError`.
-    /// P5-101 (D-7): also a free function, [`check_ast_shape`], which the TS
-    /// views call.
-    #[wasm_bindgen(js_name = checkAstShape)]
-    pub fn check_ast_shape(&self, ast: &str) -> std::result::Result<(), JsValue> {
-        check_ast_shape(ast)
-    }
-
     /// The handle's own mutation counter (P5-06): it moves iff the manager
     /// may have changed (the rule on the field, P5-101 D-7), and never goes
     /// back, so anything a view read from the handle is still current while
     /// the epoch is unchanged. Additive; a JS number (exact up to 2^53).
+    /// No caller in concerto-core: the smoke checks (`scripts/checks.mjs`)
+    /// read it to show which bindings leave the manager unchanged (P5-103
+    /// kept it for them).
     pub fn epoch(&self) -> f64 {
         // Precision loss only past 2^53 mutations.
         #[allow(clippy::cast_precision_loss)]
@@ -5930,17 +5735,12 @@ impl ModelManagerHandle {
         epoch
     }
 
-    /// The manager's state version ([`concerto_core::ModelManager::state_version`]):
-    /// a snapshot taken at one version is current while the version is
-    /// unchanged; a rolled-back batch restores it with the state. Exposed to
-    /// JS as `generation()`, its name before P5-100 (F-3). A JS number
-    /// (exact up to 2^53).
-    #[wasm_bindgen(js_name = generation)]
-    pub fn state_version(&self) -> f64 {
-        // Precision loss only past 2^53 mutations.
-        #[allow(clippy::cast_precision_loss)]
-        let state_version = self.manager.state_version() as f64;
-        state_version
+    /// The handle of a declaration, by its exact fully-qualified name;
+    /// `undefined` if none. P5-106 (BC-52): the views pass it to the arena
+    /// answers of the retired JsContext bindings.
+    #[wasm_bindgen(js_name = declarationId)]
+    pub fn declaration_id(&self, fqn: &str) -> Option<u32> {
+        self.manager.declaration_id(fqn).map(DeclId::index)
     }
 
     /// The handle of the model file for a namespace; `undefined` if none.
@@ -5974,62 +5774,6 @@ impl ModelManagerHandle {
             .map(|mf| mf.namespace().to_string())
     }
 
-    /// The handles of every loaded model file, the system model included,
-    /// in load order.
-    #[wasm_bindgen(js_name = modelFileIds)]
-    pub fn model_file_ids(&self) -> Vec<u32> {
-        self.manager
-            .model_files()
-            .filter_map(|file| self.manager.model_file_id(file.namespace()))
-            .map(ModelFileId::index)
-            .collect()
-    }
-
-    /// The handle of a declaration, by its exact fully-qualified name;
-    /// `undefined` if none.
-    #[wasm_bindgen(js_name = declarationId)]
-    pub fn declaration_id(&self, fqn: &str) -> Option<u32> {
-        self.manager.declaration_id(fqn).map(DeclId::index)
-    }
-
-    /// The handles of a model file's declarations, in file order; empty for
-    /// a handle that names nothing.
-    #[wasm_bindgen(js_name = declarationIds)]
-    pub fn declaration_ids(&self, model_file: u32) -> Vec<u32> {
-        self.manager
-            .declaration_ids(ModelFileId::from_index(model_file))
-            .map(DeclId::index)
-            .collect()
-    }
-
-    /// The handles of a class declaration's own properties, in declaration
-    /// order; empty for any other declaration, or a handle that names nothing.
-    #[wasm_bindgen(js_name = propertyIds)]
-    pub fn property_ids(&self, declaration: u32) -> Vec<u32> {
-        self.manager
-            .property_ids(DeclId::from_index(declaration))
-            .map(PropId::index)
-            .collect()
-    }
-
-    /// The handle of a declaration's model file; `undefined` if the handle
-    /// names nothing.
-    #[wasm_bindgen(js_name = modelFileOf)]
-    pub fn model_file_of(&self, declaration: u32) -> Option<u32> {
-        self.manager
-            .model_file_of(DeclId::from_index(declaration))
-            .map(ModelFileId::index)
-    }
-
-    /// The handle of a property's declaration; `undefined` if the handle
-    /// names nothing.
-    #[wasm_bindgen(js_name = parentOf)]
-    pub fn parent_of(&self, property: u32) -> Option<u32> {
-        self.manager
-            .parent_of(PropId::from_index(property))
-            .map(DeclId::index)
-    }
-
     /// A model file's snapshot, as JSON text:
     /// `{namespace, version, fileName, ast}`. `fileName` is `null` when the
     /// file has none; `ast` is the AST as it was loaded (OD-3).
@@ -6047,73 +5791,6 @@ impl ModelManagerHandle {
                 "fileName": file.file_name(),
                 "ast": file.ast(),
             }))
-        })
-    }
-
-    /// A declaration's snapshot, as JSON text:
-    /// `{name, fullyQualifiedName, modelFile, ast}`, where `modelFile` is the
-    /// handle of its model file and `ast` its node of the model file's AST.
-    #[wasm_bindgen(js_name = declarationSnapshot)]
-    pub fn declaration_snapshot(&self, declaration: u32) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let id = DeclId::from_index(declaration);
-            let (file_id, file, found) = self.declaration_parts(id)?;
-            let ast = self.declaration_ast(id)?;
-            snapshot(&json!({
-                "name": found.name(),
-                "fullyQualifiedName": mu::qualify(file.namespace(), found.name()),
-                "modelFile": file_id.index(),
-                "ast": ast,
-            }))
-        })
-    }
-
-    /// A property's snapshot, as JSON text: `{name, declaration, ast}`, where
-    /// `declaration` is the handle of the declaration it belongs to and `ast`
-    /// its node of that declaration's AST.
-    #[wasm_bindgen(js_name = propertySnapshot)]
-    pub fn property_snapshot(&self, property: u32) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let id = PropId::from_index(property);
-            let missing = || unknown(Node::Property(id));
-            let found = self.manager.property_by_id(id).ok_or_else(missing)?;
-            let parent = self.manager.parent_of(id).ok_or_else(missing)?;
-            let index = self
-                .manager
-                .property_ids(parent)
-                .position(|p| p == id)
-                .ok_or_else(missing)?;
-            let ast = self
-                .declaration_ast(parent)?
-                .get("properties")
-                .and_then(|properties| properties.get(index))
-                .ok_or_else(missing)?;
-            snapshot(&json!({
-                "name": found.name(),
-                "declaration": parent.index(),
-                "ast": ast,
-            }))
-        })
-    }
-
-    /// `Serializer.fromJSON`'s fast path (P4-10; module doc above
-    /// "Serializer fast path"): decodes `json_text` (the JSON object to
-    /// populate) and `options_text` (the serializer's merged options, or
-    /// `"null"`), builds the resource in one call, and returns its wire
-    /// encoding as JSON text for the view to materialise into a real
-    /// `Resource`/`ValidatedResource`/`Relationship`. `env` is a plain JS
-    /// object exposing `newId()`/`nowMs()` (D7).
-    #[wasm_bindgen(js_name = serializerFromJson)]
-    pub fn serializer_from_json(
-        &self,
-        json_text: &str,
-        options_text: &str,
-        env: JsValue,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let resource = self.build_from_json(WireDoc::Text(json_text), options_text, env)?;
-            serde_json::to_string(&WireInstanceOut::<false>(&resource))
-                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
     }
 
@@ -6149,7 +5826,7 @@ impl ModelManagerHandle {
         run(|| {
             // P5-101 (D-3): one pass each way ([`parse_wire`], [`WireOut`])
             // and the serializer reused while the options text is unchanged
-            // ([`with_serializer_options`]), as for `serializerFromJson`.
+            // ([`with_serializer_options`]), as for `serializerFromJsonCompact`.
             self.to_json_text(WireDoc::Text(wire_text), options_text)
         })
     }
@@ -6241,205 +5918,19 @@ impl ModelManagerHandle {
         })
     }
 
-    /// Lazy views (P5-06a spike, productionised in P5-10a): loads a model
-    /// file from its JSON AST, passed as JSON text, **without registering
-    /// it**, and keeps it in this handle's staging slot. Returns its stage
-    /// id. This is the one time a lazily viewed `ModelFile`'s AST crosses
-    /// into Rust: the same typed-path load ([`model_file_from_text`], P5-06c)
-    /// [`Self::add_model_with_definitions`] and
-    /// [`Self::model_file_validate_detached`] run, so it throws exactly
-    /// what they would throw for this AST. Malformed JSON throws a JS
-    /// `SyntaxError`. Does not change the manager or its epoch. Additive.
-    #[wasm_bindgen(js_name = stageModelFile)]
-    pub fn stage_model_file(
-        &mut self,
-        ast: &str,
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<u32, JsValue> {
-        run(|| {
-            let file = model_file_from_text(ast, definitions, file_name)?;
-            Ok(self.staged.insert(file))
-        })
-    }
-
-    /// P5-28 (accordproject/concerto-rust#333): [`Self::stage_model_file`]
-    /// and the header [`model_file_from_ast_header`] would set, in one
-    /// engine call, from one decode of the AST text. Stages the file exactly
-    /// as [`Self::stage_model_file`] does (the same load, the same errors),
-    /// and returns JSON text `{"id": <stage id>, "header": <header>}`, where
-    /// `header` is [`staged_header_from_parts`]'s reading of the loaded file's
-    /// namespace and `imports` node, or `null` when it cannot vouch that
-    /// [`model_file_from_ast_header`] would set exactly that (the caller then
-    /// runs that binding, as before). Does not change the manager or its
-    /// epoch. Additive.
-    #[wasm_bindgen(js_name = stageModelFileWithHeader)]
-    pub fn stage_model_file_with_header(
-        &mut self,
-        ast: &str,
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let loaded = ModelFile::from_json_text_with_imports(ast, definitions, file_name)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            self.stage_loaded(loaded)
-        })
-    }
-
-    /// P5-69 (BC-19-b, R1; accordproject/concerto-rust#408):
-    /// [`Self::stage_model_file_with_header`] with BC-19's AST shape check
-    /// folded into the same load: one parse of the AST text and one strict
-    /// decode ([`ModelFile::from_json_text_checked_with_imports`]), where the
-    /// TS `ModelFile` constructor used to call [`Self::check_ast_shape`]
-    /// first and then stage the same text. An AST the check rejects throws
-    /// that check's `IllegalModelException` (one of its
-    /// `modelfile-load-astshape`, `-decoratorsnotarray`, `-supertypename`,
-    /// `-namenotstring` or `-nodenotobject` codes) before any part of the
-    /// load runs; otherwise the file is staged, or the load's error thrown,
-    /// exactly as [`Self::stage_model_file_with_header`] does. Returns the
-    /// same JSON text. Does not change the manager or its epoch. Additive.
-    #[wasm_bindgen(js_name = stageModelFileChecked)]
-    pub fn stage_model_file_checked(
-        &mut self,
-        ast: &str,
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let loaded =
-                ModelFile::from_json_text_checked_with_imports(ast, definitions, file_name)
-                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??;
-            self.stage_loaded(loaded)
-        })
-    }
-
-    /// P5-76 (accordproject/concerto-rust#418): [`Self::stage_model_file_checked`]
-    /// for the AST's JSON text as UTF-8 bytes (a JS `TextEncoder`'s
-    /// `encode`), which cross into WASM as one copy, where a JS string
-    /// crosses one character at a time. The same load, the same result and
-    /// the same errors as for that text. Bytes that are not UTF-8 (which a
-    /// `TextEncoder` never writes) throw a `TypeError`. Additive.
-    #[wasm_bindgen(js_name = stageModelFileCheckedUtf8)]
-    pub fn stage_model_file_checked_utf8(
-        &mut self,
-        ast: &[u8],
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        let ast = utf8_text(ast)?;
-        self.stage_model_file_checked(ast, definitions, file_name)
-    }
-
-    /// P5-76 (accordproject/concerto-rust#418): [`Self::stage_model_file_with_header`]
-    /// for the AST's JSON text as UTF-8 bytes, as
-    /// [`Self::stage_model_file_checked_utf8`] takes it. The same load, the
-    /// same result and the same errors as for that text. Additive.
-    #[wasm_bindgen(js_name = stageModelFileWithHeaderUtf8)]
-    pub fn stage_model_file_with_header_utf8(
-        &mut self,
-        ast: &[u8],
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        let ast = utf8_text(ast)?;
-        self.stage_model_file_with_header(ast, definitions, file_name)
-    }
-
-    /// P5-92 (accordproject/concerto-rust#438): [`Self::stage_model_file_checked`]
-    /// for the AST in the compact binary layout (concerto-core
-    /// `introspect::compact`, the layout of the instance fast path), which
-    /// the TS `ModelFile` constructor writes straight from an AST that
-    /// exists as a JS object (concerto-core src/engine/ast-codec.ts) where
-    /// it used to `JSON.stringify` it. The bytes are read straight into the
-    /// typed model ([`ModelFile::from_compact_checked_with_imports`]), with
-    /// BC-19's shape check folded in: the same result and the same errors as
-    /// [`Self::stage_model_file_checked`] for that AST's JSON text. Bytes not
-    /// in the layout (which the TS side never writes) throw a `TypeError`.
-    /// Does not change the manager or its epoch. Additive.
-    #[wasm_bindgen(js_name = stageModelFileCheckedCompact)]
-    pub fn stage_model_file_checked_compact(
-        &mut self,
-        ast: &[u8],
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let loaded = ModelFile::from_compact_checked_with_imports(ast, definitions, file_name)
-                .map_err(compact_layout_error)??;
-            self.stage_loaded(loaded)
-        })
-    }
-
-    /// P5-92 (accordproject/concerto-rust#438): [`Self::stage_model_file_with_header`]
-    /// for the AST in the compact binary layout, as
-    /// [`Self::stage_model_file_checked_compact`] takes it, for a manager
-    /// with BC-19's shape check off (`metamodelValidation: false`): the
-    /// same result and the same errors as for that AST's JSON text
-    /// ([`ModelFile::from_compact_with_imports`]). Additive.
-    #[wasm_bindgen(js_name = stageModelFileWithHeaderCompact)]
-    pub fn stage_model_file_with_header_compact(
-        &mut self,
-        ast: &[u8],
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let loaded = ModelFile::from_compact_with_imports(ast, definitions, file_name)
-                .map_err(compact_layout_error)??;
-            self.stage_loaded(loaded)
-        })
-    }
-
-    /// P5-94 (accordproject/concerto-rust#444): [`Self::stage_model_file_checked_compact`]
-    /// with its result in the flat layout of [`flat_staged_text`] instead
-    /// of `{"id", "header"}`, so the TS side parses one array per file
-    /// rather than two objects and an array per short name. The same load,
-    /// the same stage and the same errors. Additive.
-    #[wasm_bindgen(js_name = stageModelFileCheckedCompactFlat)]
-    pub fn stage_model_file_checked_compact_flat(
-        &mut self,
-        ast: &[u8],
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let loaded = ModelFile::from_compact_checked_with_imports(ast, definitions, file_name)
-                .map_err(compact_layout_error)??;
-            self.stage_loaded_flat(loaded)
-        })
-    }
-
-    /// P5-94: [`Self::stage_model_file_with_header_compact`] with its result
-    /// in the flat layout of [`flat_staged_text`]. Additive.
-    #[wasm_bindgen(js_name = stageModelFileWithHeaderCompactFlat)]
-    pub fn stage_model_file_with_header_compact_flat(
-        &mut self,
-        ast: &[u8],
-        definitions: Option<String>,
-        file_name: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        run(|| {
-            let loaded = ModelFile::from_compact_with_imports(ast, definitions, file_name)
-                .map_err(compact_layout_error)??;
-            self.stage_loaded_flat(loaded)
-        })
-    }
-
     /// P5-101 (D-4, D-10; accordproject/concerto-rust#455): the one staging
     /// binding, which the TS side stages every model file through: loads
     /// the AST from `ast`, its JSON text as UTF-8 bytes (a `TextEncoder`'s
     /// output, P5-76) or, with [`STAGE_COMPACT`], its compact binary layout
     /// (P5-92), with BC-19's shape check folded into the load when
     /// [`STAGE_CHECKED`] is set (P5-69), and stages it, as the bindings it
-    /// stands for do: `stageModelFileCheckedUtf8`,
+    /// stood for did (`stageModelFileCheckedUtf8`,
     /// `stageModelFileWithHeaderUtf8`, `stageModelFileCheckedCompactFlat`
-    /// and `stageModelFileWithHeaderCompactFlat` (the same load, the same
-    /// stage and the same errors). Returns the stage and its header in the
+    /// and `stageModelFileWithHeaderCompactFlat`, which P5-103 removed with
+    /// the other staging bindings). Returns the stage and its header in the
     /// flat layout ([`FlatStaged`]). Bytes that are not UTF-8, or not in the
     /// compact layout, throw a `TypeError`; malformed JSON a `SyntaxError`.
-    /// Does not change the manager or its epoch. Additive: the bindings it
-    /// stands for are unchanged.
+    /// Does not change the manager or its epoch.
     #[wasm_bindgen(js_name = stageModelFileBytes)]
     pub fn stage_model_file_bytes(
         &mut self,
@@ -6473,8 +5964,9 @@ impl ModelManagerHandle {
         })
     }
 
-    /// P5-94: [`Self::stage_loaded`], with the result in the flat layout
-    /// ([`flat_staged_text`]).
+    /// P5-94: stages a model file [`Self::stage_model_file_bytes`] has just
+    /// loaded, with the AST's own `imports` node, and returns the stage and
+    /// its header in the flat layout ([`flat_staged_text`]).
     fn stage_loaded_flat(&mut self, loaded: (ModelFile, Option<Value>)) -> Result<String> {
         let (file, imports) = loaded;
         let header = staged_header_from_parts(file.namespace(), imports.as_ref());
@@ -6482,42 +5974,6 @@ impl ModelManagerHandle {
             .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?;
         self.staged.insert(file);
         Ok(text)
-    }
-
-    /// Stages a model file the staging bindings have just loaded, with the
-    /// AST's own `imports` node, and returns their JSON text `{"id": <stage
-    /// id>, "header": <header>}` ([`Self::stage_model_file_with_header`]).
-    fn stage_loaded(&mut self, loaded: (ModelFile, Option<Value>)) -> Result<String> {
-        let (file, imports) = loaded;
-        let header = staged_header_from_parts(file.namespace(), imports.as_ref());
-        let text = StagedResult {
-            id: self.staged.next_id(),
-            header,
-        }
-        .to_text()?;
-        self.staged.insert(file);
-        Ok(text)
-    }
-
-    /// P5-73 (accordproject/concerto-rust#414): a precomputed verdict for
-    /// the two fixed system models, which the TS `BaseModelManager`
-    /// constructor and `clearModelFiles` build a `ModelFile` for on every
-    /// call, from the same constant ASTs. When `ast` is exactly the text of
-    /// one of them ([`concerto_core::rootmodel::system_model_json_texts`]),
-    /// returns the JSON text of the header [`Self::stage_model_file_checked`]
-    /// returns for it (`null` when there is none), without loading or
-    /// checking it again: that load, with BC-19's shape check, ran once on
-    /// first use, and its verdict holds for the same text. Nothing is staged
-    /// (the caller never commits a system model file, which this handle
-    /// already holds). Any other text, including any other AST of a system
-    /// namespace, returns `undefined`, and the caller loads and checks it as
-    /// before, so no AST skips the check by this binding. Does not change
-    /// the manager or its epoch. Additive.
-    /// P5-101 (D-7): also a free function, [`system_model_file_header`],
-    /// which the TS views call.
-    #[wasm_bindgen(js_name = systemModelFileHeader)]
-    pub fn system_model_file_header(&self, ast: &str) -> Option<String> {
-        system_model_file_header(ast)
     }
 
     /// P5-06a: registers a staged model file, as
@@ -6851,47 +6307,12 @@ impl ModelManagerHandle {
     //
     // A model file is not its own handle type: it already has one, the same
     // `ModelFileId` P1-04's arena gives every loaded file (`modelFileId`,
-    // `modelFileIds`, `modelFileSnapshot`, above), and its declarations
-    // already cross as the arena's own `DeclId` handles (`declarationIds`,
-    // `declarationSnapshot`) — there is nothing new to invent for either.
-    // What was missing is the handful of `ModelFile` members
-    // `modelFileSnapshot`'s plain `{namespace, version, fileName, ast}` does
-    // not already answer: `getVersion` (`version` can be `null`, which the
-    // snapshot's string cannot represent), `isSystemModelFile`, `getImports`
-    // (the resolved fully-qualified names, built-in import included, not
-    // the raw AST `imports` array `modelFileSnapshot` already exposes),
-    // `isLocalType`, `filter` and `validate` — all bound below, keyed by the
-    // same `u32` handle. `process`/`fromAst` are the constructor's own two
-    // calls (modelfile.ts), inseparable in this port
-    // (`ModelFile::from_json_with_definitions` runs both in one pass) and
-    // reached only when a file is not yet registered in any manager
-    // (`modelFileFromAst`, a free function below, since it needs none).
+    // `modelFileSnapshot`, above). Bound below, keyed by the same `u32`
+    // handle: the `ModelFile` members `modelFileSnapshot`'s plain
+    // `{namespace, version, fileName, ast}` does not already answer,
+    // `getImports` (the resolved fully-qualified names, built-in import
+    // included), `isLocalType`, `filter` and `validate`.
     // -----------------------------------------------------------------------
-
-    /// TS: `ModelFile.getVersion`. `None` (JS `undefined`) for an unversioned
-    /// namespace, which no registered file has: every namespace is required
-    /// to carry a version (`parse_namespace_version`'s own check,
-    /// model_file.rs; before BC-02, P5-50, a system model file's was exempt).
-    #[wasm_bindgen(js_name = modelFileGetVersion)]
-    pub fn model_file_get_version(
-        &self,
-        model_file: u32,
-    ) -> std::result::Result<Option<String>, JsValue> {
-        run(|| {
-            let file = self.require_file(model_file)?;
-            let version = file.version();
-            Ok((!version.is_empty()).then(|| version.to_string()))
-        })
-    }
-
-    /// TS: `ModelFile.isSystemModelFile`.
-    #[wasm_bindgen(js_name = modelFileIsSystemModelFile)]
-    pub fn model_file_is_system_model_file(
-        &self,
-        model_file: u32,
-    ) -> std::result::Result<bool, JsValue> {
-        run(|| Ok(self.require_file(model_file)?.is_system_namespace()))
-    }
 
     /// TS: `ModelFile.getImports` — the fully-qualified names this file
     /// imports (the built-in system import included for a non-system file),
@@ -6905,26 +6326,6 @@ impl ModelManagerHandle {
                 .iter()
                 .map(|n| JsValue::from_str(n))
                 .collect())
-        })
-    }
-
-    /// TS: `ModelFile.getExternalImports` — `this.importUriMap` directly:
-    /// a plain object keyed by each import's fully-qualified name, valued
-    /// by its URI, in import order (issue #263: `external_imports` returns
-    /// an `IndexMap`, so this iterates and inserts in that same order).
-    #[wasm_bindgen(js_name = modelFileGetExternalImports)]
-    pub fn model_file_get_external_imports(
-        &self,
-        model_file: u32,
-    ) -> std::result::Result<Object, JsValue> {
-        run(|| {
-            let file = self.require_file(model_file)?;
-            let out = Object::new();
-            for (fqn, uri) in file.external_imports() {
-                Reflect::set(&out, &JsValue::from_str(&fqn), &JsValue::from_str(&uri))
-                    .map_err(Error::Js)?;
-            }
-            Ok(out)
         })
     }
 
@@ -7175,8 +6576,7 @@ impl ModelManagerHandle {
     /// — the same `keep_fqn` convention `ModelManager::filter`
     /// (`BaseModelManager.filter`) already uses, so the view's own
     /// `Declaration -> bool` predicate is expected to look its argument back
-    /// up by fully-qualified name (`declarationId`) the way that binding's
-    /// caller must too. A predicate that throws propagates unchanged.
+    /// up by fully-qualified name, as the TS `ModelFile.filter` does. A predicate that throws propagates unchanged.
     ///
     /// The filtered model file, if any declaration survived, is added to
     /// `target` exactly as `addModel` would (so its declarations get the
@@ -7633,16 +7033,16 @@ pub fn check_ast_shape(ast: &str) -> std::result::Result<(), JsValue> {
 /// P5-101 (D-7, accordproject/concerto-rust#455): the precomputed system
 /// model header ([`ModelManagerHandle::system_model_file_header`]) as a
 /// free function: it reads no handle, so the TS views call it without one.
-/// Additive: the handle method stays, and calls this.
+/// P5-103 removed the handle method.
 #[wasm_bindgen(js_name = systemModelFileHeader)]
 pub fn system_model_file_header(ast: &str) -> Option<String> {
     system_model_header(ast)
 }
 
-/// [`ModelManagerHandle::system_model_file_header`]: the header text of the
+/// [`system_model_file_header`]: the header text of the
 /// fixed system model whose AST is exactly `ast`, from one checked load of
 /// that text ([`ModelFile::from_json_text_checked_with_imports`], what
-/// `stageModelFileChecked` runs) on first use. `None` for any other text.
+/// `stageModelFileBytes` runs with [`STAGE_CHECKED`]) on first use. `None` for any other text.
 fn system_model_header(ast: &str) -> Option<String> {
     caches::SYSTEM_MODEL_HEADERS.with(|cell| {
         cell.get_or_init(|| {
@@ -7676,8 +7076,8 @@ fn system_model_header(ast: &str) -> Option<String> {
 /// P5-28 (accordproject/concerto-rust#333): what [`model_file_from_ast_header`]
 /// sets on a JS `ModelFile` being constructed, read from a staged file's
 /// namespace and its AST's `imports` node instead of from the JS values, so
-/// [`ModelManagerHandle::stage_model_file_with_header`] can return it with
-/// the stage. `{namespace, version, system, shortNames, uriMap}`: `version`
+/// [`ModelManagerHandle::stage_model_file_bytes`] can return it with the
+/// stage. `{namespace, version, system, shortNames, uriMap}`: `version`
 /// is the namespace's version or `null` (TS `this.version`), `system`
 /// whether `isSystemModelFile()` holds during construction (TS: the
 /// namespace is `concerto` or starts with `concerto@`, since the file is not
@@ -7818,10 +7218,9 @@ const IMPLICIT_IMPORT_SHORT_NAMES: [(&str, &str); 5] = [
 /// the one staged-header format, which every staging path returns in the
 /// flat layout ([`FlatStaged`]): a model file staged from its AST
 /// ([`ModelManagerHandle::stage_model_file_bytes`]), a fixed system model's
-/// verdict ([`ModelManagerHandle::system_model_file_header`]) and a
-/// DecoratorManager result ([`stage_shared`]). The legacy staging bindings
-/// still serialize it as `{namespace, version, system, shortNames,
-/// uriMap}` ([`StagedResult`]), unchanged.
+/// verdict ([`system_model_file_header`]) and a DecoratorManager result
+/// ([`stage_shared`]). P5-103 removed the legacy staging bindings, which
+/// serialized it as `{namespace, version, system, shortNames, uriMap}`.
 #[derive(Debug, Serialize)]
 struct StagedHeader<'a> {
     namespace: Cow<'a, str>,
@@ -7906,21 +7305,6 @@ fn flat_staged_text(id: u32, header: Option<&StagedHeader<'_>>) -> serde_json::R
     serde_json::to_string(&FlatStaged { id, header })
 }
 
-/// What the staging bindings return: `{"id": <stage id>, "header": <header
-/// or null>}` (P5-76: serialized without a `Value`).
-#[derive(Serialize)]
-struct StagedResult<'a> {
-    id: u32,
-    header: Option<StagedHeader<'a>>,
-}
-
-impl StagedResult<'_> {
-    fn to_text(&self) -> Result<String> {
-        serde_json::to_string(self)
-            .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
-    }
-}
-
 /// `value.length`: a string primitive's own length (UTF-16 code units),
 /// which [`get`] does not read.
 fn js_length(value: &JsValue) -> Result<JsValue> {
@@ -7953,127 +7337,27 @@ fn each(value: &JsValue, expression: &str) -> Result<Vec<JsValue>> {
     ))
 }
 
-/// TS: `new ModelFile(modelManager, ast, definitions, fileName)`, before it
-/// is added to any manager — `process()` then `fromAst(this.ast)`, plus
-/// `isCompatibleVersion()` and the `localTypes` build (the constructor's own
-/// three steps, modelfile.ts). All of it runs in one pass here
-/// (`ModelFile::from_json_with_definitions`); there is no Rust-side way to
-/// call `process()` without immediately `fromAst()`-ing, so the two are one
-/// binding. `ast`, `definitions` and `file_name` are the constructor's own
-/// three arguments, as the JS values a view holds — nullish for an omitted
-/// one — so this throws the same plain `Error`s the constructor's own
-/// argument checks raise before ever reading the AST
-/// (`ModelFile::check_constructor_arguments`), ahead of any error `fromAst`/
-/// `isCompatibleVersion` themselves raise.
-///
-/// Returns the detached file's snapshot, as JSON text: `{namespace, version,
-/// fileName, ast, isSystemModelFile, imports}` (`version` is `null` for an
-/// unversioned namespace, as [`ModelManagerHandle::model_file_get_version`]
-/// is). A file returned this way has no handle: its declarations are not yet
-/// addressable until it is registered in a manager (`ModelManagerHandle::add_model`),
-/// which every caller does before it needs one.
-#[wasm_bindgen(js_name = modelFileFromAst)]
-pub fn model_file_from_ast(
-    ast: JsValue,
-    definitions: JsValue,
-    file_name: JsValue,
-) -> std::result::Result<String, JsValue> {
-    run(|| {
-        let ast_json = to_json(&ast)?;
-        let definitions_json = to_json(&definitions)?;
-        let file_name_json = to_json(&file_name)?;
-        ModelFile::check_constructor_arguments(
-            ast_json.as_ref(),
-            definitions_json.as_ref(),
-            file_name_json.as_ref(),
-        )?;
-        let ast_value = ast_json.unwrap_or(Value::Null);
-        let definitions = definitions.as_string();
-        let file_name = file_name.as_string();
-        let file = ModelFile::from_json_with_definitions(&ast_value, definitions, file_name)?;
-        let version = (!file.version().is_empty()).then(|| file.version().to_string());
-        snapshot(&json!({
-            "namespace": file.namespace(),
-            "version": version,
-            "fileName": file.file_name(),
-            "ast": file.ast(),
-            "isSystemModelFile": file.is_system_namespace(),
-            "imports": file.imported_type_names(),
-        }))
-    })
-}
-
-impl ModelManagerHandle {
-    /// A declaration, with its model file and that file's handle.
-    fn declaration_parts(
-        &self,
-        id: DeclId,
-    ) -> Result<(
-        ModelFileId,
-        &concerto_core::ModelFile,
-        &concerto_core::Declaration,
-    )> {
-        let missing = || unknown(Node::Declaration(id));
-        let found = self.manager.declaration(id).ok_or_else(missing)?;
-        let file_id = self.manager.model_file_of(id).ok_or_else(missing)?;
-        let file = self.manager.file(file_id).ok_or_else(missing)?;
-        Ok((file_id, file, found))
-    }
-
-    /// A declaration's node of its model file's AST.
-    fn declaration_ast(&self, id: DeclId) -> Result<&Value> {
-        let missing = || unknown(Node::Declaration(id));
-        let (file_id, file, _) = self.declaration_parts(id)?;
-        let index = self
-            .manager
-            .declaration_ids(file_id)
-            .position(|d| d == id)
-            .ok_or_else(missing)?;
-        file.ast()
-            .get("declarations")
-            .and_then(|declarations| declarations.get(index))
-            .ok_or_else(missing)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // DecoratorManager, DCS converter and extractor (src/decoratormanager.ts,
 // src/decoratorextractor.ts) — P4-09
 // ---------------------------------------------------------------------------
 //
-// Neither `DecoratorManager` nor `DecoratorExtractor` yet meets a
-// Rust-backed `ModelManagerHandle` (P4-08 has not run): every binding below
-// takes the plain model ASTs a view reads off its `ModelManager` with
-// `getAst`/`getModelFiles`, builds its own throwaway native `ModelManager`
-// (`model_manager_from_asts`) the way the already-reviewed P2-12 port's own
-// callers do, and hands the result's models back as one more AST for the
-// view's `new ModelManager().fromAst(...)` — the same shape `decorateModels`
-// and `DecoratorExtractor.extract` already build in TS. `dcsconverter.ts`
+// The DecoratorManager operations run on the source ModelManager's own
+// handle (`dcsDecorateModels`, `dcsExtract`, `dcsValidate`) or on a resident
+// `DcsManagerHandle` built from the model ASTs a view reads off its
+// `ModelManager` with `getAst` (P5-27, P5-55); P5-103 removed the per-call
+// bindings that built a throwaway native `ModelManager` on every call. The
+// result is staged into the new ModelManager's handle. `dcsconverter.ts`
 // stays out of this: the seam ledger classifies every one of its members TS
 // ("YAML (de)serialisation via the `yaml` npm lib ... no model semantics"),
 // so `DecoratorManager.jsonToYaml`/`yamlToJson` only need `validate` below —
 // the YAML conversion itself is unchanged TS on both sides of the view.
 
-/// `new ModelManager()` (`src/modelmanager.ts`), then `models` (a JSON
-/// array of model ASTs, none of them the system ones — a view reads them
-/// off `ModelManager.getAst(resolve, false).models`, or a per-file
-/// `getModelFiles(false).map(mf => mf.getAst())`) added the way
-/// `fromAst`/`add_model` do (P4-09).
-#[cfg(test)]
-fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
-    let mut mm = ModelManager::new()?;
-    for model in models {
-        mm.add_model_with_definitions(model, None, None)?;
-    }
-    Ok(mm)
-}
-
-/// `model_manager_from_asts`, taking the `models` array itself (anything
-/// but an array loads nothing, as `as_array().unwrap_or_default()` read it)
-/// and moving each AST into its model file
-/// ([`ModelManager::add_owned_model_with_definitions`]: same result, same
-/// errors, in the same order) rather than copying the array and then every
-/// AST in it (P5-40, F-B).
+/// `new ModelManager()` (`src/modelmanager.ts`), then the ASTs of the
+/// `models` array (anything but an array loads nothing) added the way
+/// `fromAst` does, each moved into its model file
+/// ([`ModelManager::add_owned_model_with_definitions`]) rather than copied
+/// (P5-40, F-B).
 fn model_manager_from_owned_asts(models: Value) -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     if let Value::Array(models) = models {
@@ -8082,26 +7366,6 @@ fn model_manager_from_owned_asts(models: Value) -> Result<ModelManager> {
         }
     }
     Ok(mm)
-}
-
-/// `model_manager_from_asts`, plus the namespaces of the models it added
-/// (as distinct from the system ones `ModelManager::new()` pre-loads) — for
-/// [`decorator_manager_validate`], which must hand [`dcs::validate`] only
-/// the caller's own model files: re-adding a system one to the fresh
-/// validation manager `dcs::validate` builds internally is a duplicate
-/// namespace.
-fn model_manager_from_asts_with_user_ns(
-    models: &[Value],
-) -> Result<(ModelManager, HashSet<String>)> {
-    let mut mm = ModelManager::new()?;
-    let mut user_ns = HashSet::new();
-    for model in models {
-        mm.add_model_with_definitions(model, None, None)?;
-        if let Some(ns) = model.get("namespace").and_then(Value::as_str) {
-            user_ns.insert(ns.to_string());
-        }
-    }
-    Ok((mm, user_ns))
 }
 
 /// A native `ModelManager`'s own models (the system ones included, in load
@@ -8176,22 +7440,6 @@ fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
     }
 }
 
-/// `{ modelManager, decoratorCommandSet, vocabularies }`
-/// (`ExtractDecoratorsResult`, `src/decoratormanager.ts`'s JSDoc typedef),
-/// from a native [`dcs::extractor::EncodedExtractResult`].
-///
-/// The intermediate-`Value` encoding: [`extract_result_js`]'s fallback
-/// (P5-41), with the command sets parsed back from their text (P5-57).
-fn extract_result_to_js(result: &dcs::extractor::EncodedExtractResult) -> Value {
-    let decorator_command_set: Value =
-        serde_json::from_str(&result.decorator_command_set).unwrap_or(Value::Null);
-    json!({
-        "modelManager": model_manager_to_ast(&result.model_manager),
-        "decoratorCommandSet": decorator_command_set,
-        "vocabularies": result.vocabularies,
-    })
-}
-
 /// P5-41 (F-C, accordproject/concerto-rust#351): the `{ "$class", "models" }`
 /// AST [`model_manager_to_ast`] builds, serialised straight from the
 /// manager's own model ASTs, without cloning them into a new `Value`.
@@ -8214,57 +7462,6 @@ impl serde::Serialize for ModelAstsView<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         s.collect_seq(self.0.model_files().map(ModelFile::ast))
     }
-}
-
-/// The JSON text of [`extract_result_to_js`]'s object, serialised straight
-/// from the borrowed [`dcs::extractor::EncodedExtractResult`] (same keys,
-/// same order, same bytes), plus the resident path's `staged` and
-/// `validated` keys, which [`DcsManagerHandle::extract`] appends after
-/// them. P5-41 (F-C) serialises the model ASTs without cloning them into a
-/// new `Value`; P5-57 (T3, accordproject/concerto-rust#378) splices in the
-/// command sets, which the extractor has already encoded from the borrowed
-/// AST nodes.
-fn extract_result_text(
-    result: &dcs::extractor::EncodedExtractResult,
-    staged: Option<&[Value]>,
-) -> serde_json::Result<String> {
-    let mut out = Vec::new();
-    out.extend_from_slice(b"{\"modelManager\":");
-    serde_json::to_writer(&mut out, &ModelManagerAstView(&result.model_manager))?;
-    out.extend_from_slice(b",\"decoratorCommandSet\":");
-    out.extend_from_slice(result.decorator_command_set.as_bytes());
-    out.extend_from_slice(b",\"vocabularies\":");
-    serde_json::to_writer(&mut out, &result.vocabularies)?;
-    if let Some(staged) = staged {
-        out.extend_from_slice(b",\"staged\":");
-        serde_json::to_writer(&mut out, staged)?;
-        out.extend_from_slice(b",\"validated\":true");
-    }
-    out.push(b'}');
-    // Every piece is serde_json output or a Rust `String`: valid UTF-8.
-    String::from_utf8(out).map_err(serde::ser::Error::custom)
-}
-
-/// P5-41 (F-C): the JS value of an extract result, encoded directly
-/// ([`extract_result_text`], then `JSON.parse`). Additive: the old
-/// intermediate-`Value` path ([`extract_result_to_js`] then [`to_js`]) stays
-/// as the fallback, should the direct encoding or its parse ever fail.
-fn extract_result_js(
-    result: &dcs::extractor::EncodedExtractResult,
-    staged: Option<Vec<Value>>,
-) -> JsValue {
-    if let Some(js) = extract_result_text(result, staged.as_deref())
-        .ok()
-        .and_then(|text| JSON::parse(&text).ok())
-    {
-        return js;
-    }
-    let mut out = extract_result_to_js(result);
-    if let (Some(staged), Some(map)) = (staged, out.as_object_mut()) {
-        map.insert("staged".to_string(), Value::Array(staged));
-        map.insert("validated".to_string(), Value::Bool(true));
-    }
-    to_js(&out)
 }
 
 /// TS: `DecoratorManager.falsyOrEqual`. `values` is always a plain string
@@ -8306,41 +7503,6 @@ pub fn decorator_manager_migrate_to(
     })
 }
 
-/// TS: `DecoratorManager.validate`'s structural check — the second half of
-/// the TS body (`serializer.fromJSON(decoratorCommandSet)`); the view still
-/// builds the returned `validationModelManager` itself (CTO parsing stays
-/// TS). `model_files` is `null`/`undefined` for the no-model-files overload,
-/// or an array of model ASTs (a view's own `modelFiles.map(mf =>
-/// mf.getAst())`) for the other.
-#[wasm_bindgen(js_name = decoratorManagerValidate)]
-pub fn decorator_manager_validate(
-    decorator_command_set: JsValue,
-    model_files: JsValue,
-) -> std::result::Result<(), JsValue> {
-    run(|| {
-        let command_set = to_json(&decorator_command_set)?.unwrap_or(Value::Null);
-        match to_json(&model_files)? {
-            None | Some(Value::Null) => {
-                dcs::validate(&command_set, None)?;
-            }
-            Some(models) => {
-                let models = models.as_array().cloned().unwrap_or_default();
-                let (mm, user_ns) = model_manager_from_asts_with_user_ns(&models)?;
-                // Shared with the validation manager, not copied (P5-102).
-                let files: Vec<std::sync::Arc<ModelFile>> = mm
-                    .shared_model_files()
-                    .filter(|mf| user_ns.contains(mf.namespace()))
-                    .cloned()
-                    .collect();
-                let refs: Option<&[std::sync::Arc<ModelFile>]> =
-                    if files.is_empty() { None } else { Some(&files) };
-                dcs::validate(&command_set, refs)?;
-            }
-        }
-        Ok(())
-    })
-}
-
 /// TS: `DecoratorManager.executePropertyCommand`, which mutates `property`
 /// in place and returns nothing; the view copies the mutated fields this
 /// returns back onto its own `property` object.
@@ -8354,103 +7516,6 @@ pub fn decorator_manager_execute_property_command(
         let cmd = to_json(&command)?.unwrap_or(Value::Null);
         dcs::execute_property_command(&mut prop, &cmd)?;
         Ok(to_js(&prop))
-    })
-}
-
-/// TS: `DecoratorManager.decorateModels`, after the view's own early return
-/// (an empty `decoratorCommandSet` returns `modelManager` itself, never
-/// reaching this binding) and its `Array.isArray` normalisation. `models`
-/// is `modelManager.getAst(!options.disableMetamodelResolution, false).models`,
-/// read by the view's shim (concerto `src/engine/views.ts`
-/// `decoratorManagerDecorateModels`): metamodel resolution is not ported
-/// (`dcs::decorate_models`'s doc comment), so the TS ModelManager resolves
-/// before the call, as the ts-mode body does, and the system namespaces are
-/// left out, the native manager carrying its own. The result is the new
-/// manager's own AST, for the shim's `new ModelManager({decoratorValidation})
-/// .fromAst(decoratedAst, { disableValidation })`.
-#[wasm_bindgen(js_name = decoratorManagerDecorateModels)]
-pub fn decorator_manager_decorate_models(
-    models: JsValue,
-    decorator_command_sets: JsValue,
-    options: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
-    run(|| {
-        // P5-102 (D-5): the ASTs and the command sets are moved out of
-        // their `Value`s, not copied, and the result is written as text
-        // straight from its model ASTs ([`ModelManagerAstView`]), as
-        // extract's is, with the intermediate `Value` only as the fallback.
-        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_owned_asts(models_json)?;
-
-        let mut sets = owned_array(to_json(&decorator_command_sets)?);
-
-        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
-        let mut opts = decorate_options_from_js(&options_json);
-
-        let decorated = dcs::decorate_models(&mm, &mut sets, &mut opts)?;
-        if let Some(js) = serde_json::to_string(&ModelManagerAstView(&decorated))
-            .ok()
-            .and_then(|text| JSON::parse(&text).ok())
-        {
-            return Ok(js);
-        }
-        Ok(to_js(&model_manager_to_ast(&decorated)))
-    })
-}
-
-/// TS: `DecoratorManager.extractDecorators`. `models` is
-/// `modelManager.getAst(true, false).models`: resolved on the TS side, as
-/// the ts-mode body's own `getAst(true, true)` is, with the system
-/// namespaces left out (see [`decorator_manager_decorate_models`]).
-#[wasm_bindgen(js_name = decoratorManagerExtractDecorators)]
-pub fn decorator_manager_extract_decorators(
-    models: JsValue,
-    options: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
-    run(|| {
-        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_owned_asts(models_json)?;
-        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
-        let opts = extract_options_from_js(&options_json);
-        let result = dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractAll)?;
-        Ok(extract_result_js(&result, None))
-    })
-}
-
-/// TS: `DecoratorManager.extractVocabularies`. `models` is
-/// `modelManager.getAst(true, false).models` (see
-/// [`decorator_manager_extract_decorators`]).
-#[wasm_bindgen(js_name = decoratorManagerExtractVocabularies)]
-pub fn decorator_manager_extract_vocabularies(
-    models: JsValue,
-    options: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
-    run(|| {
-        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_owned_asts(models_json)?;
-        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
-        let opts = extract_options_from_js(&options_json);
-        let result = dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractVocab)?;
-        Ok(extract_result_js(&result, None))
-    })
-}
-
-/// TS: `DecoratorManager.extractNonVocabDecorators`. `models` is
-/// `modelManager.getAst(true, false).models`, resolved on the TS side and
-/// without the system namespaces, matching the ts-mode body's own
-/// `getAst(true)` call (the one-argument overload).
-#[wasm_bindgen(js_name = decoratorManagerExtractNonVocabDecorators)]
-pub fn decorator_manager_extract_non_vocab_decorators(
-    models: JsValue,
-    options: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
-    run(|| {
-        let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let mm = model_manager_from_owned_asts(models_json)?;
-        let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
-        let opts = extract_options_from_js(&options_json);
-        let result = dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractNonVocab)?;
-        Ok(extract_result_js(&result, None))
     })
 }
 
@@ -8527,13 +7592,13 @@ fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<V
     )
 }
 
-/// The input manager of the `DecoratorManager` operations, kept resident
-/// across calls (P5-27, F6): the source models, as the view reads them off
-/// `modelManager.getAst(resolve, false).models`, loaded once
-/// ([`model_manager_from_owned_asts`], as each `decoratorManagerExtract*`
-/// binding loads them on every call). The view keeps one per source
-/// ModelManager and resolution flag, and builds a new one once that manager's epoch or model
-/// files change. The operations never change it. Additive.
+/// The input manager of the `DecoratorManager` operations (P5-27, F6), for
+/// a source ModelManager whose own handle cannot stand for it: the source
+/// models, as the view reads them off `modelManager.getAst(resolve,
+/// false).models`, loaded once ([`model_manager_from_owned_asts`]). The
+/// view builds one per operation and frees it (P5-103 removed the copy it
+/// kept per source manager, which only a manager the source handle serves
+/// could use). The operations never change it.
 #[wasm_bindgen]
 pub struct DcsManagerHandle {
     manager: ModelManager,
@@ -8542,8 +7607,7 @@ pub struct DcsManagerHandle {
 #[wasm_bindgen]
 impl DcsManagerHandle {
     /// Loads `models` (a JSON array of model ASTs, none of them the system
-    /// ones), throwing what [`decorator_manager_decorate_models`] throws
-    /// while it loads them.
+    /// ones), throwing what `new ModelManager().fromAst` throws for them.
     #[wasm_bindgen(constructor)]
     pub fn new(models: JsValue) -> std::result::Result<DcsManagerHandle, JsValue> {
         run(|| {
@@ -8553,10 +7617,10 @@ impl DcsManagerHandle {
         })
     }
 
-    /// [`decorator_manager_decorate_models`] on the resident manager, with
+    /// TS: `DecoratorManager.decorateModels` on the resident manager, with
     /// the result staged into `target` (the new ModelManager's handle, as
     /// the view's `clearModelFiles` left it). Returns `{ast, staged,
-    /// validated}`: `ast` is what that binding returns, `staged` is
+    /// validated}`: `ast` is the decorated models' AST, `staged` is
     /// [`stage_result`]'s entries for `ast.models`, and `validated` is
     /// whether the result manager was validated (every model but the system
     /// ones).
@@ -8585,8 +7649,8 @@ impl DcsManagerHandle {
     /// P5-101 (D-10, accordproject/concerto-rust#455): the three extract
     /// operations as one binding, `action` selecting which
     /// ([`extract_action`]: 0 `extractDecorators`, 1 `extractVocabularies`,
-    /// 2 `extractNonVocabDecorators`): the same result, staged the same way,
-    /// as the binding it selects. Additive: those bindings are unchanged.
+    /// 2 `extractNonVocabDecorators`), the result staged into `target`.
+    /// P5-103 removed the three per-action bindings.
     #[wasm_bindgen(js_name = extract)]
     pub fn extract_with_action(
         &self,
@@ -8597,41 +7661,6 @@ impl DcsManagerHandle {
         let action = extract_action(action).map_err(|e| throw(e, None))?;
         self.extract(target, &options, action)
     }
-
-    /// [`decorator_manager_extract_decorators`] on the resident manager,
-    /// with the result's model manager staged into `target`. Returns what
-    /// that binding returns, plus `staged` (for `modelManager.models`) and
-    /// `validated` (always `true`: the extractor validates its result).
-    #[wasm_bindgen(js_name = extractDecorators)]
-    pub fn extract_decorators(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
-        self.extract(target, &options, dcs::extractor::Action::ExtractAll)
-    }
-
-    /// [`decorator_manager_extract_vocabularies`] on the resident manager
-    /// (see [`Self::extract_decorators`]).
-    #[wasm_bindgen(js_name = extractVocabularies)]
-    pub fn extract_vocabularies(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
-        self.extract(target, &options, dcs::extractor::Action::ExtractVocab)
-    }
-
-    /// [`decorator_manager_extract_non_vocab_decorators`] on the resident
-    /// manager (see [`Self::extract_decorators`]).
-    #[wasm_bindgen(js_name = extractNonVocabDecorators)]
-    pub fn extract_non_vocab_decorators(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
-        self.extract(target, &options, dcs::extractor::Action::ExtractNonVocab)
-    }
 }
 
 #[wasm_bindgen]
@@ -8641,12 +7670,10 @@ impl ModelManagerHandle {
     /// own resident manager (P5-27, F6). The view calls it on the
     /// `validationModelManager` it has just built and returns (the
     /// metamodel, the caller's model files and the DCS model), once that
-    /// manager's rustHandle mirrors its model files; so, unlike
-    /// [`decorator_manager_validate`], it neither sends the model files
-    /// again nor rebuilds a manager from them, and [`dcs::validate_against`]
-    /// throws what [`dcs::validate`] throws at the same step. Additive:
-    /// `decoratorManagerValidate` is unchanged and remains the view's
-    /// fallback. Never changes the manager.
+    /// manager's rustHandle mirrors its model files; so it neither sends
+    /// the model files again nor rebuilds a manager from them, and
+    /// [`dcs::validate_against`] throws what [`dcs::validate`] throws at the
+    /// same step. Never changes the manager.
     #[wasm_bindgen(js_name = dcsValidate)]
     pub fn dcs_validate(&self, decorator_command_set: JsValue) -> std::result::Result<(), JsValue> {
         run(|| {
@@ -8778,9 +7805,9 @@ fn staged_extract(
 ) -> Result<JsValue> {
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let opts = extract_options_from_js(&options_json);
-    let result = dcs::extract_encoded(manager, &opts, action)?;
+    let result = dcs::extract(manager, &opts, action, false)?;
     // P5-77: staged shared, with the result's ASTs kept as text.
-    Ok(compacted_extract_js(target, result, Vec::new()).0)
+    Ok(compacted_extract_js(target, result).0)
 }
 
 // ---------------------------------------------------------------------------
@@ -8793,7 +7820,7 @@ fn staged_extract(
 // rustHandle (P4-08, P5-34), so the handle holds exactly the models a
 // [`DcsManagerHandle`] would be built from: the same ASTs, loaded the same
 // way, with the same system models. [`dcs::decorate_models`] and
-// [`dcs::extract_encoded`] resolve those models themselves
+// [`dcs::extract`] resolve those models themselves
 // (`ModelManager::models_ast`), so running them on the handle's own manager
 // skips the copy (`getAst`, then JsValue to `Value`, then the load) that a
 // cold [`DcsManagerHandle`] costs. Each operation is
@@ -8837,40 +7864,6 @@ impl ModelManagerHandle {
     ) -> std::result::Result<JsValue, JsValue> {
         run(|| self.memo_extract(target, &options, extract_action(action)?))
     }
-
-    /// [`DcsManagerHandle::extract_decorators`] on this handle's own
-    /// manager, staged into `target` (the new ModelManager's handle, never
-    /// this one). Never changes this manager.
-    #[wasm_bindgen(js_name = dcsExtractDecorators)]
-    pub fn dcs_extract_decorators(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
-        run(|| self.memo_extract(target, &options, dcs::extractor::Action::ExtractAll))
-    }
-
-    /// [`DcsManagerHandle::extract_vocabularies`] on this handle's own
-    /// manager (see [`Self::dcs_extract_decorators`]).
-    #[wasm_bindgen(js_name = dcsExtractVocabularies)]
-    pub fn dcs_extract_vocabularies(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
-        run(|| self.memo_extract(target, &options, dcs::extractor::Action::ExtractVocab))
-    }
-
-    /// [`DcsManagerHandle::extract_non_vocab_decorators`] on this handle's
-    /// own manager (see [`Self::dcs_extract_decorators`]).
-    #[wasm_bindgen(js_name = dcsExtractNonVocabDecorators)]
-    pub fn dcs_extract_non_vocab_decorators(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
-        run(|| self.memo_extract(target, &options, dcs::extractor::Action::ExtractNonVocab))
-    }
 }
 
 // P5-12c (accordproject/concerto-rust#293): `ValidatedResource.validate()`,
@@ -8910,6 +7903,33 @@ mod tests {
     fn header_value(namespace: &str, imports: Option<&Value>) -> Option<Value> {
         staged_header_from_parts(namespace, imports)
             .map(|header| serde_json::to_value(header).expect("a header serializes"))
+    }
+
+    /// The JSON text of a full extract result (`{modelManager,
+    /// decoratorCommandSet, vocabularies}`, then the resident path's
+    /// `staged` and `validated` keys), written from the borrowed
+    /// [`dcs::extractor::ExtractResult`]: the text the extract
+    /// bindings wrote before the memo (P5-41, P5-57), kept as the test
+    /// oracle of [`DcsExtractKept::result_text`] (P5-103 removed the
+    /// bindings).
+    fn extract_result_text(
+        result: &dcs::extractor::ExtractResult,
+        staged: Option<&[Value]>,
+    ) -> serde_json::Result<String> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"{\"modelManager\":");
+        serde_json::to_writer(&mut out, &model_manager_to_ast(&result.model_manager))?;
+        out.extend_from_slice(b",\"decoratorCommandSet\":");
+        out.extend_from_slice(result.decorator_command_set.as_bytes());
+        out.extend_from_slice(b",\"vocabularies\":");
+        serde_json::to_writer(&mut out, &result.vocabularies)?;
+        if let Some(staged) = staged {
+            out.extend_from_slice(b",\"staged\":");
+            serde_json::to_writer(&mut out, staged)?;
+            out.extend_from_slice(b",\"validated\":true");
+        }
+        out.push(b'}');
+        Ok(String::from_utf8(out).unwrap())
     }
 
     /// P5-56 (T2, F-A2): a repeated extract through the memo writes, byte
@@ -8955,15 +7975,14 @@ mod tests {
                 remove_decorators_from_model: remove,
                 ..dcs::ExtractOptions::default()
             };
-            let (result, source) =
-                dcs::extract_encoded_keeping_source(&handle.manager, &fill, action).unwrap();
-            let kept = DcsExtractKept::new(source, result.model_manager);
+            let result = dcs::extract(&handle.manager, &fill, action, true).unwrap();
+            let kept = DcsExtractKept::new(result.source_models.unwrap(), result.model_manager);
             for locale in ["en", "fr"] {
                 let opts = dcs::ExtractOptions {
                     remove_decorators_from_model: remove,
                     locale: locale.to_string(),
                 };
-                let full = dcs::extract_encoded(&handle.manager, &opts, action).unwrap();
+                let full = dcs::extract(&handle.manager, &opts, action, false).unwrap();
                 let mut t1 = ModelManagerHandle::new().unwrap();
                 let mut t2 = ModelManagerHandle::new().unwrap();
                 let staged = stage_result(&mut t1, &full.model_manager);
@@ -8989,107 +8008,10 @@ mod tests {
         assert!(handle.dcs_memo.get_mut().is_none());
     }
 
-    /// P5-41 (F-C) and P5-57 (T3): the direct encoding of an extract result
-    /// (the model ASTs borrowed, the command sets encoded from the borrowed
-    /// AST nodes) is, byte for byte, the JSON text of the old intermediate
-    /// `Value` route (same keys, same order, same numbers), with and without
-    /// the resident path's keys, for each extract action; so is the
-    /// fallback's `Value`.
-    #[test]
-    fn extract_result_text_matches_the_value_route() {
-        let dec = |name: &str, args: Value| json!({"$class": "concerto.metamodel@1.0.0.Decorator", "name": name, "arguments": args});
-        let model = json!({
-            "$class": "concerto.metamodel@1.0.0.Model",
-            "namespace": "org.p541@1.0.0",
-            "imports": [],
-            "decorators": [dec("Term", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "A model"}]))],
-            "declarations": [{
-                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                "name": "Person",
-                "isAbstract": false,
-                "decorators": [
-                    dec("Term", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "A person"}])),
-                    dec("Weight", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": 0.1}])),
-                ],
-                "properties": [{
-                    "$class": "concerto.metamodel@1.0.0.StringProperty",
-                    "name": "name",
-                    "isArray": false,
-                    "isOptional": false,
-                    "decorators": [
-                        dec("Term", json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "Name"}])),
-                        dec("Flag", json!([])),
-                    ],
-                }],
-            }],
-        });
-        for remove in [false, true] {
-            let Ok(mm) = model_manager_from_asts(std::slice::from_ref(&model)) else {
-                panic!("model_manager_from_asts failed");
-            };
-            let opts = dcs::ExtractOptions {
-                remove_decorators_from_model: remove,
-                locale: "en".to_string(),
-            };
-            for (action, value_route) in [
-                (
-                    dcs::extractor::Action::ExtractAll,
-                    dcs::extract_decorators
-                        as fn(
-                            &ModelManager,
-                            &dcs::ExtractOptions,
-                        )
-                            -> concerto_core::Result<dcs::extractor::ExtractResult>,
-                ),
-                (
-                    dcs::extractor::Action::ExtractVocab,
-                    dcs::extract_vocabularies,
-                ),
-                (
-                    dcs::extractor::Action::ExtractNonVocab,
-                    dcs::extract_non_vocab_decorators,
-                ),
-            ] {
-                let value = value_route(&mm, &opts).unwrap();
-                let result = dcs::extract_encoded(&mm, &opts, action).unwrap();
-                let old = json!({
-                    "modelManager": model_manager_to_ast(&value.model_manager),
-                    "decoratorCommandSet": value.decorator_command_set,
-                    "vocabularies": value.vocabularies,
-                });
-                assert_eq!(
-                    extract_result_text(&result, None).unwrap(),
-                    serde_json::to_string(&old).unwrap()
-                );
-                assert_eq!(extract_result_to_js(&result), old);
-            }
-
-            let value = dcs::extract_decorators(&mm, &opts).unwrap();
-            assert!(!value.decorator_command_set.is_empty());
-            assert!(!value.vocabularies.is_empty());
-            let result =
-                dcs::extract_encoded(&mm, &opts, dcs::extractor::Action::ExtractAll).unwrap();
-            let old = json!({
-                "modelManager": model_manager_to_ast(&value.model_manager),
-                "decoratorCommandSet": value.decorator_command_set,
-                "vocabularies": value.vocabularies,
-            });
-
-            let staged = vec![json!([0, null]), Value::Null];
-            let mut old = old;
-            let map = old.as_object_mut().unwrap();
-            map.insert("staged".to_string(), Value::Array(staged.clone()));
-            map.insert("validated".to_string(), Value::Bool(true));
-            assert_eq!(
-                extract_result_text(&result, Some(&staged)).unwrap(),
-                serde_json::to_string(&old).unwrap()
-            );
-        }
-    }
-
     /// P5-94: the flat staging result, read back the way the TS side reads
     /// it (the implicit import's short names appended for a non-system
-    /// file), is the `{"id", "header"}` result, for a canonical file, a
+    /// file), is the `{"id", "header"}` result the removed text staging
+    /// bindings returned (P5-103), for a canonical file, a
     /// system file, an unversioned system file and a file with no header.
     #[test]
     fn flat_staged_text_reads_back_as_the_staged_result() {
@@ -9138,18 +8060,9 @@ mod tests {
         for (id, (namespace, imports)) in cases.into_iter().enumerate() {
             let id = id as u32;
             let header = staged_header_from_parts(namespace, imports);
-            let object = StagedResult {
-                id,
-                header: staged_header_from_parts(namespace, imports),
-            }
-            .to_text()
-            .unwrap_or_else(|_| panic!("a staged result serializes"));
+            let object = json!({"id": id, "header": header_value(namespace, imports)});
             let flat = flat_staged_text(id, header.as_ref()).unwrap();
-            assert_eq!(
-                read_back(&flat),
-                serde_json::from_str::<Value>(&object).unwrap(),
-                "{namespace}"
-            );
+            assert_eq!(read_back(&flat), object, "{namespace}");
         }
         assert_eq!(flat_staged_text(7, None).unwrap(), "[7]");
     }
@@ -9310,7 +8223,7 @@ mod tests {
         }
     }
 
-    /// The same doubles inside a document, as `serializerFromJson` and the
+    /// The same doubles inside a document, as `serializerFromJsonCompact` and the
     /// per-field bindings decode it.
     #[test]
     fn decode_wire_keeps_nested_doubles_exact() {

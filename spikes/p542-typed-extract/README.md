@@ -16,7 +16,7 @@ with the shipped release profile (opt 3, fat LTO, 1 CGU, panic=abort):
 
 | stage | what it is |
 |---|---|
-| `extract_total` | `dcs::extract_decorators(&manager, remove=false)`, the whole call |
+| `extract_total` | `dcs::extract(&manager, remove=false, ExtractAll)`, the whole call (`dcs::extract_decorators`, the `Value` route, before P5-103) |
 | `resolve` | `ModelManager::ast(resolve, system)`: the resolved `Value` tree the extractor clones and walks (inside `extract_total`) |
 | `result_build` | `ModelManager::new()`, loading the resolved non-system models, and `validate_models()`: how `DecoratorExtractor::extract` builds the result manager (inside `extract_total`) |
 | `new_mm` | `ModelManager::new()` alone (inside `result_build`) |

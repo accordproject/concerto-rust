@@ -35,8 +35,6 @@
 //! `ResourceValidator` pass — now runs as the real, ported
 //! `Serializer.fromJSON` over plain JSON (P3-01b; `crate::instance::from_json` since P6-01), raising
 //! the same `ValidationException`-style errors TS does.
-//! [`validate_dcs_structure`] used to stand in for that; nothing here still
-//! calls it (kept for its own unit tests).
 //!
 //! **Metamodel resolution.** `decorateModels` and the `extract*` statics read
 //! `modelManager.getAst(true, …)`, which runs `BaseModelManager.resolveMetaModel`
@@ -855,171 +853,6 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
     }
 }
 
-fn structural_error(message: impl Into<String>) -> ContractError {
-    ContractError::pre_port(ErrorKind::InvalidArgument, message.into(), None)
-}
-
-fn require_string_field(obj: &Map<String, Value>, key: &str, context: &str) -> Result<()> {
-    match obj.get(key) {
-        Some(Value::String(_)) => Ok(()),
-        Some(_) => Err(structural_error(format!("{context} must be a string")).into()),
-        None => Err(structural_error(format!("{context} is required")).into()),
-    }
-}
-
-/// A hand-written structural conformance check of `decorator_command_set`
-/// against `DCS_MODEL` (`org.accordproject.decoratorcommands@0.4.0`,
-/// `src/decoratormanager.ts`) — required/optional fields and the
-/// `CommandType`/`MapElement` enums — standing in for the part of
-/// `Serializer.fromJSON(decoratorCommandSet)` after its `$class` lookup,
-/// for which no `Serializer` exists in this crate yet (module doc).
-/// Reachable through [`validate`], [`migrate_and_validate`]'s
-/// `should_validate` and [`DecorateOptions::validate`].
-///
-/// This closes the gap the schema-conformance check exists for — reject a
-/// command set with no `commands` array, a command missing `target`, an
-/// unrecognised `CommandType`/`MapElement` value — but its error text,
-/// class and location are this port's own, not a match for what
-/// `Serializer.fromJSON` throws.
-pub fn validate_dcs_structure(decorator_command_set: &Value) -> Result<()> {
-    let obj = decorator_command_set
-        .as_object()
-        .ok_or_else(|| structural_error("a decorator command set must be an object"))?;
-    require_string_field(obj, "name", "DecoratorCommandSet.name")?;
-    require_string_field(obj, "version", "DecoratorCommandSet.version")?;
-    if let Some(includes) = obj.get("includes") {
-        let arr = includes
-            .as_array()
-            .ok_or_else(|| structural_error("DecoratorCommandSet.includes must be an array"))?;
-        for (i, inc) in arr.iter().enumerate() {
-            let inc_obj = inc.as_object().ok_or_else(|| {
-                structural_error(format!(
-                    "DecoratorCommandSet.includes[{i}] must be an object"
-                ))
-            })?;
-            require_string_field(
-                inc_obj,
-                "name",
-                &format!("DecoratorCommandSet.includes[{i}].name"),
-            )?;
-            require_string_field(
-                inc_obj,
-                "version",
-                &format!("DecoratorCommandSet.includes[{i}].version"),
-            )?;
-        }
-    }
-    let commands = obj
-        .get("commands")
-        .ok_or_else(|| structural_error("DecoratorCommandSet.commands is required"))?
-        .as_array()
-        .ok_or_else(|| structural_error("DecoratorCommandSet.commands must be an array"))?;
-    for (i, command) in commands.iter().enumerate() {
-        validate_command_structure(command, i)?;
-    }
-    Ok(())
-}
-
-fn validate_command_structure(command: &Value, index: usize) -> Result<()> {
-    let obj = command
-        .as_object()
-        .ok_or_else(|| structural_error(format!("commands[{index}] must be an object")))?;
-    let target = obj
-        .get("target")
-        .ok_or_else(|| structural_error(format!("commands[{index}].target is required")))?;
-    validate_command_target_structure(target, index)?;
-    let decorator = obj
-        .get("decorator")
-        .ok_or_else(|| structural_error(format!("commands[{index}].decorator is required")))?;
-    validate_decorator_structure(decorator, index)?;
-    let ty = obj
-        .get("type")
-        .ok_or_else(|| structural_error(format!("commands[{index}].type is required")))?
-        .as_str()
-        .ok_or_else(|| structural_error(format!("commands[{index}].type must be a string")))?;
-    if !matches!(ty, "UPSERT" | "APPEND") {
-        return Err(structural_error(format!(
-            "commands[{index}].type must be UPSERT or APPEND, found {ty:?}"
-        ))
-        .into());
-    }
-    if let Some(dn) = obj.get("decoratorNamespace")
-        && !dn.is_string()
-    {
-        return Err(structural_error(format!(
-            "commands[{index}].decoratorNamespace must be a string"
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-fn validate_command_target_structure(target: &Value, index: usize) -> Result<()> {
-    let obj = target
-        .as_object()
-        .ok_or_else(|| structural_error(format!("commands[{index}].target must be an object")))?;
-    for key in ["namespace", "declaration", "property", "type"] {
-        if let Some(v) = obj.get(key)
-            && !v.is_string()
-        {
-            return Err(structural_error(format!(
-                "commands[{index}].target.{key} must be a string"
-            ))
-            .into());
-        }
-    }
-    if let Some(v) = obj.get("properties") {
-        let arr = v.as_array().ok_or_else(|| {
-            structural_error(format!(
-                "commands[{index}].target.properties must be an array"
-            ))
-        })?;
-        if arr.iter().any(|p| !p.is_string()) {
-            return Err(structural_error(format!(
-                "commands[{index}].target.properties must be an array of strings"
-            ))
-            .into());
-        }
-    }
-    if let Some(v) = obj.get("mapElement") {
-        let s = v.as_str().ok_or_else(|| {
-            structural_error(format!(
-                "commands[{index}].target.mapElement must be a string"
-            ))
-        })?;
-        if !matches!(s, "KEY" | "VALUE" | "KEY_VALUE") {
-            return Err(structural_error(format!(
-                "commands[{index}].target.mapElement must be KEY, VALUE or KEY_VALUE, found {s:?}"
-            ))
-            .into());
-        }
-    }
-    Ok(())
-}
-
-fn validate_decorator_structure(decorator: &Value, index: usize) -> Result<()> {
-    let obj = decorator.as_object().ok_or_else(|| {
-        structural_error(format!("commands[{index}].decorator must be an object"))
-    })?;
-    require_string_field(obj, "name", &format!("commands[{index}].decorator.name"))?;
-    if let Some(args) = obj.get("arguments") {
-        let arr = args.as_array().ok_or_else(|| {
-            structural_error(format!(
-                "commands[{index}].decorator.arguments must be an array"
-            ))
-        })?;
-        for (j, arg) in arr.iter().enumerate() {
-            if !arg.is_object() {
-                return Err(structural_error(format!(
-                    "commands[{index}].decorator.arguments[{j}] must be an object"
-                ))
-                .into());
-            }
-        }
-    }
-    Ok(())
-}
-
 /// The AST of `DCS_MODEL` (`src/decoratormanager.ts`), the CTO text that
 /// `DecoratorManager.validate`/`migrateAndValidate` compile with
 /// `addCTOModel`. It is concerto-metamodel 3.17.0's `lib/dcsmodel.json`
@@ -1114,9 +947,7 @@ fn validation_model_manager(
 /// The rest, populating and validating a resource from the JSON, now runs
 /// as the rest of `Serializer.fromJSON` does: its `JSONPopulator` walk and
 /// `ResourceValidator` pass, ported in full by P3-01b, over plain JSON
-/// (`crate::instance::from_json`, P6-01). [`validate_dcs_structure`] used to stand
-/// in for that; it is kept only for its own unit tests below, and is no
-/// longer reachable from here.
+/// (`crate::instance::from_json`, P6-01).
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
     let class = js_read(Some(instance), "$class")?;
     let class = match class {
@@ -1732,70 +1563,36 @@ fn models_of(ast: Value) -> Vec<Value> {
     }
 }
 
-/// `DecoratorManager.extractDecorators(modelManager, options)`
-/// (`src/decoratormanager.ts`): every decorator of every model, the system
-/// models included, extracted into command sets and vocabularies.
-pub fn extract_decorators(
-    model_manager: &ModelManager,
-    options: &ExtractOptions,
-) -> Result<extractor::ExtractResult> {
-    extractor::DecoratorExtractor::new(
-        options.remove_decorators_from_model,
-        options.locale.clone(),
-        DCS_VERSION,
-        model_manager.models_ast(true, true)?,
-        extractor::Action::ExtractAll,
-    )
-    .extract()
-}
-
-/// `DecoratorManager.extractVocabularies(modelManager, options)`
-/// (`src/decoratormanager.ts`): the vocabulary (`Term`/`Term_*`) decorators
-/// only; the result's `decorator_command_set` is always empty (TS returns
-/// no `decoratorCommandSet` at all).
-pub fn extract_vocabularies(
-    model_manager: &ModelManager,
-    options: &ExtractOptions,
-) -> Result<extractor::ExtractResult> {
-    extractor::DecoratorExtractor::new(
-        options.remove_decorators_from_model,
-        options.locale.clone(),
-        DCS_VERSION,
-        model_manager.models_ast(true, true)?,
-        extractor::Action::ExtractVocab,
-    )
-    .extract()
-}
-
-/// `DecoratorManager.extractNonVocabDecorators(modelManager, options)`
-/// (`src/decoratormanager.ts`): the non-vocabulary decorators of the user's
-/// models only (TS reads `getAst(true)`, without the system namespaces); the
-/// result's `vocabularies` is always empty (TS returns none).
-pub fn extract_non_vocab_decorators(
-    model_manager: &ModelManager,
-    options: &ExtractOptions,
-) -> Result<extractor::ExtractResult> {
-    extractor::DecoratorExtractor::new(
-        options.remove_decorators_from_model,
-        options.locale.clone(),
-        DCS_VERSION,
-        model_manager.models_ast(true, false)?,
-        extractor::Action::ExtractNonVocab,
-    )
-    .extract()
-}
-
-/// [`extract_decorators`], [`extract_vocabularies`] or
-/// [`extract_non_vocab_decorators`], by `action`, with the command sets and
-/// vocabularies encoded directly from the borrowed AST nodes (P5-57, T3,
-/// accordproject/concerto-rust#378,
-/// [`extractor::DecoratorExtractor::extract_encoded`]): the same result and
-/// the same errors, with the command sets as JSON text.
-pub fn extract_encoded(
+/// `DecoratorManager.extractDecorators`, `extractVocabularies` or
+/// `extractNonVocabDecorators(modelManager, options)`
+/// (`src/decoratormanager.ts`), by `action`, with the command sets encoded
+/// as JSON text ([`extractor::DecoratorExtractor::extract`]).
+///
+/// - [`extractor::Action::ExtractAll`] (`extractDecorators`): every
+///   decorator of every model, the system models included, extracted into
+///   command sets and vocabularies.
+/// - [`extractor::Action::ExtractVocab`] (`extractVocabularies`): the
+///   vocabulary (`Term`/`Term_*`) decorators only; the command sets are
+///   always `[]` (TS returns no `decoratorCommandSet` at all).
+/// - [`extractor::Action::ExtractNonVocab`] (`extractNonVocabDecorators`):
+///   the non-vocabulary decorators of the user's models only (TS reads
+///   `getAst(true)`, without the system namespaces); the vocabularies are
+///   always empty (TS returns none).
+///
+/// With `keep_source`, the result also holds the source models its walk
+/// read ([`extractor::ExtractResult::source_models`]; P5-56, T2, F-A2,
+/// accordproject/concerto-rust#377), so a caller that keeps them can
+/// rebuild the same command sets and vocabularies with
+/// [`encode_extract_source`] while `model_manager` is unchanged.
+///
+/// P5-103 (C-5) collapsed the per-action wrappers and the `Value` route
+/// into this one function.
+pub fn extract(
     model_manager: &ModelManager,
     options: &ExtractOptions,
     action: extractor::Action,
-) -> Result<extractor::EncodedExtractResult> {
+    keep_source: bool,
+) -> Result<extractor::ExtractResult> {
     let include_system = action != extractor::Action::ExtractNonVocab;
     extractor::DecoratorExtractor::new(
         options.remove_decorators_from_model,
@@ -1804,34 +1601,12 @@ pub fn extract_encoded(
         model_manager.models_ast(true, include_system)?,
         action,
     )
-    .extract_encoded()
+    .extract(keep_source)
 }
 
-/// [`extract_encoded`], also returning the source models its walk read
-/// (P5-56, T2, F-A2, accordproject/concerto-rust#377,
-/// [`extractor::DecoratorExtractor::extract_encoded_keeping_source`]), so a
-/// caller that keeps them can rebuild the same command sets and
-/// vocabularies with [`encode_extract_source`] while `model_manager` is
-/// unchanged. The same result and the same errors as [`extract_encoded`].
-pub fn extract_encoded_keeping_source(
-    model_manager: &ModelManager,
-    options: &ExtractOptions,
-    action: extractor::Action,
-) -> Result<(extractor::EncodedExtractResult, Vec<Value>)> {
-    let include_system = action != extractor::Action::ExtractNonVocab;
-    extractor::DecoratorExtractor::new(
-        options.remove_decorators_from_model,
-        options.locale.clone(),
-        DCS_VERSION,
-        model_manager.models_ast(true, include_system)?,
-        action,
-    )
-    .extract_encoded_keeping_source()
-}
-
-/// The command sets (JSON text) and vocabularies [`extract_encoded`] gives
+/// The command sets (JSON text) and vocabularies [`extract`] gives
 /// for `action` and `options`, rebuilt from `models`, the source models an
-/// earlier [`extract_encoded_keeping_source`] with the same `action`'s
+/// earlier [`extract`] keeping its source with the same `action`'s
 /// system flag returned (P5-56). The source models are neither resolved nor
 /// loaded again, and no result manager is built.
 pub fn encode_extract_source(
@@ -2450,40 +2225,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn validate_dcs_structure_accepts_a_well_formed_command_set() {
-        assert!(validate_dcs_structure(&valid_command_set()).is_ok());
-    }
-
-    #[test]
-    fn validate_dcs_structure_rejects_a_command_set_with_no_commands_array() {
-        // The bug this closes: `.and_then(Value::as_array)` silently
-        // skipping a missing `commands` (used to make `migrate_and_validate`
-        // accept this).
-        let mut command_set = valid_command_set();
-        command_set.as_object_mut().unwrap().remove("commands");
-        let err = validate_dcs_structure(&command_set).unwrap_err();
-        assert!(err.to_string().contains("commands"), "{err}");
-    }
-
-    #[test]
-    fn validate_dcs_structure_rejects_a_command_missing_target() {
-        let mut command_set = valid_command_set();
-        command_set["commands"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("target");
-        let err = validate_dcs_structure(&command_set).unwrap_err();
-        assert!(err.to_string().contains("target"), "{err}");
-    }
-
-    #[test]
-    fn validate_dcs_structure_rejects_an_unknown_command_type() {
-        let mut command_set = valid_command_set();
-        command_set["commands"][0]["type"] = json!("DELETE");
-        assert!(validate_dcs_structure(&command_set).is_err());
-    }
-
     /// P5-27 (F6): `validate_against` on the manager `validate` built
     /// accepts and rejects what `validate` does, with the same error.
     #[test]
@@ -2513,12 +2254,6 @@ mod tests {
             let actual = validate_against(&mgr, &bad).unwrap_err().to_string();
             assert_eq!(actual, expected, "{bad}");
         }
-    }
-
-    #[test]
-    fn validate_dcs_structure_rejects_a_non_object_command_set() {
-        assert!(validate_dcs_structure(&json!("not a command set")).is_err());
-        assert!(validate_dcs_structure(&json!(null)).is_err());
     }
 
     #[test]
@@ -2612,7 +2347,7 @@ mod tests {
 
     /// P5-56 (T2, F-A2): on a manager (system models included for
     /// `ExtractAll`/`ExtractVocab`, not for `ExtractNonVocab`),
-    /// `extract_encoded_keeping_source` gives `extract_encoded`'s result, and
+    /// `extract` keeping its source gives the same result as without, and
     /// `encode_extract_source` over the kept models rebuilds its command
     /// sets and vocabularies.
     #[test]
@@ -2646,8 +2381,9 @@ mod tests {
             extractor::Action::ExtractNonVocab,
         ] {
             let options = ExtractOptions::default();
-            let direct = extract_encoded(&mgr, &options, action).unwrap();
-            let (kept, source) = extract_encoded_keeping_source(&mgr, &options, action).unwrap();
+            let direct = extract(&mgr, &options, action, false).unwrap();
+            let mut kept = extract(&mgr, &options, action, true).unwrap();
+            let source = kept.source_models.take().unwrap();
             assert_eq!(kept.decorator_command_set, direct.decorator_command_set);
             assert_eq!(kept.vocabularies, direct.vocabularies);
             let asts = |mm: &ModelManager| {
@@ -2665,7 +2401,7 @@ mod tests {
                     remove_decorators_from_model: false,
                     locale: locale.to_string(),
                 };
-                let fresh = extract_encoded(&mgr, &options, action).unwrap();
+                let fresh = extract(&mgr, &options, action, false).unwrap();
                 let (sets, vocabularies) =
                     encode_extract_source(&source, &options, action).unwrap();
                 assert_eq!(sets, fresh.decorator_command_set, "{action:?} {locale}");

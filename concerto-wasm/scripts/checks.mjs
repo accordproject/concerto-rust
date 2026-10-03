@@ -3,8 +3,8 @@
 // one {name, ok, detail?} row per check; a smoke fails if any row is not ok.
 //
 // They cover the handle API (one ModelManagerHandle per manager, dense u32
-// handles, JSON snapshots, generation()), the error mapping through the
-// registered factory, and one of the P0-04b trial bindings.
+// model file handles, JSON snapshots, epoch()), the error mapping through
+// the registered factory, and one of the P0-04b trial bindings.
 
 const MM = 'concerto.metamodel@1.0.0';
 
@@ -66,6 +66,19 @@ function thrown(fn) {
   throw new Error('expected an exception');
 }
 
+/**
+ * The wire document of a resource (`{"@@oracle": "typed", ctor, fqn,
+ * fields}`, what `serializerToJson` reads) from `serializerFromJsonCompact`'s
+ * compact result text, as concerto-core's `materializeCompact` reads it.
+ */
+function wireOf(compactText) {
+  const [ctor, fqn, namespace, type, idField, id, timestamp, fields] = JSON.parse(compactText);
+  return {
+    '@@oracle': 'typed', ctor, fqn,
+    fields: { $namespace: namespace, $type: type, $identifierFieldName: idField, $identifier: id, $timestamp: timestamp, ...fields },
+  };
+}
+
 export function runChecks(engine) {
   const rows = [];
   const check = (name, fn) => {
@@ -79,65 +92,41 @@ export function runChecks(engine) {
   const assert = (cond, message) => {
     if (!cond) throw new Error(message);
   };
+  // `stageModelFileBytes` (P5-101), the one staging binding: the AST's
+  // JSON text as UTF-8 bytes, or its compact layout with STAGE_COMPACT; the
+  // shape check folded in with STAGE_CHECKED. Its result is the flat
+  // layout, [id, ...header].
+  const STAGE_CHECKED = 1;
+  const STAGE_COMPACT = 2;
+  const utf8 = (text) => new TextEncoder().encode(text);
+  const stageText = (h, text, definitions, fileName, flags = 0) =>
+    JSON.parse(h.stageModelFileBytes(utf8(text), definitions, fileName, flags));
+  const stageId = (h, text, fileName) => stageText(h, text, undefined, fileName)[0];
 
-  engine.setHost((payload) => new EngineError(payload), (version) => ({ version }));
+  engine.setHost((payload) => new EngineError(payload));
 
   const mm = new engine.ModelManagerHandle();
   let file;
-  let person;
 
   check('a new manager holds the system model', () => {
     // P1-07b (#101): a fresh manager preloads `concerto.decorator@1.0.0`
     // before `concerto@1.0.0`, matching TS's
     // `addDecoratorModel(); addRootModel();`, so it starts with two model
     // files, decorator first.
-    const ids = [...mm.modelFileIds()];
-    assert(ids.length === 2 && ids[0] === 0 && ids[1] === 1, `modelFileIds ${ids}`);
     assert(mm.modelFileId('concerto.decorator@1.0.0') === 0, 'concerto.decorator@1.0.0 is file 0');
     assert(mm.modelFileId('concerto@1.0.0') === 1, 'concerto@1.0.0 is file 1');
-    assert(typeof mm.declarationId('concerto@1.0.0.Concept') === 'number', 'Concept has a handle');
-    assert(typeof mm.declarationId('concerto.decorator@1.0.0.Decorator') === 'number', 'Decorator has a handle');
-    return { generation: mm.generation() };
+    assert(mm.getNamespaces().length === 2, `namespaces ${mm.getNamespaces()}`);
+    assert(mm.getTypeName('concerto@1.0.0.Concept') === 'concerto@1.0.0.Concept', 'Concept resolves');
+    return { epoch: mm.epoch() };
   });
 
-  check('addModel returns the model file handle and bumps the generation', () => {
-    const before = mm.generation();
+  check('addModel returns the model file handle and moves the epoch', () => {
+    const before = mm.epoch();
     file = mm.addModel(JSON.stringify(MODEL), 'example.cto');
     assert(typeof file === 'number', `handle ${file}`);
     assert(mm.modelFileId('org.example@1.0.0') === file, 'modelFileId agrees');
-    assert(mm.generation() === before + 1, `generation ${before} -> ${mm.generation()}`);
-    return { file, generation: mm.generation() };
-  });
-
-  check('declaration handles and snapshots', () => {
-    const ids = [...mm.declarationIds(file)];
-    assert(ids.length === 3, `declarationIds ${ids}`);
-    person = mm.declarationId('org.example@1.0.0.Person');
-    assert(person === ids[0], `Person is ${person}, first is ${ids[0]}`);
-    assert(mm.modelFileOf(person) === file, 'modelFileOf');
-    const snap = JSON.parse(mm.declarationSnapshot(person));
-    assert(snap.name === 'Person', `name ${snap.name}`);
-    assert(snap.fullyQualifiedName === 'org.example@1.0.0.Person', `fqn ${snap.fullyQualifiedName}`);
-    assert(snap.modelFile === file, 'snapshot modelFile');
-    assert(JSON.stringify(snap.ast) === JSON.stringify(MODEL.declarations[0]), 'ast is the loaded node');
-    assert(mm.declarationId('org.example@1.0.0.Nope') === undefined, 'unknown fqn is undefined');
-  });
-
-  check('property handles and snapshots', () => {
-    const props = [...mm.propertyIds(person)];
-    assert(props.length === 2, `propertyIds ${props}`);
-    const names = props.map((p) => JSON.parse(mm.propertySnapshot(p)).name);
-    assert(names.join() === 'name,age', `names ${names}`);
-    for (const p of props) assert(mm.parentOf(p) === person, 'parentOf');
-    const age = JSON.parse(mm.propertySnapshot(props[1]));
-    assert(age.declaration === person, 'snapshot declaration');
-    assert(JSON.stringify(age.ast) === JSON.stringify(MODEL.declarations[0].properties[1]), 'ast is the loaded node');
-    // P2-04 (#48): enum values get PropIds too, addressed the same way a
-    // class declaration's fields are, one per EnumProperty.
-    const color = mm.declarationId('org.example@1.0.0.Color');
-    const colorProps = [...mm.propertyIds(color)];
-    assert(colorProps.length === 1, `enum PropId count ${colorProps.length}`);
-    assert(JSON.parse(mm.propertySnapshot(colorProps[0])).name === 'RED', 'enum value name');
+    assert(mm.epoch() > before, `epoch ${before} -> ${mm.epoch()}`);
+    return { file, epoch: mm.epoch() };
   });
 
   check('model file snapshot', () => {
@@ -149,14 +138,14 @@ export function runChecks(engine) {
   });
 
   check('handles stay valid across a later load', () => {
-    const before = mm.declarationSnapshot(person);
+    const before = mm.modelFileSnapshot(file);
     mm.addModel(JSON.stringify({ ...MODEL, namespace: 'org.other@1.0.0' }));
-    assert(mm.declarationSnapshot(person) === before, 'same snapshot for the same handle');
-    assert(mm.declarationId('org.example@1.0.0.Person') === person, 'same handle');
+    assert(mm.modelFileSnapshot(file) === before, 'same snapshot for the same handle');
+    assert(mm.modelFileId('org.example@1.0.0') === file, 'same handle');
   });
 
-  check('validateModels accepts a valid model set', () => {
-    mm.validateModels();
+  check('validateModelFiles accepts a valid model set', () => {
+    mm.validateModelFiles({});
   });
 
   check('errors leave through the registered factory', () => {
@@ -168,15 +157,15 @@ export function runChecks(engine) {
     assert(dup.payload.code === 'basemodelmanager-throwalreadyexists', `code ${dup.payload.code}`);
     const bad = new engine.ModelManagerHandle();
     bad.addModel(JSON.stringify(BROKEN));
-    const invalid = thrown(() => bad.validateModels());
-    assert(invalid instanceof EngineError, `validateModels threw ${invalid}`);
+    const invalid = thrown(() => bad.validateModelFiles({}));
+    assert(invalid instanceof EngineError, `validateModelFiles threw ${invalid}`);
     bad.free();
-    const handle = thrown(() => mm.declarationSnapshot(1e6));
+    const handle = thrown(() => mm.modelFileSnapshot(1e6));
     assert(handle instanceof EngineError && handle.payload.kind === 'TypeNotFound', `unknown handle threw ${handle}`);
     const json = thrown(() => mm.addModel('{'));
     assert(json instanceof SyntaxError, `malformed JSON threw ${json}`);
     // The manager is still usable after each of them.
-    assert(mm.declarationId('org.example@1.0.0.Person') === person, 'usable after errors');
+    assert(mm.modelFileId('org.example@1.0.0') === file, 'usable after errors');
     return {
       duplicate: `${dup.payload.kind}/${dup.payload.code}: ${dup.message}`,
       validate: `${invalid.payload.kind}/${invalid.payload.code}: ${invalid.message}`,
@@ -187,7 +176,7 @@ export function runChecks(engine) {
   check('a freed manager throws', () => {
     const doomed = new engine.ModelManagerHandle();
     doomed.free();
-    thrown(() => doomed.generation());
+    thrown(() => doomed.epoch());
   });
 
   check('the trial bindings are still exported', () => {
@@ -211,8 +200,8 @@ export function runChecks(engine) {
     const env = { newId: () => 'id', nowMs: () => 0 };
     for (const n of samples) {
       const doc = { $class: 'org.example@1.0.0.Employee', name: 'n', salary: n };
-      const built = JSON.parse(mmd.serializerFromJson(JSON.stringify(doc), 'null', env));
-      assert(Object.is(built.fields.salary, n), `serializerFromJson salary ${n} returned ${built.fields.salary}`);
+      const built = wireOf(mmd.serializerFromJsonCompact(JSON.stringify(doc), 'null', env));
+      assert(Object.is(built.fields.salary, n), `serializerFromJsonCompact salary ${n} returned ${built.fields.salary}`);
       const json = JSON.parse(mmd.serializerToJson(JSON.stringify(built), 'null'));
       assert(Object.is(json.salary, n), `serializerToJson salary ${n} returned ${json.salary}`);
     }
@@ -226,11 +215,6 @@ export function runChecks(engine) {
 
   // P4-08c: the ModelFile bindings, keyed by the same model file handle.
   check('modelFile getters', () => {
-    assert(mm.modelFileGetVersion(file) === '1.0.0', 'getVersion');
-    assert(mm.modelFileIsSystemModelFile(file) === false, 'isSystemModelFile (user file)');
-    const concertoFile = mm.modelFileId('concerto@1.0.0');
-    assert(mm.modelFileIsSystemModelFile(concertoFile) === true, 'isSystemModelFile (system file)');
-    assert(mm.modelFileGetVersion(concertoFile) === '1.0.0', 'getVersion (system file, versioned namespace)');
     const imports = [...mm.modelFileGetImports(file)];
     assert(imports.includes('concerto@1.0.0.Concept'), `getImports ${imports}`);
     assert(mm.modelFileIsLocalType(file, 'Person') === true, 'isLocalType Person');
@@ -247,29 +231,13 @@ export function runChecks(engine) {
     assert(invalid instanceof EngineError, `detached validate threw ${invalid}`);
   });
 
-  check('modelFileFromAst builds a detached snapshot', () => {
-    const snap = JSON.parse(engine.modelFileFromAst(MODEL, undefined, 'inline.cto'));
-    assert(snap.namespace === 'org.example@1.0.0', `namespace ${snap.namespace}`);
-    assert(snap.version === '1.0.0', `version ${snap.version}`);
-    assert(snap.fileName === 'inline.cto', `fileName ${snap.fileName}`);
-    assert(snap.isSystemModelFile === false, 'isSystemModelFile');
-    assert(snap.imports.includes('concerto@1.0.0.Concept'), `imports ${snap.imports}`);
-    // BC-02 (R1, P5-50; DV-003 closed): an unversioned namespace is
-    // rejected, the bare `concerto` system namespace included (TS 5.0.0
-    // accepted that one, with no version).
-    const bare = thrown(() => engine.modelFileFromAst({ ...MODEL, namespace: 'concerto' }, undefined, undefined));
-    assert(bare instanceof EngineError && /unversioned namespace: concerto\b/.test(bare.message), `bare namespace threw ${bare}`);
-    const bad = thrown(() => engine.modelFileFromAst(null, undefined, undefined));
-    assert(bad instanceof EngineError && bad.payload.code === 'pre-port', `bad ast threw ${bad}`);
-  });
-
   check('modelFileFilter keeps only the predicate\'s declarations', () => {
     const target = new engine.ModelManagerHandle();
     const kept = mm.modelFileFilter(file, (fqn) => fqn === 'org.example@1.0.0.Person', target);
     assert(typeof kept === 'number', `filter returned ${kept}`);
-    const ids = [...target.declarationIds(kept)];
-    assert(ids.length === 1, `filtered declarationIds ${ids}`);
-    assert(JSON.parse(target.declarationSnapshot(ids[0])).name === 'Person', 'kept declaration');
+    const declarations = JSON.parse(target.modelFileSnapshot(kept)).ast.declarations;
+    assert(declarations.length === 1, `filtered declarations ${declarations.length}`);
+    assert(declarations[0].name === 'Person', 'kept declaration');
     const other = new engine.ModelManagerHandle();
     const dropped = mm.modelFileFilter(file, () => false, other);
     assert(dropped === undefined, `filter-to-nothing returned ${dropped}`);
@@ -278,7 +246,8 @@ export function runChecks(engine) {
     target.free();
     other.free();
     // The source manager (and the file's own handle within it) is unchanged.
-    assert(mm.declarationId('org.example@1.0.0.Person') === person, 'source manager untouched');
+    assert(mm.modelFileId('org.example@1.0.0') === file, 'source manager untouched');
+    assert(JSON.parse(mm.modelFileSnapshot(file)).ast.declarations.length === 3, 'source file untouched');
   });
 
   check('modelFileFilter gives the predicate the imported declaration\'s own FQN', () => {
@@ -330,7 +299,7 @@ export function runChecks(engine) {
   // `setDangerouslyAllowReservedSystemTypeNamesInUserModels` (P4-08a). A
   // decorator whose name is not a declared type ("Nope") is otherwise
   // silently allowed; only `missingDecorator: 'error'` turns it into a
-  // validateModels() failure (validation.rs
+  // validateModelFiles() failure (validation.rs
   // `undeclared_decorator_is_reported_before_the_duplicate_scan_when_decorator_validation_is_enabled`).
   check('setDecoratorValidation gates undeclared decorators', () => {
     const withDecorator = {
@@ -346,14 +315,14 @@ export function runChecks(engine) {
     };
     const off = new engine.ModelManagerHandle();
     off.addModel(JSON.stringify(withDecorator));
-    off.validateModels();
+    off.validateModelFiles({});
     off.free();
 
     const on = new engine.ModelManagerHandle();
     on.setDecoratorValidation({ missingDecorator: 'error' });
     on.addModel(JSON.stringify(withDecorator));
-    const err = thrown(() => on.validateModels());
-    assert(err instanceof EngineError, `validateModels threw ${err}`);
+    const err = thrown(() => on.validateModelFiles({}));
+    assert(err instanceof EngineError, `validateModelFiles threw ${err}`);
     assert(/Undeclared type/.test(err.message), `message ${err.message}`);
     on.free();
 
@@ -1075,39 +1044,35 @@ export function runChecks(engine) {
   // P5-49 (BC-19 with BC-17 and BC-20, R1): the strict AST shape check the
   // TS ModelFile constructor runs at load.
   check('checkAstShape accepts a well-formed model and rejects a malformed one (BC-19)', () => {
-    const h = new engine.ModelManagerHandle();
-    const epoch = h.epoch();
-    h.checkAstShape(JSON.stringify(MODEL));
-    assert(h.epoch() === epoch, 'the check does not move the epoch');
+    engine.checkAstShape(JSON.stringify(MODEL));
     const cases = [
       [{ ...MODEL, decorators: 'x' }, 'modelfile-load-decoratorsnotarray'],
       [{ ...MODEL, undeclared: [] }, 'modelfile-load-astshape'],
       [{ ...MODEL, declarations: [{ ...MODEL.declarations[0], name: 7 }] }, 'modelfile-load-namenotstring'],
     ];
     for (const [ast, code] of cases) {
-      const err = thrown(() => h.checkAstShape(JSON.stringify(ast)));
+      const err = thrown(() => engine.checkAstShape(JSON.stringify(ast)));
       assert(err instanceof EngineError, `${code}: threw ${err}`);
       assert(err.payload.kind === 'IllegalModel', `${code}: kind ${err.payload.kind}`);
       assert(err.payload.code === code, `${code}: code ${err.payload.code}`);
     }
-    assert(thrown(() => h.checkAstShape('{')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
+    assert(thrown(() => engine.checkAstShape('{')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
   });
 
   // P5-69 (BC-19-b, R1): the shape check folded into the staging load. A
-  // well-formed model stages as stageModelFileWithHeader stages it; a
-  // malformed one throws the check's own error, the one checkAstShape
-  // throws; an AST the check accepts but the load rejects throws the
-  // load's error.
-  check('stageModelFileChecked stages like stageModelFileWithHeader, after the shape check (BC-19-b)', () => {
+  // well-formed model stages as it does without the check; a malformed one
+  // throws the check's own error, the one checkAstShape throws; an AST the
+  // check accepts but the load rejects throws the load's error.
+  check('the checked staging load stages as the unchecked one, after the shape check (BC-19-b)', () => {
     const h = new engine.ModelManagerHandle();
     const epoch = h.epoch();
     const text = JSON.stringify(MODEL);
-    const checked = JSON.parse(h.stageModelFileChecked(text, undefined, 'm.cto'));
-    const unchecked = JSON.parse(h.stageModelFileWithHeader(text, undefined, 'm.cto'));
-    assert(typeof checked.id === 'number' && checked.id !== unchecked.id, `stage ids ${checked.id} ${unchecked.id}`);
-    assert(JSON.stringify(checked.header) === JSON.stringify(unchecked.header), 'the same header');
-    h.dropStagedModelFile(checked.id);
-    h.dropStagedModelFile(unchecked.id);
+    const checked = stageText(h, text, undefined, 'm.cto', STAGE_CHECKED);
+    const unchecked = stageText(h, text, undefined, 'm.cto');
+    assert(typeof checked[0] === 'number' && checked[0] !== unchecked[0], `stage ids ${checked[0]} ${unchecked[0]}`);
+    assert(JSON.stringify(checked.slice(1)) === JSON.stringify(unchecked.slice(1)), 'the same header');
+    h.dropStagedModelFile(checked[0]);
+    h.dropStagedModelFile(unchecked[0]);
     assert(h.epoch() === epoch, 'staging does not move the epoch');
     const malformed = [
       { ...MODEL, decorators: 'x' },
@@ -1118,8 +1083,8 @@ export function runChecks(engine) {
     ];
     for (const ast of malformed) {
       const astText = JSON.stringify(ast);
-      const expected = thrown(() => h.checkAstShape(astText));
-      const err = thrown(() => h.stageModelFileChecked(astText, undefined, 'bad.cto'));
+      const expected = thrown(() => engine.checkAstShape(astText));
+      const err = thrown(() => stageText(h, astText, undefined, 'bad.cto', STAGE_CHECKED));
       assert(err instanceof EngineError, `${astText}: threw ${err}`);
       assert(err.payload.kind === 'IllegalModel', `${astText}: kind ${err.payload.kind}`);
       assert(err.payload.code === expected.payload.code, `${astText}: code ${err.payload.code}, not ${expected.payload.code}`);
@@ -1127,50 +1092,18 @@ export function runChecks(engine) {
     }
     // Accepted by the check (a root that is not a Model), rejected by the load.
     const notAModel = JSON.stringify({ $class: `${MM}.TypeIdentifier`, name: 'X' });
-    h.checkAstShape(notAModel);
-    const err = thrown(() => h.stageModelFileChecked(notAModel, undefined, 'x.cto'));
-    const load = thrown(() => h.stageModelFileWithHeader(notAModel, undefined, 'x.cto'));
+    engine.checkAstShape(notAModel);
+    const err = thrown(() => stageText(h, notAModel, undefined, 'x.cto', STAGE_CHECKED));
+    const load = thrown(() => stageText(h, notAModel, undefined, 'x.cto'));
     assert(err instanceof EngineError && err.payload.code === load.payload.code, `load error ${err && err.payload && err.payload.code}`);
-    assert(thrown(() => h.stageModelFileChecked('{', undefined, undefined)) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
-  });
-
-  // P5-76 (accordproject/concerto-rust#418): the staging bindings for the
-  // AST's text as UTF-8 bytes stage and throw exactly as the string ones do
-  // for the same text, non-ASCII text included.
-  check('the UTF-8 staging bindings stage and throw as the string ones do (P5-76)', () => {
-    const h = new engine.ModelManagerHandle();
-    const epoch = h.epoch();
-    const bytes = (text) => new TextEncoder().encode(text);
+    assert(thrown(() => stageText(h, '{', undefined, undefined, STAGE_CHECKED)) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
+    // P5-76: non-ASCII text crosses as UTF-8 bytes; bytes that are not
+    // UTF-8 are a TypeError.
     const withText = { ...MODEL, decorators: [{ $class: `${MM}.Decorator`, name: 'd', arguments: [{ $class: `${MM}.DecoratorString`, value: 'é — 𝄞 \u0000' }] }] };
-    for (const ast of [MODEL, withText]) {
-      const text = JSON.stringify(ast);
-      for (const [name, utf8] of [['stageModelFileChecked', 'stageModelFileCheckedUtf8'], ['stageModelFileWithHeader', 'stageModelFileWithHeaderUtf8']]) {
-        const fromText = JSON.parse(h[name](text, 'def', 'm.cto'));
-        const fromBytes = JSON.parse(h[utf8](bytes(text), 'def', 'm.cto'));
-        assert(fromBytes.id === fromText.id + 1, `${utf8}: stage ids ${fromText.id} ${fromBytes.id}`);
-        assert(JSON.stringify(fromBytes.header) === JSON.stringify(fromText.header), `${utf8}: the same header`);
-        h.dropStagedModelFile(fromText.id);
-        h.dropStagedModelFile(fromBytes.id);
-      }
-    }
-    const bad = [
-      JSON.stringify({ ...MODEL, decorators: 'x' }),
-      JSON.stringify({ ...MODEL, undeclared: [] }),
-      JSON.stringify({ $class: `${MM}.TypeIdentifier`, name: 'X' }),
-      '{',
-    ];
-    for (const text of bad) {
-      for (const [name, utf8] of [['stageModelFileChecked', 'stageModelFileCheckedUtf8'], ['stageModelFileWithHeader', 'stageModelFileWithHeaderUtf8']]) {
-        const expected = thrown(() => h[name](text, undefined, 'bad.cto'));
-        const err = thrown(() => h[utf8](bytes(text), undefined, 'bad.cto'));
-        assert(err !== undefined && err.constructor === expected.constructor, `${utf8} ${text}: threw ${err}, not ${expected}`);
-        assert(err.message === expected.message, `${utf8} ${text}: message ${err.message}`);
-        if (expected instanceof EngineError) {
-          assert(err.payload.code === expected.payload.code, `${utf8} ${text}: code ${err.payload.code}`);
-        }
-      }
-    }
-    const notUtf8 = thrown(() => h.stageModelFileCheckedUtf8(new Uint8Array([0x7b, 0xff, 0x7d]), undefined, undefined));
+    const nonAscii = stageText(h, JSON.stringify(withText), 'def', 'm.cto', STAGE_CHECKED);
+    assert(JSON.stringify(nonAscii.slice(1)) === JSON.stringify(checked.slice(1)), 'the same header for non-ASCII text');
+    h.dropStagedModelFile(nonAscii[0]);
+    const notUtf8 = thrown(() => h.stageModelFileBytes(new Uint8Array([0x7b, 0xff, 0x7d]), undefined, undefined, STAGE_CHECKED));
     assert(notUtf8 instanceof TypeError, `bytes that are not UTF-8: ${notUtf8}`);
     assert(h.epoch() === epoch, 'staging does not move the epoch');
   });
@@ -1225,16 +1158,16 @@ export function runChecks(engine) {
       return new Uint8Array(out);
     };
     const withText = { ...MODEL, decorators: [{ $class: `${MM}.Decorator`, name: 'd', arguments: [{ $class: `${MM}.DecoratorNumber`, value: -2.5 }, { $class: `${MM}.DecoratorString`, value: 'é — 𝄞 \u0000' }] }] };
-    const pairs = [['stageModelFileChecked', 'stageModelFileCheckedCompact'], ['stageModelFileWithHeader', 'stageModelFileWithHeaderCompact']];
+    const pairs = [[STAGE_CHECKED, STAGE_CHECKED | STAGE_COMPACT], [0, STAGE_COMPACT]];
     for (const ast of [MODEL, withText]) {
       const text = JSON.stringify(ast);
       for (const [name, bin] of pairs) {
-        const fromText = JSON.parse(h[name](text, 'def', 'm.cto'));
-        const fromBytes = JSON.parse(h[bin](compact(ast), 'def', 'm.cto'));
-        assert(fromBytes.id === fromText.id + 1, `${bin}: stage ids ${fromText.id} ${fromBytes.id}`);
-        assert(JSON.stringify(fromBytes.header) === JSON.stringify(fromText.header), `${bin}: the same header`);
-        h.dropStagedModelFile(fromText.id);
-        h.dropStagedModelFile(fromBytes.id);
+        const fromText = stageText(h, text, 'def', 'm.cto', name);
+        const fromBytes = JSON.parse(h.stageModelFileBytes(compact(ast), 'def', 'm.cto', bin));
+        assert(fromBytes[0] === fromText[0] + 1, `${bin}: stage ids ${fromText[0]} ${fromBytes[0]}`);
+        assert(JSON.stringify(fromBytes.slice(1)) === JSON.stringify(fromText.slice(1)), `${bin}: the same header`);
+        h.dropStagedModelFile(fromText[0]);
+        h.dropStagedModelFile(fromBytes[0]);
       }
     }
     const bad = [
@@ -1245,8 +1178,8 @@ export function runChecks(engine) {
     ];
     for (const ast of bad) {
       for (const [name, bin] of pairs) {
-        const expected = thrown(() => h[name](JSON.stringify(ast), undefined, 'bad.cto'));
-        const err = thrown(() => h[bin](compact(ast), undefined, 'bad.cto'));
+        const expected = thrown(() => stageText(h, JSON.stringify(ast), undefined, 'bad.cto', name));
+        const err = thrown(() => h.stageModelFileBytes(compact(ast), undefined, 'bad.cto', bin));
         assert(err !== undefined && err.constructor === expected.constructor, `${bin} ${JSON.stringify(ast)}: threw ${err}, not ${expected}`);
         if (expected instanceof EngineError) {
           assert(err.payload.code === expected.payload.code, `${bin} ${JSON.stringify(ast)}: code ${err.payload.code}`);
@@ -1254,7 +1187,7 @@ export function runChecks(engine) {
       }
     }
     for (const bytes of [new Uint8Array([]), new Uint8Array([9]), new Uint8Array([0, 0]), new Uint8Array([5, 1, 0, 0, 0, 0xff])]) {
-      const err = thrown(() => h.stageModelFileCheckedCompact(bytes, undefined, undefined));
+      const err = thrown(() => h.stageModelFileBytes(bytes, undefined, undefined, STAGE_CHECKED | STAGE_COMPACT));
       assert(err instanceof TypeError, `bytes not in the layout: ${err}`);
     }
     assert(h.epoch() === epoch, 'staging does not move the epoch');
@@ -1300,13 +1233,11 @@ export function runChecks(engine) {
       }
       return object(entries);
     };
-    const bindings = ['stageModelFileCheckedCompact', 'stageModelFileWithHeaderCompact', 'stageModelFileCheckedCompactFlat', 'stageModelFileWithHeaderCompactFlat']
-      .filter((name) => typeof h[name] === 'function');
-    assert(bindings.length === 4, `the compact staging bindings: ${bindings}`);
+    const bindings = [STAGE_CHECKED | STAGE_COMPACT, STAGE_COMPACT];
+    const stage = (flags, bytes, fileName) => h.stageModelFileBytes(new Uint8Array(bytes), undefined, fileName, flags);
     const valid = model('', []);
     for (const name of bindings) {
-      const staged = JSON.parse(h[name](new Uint8Array(valid), undefined, 'm.cto'));
-      h.dropStagedModelFile(Array.isArray(staged) ? staged[0] : staged.id);
+      h.dropStagedModelFile(JSON.parse(stage(name, valid, 'm.cto'))[0]);
     }
     const deep = [];
     for (let i = 0; i < 600; i++) {
@@ -1338,13 +1269,12 @@ export function runChecks(engine) {
     }
     for (const [what, bytes] of cases) {
       for (const name of bindings) {
-        const err = thrown(() => h[name](new Uint8Array(bytes), undefined, 'bad.cto'));
-        assert(err instanceof TypeError, `${name}, ${what}: threw ${err}`);
+        const err = thrown(() => stage(name, bytes, 'bad.cto'));
+        assert(err instanceof TypeError, `flags ${name}, ${what}: threw ${err}`);
       }
     }
     for (const name of bindings) {
-      const staged = JSON.parse(h[name](new Uint8Array(valid), undefined, 'm.cto'));
-      h.dropStagedModelFile(Array.isArray(staged) ? staged[0] : staged.id);
+      h.dropStagedModelFile(JSON.parse(stage(name, valid, 'm.cto'))[0]);
     }
     assert(h.epoch() === epoch, 'staging does not move the epoch');
   });
@@ -1355,14 +1285,11 @@ export function runChecks(engine) {
   // any other text, a malformed one or one that is not JSON included, gets
   // none, so the caller loads and checks it, and nothing is staged.
   check('systemModelFileHeader gives no verdict for any other text (P5-73)', () => {
-    const h = new engine.ModelManagerHandle();
-    const epoch = h.epoch();
     const rootLike = { ...MODEL, namespace: 'concerto@1.0.0' };
     for (const text of ['', '{', JSON.stringify(MODEL), JSON.stringify(rootLike), JSON.stringify({ ...rootLike, decorators: 'x' })]) {
-      const header = h.systemModelFileHeader(text);
+      const header = engine.systemModelFileHeader(text);
       assert(header === undefined, `${text}: ${header}`);
     }
-    assert(h.epoch() === epoch, 'does not move the epoch');
   });
 
   // P5-61 (BR-09, maintainer decision 2026-09-30): with the shape check off
@@ -1390,8 +1317,7 @@ export function runChecks(engine) {
     for (const ast of malformed) {
       const text = JSON.stringify(ast);
       for (const load of [
-        () => h.stageModelFile(text, undefined, 'bad.cto'),
-        () => h.stageModelFileWithHeader(text, undefined, 'bad.cto'),
+        () => stageText(h, text, undefined, 'bad.cto'),
         () => h.addModelWithDefinitions(text, undefined, 'bad.cto', false),
       ]) {
         const err = thrown(load);
@@ -1410,7 +1336,7 @@ export function runChecks(engine) {
     const h = new engine.ModelManagerHandle();
     const text = JSON.stringify({ ...MODEL, namespace: 'org.staged@1.0.0' });
     const epoch = h.epoch();
-    const stage = h.stageModelFile(text, undefined, 'staged.cto');
+    const stage = stageId(h, text, 'staged.cto');
     assert(typeof stage === 'number', `stage ${stage}`);
     assert(h.epoch() === epoch, 'staging does not move the epoch');
     assert(h.modelFileId('org.staged@1.0.0') === undefined, 'a staged file is not registered');
@@ -1422,18 +1348,18 @@ export function runChecks(engine) {
     assert(h.modelFileValidateStaged(stage) === false, 'a committed stage is gone');
     h.dropStagedModelFile(stage);
     // Registering the same namespace again fails as addModelWithDefinitions does.
-    const again = h.stageModelFile(text, undefined, 'staged.cto');
+    const again = stageId(h, text, 'staged.cto');
     const viaStage = thrown(() => h.commitStagedModelFile(again));
     const viaText = thrown(() => h.addModelWithDefinitions(text, undefined, 'staged.cto', false));
     assert(viaStage.message === viaText.message, `${viaStage.message} vs ${viaText.message}`);
     // A load error is the one the text path raises.
     const bad = JSON.stringify({ ...MODEL, namespace: 'org.bad@1.0.0', declarations: [{ $class: `${MM}.Nope`, name: 'X' }] });
-    const stageErr = thrown(() => h.stageModelFile(bad, undefined, 'bad.cto'));
+    const stageErr = thrown(() => stageId(h, bad, 'bad.cto'));
     const textErr = thrown(() => h.addModelWithDefinitions(bad, undefined, 'bad.cto', false));
     assert(stageErr.message === textErr.message, `${stageErr.message} vs ${textErr.message}`);
     // Invalid content is reported by validateStaged as by validateDetached.
     const broken = JSON.stringify(BROKEN);
-    const s2 = h.stageModelFile(broken, undefined, 'broken.cto');
+    const s2 = stageId(h, broken, 'broken.cto');
     const e1 = thrown(() => h.modelFileValidateStaged(s2));
     const e2 = thrown(() => h.modelFileValidateDetached(broken, undefined, 'broken.cto'));
     assert(e1.message === e2.message, `${e1.message} vs ${e2.message}`);
@@ -1446,7 +1372,7 @@ export function runChecks(engine) {
   check('validateAndCommitStagedModelFile validates, then commits', () => {
     const h = new engine.ModelManagerHandle();
     const text = JSON.stringify({ ...MODEL, namespace: 'org.staged@1.0.0' });
-    const stage = h.stageModelFile(text, undefined, 'staged.cto');
+    const stage = stageId(h, text, 'staged.cto');
     const epoch = h.epoch();
     const id = h.validateAndCommitStagedModelFile(stage);
     assert(id === h.modelFileId('org.staged@1.0.0'), `returned ${id}`);
@@ -1454,7 +1380,7 @@ export function runChecks(engine) {
     assert(h.validateAndCommitStagedModelFile(stage) === undefined, 'a stage commits once');
     // Invalid content throws what validateStaged throws, and stays staged.
     const broken = JSON.stringify(BROKEN);
-    const s2 = h.stageModelFile(broken, undefined, 'broken.cto');
+    const s2 = stageId(h, broken, 'broken.cto');
     const before = h.epoch();
     const e1 = thrown(() => h.validateAndCommitStagedModelFile(s2));
     const e2 = thrown(() => h.modelFileValidateStaged(s2));
@@ -1463,8 +1389,8 @@ export function runChecks(engine) {
     assert(h.modelFileId(JSON.parse(broken).namespace) === undefined, 'not registered');
     h.dropStagedModelFile(s2);
     // A registration error is the one commitStaged raises.
-    const again = h.stageModelFile(text, undefined, 'staged.cto');
-    const again2 = h.stageModelFile(text, undefined, 'staged.cto');
+    const again = stageId(h, text, 'staged.cto');
+    const again2 = stageId(h, text, 'staged.cto');
     const viaBoth = thrown(() => h.validateAndCommitStagedModelFile(again));
     const viaCommit = thrown(() => h.commitStagedModelFile(again2));
     assert(viaBoth.message === viaCommit.message, `${viaBoth.message} vs ${viaCommit.message}`);
@@ -1480,9 +1406,9 @@ export function runChecks(engine) {
     const h = new engine.ModelManagerHandle();
     const unknownKind = thrown(() => h.serializerToJson('{"@@oracle":"nope"}', 'null'));
     assert(unknownKind.payload?.fastPathUnsupported === true, `kind: ${JSON.stringify(unknownKind.payload)}`);
-    const badOptions = thrown(() => h.serializerFromJson('{}', '{"a":{"@@oracle":"number","value":"x"}}', { newId: () => 'x', nowMs: () => 0 }));
+    const badOptions = thrown(() => h.serializerFromJsonCompact('{}', '{"a":{"@@oracle":"number","value":"x"}}', { newId: () => 'x', nowMs: () => 0 }));
     assert(badOptions.payload?.fastPathUnsupported === true, `options: ${JSON.stringify(badOptions.payload)}`);
-    const noClass = thrown(() => h.serializerFromJson('{}', 'null', { newId: () => 'x', nowMs: () => 0 }));
+    const noClass = thrown(() => h.serializerFromJsonCompact('{}', 'null', { newId: () => 'x', nowMs: () => 0 }));
     assert(noClass.payload && noClass.payload.fastPathUnsupported === undefined, `no class: ${JSON.stringify(noClass.payload)}`);
     assert(thrown(() => h.serializerToJson('{', 'null')) instanceof SyntaxError, 'malformed JSON is a SyntaxError');
     h.free();
@@ -1495,11 +1421,11 @@ export function runChecks(engine) {
   check('validateAndCommitStagedModelFile runs the metamodel check first (P5-101)', () => {
     const h = new engine.ModelManagerHandle();
     const text = JSON.stringify({ ...MODEL, namespace: 'org.mm@1.0.0' });
-    const id = h.validateAndCommitStagedModelFile(h.stageModelFile(text, undefined, 'mm.cto'), true);
+    const id = h.validateAndCommitStagedModelFile(stageId(h, text, 'mm.cto'), true);
     assert(id === h.modelFileId('org.mm@1.0.0'), `returned ${id}`);
     const wrongVersion = JSON.stringify({ ...MODEL, $class: 'concerto.metamodel@0.4.0.Model', namespace: 'org.v@1.0.0' });
-    const s1 = h.stageModelFile(wrongVersion, undefined, 'v.cto');
-    const s2 = h.stageModelFile(wrongVersion, undefined, 'v.cto');
+    const s1 = stageId(h, wrongVersion, 'v.cto');
+    const s2 = stageId(h, wrongVersion, 'v.cto');
     const viaCommit = thrown(() => h.validateAndCommitStagedModelFile(s1, true));
     const viaStaged = thrown(() => h.validateAstStaged(s2));
     assert(viaCommit && viaStaged && viaCommit.constructor === viaStaged.constructor, `${viaCommit} vs ${viaStaged}`);
@@ -1509,19 +1435,16 @@ export function runChecks(engine) {
     h.free();
   });
 
-  // P5-101 (D-4, D-10): the one staging binding stages as the bindings it
-  // stands for, from UTF-8 text or the compact layout, checked or not, and
-  // returns the stage in the flat layout.
-  check('stageModelFileBytes stages as the bindings it stands for (P5-101)', () => {
+  // P5-101 (D-4, D-10): the one staging binding stages from UTF-8 text or
+  // the compact layout, checked or not, and returns the stage in the flat
+  // layout.
+  check('stageModelFileBytes stages in the flat layout (P5-101)', () => {
     const h = new engine.ModelManagerHandle();
     const text = JSON.stringify(MODEL);
-    const utf8 = new TextEncoder().encode(text);
-    for (const [flags, legacy] of [[0, 'stageModelFileWithHeaderUtf8'], [1, 'stageModelFileCheckedUtf8']]) {
-      const flat = JSON.parse(h.stageModelFileBytes(utf8, undefined, 'm.cto', flags));
-      const object = JSON.parse(h[legacy](utf8, undefined, 'm.cto'));
-      assert(Array.isArray(flat) && flat[1] === object.header.namespace && flat[2] === object.header.version, `flags ${flags}: ${JSON.stringify(flat)}`);
+    for (const flags of [0, STAGE_CHECKED]) {
+      const flat = JSON.parse(h.stageModelFileBytes(utf8(text), undefined, 'm.cto', flags));
+      assert(Array.isArray(flat) && flat[1] === MODEL.namespace && flat[2] === '1.0.0' && flat[3] === false, `flags ${flags}: ${JSON.stringify(flat)}`);
       h.dropStagedModelFile(flat[0]);
-      h.dropStagedModelFile(object.id);
     }
     const notUtf8 = thrown(() => h.stageModelFileBytes(new Uint8Array([0xff]), undefined, undefined, 0));
     assert(notUtf8 instanceof TypeError, `not UTF-8: ${notUtf8}`);
@@ -1562,13 +1485,12 @@ export function runChecks(engine) {
     assert(h.commitStagedModelFiles(ids) === true, 'committed');
     assert(ids[0] === h.modelFileId('org.example@1.0.0') && ids[1] === h.modelFileId('org.second@1.0.0'), `ids ${ids}`);
     assert(h.epoch() !== epoch, 'the epoch moved');
-    // D-7: the free functions answer as the handle methods.
+    // D-7: the free functions (P5-103 removed the handle methods).
     engine.checkAstShape(JSON.stringify(MODEL));
     const bad = JSON.stringify({ ...MODEL, declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 1 }] });
     const viaFree = thrown(() => engine.checkAstShape(bad));
-    const viaHandle = thrown(() => h.checkAstShape(bad));
-    assert(viaFree && viaHandle && viaFree.message === viaHandle.message, `${viaFree} vs ${viaHandle}`);
-    assert(engine.systemModelFileHeader('{}') === undefined && h.systemModelFileHeader('{}') === undefined, 'no header');
+    assert(viaFree instanceof EngineError && viaFree.payload.kind === 'IllegalModel', `${viaFree}`);
+    assert(engine.systemModelFileHeader('{}') === undefined, 'no header');
     // D-10: by slot, a valid value is 0, a validation error its message, a
     // stale slot 4; no slot for a missing property.
     const slot = h.validationPropertySlot('org.example@1.0.0.Person', 'name');
@@ -1592,7 +1514,7 @@ export function runChecks(engine) {
     const errText = thrown(() => h.serializerFromJsonCompact(JSON.stringify(doc), 'null', env));
     const errBytes = thrown(() => h.serializerFromJsonCompactBytes(compact(doc), 'null', env));
     assert(errText && errBytes && errText.message === errBytes.message && JSON.stringify(errText.payload) === JSON.stringify(errBytes.payload), `${errText} vs ${errBytes}`);
-    const built = JSON.parse(h.serializerFromJson(JSON.stringify({ $class: 'org.example@1.0.0.Employee', name: 'n', salary: 2.5 }), 'null', env));
+    const built = wireOf(h.serializerFromJsonCompact(JSON.stringify({ $class: 'org.example@1.0.0.Employee', name: 'n', salary: 2.5 }), 'null', env));
     assert(h.serializerToJson(JSON.stringify(built), 'null') === h.serializerToJsonBytes(compact(built), 'null'), 'toJSON');
     const notLayout = thrown(() => h.serializerToJsonBytes(new Uint8Array([9]), 'null'));
     assert(notLayout.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayout.payload)}`);
@@ -1601,7 +1523,7 @@ export function runChecks(engine) {
 
   // P5-10a lazy views: the per-file view snapshot gives each declaration
   // the decisions the per-element bindings give its view, and each property
-  // the modelFilePropertySnapshots entry.
+  // an entry.
   check('modelFileViewSnapshot matches the per-element bindings', () => {
     const ns = 'org.snap@1.0.0';
     const ast = {
@@ -1625,14 +1547,14 @@ export function runChecks(engine) {
     };
     const text = JSON.stringify(ast);
     const snapshot = JSON.parse(engine.modelFileViewSnapshot(text, ns));
-    const properties = JSON.parse(engine.modelFilePropertySnapshots(text));
     assert(snapshot.length === ast.declarations.length, `length ${snapshot.length}`);
     const modelFile = { isSystemModelFile: () => false };
     ast.declarations.forEach((declaration, i) => {
       const { d, p } = snapshot[i];
-      // P5-10b's extra keys (checked below) aside.
-      const base = p && p.map((entry) => entry && { p: entry.p, f: entry.f });
-      assert(JSON.stringify(base) === JSON.stringify(properties[i]), `${declaration.name}: properties differ`);
+      // One entry per property, named as the property is (the entries
+      // themselves are checked against the per-element bindings below).
+      const names = p && p.map((entry) => entry && entry.p.name);
+      assert(JSON.stringify(names) === JSON.stringify(declaration.properties.map((x) => x.name)), `${declaration.name}: properties ${JSON.stringify(names)}`);
       if (!engine.modelUtilIsValidIdentifier(declaration.name)) {
         assert(d === null, `${declaration.name}: an invalid name has an entry`);
         return;
@@ -1835,14 +1757,16 @@ export function runChecks(engine) {
     }
     target.validateModelFiles({});
     assert(target.modelFileId('org.other@2.0.0') !== undefined, 'committed');
-    const extracted = dcs.extractDecorators(target, { removeDecoratorsFromModel: true, locale: 'en' });
+    const extracted = dcs.extract(target, { removeDecoratorsFromModel: true, locale: 'en' }, 0);
     assert(extracted.validated === true && extracted.modelManager.models.length === extracted.staged.length, 'extract staged');
     dcs.free();
     target.free();
   });
 
   // P5-27 (F6): DecoratorManager.validate's check against the handle's own
-  // manager throws what the per-call decoratorManagerValidate throws.
+  // manager (P5-103 removed the per-call decoratorManagerValidate it was
+  // compared with): a command set that does not validate throws through the
+  // factory.
   check('dcsValidate checks against the resident manager', () => {
     const h = new engine.ModelManagerHandle();
     h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, undefined, false);
@@ -1856,17 +1780,17 @@ export function runChecks(engine) {
       { $class: 'org.example@1.0.0.Person', name: 1 },
     ]) {
       const viaHandle = thrown(() => h.dcsValidate(bad));
-      const perCall = thrown(() => engine.decoratorManagerValidate(bad, [MODEL]));
-      assert(viaHandle.constructor.name === perCall.constructor.name && viaHandle.message === perCall.message,
-        `${viaHandle.constructor.name}: ${viaHandle.message} vs ${perCall.constructor.name}: ${perCall.message}`);
+      assert(viaHandle instanceof EngineError, `${JSON.stringify(bad)}: threw ${viaHandle}`);
     }
+    assert(h.epoch() === epoch, 'a failed check leaves the manager unchanged');
     h.free();
   });
 
   // P5-55 (T1, F-A1): the DCS operations on a ModelManagerHandle's own
   // manager give what the DcsManagerHandle ones give, stage the same way,
-  // and leave the handle (and its epoch) unchanged.
-  check('dcsDecorateModels and dcsExtract* run on the handle itself', () => {
+  // and leave the handle (and its epoch) unchanged. P5-101 (D-10): one
+  // extract binding, by action.
+  check('dcsDecorateModels and dcsExtract run on the handle itself', () => {
     const h = new engine.ModelManagerHandle();
     h.addModelWithDefinitions(JSON.stringify(MODEL), undefined, undefined, false);
     const dcs = new engine.DcsManagerHandle([MODEL]);
@@ -1882,30 +1806,19 @@ export function runChecks(engine) {
     const epoch = h.epoch();
     const pairs = [
       ['dcsDecorateModels', 'decorateModels', [[commandSet], {}]],
-      ['dcsExtractDecorators', 'extractDecorators', [{ removeDecoratorsFromModel: true, locale: 'en' }]],
-      ['dcsExtractVocabularies', 'extractVocabularies', [{ removeDecoratorsFromModel: false, locale: 'en' }]],
-      ['dcsExtractNonVocabDecorators', 'extractNonVocabDecorators', [{ removeDecoratorsFromModel: true, locale: 'en' }]],
+      ['dcsExtract', 'extract', [{ removeDecoratorsFromModel: true, locale: 'en' }, 0]],
+      ['dcsExtract', 'extract', [{ removeDecoratorsFromModel: false, locale: 'en' }, 1]],
+      ['dcsExtract', 'extract', [{ removeDecoratorsFromModel: true, locale: 'en' }, 2]],
     ];
     for (const [own, resident, args] of pairs) {
       const t1 = new engine.ModelManagerHandle();
       const t2 = new engine.ModelManagerHandle();
       const a = h[own](t1, ...structuredClone(args));
       const b = dcs[resident](t2, ...structuredClone(args));
-      assert(JSON.stringify(a) === JSON.stringify(b), `${own}: ${JSON.stringify(a).slice(0, 200)}`);
+      assert(JSON.stringify(a) === JSON.stringify(b), `${own} ${JSON.stringify(args)}: ${JSON.stringify(a).slice(0, 200)}`);
       assert(a.staged.some((s) => Array.isArray(s)), `${own} staged`);
       t1.free();
       t2.free();
-    }
-    // P5-101 (D-10): the one extract binding of each, by action, gives
-    // what the binding for that action gives.
-    for (const [action, own, resident] of [[0, 'dcsExtractDecorators', 'extractDecorators'], [1, 'dcsExtractVocabularies', 'extractVocabularies'], [2, 'dcsExtractNonVocabDecorators', 'extractNonVocabDecorators']]) {
-      const options = { removeDecoratorsFromModel: action !== 1, locale: 'en' };
-      const ts = [0, 1, 2, 3].map(() => new engine.ModelManagerHandle());
-      const viaOne = JSON.stringify(h.dcsExtract(ts[0], structuredClone(options), action));
-      assert(viaOne === JSON.stringify(h[own](ts[1], structuredClone(options))), `dcsExtract ${action}`);
-      const viaResident = JSON.stringify(dcs.extract(ts[2], structuredClone(options), action));
-      assert(viaResident === JSON.stringify(dcs[resident](ts[3], structuredClone(options))), `extract ${action}`);
-      ts.forEach((x) => x.free());
     }
     assert(thrown(() => h.dcsExtract(new engine.ModelManagerHandle(), {}, 3)) instanceof Error, 'an unknown action throws');
     assert(h.epoch() === epoch, 'the handle is unchanged');
@@ -1919,9 +1832,10 @@ export function runChecks(engine) {
     const hb = new engine.ModelManagerHandle();
     hb.addModelWithDefinitions(JSON.stringify(bad), undefined, undefined, false);
     const t = new engine.ModelManagerHandle();
-    const viaHandle = thrown(() => hb.dcsExtractDecorators(t, {}));
-    const perCall = thrown(() => engine.decoratorManagerExtractDecorators([bad], {}));
-    assert(viaHandle.constructor.name === perCall.constructor.name, `${viaHandle.constructor.name} vs ${perCall.constructor.name}`);
+    const viaHandle = thrown(() => hb.dcsExtract(t, {}, 0));
+    const viaResident = thrown(() => new engine.DcsManagerHandle([bad]).extract(new engine.ModelManagerHandle(), {}, 0));
+    assert(viaHandle.constructor.name === viaResident.constructor.name && viaHandle.message === viaResident.message,
+      `${viaHandle.constructor.name} vs ${viaResident.constructor.name}`);
     for (const x of [h, hb, t, dcs]) {
       x.free();
     }
@@ -1931,9 +1845,9 @@ export function runChecks(engine) {
   // removeDecoratorsFromModel: false extract (the memo is filled on the
   // second call, used from the third) gives what the resident handle gives,
   // with any action and locale; a model change is seen by the next call; a
-  // returned result is the caller's own; dropDcsMemo and a throwing call
-  // change nothing; the epoch never moves.
-  check('dcsExtract* repeated calls through the memo', () => {
+  // returned result is the caller's own; a throwing call changes nothing;
+  // the epoch never moves.
+  check('dcsExtract repeated calls through the memo', () => {
     const str = (v) => [{ $class: `${MM}.DecoratorString`, value: v }];
     const dec = (name, args) => ({ $class: `${MM}.Decorator`, name, arguments: args });
     const DECORATED = {
@@ -1954,61 +1868,53 @@ export function runChecks(engine) {
     const h = new engine.ModelManagerHandle();
     h.addModelWithDefinitions(JSON.stringify(DECORATED), undefined, undefined, false);
     const epoch = h.epoch();
-    const same = (own, resident, models, opts, label) => {
+    const same = (action, models, opts, label) => {
       const dcs = new engine.DcsManagerHandle(models);
       const t1 = new engine.ModelManagerHandle();
       const t2 = new engine.ModelManagerHandle();
-      const a = h[own](t1, structuredClone(opts));
-      const b = dcs[resident](t2, structuredClone(opts));
+      const a = h.dcsExtract(t1, structuredClone(opts), action);
+      const b = dcs.extract(t2, structuredClone(opts), action);
       const ja = JSON.stringify(a);
-      assert(ja === JSON.stringify(b), `${label} ${own}: ${ja.slice(0, 200)}`);
-      assert(a.staged.some((s) => Array.isArray(s)), `${label} ${own} staged`);
+      assert(ja === JSON.stringify(b), `${label} ${action}: ${ja.slice(0, 200)}`);
+      assert(a.staged.some((s) => Array.isArray(s)), `${label} ${action} staged`);
       for (const x of [dcs, t1, t2]) {
         x.free();
       }
       return a;
     };
-    const ops = [
-      ['dcsExtractDecorators', 'extractDecorators'],
-      ['dcsExtractVocabularies', 'extractVocabularies'],
-      ['dcsExtractNonVocabDecorators', 'extractNonVocabDecorators'],
-    ];
+    const actions = [0, 1, 2];
     const keep = { removeDecoratorsFromModel: false, locale: 'en' };
-    for (const [own, resident] of ops) {
+    for (const action of actions) {
       for (let i = 0; i < 4; i++) {
-        same(own, resident, [DECORATED], i === 3 ? { removeDecoratorsFromModel: false, locale: 'fr' } : keep, `call ${i}`);
+        same(action, [DECORATED], i === 3 ? { removeDecoratorsFromModel: false, locale: 'fr' } : keep, `call ${i}`);
       }
     }
     // Memoised calls with every action interleaved, then a result mutated
     // by its caller: the next call is unaffected.
     for (let i = 0; i < 3; i++) {
-      same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'warm');
+      same(0, [DECORATED], keep, 'warm');
     }
-    same('dcsExtractVocabularies', 'extractVocabularies', [DECORATED], keep, 'vocab after all');
-    const mutated = same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'to mutate');
+    same(1, [DECORATED], keep, 'vocab after all');
+    const mutated = same(0, [DECORATED], keep, 'to mutate');
     mutated.modelManager.models.length = 0;
     mutated.decoratorCommandSet.push({ junk: true });
     mutated.vocabularies[0] = 'junk';
-    same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'after mutation');
+    same(0, [DECORATED], keep, 'after mutation');
     // removeDecoratorsFromModel: true never reads the memo.
-    same('dcsExtractDecorators', 'extractDecorators', [DECORATED], { removeDecoratorsFromModel: true, locale: 'en' }, 'remove');
-    same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, 'after remove');
-    h.dropDcsMemo();
-    for (let i = 0; i < 3; i++) {
-      same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, `after drop ${i}`);
-    }
+    same(0, [DECORATED], { removeDecoratorsFromModel: true, locale: 'en' }, 'remove');
+    same(0, [DECORATED], keep, 'after remove');
     assert(h.epoch() === epoch, 'the memo never moves the epoch');
     // A model change is seen by the next call.
     h.addModelWithDefinitions(JSON.stringify(OTHER), undefined, undefined, false);
-    for (const [own, resident] of ops) {
+    for (const action of actions) {
       for (let i = 0; i < 3; i++) {
-        const out = same(own, resident, [DECORATED, OTHER], keep, `changed ${i}`);
-        assert(out.modelManager.models.some((m) => m.namespace === 'org.other@1.0.0'), `changed ${i} ${own}`);
+        const out = same(action, [DECORATED, OTHER], keep, `changed ${i}`);
+        assert(out.modelManager.models.some((m) => m.namespace === 'org.other@1.0.0'), `changed ${i} ${action}`);
       }
     }
     h.deleteModelFile('org.other@1.0.0');
     for (let i = 0; i < 3; i++) {
-      const out = same('dcsExtractDecorators', 'extractDecorators', [DECORATED], keep, `deleted ${i}`);
+      const out = same(0, [DECORATED], keep, `deleted ${i}`);
       assert(!out.modelManager.models.some((m) => m.namespace === 'org.other@1.0.0'), `deleted ${i}`);
     }
     // A throwing call is never memoised: it throws the same class each time.
@@ -2021,10 +1927,10 @@ export function runChecks(engine) {
     const hb = new engine.ModelManagerHandle();
     hb.addModelWithDefinitions(JSON.stringify(bad), undefined, undefined, false);
     const t = new engine.ModelManagerHandle();
-    const perCall = thrown(() => engine.decoratorManagerExtractDecorators([bad], {})).constructor.name;
+    const viaResident = thrown(() => new engine.DcsManagerHandle([bad]).extract(new engine.ModelManagerHandle(), keep, 0)).constructor.name;
     for (let i = 0; i < 3; i++) {
-      const viaHandle = thrown(() => hb.dcsExtractDecorators(t, keep)).constructor.name;
-      assert(viaHandle === perCall, `throw ${i}: ${viaHandle} vs ${perCall}`);
+      const viaHandle = thrown(() => hb.dcsExtract(t, keep, 0)).constructor.name;
+      assert(viaHandle === viaResident, `throw ${i}: ${viaHandle} vs ${viaResident}`);
     }
     for (const x of [h, hb, t]) {
       x.free();

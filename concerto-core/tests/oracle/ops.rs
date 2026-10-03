@@ -2849,40 +2849,6 @@ fn attributed_dispatch(outcome: Value, attributed: Option<Attribution>) -> Dispa
     }
 }
 
-/// The owner of what `Serializer.fromJSON` does after its `$class` lookup
-/// (populating and validating the instance): P3-01b, which owns the
-/// `Serializer` since `ledger.rs`'s split of P3-01. `dcs::validate_dcs_structure`
-/// used to stand in for it (`concerto_core::dcs`'s module doc) with its own
-/// error text and class, not TS's `ValidationException`; `dcs::from_json_against`
-/// now runs the real, ported `Serializer::from_json` instead, so this
-/// attribution is no longer reachable from current production output — it
-/// stays only so a fixture recorded against the pre-P3-01b stand-in still
-/// gets attributed rather than misread as a fresh divergence.
-const RESOURCE_VALIDATION_OWNER: &str = "P3-01b";
-
-/// Attributes a DCS op's error outcome to [`RESOURCE_VALIDATION_OWNER`]
-/// when it is exactly the error the structural stand-in raises for one of
-/// the command sets it checked, and TS threw the `ValidationException` that
-/// resource validation raises: TS reaches the same point with the ported
-/// `$class` and `getType` steps, then fails there. [`RESOURCE_VALIDATION_OWNER`]'s
-/// doc comment covers why this rarely matches any more.
-fn attribute_stand_in(outcome: &recipe::Outcome, command_sets: &[Value]) -> Option<Attribution> {
-    let Err(error) = outcome else {
-        return None;
-    };
-    command_sets
-        .iter()
-        .find_map(|set| dcs::validate_dcs_structure(set).err())
-        .filter(|stand_in| {
-            let stand_in = to_oracle_error(stand_in);
-            stand_in.class == error.class && stand_in.message == error.message
-        })
-        .map(|_| Attribution {
-            blocker: recipe::Blocker::Owner(RESOURCE_VALIDATION_OWNER.into()),
-            ts_error_classes: &["ValidationException"],
-        })
-}
-
 /// A plain argument, or `None` for JS `undefined` (absent or the
 /// `undefined` marker).
 fn plain_arg(args: &[Arg], index: usize) -> Faulty<Option<Value>> {
@@ -3156,12 +3122,12 @@ pub fn derive_model_manager(
         return Ok(Some(DerivedModelManager { mm }));
     }
     let options = extract_options(plain_arg(&args, 1)?.as_ref());
-    let result = match member {
-        "extractDecorators" => dcs::extract_decorators(&r.mm, &options),
-        "extractVocabularies" => dcs::extract_vocabularies(&r.mm, &options),
-        _ => dcs::extract_non_vocab_decorators(&r.mm, &options),
-    }
-    .map_err(failed)?;
+    let action = match member {
+        "extractDecorators" => dcs::extractor::Action::ExtractAll,
+        "extractVocabularies" => dcs::extractor::Action::ExtractVocab,
+        _ => dcs::extractor::Action::ExtractNonVocab,
+    };
+    let result = dcs::extract(&r.mm, &options, action, false).map_err(failed)?;
     Ok(Some(DerivedModelManager {
         mm: result.model_manager,
     }))
@@ -3310,8 +3276,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                         .map_err(err)
                 }
             };
-            let attributed = model_validation.or_else(|| attribute_stand_in(&outcome, &sets));
-            Ok(ran_with_effects(outcome, &before, &after, attributed))
+            Ok(ran_with_effects(outcome, &before, &after, model_validation))
         }
         "extractDecorators" | "extractVocabularies" | "extractNonVocabDecorators" => {
             let Some(Arg::Mm(index)) = args.first() else {
@@ -3321,83 +3286,51 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             };
             let r = &session.pool[*index];
             let options = extract_options(plain_arg(&args, 1)?.as_ref());
-            let (action, value_route) = match member {
-                "extractDecorators" => (
-                    dcs::extractor::Action::ExtractAll,
-                    dcs::extract_decorators(&r.mm, &options),
-                ),
-                "extractVocabularies" => (
-                    dcs::extractor::Action::ExtractVocab,
-                    dcs::extract_vocabularies(&r.mm, &options),
-                ),
-                _ => (
-                    dcs::extractor::Action::ExtractNonVocab,
-                    dcs::extract_non_vocab_decorators(&r.mm, &options),
-                ),
+            let action = match member {
+                "extractDecorators" => dcs::extractor::Action::ExtractAll,
+                "extractVocabularies" => dcs::extractor::Action::ExtractVocab,
+                _ => dcs::extractor::Action::ExtractNonVocab,
             };
-            // P5-57 (T3, accordproject/concerto-rust#378): the binding
-            // encodes the command sets directly from the borrowed AST
-            // nodes. Replay that route, and hold it byte for byte to the
-            // `Value` route it replaces: the same command-set JSON text,
-            // vocabularies and result models, or the same error.
-            let direct = dcs::extract_encoded(&r.mm, &options, action);
-            let agrees = match (&direct, &value_route) {
-                (Ok(d), Ok(v)) => {
-                    serde_json::to_string(&v.decorator_command_set)
-                        .ok()
-                        .as_deref()
-                        == Some(d.decorator_command_set.as_str())
-                        && d.vocabularies == v.vocabularies
-                        && d.model_manager
-                            .model_files()
-                            .map(ModelFile::ast)
-                            .eq(v.model_manager.model_files().map(ModelFile::ast))
-                }
-                (Err(d), Err(v)) => d == v,
-                _ => false,
-            };
-            if !agrees {
-                return Err(Fault::Divergence(format!(
-                    "{op}: the direct-encoded extract result differs from the Value route"
-                )));
-            }
-            let result = match direct {
+            // P5-57 (T3, accordproject/concerto-rust#378): the binding's
+            // route, which encodes the command sets directly from the
+            // borrowed AST nodes. P5-103 (C-5) deleted the `Value` route
+            // this was held to byte for byte; the recorded TS outcome is
+            // now its only check.
+            let result = match dcs::extract(&r.mm, &options, action, false) {
                 Ok(res) => {
                     let Ok(Value::Array(decorator_command_set)) =
                         serde_json::from_str(&res.decorator_command_set)
                     else {
                         return Err(Fault::Divergence(format!(
-                            "{op}: the direct-encoded command sets are not a JSON array"
+                            "{op}: the encoded command sets are not a JSON array"
                         )));
                     };
-                    Ok(dcs::extractor::ExtractResult {
-                        model_manager: res.model_manager,
-                        decorator_command_set,
-                        vocabularies: res.vocabularies,
-                    })
+                    Ok((res.model_manager, decorator_command_set, res.vocabularies))
                 }
                 Err(e) => Err(e),
             };
-            Ok(ran(result.map_err(err).map(|res| {
-                let mut summary =
-                    recipe::summary_of(recipe::Kind::ModelManager, &res.model_manager);
-                restore_undefined_decorators(&r.mm, &mut summary);
-                let mut out = serde_json::Map::new();
-                out.insert("modelManager".into(), summary);
-                if member != "extractVocabularies" {
-                    out.insert(
-                        "decoratorCommandSet".into(),
-                        Value::Array(res.decorator_command_set),
-                    );
-                }
-                if member != "extractNonVocabDecorators" {
-                    out.insert(
-                        "vocabularies".into(),
-                        Value::Array(res.vocabularies.into_iter().map(Value::String).collect()),
-                    );
-                }
-                Value::Object(out)
-            })))
+            Ok(ran(result.map_err(err).map(
+                |(model_manager, decorator_command_set, vocabularies)| {
+                    let mut summary =
+                        recipe::summary_of(recipe::Kind::ModelManager, &model_manager);
+                    restore_undefined_decorators(&r.mm, &mut summary);
+                    let mut out = serde_json::Map::new();
+                    out.insert("modelManager".into(), summary);
+                    if member != "extractVocabularies" {
+                        out.insert(
+                            "decoratorCommandSet".into(),
+                            Value::Array(decorator_command_set),
+                        );
+                    }
+                    if member != "extractNonVocabDecorators" {
+                        out.insert(
+                            "vocabularies".into(),
+                            Value::Array(vocabularies.into_iter().map(Value::String).collect()),
+                        );
+                    }
+                    Value::Object(out)
+                },
+            )))
         }
         "validate" => {
             let Some(command_set) = plain_arg(&args, 0)? else {
@@ -3409,8 +3342,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             let outcome = dcs::validate(&command_set, files.as_deref())
                 .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
                 .map_err(err);
-            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&command_set));
-            Ok(ran_with_effects(outcome, &[], &[], attributed))
+            Ok(ran_with_effects(outcome, &[], &[], None))
         }
         "jsonToYaml" => {
             let Some(json_input) = plain_arg(&args, 0)? else {
@@ -3419,8 +3351,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             let outcome = dcs::validated_json_to_yaml(&json_input)
                 .map(Value::String)
                 .map_err(err);
-            let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&json_input));
-            Ok(ran_with_effects(outcome, &[], &[], attributed))
+            Ok(ran_with_effects(outcome, &[], &[], None))
         }
         "yamlToJson" => {
             let Some(Value::String(yaml_input)) = plain_arg(&args, 0)? else {
@@ -3429,10 +3360,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 ));
             };
             let outcome = dcs::validated_yaml_to_json(&yaml_input).map_err(err);
-            // The command set `validate` checked: the converter's output.
-            let converted: Vec<Value> = dcs::yaml_to_json(&yaml_input).into_iter().collect();
-            let attributed = attribute_stand_in(&outcome, &converted);
-            Ok(ran_with_effects(outcome, &[], &[], attributed))
+            Ok(ran_with_effects(outcome, &[], &[], None))
         }
         "migrateTo" => {
             let Some(mut command_set) = plain_arg(&args, 0)? else {

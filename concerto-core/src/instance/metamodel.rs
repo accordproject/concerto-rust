@@ -54,12 +54,15 @@ pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 /// `&'static str` literal: `metamodel_class!("MapDeclaration")` is
 /// `"concerto.metamodel@1.0.0.MapDeclaration"` ([`METAMODEL_NAMESPACE`],
 /// a dot, the short name), built at compile time rather than with
-/// `format!` on each call (P5-102, C-10).
+/// `format!` on each call (P5-102, C-10). Only the decorator command sets
+/// (`dcs`, the `js-compat` feature) use it.
+#[cfg(feature = "js-compat")]
 macro_rules! metamodel_class {
     ($short:literal) => {
         concat!("concerto.metamodel@1.0.0.", $short)
     };
 }
+#[cfg(feature = "js-compat")]
 pub(crate) use metamodel_class;
 
 /// The metamodel's own AST, `MetaModelUtil.metaModelAst` (the document

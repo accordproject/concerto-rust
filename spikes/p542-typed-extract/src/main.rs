@@ -9,7 +9,8 @@
 //! (P5-27). Then, per iteration, it times:
 //!
 //! - the stages of today's resident extract call, natively:
-//!   `extract_total` (`dcs::extract_decorators`, all of it), and inside it
+//!   `extract_total` (`dcs::extract` with `ExtractAll`, all of it; the
+//!   `Value`-route `dcs::extract_decorators` until P5-103), and inside it
 //!   `resolve` (`ModelManager::ast(resolve, system)`, the resolved `Value`
 //!   tree the extractor walks) and `result_build` (`ModelManager::new` plus
 //!   loading and validating the result models, as `DecoratorExtractor::extract`
@@ -493,7 +494,7 @@ fn encode(result: &dcs::extractor::ExtractResult) -> String {
     }
     let mut out = String::new();
     out.push_str(&serde_json::to_string(&Asts(&result.model_manager)).unwrap());
-    out.push_str(&serde_json::to_string(&result.decorator_command_set).unwrap());
+    out.push_str(&result.decorator_command_set);
     out.push_str(&serde_json::to_string(&result.vocabularies).unwrap());
     out
 }
@@ -525,9 +526,9 @@ fn main() {
     };
 
     // Sanity: the prototypes find as many commands as the real extractor.
-    let real = dcs::extract_decorators(&source, &opts).unwrap();
-    let real_commands: usize = real
-        .decorator_command_set
+    let real = dcs::extract(&source, &opts, dcs::extractor::Action::ExtractAll, false).unwrap();
+    let real_sets: Vec<Value> = serde_json::from_str(&real.decorator_command_set).unwrap();
+    let real_commands: usize = real_sets
         .iter()
         .map(|s| s["commands"].as_array().map_or(0, Vec::len))
         .sum();
@@ -553,7 +554,8 @@ fn main() {
     for i in 0..warmup + iters {
         let mut row = [0.0f64; 11];
         let t = Instant::now();
-        let result = dcs::extract_decorators(&source, &opts).unwrap();
+        let result =
+            dcs::extract(&source, &opts, dcs::extractor::Action::ExtractAll, false).unwrap();
         row[0] = t.elapsed().as_secs_f64() * 1e6;
 
         let t = Instant::now();
