@@ -82,7 +82,7 @@ use concerto_core::model_manager::{
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
-use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions, generator, populator};
+use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions};
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
@@ -1636,9 +1636,24 @@ fn write_property_entry(out: &mut String, ast: &Value) -> Option<()> {
 #[wasm_bindgen(js_name = modelFileViewSnapshot)]
 pub fn model_file_view_snapshot(ast: &str, namespace: Option<String>) -> Option<String> {
     let model: ViewModel = serde_json::from_str(ast).ok()?;
+    view_snapshot(model, namespace, ast.len() / 3)
+}
+
+/// P5-100 (E-6, accordproject/concerto-rust#454): [`model_file_view_snapshot`]
+/// of an AST the engine already holds (a loaded or staged model file's), read
+/// in place rather than from text the view would send and the engine parse
+/// again.
+fn model_file_view_snapshot_of(ast: &Value, namespace: Option<String>) -> Option<String> {
+    use serde::Deserialize;
+    let model = ViewModel::deserialize(ast).ok()?;
+    view_snapshot(model, namespace, 4096)
+}
+
+/// The body of [`model_file_view_snapshot`], for a model already read.
+fn view_snapshot(model: ViewModel, namespace: Option<String>, capacity: usize) -> Option<String> {
     let declarations = model.declarations?;
     let namespace = namespace.unwrap_or_default();
-    let mut out = String::with_capacity(ast.len() / 3);
+    let mut out = String::with_capacity(capacity);
     out.push('[');
     for (i, declaration) in declarations.into_iter().enumerate() {
         if i > 0 {
@@ -2812,59 +2827,6 @@ pub fn class_declaration_identifier_redeclare_conflict(
         super_is_system_identified,
         super_is_explicitly_identified,
     )
-}
-
-/// TS: `ClassDeclaration.toString`. `super_type_name` is the raw (unqualified)
-/// name `this.superType` holds (an explicit AST name or the implicit
-/// `'Concept'`), never a resolved FQN; a `ClassDeclaration` receiver is never
-/// an enum (`EnumDeclaration` overrides `toString`), matching
-/// [`ClassDeclaration::to_string`]'s hardcoded `enum=false`.
-#[wasm_bindgen(js_name = classDeclarationToString)]
-pub fn class_declaration_to_string(
-    fqn: JsValue,
-    super_type_name: JsValue,
-    is_abstract: bool,
-) -> std::result::Result<String, JsValue> {
-    run(|| {
-        let fqn = js_string(&fqn)?;
-        let super_type_name = if nullish(&super_type_name) {
-            None
-        } else {
-            Some(js_string(&super_type_name)?)
-        };
-        Ok(concerto_core::ClassDeclaration::to_string(
-            &fqn,
-            super_type_name.as_deref(),
-            is_abstract,
-        ))
-    })
-}
-
-/// TS: `EnumDeclaration.toString` (src/introspect/enumdeclaration.ts): the
-/// override with no super type or abstract flag.
-#[wasm_bindgen(js_name = enumDeclarationToString)]
-pub fn enum_declaration_to_string(fqn: JsValue) -> std::result::Result<String, JsValue> {
-    run(|| {
-        let fqn = js_string(&fqn)?;
-        Ok(concerto_core::introspect::declaration::EnumDeclaration::to_string(&fqn))
-    })
-}
-
-/// TS: `ClassDeclaration.isAsset`/`isParticipant`/`isTransaction`/`isEvent`/
-/// `isConcept`/`isEnum`/`isMapDeclaration`: each compares `this.type` (the
-/// AST's own `$class`, already set by `process()`) against one metamodel
-/// `$class`. `kind_type` is the receiver's `this.type`; `want` is the
-/// metamodel short name to compare against (`"AssetDeclaration"`, …).
-#[wasm_bindgen(js_name = classDeclarationIsKind)]
-pub fn class_declaration_is_kind(
-    kind_type: JsValue,
-    want: JsValue,
-) -> std::result::Result<bool, JsValue> {
-    run(|| {
-        let kind_type = js_string(&kind_type)?;
-        let want = js_string(&want)?;
-        Ok(concerto_core::ClassDeclaration::is_kind(&kind_type, &want))
-    })
 }
 
 /// `target[name] = value`, the write-back `_resolveSuperType` makes onto its
@@ -5926,13 +5888,17 @@ impl ModelManagerHandle {
         epoch
     }
 
-    /// The mutation counter: a snapshot taken at one generation is current
-    /// while the generation is unchanged. A JS number (exact up to 2^53).
-    pub fn generation(&self) -> f64 {
+    /// The manager's state version ([`concerto_core::ModelManager::state_version`]):
+    /// a snapshot taken at one version is current while the version is
+    /// unchanged; a rolled-back batch restores it with the state. Exposed to
+    /// JS as `generation()`, its name before P5-100 (F-3). A JS number
+    /// (exact up to 2^53).
+    #[wasm_bindgen(js_name = generation)]
+    pub fn state_version(&self) -> f64 {
         // Precision loss only past 2^53 mutations.
         #[allow(clippy::cast_precision_loss)]
-        let generation = self.manager.generation() as f64;
-        generation
+        let state_version = self.manager.state_version() as f64;
+        state_version
     }
 
     /// The handle of the model file for a namespace; `undefined` if none.
@@ -6458,6 +6424,79 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-100 (E-6, accordproject/concerto-rust#454): replaces the model
+    /// file registered under a staged file's namespace with it, as
+    /// [`Self::update_model_file`] with `validate: false` would replace it
+    /// with the AST it was staged from (the same errors), without sending or
+    /// parsing the AST again. The stage id is consumed. Returns the file's
+    /// handle, or `undefined` if the stage id is unknown (evicted, or already
+    /// consumed); the caller then falls back to [`Self::update_model_file`].
+    /// Additive.
+    #[wasm_bindgen(js_name = updateStagedModelFile)]
+    pub fn update_staged_model_file(
+        &mut self,
+        stage: u32,
+    ) -> std::result::Result<Option<u32>, JsValue> {
+        let Some(file) = self.staged.files.remove(&stage) else {
+            return Ok(None);
+        };
+        self.staged.proofs.remove(&stage);
+        self.bump_epoch();
+        run(|| {
+            let model_file = std::sync::Arc::unwrap_or_clone(file);
+            let namespace = model_file.namespace().to_string();
+            let updated = self.manager.update_model_file(model_file, false)?;
+            self.manager.adopt(updated);
+            self.manager
+                .model_file_id(&namespace)
+                .map(ModelFileId::index)
+                .map(Some)
+                .ok_or_else(|| CoreError::type_not_found(namespace).into())
+        })
+    }
+
+    /// P5-100 (E-6): [`Self::validate_ast_value`] over a staged model file's
+    /// AST, without sending it again. Returns `true` once checked, `false`
+    /// if the stage id is unknown (the caller then sends the AST, as
+    /// before); throws what [`Self::validate_ast_value`] throws. The file
+    /// stays staged. Additive.
+    #[wasm_bindgen(js_name = validateAstStaged)]
+    pub fn validate_ast_staged(&mut self, stage: u32) -> std::result::Result<bool, JsValue> {
+        let Some(file) = self.staged.files.get(&stage).cloned() else {
+            return Ok(false);
+        };
+        self.bump_epoch();
+        run(|| {
+            self.manager.validate_ast_value(file.ast())?;
+            Ok(true)
+        })
+    }
+
+    /// P5-100 (E-6): [`model_file_view_snapshot`] of a staged model file's
+    /// AST, or `undefined` if the stage id is unknown or the snapshot cannot
+    /// be read. Changes nothing. Additive.
+    #[wasm_bindgen(js_name = stagedModelFileViewSnapshot)]
+    pub fn staged_model_file_view_snapshot(
+        &self,
+        stage: u32,
+        namespace: Option<String>,
+    ) -> Option<String> {
+        model_file_view_snapshot_of(self.staged.files.get(&stage)?.ast(), namespace)
+    }
+
+    /// P5-100 (E-6): [`model_file_view_snapshot`] of a loaded model file's
+    /// AST, or `undefined` if the handle is unknown or the snapshot cannot
+    /// be read. Changes nothing. Additive.
+    #[wasm_bindgen(js_name = modelFileViewSnapshotOf)]
+    pub fn model_file_view_snapshot_of(
+        &self,
+        model_file: u32,
+        namespace: Option<String>,
+    ) -> Option<String> {
+        let file = self.manager.file(ModelFileId::from_index(model_file))?;
+        model_file_view_snapshot_of(file.ast(), namespace)
+    }
+
     /// P5-34 (I-5, accordproject/concerto-rust#344): TS
     /// `BaseModelManager.addModelFile`'s validation and registration of a
     /// staged model file in one call: [`Self::model_file_validate_staged`]
@@ -6842,6 +6881,44 @@ impl ModelManagerHandle {
         self.manager
             .update_external_models_naming_file(parsed)
             .map(|_| ())
+            .map_err(|(namespace, err)| match namespace {
+                Some(namespace) => throw_naming_file(err.into(), model_files, &namespace),
+                None => throw(err.into(), None),
+            })
+    }
+
+    /// P5-100 (E-6, accordproject/concerto-rust#454):
+    /// [`Self::update_external_models`] for downloaded files the view staged
+    /// when it built their `ModelFile`s: `stages` are their stage ids, in
+    /// order, and no AST is sent or parsed again
+    /// ([`ModelManager::update_external_model_files_naming_file`]). Returns
+    /// `false`, having changed nothing, if any stage id is unknown (the
+    /// caller then sends the ASTs, as before); otherwise consumes the
+    /// stages, and throws what [`Self::update_external_models`] throws,
+    /// leaving this handle as it was. Additive.
+    #[wasm_bindgen(js_name = updateExternalModelsStaged)]
+    pub fn update_external_models_staged(
+        &mut self,
+        stages: Vec<u32>,
+        model_files: &JsValue,
+    ) -> std::result::Result<bool, JsValue> {
+        if !stages
+            .iter()
+            .all(|stage| self.staged.files.contains_key(stage))
+        {
+            return Ok(false);
+        }
+        let files: Vec<_> = stages
+            .iter()
+            .filter_map(|stage| {
+                self.staged.proofs.remove(stage);
+                self.staged.files.remove(stage)
+            })
+            .collect();
+        self.bump_epoch();
+        self.manager
+            .update_external_model_files_naming_file(files)
+            .map(|_| true)
             .map_err(|(namespace, err)| match namespace {
                 Some(namespace) => throw_naming_file(err.into(), model_files, &namespace),
                 None => throw(err.into(), None),
@@ -7677,82 +7754,6 @@ pub fn model_file_from_ast(
             "isSystemModelFile": file.is_system_namespace(),
             "imports": file.imported_type_names(),
         }))
-    })
-}
-
-// ---------------------------------------------------------------------------
-// JSONPopulator / JSONGenerator / ResourceValidator per-field delegation
-// (task P4-10, accordproject/concerto-rust#69)
-//
-// The visitor shells (jsonpopulator.ts, jsongenerator.ts,
-// resourcevalidator.ts) stay in TS -- white-box tests spy on their
-// `visitX` methods -- but the leaf per-field check or coercion each calls
-// (`convertToObject`, `convertToJSON`, `checkItem`'s primitive switch) is
-// pure: it needs only the field's declared type name, the JSON value at
-// that path, and the serializer's merged options, none of which needs a
-// live `ModelManagerHandle`. So these are free functions, not methods on
-// `ModelManagerHandle`, and reuse the same wire codec as the whole-document
-// fast path above.
-
-/// `JSONPopulator.convertToObject` (task P4-10): `json_text` is the wire
-/// encoding (module doc on `decode_wire`) of the value at `path`,
-/// `options_text` the serializer's merged options or `"null"`. Returns the
-/// coerced value's wire encoding, or throws the same `ValidationException`
-/// TS would for that path and type.
-#[wasm_bindgen(js_name = populatorConvertPrimitive)]
-pub fn populator_convert_primitive(
-    type_name: &str,
-    json_text: &str,
-    options_text: &str,
-    path: &str,
-) -> std::result::Result<String, JsValue> {
-    run(|| {
-        let json_value: Value = serde_json::from_str(json_text)
-            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-        let value = decode_wire(&json_value)?;
-        let options = decode_wire_options(options_text)?.unwrap_or_default();
-        let popt = populator::populator_options(&options);
-        let result = populator::convert_primitive(type_name, &value, &popt, path)?;
-        snapshot(&encode_wire(&result))
-    })
-}
-
-/// `JSONGenerator.convertToJSON` (task P4-10): the counterpart of
-/// [`populator_convert_primitive`], for `Serializer.toJSON`'s visitor path.
-#[wasm_bindgen(js_name = generatorConvertPrimitive)]
-pub fn generator_convert_primitive(
-    type_name: &str,
-    json_text: &str,
-    options_text: &str,
-) -> std::result::Result<String, JsValue> {
-    run(|| {
-        let json_value: Value = serde_json::from_str(json_text)
-            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-        let value = decode_wire(&json_value)?;
-        let options = decode_wire_options(options_text)?.unwrap_or_default();
-        let gopt = generator::generator_options(&options);
-        let result = generator::convert_primitive(type_name, &value, &gopt)?;
-        snapshot(&encode_wire(&result))
-    })
-}
-
-/// `ResourceValidator.checkItem`'s primitive-type switch (task P4-10,
-/// resourcevalidator.ts:397): whether `json_text`'s value (already coerced
-/// by the populator, as a real field value always is here) is valid for
-/// the declared primitive `type_name`. A pure predicate -- the TS shell
-/// still does its own `reportFieldTypeViolation` (needs `rootResourceIdentifier`
-/// and the `Field`, neither of which crosses this call), and still makes
-/// the `undefined`/`symbol` check the wire codec cannot cross.
-#[wasm_bindgen(js_name = resourceValidatorPrimitiveValid)]
-pub fn resource_validator_primitive_valid(
-    type_name: &str,
-    json_text: &str,
-) -> std::result::Result<bool, JsValue> {
-    run(|| {
-        let json_value: Value = serde_json::from_str(json_text)
-            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-        let value = decode_wire(&json_value)?;
-        Ok(populator::primitive_field_valid(type_name, &value))
     })
 }
 

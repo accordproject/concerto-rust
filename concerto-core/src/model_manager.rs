@@ -18,7 +18,7 @@
 //! `update_model_ast`, `remove_model`) builds a new arena, and every handle
 //! handed out before it is invalid after it. Looking an element up by its
 //! handle is an index into the arena, never a string hash.
-//! `ModelManager::generation` counts the mutations and never goes back to an
+//! `ModelManager::state_version` counts the mutations and never goes back to an
 //! earlier value for a different state (A-3), so that a binding caching a
 //! snapshot of an element knows when to drop it (spike input on #41;
 //! PORTING.md 1.5).
@@ -382,13 +382,13 @@ impl<'a> ClassProperties<'a> {
     }
 }
 
-/// The arena lengths and generation before
+/// The arena lengths and state version before
 /// [`ModelManager::append_for_validation`] appended a file (P5-48).
 pub(crate) struct AppendMark {
     files: usize,
     declarations: usize,
     properties: usize,
-    generation: u64,
+    state_version: u64,
 }
 
 /// Where a property is: its declaration, and its position in
@@ -448,7 +448,7 @@ pub struct ModelManager {
     namespaces: FxHashMap<String, ModelFileId>,
     declarations: Vec<DeclSlot>,
     properties: Vec<PropSlot>,
-    generation: u64,
+    state_version: u64,
     /// The manager's options (A-5): one value, so every manager derived
     /// from this one (a fork, a filter, a scratch copy) starts from
     /// `self.options.clone()` and never drops one.
@@ -461,7 +461,7 @@ pub struct ModelManager {
     /// ([`ModelManager::keep_caches_for_append`], P5-97), and any other
     /// change drops them all ([`ModelManager::invalidate_caches`]).
     decl_cache: DeclCache,
-    /// `generation + 1` when [`ModelManager::has_system_files_of`] last
+    /// `state_version + 1` when [`ModelManager::has_system_files_of`] last
     /// found this manager's system model files to be the resident
     /// metamodel manager's own (P5-13); 0 before any such check.
     system_files_checked: std::sync::atomic::AtomicU64,
@@ -925,7 +925,7 @@ impl ModelManager {
                 namespaces: self.namespaces.clone(),
                 declarations: self.declarations.clone(),
                 properties: self.properties.clone(),
-                generation: self.generation,
+                state_version: self.state_version,
                 options: self.options.clone(),
                 decl_cache: self.decl_cache.snapshot(),
                 system_files_checked: std::sync::atomic::AtomicU64::new(
@@ -1117,14 +1117,14 @@ impl ModelManager {
             files: self.files.len(),
             declarations: self.declarations.len(),
             properties: self.properties.len(),
-            generation: self.generation,
+            state_version: self.state_version,
         };
         let id = self.insert_shared(Arc::clone(model_file)).ok()?;
         Some((id, mark))
     }
 
     /// Takes out the file [`ModelManager::append_for_validation`] appended,
-    /// leaving the arena, the namespaces and the generation as they were
+    /// leaving the arena, the namespaces and the state version as they were
     /// before it (as [`ModelManager::load_models`] rolls a batch back). The
     /// caches are dropped: they may hold the appended file's handles.
     pub(crate) fn undo_append(&mut self, mark: AppendMark) {
@@ -1135,7 +1135,7 @@ impl ModelManager {
         self.files.truncate(mark.files);
         self.declarations.truncate(mark.declarations);
         self.properties.truncate(mark.properties);
-        self.generation = mark.generation;
+        self.state_version = mark.state_version;
         self.invalidate_caches();
     }
 
@@ -1183,7 +1183,7 @@ impl ModelManager {
         let declarations_len = self.declarations.len();
         let properties_len = self.properties.len();
         let namespaces_snapshot = self.namespaces.clone();
-        let generation = self.generation;
+        let state_version = self.state_version;
         let validated = self.validated_marks();
 
         let mut result = Ok(Vec::new());
@@ -1224,7 +1224,7 @@ impl ModelManager {
             self.properties.truncate(properties_len);
             self.invalidate_caches();
             self.namespaces = namespaces_snapshot;
-            self.generation = generation;
+            self.state_version = state_version;
             self.restore_validated(&validated);
             return Err(err);
         }
@@ -1251,7 +1251,7 @@ impl ModelManager {
     /// is its slot's position. Otherwise `model_file` takes the old file's
     /// place in the order, so the tables after it are rebuilt, as before.
     /// Either way the copy starts with empty caches and ends at the same
-    /// generation as a copy built file by file.
+    /// state version as a copy built file by file.
     pub(crate) fn with_model_file_registered(&self, model_file: Arc<ModelFile>) -> Result<Self> {
         let namespace = model_file.namespace().to_string();
         let namespace = namespace.as_str();
@@ -1267,7 +1267,7 @@ impl ModelManager {
             scratch.declarations = self.declarations.clone();
             scratch.properties = self.properties.clone();
             // One `insert` per file, as a copy built file by file counts.
-            scratch.generation = u64::try_from(self.files.len()).unwrap_or(u64::MAX);
+            scratch.state_version = u64::try_from(self.files.len()).unwrap_or(u64::MAX);
             scratch.insert_shared(model_file)?;
             return Ok(scratch);
         }
@@ -1339,7 +1339,7 @@ impl ModelManager {
         });
         self.declarations.extend(declarations);
         self.properties.extend(properties);
-        self.generation += 1;
+        self.state_version += 1;
         Ok(file_id)
     }
 
@@ -1582,7 +1582,7 @@ impl ModelManager {
                 self.properties.truncate(properties_len);
                 self.invalidate_caches();
                 self.namespaces.remove(METAMODEL_NAMESPACE);
-                self.generation += 1;
+                self.state_version += 1;
             }
             Ok(())
         }
@@ -1624,11 +1624,11 @@ impl ModelManager {
 
     /// Whether this manager holds the same decorator and root model files
     /// as `other` (by AST, which is all a model file's lookups are built
-    /// from). Answered once per [`ModelManager::generation`].
+    /// from). Answered once per [`ModelManager::state_version`].
     fn has_system_files_of(&self, other: &ModelManager) -> bool {
         use std::sync::atomic::Ordering;
-        // `generation + 1`, so that the default 0 means "not checked".
-        let checked = self.generation.wrapping_add(1);
+        // `state_version + 1`, so that the default 0 means "not checked".
+        let checked = self.state_version.wrapping_add(1);
         if self.system_files_checked.load(Ordering::Relaxed) == checked {
             return true;
         }
@@ -1672,16 +1672,17 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// A counter that every mutation of the manager increases. A snapshot of
-        /// an element taken at one generation is current while the generation is
-        /// unchanged. It never repeats an earlier value for a different state:
+        /// The version of the manager's state, which every mutation of the
+        /// manager increases (P5-100, F-3: named `generation` before). A
+        /// snapshot of an element taken at one version is current while the
+        /// version is unchanged. It never repeats an earlier value for a different state:
         /// a manager rebuilt from this one and adopted in its place
         /// ([`ModelManager::adopt`]: an update, a removal, external models)
         /// continues the count (A-3, accordproject/concerto-rust#448), and a
         /// failed batch that is rolled back restores the count it started from
         /// together with the very state it had then.
-        pub fn generation(&self) -> u64 {
-            self.generation
+        pub fn state_version(&self) -> u64 {
+            self.state_version
         }
     }
 
@@ -1689,13 +1690,13 @@ impl ModelManager {
         /// Replaces this manager with `next`, one built from it
         /// ([`ModelManager::update_model_file`],
         /// [`ModelManager::delete_model_file`]), as one mutation: `next`
-        /// continues this manager's [`ModelManager::generation`] (A-3,
+        /// continues this manager's [`ModelManager::state_version`] (A-3,
         /// accordproject/concerto-rust#448), so a snapshot taken before is
         /// never taken as current after. A rebuilt manager's own count
         /// restarts with its arena, and adopting it as it is could repeat an
-        /// earlier generation.
+        /// earlier state version.
         pub fn adopt(&mut self, mut next: Self) {
-            next.generation = self.generation.wrapping_add(1);
+            next.state_version = self.state_version.wrapping_add(1);
             next.system_files_checked = std::sync::atomic::AtomicU64::new(0);
             *self = next;
         }
@@ -3501,6 +3502,39 @@ impl ModelManager {
             &mut self,
             external_models: impl IntoIterator<Item = ModelFileSource>,
         ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
+            self.update_external_model_files(external_models.into_iter().map(|source| {
+                ModelFile::from_json_with_definitions(
+                    &source.ast,
+                    source.definitions,
+                    source.file_name,
+                )
+                .map(Arc::new)
+            }))
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::update_external_models_naming_file`] for model
+        /// files already built (P5-100, accordproject/concerto-rust#454): the
+        /// files the TS view staged when it built each downloaded
+        /// `ModelFile`, so their ASTs are not sent and parsed again.
+        pub fn update_external_model_files_naming_file(
+            &mut self,
+            external_model_files: impl IntoIterator<Item = Arc<ModelFile>>,
+        ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
+            self.update_external_model_files(external_model_files.into_iter().map(Ok))
+        }
+    }
+
+    /// The core of [`ModelManager::update_external_models_naming_file`] and
+    /// [`ModelManager::update_external_model_files_naming_file`]: each model
+    /// file in turn (an error building one fails the update there), then the
+    /// validation.
+    fn update_external_model_files(
+        &mut self,
+        external_model_files: impl IntoIterator<Item = Result<Arc<ModelFile>>>,
+    ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
+        {
             // A-4: each downloaded file is built once and shared (`Arc`)
             // between the scratch manager and the list returned, and the
             // scratch is rebuilt only for a file that replaces one; a new
@@ -3509,15 +3543,8 @@ impl ModelManager {
             // build, without copying it once per file.
             let mut updated: Option<Self> = None;
             let mut registered = Vec::new();
-            for source in external_models {
-                let mf = Arc::new(
-                    ModelFile::from_json_with_definitions(
-                        &source.ast,
-                        source.definitions,
-                        source.file_name,
-                    )
-                    .map_err(|err| (None, err))?,
-                );
+            for mf in external_model_files {
+                let mf = mf.map_err(|err| (None, err))?;
                 let replaces = updated
                     .as_ref()
                     .unwrap_or(self)
@@ -3573,7 +3600,7 @@ impl ModelManager {
         let declarations_len = self.declarations.len();
         let properties_len = self.properties.len();
         let namespaces_snapshot = self.namespaces.clone();
-        let generation = self.generation;
+        let state_version = self.state_version;
         let validated = self.validated_marks();
 
         let mut result: Result<()> = Ok(());
@@ -3596,7 +3623,7 @@ impl ModelManager {
             self.properties.truncate(properties_len);
             self.invalidate_caches();
             self.namespaces = namespaces_snapshot;
-            self.generation = generation;
+            self.state_version = state_version;
             self.restore_validated(&validated);
             return Err(err);
         }
@@ -4984,7 +5011,7 @@ mod tests {
         let mut mgr = manager();
         let person = mgr.declaration_id("org.example@1.0.0.Person").unwrap();
         let file = mgr.model_file_id("org.example@1.0.0").unwrap();
-        let generation = mgr.generation();
+        let state_version = mgr.state_version();
 
         mgr.load_model(
             &serde_json::json!({
@@ -4998,7 +5025,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(mgr.generation() > generation);
+        assert!(mgr.state_version() > state_version);
         assert_eq!(mgr.declaration_id("org.example@1.0.0.Person"), Some(person));
         assert_eq!(mgr.model_file_id("org.example@1.0.0"), Some(file));
         assert_eq!(mgr.model_file_of(person), Some(file));
@@ -5010,13 +5037,13 @@ mod tests {
     #[test]
     fn a_failed_load_changes_nothing() {
         let mut mgr = manager();
-        let generation = mgr.generation();
+        let state_version = mgr.state_version();
         let model = serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0", "declarations": []
         });
         assert!(mgr.load_model(&model, None).is_err());
-        assert_eq!(mgr.generation(), generation);
+        assert_eq!(mgr.state_version(), state_version);
         // The two system models (P1-07b) plus `org.example@1.0.0` from `manager()`.
         assert_eq!(mgr.model_files().count(), 3);
     }
@@ -5472,7 +5499,7 @@ mod tests {
     #[test]
     fn add_models_rolls_back_the_whole_batch_on_validation_failure() {
         let mut mgr = manager();
-        let generation = mgr.generation();
+        let state_version = mgr.state_version();
         let namespaces_before: Vec<String> = mgr
             .model_files()
             .map(|mf| mf.namespace().to_string())
@@ -5487,8 +5514,8 @@ mod tests {
         assert!(err.to_string().contains("Base"), "{err}");
 
         // Nothing from the failed batch survives: not the new namespace, not
-        // the generation counter, not the arena length.
-        assert_eq!(mgr.generation(), generation);
+        // the state version, not the arena length.
+        assert_eq!(mgr.state_version(), state_version);
         assert_eq!(mgr.model_file_id("org.dependent@1.0.0"), None);
         let namespaces_after: Vec<String> = mgr
             .model_files()
@@ -5500,19 +5527,19 @@ mod tests {
     #[test]
     fn add_models_rolls_back_on_duplicate_namespace_within_the_batch() {
         let mut mgr = ModelManager::new().unwrap();
-        let generation = mgr.generation();
+        let state_version = mgr.state_version();
         let base = base_model();
 
         assert!(mgr.load_models([(&base, None), (&base, None)]).is_err());
 
-        assert_eq!(mgr.generation(), generation);
+        assert_eq!(mgr.state_version(), state_version);
         assert_eq!(mgr.model_file_id("org.base@1.0.0"), None);
     }
 
     #[test]
     fn add_models_rolls_back_on_duplicate_against_an_existing_model() {
         let mut mgr = manager();
-        let generation = mgr.generation();
+        let state_version = mgr.state_version();
         let count_before = mgr.model_files().count();
 
         let clash = serde_json::json!({
@@ -5524,7 +5551,7 @@ mod tests {
         // get inserted before the failure — and must be undone too.
         assert!(mgr.load_models([(&other, None), (&clash, None)]).is_err());
 
-        assert_eq!(mgr.generation(), generation);
+        assert_eq!(mgr.state_version(), state_version);
         assert_eq!(mgr.model_files().count(), count_before);
         assert_eq!(mgr.model_file_id("org.base@1.0.0"), None);
     }
@@ -6026,7 +6053,7 @@ mod tests {
     /// validates a file whose namespace is not registered is this manager's
     /// arena with the file appended. It must be exactly the manager a
     /// file-by-file rebuild (the pre-P5-18 copy) produces: the same files in
-    /// the same order, the same handles and names, the same generation, and
+    /// the same order, the same handles and names, the same state version, and
     /// empty caches. The files it keeps are shared, not deep-cloned.
     #[test]
     fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
@@ -6093,7 +6120,7 @@ mod tests {
         assert_eq!(decls(&scratch), decls(&rebuilt));
         assert_eq!(props(&scratch), props(&rebuilt));
         assert_eq!(namespaces(&scratch), namespaces(&rebuilt));
-        assert_eq!(scratch.generation, rebuilt.generation);
+        assert_eq!(scratch.state_version, rebuilt.state_version);
         assert_eq!(scratch.cache_counts(), (0, 0, 0));
         for (mine, theirs) in mgr.files.iter().zip(&scratch.files) {
             assert!(Arc::ptr_eq(&mine.model_file, &theirs.model_file));
@@ -6137,7 +6164,10 @@ mod tests {
                 .unwrap()
                 .same_ast(&replacement)
         );
-        assert_eq!(scratch.generation, u64::try_from(mgr.files.len()).unwrap());
+        assert_eq!(
+            scratch.state_version,
+            u64::try_from(mgr.files.len()).unwrap()
+        );
     }
 
     #[test]
@@ -6577,7 +6607,7 @@ mod tests {
 
         let mut fork = base.fork();
         assert_eq!(fork.cache_counts(), warmed);
-        assert_eq!(fork.generation(), base.generation());
+        assert_eq!(fork.state_version(), base.state_version());
         assert_eq!(fork.decorator_validation(), base.decorator_validation());
         for (a, b) in base.shared_model_files().zip(fork.shared_model_files()) {
             assert!(Arc::ptr_eq(a, b));
@@ -6794,29 +6824,29 @@ mod tests {
     }
 
     /// A-3 (accordproject/concerto-rust#448): an update or a removal adopts
-    /// a rebuilt manager, and the generation keeps rising: it never repeats
+    /// a rebuilt manager, and the state version keeps rising: it never repeats
     /// one an earlier state had.
     #[test]
-    fn generation_never_repeats_across_updates_and_removals() {
+    fn state_version_never_repeats_across_updates_and_removals() {
         let mut mgr = manager();
         mgr.add_model_ast(&user_model("org.user@1.0.0"), Some("user.cto"))
             .unwrap();
-        let mut seen = vec![mgr.generation()];
+        let mut seen = vec![mgr.state_version()];
         mgr.update_model_ast(&user_model("org.user@1.0.0"), Some("user2.cto"))
             .unwrap();
-        seen.push(mgr.generation());
+        seen.push(mgr.state_version());
         mgr.remove_model("org.user@1.0.0").unwrap();
-        seen.push(mgr.generation());
+        seen.push(mgr.state_version());
         mgr.add_model_ast(&user_model("org.other@1.0.0"), None)
             .unwrap();
-        seen.push(mgr.generation());
+        seen.push(mgr.state_version());
         assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
         // A rebuilt manager on its own restarts its count; adopting it does not.
         let rebuilt = mgr.delete_model_file("org.other@1.0.0").unwrap();
-        assert!(rebuilt.generation() < mgr.generation());
-        let before = mgr.generation();
+        assert!(rebuilt.state_version() < mgr.state_version());
+        let before = mgr.state_version();
         mgr.adopt(rebuilt);
-        assert_eq!(mgr.generation(), before + 1);
+        assert_eq!(mgr.state_version(), before + 1);
     }
 
     /// A-4: a removal, an update and the metamodel share the files they
