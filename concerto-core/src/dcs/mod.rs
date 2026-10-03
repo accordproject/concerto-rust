@@ -54,7 +54,7 @@ pub use dcsconverter::{json_to_yaml, yaml_to_json};
 pub use yaml_quote::{DECORATOR_STRING_TYPE, quote_string_value};
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
@@ -147,21 +147,21 @@ impl<'a> DcsIndexWrapper<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct DecoratorMaps<'a> {
     /// Commands targeting a `target.namespace`.
-    pub namespace_commands: HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub namespace_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.declaration`.
-    pub declaration_commands: HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub declaration_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.property` (or one entry of
     /// `target.properties`).
-    pub property_commands: HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub property_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.mapElement`.
-    pub map_element_commands: HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub map_element_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.type`.
-    pub type_commands: HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub type_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
 }
 
 /// `DecoratorManager.addDcsWithIndexToMap` (`src/decoratormanager.ts`).
 fn add_dcs_with_index_to_map<'a>(
-    map: &mut HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    map: &mut FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     key: &'a str,
     dcs_with_index: DcsIndexWrapper<'a>,
 ) {
@@ -217,7 +217,7 @@ pub fn get_decorator_maps<'a>(commands: impl IntoIterator<Item = &'a Value>) -> 
 /// `DecoratorManager.pushMapValues` (`src/decoratormanager.ts`).
 fn push_map_values<'a>(
     out: &mut Vec<DcsIndexWrapper<'a>>,
-    map: &HashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    map: &FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     key: &str,
 ) {
     if let Some(values) = map.get(key) {
@@ -371,7 +371,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
 /// included, [`ContractError::final_message`]) if `decorated_ast.decorators`
 /// names the same decorator twice.
 pub fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = FxHashSet::default();
     if let Some(decorators) = decorated_ast.get("decorators").and_then(Value::as_array) {
         for d in decorators {
             let name = d
