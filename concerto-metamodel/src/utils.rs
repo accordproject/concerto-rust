@@ -1,16 +1,17 @@
-//! Serde helpers for the `DateTime` and `$class` fields of the generated
-//! types.
+//! Serde helpers for the `$class` fields of the generated types, plus
+//! concerto-codegen's own helpers for their `DateTime` fields.
 
 use std::borrow::Cow;
 use std::fmt;
 
-use chrono::{DateTime, Utc};
+use serde::Deserializer;
 use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer, Serializer};
 
 use crate::ClassName;
 
-include!(concat!(env!("OUT_DIR"), "/classes.rs"));
+pub use crate::codegen_utils::*;
+
+include!("generated/classes.rs");
 
 /// The static copy of `class` when it is the `$class` of a type declared in
 /// one of the models this crate is generated from.
@@ -64,23 +65,4 @@ where
     }
 
     deserializer.deserialize_string(ClassVisitor)
-}
-
-/// Serializes a timestamp in the ISO 8601 / RFC 3339 form.
-pub fn serialize_datetime<S>(datetime: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&datetime.format("%+").to_string())
-}
-
-/// Deserializes a timestamp written as `YYYY-MM-DDTHH:MM:SS.sss` plus a zone.
-pub fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let datetime_str = String::deserialize(deserializer)?;
-    DateTime::parse_from_str(&datetime_str, "%Y-%m-%dT%H:%M:%S%.3f%Z")
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(serde::de::Error::custom)
 }

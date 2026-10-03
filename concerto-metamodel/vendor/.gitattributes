@@ -1,3 +1,3 @@
-# The vendored models are checked against pinned SHA-256 checksums, so keep
-# their bytes exactly as downloaded.
+# The vendored models are the exact inputs of codegen/generate.js (which
+# checks them against the pinned npm packages), so keep their bytes as is.
 *.json -text
