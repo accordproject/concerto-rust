@@ -894,28 +894,45 @@ impl StringValidator {
                 max_length,
                 regex,
             };
-
-            // `if(this.field?.ast?.defaultValue) { this.validate(field.getName(), this.field.ast.defaultValue); }`:
-            // a plain JS truthy check, so a `null`, `false`, `0` or `""` default
-            // skips the check, and only a string default reaches `.length`/regex
-            // logic below (a non-string default is a model TS itself does not
-            // guard against; this port skips the check for one rather than
-            // guessing at JS's coercions). A default outside the validator is
-            // a model error (BC-39), so it is reported as one.
-            if let Some(value) = field.default_value()?
-                && ecma::is_truthy(&value)
-                && let Some(text) = value.as_str()
-            {
-                built.check(
-                    field,
-                    ErrorKind::IllegalModel,
-                    Some(&field.name()?),
-                    Some(text),
-                )?;
-            }
-
+            built.check_default(field)?;
             Ok(built)
         }
+    }
+
+    js_compat_pub! {
+        /// This validator, as [`StringValidator::new`] builds it from the
+        /// same validator nodes for another element `field`: the same
+        /// bounds and regex, with `field`'s own default value checked
+        /// against them. For a scalar's validator ([`super::scalar::ScalarValidator`])
+        /// read for a property of that scalar type.
+        pub fn for_field<F: ValidatedElement>(&self, field: &F) -> Result<Self, F::Error> {
+            self.check_default(field)?;
+            Ok(self.clone())
+        }
+    }
+
+    /// The end of [`StringValidator::new`]: the element's own default value
+    /// checked against this validator.
+    fn check_default<F: ValidatedElement>(&self, field: &F) -> Result<(), F::Error> {
+        // `if(this.field?.ast?.defaultValue) { this.validate(field.getName(), this.field.ast.defaultValue); }`:
+        // a plain JS truthy check, so a `null`, `false`, `0` or `""` default
+        // skips the check, and only a string default reaches `.length`/regex
+        // logic below (a non-string default is a model TS itself does not
+        // guard against; this port skips the check for one rather than
+        // guessing at JS's coercions). A default outside the validator is
+        // a model error (BC-39), so it is reported as one.
+        if let Some(value) = field.default_value()?
+            && ecma::is_truthy(&value)
+            && let Some(text) = value.as_str()
+        {
+            self.check(
+                field,
+                ErrorKind::IllegalModel,
+                Some(&field.name()?),
+                Some(text),
+            )?;
+        }
+        Ok(())
     }
 
     /// The minimum length, or `None` (JS `null`/`undefined`) when there is

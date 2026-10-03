@@ -1292,14 +1292,14 @@ fn property_snapshot(processed: &property::ProcessedProperty) -> Value {
 fn field_snapshot(processed: &field::ProcessedField) -> Value {
     let validator = match &processed.validator {
         None => Value::Null,
-        Some(ScalarValidator::Number(v)) => {
+        Some(field::FieldValidator::Number(v)) => {
             let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
             if let Value::Object(map) = &mut snapshot {
                 map.insert("kind".to_string(), json!("NumberValidator"));
             }
             snapshot
         }
-        Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
+        Some(field::FieldValidator::String { .. }) => json!({ "kind": "StringValidator" }),
     };
     json!({
         "validator": validator,
@@ -1703,7 +1703,7 @@ fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Value> {
             map.insert("kind".to_string(), json!("NumberValidator"));
             snapshot
         }
-        Some(ScalarValidator::String { .. }) => {
+        Some(ScalarValidator::String(_)) => {
             let mut snapshot = string_validator_view_snapshot(name, &ast)?;
             let Value::Object(map) = &mut snapshot else {
                 return None;
@@ -2341,7 +2341,7 @@ pub fn scalar_declaration_process(declaration: JsValue) -> std::result::Result<J
                 }
                 snapshot
             }
-            Some(ScalarValidator::String { .. }) => json!({ "kind": "StringValidator" }),
+            Some(ScalarValidator::String(_)) => json!({ "kind": "StringValidator" }),
         };
         Ok(to_js(&json!({
             "type": processed.scalar_type,

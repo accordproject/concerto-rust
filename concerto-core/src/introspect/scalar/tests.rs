@@ -60,16 +60,10 @@ fn get_validator_returns_the_string_validator_for_a_regex_scalar() {
     });
     let processed = ScalarDeclaration::process::<ContractError>(&ast, None, &|| unreachable!())
         .expect("a valid regex validator must not error");
-    let Some(ScalarValidator::String {
-        validator: Some(v), ..
-    }) = processed.validator
-    else {
-        panic!("expected a String validator carrying the AST's `validator`");
+    let Some(ScalarValidator::String(v)) = processed.validator else {
+        panic!("expected a String validator built from the AST's `validator`");
     };
-    assert_eq!(
-        v.get("pattern").and_then(Value::as_str),
-        Some("\\d{3}-\\d{2}-\\d{4}")
-    );
+    assert_eq!(v.regex().as_deref(), Some("/\\d{3}-\\d{2}-\\d{4}/"));
 }
 
 // TS: "#getDefaultValue should return the default value"

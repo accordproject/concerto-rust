@@ -1451,7 +1451,7 @@ fn scalar_validator_summary(validator: Option<&ScalarValidator>) -> Value {
         Some(ScalarValidator::Number(_)) => {
             json!({ M: "Validator", "ctor": "NumberValidator" })
         }
-        Some(ScalarValidator::String { .. }) => {
+        Some(ScalarValidator::String(_)) => {
             json!({ M: "Validator", "ctor": "StringValidator" })
         }
     }
@@ -1537,8 +1537,8 @@ fn build_validator(
 /// the declaration as the validator's `field`.
 ///
 /// A `NumberValidator` is the one the loaded declaration already holds; a
-/// `StringValidator` is rebuilt from the AST arguments
-/// [`ScalarValidator::String`] records. The declaration loaded successfully,
+/// `StringValidator` is the one [`ScalarValidator::String`] holds, with the
+/// element's default value checked again (`StringValidator::for_field`). The declaration loaded successfully,
 /// so a failure here is a [`Fault::Divergence`].
 fn scalar_declaration_validator(
     session: &Session,
@@ -1573,31 +1573,11 @@ fn scalar_declaration_validator(
     };
     let validator = match scalar.validator() {
         Some(ScalarValidator::Number(nv)) => Validator::Number(nv.clone()),
-        Some(ScalarValidator::String {
-            validator,
-            length_validator,
-        }) => {
-            let regex = validator
-                .clone()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| Fault::Divergence(format!("decoding the scalar's regex: {e}")))?;
-            let length = length_validator
-                .clone()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| {
-                    Fault::Divergence(format!("decoding the scalar's length validator: {e}"))
-                })?;
-            let built = concerto_core::introspect::validators::StringValidator::new(
-                &elem,
-                regex.as_ref(),
-                length.as_ref(),
-                None,
-            )
-            .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?;
-            Validator::String(built)
-        }
+        Some(ScalarValidator::String(built)) => Validator::String(
+            built
+                .for_field(&elem)
+                .map_err(|e| Fault::Divergence(format!("rebuilding StringValidator: {e}")))?,
+        ),
         None => {
             return Err(Fault::Divergence(
                 "state divergence: the validatorref's scalar declaration has no validator".into(),

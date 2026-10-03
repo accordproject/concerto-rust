@@ -5,16 +5,15 @@
 //! into `this.defaultValue`. The selection is identical in shape to
 //! `ScalarDeclaration.process`'s own (`introspect::scalar`): a `NumberValidator`
 //! for Integer/Long/Double when `ast.validator` is set, a `StringValidator`
-//! for String when either `ast.validator` or `ast.lengthValidator` is set —
-//! so this reuses the same [`ScalarValidator`] result shape rather than
-//! duplicating it under a new name.
+//! for String when either `ast.validator` or `ast.lengthValidator` is set.
+//! Unlike the scalar's, the field's `StringValidator` is not built here: the
+//! view builds it ([`FieldValidator::String`]).
 
 use serde_json::Value;
 
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::FullyQualified;
-use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::NumberValidator;
 use crate::model_manager::ValidatedElement;
 
@@ -23,11 +22,31 @@ use crate::model_manager::ValidatedElement;
 const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
 js_compat_pub! {
+    /// The validator `Field.process` attaches.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum FieldValidator {
+        /// `new NumberValidator(this, this.ast.validator)`, for Integer, Long
+        /// and Double fields.
+        Number(NumberValidator),
+        /// `new StringValidator(this, this.ast.validator,
+        /// this.ast.lengthValidator)`, for String fields: the arguments TS
+        /// passes (`None` is `undefined`), from which the view builds the
+        /// TS-facing `StringValidator`.
+        String {
+            /// `this.ast.validator`.
+            validator: Option<Value>,
+            /// `this.ast.lengthValidator`.
+            length_validator: Option<Value>,
+        },
+    }
+}
+
+js_compat_pub! {
     /// What `Field.process` computes, after `Property.process` has set `type`.
     #[derive(Debug, Clone, PartialEq)]
     pub struct ProcessedField {
         /// `this.validator`, or `None` (JS `null`).
-        pub validator: Option<ScalarValidator>,
+        pub validator: Option<FieldValidator>,
         /// `this.defaultValue`, or `None` (JS `null`) when the AST has none or a
         /// nullish one.
         pub default_value: Option<Value>,
@@ -89,13 +108,13 @@ js_compat_pub! {
                     fully_qualified_name,
                 };
                 let validator_ast = ast.get("validator").unwrap_or(&Value::Null);
-                Some(ScalarValidator::Number(NumberValidator::new(
+                Some(FieldValidator::Number(NumberValidator::new(
                     &element,
                     validator_ast,
                 )?))
             }
             Some("String") if truthy("validator") || truthy("lengthValidator") => {
-                Some(ScalarValidator::String {
+                Some(FieldValidator::String {
                     validator: ast.get("validator").cloned(),
                     length_validator: ast.get("lengthValidator").cloned(),
                 })

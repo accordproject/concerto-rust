@@ -33,17 +33,9 @@ pub enum ScalarValidator {
     /// Double scalars.
     Number(NumberValidator),
     /// `new StringValidator(this, this.ast.validator, this.ast.lengthValidator)`,
-    /// for String scalars. `ScalarDeclaration::process` builds (and so
-    /// validates) the real `StringValidator` (P2-09c/F5) purely for that
-    /// side effect and discards it: this variant still just records the
-    /// arguments TS passes (`None` is `undefined`), since the WASM view
-    /// builds its own TS-facing `StringValidator` from them.
-    String {
-        /// `this.ast.validator`.
-        validator: Option<Value>,
-        /// `this.ast.lengthValidator`.
-        length_validator: Option<Value>,
-    },
+    /// for String scalars: the validator as `ScalarDeclaration::process`
+    /// builds (and so checks) it (P2-09c/F5, A-10).
+    String(StringValidator),
 }
 
 js_compat_pub! {
@@ -209,16 +201,12 @@ impl ScalarDeclaration {
                     let validator = validators::regex_validator_from_ast(ast.get("validator"));
                     let length_validator =
                         validators::length_validator_from_ast(ast.get("lengthValidator"));
-                    StringValidator::new(
+                    Some(ScalarValidator::String(StringValidator::new(
                         &element,
                         validator.as_ref(),
                         length_validator.as_ref(),
                         ast.get("lengthValidator"),
-                    )?;
-                    Some(ScalarValidator::String {
-                        validator: ast.get("validator").cloned(),
-                        length_validator: ast.get("lengthValidator").cloned(),
-                    })
+                    )?))
                 }
                 _ => None,
             };
@@ -241,10 +229,10 @@ impl ScalarDeclaration {
     /// accordproject/concerto-rust#458): over the strictly read typed
     /// `node`, with `kept` (the node as the typed read keeps it) only for
     /// what TS reads off the raw AST: its `location`, the element's
-    /// `defaultValue` and the validator values the result records. The
+    /// `defaultValue` and the raw `lengthValidator` bounds TS compares. The
     /// checks, their order and their errors are `process`'s; the validators
     /// are built from the typed nodes, as a property's are, instead of
-    /// re-reading the raw AST untyped. `process` stays for an AST that never
+    /// re-reading the raw AST untyped, and the result holds them as built. `process` stays for an AST that never
     /// went through the loader (`build_standalone`, the WASM standalone
     /// bindings).
     pub(crate) fn process_loaded(
@@ -269,7 +257,6 @@ impl ScalarDeclaration {
             name,
             fully_qualified_name,
         };
-        let raw = |key: &str| kept.get(key).map(Kept::to_value);
         let validator = match node {
             mm::ScalarDeclaration::IntegerScalar(mm::IntegerScalar {
                 validator: Some(v), ..
@@ -291,18 +278,14 @@ impl ScalarDeclaration {
                 if string.validator.is_some() || string.length_validator.is_some() =>
             {
                 // TS: `this.validator = new StringValidator(this,
-                // this.ast.validator, this.ast.lengthValidator)`, built for
-                // its checks; the result records the arguments.
-                StringValidator::new(
+                // this.ast.validator, this.ast.lengthValidator)`.
+                let raw_length = kept.get("lengthValidator").map(Kept::to_value);
+                Some(ScalarValidator::String(StringValidator::new(
                     &element,
                     string.validator.as_ref(),
                     string.length_validator.as_ref(),
-                    raw("lengthValidator").as_ref(),
-                )?;
-                Some(ScalarValidator::String {
-                    validator: raw("validator"),
-                    length_validator: raw("lengthValidator"),
-                })
+                    raw_length.as_ref(),
+                )?))
             }
             _ => validator,
         };
