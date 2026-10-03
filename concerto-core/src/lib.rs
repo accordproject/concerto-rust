@@ -75,6 +75,9 @@ pub use concerto_macros as derive;
 pub mod dcs;
 mod ecma;
 pub mod error;
+// P5-110: the seeded hasher of the maps keyed by untrusted input; public
+// for concerto-core-js and concerto-wasm, which seeds it.
+js_compat_mod!(hash);
 pub mod instance;
 pub mod introspect;
 pub mod model_manager;

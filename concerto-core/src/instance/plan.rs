@@ -75,7 +75,7 @@
 
 use std::sync::Arc;
 
-use std::collections::{HashMap, HashSet};
+use crate::hash::{SeededHashMap, SeededHashSet};
 
 use crate::error::{Error, Result};
 use crate::introspect::scalar::ScalarValidator;
@@ -128,14 +128,14 @@ pub struct EnumPlan {
     /// The enum declaration.
     pub decl: DeclId,
     /// Its value names.
-    pub values: HashSet<Box<str>>,
+    pub values: SeededHashSet<Box<str>>,
 }
 
 impl EnumPlan {
     fn of(mm: &ModelManager, decl: DeclId) -> Self {
         let values = match mm.declaration(decl) {
             Some(Declaration::Enum(e)) => e.values().iter().map(|v| v.name().into()).collect(),
-            _ => HashSet::new(),
+            _ => SeededHashSet::default(),
         };
         Self { decl, values }
     }
@@ -229,7 +229,7 @@ pub struct ClassPlan {
     /// Every property, own then inherited, in `getProperties()` order.
     pub props: Box<[PlanProp]>,
     /// The first property of each name (TS `getProperty`).
-    index: HashMap<Box<str>, u32>,
+    index: SeededHashMap<Box<str>, u32>,
     /// The identifier field's regex validator, for `Factory.newResource`
     /// (`idFullField?.validator`), when it has a regex.
     pub id_regex: Prepared<StringValidator>,
@@ -355,7 +355,7 @@ fn build(mm: &ModelManager, id: DeclId) -> ClassPlan {
                 identifier_owner: None,
                 chain: Box::default(),
                 props: Box::default(),
-                index: HashMap::new(),
+                index: SeededHashMap::default(),
                 id_regex: Prepared::None,
                 failure: Some(err),
                 settled: false,
@@ -373,7 +373,7 @@ fn build(mm: &ModelManager, id: DeclId) -> ClassPlan {
         .copied()
         .find(|d| mm.own_identifier_field_name_of(*d).is_some());
     let mut props = Vec::with_capacity(prop_ids.len());
-    let mut index = HashMap::new();
+    let mut index = SeededHashMap::default();
     for (i, prop) in prop_ids.iter().copied().enumerate() {
         let owner = mm
             .property_owner_of(prop)

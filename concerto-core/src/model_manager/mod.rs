@@ -40,8 +40,8 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
+use crate::hash::SeededHashSet;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::HashSet;
 
 use serde_json::Value;
 

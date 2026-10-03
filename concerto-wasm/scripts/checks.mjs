@@ -213,6 +213,16 @@ export function runChecks(engine) {
     assert(typeof engine.init === 'function', 'init is exported');
   });
 
+  // P5-110 (#477): the hasher of instance keys (JsObject, concerto-core's SeededState tables)
+  // is seeded from crypto.getRandomValues at instantiation, not left with
+  // wasm32's fixed RandomState keys.
+  check('the untrusted-key hasher is seeded from crypto.getRandomValues', () => {
+    const { source, probe } = engine.hashSeed();
+    assert(source === 'crypto', `seeded from ${source}`);
+    assert(/^[0-9a-f]{16}$/.test(probe), `probe ${probe}`);
+    return { source };
+  });
+
   // P4-08c: the ModelFile bindings, keyed by the same model file handle.
   check('modelFile getters', () => {
     const imports = [...mm.modelFileGetImports(file)];

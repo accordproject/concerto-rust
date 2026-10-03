@@ -20,8 +20,7 @@
 //! validator's options. That is the order `Object.getOwnPropertyNames`
 //! reports, which `ResourceValidator` walks (first undeclared field wins).
 
-use std::collections::hash_map::RandomState;
-
+use concerto_core::hash::SeededState;
 use indexmap::IndexMap;
 use serde_json::Value;
 
@@ -30,15 +29,13 @@ use serde_json::Value;
 /// options (`SerializerOptions`): an `IndexMap`, so iteration is in
 /// insertion order (`Object.keys` order).
 ///
-/// Its keys come from user-supplied JSON instances, so it hashes with the
-/// standard library's seeded SipHash ([`RandomState`]), not FxHash: with an
-/// unseeded hash an attacker can send an object whose keys all collide,
-/// making building, validating or serializing it quadratic (P5-110,
+/// Its keys come from user-supplied JSON instances, so it hashes with
+/// SipHash under secret keys ([`SeededState`]), not FxHash: with an unseeded
+/// or publicly keyed hash an attacker can send an object whose keys all
+/// collide, making building, validating or serializing it quadratic (P5-110,
 /// accordproject/concerto-rust#477, tests/hashdos.rs; PORTING.md 3.7).
-/// FxHash stays for the engine's internal tables keyed by identifiers. On
-/// `wasm32-unknown-unknown` the standard library has no entropy source, so
-/// `RandomState`'s keys there are fixed.
-pub type JsObject = IndexMap<String, JsValue, RandomState>;
+/// FxHash stays for the engine's internal tables keyed by identifiers.
+pub type JsObject = IndexMap<String, JsValue, SeededState>;
 
 use concerto_core::error::Result;
 use concerto_core::instance::dayjs::Dayjs;

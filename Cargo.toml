@@ -53,8 +53,9 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 indexmap = "2"
 # The one fast, non-cryptographic hasher of the internal lookup maps
 # (P5-13, accordproject/concerto-rust#297). None of them is iterated on an
-# observable path; maps keyed by untrusted input (concerto-core-js's
-# JsObject) use the seeded std RandomState instead (PORTING.md 3.7).
+# observable path; maps keyed by untrusted input (JsObject, user model
+# names and regex patterns) use concerto_core::hash's seeded SipHash instead
+# (PORTING.md 3.7).
 rustc-hash = "2"
 # The native oracle harness's CTO -> AST cache key (P1-07a), as
 # migration/oracle/bin/build-cto-cache.js keys it.

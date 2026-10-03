@@ -12,8 +12,8 @@
 //! `StringValidator`) last, by P2-09c/F5 — `introspect::check_pattern` and
 //! `check_length`, the ad hoc checks this replaced, are gone.
 
+use crate::hash::SeededHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
@@ -668,7 +668,7 @@ thread_local! {
 }
 
 /// [`REGEX_CACHE`]'s map: flags, then pattern, to the compiled regex.
-type RegexCache = HashMap<Box<str>, HashMap<Box<str>, CompiledRegex>>;
+type RegexCache = SeededHashMap<Box<str>, SeededHashMap<Box<str>, CompiledRegex>>;
 
 /// The cache is cleared when it reaches this many entries, so a process
 /// that sees an unbounded stream of distinct patterns stays bounded.

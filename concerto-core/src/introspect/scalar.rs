@@ -439,7 +439,7 @@ impl ScalarDeclaration {
             .collect::<Result<Vec<_>, _>>()?;
         // The first name equal to an earlier one is `duplicateElements[0]`.
         // The set is only probed, never iterated.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::hash::SeededHashSet::default();
         if let Some(duplicate) = names.iter().find(|name| !seen.insert(name.as_str())) {
             return Err(ContractError::new(
                 ErrorKind::IllegalModel,
