@@ -48,32 +48,49 @@ use crate::model_util;
 /// `basemodelmanager.ts` imports it.
 pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
-/// The metamodel's own AST: the same vendored copy
-/// `crate::dcs` includes (`concerto-core/src/dcs/metamodel.json`, identical
-/// byte for byte to `concerto-metamodel/vendor/concerto.metamodel@1.0.0.json`
-/// — `MetaModelUtil.metaModelAst`, the document `new ModelManager({
-/// addMetamodel: true })` adds), so this module vendors no copy of its own.
-const METAMODEL_AST_JSON: &str = include_str!("../dcs/metamodel.json");
+/// The fully-qualified name of the metamodel declaration `$short`, as a
+/// `&'static str` literal: `metamodel_class!("MapDeclaration")` is
+/// `"concerto.metamodel@1.0.0.MapDeclaration"` ([`METAMODEL_NAMESPACE`],
+/// a dot, the short name), built at compile time rather than with
+/// `format!` on each call (P5-102, C-10).
+macro_rules! metamodel_class {
+    ($short:literal) => {
+        concat!("concerto.metamodel@1.0.0.", $short)
+    };
+}
+pub(crate) use metamodel_class;
 
-/// A fresh [`ModelManager`] with the metamodel model itself loaded. TS's
+/// The metamodel's own AST, `MetaModelUtil.metaModelAst` (the document
+/// `new ModelManager({ addMetamodel: true })` adds): the vendored copy
+/// `concerto-core/src/metamodel.json`, next to the system models'
+/// `rootmodel.json`, identical byte for byte to
+/// `concerto-metamodel/vendor/concerto.metamodel@1.0.0.json`. Read only by
+/// [`metamodel_model_file`], the crate's one loader of it (P5-102, C-10).
+const METAMODEL_AST_JSON: &str = include_str!("../metamodel.json");
+
+/// A fresh [`ModelManager`] holding the system models and the metamodel
+/// file ([`metamodel_model_file`], shared, not copied), validated. TS's
 /// `validateAst` adds `this.metamodelModelFile` only for the duration of
 /// the check (and only when a metamodel is not already present) rather
-/// than caching it; [`validate_metamodel`] runs on
+/// than caching it; the checks here run on
 /// [`with_resident_metamodel_manager`]'s per-thread copy of this manager
 /// instead (P5-21), which holds the same models and gives the same answer.
 fn metamodel_model_manager() -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
-    let metamodel: Value =
-        serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    mm.load_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
+    mm.add_shared_model_file(metamodel_model_file()?)?;
+    mm.validate_models()?;
     Ok(mm)
 }
 
 /// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
-/// P5-21, accordproject/concerto-rust#319), as P5-13's
-/// `ModelManager::validate_ast_value` does for its own resident manager:
-/// built on the first call on each thread, then kept with its caches warm,
-/// so a later call pays for no system-model or metamodel load.
+/// P5-21, accordproject/concerto-rust#319): built on the first call on each
+/// thread, then kept with its caches warm, so a later call pays for no
+/// system-model or metamodel load.
+///
+/// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
+/// [`validate_metamodel`], [`validate_meta_model_instance`],
+/// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
+/// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
 ///
 /// The manager is only ever read ([`from_json`] takes it by shared
 /// reference, and nothing else can reach it), so every call sees the same
@@ -81,7 +98,9 @@ fn metamodel_model_manager() -> Result<ModelManager> {
 /// A build error is returned and not cached, exactly as an uncached build
 /// returns it. Being per-thread, the cache adds no shared state: nothing
 /// here changes what is `Send` or `Sync` (P6-01).
-fn with_resident_metamodel_manager<R>(f: impl FnOnce(&ModelManager) -> Result<R>) -> Result<R> {
+pub(crate) fn with_resident_metamodel_manager<R>(
+    f: impl FnOnce(&ModelManager) -> Result<R>,
+) -> Result<R> {
     thread_local! {
         static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
             const { std::cell::RefCell::new(None) };
@@ -179,8 +198,9 @@ pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
     }
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    let model_file = std::sync::Arc::new(ModelFile::from_json(
-        &metamodel,
+    let model_file = std::sync::Arc::new(ModelFile::from_owned_json_with_definitions(
+        metamodel,
+        None,
         Some(METAMODEL_NAMESPACE.to_string()),
     )?);
     METAMODEL_MODEL_FILE.with(|cache| *cache.borrow_mut() = Some(std::sync::Arc::clone(&model_file)));
@@ -236,13 +256,16 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
 /// This one runs the default options, and a failure is the serializer's own
 /// error, unwrapped, as TS throws it.
 ///
-/// The metamodel manager is `metamodel_model_manager`'s. TS's
+/// The metamodel manager is the resident one
+/// ([`with_resident_metamodel_manager`], P5-102), which holds the models a
+/// fresh `newMetaModelManager()` holds and is only read. TS's
 /// `newMetaModelManager` names the file `concerto.metamodel` and keeps the
 /// metamodel's CTO text as its definitions; neither is observable here
 /// beyond an error message's wording (error parity compares the class).
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
-    let mm = metamodel_model_manager()?;
-    from_json(&mm, input, &FromJsonOptions::default(), &mut FixedEnv).map(|_resource| ())
+    with_resident_metamodel_manager(|mm| {
+        from_json(mm, input, &FromJsonOptions::default(), &mut FixedEnv).map(|_resource| ())
+    })
 }
 
 /// TS `modelManagerFromMetaModel(metaModel, validate = true)`
@@ -542,6 +565,24 @@ fn namespace_version(ns: &str) -> Result<Option<String>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// P5-102 (F-7/B-8/A-12): one resident manager, holding the one shared
+    /// metamodel file under its namespace, as `validateAst` registers it.
+    #[test]
+    fn the_resident_manager_holds_the_shared_metamodel_file() {
+        let file = metamodel_model_file().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&file, &metamodel_model_file().unwrap()));
+        assert_eq!(file.file_name(), Some(METAMODEL_NAMESPACE));
+        with_resident_metamodel_manager(|mm| {
+            let held = mm
+                .shared_model_files()
+                .find(|mf| mf.namespace() == METAMODEL_NAMESPACE)
+                .expect("the resident manager holds the metamodel");
+            assert!(std::sync::Arc::ptr_eq(held, &file));
+            Ok(())
+        })
+        .unwrap();
+    }
 
     // ---- ported from concerto-validate-rs's src/lib.rs tests (issue
     //      accordproject/concerto-rust#59's exit condition, as narrowed by

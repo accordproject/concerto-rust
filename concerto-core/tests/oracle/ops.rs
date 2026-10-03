@@ -3026,7 +3026,7 @@ fn command_sets(arg: Option<&Value>) -> Faulty<(Vec<Value>, bool)> {
 
 /// `DecoratorManager.validate`'s optional `modelFiles`: absent, or a list
 /// of model files, each rebuilt as TS's `ModelFile` would be.
-fn model_files_arg(args: &[Arg], index: usize) -> Faulty<Option<Vec<ModelFile>>> {
+fn model_files_arg(args: &[Arg], index: usize) -> Faulty<Option<Vec<std::sync::Arc<ModelFile>>>> {
     let items = match args.get(index) {
         None => return Ok(None),
         Some(Arg::Plain(v)) if recipe::is_undefined(v) || v.is_null() => return Ok(None),
@@ -3039,12 +3039,14 @@ fn model_files_arg(args: &[Arg], index: usize) -> Faulty<Option<Vec<ModelFile>>>
         }
     };
     let file = |item: &Arg| match item {
-        Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone()).map_err(|e| {
-            Fault::Divergence(format!(
-                "input construction failed: new ModelFile: {}",
-                to_oracle_error(&e).message
-            ))
-        }),
+        Arg::File(f) => ModelFile::from_json(&f.ast, f.file_name.clone())
+            .map(std::sync::Arc::new)
+            .map_err(|e| {
+                Fault::Divergence(format!(
+                    "input construction failed: new ModelFile: {}",
+                    to_oracle_error(&e).message
+                ))
+            }),
         _ => Err(Fault::Unsupported(
             "DecoratorManager.validate with a modelFiles entry that is not a model file".into(),
         )),
@@ -3132,8 +3134,7 @@ pub fn derive_model_manager(
             ));
         };
         let files = model_files_arg(&args, 1)?;
-        let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
-        let mm = dcs::validate(&command_set, refs.as_deref()).map_err(failed)?;
+        let mm = dcs::validate(&command_set, files.as_deref()).map_err(failed)?;
         return Ok(Some(DerivedModelManager { mm }));
     }
     let Some(Arg::Mm(index)) = args.first() else {
@@ -3145,13 +3146,12 @@ pub fn derive_model_manager(
     if member == "decorateModels" {
         let (mut sets, _) = command_sets(plain_arg(&args, 1)?.as_ref())?;
         let mut options = decorate_options(plain_arg(&args, 2)?.as_ref());
-        let Some(prepared) =
-            dcs::prepare_decoration(&r.mm, &mut sets, &mut options).map_err(failed)?
-        else {
+        if !dcs::prepare_command_sets(&r.mm, &mut sets, &mut options).map_err(failed)? {
             return Err(Fault::Harness(format!(
                 "a model manager derived from {op} with no command sets, which returns its input"
             )));
-        };
+        }
+        let prepared = dcs::index_commands(&sets, &options).map_err(failed)?;
         let mm = dcs::apply_decoration(&r.mm, &prepared, &options).map_err(failed)?;
         return Ok(Some(DerivedModelManager { mm }));
     }
@@ -3255,7 +3255,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             let options_arg = plain_arg(&args, 2)?;
             let (mut sets, is_list) = command_sets(sets_arg.as_ref())?;
             let mut options = decorate_options(options_arg.as_ref());
-            let prepared = dcs::prepare_decoration(&r.mm, &mut sets, &mut options);
+            let prepared = dcs::prepare_command_sets(&r.mm, &mut sets, &mut options);
             let sets_after = sets_arg.as_ref().map(|_| {
                 if is_list {
                     Value::Array(sets.clone())
@@ -3277,6 +3277,11 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
             let before = [None, sets_arg.clone(), options_arg.clone()];
             let mut model_validation = None;
             let after = [None, sets_after, options_after];
+            let prepared = prepared.and_then(|applies| {
+                applies
+                    .then(|| dcs::index_commands(&sets, &options))
+                    .transpose()
+            });
             let outcome = match prepared {
                 Err(e) => Err(err(e)),
                 // TS returns the model manager it was given.
@@ -3401,8 +3406,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                 ));
             };
             let files = model_files_arg(&args, 1)?;
-            let refs: Option<Vec<&ModelFile>> = files.as_ref().map(|fs| fs.iter().collect());
-            let outcome = dcs::validate(&command_set, refs.as_deref())
+            let outcome = dcs::validate(&command_set, files.as_deref())
                 .map(|mm| recipe::summary_of(recipe::Kind::ModelManager, &mm))
                 .map_err(err);
             let attributed = attribute_stand_in(&outcome, std::slice::from_ref(&command_set));

@@ -962,7 +962,7 @@ pub(crate) mod tests {
             .iter()
             .map(|(_, text)| serde_json::from_str(text).unwrap())
             .collect();
-        bases.push(serde_json::from_str(include_str!("../dcs/metamodel.json")).unwrap());
+        bases.push(serde_json::from_str(include_str!("../metamodel.json")).unwrap());
         if let Ok(fixtures) = std::env::var("CONCERTO_ORACLE_FIXTURES") {
             let cache = std::path::Path::new(&fixtures).join("../cto-cache");
             let mut files = Vec::new();

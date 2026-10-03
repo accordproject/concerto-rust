@@ -20,7 +20,8 @@ use crate::error::{ContractError, ErrorKind, Result};
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
 
-use super::{MAP_DECLARATION_CLASS, META_MODEL_NAMESPACE, quote_string_value};
+use super::{MAP_DECLARATION_CLASS, quote_string_value};
+use crate::instance::metamodel::metamodel_class;
 
 /// `DecoratorExtractor.Action` (`src/decoratorextractor.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,8 +89,8 @@ pub struct EncodedExtractResult {
 struct CommandClasses {
     command: String,
     target: String,
-    decorator: String,
-    type_reference: String,
+    decorator: &'static str,
+    type_reference: &'static str,
 }
 
 /// `DecoratorExtractor` (`src/decoratorextractor.ts`).
@@ -306,7 +307,7 @@ impl DecoratorExtractor {
         let mut decorator = Map::new();
         decorator.insert(
             "$class".to_string(),
-            Value::String(classes.decorator.clone()),
+            Value::String(classes.decorator.to_string()),
         );
         decorator.insert(
             "name".to_string(),
@@ -318,7 +319,7 @@ impl DecoratorExtractor {
                 .map(|arg| {
                     let mut m = Map::new();
                     let class = arg.get("$class").cloned().unwrap_or(Value::Null);
-                    let is_type_reference = class.as_str() == Some(classes.type_reference.as_str());
+                    let is_type_reference = class.as_str() == Some(classes.type_reference);
                     m.insert("$class".to_string(), class);
                     if is_type_reference {
                         m.insert(
@@ -481,8 +482,8 @@ impl DecoratorExtractor {
         CommandClasses {
             command: format!("org.accordproject.decoratorcommands@{version}.Command"),
             target: format!("org.accordproject.decoratorcommands@{version}.CommandTarget"),
-            decorator: format!("{META_MODEL_NAMESPACE}.Decorator"),
-            type_reference: format!("{META_MODEL_NAMESPACE}.DecoratorTypeReference"),
+            decorator: metamodel_class!("Decorator"),
+            type_reference: metamodel_class!("DecoratorTypeReference"),
         }
     }
 
@@ -872,7 +873,7 @@ impl serde::Serialize for DecoratorView<'_> {
         map.serialize_entry("$class", &command.classes.decorator)?;
         map.serialize_entry("name", dcs.get("name").unwrap_or(&NULL))?;
         if let Some(args) = dcs.get("arguments").and_then(Value::as_array) {
-            let type_reference = command.classes.type_reference.as_str();
+            let type_reference = command.classes.type_reference;
             map.serialize_entry(
                 "arguments",
                 &ArgumentsView {

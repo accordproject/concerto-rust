@@ -1592,39 +1592,22 @@ impl ModelManager {
     /// manager ([`ModelManager::validate_ast_value`]), when this manager's
     /// system model files match that manager's. `false` also when the
     /// resident manager cannot be built, so the caller's own path reports
-    /// that error.
+    /// that error. The resident manager is the crate's one
+    /// (`instance::metamodel::with_resident_metamodel_manager`, P5-102:
+    /// before, this kept a second one of its own).
     fn passes_on_resident_metamodel(&self, ast: &Value) -> bool {
-        use crate::instance::metamodel::{deserialize_ast, metamodel_model_file};
-        thread_local! {
-            static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
-                const { std::cell::RefCell::new(None) };
-        }
-        RESIDENT.with(|cell| {
-            let Ok(mut cell) = cell.try_borrow_mut() else {
-                return false;
-            };
-            if cell.is_none() {
-                let Ok(mut resident) = ModelManager::new() else {
-                    return false;
-                };
-                let Ok(metamodel) = metamodel_model_file() else {
-                    return false;
-                };
-                if resident.insert_shared(metamodel).is_err() {
-                    return false;
-                }
-                *cell = Some(resident);
-            }
-            let Some(resident) = cell.as_ref() else {
-                return false;
-            };
-            self.has_system_files_of(resident) && deserialize_ast(resident, ast).is_ok()
+        use crate::instance::metamodel::{deserialize_ast, with_resident_metamodel_manager};
+        with_resident_metamodel_manager(|resident| {
+            Ok(self.has_system_files_of(resident) && deserialize_ast(resident, ast).is_ok())
         })
+        .unwrap_or(false)
     }
 
     /// Whether this manager holds the same decorator and root model files
-    /// as `other` (by AST, which is all a model file's lookups are built
-    /// from). Answered once per [`ModelManager::generation`].
+    /// as `other`: the same shared file (P5-102, A-12: the usual case, as
+    /// both managers hold `system_model_files`' own), or else the same AST,
+    /// which is all a model file's lookups are built from. Answered once
+    /// per [`ModelManager::generation`].
     fn has_system_files_of(&self, other: &ModelManager) -> bool {
         use std::sync::atomic::Ordering;
         // `generation + 1`, so that the default 0 means "not checked".
@@ -1632,17 +1615,25 @@ impl ModelManager {
         if self.system_files_checked.load(Ordering::Relaxed) == checked {
             return true;
         }
-        let same = EXCLUDE_NS
-            .iter()
-            .all(|ns| match (self.model_file(ns), other.model_file(ns)) {
-                (Some(mine), Some(theirs)) => mine.ast() == theirs.ast(),
+        let same = EXCLUDE_NS.iter().all(|ns| {
+            match (self.shared_model_file(ns), other.shared_model_file(ns)) {
+                (Some(mine), Some(theirs)) => {
+                    Arc::ptr_eq(mine, theirs) || mine.ast() == theirs.ast()
+                }
                 (None, None) => true,
                 _ => false,
-            });
+            }
+        });
         if same {
             self.system_files_checked.store(checked, Ordering::Relaxed);
         }
         same
+    }
+
+    /// The shared handle of the model file registered under `namespace`.
+    fn shared_model_file(&self, namespace: &str) -> Option<&Arc<ModelFile>> {
+        let id = self.namespaces.get(namespace)?;
+        self.files.get(id.slot()).map(|slot| &slot.model_file)
     }
 
     /// TS `new ModelManager({ addMetamodel: true })` (`src/basemodelmanager.ts`
@@ -3355,11 +3346,6 @@ impl ModelManager {
         keep: impl Fn(&str, &Declaration) -> bool,
         disable_validation: bool,
     ) -> Result<Self> {
-        // A-5: every option, `metamodel_validation` included, as TS's
-        // `new BaseModelManager({...this.options})` does.
-        let mut result = Self::new()?;
-        result.options = self.options.clone();
-
         // `ModelFile::filter`'s predicate carries no namespace of its own
         // (its doc): it is called both on the file being filtered *and*,
         // for that file's own imports, on a *different* file's declarations
@@ -3410,8 +3396,39 @@ impl ModelManager {
                 }
             }
         }
-        result.insert_models(filtered_files, !disable_validation)?;
+        // A-5: every option, `metamodel_validation` included, as TS's
+        // `new BaseModelManager({...this.options})` does.
+        self.new_like_with(filtered_files, !disable_validation)
+    }
+
+    /// P5-102 (accordproject/concerto-rust#456, C-2): a new manager with
+    /// this one's options and the system models, holding `files` (shared,
+    /// each with the [`ValidityProof`] it came with, if any), validated
+    /// together unless `validate` is false. The shape `filter`'s result and
+    /// the empty-input result of `crate::dcs::decorate_models` share.
+    pub(crate) fn new_like_with(
+        &self,
+        files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
+        validate: bool,
+    ) -> Result<Self> {
+        let mut result = Self::new()?;
+        result.options = self.options.clone();
+        result.insert_models(files, validate)?;
         Ok(result)
+    }
+
+    /// P5-102 (C-2): this manager's own model files (those of `EXCLUDE_NS`
+    /// left out, as `getModelFiles()` leaves them out), shared, each with its [`ValidityProof`] here: what another
+    /// manager registers to hold the same models without copying or, where
+    /// the proof holds there, validating them again
+    /// ([`ModelManager::insert_models`]).
+    pub(crate) fn user_files_with_proofs(
+        &self,
+    ) -> Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)> {
+        self.shared_model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .map(|mf| (Arc::clone(mf), self.validity_proof(mf.namespace())))
+            .collect()
     }
 
     js_compat_pub! {
@@ -3575,7 +3592,7 @@ impl ModelManager {
     /// [`ModelManager::validate_models`] once over the whole manager; either
     /// failure undoes every insert this call made, exactly as `add_models`
     /// does for its own AST-building version of the same loop.
-    fn insert_models(
+    pub(crate) fn insert_models(
         &mut self,
         files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
         validate: bool,

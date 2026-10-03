@@ -5705,7 +5705,7 @@ pub struct ModelManagerHandle {
 /// P5-77 (accordproject/concerto-rust#419): each file is kept shared
 /// (`Arc`), so a DecoratorManager result staged from a manager that keeps
 /// its files (the extract memo, P5-56) or is about to drop them
-/// ([`stage_result`]) is staged without a deep copy, and registered as the
+/// (`stage_result`) is staged without a deep copy, and registered as the
 /// same shared file ([`ModelManager::add_shared_model_file`]).
 #[derive(Default)]
 struct StagedModelFiles {
@@ -7812,6 +7812,7 @@ impl ModelManagerHandle {
 /// off `ModelManager.getAst(resolve, false).models`, or a per-file
 /// `getModelFiles(false).map(mf => mf.getAst())`) added the way
 /// `fromAst`/`add_model` do (P4-09).
+#[cfg(test)]
 fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     for model in models {
@@ -7820,7 +7821,7 @@ fn model_manager_from_asts(models: &[Value]) -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// [`model_manager_from_asts`], taking the `models` array itself (anything
+/// `model_manager_from_asts`, taking the `models` array itself (anything
 /// but an array loads nothing, as `as_array().unwrap_or_default()` read it)
 /// and moving each AST into its model file
 /// ([`ModelManager::add_owned_model_with_definitions`]: same result, same
@@ -7836,7 +7837,7 @@ fn model_manager_from_owned_asts(models: Value) -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// [`model_manager_from_asts`], plus the namespaces of the models it added
+/// `model_manager_from_asts`, plus the namespaces of the models it added
 /// (as distinct from the system ones `ModelManager::new()` pre-loads) — for
 /// [`decorator_manager_validate`], which must hand [`dcs::validate`] only
 /// the caller's own model files: re-adding a system one to the fresh
@@ -8078,11 +8079,13 @@ pub fn decorator_manager_validate(
             Some(models) => {
                 let models = models.as_array().cloned().unwrap_or_default();
                 let (mm, user_ns) = model_manager_from_asts_with_user_ns(&models)?;
-                let files: Vec<&ModelFile> = mm
-                    .model_files()
+                // Shared with the validation manager, not copied (P5-102).
+                let files: Vec<std::sync::Arc<ModelFile>> = mm
+                    .shared_model_files()
                     .filter(|mf| user_ns.contains(mf.namespace()))
+                    .cloned()
                     .collect();
-                let refs: Option<&[&ModelFile]> =
+                let refs: Option<&[std::sync::Arc<ModelFile>]> =
                     if files.is_empty() { None } else { Some(&files) };
                 dcs::validate(&command_set, refs)?;
             }
@@ -8125,17 +8128,25 @@ pub fn decorator_manager_decorate_models(
     options: JsValue,
 ) -> std::result::Result<JsValue, JsValue> {
     run(|| {
+        // P5-102 (D-5): the ASTs and the command sets are moved out of
+        // their `Value`s, not copied, and the result is written as text
+        // straight from its model ASTs ([`ModelManagerAstView`]), as
+        // extract's is, with the intermediate `Value` only as the fallback.
         let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
-        let models_vec = models_json.as_array().cloned().unwrap_or_default();
-        let mm = model_manager_from_asts(&models_vec)?;
+        let mm = model_manager_from_owned_asts(models_json)?;
 
-        let sets_json = to_json(&decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-        let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+        let mut sets = owned_array(to_json(&decorator_command_sets)?);
 
         let options_json = to_json(&options)?.unwrap_or_else(|| json!({}));
         let mut opts = decorate_options_from_js(&options_json);
 
         let decorated = dcs::decorate_models(&mm, &mut sets, &mut opts)?;
+        if let Some(js) = serde_json::to_string(&ModelManagerAstView(&decorated))
+            .ok()
+            .and_then(|text| JSON::parse(&text).ok())
+        {
+            return Ok(js);
+        }
         Ok(to_js(&model_manager_to_ast(&decorated)))
     })
 }
@@ -8349,20 +8360,16 @@ fn staged_header(ast: &Value) -> Option<Value> {
 /// `result` ([`ModelManager::shared_model_files`]), not deep-copied; every
 /// caller drops `result` (or keeps it unchanged, in the extract memo) once
 /// the call returns.
+///
+/// Every DCS operation now stages through [`stage_with_headers`] (P5-102:
+/// decorate too), so this is the tests' reference for it.
+#[cfg(test)]
 fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<Value> {
-    result
-        .shared_model_files()
-        .map(|mf| {
-            if DCS_EXCLUDE_NS.contains(&mf.namespace())
-                || target.staged.files.len() >= StagedModelFiles::CAPACITY
-            {
-                return Value::Null;
-            }
-            let header = staged_header(mf.ast()).unwrap_or(Value::Null);
-            let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
-            json!([id, header])
-        })
-        .collect()
+    let headers: Vec<Value> = result
+        .model_files()
+        .map(|mf| staged_header(mf.ast()).unwrap_or(Value::Null))
+        .collect();
+    stage_with_headers(target, result, &headers)
 }
 
 /// The input manager of the `DecoratorManager` operations, kept resident
@@ -8395,7 +8402,7 @@ impl DcsManagerHandle {
     /// the result staged into `target` (the new ModelManager's handle, as
     /// the view's `clearModelFiles` left it). Returns `{ast, staged,
     /// validated}`: `ast` is what that binding returns, `staged` is
-    /// [`stage_result`]'s entries for `ast.models`, and `validated` is
+    /// `stage_result`'s entries for `ast.models`, and `validated` is
     /// whether the result manager was validated (every model but the system
     /// ones).
     ///
@@ -8500,8 +8507,7 @@ fn staged_decorate_models(
     decorator_command_sets: &JsValue,
     options: &JsValue,
 ) -> Result<JsValue> {
-    let sets_json = to_json(decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-    let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+    let mut sets = owned_array(to_json(decorator_command_sets)?);
 
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let mut opts = decorate_options_from_js(&options_json);
@@ -8512,12 +8518,65 @@ fn staged_decorate_models(
     let applied = !sets.is_empty();
     let decorated = dcs::decorate_models(manager, &mut sets, &mut opts)?;
     let validated = applied && opts.disable_metamodel_validation != Some(true);
-    let staged = stage_result(target, &decorated);
-    Ok(to_js(&json!({
-        "ast": model_manager_to_ast(&decorated),
+    // P5-102 (D-5, C-3): extract's path. The result is compacted and its
+    // files staged shared, and `{ast, staged, validated}` is written as text
+    // with the AST spliced in, then parsed once; the intermediate `Value`
+    // (every AST deep-copied by `model_manager_to_ast`, then `to_js`) is
+    // only the fallback.
+    let compacted = CompactedResult::new(decorated);
+    let staged = stage_with_headers(target, &compacted.result, &compacted.headers);
+    Ok(decorate_result_js(&compacted, staged, validated))
+}
+
+/// A JS array argument's elements, moved out of its `Value` rather than
+/// copied (P5-102): anything but an array (`undefined` included) gives
+/// none, as `as_array().cloned().unwrap_or_default()` read it.
+fn owned_array(value: Option<Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
+/// The JSON text of `{ast, staged, validated}` for a compacted decorate
+/// result, the AST spliced in from [`CompactedResult::ast_text`]: byte for
+/// byte `serde_json`'s text of [`staged_decorate_models`]'s former
+/// intermediate `Value`.
+fn decorate_result_text(
+    compacted: &CompactedResult,
+    staged: &[Value],
+    validated: bool,
+) -> serde_json::Result<String> {
+    if compacted.ast_text.is_empty() {
+        return Err(serde::ser::Error::custom("no kept AST text"));
+    }
+    let mut out = Vec::with_capacity(compacted.ast_text.len() + 64);
+    out.extend_from_slice(b"{\"ast\":");
+    out.extend_from_slice(compacted.ast_text.as_bytes());
+    out.extend_from_slice(b",\"staged\":");
+    serde_json::to_writer(&mut out, staged)?;
+    out.extend_from_slice(if validated {
+        b",\"validated\":true}"
+    } else {
+        b",\"validated\":false}"
+    });
+    String::from_utf8(out).map_err(serde::ser::Error::custom)
+}
+
+/// The JS value of a decorate result: [`decorate_result_text`], parsed, or
+/// the intermediate-`Value` fallback, which gives the same value.
+fn decorate_result_js(compacted: &CompactedResult, staged: Vec<Value>, validated: bool) -> JsValue {
+    if let Some(js) = decorate_result_text(compacted, &staged, validated)
+        .ok()
+        .and_then(|text| JSON::parse(&text).ok())
+    {
+        return js;
+    }
+    to_js(&json!({
+        "ast": model_manager_to_ast(&compacted.result),
         "staged": staged,
         "validated": validated,
-    })))
+    }))
 }
 
 /// [`DcsManagerHandle::extract`]'s body, on `manager`: one extract
@@ -8660,6 +8719,64 @@ struct DcsExtractMemo {
     kept: Option<DcsExtractKept>,
 }
 
+/// A DCS operation's result manager, compacted (P5-77; P5-102 for
+/// decorate): the staged headers read from its parsed ASTs first, then each
+/// model file's AST kept as the JSON text [`ModelManagerAstView`] writes
+/// for it ([`ModelManager::compact_model_asts`]), and the whole envelope's
+/// text spliced from those texts, byte for byte that view's text. The files
+/// staged from it ([`stage_with_headers`], shared) then hold text, not a
+/// parsed tree, for as long as the new ModelManager lives. Should the
+/// compaction fail, `ast_text` is left empty, and the caller takes its
+/// intermediate-`Value` fallback.
+struct CompactedResult {
+    /// The result manager.
+    result: ModelManager,
+    /// The JSON text of the result manager's AST ([`ModelManagerAstView`]).
+    ast_text: String,
+    /// [`staged_header`] of each of `result`'s model files, in order.
+    headers: Vec<Value>,
+}
+
+impl CompactedResult {
+    fn new(mut result: ModelManager) -> Self {
+        let headers = result
+            .model_files()
+            .map(|mf| staged_header(mf.ast()).unwrap_or(Value::Null))
+            .collect();
+        let ast_text = result
+            .compact_model_asts()
+            .map(|texts| models_envelope_text(&texts))
+            .unwrap_or_default();
+        Self {
+            result,
+            ast_text,
+            headers,
+        }
+    }
+}
+
+/// `stage_result` with headers already read ([`CompactedResult`]): each
+/// file staged shared with `result`, which never changes.
+fn stage_with_headers(
+    target: &mut ModelManagerHandle,
+    result: &ModelManager,
+    headers: &[Value],
+) -> Vec<Value> {
+    result
+        .shared_model_files()
+        .zip(headers)
+        .map(|(mf, header)| {
+            if DCS_EXCLUDE_NS.contains(&mf.namespace())
+                || target.staged.files.len() >= StagedModelFiles::CAPACITY
+            {
+                return Value::Null;
+            }
+            let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
+            json!([id, header])
+        })
+        .collect()
+}
+
 /// [`ModelManagerAstView`]'s text, from each model's own AST text
 /// ([`ModelManager::compact_model_asts`]): the same compact envelope, byte
 /// for byte (P5-77).
@@ -8676,7 +8793,7 @@ fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
     out
 }
 
-/// P5-77: [`stage_result`] then [`extract_result_js`] for a result the
+/// P5-77: `stage_result` then [`extract_result_js`] for a result the
 /// caller drops once the call returns, through [`DcsExtractKept`], so the
 /// files staged into `target` keep their ASTs as text
 /// ([`DcsExtractKept::new`]). The same JS value, the same stages.
@@ -8719,15 +8836,12 @@ impl DcsExtractKept {
     /// result ModelManager lives. Should the compaction fail, `ast_text` is
     /// left empty and [`Self::result_js`] takes its fallback, as before
     /// when the view's text failed.
-    fn new(source: Vec<Value>, mut result: ModelManager) -> Self {
-        let headers = result
-            .model_files()
-            .map(|mf| staged_header(mf.ast()).unwrap_or(Value::Null))
-            .collect();
-        let ast_text = result
-            .compact_model_asts()
-            .map(|texts| models_envelope_text(&texts))
-            .unwrap_or_default();
+    fn new(source: Vec<Value>, result: ModelManager) -> Self {
+        let CompactedResult {
+            result,
+            ast_text,
+            headers,
+        } = CompactedResult::new(result);
         Self {
             source,
             result,
@@ -8736,23 +8850,11 @@ impl DcsExtractKept {
         }
     }
 
-    /// [`stage_result`] from the kept result manager, with its kept headers.
+    /// `stage_result` from the kept result manager, with its kept headers.
     /// P5-77: each file is staged shared with the kept manager, which never
     /// changes, so a repeated extract copies no model file.
     fn stage(&self, target: &mut ModelManagerHandle) -> Vec<Value> {
-        self.result
-            .shared_model_files()
-            .zip(&self.headers)
-            .map(|(mf, header)| {
-                if DCS_EXCLUDE_NS.contains(&mf.namespace())
-                    || target.staged.files.len() >= StagedModelFiles::CAPACITY
-                {
-                    return Value::Null;
-                }
-                let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
-                json!([id, header])
-            })
-            .collect()
+        stage_with_headers(target, &self.result, &self.headers)
     }
 
     /// [`extract_result_text`] for the kept result and this call's command
