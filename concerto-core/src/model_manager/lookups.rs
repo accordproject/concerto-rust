@@ -263,10 +263,7 @@ impl ModelManager {
     /// TS: `BaseModelManager.getEnumDeclarations`.
     pub fn enum_declarations(&self) -> impl Iterator<Item = (String, &EnumDeclaration)> {
         self.declarations_in(self.user_file_slots())
-            .filter_map(|(_, fqn, declaration)| match declaration {
-                Declaration::Enum(e) => Some((fqn.to_string(), e)),
-                Declaration::Class(_) | Declaration::Scalar(_) | Declaration::Map(_) => None,
-            })
+            .filter_map(|(_, fqn, declaration)| Some((fqn.to_string(), declaration.as_enum()?)))
     }
 
     /// The loaded model files outside `EXCLUDE_NS`, in load order: what TS's
@@ -606,7 +603,7 @@ impl ModelManager {
     /// of deep-cloned into a `Models` envelope. The first model with a given
     /// namespace wins, the same as TS `findNamespace`'s `Array.find`.
     pub(super) fn prior_models(&self) -> metamodel_util::PriorModels<'_> {
-        let mut prior_models = metamodel_util::PriorModels::new();
+        let mut prior_models = metamodel_util::PriorModels::default();
         for mf in self.model_files() {
             let ast = mf.ast();
             if let Some(namespace) = ast.get("namespace").and_then(Value::as_str) {

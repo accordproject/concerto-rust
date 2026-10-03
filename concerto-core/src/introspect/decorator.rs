@@ -558,12 +558,6 @@ fn illegal_model(message: String, location: Option<Value>) -> Error {
 /// oracle harness reads off a [`Error`], `to_oracle_error`), for
 /// [`Decorator::rethrow`] to carry into its `IllegalModelException`.
 fn js_message(err: &Error) -> String {
-    if let Some(type_name) = err.unported_type_not_found() {
-        return format!("Type \"{type_name}\" not found.");
-    }
-    if let Some(message) = err.unported_illegal_model() {
-        return message.to_string();
-    }
     err.contract().final_message()
 }
 

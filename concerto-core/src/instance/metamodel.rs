@@ -34,6 +34,8 @@
 //! constructor's `addMetamodel` option, so the native oracle harness can
 //! replay their fixtures.
 
+use std::cell::RefCell;
+
 use serde_json::Value;
 
 use super::from_json::{FixedEnv, FromJsonOptions, from_json};
@@ -107,8 +109,8 @@ js_compat_pub! {
         f: impl FnOnce(&ModelManager) -> Result<R>,
     ) -> Result<R> {
         thread_local! {
-            static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
-                const { std::cell::RefCell::new(None) };
+            static RESIDENT: RefCell<Option<ModelManager>> =
+                const { RefCell::new(None) };
         }
         RESIDENT.with(|cell| {
             if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
@@ -172,16 +174,8 @@ impl MetaModelPreset {
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
 /// own, already-constructed message. For a catalogue error that is
 /// `ContractError::final_message` (the same text the native oracle harness
-/// compares, per its own doc comment); the two pre-port shapes
-/// (`Error::type_not_found`, `Error::illegal_model`) are given the message
-/// they carry to the binding.
+/// compares, per its own doc comment), the pre-port shapes included (B-9).
 fn ts_message(err: &Error) -> String {
-    if let Some(message) = err.unported_illegal_model() {
-        return message.to_string();
-    }
-    if let Some(type_name) = err.unported_type_not_found() {
-        return format!("type not found: {type_name}");
-    }
     err.contract().final_message()
 }
 
@@ -231,8 +225,8 @@ fn wrapped(err: &Error) -> Error {
 /// exactly as an uncached load would return it.
 pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
     thread_local! {
-        static METAMODEL_MODEL_FILE: std::cell::RefCell<Option<std::sync::Arc<ModelFile>>> =
-            const { std::cell::RefCell::new(None) };
+        static METAMODEL_MODEL_FILE: RefCell<Option<std::sync::Arc<ModelFile>>> =
+            const { RefCell::new(None) };
     }
     if let Some(model_file) = METAMODEL_MODEL_FILE.with(|cache| cache.borrow().clone()) {
         return Ok(model_file);
@@ -873,9 +867,7 @@ mod tests {
             "declarations": []
         });
         let err = validate_ast(&ast).expect_err("an unknown metamodel version should fail");
-        let Some(contract) = err.ported().cloned() else {
-            panic!("expected a Contract error, got {err:?}");
-        };
+        let contract = err.contract().clone();
         assert_eq!(contract.kind, ErrorKind::Metamodel);
         assert_eq!(
             contract.message(),
@@ -1048,9 +1040,7 @@ mod tests {
         let err = mm
             .validate_ast(&mf)
             .expect_err("a fraction in an Integer field is invalid");
-        let Some(contract) = err.ported().cloned() else {
-            panic!("expected a Contract error, got {err:?}");
-        };
+        let contract = err.contract().clone();
         assert_eq!(contract.kind, ErrorKind::Metamodel);
         let mut expected: Vec<String> =
             ModelManager::new().map(|fresh| namespaces(&fresh)).unwrap();
@@ -1180,9 +1170,7 @@ mod tests {
         let err = mm
             .validate_ast(&mf)
             .expect_err("an unknown metamodel version");
-        let Some(contract) = err.ported().cloned() else {
-            panic!("expected a Contract error, got {err:?}");
-        };
+        let contract = err.contract().clone();
         assert_eq!(
             contract.message(),
             "Model file version 99.0.0 does not match metamodel version 1.0.0"
@@ -1215,9 +1203,7 @@ mod tests {
                 err
             },
         ] {
-            let Some(contract) = err.ported().cloned() else {
-                panic!("expected a Contract error, got {err:?}");
-            };
+            let contract = err.contract().clone();
             assert_eq!(contract.kind, kind);
             assert_eq!(contract.message(), message);
         }
@@ -1282,7 +1268,7 @@ mod tests {
     //      `validateMetaModel` and `modelManagerFromMetaModel` ----
 
     fn kind_of(err: &Error) -> Option<ErrorKind> {
-        err.ported().map(|contract| contract.kind)
+        Some(err.contract().kind)
     }
 
     fn person_models() -> Value {
@@ -1393,7 +1379,7 @@ mod tests {
 
     fn shape_code(ast: &Value) -> Option<&'static str> {
         check_ast_shape(ast).err().map(|err| {
-            let contract = err.ported().expect("a catalogue error");
+            let contract = err.contract();
             assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ast}");
             contract.code
         })

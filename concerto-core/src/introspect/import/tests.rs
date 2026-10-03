@@ -79,7 +79,7 @@ fn missing_class_is_reported_verbatim() {
     let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
     assert_eq!(
         err.unwrap_err().to_string(),
-        "illegal model: import node is missing its $class"
+        "import node is missing its $class"
     );
 }
 
@@ -91,7 +91,7 @@ fn unknown_import_kind_errors() {
     }));
     assert_eq!(
         err.unwrap_err().to_string(),
-        "illegal model: unknown import type: MysteryImport"
+        "unknown import type: MysteryImport"
     );
 }
 

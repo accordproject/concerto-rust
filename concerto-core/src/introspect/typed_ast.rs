@@ -1240,7 +1240,7 @@ impl PropertyKeys {
             )),
             _ => Property::Enum(WithDecorators::new(
                 mm::EnumProperty {
-                    _class: class_name(class),
+                    _class: concerto_metamodel::utils::class_name(class),
                     name,
                     decorators: node_decorators,
                     location,
@@ -1263,11 +1263,6 @@ impl PropertyKeys {
             _ => Resumed::Value(serde_json::to_value(self.type_.take())?),
         })
     }
-}
-
-/// `class` as a generated struct's `$class` (interned).
-fn class_name(class: &str) -> concerto_metamodel::ClassName {
-    concerto_metamodel::utils::class_name(class)
 }
 
 /// A value [`read_property`] read, handed back to the generated struct.

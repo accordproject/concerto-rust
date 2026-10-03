@@ -1053,8 +1053,7 @@ fn into_decorator(node: Kept) -> mm::Decorator {
             match (key.as_ref(), value) {
                 ("$class", value) => {
                     let class = value.into_string();
-                    decorator._class = concerto_metamodel::utils::intern_class(&class)
-                        .map_or(Cow::Owned(class), Cow::Borrowed);
+                    decorator._class = concerto_metamodel::utils::class_name_owned(class);
                 }
                 ("name", value) => decorator.name = value.into_string().into(),
                 ("arguments", Kept::Array(arguments)) => {
@@ -1516,8 +1515,7 @@ impl<'de> Visitor<'de> for PlainDecoratorSeed {
         }
         let class = match map.next_value_seed(LeafSeed)? {
             Leaf::Str(Cow::Borrowed(class)) => class_name(class),
-            Leaf::Str(Cow::Owned(class)) => concerto_metamodel::utils::intern_class(&class)
-                .map_or(Cow::Owned(class), Cow::Borrowed),
+            Leaf::Str(Cow::Owned(class)) => concerto_metamodel::utils::class_name_owned(class),
             leaf => {
                 let entries = vec![(Cow::Borrowed("$class"), leaf.into_kept())];
                 return read_entries(entries, map).map(Err);

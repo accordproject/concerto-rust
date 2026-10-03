@@ -54,11 +54,6 @@ const PRIVATE_RESERVED_PROPERTIES: &[&str] = &[
 /// `assignableReservedProperties` in `src/modelutil.ts`.
 const ASSIGNABLE_RESERVED_PROPERTIES: &[&str] = &["$identifier", "$timestamp"];
 
-/// A [`ContractError`] as the crate's error type.
-fn error(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(kind, code, params).into()
-}
-
 /// The short name: whatever comes after the last `.`.
 ///
 /// ```
@@ -140,7 +135,7 @@ js_compat_pub! {
         let fqn = match fqn {
             Some(fqn) if !fqn.is_empty() => fqn,
             _ => {
-                return Err(error(
+                return Err(Error::new(
                     ErrorKind::InvalidArgument,
                     "modelutil-getnamespace-nofnq",
                     Vec::new(),
@@ -299,14 +294,14 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
 /// version mismatch).
 pub(crate) fn split_namespace(ns: &str) -> Result<(&str, Option<&str>)> {
     if ns.is_empty() {
-        return Err(error(
+        return Err(Error::new(
             ErrorKind::InvalidArgument,
             "modelutil-parsenamespace-nullorundefined",
             Vec::new(),
         ));
     }
     let invalid = || {
-        error(
+        Error::new(
             ErrorKind::InvalidArgument,
             "modelutil-parsenamespace-invalidnamespace",
             vec![("ns", ns.to_string())],
@@ -393,7 +388,7 @@ js_compat_pub! {
         let ns = match ns {
             Some(ns) if !ns.is_empty() => ns,
             _ => {
-                return Err(error(
+                return Err(Error::new(
                     ErrorKind::InvalidArgument,
                     "modelutil-parsenamespace-nullorundefined",
                     Vec::new(),
@@ -401,7 +396,7 @@ js_compat_pub! {
             }
         };
         let invalid = || {
-            error(
+            Error::new(
                 ErrorKind::InvalidArgument,
                 "modelutil-parsenamespace-invalidnamespace",
                 vec![("ns", ns.to_string())],
@@ -466,7 +461,7 @@ js_compat_pub! {
                     .iter()
                     .map(|t| format!("{}.{}", field("namespace"), ecma::to_js_string(t)))
                     .collect()),
-                None | Some(Value::Null) => Err(error(
+                None | Some(Value::Null) => Err(Error::new(
                     ErrorKind::MalformedInput,
                     "engine-typeerror-readproperties",
                     vec![
@@ -474,14 +469,14 @@ js_compat_pub! {
                         ("property", "forEach".to_string()),
                     ],
                 )),
-                Some(_) => Err(error(
+                Some(_) => Err(Error::new(
                     ErrorKind::MalformedInput,
                     "engine-typeerror-notafunction",
                     vec![("expression", "imp.types.forEach".to_string())],
                 )),
             }
         } else {
-            Err(error(
+            Err(Error::new(
                 ErrorKind::InvalidArgument,
                 "metamodelutil-importfullyqualifiednames-unrecognizedimports",
                 vec![("$class", field("$class"))],
@@ -747,7 +742,7 @@ pub fn is_private_system_property(property_name: &str) -> bool {
 /// property of `undefined` or `null` is a JS `TypeError`.
 fn class_of(node: Option<&Value>) -> Result<Option<&str>> {
     match node {
-        None | Some(Value::Null) => Err(error(
+        None | Some(Value::Null) => Err(Error::new(
             ErrorKind::MalformedInput,
             "engine-typeerror-readproperties",
             vec![

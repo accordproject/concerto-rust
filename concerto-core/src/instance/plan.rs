@@ -548,7 +548,9 @@ fn prepared<T>(r: Result<T>) -> Prepared<T> {
     }
 }
 
-fn invalid_string_validator(e: serde_json::Error) -> Error {
+/// A string validator node that does not decode (B-14: the one helper for
+/// it; `instance::model` uses it too).
+pub(crate) fn invalid_string_validator(e: serde_json::Error) -> Error {
     Error::from(ContractError::pre_port(
         ErrorKind::InvalidArgument,
         format!("invalid string validator: {e}"),

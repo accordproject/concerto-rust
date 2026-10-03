@@ -9,7 +9,7 @@ fn names_read_from_text_share_the_text_the_file_keeps() {
     let (file, _) = ModelFile::from_json_text_checked_with_imports(text, None, None)
         .unwrap()
         .unwrap();
-    let kept = file.ast.text.as_deref().unwrap();
+    let kept: &str = file.ast.text().unwrap();
     let within = |name: &str| {
         let start = kept.as_ptr() as usize;
         let at = name.as_ptr() as usize;
@@ -83,9 +83,9 @@ fn compact_ast_keeps_an_equal_ast_as_text() {
     let mut typed = ModelFile::from_json_text(&serde_json::to_string(&value).unwrap(), None, None)
         .unwrap()
         .unwrap();
-    let own = typed.ast.text.clone();
+    let own = typed.ast.text().cloned();
     assert_eq!(&*typed.compact_ast().unwrap(), &*text);
-    assert_eq!(typed.ast.text, own);
+    assert_eq!(typed.ast.text().cloned(), own);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn resolves_local_primitive_and_import() {
 #[test]
 fn constructor_arguments_are_checked_in_ts_order() {
     use serde_json::json;
-    let message = |r: Result<()>| match r.unwrap_err().into_ported() {
+    let message = |r: Result<()>| match Some(r.unwrap_err().into_contract()) {
         Some(c) => {
             assert_eq!(c.kind, ErrorKind::InvalidArgument);
             c.message()
@@ -246,9 +246,7 @@ fn a_system_property_name_is_rejected_with_the_declaration_location() {
         Some("c.cto".into()),
     )
     .unwrap_err();
-    let Some(err) = err.ported().cloned() else {
-        panic!("expected a contract error, got {err:?}");
-    };
+    let err = err.contract().clone();
     assert_eq!(err.location, Some(location));
     assert_eq!(
         err.final_message(),
@@ -399,9 +397,7 @@ fn resolve_import_failure_lists_the_imports_as_ts_stringifies_them() {
         None,
     )
     .unwrap();
-    let Some(err) = mf.resolve_import("Coin").unwrap_err().into_ported() else {
-        panic!("expected a contract error");
-    };
+    let err = mf.resolve_import("Coin").unwrap_err().into_contract();
     assert_eq!(
         err.final_message(),
         "Failed to find \"Coin\" in list of imports \"[[{\"$class\":\"concerto.metamodel@1.0.0.ImportType\",\"name\":\"Wow\",\"namespace\":\"org.doge@1.0.0\"},{\"$class\":\"concerto.metamodel@1.0.0.ImportTypes\",\"namespace\":\"concerto@1.0.0\",\"types\":[\"Concept\",\"Asset\",\"Transaction\",\"Participant\",\"Event\"]}]]\" for namespace \"org.acme@1.0.0\". "

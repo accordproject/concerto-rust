@@ -496,13 +496,7 @@ pub fn identifier_regex(
             else {
                 return Ok(None);
             };
-            let bad = |e: serde_json::Error| {
-                Error::from(ContractError::pre_port(
-                    ErrorKind::InvalidArgument,
-                    format!("invalid string validator: {e}"),
-                    None,
-                ))
-            };
+            let bad = crate::instance::plan::invalid_string_validator;
             let regex = serde_json::from_value(regex.clone()).map_err(bad)?;
             let length = length_validator
                 .as_ref()

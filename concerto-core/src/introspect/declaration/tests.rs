@@ -219,9 +219,7 @@ fn only_the_exact_metamodel_classes_are_recognised() {
                     Some("x.cto"),
                 )
                 .unwrap_err();
-            let Some(err) = err.ported().cloned() else {
-                panic!("expected a contract error, got {err:?}");
-            };
+            let err = err.contract().clone();
             assert_eq!(err.kind, ErrorKind::IllegalModel);
             assert_eq!(err.location, None);
             assert_eq!(
@@ -255,9 +253,7 @@ fn an_invalid_class_name_is_reported_before_a_system_field_name() {
         Some("x.cto"),
     )
     .unwrap_err();
-    let Some(err) = err.ported().cloned() else {
-        panic!("expected a contract error, got {err:?}");
-    };
+    let err = err.contract().clone();
     assert_eq!(
         err.final_message(),
         "Invalid class name '1bad' File 'x.cto': "
@@ -303,9 +299,7 @@ fn scalar_with_valid_range_is_accepted() {
 /// The code of a `modelfile-load-unreadable` error (P5-61): a node the
 /// typed read cannot read, an `IllegalModelException`.
 fn unreadable(err: Error) -> String {
-    let Some(contract) = err.ported() else {
-        panic!("expected a contract error, got {err:?}");
-    };
+    let contract = err.contract();
     assert_eq!(contract.kind, ErrorKind::IllegalModel, "{err}");
     assert_eq!(contract.code, "modelfile-load-unreadable", "{err}");
     err.to_string()

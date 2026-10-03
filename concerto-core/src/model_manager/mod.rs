@@ -36,11 +36,11 @@
 //! `Node` as its handle; `concerto-wasm` implements it over JS objects, for
 //! views a white-box test builds over stubbed collaborators (PORTING.md 1.4).
 
-use std::collections::HashSet;
+use std::cell::RefCell;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use serde_json::Value;
 
@@ -362,8 +362,8 @@ thread_local! {
     /// file, so a shared file is indistinguishable from a fresh load, without
     /// re-serialising and re-reading both ASTs on every
     /// [`ModelManager::new`].
-    static SYSTEM_MODEL_FILES: std::cell::RefCell<Option<(Arc<ModelFile>, Arc<ModelFile>)>> =
-        const { std::cell::RefCell::new(None) };
+    static SYSTEM_MODEL_FILES: RefCell<Option<(Arc<ModelFile>, Arc<ModelFile>)>> =
+        const { RefCell::new(None) };
 }
 
 /// The decorator and root system model files, as [`ModelManager::new`]

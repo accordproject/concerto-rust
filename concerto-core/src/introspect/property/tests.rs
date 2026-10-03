@@ -227,7 +227,7 @@ fn relationship(name: &str, ty: Option<Value>) -> Value {
 }
 
 fn contract(err: Error) -> ContractError {
-    match err.into_ported() {
+    match Some(err.into_contract()) {
         Some(contract) => contract,
         other => panic!("expected a contract error, got {other:?}"),
     }
@@ -707,7 +707,7 @@ fn only_the_full_metamodel_property_classes_are_recognised() {
         .unwrap_err();
         assert!(
             matches!(
-                err.ported(),
+                Some(err.contract()),
                 Some(c) if c.kind == ErrorKind::IllegalModel && c.code == "modelfile-load-unreadable"
             ),
             "{class}: {err}"
@@ -767,7 +767,7 @@ fn a_reserved_name_is_rejected_on_an_enum_value() {
     }));
     assert_eq!(
         err.unwrap_err().to_string(),
-        "illegal model: Invalid field name '$identifier'"
+        "Invalid field name '$identifier'"
     );
 }
 

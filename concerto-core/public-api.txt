@@ -313,6 +313,7 @@ pub concerto_core::introspect::declaration::Declaration::Map(concerto_core::intr
 pub concerto_core::introspect::declaration::Declaration::Scalar(concerto_core::introspect::scalar::ScalarDeclaration)
 impl concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::as_class(&self) -> core::option::Option<&concerto_core::introspect::declaration::ClassDeclaration>
+pub fn concerto_core::introspect::declaration::Declaration::as_enum(&self) -> core::option::Option<&concerto_core::introspect::declaration::EnumDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::as_map(&self) -> core::option::Option<&concerto_core::introspect::declaration::MapDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::as_scalar(&self) -> core::option::Option<&concerto_core::introspect::scalar::ScalarDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::is_class_declaration(&self) -> bool
@@ -909,6 +910,7 @@ pub concerto_core::introspect::Declaration::Map(concerto_core::introspect::decla
 pub concerto_core::introspect::Declaration::Scalar(concerto_core::introspect::scalar::ScalarDeclaration)
 impl concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::as_class(&self) -> core::option::Option<&concerto_core::introspect::declaration::ClassDeclaration>
+pub fn concerto_core::introspect::declaration::Declaration::as_enum(&self) -> core::option::Option<&concerto_core::introspect::declaration::EnumDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::as_map(&self) -> core::option::Option<&concerto_core::introspect::declaration::MapDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::as_scalar(&self) -> core::option::Option<&concerto_core::introspect::scalar::ScalarDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::is_class_declaration(&self) -> bool
@@ -1726,6 +1728,7 @@ pub concerto_core::Declaration::Map(concerto_core::introspect::declaration::MapD
 pub concerto_core::Declaration::Scalar(concerto_core::introspect::scalar::ScalarDeclaration)
 impl concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::as_class(&self) -> core::option::Option<&concerto_core::introspect::declaration::ClassDeclaration>
+pub fn concerto_core::introspect::declaration::Declaration::as_enum(&self) -> core::option::Option<&concerto_core::introspect::declaration::EnumDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::as_map(&self) -> core::option::Option<&concerto_core::introspect::declaration::MapDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::as_scalar(&self) -> core::option::Option<&concerto_core::introspect::scalar::ScalarDeclaration>
 pub fn concerto_core::introspect::declaration::Declaration::is_class_declaration(&self) -> bool

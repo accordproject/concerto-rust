@@ -331,7 +331,7 @@ fn assignable_ids_below_a_cyclic_chain_is_an_illegal_model_error() {
     .unwrap();
     let a = mgr.declaration_id("org.cycle@1.0.0.A").unwrap();
     let err = mgr.assignable_ids(a).unwrap_err();
-    let c = err.ported().unwrap();
+    let c = err.contract();
     assert_eq!(c.kind, ErrorKind::IllegalModel);
     assert_eq!(c.code, "classdeclaration-circularinheritance");
     assert_eq!(
@@ -791,7 +791,7 @@ fn resolve_meta_model_accepts_an_empty_import_types_from_an_unknown_namespace() 
         .resolve_meta_model(&model(serde_json::json!(["Thing"])))
         .unwrap_err();
     assert!(matches!(
-        err.ported(),
+        Some(err.contract()),
         Some(c) if c.kind == ErrorKind::MalformedInput
     ));
 }
@@ -1257,7 +1257,7 @@ fn resolve_type_name_carries_the_given_location_verbatim() {
     let err = mgr
         .resolve_type_name_at("org.does.not.exist@1.0.0", "Foo", Some(location.clone()))
         .unwrap_err();
-    match err.into_ported() {
+    match Some(err.into_contract()) {
         Some(contract) => assert_eq!(contract.location, Some(location)),
         other => panic!("expected a Contract error, got {other:?}"),
     }
@@ -1269,7 +1269,7 @@ fn resolve_type_name_with_no_location_carries_none() {
     let err = mgr
         .resolve_type_name_at("org.does.not.exist@1.0.0", "Foo", None)
         .unwrap_err();
-    match err.into_ported() {
+    match Some(err.into_contract()) {
         Some(contract) => assert_eq!(contract.location, None),
         other => panic!("expected a Contract error, got {other:?}"),
     }
@@ -2334,9 +2334,7 @@ fn circular_inheritance_is_an_illegal_model_error() {
             .unwrap_err(),
     ];
     for err in errors {
-        let Some(c) = err.ported().cloned() else {
-            panic!("expected a contract error, got {err:?}");
-        };
+        let c = err.contract().clone();
         assert_eq!(c.kind, ErrorKind::IllegalModel);
         assert_eq!(c.code, "classdeclaration-circularinheritance");
         assert!(
@@ -2350,7 +2348,7 @@ fn circular_inheritance_is_an_illegal_model_error() {
     }
     let err = mgr.properties("org.cycle@1.0.0.A").unwrap_err();
     assert_eq!(
-        err.ported().unwrap().message(),
+        err.contract().message(),
         "The super type chain of \"org.cycle@1.0.0.A\" is circular: org.cycle@1.0.0.A -> org.cycle@1.0.0.C -> org.cycle@1.0.0.B -> org.cycle@1.0.0.A."
     );
 }
@@ -2395,9 +2393,7 @@ fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
             .unwrap_err(),
         mgr.properties("org.acme.l2@1.0.0.Vehicle").unwrap_err(),
     ] {
-        let Some(c) = err.ported().cloned() else {
-            panic!("expected a contract error, got {err:?}");
-        };
+        let c = err.contract().clone();
         assert_eq!(c.kind, ErrorKind::TypeNotFound);
         assert_eq!(
             c.message(),

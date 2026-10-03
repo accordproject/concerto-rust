@@ -41,15 +41,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// message (`Display`) is the TS message today, but its wording carries no
 /// stability promise (docs/public-api.md section 2).
 #[derive(Debug, Clone, PartialEq)]
-pub struct Error(Box<Inner>);
-
-/// What an [`Error`] holds.
-#[derive(Debug, Clone, PartialEq)]
-struct Inner {
-    contract: ContractError,
-    /// Which pre-port check made the error, if one did.
-    legacy: Legacy,
-}
+pub struct Error(Box<ContractError>);
 
 /// The error type under its earlier name.
 #[deprecated(
@@ -61,89 +53,81 @@ pub type ConcertoError = Error;
 impl Error {
     /// The class of failure.
     pub fn kind(&self) -> ErrorKind {
-        self.0.contract.kind
+        self.0.kind
     }
 
     /// The catalogue key of the message: a stable identifier, safe to match
     /// on. An error raised by a check whose message is not yet a faithful
     /// port of the TS message has the code `"pre-port"`.
     pub fn code(&self) -> &'static str {
-        self.0.contract.code
+        self.0.code
     }
 
     /// The params the message is rendered with, in template order. Each value
     /// is the string TS interpolates.
     pub fn params(&self) -> &[(&'static str, String)] {
-        &self.0.contract.params
+        &self.0.params
     }
 
     /// Where in the model the problem is, when the error has a location that
     /// is a well-formed `concerto.metamodel@1.0.0.Range`.
     pub fn location(&self) -> Option<Location> {
-        self.0
-            .contract
-            .location
-            .as_ref()
-            .and_then(Location::from_value)
+        self.0.location.as_ref().and_then(Location::from_value)
     }
 
     /// The name of the model file the error is about, when it names one.
     pub fn file_name(&self) -> Option<&str> {
-        match &self.0.legacy {
-            Legacy::IllegalModel { file_name } => file_name.as_deref(),
-            Legacy::None | Legacy::TypeNotFound => self
-                .0
-                .contract
-                .model_file
-                .as_ref()
-                .and_then(|name| name.as_deref()),
-        }
+        self.0.model_file.as_ref().and_then(|name| name.as_deref())
     }
 
     /// The structured violations of a strict-option rejection
     /// (accordproject/concerto#1273); empty for every other error.
     pub fn details(&self) -> &[Detail] {
-        &self.0.contract.details
+        &self.0.details
     }
 
     js_compat_pub! {
         /// The contract shape behind this error (PORTING.md section 2.1),
         /// which the JS binding hands to the TS error factory.
         pub fn contract(&self) -> &ContractError {
-            &self.0.contract
+            &self.0
         }
     }
 
     js_compat_pub! {
         /// [`Error::contract`], by value.
         pub fn into_contract(self) -> ContractError {
-            self.0.contract
-        }
-    }
-
-    /// The contract shape behind this error, unless a pre-port check made it
-    /// ([`Error::type_not_found`], [`Error::illegal_model`]).
-    pub(crate) fn ported(&self) -> Option<&ContractError> {
-        matches!(self.0.legacy, Legacy::None).then_some(&self.0.contract)
-    }
-
-    js_compat_pub! {
-        /// The ported contract error, by value: `None` for the two pre-port
-        /// shapes (`Error::type_not_found`, `Error::illegal_model`).
-        pub fn into_ported(self) -> Option<ContractError> {
-            matches!(self.0.legacy, Legacy::None).then_some(self.0.contract)
+            *self.0
         }
     }
 
     /// The contract shape behind this error, to amend in place.
     pub(crate) fn contract_mut(&mut self) -> &mut ContractError {
-        &mut self.0.contract
+        &mut self.0
+    }
+
+    /// A catalogue error ([`ContractError::new`]) as the crate's error type
+    /// (B-14, accordproject/concerto-rust#458): no location and no model
+    /// file; [`Error::at`] adds the location.
+    pub(crate) fn new(
+        kind: ErrorKind,
+        code: &'static str,
+        params: Vec<(&'static str, String)>,
+    ) -> Self {
+        ContractError::new(kind, code, params).into()
+    }
+
+    /// This error at `location`: the AST node's `location`, verbatim, or
+    /// `None` where TS passes none.
+    pub(crate) fn at(mut self, location: Option<serde_json::Value>) -> Self {
+        self.0.location = location;
+        self
     }
 
     js_compat_pub! {
         /// A type that could not be resolved, raised by a check that has no
         /// catalogue entry yet: `"pre-port"`, `typeName` set, and the message
-        /// `type not found: {type_name}`.
+        /// `type not found: {type_name}` (the one place that spells it, B-9).
         pub fn type_not_found(type_name: impl Into<String>) -> Self {
             let type_name = type_name.into();
             let mut err = ContractError::pre_port(
@@ -153,70 +137,38 @@ impl Error {
             );
             // `TypeNotFound` payloads carry `typeName` (table 2.3).
             err.params.push(("typeName", type_name));
-            Self(Box::new(Inner {
-                contract: err,
-                legacy: Legacy::TypeNotFound,
-            }))
+            err.into()
         }
     }
 
     js_compat_pub! {
         /// A model that cannot be loaded, raised by a check that has no catalogue
-        /// entry yet: `"pre-port"`, with `message` verbatim.
+        /// entry yet: `"pre-port"`, with `message` verbatim, naming the model
+        /// file `file_name` when there is one ([`ContractError::model_file`]).
         pub fn illegal_model(
             message: impl Into<String>,
             file_name: Option<String>,
             location: Option<serde_json::Value>,
         ) -> Self {
-            let contract = ContractError::pre_port(ErrorKind::IllegalModel, message.into(), location);
-            Self(Box::new(Inner {
-                contract,
-                legacy: Legacy::IllegalModel { file_name },
-            }))
+            let mut contract =
+                ContractError::pre_port(ErrorKind::IllegalModel, message.into(), location);
+            contract.model_file = file_name.map(Some);
+            contract.into()
         }
     }
 
-    /// Whether the error was made by [`Error::type_not_found`].
-    pub(crate) fn is_unported_type_not_found(&self) -> bool {
-        matches!(self.0.legacy, Legacy::TypeNotFound)
-    }
-
-    js_compat_pub! {
-        /// The name that failed to resolve, when the error comes from a
-        /// `TypeNotFound` check that has no catalogue entry yet (its message
-        /// is not the TS one).
-        pub fn unported_type_not_found(&self) -> Option<&str> {
-            match self.0.legacy {
-                Legacy::TypeNotFound => self.0.contract.param("typeName"),
-                Legacy::None | Legacy::IllegalModel { .. } => None,
-            }
-        }
-    }
-
-    js_compat_pub! {
-        /// The message, when the error comes from an `IllegalModel` check
-        /// that has no catalogue entry yet.
-        pub fn unported_illegal_model(&self) -> Option<&str> {
-            match self.0.legacy {
-                Legacy::IllegalModel { .. } => self.0.contract.param("message"),
-                Legacy::None | Legacy::TypeNotFound => None,
-            }
-        }
+    /// Whether the error was made by [`Error::type_not_found`]: a
+    /// `TypeNotFound` with no catalogue entry yet.
+    pub(crate) fn is_pre_port_type_not_found(&self) -> bool {
+        self.0.kind == ErrorKind::TypeNotFound && self.0.code == "pre-port"
     }
 }
 
+/// The contract's message ([`ContractError::message`]); its wording carries
+/// no stability promise (docs/public-api.md section 2).
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.legacy {
-            Legacy::IllegalModel { .. } => {
-                write!(
-                    f,
-                    "illegal model: {}",
-                    self.0.contract.param("message").unwrap_or("")
-                )
-            }
-            Legacy::None | Legacy::TypeNotFound => f.write_str(&self.0.contract.message()),
-        }
+        f.write_str(&self.0.message())
     }
 }
 
@@ -224,10 +176,7 @@ impl std::error::Error for Error {}
 
 impl From<ContractError> for Error {
     fn from(contract: ContractError) -> Self {
-        Self(Box::new(Inner {
-            contract,
-            legacy: Legacy::None,
-        }))
+        Self(Box::new(contract))
     }
 }
 
@@ -286,20 +235,6 @@ impl Location {
     }
 }
 
-/// Which pre-port check made an error, where the error must still show the
-/// shape it had before [`Error`] replaced the `Error` enum: its
-/// `Display` text and file name (docs/public-api.md section 5.6).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) enum Legacy {
-    /// A catalogue error.
-    #[default]
-    None,
-    /// [`Error::type_not_found`].
-    TypeNotFound,
-    /// [`Error::illegal_model`], with the file name it was given.
-    IllegalModel { file_name: Option<String> },
-}
-
 /// The kind of failure an error reports.
 ///
 /// Each kind is one TS exception class (PORTING.md table 2.3), which the
@@ -317,7 +252,8 @@ pub enum ErrorKind {
     /// TS: `IllegalModelException(message, modelFile, location)`.
     IllegalModel,
     /// A type the model refers to is not declared. `params` must include
-    /// `typeName` (table 2.3); build these with `ContractError::type_not_found`.
+    /// `typeName` (table 2.3); build these with `ContractError::type_not_found`, or,
+    /// for a check with no catalogue entry yet, `Error::type_not_found`.
     ///
     /// TS: `TypeNotFoundException(typeName, message)`.
     TypeNotFound,
@@ -652,14 +588,6 @@ pub struct Detail {
 pub type ValidationDetail = Detail;
 
 impl ContractError {
-    /// The value of the param `name`, if the error has one.
-    pub(crate) fn param(&self, name: &str) -> Option<&str> {
-        self.params
-            .iter()
-            .find(|(param, _)| *param == name)
-            .map(|(_, value)| value.as_str())
-    }
-
     /// An error with no location and no model file.
     ///
     /// `code` must be a catalogue key ([`catalogue_entry`]); a debug build

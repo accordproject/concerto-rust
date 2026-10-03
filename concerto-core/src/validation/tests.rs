@@ -29,9 +29,7 @@ fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
 /// their own `IllegalModelException` messages.
 fn assert_unreadable(result: crate::error::Result<()>) {
     let err = result.unwrap_err();
-    let Some(contract) = err.ported() else {
-        panic!("expected an IllegalModelException, got {err:?}");
-    };
+    let contract = err.contract();
     assert_eq!(contract.kind, ErrorKind::IllegalModel, "{err}");
     assert_eq!(contract.code, "modelfile-load-unreadable", "{err}");
 }
@@ -100,7 +98,7 @@ fn super_type_that_is_missing_carries_the_class_ast_location() {
         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" }
     }))]))
     .unwrap_err();
-    match err.into_ported() {
+    match Some(err.into_contract()) {
         Some(contract) => assert_eq!(contract.location, Some(location)),
         other => panic!("expected a Contract error, got {other:?}"),
     }
@@ -127,7 +125,7 @@ fn relationship_to_primitive_carries_the_property_ast_location() {
         ]
     }))]))
     .unwrap_err();
-    match err.into_ported() {
+    match Some(err.into_contract()) {
         Some(contract) => assert_eq!(contract.location, Some(location)),
         other => panic!("expected a Contract error, got {other:?}"),
     }
@@ -162,7 +160,7 @@ fn an_enum_clashing_with_an_imported_name_carries_the_enum_ast_location() {
         err.to_string(),
         "Type 'Address' clashes with an imported type with the same name."
     );
-    match err.into_ported() {
+    match Some(err.into_contract()) {
         Some(contract) => assert_eq!(contract.location, Some(location)),
         other => panic!("expected a Contract error, got {other:?}"),
     }
@@ -193,7 +191,7 @@ fn attach_model_file_only_stamps_a_file_less_illegalmodel_error() {
         "pre-port",
         vec![],
     ));
-    match attach_model_file(illegal, &mf).into_ported() {
+    match Some(attach_model_file(illegal, &mf).into_contract()) {
         Some(c) => {
             assert_eq!(c.model_file, Some(Some("attach.cto".to_string())))
         }
@@ -204,7 +202,7 @@ fn attach_model_file_only_stamps_a_file_less_illegalmodel_error() {
     // overwritten by a hard-coded `true` guard).
     let mut already_attached = ContractError::new(ErrorKind::IllegalModel, "pre-port", vec![]);
     already_attached.model_file = Some(Some("other.cto".to_string()));
-    match attach_model_file(Error::from(already_attached), &mf).into_ported() {
+    match Some(attach_model_file(Error::from(already_attached), &mf).into_contract()) {
         Some(c) => {
             assert_eq!(c.model_file, Some(Some("other.cto".to_string())))
         }
@@ -214,7 +212,7 @@ fn attach_model_file_only_stamps_a_file_less_illegalmodel_error() {
     // A non-IllegalModel error is left alone (would be stamped by an
     // `&&` → `||` swap, since it has no file yet).
     let validator = Error::from(ContractError::new(ErrorKind::Validator, "pre-port", vec![]));
-    match attach_model_file(validator, &mf).into_ported() {
+    match Some(attach_model_file(validator, &mf).into_contract()) {
         Some(c) => assert_eq!(c.model_file, None),
         other => panic!("expected a Contract error, got {other:?}"),
     }
@@ -460,9 +458,7 @@ fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
                 .unwrap()
                 .load_model(&model, file_name.map(String::from))
                 .unwrap_err();
-            let Some(contract) = err.ported() else {
-                panic!("{pointer}: expected an IllegalModelException, got {err:?}");
-            };
+            let contract = err.contract();
             assert_eq!(contract.kind, ErrorKind::IllegalModel, "{pointer}");
             assert_eq!(contract.code, "modelfile-load-unreadable", "{pointer}");
             assert_eq!(
@@ -516,9 +512,7 @@ fn an_empty_super_type_name_is_not_found() {
         )
         .unwrap();
     let err = manager.validate_models().unwrap_err();
-    let Some(contract) = err.ported() else {
-        panic!("expected an IllegalModelException, got {err:?}");
-    };
+    let contract = err.contract();
     assert_eq!(contract.kind, ErrorKind::IllegalModel);
     assert_eq!(contract.message(), "Could not find super type ");
 }
@@ -1125,9 +1119,7 @@ fn importing_two_versions_of_one_namespace_is_rejected() {
 fn an_import_name_that_makes_the_synthesised_namespace_fail_parse_first() {
     let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X../../etc")]))
         .unwrap_err();
-    let Some(c) = err.ported().cloned() else {
-        panic!("expected a contract error, got {err:?}");
-    };
+    let c = err.contract().clone();
     assert_eq!(c.kind, ErrorKind::InvalidArgument);
     assert_eq!(c.message(), "Invalid namespace org.a@1.0.0.X../.");
 }
@@ -1474,9 +1466,7 @@ fn a_decorator_validation_error_carries_the_file_suffix_once() {
     // suffix at *construction*, so it shows up in the fully-decorated
     // message (`final_message`, what the oracle compares), not in the
     // raw `Display`/`message()` this crate's other call sites use.
-    let Some(contract) = err.ported() else {
-        panic!("expected a Contract error, got {err:?}");
-    };
+    let contract = err.contract();
     assert_eq!(
         contract.final_message(),
         "Undeclared type \"Hide\" in \"test@1.0.0.Person.ssn\". File 'test.cto': "
@@ -1718,9 +1708,7 @@ fn an_undeclared_map_value_type_is_an_illegal_model_error() {
         object_type("Missing", "ObjectMapValueType"),
     ));
     let err = err.unwrap_err();
-    let Some(c) = err.ported() else {
-        panic!("expected a contract error, got {err:?}");
-    };
+    let c = err.contract();
     assert_eq!(c.kind, ErrorKind::IllegalModel);
     assert!(
         c.message().contains("Undeclared type \"Missing\""),
@@ -2017,9 +2005,7 @@ fn duplicate_model(namespace: &str) -> serde_json::Value {
 /// `IllegalModelException`: its exact message, and neither a model file
 /// nor a location (TS passes neither), even when the file has a name.
 fn assert_duplicate_class_name(err: Error, fqn: &str) {
-    let Some(contract) = err.ported() else {
-        panic!("expected a contract error, got {err:?}");
-    };
+    let contract = err.contract();
     assert_eq!(contract.kind, crate::error::ErrorKind::IllegalModel);
     assert_eq!(contract.model_file, None);
     assert_eq!(contract.location, None);
@@ -2288,11 +2274,12 @@ fn validate_detached_model_file_names_the_file_it_was_actually_asked_to_validate
         .unwrap();
 
     let renamed = ModelFile::from_json(&ast, Some("renamed.cto".into())).unwrap();
-    match manager
-        .validate_detached_model_file(&renamed)
-        .unwrap_err()
-        .into_ported()
-    {
+    match Some(
+        manager
+            .validate_detached_model_file(&renamed)
+            .unwrap_err()
+            .into_contract(),
+    ) {
         Some(c) => {
             assert!(c.final_message().contains("Duplicate decorator"));
             assert_eq!(c.model_file, Some(Some("renamed.cto".to_string())));
@@ -2888,7 +2875,7 @@ fn an_aliased_imported_concept_map_value_validates() {
 /// Asserts `result` is the `IllegalModelException` TS throws: the only
 /// thing the TS tests below assert about their errors.
 fn assert_illegal_model(result: crate::error::Result<()>) {
-    match result.map_err(Error::into_ported) {
+    match result.map_err(|e| Some(e.into_contract())) {
         Err(Some(err)) => {
             assert_eq!(err.kind, crate::error::ErrorKind::IllegalModel, "{err:?}");
         }
@@ -3106,7 +3093,7 @@ fn an_inherited_property_is_validated_in_the_subclass_pass() {
     }));
     let expected = "size validator can only be applied to array or map properties: \
                         org.a@1.0.0.X.s File 'b.cto': ";
-    let final_message = |e: Error| match e.into_ported() {
+    let final_message = |e: Error| match Some(e.into_contract()) {
         Some(c) => c.final_message(),
         other => panic!("expected a contract error, got {other:?}"),
     };
@@ -3155,11 +3142,12 @@ fn a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file(
         ]
     }));
     let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
-    match manager
-        .validate_detached_model_file(&detached)
-        .unwrap_err()
-        .into_ported()
-    {
+    match Some(
+        manager
+            .validate_detached_model_file(&detached)
+            .unwrap_err()
+            .into_contract(),
+    ) {
         Some(c) => {
             assert!(c.final_message().contains("Duplicate decorator"));
             assert_eq!(c.model_file, Some(Some("a.cto".to_string())));
@@ -3202,11 +3190,12 @@ fn a_duplicate_decorator_on_an_own_property_is_not_misattached_via_detached_decl
             Some("owned.cto".into()),
         )
         .unwrap();
-    match manager
-        .validate_detached_declaration(&mf, 0)
-        .unwrap_err()
-        .into_ported()
-    {
+    match Some(
+        manager
+            .validate_detached_declaration(&mf, 0)
+            .unwrap_err()
+            .into_contract(),
+    ) {
         Some(c) => {
             assert!(c.final_message().contains("Duplicate decorator"));
             assert_eq!(c.model_file, None);
@@ -3295,9 +3284,7 @@ fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() 
         manager.load_model(&b, Some("b.cto".into())).unwrap();
         let file = manager.model_file("org.b@1.0.0").unwrap();
         let err = manager.validate_model_file(file).unwrap_err();
-        let Some(err) = err.ported().cloned() else {
-            panic!("expected a contract error, got {err:?}");
-        };
+        let err = err.contract().clone();
         assert_eq!(err.kind, crate::error::ErrorKind::TypeNotFound);
         err.final_message()
     };
@@ -3368,11 +3355,12 @@ fn an_inherited_relationship_to_an_unidentified_type_is_attached_to_the_types_fi
         }))]
     });
     let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
-    match manager
-        .validate_detached_model_file(&detached)
-        .unwrap_err()
-        .into_ported()
-    {
+    match Some(
+        manager
+            .validate_detached_model_file(&detached)
+            .unwrap_err()
+            .into_contract(),
+    ) {
         Some(c) => {
             assert!(
                 c.final_message()
@@ -3441,11 +3429,12 @@ fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misatt
     });
     let detached = ModelFile::from_json(&b, Some("b.cto".into())).unwrap();
     // `Y` is declaration index 1 (`NoId` is index 0).
-    match manager
-        .validate_detached_declaration(&detached, 1)
-        .unwrap_err()
-        .into_ported()
-    {
+    match Some(
+        manager
+            .validate_detached_declaration(&detached, 1)
+            .unwrap_err()
+            .into_contract(),
+    ) {
         Some(c) => {
             assert!(
                 c.final_message()

@@ -172,7 +172,7 @@ fn string_validator_rejects_length_with_absent_bounds() {
         let length = length_validator_from_ast(Some(&ast));
         let err = StringValidator::new(&field(), None, length.as_ref(), Some(&ast))
             .expect_err(&format!("{ast} should be rejected"));
-        let contract = err.into_ported().expect("a contract error");
+        let contract = err.into_contract();
         assert_eq!(contract.kind, ErrorKind::IllegalModel, "{ast}");
         assert_eq!(contract.code, "stringvalidator-constructor-invalidlength");
         assert_eq!(
@@ -742,7 +742,7 @@ fn validator_compatible_with_dispatches_to_each_variant() {
 
 /// The kind and `errorType` of a validator error.
 fn kind_and_type(err: Error) -> (ErrorKind, &'static str) {
-    let contract = err.into_ported().expect("a contract error");
+    let contract = err.into_contract();
     let error_type = contract
         .validator
         .as_ref()

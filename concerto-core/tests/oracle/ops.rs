@@ -95,7 +95,7 @@
 //!   (accordproject/concerto-rust#265).
 
 use concerto_core::dcs;
-use concerto_core::error::{Error, ErrorKind};
+use concerto_core::error::Error;
 use concerto_core::introspect::declaration::ClassDeclaration;
 use concerto_core::introspect::model_file::ModelFile;
 use concerto_core::introspect::property::Property;
@@ -3916,27 +3916,11 @@ fn encode_parsed_namespace(parsed: ParsedNamespace) -> Value {
 /// same fields `ContractError` carries (PORTING.md section 2.1):
 /// `kind.ts_class()` for `class`, [`concerto_core::error::ContractError::final_message`]
 /// for `message` (its doc comment: "Used by the native oracle harness
-/// only"), the AST `location` verbatim, and `component`. The two pre-port
-/// variants (`TypeNotFound`, `IllegalModel`) carry no catalogue key; they
-/// map to their TS class with their own text, so a fixture that reaches one
-/// fails on its message until the owning task ports the throw site.
+/// only"), the AST `location` verbatim, and `component`. A pre-port error
+/// (no catalogue key) maps to its TS class with its own text, so a fixture
+/// that reaches one differs on its message until the owning task ports the
+/// throw site (B-9: the pre-port shapes are ordinary contract errors).
 pub fn to_oracle_error(err: &Error) -> OracleError {
-    if let Some(type_name) = err.unported_type_not_found() {
-        return OracleError {
-            class: ErrorKind::TypeNotFound.ts_class().to_string(),
-            message: format!("Type \"{type_name}\" not found."),
-            location: None,
-            component: Some("@accordproject/concerto-core".into()),
-        };
-    }
-    if let Some(message) = err.unported_illegal_model() {
-        return OracleError {
-            class: ErrorKind::IllegalModel.ts_class().to_string(),
-            message: message.to_string(),
-            location: err.contract().location.clone(),
-            component: Some("@accordproject/concerto-core".into()),
-        };
-    }
     let ce = err.contract();
     OracleError {
         class: ce.kind.ts_class().to_string(),

@@ -533,11 +533,9 @@ fn visit_class<'v, V: ValidatorInput + 'v>(
             let id = identifier_field_name
                 .and_then(|f| obj.get(f))
                 .and_then(V::as_str);
-            js_id_display(id)
+            Cow::Borrowed(js_id_display(id))
         } else {
-            p.current_identifier()
-                .unwrap_or("undefined")
-                .to_string()
+            Cow::Owned(p.current_identifier().unwrap_or("undefined").to_string())
         };
         p.report_at(key, undeclared_field(&resource_id, key, own_fqn))?;
     }
@@ -616,9 +614,8 @@ fn write_fully_qualified_identifier(out: &mut String, fqn: &str, id: Option<&str
 /// wherever TS interpolates a value that can genuinely be `undefined` (as
 /// opposed to [`fully_qualified_identifier`]'s falsy-id check, which folds
 /// `undefined` and `""` together).
-fn js_id_display(id: Option<&str>) -> String {
-    id.map(str::to_string)
-        .unwrap_or_else(|| "undefined".to_string())
+fn js_id_display(id: Option<&str>) -> &str {
+    id.unwrap_or("undefined")
 }
 
 /// Whether `value` stands for a real TS `Identifiable` (a `Resource` or
@@ -743,7 +740,7 @@ fn visit_field<V: ValidatorInput>(
     if let (Some(_), PlanKind::Map { .. }) = (property.size_validator(), &pp.kind)
         && let Some(entries) = value.map_entries()
     {
-        check_size(p, owner_fqn, property, pp, entries.len())?;
+        check_size(p, owner_fqn, property, pp, entries.count())?;
     }
 
     check_item(p, owner_fqn, property, pp, value)
@@ -1127,21 +1124,16 @@ fn bigint_value(value: &Value) -> Option<&str> {
 }
 
 /// The entries of a [`MAP_TAG`] value.
-fn map_entries(value: &Value) -> Option<Vec<(&Value, &Value)>> {
+fn map_entries(value: &Value) -> Option<impl Iterator<Item = (&Value, &Value)>> {
     let o = value.as_object()?;
     if o.len() != 1 {
         return None;
     }
     let entries = o.get(MAP_TAG)?.as_array()?;
-    Some(
-        entries
-            .iter()
-            .filter_map(|e| {
-                let pair = e.as_array()?;
-                Some((pair.first()?, pair.get(1)?))
-            })
-            .collect(),
-    )
+    Some(entries.iter().filter_map(|e| {
+        let pair = e.as_array()?;
+        Some((pair.first()?, pair.get(1)?))
+    }))
 }
 
 js_compat_pub! {
@@ -1221,8 +1213,9 @@ js_compat_pub! {
         fn is_boolean(&self) -> bool;
         /// Whether the value is a `Dayjs` ([`DAYJS_TAG`]).
         fn is_dayjs(&self) -> bool;
-        /// A JS `Map`'s entries ([`MAP_TAG`]), in order.
-        fn map_entries(&self) -> Option<Vec<(&Self, &Self)>>;
+        /// A JS `Map`'s entries ([`MAP_TAG`]), in order, read in place
+        /// (B-15: no `Vec` per map).
+        fn map_entries(&self) -> Option<impl Iterator<Item = (&Self, &Self)>>;
         /// The value in the plain-JSON shape (module doc, "Scope"), for the
         /// messages that print it.
         fn to_value(&self) -> Cow<'_, Value>;
@@ -1280,7 +1273,7 @@ impl ValidatorInput for Value {
         is_populated_datetime(self)
     }
 
-    fn map_entries(&self) -> Option<Vec<(&Value, &Value)>> {
+    fn map_entries(&self) -> Option<impl Iterator<Item = (&Value, &Value)>> {
         map_entries(self)
     }
 

@@ -12,6 +12,7 @@
 //! `StringValidator`) last, by P2-09c/F5 — `introspect::check_pattern` and
 //! `check_length`, the ad hoc checks this replaced, are gone.
 
+use std::cell::RefCell;
 use std::fmt;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
@@ -660,8 +661,8 @@ thread_local! {
     /// `regress` compilation dominated that. Only successful compilations
     /// are kept, so an error is always produced (and worded) by a fresh
     /// compile, exactly as without the cache.
-    static REGEX_CACHE: std::cell::RefCell<RegexCache> =
-        std::cell::RefCell::new(RegexCache::default());
+    static REGEX_CACHE: RefCell<RegexCache> =
+        RefCell::new(RegexCache::default());
 }
 
 /// [`REGEX_CACHE`]'s map: flags, then pattern, to the compiled regex.
@@ -1058,26 +1059,18 @@ impl StringValidator {
         // takes the same "no bound" branch, as it did before BC-40 (P5-05-T2a
         // review: oracle `StringValidator.compatibleWith` fixtures
         // `0a5c036e…`, `9741b5ff…`, `acec2eb1…`, `b95d5042…`).
-        fn is_null_bound(bound: Option<f64>) -> bool {
-            bound.is_none_or(f64::is_nan)
+        fn bound(bound: Option<f64>) -> Option<f64> {
+            bound.filter(|b| !b.is_nan())
         }
-        let this_min_null = is_null_bound(self.min_length);
-        let other_min_null = is_null_bound(other.min_length);
-        if this_min_null && !other_min_null {
-            return false;
+        match (bound(self.min_length), bound(other.min_length)) {
+            (None, Some(_)) => return false,
+            (Some(this), Some(other)) if this < other => return false,
+            _ => {}
         }
-        if !this_min_null && !other_min_null && self.min_length.unwrap() < other.min_length.unwrap()
-        {
-            return false;
-        }
-        let this_max_null = is_null_bound(self.max_length);
-        let other_max_null = is_null_bound(other.max_length);
-        if this_max_null && !other_max_null {
-            return false;
-        }
-        if !this_max_null && !other_max_null && self.max_length.unwrap() > other.max_length.unwrap()
-        {
-            return false;
+        match (bound(self.max_length), bound(other.max_length)) {
+            (None, Some(_)) => return false,
+            (Some(this), Some(other)) if this > other => return false,
+            _ => {}
         }
         true
     }

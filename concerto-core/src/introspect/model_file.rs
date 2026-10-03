@@ -581,12 +581,8 @@ impl ModelFile {
         /// one).
         pub fn compact_ast(&mut self) -> serde_json::Result<Arc<str>> {
             let text: Arc<str> = Arc::from(serde_json::to_string(self.ast())?);
-            if self.ast.text.is_none() {
-                self.ast = Ast {
-                    value: OnceLock::new(),
-                    text: Some(Arc::clone(&text)),
-                    compact: None,
-                };
+            if self.ast.text().is_none() {
+                self.ast = Ast::from_text(Arc::clone(&text));
             }
             Ok(text)
         }
@@ -595,7 +591,7 @@ impl ModelFile {
     /// Whether this file was built by the typed AST path.
     #[cfg(test)]
     pub(crate) fn built_by_typed_path(&self) -> bool {
-        self.ast.text.is_some()
+        self.ast.text().is_some()
     }
 
     /// Whether this file and `other` were built from equal ASTs
@@ -603,15 +599,10 @@ impl ModelFile {
     /// text when both were built from the same text
     /// ([`ModelFile::from_json_text`]).
     pub(crate) fn same_ast(&self, other: &ModelFile) -> bool {
-        if let (Some(a), Some(b)) = (&self.ast.text, &other.ast.text)
-            && a == b
-        {
-            return true;
-        }
-        if let (Some(a), Some(b)) = (&self.ast.compact, &other.ast.compact)
-            && a == b
-        {
-            return true;
+        match (&self.ast.source, &other.ast.source) {
+            (AstSource::Text(a), AstSource::Text(b)) if a == b => return true,
+            (AstSource::Compact(a), AstSource::Compact(b)) if a == b => return true,
+            _ => {}
         }
         self.ast() == other.ast()
     }
@@ -1238,31 +1229,42 @@ pub(crate) fn unreadable_ast(err: &serde_json::Error, file_name: Option<&str>) -
 }
 
 /// [`ModelFile::ast`]: the AST as a `serde_json::Value`, either given
-/// directly or parsed on first use from the JSON text the typed AST path
+/// directly or parsed on first use from the source the typed AST path
 /// read (P5-06c, [`ModelFile::from_json_text`]).
 #[derive(Clone)]
 struct Ast {
     value: OnceLock<serde_json::Value>,
-    text: Option<Arc<str>>,
+    /// What `value` is parsed from on first use, when it was not given
+    /// (A-13, accordproject/concerto-rust#458: one sum type where three
+    /// independent fields could disagree).
+    source: AstSource,
+}
+
+/// Where an [`Ast`]'s value comes from when it was not given directly.
+#[derive(Clone)]
+enum AstSource {
+    /// The value was given (or nothing else is kept).
+    None,
+    /// The JSON text the typed AST path read (P5-06c).
+    Text(Arc<str>),
     /// P5-92: the AST in the compact binary layout
-    /// ([`ModelFile::from_compact_with_imports`]), decoded on first use.
-    compact: Option<Arc<[u8]>>,
+    /// ([`ModelFile::from_compact_with_imports`]).
+    #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+    Compact(Arc<[u8]>),
 }
 
 impl Ast {
     fn from_value(value: serde_json::Value) -> Self {
         Self {
             value: OnceLock::from(value),
-            text: None,
-            compact: None,
+            source: AstSource::None,
         }
     }
 
     fn from_text(text: Arc<str>) -> Self {
         Self {
             value: OnceLock::new(),
-            text: Some(text),
-            compact: None,
+            source: AstSource::Text(text),
         }
     }
 
@@ -1270,31 +1272,49 @@ impl Ast {
     fn from_compact(bytes: &[u8]) -> Self {
         Self {
             value: OnceLock::new(),
-            text: None,
-            compact: Some(Arc::from(bytes)),
+            source: AstSource::Compact(Arc::from(bytes)),
+        }
+    }
+
+    /// The kept JSON text, if the AST was read from text.
+    fn text(&self) -> Option<&Arc<str>> {
+        match &self.source {
+            AstSource::Text(text) => Some(text),
+            AstSource::None | AstSource::Compact(_) => None,
         }
     }
 
     fn get(&self) -> &serde_json::Value {
-        self.value.get_or_init(|| {
+        self.value.get_or_init(|| match &self.source {
             #[cfg(feature = "js-compat")]
-            if let Some(bytes) = &self.compact {
-                return crate::introspect::compact::to_value(bytes)
-                    // P5-95: the typed read checks every byte as `to_value`
-                    // does, a value it skips included (`Compact::skip`).
-                    .expect("the typed read accepted these bytes, so they are in the layout");
-            }
+            AstSource::Compact(bytes) => crate::introspect::compact::to_value(bytes)
+                // P5-95: the typed read checks every byte as `to_value`
+                // does, a value it skips included (`Compact::skip`).
+                .expect("the typed read accepted these bytes, so they are in the layout"),
             // The typed path only accepts text that also parses as a `Value`
             // (typed_ast's module doc, "JSON syntax").
-            serde_json::from_str(self.text.as_deref().unwrap_or("null"))
-                .expect("the typed AST path accepted this text, so it is JSON")
+            AstSource::Text(text) => serde_json::from_str(text)
+                .expect("the typed AST path accepted this text, so it is JSON"),
+            #[cfg(not(feature = "js-compat"))]
+            AstSource::Compact(_) => serde_json::Value::Null,
+            AstSource::None => serde_json::Value::Null,
         })
     }
 }
 
+/// The value when it has been parsed; otherwise only the source's kind and
+/// length, so that `{:?}` on a model file (or a manager) never parses and
+/// keeps a lazily kept AST (A-13).
 impl std::fmt::Debug for Ast {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
+        match (self.value.get(), &self.source) {
+            (Some(value), _) => value.fmt(f),
+            (None, AstSource::Text(text)) => write!(f, "<JSON text, {} bytes>", text.len()),
+            (None, AstSource::Compact(bytes)) => {
+                write!(f, "<compact AST, {} bytes>", bytes.len())
+            }
+            (None, AstSource::None) => f.write_str("null"),
+        }
     }
 }
 
@@ -1481,13 +1501,17 @@ fn parse_namespace_version<'a>(namespace: &'a str, file_name: &Option<String>) -
 
 /// Stamps this file's name onto an `IllegalModel` error that came up while
 /// parsing one of its declarations, so the message points somewhere useful.
-fn annotate(err: Error, file_name: &Option<String>) -> Error {
-    match err.unported_illegal_model() {
-        Some(message) => {
-            Error::illegal_model(message, file_name.clone(), err.contract().location.clone())
-        }
-        None => err,
+/// Only a pre-port `IllegalModel` error ([`Error::illegal_model`]) that
+/// names no file yet is stamped.
+fn annotate(mut err: Error, file_name: &Option<String>) -> Error {
+    let contract = err.contract_mut();
+    if contract.kind == ErrorKind::IllegalModel
+        && contract.code == "pre-port"
+        && contract.model_file.is_none()
+    {
+        contract.model_file = file_name.clone().map(Some);
     }
+    err
 }
 
 #[cfg(test)]

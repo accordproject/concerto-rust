@@ -12,14 +12,13 @@
 //! Validation stops at the first problem. TS raises every one of these as
 //! `IllegalModelException` (`ClassDeclaration.validate` and its callees;
 //! PORTING.md section 2.3), so every error here carries
-//! a contract error with `ErrorKind::IllegalModel` — built through
-//! `ContractError::pre_port` (`failed`, below) until a P2 task ports the
-//! check's exact TS wording. A model whose inheritance is circular surfaces
+//! a contract error with `ErrorKind::IllegalModel`, from the error
+//! catalogue (`Error::new`). A model whose inheritance is circular surfaces
 //! the `RangeError` TS's recursion overflows with (`ErrorKind::RecursionLimit`,
 //! PORTING.md section 2.5, DV-013), raised by the model manager's
 //! super-type walk. A model that validates cleanly returns `Ok(())`.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -31,7 +30,7 @@ use crate::introspect::{DeclarationKind, Decorated, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, get_namespace, is_primitive_type, qualify, short_name};
 
-/// A class's own AST `location`, for [`failed`]'s `location` parameter
+/// A class's own AST `location`, for an error's `location` ([`Error::at`])
 /// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
 /// `mm::Range`, so this re-serialises it through
 /// [`crate::error::location_value`]; it is not a verbatim copy of the AST's
@@ -403,14 +402,15 @@ fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> Error {
 /// location, so neither is set here (and [`ModelManager::validate_model_file`]
 /// does not attach one).
 fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
-    let mut seen = HashSet::new();
+    let mut seen = FxHashSet::default();
     for declaration in model_file.declarations() {
         if !seen.insert(declaration.name()) {
-            return Err(catalogue_error(
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
                 "modelfile-validate-duplicateclassname",
                 vec![("fqn", qualify(model_file.namespace(), declaration.name()))],
-                None,
-            ));
+            )
+            .at(None));
         }
     }
     Ok(())
@@ -430,13 +430,12 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
 /// of `ModelFile.getName()`'s contract (P2-08). [`undeclared_type_error`]
 /// already attaches its own file name; this backstops every other check in
 /// this module, which builds a bare [`Error`] through
-/// [`failed`]/[`catalogue_error`] with no file in scope. A `model_file`
+/// [`Error::new`] with no file in scope. A `model_file`
 /// already set (as `undeclared_type_error` sets its own) is left alone, and
 /// only `IllegalModel`-kind contract errors are touched.
 pub(crate) fn attach_model_file(mut err: Error, model_file: &ModelFile) -> Error {
-    if err.ported().is_some_and(|contract| {
-        contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel
-    }) {
+    let contract = err.contract();
+    if contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel {
         err.contract_mut().model_file = Some(model_file.file_name().map(str::to_string));
     }
     err
@@ -471,11 +470,12 @@ fn check_import_clash(
     {
         return Ok(());
     }
-    Err(catalogue_error(
+    Err(Error::new(
+        ErrorKind::IllegalModel,
         "declaration-validate-importclash",
         vec![("name", name.to_string())],
-        lazy_location(location),
-    ))
+    )
+    .at(lazy_location(location)))
 }
 
 /// TS: `Declaration.isReservedSystemTypeImport` (declaration.ts) — `name`,
@@ -662,15 +662,14 @@ fn validate_property(
     // `modelManager.getType(typeFqn)`.
     let type_name = type_name.unwrap_or_default();
     let Some(type_fqn) = resolve(manager, owner_ns, type_name) else {
-        return Err(ContractError::pre_port(
+        return Err(Error::new(
             ErrorKind::InvalidArgument,
-            format!(
-                "Failed to find fully qualified type name for property {} with type {type_name}",
-                property.name()
-            ),
-            None,
-        )
-        .into());
+            "property-getfullyqualifiedtypename-notfound",
+            vec![
+                ("name", property.name().to_string()),
+                ("type", type_name.to_string()),
+            ],
+        ));
     };
     // TS `modelManager.getType(typeFqn)`, with its own two errors.
     manager.get_type_declaration(&type_fqn)?;
@@ -711,18 +710,19 @@ fn validate_decorators(
 
 /// An element may not carry the same decorator twice.
 fn check_unique_decorators(element: &impl Decorated, location: Option<&mm::Range>) -> Result<()> {
-    let mut seen = HashSet::new();
+    let mut seen = FxHashSet::default();
     for decorator in element.decorators() {
         // TS keys its `Set` on `getName()` and interpolates it into the
         // message as is, so a decorator with no `name` at all is its own
         // entry and reads `undefined` (accordproject/concerto-rust#218).
         let name = decorator.js_name();
         if !seen.insert(name) {
-            return Err(catalogue_error(
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
                 "decorated-validate-duplicatedecorator",
                 vec![("name", name.unwrap_or("undefined").to_string())],
-                lazy_location(location),
-            ));
+            )
+            .at(lazy_location(location)));
         }
     }
     Ok(())
@@ -756,11 +756,12 @@ fn check_super_type(
 
     if super_type.name == class.name() && !SELF_EXTENDING_EXEMPT.contains(&super_type.name.as_str())
     {
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "classdeclaration-validate-selfextending",
             vec![("class", class.name().to_string())],
-            class_location(class),
-        ));
+        )
+        .at(class_location(class)));
     }
 
     let super_declaration = resolve(manager, namespace, &super_type.name)
@@ -768,11 +769,12 @@ fn check_super_type(
     let Some(super_declaration) = super_declaration else {
         // TS: `_resolveSuperType`'s hardcoded string, not a catalogue
         // template (Globalize is never called on this path).
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "classdeclaration-resolvesupertype-notfound",
             vec![("superType", super_type.name.to_string())],
-            class_location(class),
-        ));
+        )
+        .at(class_location(class)));
     };
 
     // A super type that is not a concept must be the exact same kind as the
@@ -784,7 +786,8 @@ fn check_super_type(
     if super_declaration.declaration_kind() != "ConceptDeclaration"
         && class.declaration_kind() != super_declaration.declaration_kind()
     {
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "classdeclaration-resolvesupertype-kindmismatch",
             vec![
                 ("kind", class.declaration_kind().to_string()),
@@ -795,8 +798,8 @@ fn check_super_type(
                 ),
                 ("superName", super_declaration.name().to_string()),
             ],
-            class_location(class),
-        ));
+        )
+        .at(class_location(class)));
     }
 
     Ok(())
@@ -825,14 +828,15 @@ fn check_unique_field_names(
     let mut seen = rustc_hash::FxHashSet::default();
     for (_, property) in properties.iter() {
         if !seen.insert(property.name()) {
-            return Err(catalogue_error(
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
                 "classdeclaration-validate-duplicatefieldname",
                 vec![
                     ("class", declaration_name.to_string()),
                     ("fieldName", property.name().to_string()),
                 ],
-                lazy_location(location),
-            ));
+            )
+            .at(lazy_location(location)));
         }
     }
     Ok(())
@@ -857,14 +861,15 @@ fn check_identifier(
         .class_properties(&fqn)?
         .find(field_name)
         .ok_or_else(|| {
-            catalogue_error(
+            Error::new(
+                ErrorKind::IllegalModel,
                 "classdeclaration-validate-identifiernotproperty",
                 vec![
                     ("class", class.name().to_string()),
                     ("idField", field_name.to_string()),
                 ],
-                class_location(class),
             )
+            .at(class_location(class))
         })?;
 
     // TS checks the type first, then optionality (classdeclaration.ts
@@ -874,23 +879,25 @@ fn check_identifier(
     // for an inherited identifier is the super type's, not this class's.
     let owner_namespace = get_namespace(Some(owner))?;
     if !is_string_typed(manager, owner_namespace, field) {
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "classdeclaration-validate-identifiernotstring",
             vec![
                 ("class", class.name().to_string()),
                 ("idField", field_name.to_string()),
             ],
-            class_location(class),
-        ));
+        )
+        .at(class_location(class)));
     }
     // TS: hardcoded, not a catalogue template (Globalize is never called on
     // this path).
     if field.is_optional() {
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "classdeclaration-validate-identifieroptional",
             vec![],
-            class_location(class),
-        ));
+        )
+        .at(class_location(class)));
     }
     Ok(())
 }
@@ -945,11 +952,12 @@ fn check_property_type(
         // rejected there; any other property kind is silently accepted, the
         // same as a genuinely absent `type` node.
         if property.is_relationship() {
-            return Err(catalogue_error(
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-notype",
                 vec![],
-                property_location(property),
-            ));
+            )
+            .at(property_location(property)));
         }
         return check_size_validator_target(owner_fqn, property, false);
     }
@@ -966,14 +974,15 @@ fn check_property_type(
         // (src/introspect/relationshipdeclaration.ts): `'Relationship ' +
         // this.getName() + ' cannot be to the primitive type ' +
         // this.getType()` — no owner clause.
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "relationshipdeclaration-validate-primitivetype",
             vec![
                 ("name", property.name().to_string()),
                 ("type", type_identifier.name.to_string()),
             ],
-            property_location(property),
-        ));
+        )
+        .at(property_location(property)));
     }
 
     let target_fqn = resolve(manager, namespace, &type_identifier.name);
@@ -1052,11 +1061,12 @@ fn check_property_type(
             // `getModelManager().getType(...)` to swallow a *different* kind
             // of failure than "undeclared", which the current port does not
             // yet model.
-            return Err(catalogue_error(
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-missingtype",
                 vec![("name", property.name().to_string()), ("type", target_fqn)],
-                property_location(property),
-            ));
+            )
+            .at(property_location(property)));
         }
         // Not yet observed for a non-relationship property: TS's own
         // `Property.validate` has no declaration lookup beyond `resolveType`
@@ -1079,21 +1089,19 @@ fn check_property_type(
         // src/introspect/relationshipdeclaration.ts) — inherited, so a
         // target that has no identity of its own but extends one that does
         // (every `Asset`/`Participant`, for one) still counts.
-        let identifiable = target.is_class_declaration()
-            && manager
-                .identifier_field(&target_fqn)
-                .map(|f| f.map(str::to_string))?
-                .is_some();
+        let identifiable =
+            target.is_class_declaration() && manager.identifier_field(&target_fqn)?.is_some();
         if !identifiable {
             // TS: `'Relationship ' + this.getName() + ' must be to a class
             // that has an identifier, but this is to ' +
             // this.getFullyQualifiedTypeName()` — no owner clause, and with
             // the target's own fully-qualified name appended.
-            return Err(catalogue_error(
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-notidentified",
                 vec![("name", property.name().to_string()), ("type", target_fqn)],
-                property_location(property),
-            ));
+            )
+            .at(property_location(property)));
         }
     }
 
@@ -1115,11 +1123,12 @@ fn check_size_validator_target(
     is_map_type: bool,
 ) -> Result<()> {
     if property.size_validator().is_some() && !property.is_array() && !is_map_type {
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "property-validate-sizevalidator",
             vec![("fqn", format!("{owner_fqn}.{}", property.name()))],
-            property_location(property),
-        ));
+        )
+        .at(property_location(property)));
     }
     Ok(())
 }
@@ -1144,8 +1153,7 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
     // which every caller here now always does.
     //
     // The error is discarded (`.ok()`) by every caller: they use `None` to
-    // mean "does not resolve" and build their own message (`failed`,
-    // below), so the location `resolve_type_name` would attach to its own
+    // mean "does not resolve" and build their own error, so the location `resolve_type_name` would attach to its own
     // error never surfaces. Passing `None` here is exact, not a shortcut.
     manager.resolve_type_name_at(namespace, name, None).ok()
 }
@@ -1216,11 +1224,12 @@ fn check_imports(
             };
 
             let Some(source_file) = found else {
-                return Err(catalogue_error(
+                return Err(Error::new(
+                    ErrorKind::IllegalModel,
                     "modelmanager-gettype-noregisteredns",
                     vec![("type", import_fqn())],
-                    None,
-                ));
+                )
+                .at(None));
             };
 
             let is_global_model = name == "concerto";
@@ -1228,7 +1237,8 @@ fn check_imports(
                 && *existing != version
                 && !is_global_model
             {
-                return Err(catalogue_error(
+                return Err(Error::new(
+                    ErrorKind::IllegalModel,
                     "modelmanager-gettype-duplicatensimport",
                     vec![
                         ("namespace", import_namespace.to_string()),
@@ -1241,20 +1251,21 @@ fn check_imports(
                             version.as_deref().unwrap_or_default().to_string(),
                         ),
                     ],
-                    None,
-                ));
+                )
+                .at(None));
             }
             seen_versions.insert(name, version);
 
             if !source_file.is_local_type(import_short_name) {
-                return Err(catalogue_error(
+                return Err(Error::new(
+                    ErrorKind::IllegalModel,
                     "modelmanager-gettype-notypeinns",
                     vec![
                         ("type", import_short_name.to_string()),
                         ("namespace", import_namespace.to_string()),
                     ],
-                    None,
-                ));
+                )
+                .at(None));
             }
         }
     }
@@ -1290,10 +1301,7 @@ fn check_identity_matches_super(
     // TS: `superType.isIdentified()` — inherited, so a direct super type
     // with no identity of its own but an identified ancestor still gates
     // this check.
-    let Some(super_id_field) = manager
-        .identifier_field(&super_fqn)
-        .map(|f| f.map(str::to_string))?
-    else {
+    let Some(super_id_field) = manager.identifier_field(&super_fqn)? else {
         return Ok(());
     };
     // TS: within `if (this.idField)`, `this.isSystemIdentified()` reduces to
@@ -1309,14 +1317,15 @@ fn check_identity_matches_super(
         super_class.identifier_field_name().is_some()
     };
     if redeclares {
-        return Err(catalogue_error(
+        return Err(Error::new(
+            ErrorKind::IllegalModel,
             "classdeclaration-validate-redeclaredidentifier",
             vec![
                 ("superType", super_fqn.to_string()),
                 ("idField", super_id_field.to_string()),
             ],
-            class_location(class),
-        ));
+        )
+        .at(class_location(class)));
     }
     Ok(())
 }
@@ -1378,20 +1387,18 @@ js_compat_pub! {
                 // TS: `MapKeyType.validate` throws `new
                 // IllegalModelException(message)` with no `modelFile` argument
                 // (mapkeytype.ts) — unlike a construction-time check, this
-                // message never gets a `File '<name>': ` suffix. [`failed`]'s
-                // default `model_file: None` would let
+                // message never gets a `File '<name>': ` suffix. A default
+                // `model_file: None` would let
                 // [`ModelManager::validate_model_file`]'s generic
                 // [`attach_model_file`] stamp one on anyway, so it is marked
                 // `Some(None)` ("no file, and already decided") here instead.
-                let mut err = ContractError::pre_port(
+                let mut err = ContractError::new(
                     ErrorKind::IllegalModel,
-                    format!(
-                        "Scalar must be one of StringScalar, DateTimeScalar in context of \
-                         MapKeyType. Invalid Scalar: {}, for MapDeclaration {}",
-                        key.name,
-                        map.name()
-                    ),
-                    None,
+                    "mapkeytype-validate-invalidscalar",
+                    vec![
+                        ("type", key.name.to_string()),
+                        ("name", map.name().to_string()),
+                    ],
                 );
                 err.model_file = Some(None);
                 return Err(err.into());
@@ -1422,11 +1429,7 @@ js_compat_pub! {
         {
             // TS names the value type `ObjectMapValueType` here for a
             // relationship value too (the template's own text).
-            return Err(catalogue_error(
-                "mapvaluetype-process-invalidtypeclass",
-                vec![("name", map.name().to_string())],
-                None,
-            ));
+            return Err(Error::new(ErrorKind::IllegalModel, "mapvaluetype-process-invalidtypeclass", vec![("name", map.name().to_string())]).at(None));
         }
 
         // TS: `MapValueType.validate` allows any declaration as a map value except
@@ -1451,11 +1454,7 @@ js_compat_pub! {
                 ));
             };
             if declared.is_map_declaration() {
-                return Err(catalogue_error(
-                    "mapvaluetype-validate-mapnotsupported",
-                    vec![("type", value.name.to_string())],
-                    None,
-                ));
+                return Err(Error::new(ErrorKind::IllegalModel, "mapvaluetype-validate-mapnotsupported", vec![("type", value.name.to_string())]).at(None));
             }
         }
         Ok(())
@@ -1468,22 +1467,6 @@ js_compat_pub! {
 /// TS's own hardcoded strings ported as a [`crate::error::Renderer::Inline`]
 /// entry (P5-98, B-10: these used to be `pre-port` messages).
 ///
-/// TS: `ClassDeclaration.validate` and its callees throw
-/// `IllegalModelException` for every one of these checks (section 2.3), so
-/// `kind` is `IllegalModel`. `location` is the AST node's `location`, copied
-/// verbatim, as every TS throw on this path passes `this.ast.location`
-/// (PORTING.md 2.1); callers pass their class's own [`class_location`], or
-/// `None` where TS passes none.
-fn catalogue_error(
-    code: &'static str,
-    params: Vec<(&'static str, String)>,
-    location: Option<serde_json::Value>,
-) -> Error {
-    let mut err = ContractError::new(ErrorKind::IllegalModel, code, params);
-    err.location = location;
-    err.into()
-}
-
 /// `modelfile-resolvetype-undecltype`: TS's `ModelFile.resolveType` (module
 /// doc on [`resolve`]) — a type name that resolves through neither the
 /// primitive list, an import, nor a local declaration. `context` is TS's own

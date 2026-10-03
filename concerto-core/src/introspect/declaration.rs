@@ -9,6 +9,8 @@
 //! variants of the [`Declaration`] sum type. Each variant is selected by
 //! matching on the node's `$class`.
 
+use std::sync::LazyLock;
+
 use concerto_metamodel::Name;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -190,13 +192,11 @@ pub struct ClassDeclaration {
 
 /// The names of the system properties a class is given
 /// (`ClassDeclaration::finish`), each read once and shared (P5-93).
-static IDENTIFIER_NAME: std::sync::LazyLock<Name> =
-    std::sync::LazyLock::new(|| Name::from("$identifier"));
-static TIMESTAMP_NAME: std::sync::LazyLock<Name> =
-    std::sync::LazyLock::new(|| Name::from("$timestamp"));
+static IDENTIFIER_NAME: LazyLock<Name> = LazyLock::new(|| Name::from("$identifier"));
+static TIMESTAMP_NAME: LazyLock<Name> = LazyLock::new(|| Name::from("$timestamp"));
 
 /// A shared system property name: a clone, which counts a reference.
-fn system_name(name: &std::sync::LazyLock<Name>) -> Name {
+fn system_name(name: &LazyLock<Name>) -> Name {
     Name::clone(name)
 }
 
@@ -206,7 +206,7 @@ const TYPE_IDENTIFIER_CLASS: &str = "concerto.metamodel@1.0.0.TypeIdentifier";
 /// The implicit super type nodes: `Concept`, `Asset`, `Participant`,
 /// `Transaction` and `Event` (`ClassDeclaration::finish`).
 fn implicit_super_types() -> &'static [mm::TypeIdentifier; 5] {
-    static NODES: std::sync::LazyLock<[mm::TypeIdentifier; 5]> = std::sync::LazyLock::new(|| {
+    static NODES: LazyLock<[mm::TypeIdentifier; 5]> = LazyLock::new(|| {
         ["Concept", "Asset", "Participant", "Transaction", "Event"].map(|name| mm::TypeIdentifier {
             _class: TYPE_IDENTIFIER_CLASS.into(),
             name: name.into(),
@@ -782,7 +782,8 @@ pub enum Declaration {
 /// field at all: the grammar never writes them for an enum), so a caller that
 /// needs a class-like fact from either kind can read it the same way (see
 /// `model_manager::ClassLike`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, DeclarationKind)]
+#[concerto(kind = "EnumDeclaration")]
 pub struct EnumDeclaration {
     inner: WithDecorators<mm::EnumDeclaration>,
     /// The enum's values, read once at load time so
@@ -795,12 +796,6 @@ pub struct EnumDeclaration {
 impl Named for EnumDeclaration {
     fn name(&self) -> &str {
         &self.inner.name
-    }
-}
-
-impl DeclarationKind for EnumDeclaration {
-    fn declaration_kind(&self) -> &'static str {
-        "EnumDeclaration"
     }
 }
 
@@ -897,7 +892,8 @@ impl EnumDeclaration {
 /// each run `Decorated.process()` on their own AST node — a `MapKeyType`/
 /// `MapValueType` is a `Decorated` in its own right in TS — so the key's and
 /// value's decorators are read here too, alongside the map's own (#152).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, DeclarationKind)]
+#[concerto(kind = "MapDeclaration")]
 pub struct MapDeclaration {
     node: mm::MapDeclaration,
     decorators: Vec<Decorator>,
@@ -908,12 +904,6 @@ pub struct MapDeclaration {
 impl Named for MapDeclaration {
     fn name(&self) -> &str {
         &self.node.name
-    }
-}
-
-impl DeclarationKind for MapDeclaration {
-    fn declaration_kind(&self) -> &'static str {
-        "MapDeclaration"
     }
 }
 
@@ -1079,6 +1069,14 @@ impl Declaration {
     pub fn as_class(&self) -> Option<&ClassDeclaration> {
         match self {
             Self::Class(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Borrow this as an [`EnumDeclaration`], if it is one.
+    pub fn as_enum(&self) -> Option<&EnumDeclaration> {
+        match self {
+            Self::Enum(e) => Some(e),
             _ => None,
         }
     }
@@ -1300,9 +1298,8 @@ fn check_property_names(
 /// raised while a class-like or enum declaration is built names the file
 /// being loaded (`file_name`) unless it already names one.
 fn with_model_file(mut err: Error, file_name: Option<&str>) -> Error {
-    if err.ported().is_some_and(|contract| {
-        contract.kind == ErrorKind::IllegalModel && contract.model_file.is_none()
-    }) {
+    let contract = err.contract();
+    if contract.kind == ErrorKind::IllegalModel && contract.model_file.is_none() {
         err.contract_mut().model_file = Some(file_name.map(str::to_string));
     }
     err

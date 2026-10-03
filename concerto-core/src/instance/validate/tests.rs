@@ -754,7 +754,7 @@
             json!({ "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1 }),
         )]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map));
-        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
+        assert!(matches!(Some(err.contract()), Some(e) if e.kind == ErrorKind::Validation));
         assert!(
             err.to_string().contains("Expected a \"Relationship\""),
             "{err}"
@@ -784,7 +784,7 @@
             json!({ "$$relationship": true, "$class": "org.acme@1.0.0.Owner", "ownerId": "O1" }),
         )]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &wrong_type));
-        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
+        assert!(matches!(Some(err.contract()), Some(e) if e.kind == ErrorKind::Validation));
         assert!(err.to_string().contains("org.acme@1.0.0.Owner"), "{err}");
         let uri = js_map(vec![(json!("a"), json!("resource:org.acme@1.0.0.Vehicle#V1"))]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &uri));
@@ -810,7 +810,7 @@
             json!({ "$class": "org.acme@1.0.0.Missing", "name": "x" }),
         )]);
         let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ItemMap", &map));
-        assert!(matches!(err.ported(), Some(e) if e.kind == ErrorKind::Validation));
+        assert!(matches!(Some(err.contract()), Some(e) if e.kind == ErrorKind::Validation));
         let message = err.to_string();
         assert!(
             message.contains("Expected a \"Resource\" or a \"Concept\""),
@@ -1127,9 +1127,7 @@
 
     /// The TS class and message of a failure, as the oracle records them.
     fn class_and_message(err: &Error) -> (&'static str, String) {
-        let Some(contract) = err.ported().cloned() else {
-            panic!("expected a contract error, got {err:?}");
-        };
+        let contract = err.contract().clone();
         (contract.kind.ts_class(), err.to_string())
     }
 

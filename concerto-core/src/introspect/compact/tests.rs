@@ -470,8 +470,10 @@ fn text_and_compact_paths_agree() {
                 match (from_text.unwrap(), from_compact.unwrap()) {
                     (Ok((a, ai)), Ok((b, bi))) => {
                         loaded += 1;
-                        assert_eq!(format!("{a:?}"), format!("{b:?}"), "{text}");
+                        // Both ASTs parsed first: `Debug` prints a lazily kept
+                        // AST's source, not its value, until then (A-13).
                         assert_eq!(a.ast(), b.ast(), "{text}");
+                        assert_eq!(format!("{a:?}"), format!("{b:?}"), "{text}");
                         assert_eq!(ai, bi, "{text}");
                     }
                     (Err(a), Err(b)) => {

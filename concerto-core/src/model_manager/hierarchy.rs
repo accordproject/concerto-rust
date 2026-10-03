@@ -467,7 +467,7 @@ impl ModelManager {
             fn walk(
                 mm: &ModelManager,
                 children: &[DeclId],
-                seen: &mut HashSet<DeclId>,
+                seen: &mut FxHashSet<DeclId>,
                 results: &mut Vec<DeclId>,
                 path: &mut Vec<DeclId>,
             ) -> Result<()> {
@@ -500,7 +500,7 @@ impl ModelManager {
                 return Err(unknown(Node::Declaration(id)));
             }
             let mut results = Vec::new();
-            walk(self, &[id], &mut HashSet::new(), &mut results, &mut Vec::new())?;
+            walk(self, &[id], &mut FxHashSet::default(), &mut results, &mut Vec::new())?;
             Ok(results)
         }
     }
@@ -760,8 +760,8 @@ impl ModelManager {
             // own failure is `TypeNotFound` (`ModelManager.getType`'s shape,
             // a different TS throw site), so it is remapped here, the same
             // way `validation.rs`'s `check_super_type` already raises this
-            // exact message (`failed`) for the same TS call.
-            Err(err) if err.is_unported_type_not_found() => Err(ContractError::pre_port(
+            // exact message for the same TS call.
+            Err(err) if err.is_pre_port_type_not_found() => Err(ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Could not find super type {}", ti.name),
                 location(),

@@ -124,7 +124,7 @@ js_compat_pub! {
 fn with_document_class<R>(json: &Value, then: impl FnOnce(&str) -> Result<R>) -> Result<R> {
     let class_name = get_property(Some(json), "$class")?;
     if !is_truthy(class_name.as_deref()) {
-        return Err(plain_error("serializer-fromjson-noclass", Vec::new()));
+        return Err(Error::new(ErrorKind::InvalidArgument, "serializer-fromjson-noclass", Vec::new()));
     }
     // DV-015: see the JS layer's `Serializer::from_json`.
     let Some(Value::String(class_name)) = class_name.as_deref() else {
@@ -204,10 +204,11 @@ fn populate_as(
         // `Factory.newTransaction`/`newEvent`: `ns` and `type` must be
         // truthy, then `newResource`, then the kind check.
         if ns.is_empty() {
-            return Err(plain_error("factory-newtransaction-nsnotspecified", Vec::new()));
+            return Err(Error::new(ErrorKind::InvalidArgument, "factory-newtransaction-nsnotspecified", Vec::new()));
         }
         if name.is_empty() {
-            return Err(plain_error(
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "factory-newtransaction-typenotspecified",
                 Vec::new(),
             ));
@@ -215,22 +216,24 @@ fn populate_as(
         let resource = populator.new_resource(ns, name, id)?;
         let decl = model::get_type(mm, &resource.class_fqn)?;
         if class_declaration.is_transaction() && !decl.is_transaction() {
-            return Err(plain_error(
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "factory-newtransaction-notatransaction",
                 vec![("fqn", resource.class_fqn.clone())],
             ));
         }
         if class_declaration.is_event() && !decl.is_event() {
-            return Err(plain_error(
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "factory-newevent-notanevent",
                 vec![("fqn", resource.class_fqn.clone())],
             ));
         }
         resource
     } else if class_declaration.is_map_declaration() {
-        return Err(plain_error("serializer-fromjson-mapnotsupported", Vec::new()));
+        return Err(Error::new(ErrorKind::InvalidArgument, "serializer-fromjson-mapnotsupported", Vec::new()));
     } else if class_declaration.is_enum() {
-        return Err(plain_error("serializer-fromjson-enumnotsupported", Vec::new()));
+        return Err(Error::new(ErrorKind::InvalidArgument, "serializer-fromjson-enumnotsupported", Vec::new()));
     } else {
         // A concept, or any other class declaration:
         // `this.factory.newResource(ns, name, id)`.
@@ -409,14 +412,6 @@ fn validator_value_is_truthy(value: &Value) -> bool {
     !validate::is_js_undefined(value) && ecma::is_truthy(value)
 }
 
-fn validation(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(ErrorKind::Validation, code, params).into()
-}
-
-fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
-    ContractError::new(ErrorKind::InvalidArgument, code, params).into()
-}
-
 /// DV-015: a `$class` that is not a string.
 fn not_a_string_class(class_name: Option<&Value>) -> Error {
     ContractError::pre_port(
@@ -517,7 +512,7 @@ js_compat_pub! {
         };
 
         if class_decl.is_abstract("classDecl.isAbstract")? {
-            return Err(plain_error("factory-newinstance-abstracttype", ns_and_type()));
+            return Err(Error::new(ErrorKind::InvalidArgument, "factory-newinstance-abstracttype", ns_and_type()));
         }
 
         let id_field = class_decl.identifier_field_name()?;
@@ -530,13 +525,15 @@ js_compat_pub! {
         };
         if id_field.is_some() {
             let IdentifierArg::String(id_text) = id else {
-                return Err(plain_error(
+                return Err(Error::new(
+                    ErrorKind::InvalidArgument,
                     "factory-newinstance-invalididentifier",
                     ns_and_type(),
                 ));
             };
             if ecma::js_trim(id_text).is_empty() {
-                return Err(plain_error(
+                return Err(Error::new(
+                    ErrorKind::InvalidArgument,
                     "factory-newinstance-missingidentifier",
                     ns_and_type(),
                 ));
@@ -553,7 +550,8 @@ js_compat_pub! {
             if let Some(regex) = regex
                 && !regex.matches_regex(id_text)
             {
-                return Err(plain_error(
+                return Err(Error::new(
+                    ErrorKind::InvalidArgument,
                     "factory-newresource-idregexmismatch",
                     vec![("regex", regex.regex().unwrap_or_default())],
                 ));
@@ -561,7 +559,8 @@ js_compat_pub! {
         } else if matches!(id, IdentifierArg::String(s) if !s.is_empty())
             || matches!(id, IdentifierArg::Other { truthy: true })
         {
-            return Err(plain_error(
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "factory-newresource-notidentifiable",
                 vec![("fqn", class_decl.fqn().to_string())],
             ));
@@ -1232,7 +1231,8 @@ impl Populator<'_> {
     fn visit_field(&mut self, field: &Field, json: Option<&Value>) -> Result<Value> {
         if field.is_array() {
             let Some(Value::Array(items)) = json else {
-                return Err(validation(
+                return Err(Error::new(
+                    ErrorKind::Validation,
                     "jsonpopulator-visitfield-notarray",
                     vec![
                         ("path", self.path_text()),
@@ -1285,7 +1285,8 @@ impl Populator<'_> {
         let type_name = field.type_name();
         let path = self.path.as_str();
         let wrong_type = || {
-            validation(
+            Error::new(
+                ErrorKind::Validation,
                 "jsonpopulator-converttoobject-wrongtype",
                 vec![("path", path.to_string()), ("type", type_name.to_string())],
             )
@@ -1299,7 +1300,8 @@ impl Populator<'_> {
                 // `strictQualifiedDateTimes` says; the flag now decides
                 // only whether `utcOffset` applies, as it did before.
                 if !strict_qualified_date_time(s) {
-                    return Err(validation(
+                    return Err(Error::new(
+                        ErrorKind::Validation,
                         "jsonpopulator-converttoobject-datetimeformat",
                         vec![("path", path.to_string()), ("type", type_name.to_string())],
                     ));
@@ -1355,7 +1357,8 @@ impl Populator<'_> {
 
         if slot.is_array {
             let Some(Value::Array(items)) = json else {
-                return Err(validation(
+                return Err(Error::new(
+                    ErrorKind::Validation,
                     "jsonpopulator-visitfield-notarray",
                     vec![
                         ("path", self.path_text()),
@@ -1398,7 +1401,8 @@ impl Populator<'_> {
                 relationship_from_uri(self.mm, uri, default_namespace, default_type)
             }
             Some(Value::Object(_) | Value::Array(_)) => self.relationship_resource(slot, json, json),
-            _ => Err(plain_error(
+            _ => Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "jsonpopulator-visitrelationshipdeclaration-notstringorobject",
                 vec![
                     ("value", js_string(json)),
@@ -1418,7 +1422,8 @@ impl Populator<'_> {
         item: Option<&Value>,
     ) -> Result<Value> {
         if !self.options.accept_resources_for_relationships {
-            return Err(plain_error(
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "jsonpopulator-visitrelationshipdeclaration-notastring",
                 vec![
                     ("value", js_string(json)),
@@ -1428,7 +1433,8 @@ impl Populator<'_> {
         }
         let class_name = get_property(item, "$class")?;
         if !is_truthy(class_name.as_deref()) {
-            return Err(plain_error(
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
                 "jsonpopulator-visitrelationshipdeclaration-noclass",
                 vec![
                     ("value", js_string(item)),
@@ -1547,7 +1553,8 @@ fn set_property_value(
             .get(&resource.identifier_key)
             .filter(|v| !validate::is_js_undefined(v))
             .map_or_else(|| "undefined".to_string(), ecma::to_js_string);
-        return Err(plain_error(
+        return Err(Error::new(
+            ErrorKind::InvalidArgument,
             "validatedresource-setpropertyvalue-undeclaredfield",
             vec![("id", id), ("propName", prop_name.to_string())],
         ));
@@ -1578,7 +1585,8 @@ fn get_assignable_properties<'v>(
         .map(|p| &**p)
         .collect();
     if !private.is_empty() {
-        return Err(validation(
+        return Err(Error::new(
+            ErrorKind::Validation,
             "jsonpopulator-getassignableproperties-reservedproperties",
             vec![
                 ("fqn", declaration.fqn().to_string()),
@@ -1589,7 +1597,8 @@ fn get_assignable_properties<'v>(
     if properties.iter().any(|p| p == "$timestamp")
         && !(declaration.is_transaction() || declaration.is_event())
     {
-        return Err(validation(
+        return Err(Error::new(
+            ErrorKind::Validation,
             "jsonpopulator-getassignableproperties-timestamp",
             vec![("fqn", declaration.fqn().to_string())],
         ));
@@ -1622,7 +1631,8 @@ fn validate_properties(
         .filter(|p| !class_plan.contains(p))
         .map(|p| &**p)
         .collect();
-    Err(validation(
+    Err(Error::new(
+        ErrorKind::Validation,
         "jsonpopulator-validateproperties-unexpectedproperties",
         vec![
             ("fqn", class_declaration.fqn().to_string()),
