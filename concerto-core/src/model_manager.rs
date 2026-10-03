@@ -3320,12 +3320,13 @@ impl ModelManager {
         /// module doc); a file with nothing left is dropped. `predicate` is a
         /// `Declaration -> bool` in TS, keyed here by fully-qualified name
         /// instead, since that is all the oracle's own `predicate` encoding
-        /// carries (`tests/oracle/ops.rs`). The root model is skipped exactly as
-        /// TS's `modelFile.isSystemModelFile()` check does — the decorator model
-        /// is *not* skipped, because TS does not skip it either, so it is
-        /// filtered like any other file (which in practice always empties it,
-        /// since `keep_fqn` never names one of its own declarations in the
-        /// corpus). The result always starts from a fresh `BaseModelManager`
+        /// carries (`tests/oracle/ops.rs`). Every file the fresh result already
+        /// holds from its constructor (the decorator and root models) is
+        /// skipped, so the result keeps its own copy whole whatever `keep_fqn`
+        /// says about its declarations (BC-53, P5-108,
+        /// accordproject/concerto-rust#466: TS 5.0.0 skipped only the root
+        /// model and threw re-adding the decorator model, so `filter(() =>
+        /// true)` failed). The result always starts from a fresh `BaseModelManager`
         /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
         /// never the receiver's own kind. `disable_validation` is TS's
         /// `options?.disableValidation`; unless set, the filtered files are
@@ -3342,8 +3343,9 @@ impl ModelManager {
     /// A new manager with only the declarations `keep` accepts, given each
     /// declaration's fully-qualified name and the declaration itself. A model
     /// file left with no declaration is dropped, and each file's imports are
-    /// filtered the same way. The system root model is kept whole. The new
-    /// manager has this one's options, and its files are validated together.
+    /// filtered the same way. The built-in decorator and root models are kept
+    /// whole (BC-53). The new manager has this one's options, and its files
+    /// are validated together.
     ///
     /// TS: `BaseModelManager.filter(predicate)`.
     pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<Self> {
@@ -3375,13 +3377,20 @@ impl ModelManager {
         // below), so a declaration kept by an earlier file is still
         // recognised when it is reached again through another file's
         // imports.
+        //
+        // BC-53: every declaration of a file `result` already holds from
+        // `Self::new()` counts as kept without asking `keep`, so an import
+        // of one (a user type extending `Decorator`) is never pruned while
+        // the file it names stays whole in `result`.
         let keep = &keep;
+        let result_ref = &result;
         let kept: std::collections::HashSet<*const Declaration> = self
             .model_files()
             .flat_map(|mf| {
                 let namespace = mf.namespace();
+                let held = mf.is_system_namespace() || result_ref.model_file(namespace).is_some();
                 mf.declarations().iter().filter_map(move |decl| {
-                    keep(&qualify(namespace, decl.name()), decl)
+                    (held || keep(&qualify(namespace, decl.name()), decl))
                         .then_some(decl as *const Declaration)
                 })
             })
@@ -3389,7 +3398,11 @@ impl ModelManager {
 
         let mut filtered_files = Vec::new();
         for model_file in self.shared_model_files() {
-            if model_file.is_system_namespace() {
+            // BC-53: skip every file `result` already holds from
+            // `Self::new()`, the decorator model as well as the root model.
+            if model_file.is_system_namespace()
+                || result.model_file(model_file.namespace()).is_some()
+            {
                 continue;
             }
             // P5-97: a file the filter keeps exactly as it is is shared, not
@@ -6091,6 +6104,143 @@ mod tests {
         assert!(kept.model_file("org.example@1.0.0").is_none());
     }
 
+    /// A manager holding `manager()`'s model and a user model that imports
+    /// and extends `concerto.decorator@1.0.0.Decorator`.
+    fn manager_with_decorator_subtype() -> ModelManager {
+        let mut mgr = manager();
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.acme@1.0.0",
+                "imports": [
+                    { "$class": "concerto.metamodel@1.0.0.ImportType",
+                      "namespace": "concerto.decorator@1.0.0", "name": "Decorator" }
+                ],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "CustomDecorator",
+                      "isAbstract": false,
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Decorator" },
+                      "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        mgr.validate_models().unwrap();
+        mgr
+    }
+
+    /// Each model file's namespace and declaration names, in load order.
+    fn shape(mgr: &ModelManager) -> Vec<(String, Vec<String>)> {
+        mgr.model_files()
+            .map(|mf| {
+                (
+                    mf.namespace().to_string(),
+                    mf.declarations()
+                        .iter()
+                        .map(|d| d.name().to_string())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// BC-53 (P5-108): `filter` keeping every declaration returns a manager
+    /// with the source's namespaces, declarations and AST. TS 5.0.0 re-added
+    /// the decorator model and threw.
+    #[test]
+    fn filter_keeping_everything_round_trips() {
+        let mgr = manager_with_decorator_subtype();
+        let filtered = mgr.filter(|_, _| true).unwrap();
+        assert_eq!(shape(&filtered), shape(&mgr));
+        let all = AstOptions {
+            resolve: false,
+            include_system_models: true,
+        };
+        assert_eq!(filtered.ast(all).unwrap(), mgr.ast(all).unwrap());
+        assert!(filtered.validate_models().is_ok());
+        let by_fqn = mgr.filter_by_fqn(|_| true, false).unwrap();
+        assert_eq!(shape(&by_fqn), shape(&mgr));
+    }
+
+    /// BC-53: a predicate that keeps a user type extending `Decorator` works,
+    /// and the result resolves it against its own decorator model.
+    #[test]
+    fn filter_keeps_a_user_type_extending_decorator() {
+        let mgr = manager_with_decorator_subtype();
+        let filtered = mgr
+            .filter_by_fqn(|fqn| !fqn.starts_with("org.example@"), false)
+            .unwrap();
+        assert!(filtered.model_file("org.example@1.0.0").is_none());
+        assert!(
+            filtered
+                .is_assignable_to(
+                    "org.acme@1.0.0.CustomDecorator",
+                    "concerto.decorator@1.0.0.Decorator"
+                )
+                .unwrap()
+        );
+        assert!(filtered.validate_models().is_ok());
+
+        // A predicate that drops the decorator model's own declarations
+        // (P5-97's bench workaround) keeps the user's import of `Decorator`
+        // too: the decorator model stays whole in the result, and the
+        // predicate is never asked about its declarations.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let workaround = mgr
+            .filter_by_fqn(
+                |fqn| {
+                    asked.borrow_mut().push(fqn.to_string());
+                    !fqn.starts_with("concerto.decorator@")
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            asked
+                .borrow()
+                .iter()
+                .all(|fqn| !fqn.starts_with("concerto.decorator@") && !fqn.starts_with("concerto@"))
+        );
+        assert!(
+            workaround
+                .is_assignable_to(
+                    "org.acme@1.0.0.CustomDecorator",
+                    "concerto.decorator@1.0.0.Decorator"
+                )
+                .unwrap()
+        );
+        assert_eq!(shape(&workaround), shape(&mgr));
+        assert!(workaround.validate_models().is_ok());
+    }
+
+    /// BC-53: the built-in models are kept whole whatever the predicate says
+    /// about their declarations, so a predicate dropping everything returns
+    /// just those, and one keeping only the decorator model's own
+    /// declarations returns the same.
+    #[test]
+    fn filter_dropping_everything_keeps_only_the_built_in_models() {
+        let mgr = manager_with_decorator_subtype();
+        let built_in = shape(&ModelManager::new().unwrap());
+        assert_eq!(
+            built_in
+                .iter()
+                .map(|(ns, _)| ns.as_str())
+                .collect::<Vec<_>>(),
+            vec!["concerto.decorator@1.0.0", "concerto@1.0.0"]
+        );
+        let none = mgr.filter(|_, _| false).unwrap();
+        assert_eq!(shape(&none), built_in);
+        let decorator_only = mgr
+            .filter_by_fqn(|fqn| fqn.starts_with("concerto.decorator@"), false)
+            .unwrap();
+        assert_eq!(shape(&decorator_only), built_in);
+        assert_eq!(
+            shape(&mgr.filter_by_fqn(|_| false, true).unwrap()),
+            built_in
+        );
+    }
+
     #[test]
     fn update_model_file_replaces_the_registered_file() {
         let mgr = manager();
@@ -6955,11 +7105,7 @@ mod tests {
             missing_decorator: Some("warn".into()),
             invalid_decorator: None,
         });
-        // (Keeping the decorator model's declarations too would register it
-        // twice, as TS's `filter(() => true)` does.)
-        let filtered = mgr
-            .filter(|fqn, _| fqn.starts_with("org.example@"))
-            .unwrap();
+        let filtered = mgr.filter(|_, _| true).unwrap();
         assert_eq!(filtered.options, mgr.options);
         assert_eq!(mgr.fork().options, mgr.options);
         let deleted = mgr.delete_model_file("org.example@1.0.0").unwrap();
