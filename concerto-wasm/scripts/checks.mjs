@@ -1937,6 +1937,40 @@ export function runChecks(engine) {
     }
   });
 
+  // P5-113 (#480): the batched ResourceId bindings answer as the single
+  // ones do, entry by entry, with `undefined` where a single call throws.
+  check('resourceIdsFromURIs/resourceIdsToURIs match resourceIdFromURI/resourceIdToURI entry by entry', () => {
+    const uris = ['resource:org.a@1.0.0.P#1', 'org.a@1.0.0.P#2', 'bare', 'resource:bad uri#', '', 'x#', 42, null];
+    for (const [ns, type] of [['org.d@1.0.0', 'D'], [undefined, undefined]]) {
+      const flat = engine.resourceIdsFromURIs(uris, ns, type);
+      assert(flat.length === uris.length * 3, `length ${flat.length}`);
+      uris.forEach((uri, i) => {
+        let single;
+        try {
+          single = engine.resourceIdFromURI(uri, ns, type);
+        } catch (e) {
+          single = undefined;
+        }
+        const batched = flat[i * 3] === undefined ? undefined
+          : { namespace: flat[i * 3], type: flat[i * 3 + 1], id: flat[i * 3 + 2] };
+        assert(JSON.stringify(batched) === JSON.stringify(single),
+          `${JSON.stringify(uri)} (${ns}): ${JSON.stringify(batched)} vs ${JSON.stringify(single)}`);
+      });
+    }
+    const ids = [['org.a@1.0.0', 'P', '1'], ['org.a@1.0.0', 'P', 'a b#c'], ['', 'P', '1'], ['org.a@1.0.0', 'P', 3]];
+    const out = engine.resourceIdsToURIs(ids.flat());
+    assert(out.length === ids.length, `length ${out.length}`);
+    ids.forEach(([ns, type, id], i) => {
+      let single;
+      try {
+        single = typeof id === 'string' ? engine.resourceIdToURI(ns, type, id) : undefined;
+      } catch (e) {
+        single = undefined;
+      }
+      assert(out[i] === single, `${ns} ${type} ${id}: ${out[i]} vs ${single}`);
+    });
+  });
+
   mm.free();
   return rows;
 }
