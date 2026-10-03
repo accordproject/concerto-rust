@@ -8,9 +8,6 @@
 //! and its result, `ProcessedScalar`, is what the getters read. The WASM
 //! binding returns the same result to the TS view as its snapshot.
 
-#[cfg(feature = "js-compat")]
-use rustc_hash::FxHashSet;
-
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::Value;
 
@@ -442,7 +439,7 @@ impl ScalarDeclaration {
             .collect::<Result<Vec<_>, _>>()?;
         // The first name equal to an earlier one is `duplicateElements[0]`.
         // The set is only probed, never iterated.
-        let mut seen = FxHashSet::default();
+        let mut seen = std::collections::HashSet::new();
         if let Some(duplicate) = names.iter().find(|name| !seen.insert(name.as_str())) {
             return Err(ContractError::new(
                 ErrorKind::IllegalModel,

@@ -25,6 +25,9 @@ use crate::introspect::typed_ast::{self, ModelHeader, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
 /// The key of a declaration name in [`ModelFile`]'s `local_types`.
+/// Unseeded FxHash, although the names come from user models (PORTING.md
+/// 3.7): a seeded hash cost 20-60% on the introspection rows (P5-110,
+/// accordproject/concerto-rust#477, left for a maintainer decision).
 fn name_hash(name: &str) -> u64 {
     use std::hash::BuildHasher;
     rustc_hash::FxBuildHasher.hash_one(name)
@@ -1389,6 +1392,9 @@ fn built_in_import_typed() -> Result<Import> {
 /// TS `ModelFile.importShortNames`' shape: a local name to the import (its
 /// index in the file's imports) and the position in that import's
 /// `imported_names` it stands for.
+///
+/// Unseeded FxHash, although the names come from user models: see
+/// [`name_hash`] (P5-110).
 type ImportShortNames = rustc_hash::FxHashMap<Box<str>, (u32, u32)>;
 
 /// TS `ModelFile.fromAst`'s `importShortNames.set` loop: one forward pass

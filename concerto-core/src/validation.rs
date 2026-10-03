@@ -18,7 +18,7 @@
 //! PORTING.md section 2.5, DV-013), raised by the model manager's
 //! super-type walk. A model that validates cleanly returns `Ok(())`.
 
-use rustc_hash::FxHashSet;
+use std::collections::{HashMap, HashSet};
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -404,7 +404,7 @@ fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> Error {
 /// location, so neither is set here (and [`ModelManager::validate_model_file`]
 /// does not attach one).
 fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
-    let mut seen = FxHashSet::default();
+    let mut seen = HashSet::new();
     for declaration in model_file.declarations() {
         if !seen.insert(declaration.name()) {
             return Err(Error::new(
@@ -729,7 +729,7 @@ fn validate_decorators(
 
 /// An element may not carry the same decorator twice.
 fn check_unique_decorators(element: &impl Decorated, location: Option<&mm::Range>) -> Result<()> {
-    let mut seen = FxHashSet::default();
+    let mut seen = HashSet::new();
     for decorator in element.decorators() {
         // TS keys its `Set` on `getName()` and interpolates it into the
         // message as is, so a decorator with no `name` at all is its own
@@ -841,10 +841,11 @@ fn check_unique_field_names(
     location: Option<&mm::Range>,
     fqn: &str,
 ) -> Result<()> {
-    // P5-48: the borrowed property list and borrowed names, in an FxHash
-    // set (only ever probed, never iterated).
+    // P5-48: the borrowed property list and borrowed names, in a set that
+    // is only ever probed, never iterated (seeded: the names come from user
+    // models, PORTING.md 3.7).
     let properties = manager.class_properties(fqn)?;
-    let mut seen = rustc_hash::FxHashSet::default();
+    let mut seen = HashSet::new();
     for (_, property) in properties.iter() {
         if !seen.insert(property.name()) {
             return Err(Error::new(
@@ -1209,8 +1210,7 @@ fn check_imports(
     // name the plain split would not give back (an empty part, or a dot in
     // the imported name).
     type Borrowed<'a> = std::borrow::Cow<'a, str>;
-    let mut seen_versions: rustc_hash::FxHashMap<Borrowed<'_>, Option<Borrowed<'_>>> =
-        rustc_hash::FxHashMap::default();
+    let mut seen_versions: HashMap<Borrowed<'_>, Option<Borrowed<'_>>> = HashMap::new();
     for imp in model_file.imports() {
         for imported in imp.imported_names() {
             let owned: String;

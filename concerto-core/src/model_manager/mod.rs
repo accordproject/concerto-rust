@@ -41,6 +41,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::HashSet;
 
 use serde_json::Value;
 
@@ -200,6 +201,10 @@ struct ManagerOptions {
 #[derive(Debug, Default)]
 pub struct ModelManager {
     files: Vec<FileSlot>,
+    /// Unseeded FxHash, although namespaces come from user models
+    /// (PORTING.md 3.7): a seeded hash cost 20-60% on the introspection
+    /// rows (P5-110, accordproject/concerto-rust#477, left for a maintainer
+    /// decision).
     namespaces: FxHashMap<String, ModelFileId>,
     declarations: Vec<DeclSlot>,
     properties: Vec<PropSlot>,
