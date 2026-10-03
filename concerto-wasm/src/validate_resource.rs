@@ -80,6 +80,8 @@ const CODE_VALIDATION: u32 = 1;
 const CODE_ERROR: u32 = 2;
 /// The transport cannot carry the value (module doc).
 const CODE_UNSUPPORTED: u32 = 3;
+/// A [`ModelManagerHandle::validate_property_by_id`] slot of another epoch.
+const CODE_STALE: u32 = 4;
 
 /// A failure of the transport itself, not of the validator.
 struct Unsupported(Error);
@@ -206,6 +208,91 @@ impl ModelManagerHandle {
             )
             .map_err(Error::from))
         }))
+    }
+
+    /// P5-101 (D-10, accordproject/concerto-rust#455): the slot
+    /// [`Self::validate_property_by_id`] takes for property `prop_name` of
+    /// type `class_fqn`, which TS looks up once per class and property and
+    /// keeps for the model version: `[declId, propIndex, epoch]`, the
+    /// declaration's handle, the property's index in its validation plan
+    /// (P5-88) and this handle's epoch, low 32 bits. `undefined` when
+    /// [`Self::validate_property_binary`] would answer [`CODE_UNSUPPORTED`]
+    /// for them (a type whose plan does not resolve, or no such property).
+    /// Reads only. Additive.
+    #[wasm_bindgen(js_name = validationPropertySlot)]
+    pub fn validation_property_slot(&self, class_fqn: &str, prop_name: &str) -> Option<Vec<u32>> {
+        let decl = self.manager.type_declaration(class_fqn).ok()?;
+        let class_plan = concerto_core::instance::plan::class_plan(&self.manager, decl).ok()?;
+        let index = u32::try_from(class_plan.find(prop_name)?).ok()?;
+        Some(vec![decl.index(), index, self.epoch_low()])
+    }
+
+    /// P5-101 (D-10, accordproject/concerto-rust#455):
+    /// [`Self::validate_property_binary`] by the slot
+    /// [`Self::validation_property_slot`] gave (`decl_id`, `prop_index`, at
+    /// `epoch`), so neither the type's name nor the property's crosses and
+    /// neither is looked up by name, with the outcome in the same call:
+    ///
+    /// - `0` ([`CODE_VALID`]): the value is valid;
+    /// - a string: a [`CODE_VALIDATION`] error's message, which TS throws
+    ///   as `new ValidationException(message)`;
+    /// - `3` ([`CODE_UNSUPPORTED`]): the transport cannot carry the value
+    ///   (the caller runs the visitor);
+    /// - `4` ([`CODE_STALE`]): the slot is not one of this epoch's (the
+    ///   caller looks it up again);
+    /// - any other ([`CODE_ERROR`]) error is thrown, as the exception every
+    ///   other binding throws for it.
+    ///
+    /// Nothing is kept for [`validate_error_message`] or
+    /// [`validate_take_error`]. Additive.
+    #[wasm_bindgen(js_name = validatePropertyById)]
+    pub fn validate_property_by_id(
+        &self,
+        bytes: &[u8],
+        decl_id: u32,
+        prop_index: u32,
+        epoch: u32,
+        root_id: &str,
+        flags: u32,
+    ) -> std::result::Result<JsValue, JsValue> {
+        if epoch != self.epoch_low() {
+            return Ok(JsValue::from(CODE_STALE));
+        }
+        let decl = concerto_core::model_manager::DeclId::from_index(decl_id);
+        let outcome = decode(bytes).and_then(|value| {
+            let class_plan = concerto_core::instance::plan::class_plan(&self.manager, decl)
+                .map_err(|_| unsupported("no such property in the engine's model"))?;
+            let index = usize::try_from(prop_index)
+                .ok()
+                .filter(|index| *index < class_plan.props.len())
+                .ok_or_else(|| unsupported("no such property in the engine's model"))?;
+            Ok(validate_property_value(
+                &self.manager,
+                &class_plan,
+                index,
+                &value,
+                root_id.to_string(),
+                &options_from_flags(flags),
+            )
+            .map_err(Error::from))
+        });
+        match outcome {
+            Ok(Ok(())) => Ok(JsValue::from(CODE_VALID)),
+            Ok(Err(err)) => match err {
+                Error::Contract(c) if c.kind == ErrorKind::Validation && c.validator.is_none() => {
+                    Ok(JsValue::from(c.message()))
+                }
+                err => Err(throw(err, None)),
+            },
+            Err(Unsupported(_)) => Ok(JsValue::from(CODE_UNSUPPORTED)),
+        }
+    }
+
+    /// This handle's epoch, low 32 bits: the stamp of a
+    /// [`Self::validation_property_slot`].
+    #[allow(clippy::cast_possible_truncation)]
+    fn epoch_low(&self) -> u32 {
+        self.epoch as u32
     }
 }
 

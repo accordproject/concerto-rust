@@ -585,9 +585,25 @@ impl<'de> Deserializer<'de> for &mut Compact<'de> {
 /// The document `bytes` hold, as a [`Value`]: the one
 /// `serde_json::from_str` gives for `JSON.stringify`'s text of it (module
 /// doc). An error for bytes not in the layout.
-pub(crate) fn to_value(bytes: &[u8]) -> Result<Value, Error> {
+pub fn to_value(bytes: &[u8]) -> Result<Value, Error> {
     let mut compact = Compact::new(bytes);
     let value = Value::deserialize(&mut compact)?;
+    compact.end()?;
+    Ok(value)
+}
+
+/// P5-101 (E-7, accordproject/concerto-rust#455): `seed` run over the
+/// document `bytes` hold, as over `serde_json`'s deserializer of
+/// `JSON.stringify`'s text of it (module doc), for the Serializer fast
+/// path's binary input (concerto-wasm `parse_wire_bytes`, whose TS writer,
+/// src/engine/wire.ts, is the AST's too). An error for bytes not in the
+/// layout, or the seed's own error.
+pub fn deserialize_seed<'de, S: DeserializeSeed<'de>>(
+    bytes: &'de [u8],
+    seed: S,
+) -> Result<S::Value, Error> {
+    let mut compact = Compact::new(bytes);
+    let value = seed.deserialize(&mut compact)?;
     compact.end()?;
     Ok(value)
 }

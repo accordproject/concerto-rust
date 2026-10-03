@@ -1530,6 +1530,75 @@ export function runChecks(engine) {
     h.free();
   });
 
+  // P5-101 review round: the batch commit (M5), the free shape-check and
+  // system-header functions (D-7), the by-slot property check with its
+  // outcome in the same call (D-10), and the Serializer bindings over the
+  // compact binary layout (E-7).
+  check('commitStagedModelFiles, free checkAstShape, validatePropertyById and the *Bytes serializer bindings (P5-101)', () => {
+    const compact = (v) => {
+      const out = [];
+      const u32 = (n) => out.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+      const str = (t) => { const b = new TextEncoder().encode(t); u32(b.length); out.push(...b); };
+      const write = (x) => {
+        if (x === null) { out.push(0); } else if (x === false) { out.push(1); } else if (x === true) { out.push(2); }
+        else if (typeof x === 'number') {
+          if ((x | 0) === x) { out.push(4); u32(x); } else { out.push(3); out.push(...new Uint8Array(new Float64Array([x]).buffer)); }
+        } else if (typeof x === 'string') { out.push(5); str(x); }
+        else if (Array.isArray(x)) { out.push(6); u32(x.length); x.forEach(write); }
+        else { const keys = Object.keys(x); out.push(7); u32(keys.length); for (const k of keys) { str(k); write(x[k]); } }
+      };
+      write(v);
+      return new Uint8Array(out);
+    };
+    // M5: several stages registered in one call, their handles written
+    // back in place; an unknown stage changes nothing.
+    const h = new engine.ModelManagerHandle();
+    const a = JSON.parse(h.stageModelFileBytes(new TextEncoder().encode(JSON.stringify(MODEL)), undefined, 'a.cto', 1))[0];
+    const b = JSON.parse(h.stageModelFileBytes(new TextEncoder().encode(JSON.stringify({ ...MODEL, namespace: 'org.second@1.0.0' })), undefined, 'b.cto', 1))[0];
+    const unknown = new Uint32Array([a, 999999]);
+    const epoch = h.epoch();
+    assert(h.commitStagedModelFiles(unknown) === false && unknown[0] === a && h.epoch() === epoch, 'unknown stage: nothing changed');
+    const ids = new Uint32Array([a, b]);
+    assert(h.commitStagedModelFiles(ids) === true, 'committed');
+    assert(ids[0] === h.modelFileId('org.example@1.0.0') && ids[1] === h.modelFileId('org.second@1.0.0'), `ids ${ids}`);
+    assert(h.epoch() !== epoch, 'the epoch moved');
+    // D-7: the free functions answer as the handle methods.
+    engine.checkAstShape(JSON.stringify(MODEL));
+    const bad = JSON.stringify({ ...MODEL, declarations: [{ $class: `${MM}.ConceptDeclaration`, name: 1 }] });
+    const viaFree = thrown(() => engine.checkAstShape(bad));
+    const viaHandle = thrown(() => h.checkAstShape(bad));
+    assert(viaFree && viaHandle && viaFree.message === viaHandle.message, `${viaFree} vs ${viaHandle}`);
+    assert(engine.systemModelFileHeader('{}') === undefined && h.systemModelFileHeader('{}') === undefined, 'no header');
+    // D-10: by slot, a valid value is 0, a validation error its message, a
+    // stale slot 4; no slot for a missing property.
+    const slot = h.validationPropertySlot('org.example@1.0.0.Person', 'name');
+    assert(slot && slot.length === 3, `slot ${slot}`);
+    assert(h.validationPropertySlot('org.example@1.0.0.Person', 'nope') === undefined, 'no such property');
+    const root = 'org.example@1.0.0.Person';
+    assert(h.validatePropertyById(compact('x'), slot[0], slot[1], slot[2], root, 0) === 0, 'valid');
+    const byName = h.validatePropertyBinary(compact(1), 'org.example@1.0.0.Person', 'name', root, 0);
+    const message = engine.validateErrorMessage();
+    assert(byName === 1 && h.validatePropertyById(compact(1), slot[0], slot[1], slot[2], root, 0) === message, `message ${message}`);
+    h.addModel(JSON.stringify({ ...MODEL, namespace: 'org.third@1.0.0' }));
+    assert(h.validatePropertyById(compact('x'), slot[0], slot[1], slot[2], root, 0) === 4, 'stale');
+    // E-7: the same results, and the same errors, from the compact layout
+    // as from the text.
+    const env = { newId: () => 'id', nowMs: () => 0 };
+    const plain = { $class: 'org.example@1.0.0.Employee', name: 'n', salary: 2.5 };
+    const doc = { ...plain, salary: 'x' };
+    const fromText = h.serializerFromJsonCompact(JSON.stringify(plain), 'null', env);
+    const fromBytes = h.serializerFromJsonCompactBytes(compact(plain), 'null', env);
+    assert(fromText === fromBytes, `${fromText} vs ${fromBytes}`);
+    const errText = thrown(() => h.serializerFromJsonCompact(JSON.stringify(doc), 'null', env));
+    const errBytes = thrown(() => h.serializerFromJsonCompactBytes(compact(doc), 'null', env));
+    assert(errText && errBytes && errText.message === errBytes.message && JSON.stringify(errText.payload) === JSON.stringify(errBytes.payload), `${errText} vs ${errBytes}`);
+    const built = JSON.parse(h.serializerFromJson(JSON.stringify({ $class: 'org.example@1.0.0.Employee', name: 'n', salary: 2.5 }), 'null', env));
+    assert(h.serializerToJson(JSON.stringify(built), 'null') === h.serializerToJsonBytes(compact(built), 'null'), 'toJSON');
+    const notLayout = thrown(() => h.serializerToJsonBytes(new Uint8Array([9]), 'null'));
+    assert(notLayout.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayout.payload)}`);
+    h.free();
+  });
+
   // P5-10a lazy views: the per-file view snapshot gives each declaration
   // the decisions the per-element bindings give its view, and each property
   // the modelFilePropertySnapshots entry.

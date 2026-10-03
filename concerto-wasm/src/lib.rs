@@ -5039,6 +5039,24 @@ fn decode_wire_tagged(kind: &str, mut map: SerializerOptions) -> Result<CoreValu
     }
 }
 
+/// P5-101 (E-7, F-8; accordproject/concerto-rust#455): [`parse_wire`] over
+/// the same wire value in concerto-core's compact binary layout, which
+/// [`WireSeed`] reads as it reads the value's JSON text
+/// ([`concerto_core::introspect::compact_deserialize_seed`]). Bytes not in
+/// the layout (never written by the TS writer) are a [`wire_error`], which
+/// the caller's fallback reads as such; an unrecognised wire shape is its
+/// own [`wire_error`], as from the text.
+fn parse_wire_bytes(bytes: &[u8]) -> Result<CoreValue> {
+    let error = RefCell::new(None);
+    let value =
+        concerto_core::introspect::compact_deserialize_seed(bytes, WireSeed { error: &error })
+            .map_err(|e| wire_error(format!("a binary wire document: {e}")))?;
+    match error.into_inner() {
+        Some(error) => Err(error),
+        None => Ok(value),
+    }
+}
+
 /// `decode_wire(&serde_json::from_str(text)?)` in one pass (see
 /// [`WireSeed`]): malformed JSON throws a JS `SyntaxError`, and an
 /// unrecognised wire shape its [`wire_error`].
@@ -5343,29 +5361,68 @@ fn with_serializer_options<R>(
     Ok(out)
 }
 
+/// A Serializer fast path document: the wire encoding's JSON text, or
+/// (P5-101, E-7, accordproject/concerto-rust#455) the same wire value
+/// written by the TS binary writer (src/engine/wire.ts) in concerto-core's
+/// compact layout, which reads as that text reads
+/// ([`concerto_core::introspect::compact_deserialize_seed`]).
+#[derive(Clone, Copy)]
+enum WireDoc<'a> {
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
+impl WireDoc<'_> {
+    /// The document as a [`CoreValue`] ([`parse_wire`], [`parse_wire_bytes`]).
+    fn parse(self) -> Result<CoreValue> {
+        match self {
+            WireDoc::Text(text) => parse_wire(text),
+            WireDoc::Bytes(bytes) => parse_wire_bytes(bytes),
+        }
+    }
+
+    /// The document as a `serde_json::Value`, as `serde_json::from_str`
+    /// reads its text; `None` when it is not one.
+    fn value(self) -> Option<Value> {
+        match self {
+            WireDoc::Text(text) => serde_json::from_str::<Value>(text).ok(),
+            WireDoc::Bytes(bytes) => concerto_core::introspect::compact_value(bytes).ok(),
+        }
+    }
+}
+
 impl ModelManagerHandle {
     /// The resource `serializerFromJson` and `serializerFromJsonCompact`
     /// build (module doc above "Serializer fast path"), in one pass each way
     /// ([`parse_wire`]) and with the serializer reused while the options
     /// text is unchanged ([`with_serializer_options`], P5-16).
-    fn build_from_json(
-        &self,
-        json_text: &str,
-        options_text: &str,
-        env: JsValue,
-    ) -> Result<Instance> {
-        let object = parse_wire(json_text)?;
+    fn build_from_json(&self, doc: WireDoc, options_text: &str, env: JsValue) -> Result<Instance> {
+        let object = doc.parse()?;
         with_serializer_options(options_text, |entry| {
             let mut js_env = JsInstanceEnv { env };
             entry
                 .serializer
                 .from_json_prepared(&self.manager, &object, &entry.from_json, &mut js_env)
-                .map_err(|err| self.instance_error(err, json_text, &entry.native))
+                .map_err(|err| self.instance_error(err, doc, &entry.native))
         })?
     }
 
+    /// `serializerToJson`'s result text for the resource `doc` holds: one
+    /// pass each way ([`WireDoc::parse`], [`WireOut`]) and the serializer
+    /// reused while the options text is unchanged
+    /// ([`with_serializer_options`]), as for `serializerFromJson` (P5-101,
+    /// D-3).
+    fn to_json_text(&self, doc: WireDoc, options_text: &str) -> Result<String> {
+        let resource = doc.parse()?;
+        let result = with_serializer_options(options_text, |entry| {
+            entry.serializer.to_json(&self.manager, &resource, None)
+        })??;
+        serde_json::to_string(&WireOut::<false>(&result))
+            .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    }
+
     /// `err`, an error `serializerFromJson` raised for the document
-    /// `json_text` with the merged options `options` (as the walk reads
+    /// `doc` with the merged options `options` (as the walk reads
     /// them, [`SerializerOptionsEntry::native`]), with its diagnostics
     /// attached as the exception's `details` (P5-89,
     /// accordproject/concerto#1325): the same as `validateInstance`'s first
@@ -5375,10 +5432,10 @@ impl ModelManagerHandle {
     fn instance_error(
         &self,
         err: CoreError,
-        json_text: &str,
+        doc: WireDoc,
         options: &NativeFromJsonOptions,
     ) -> Error {
-        match validator_readings_of(json_text) {
+        match validator_readings_of(doc) {
             Some(readings) => {
                 let diagnosis =
                     diagnose_read(&self.manager, None, &readings, options, false, || {
@@ -5394,14 +5451,14 @@ impl ModelManagerHandle {
     }
 }
 
-/// The document `json_text` (a wire encoding, module doc above "Serializer
+/// The document `doc` (a wire encoding, module doc above "Serializer
 /// fast path") as the diagnostics walk reads it: plain JSON as itself, and a
 /// document with a wire tag (an `undefined` field, `-0`, `NaN`, a `Map`, a
 /// dayjs, ...) decoded as `serializerFromJson` decodes it, in the
-/// validator's tagged form ([`validator_readings`]). `None` when the text is
-/// not a wire encoding.
-fn validator_readings_of(json_text: &str) -> Option<Vec<Value>> {
-    let wire = serde_json::from_str::<Value>(json_text).ok()?;
+/// validator's tagged form ([`validator_readings`]). `None` when it is not
+/// a wire encoding.
+fn validator_readings_of(doc: WireDoc) -> Option<Vec<Value>> {
+    let wire = doc.value()?;
     if !has_wire_tag(&wire) {
         return Some(vec![wire]);
     }
@@ -5883,13 +5940,11 @@ impl ModelManagerHandle {
     /// the metamodel's shape. Reads nothing of this handle and changes
     /// nothing (not its epoch either). Additive; malformed JSON throws a JS
     /// `SyntaxError`.
+    /// P5-101 (D-7): also a free function, [`check_ast_shape`], which the TS
+    /// views call.
     #[wasm_bindgen(js_name = checkAstShape)]
     pub fn check_ast_shape(&self, ast: &str) -> std::result::Result<(), JsValue> {
-        run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            Ok(concerto_core::instance::check_ast_shape(&value)?)
-        })
+        check_ast_shape(ast)
     }
 
     /// The handle's own mutation counter (P5-06): it moves iff the manager
@@ -6084,7 +6139,7 @@ impl ModelManagerHandle {
         env: JsValue,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let resource = self.build_from_json(json_text, options_text, env)?;
+            let resource = self.build_from_json(WireDoc::Text(json_text), options_text, env)?;
             serde_json::to_string(&WireInstanceOut::<false>(&resource))
                 .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
@@ -6103,7 +6158,7 @@ impl ModelManagerHandle {
         env: JsValue,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let resource = self.build_from_json(json_text, options_text, env)?;
+            let resource = self.build_from_json(WireDoc::Text(json_text), options_text, env)?;
             serde_json::to_string(&CompactInstanceOut(&resource))
                 .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
@@ -6123,11 +6178,40 @@ impl ModelManagerHandle {
             // P5-101 (D-3): one pass each way ([`parse_wire`], [`WireOut`])
             // and the serializer reused while the options text is unchanged
             // ([`with_serializer_options`]), as for `serializerFromJson`.
-            let resource = parse_wire(wire_text)?;
-            let result = with_serializer_options(options_text, |entry| {
-                entry.serializer.to_json(&self.manager, &resource, None)
-            })??;
-            serde_json::to_string(&WireOut::<false>(&result))
+            self.to_json_text(WireDoc::Text(wire_text), options_text)
+        })
+    }
+
+    /// P5-101 (E-7, F-8; accordproject/concerto-rust#455):
+    /// [`Self::serializer_to_json`] with the resource's wire value in the
+    /// compact binary layout (`bytes`, [`WireDoc::Bytes`]), as the TS
+    /// binary writer (src/engine/wire.ts) writes it straight from the live
+    /// object: the same result and the same errors as its JSON text gives.
+    /// Additive.
+    #[wasm_bindgen(js_name = serializerToJsonBytes)]
+    pub fn serializer_to_json_bytes(
+        &self,
+        bytes: &[u8],
+        options_text: &str,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| self.to_json_text(WireDoc::Bytes(bytes), options_text))
+    }
+
+    /// P5-101 (E-7, F-8; accordproject/concerto-rust#455):
+    /// [`Self::serializer_from_json_compact`] with the document's wire value
+    /// in the compact binary layout (`bytes`, [`WireDoc::Bytes`]): the same
+    /// result, and the same errors (diagnostics included), as its JSON text
+    /// gives. Additive.
+    #[wasm_bindgen(js_name = serializerFromJsonCompactBytes)]
+    pub fn serializer_from_json_compact_bytes(
+        &self,
+        bytes: &[u8],
+        options_text: &str,
+        env: JsValue,
+    ) -> std::result::Result<String, JsValue> {
+        run(|| {
+            let resource = self.build_from_json(WireDoc::Bytes(bytes), options_text, env)?;
+            serde_json::to_string(&CompactInstanceOut(&resource))
                 .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
     }
@@ -6457,9 +6541,11 @@ impl ModelManagerHandle {
     /// namespace, returns `undefined`, and the caller loads and checks it as
     /// before, so no AST skips the check by this binding. Does not change
     /// the manager or its epoch. Additive.
+    /// P5-101 (D-7): also a free function, [`system_model_file_header`],
+    /// which the TS views call.
     #[wasm_bindgen(js_name = systemModelFileHeader)]
     pub fn system_model_file_header(&self, ast: &str) -> Option<String> {
-        system_model_header(ast)
+        system_model_file_header(ast)
     }
 
     /// P5-06a: registers a staged model file, as
@@ -6486,6 +6572,60 @@ impl ModelManagerHandle {
             let id = self.manager.add_shared_model_file_with_proof(file, proof)?;
             Ok(Some(ModelFileId::index(id)))
         })
+    }
+
+    /// P5-101 (D-10, M5; accordproject/concerto-rust#455):
+    /// [`Self::commit_staged_model_file`] for several staged files, in
+    /// order, in one call: the batch `addModelFiles` and the
+    /// DecoratorManager results (`adoptStagedModels`, which decorateModels
+    /// and every extract use) register each of their files from its stage
+    /// this way, where they used to cross once per file. On success each
+    /// entry of `stages` is overwritten with its file's handle, in place,
+    /// and `true` is returned: the ids cross back in the caller's own
+    /// buffer, which TS reuses, rather than in a new `Uint32Array` per call
+    /// (one per call cost about 1 ms of garbage collection on an extract of
+    /// 47 files, more than the per-file crossings it saves). `false`, having
+    /// changed nothing, when any stage id is unknown (evicted, or already
+    /// consumed): the caller then registers each file as before. A
+    /// registration error is thrown as [`Self::commit_staged_model_file`]
+    /// throws it, with the files before it registered and the stages after
+    /// it left staged, as the same commits one by one would leave them.
+    /// Additive.
+    #[wasm_bindgen(js_name = commitStagedModelFiles)]
+    pub fn commit_staged_model_files(
+        &mut self,
+        stages: &mut [u32],
+    ) -> std::result::Result<bool, JsValue> {
+        if stages
+            .iter()
+            .any(|stage| !self.staged.files.contains_key(stage))
+        {
+            return Ok(false);
+        }
+        if stages.is_empty() {
+            return Ok(true);
+        }
+        self.bump_epoch();
+        for slot in stages.iter_mut() {
+            let stage = *slot;
+            let Some(file) = self.staged.files.remove(&stage) else {
+                // A stage id given twice: the second is already consumed,
+                // as a second `commit_staged_model_file` would find it.
+                return Err(throw(
+                    ContractError::pre_port(
+                        ErrorKind::InvalidArgument,
+                        format!("the stage {stage} given twice"),
+                        None,
+                    )
+                    .into(),
+                    None,
+                ));
+            };
+            let proof = self.staged.proofs.remove(&stage);
+            let id = run(|| Ok(self.manager.add_shared_model_file_with_proof(file, proof)?))?;
+            *slot = ModelFileId::index(id);
+        }
+        Ok(true)
     }
 
     /// P5-100 (E-6, accordproject/concerto-rust#454): replaces the model
@@ -7501,6 +7641,30 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
         Ok(())
     };
     body().map_err(|e| throw(e, Some(&view)))
+}
+
+/// P5-101 (D-7, accordproject/concerto-rust#455): the strict AST shape check
+/// ([`ModelManagerHandle::check_ast_shape`]) as a free function: it reads no
+/// handle, so the TS views call it without one. Throws an
+/// `IllegalModelException` for an AST that does not have the metamodel's
+/// shape; malformed JSON throws a JS `SyntaxError`. Additive: the handle
+/// method stays, and calls this.
+#[wasm_bindgen(js_name = checkAstShape)]
+pub fn check_ast_shape(ast: &str) -> std::result::Result<(), JsValue> {
+    run(|| {
+        let value: Value = serde_json::from_str(ast)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        Ok(concerto_core::instance::check_ast_shape(&value)?)
+    })
+}
+
+/// P5-101 (D-7, accordproject/concerto-rust#455): the precomputed system
+/// model header ([`ModelManagerHandle::system_model_file_header`]) as a
+/// free function: it reads no handle, so the TS views call it without one.
+/// Additive: the handle method stays, and calls this.
+#[wasm_bindgen(js_name = systemModelFileHeader)]
+pub fn system_model_file_header(ast: &str) -> Option<String> {
+    system_model_header(ast)
 }
 
 /// [`ModelManagerHandle::system_model_file_header`]: the header text of the
@@ -9258,6 +9422,92 @@ mod tests {
             let value: Value = serde_json::from_str(text).unwrap();
             assert!(decode_wire(&value).is_err(), "decode_wire accepted {text}");
             assert!(parse_wire(text).is_err(), "parse_wire accepted {text}");
+        }
+    }
+
+    /// `value` in concerto-core's compact layout, as the TS writer
+    /// (src/engine/wire.ts) writes it: an `i32` for a number that fits one,
+    /// a double otherwise.
+    fn compact_bytes(value: &Value, out: &mut Vec<u8>) {
+        let raw_str = |s: &str, out: &mut Vec<u8>| {
+            out.extend_from_slice(&u32::try_from(s.len()).unwrap().to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        };
+        match value {
+            Value::Null => out.push(0),
+            Value::Bool(b) => out.push(if *b { 2 } else { 1 }),
+            Value::Number(n) => match n.as_i64().and_then(|i| i32::try_from(i).ok()) {
+                Some(i) => {
+                    out.push(4);
+                    out.extend_from_slice(&i.to_le_bytes());
+                }
+                None => {
+                    out.push(3);
+                    out.extend_from_slice(&n.as_f64().unwrap().to_le_bytes());
+                }
+            },
+            Value::String(s) => {
+                out.push(5);
+                raw_str(s, out);
+            }
+            Value::Array(items) => {
+                out.push(6);
+                out.extend_from_slice(&u32::try_from(items.len()).unwrap().to_le_bytes());
+                for item in items {
+                    compact_bytes(item, out);
+                }
+            }
+            Value::Object(map) => {
+                out.push(7);
+                out.extend_from_slice(&u32::try_from(map.len()).unwrap().to_le_bytes());
+                for (key, item) in map {
+                    raw_str(key, out);
+                    compact_bytes(item, out);
+                }
+            }
+        }
+    }
+
+    /// P5-101 (E-7): `parse_wire_bytes` reads every sample, written in the
+    /// compact layout, as `parse_wire` reads its text, and rejects what
+    /// `parse_wire` rejects; bytes not in the layout are rejected too.
+    #[test]
+    fn parse_wire_bytes_matches_parse_wire() {
+        // A `-0.0` literal is not text `JSON.stringify` writes (it writes
+        // `0`, and the TS writers send `-0` tagged), and the layout reads a
+        // double as that text reads (`-0` as `0`), so such a sample is left
+        // out.
+        for text in WIRE_SAMPLES.iter().filter(|text| !text.contains("-0.0")) {
+            let value: Value = serde_json::from_str(text).unwrap();
+            let mut bytes = Vec::new();
+            compact_bytes(&value, &mut bytes);
+            let (Ok(from_text), Ok(from_bytes)) = (parse_wire(text), parse_wire_bytes(&bytes))
+            else {
+                panic!("a sample not read: {text}");
+            };
+            assert_eq!(
+                serde_json::to_string(&WireOut::<false>(&from_bytes)).unwrap(),
+                serde_json::to_string(&WireOut::<false>(&from_text)).unwrap(),
+                "{text}"
+            );
+            assert_eq!(
+                concerto_core::introspect::compact_value(&bytes).unwrap(),
+                value,
+                "{text}"
+            );
+        }
+        for text in [
+            r#"{"@@oracle":"bogus"}"#,
+            r#"[1,{"@@oracle":"number","value":"1"}]"#,
+            r#"{"@@oracle":"dayjs","valid":true}"#,
+            r#"{"x":{"a":[{"@@oracle":"typed","ctor":"Resource","fqn":"a.B","fields":{"y":{"@@oracle":"nope"}}}]}}"#,
+        ] {
+            let mut bytes = Vec::new();
+            compact_bytes(&serde_json::from_str(text).unwrap(), &mut bytes);
+            assert!(parse_wire_bytes(&bytes).is_err(), "{text}");
+        }
+        for bytes in [&[][..], &[9][..], &[0, 0][..], &[5, 1, 0, 0, 0, 0xff][..]] {
+            assert!(parse_wire_bytes(bytes).is_err(), "{bytes:?}");
         }
     }
 

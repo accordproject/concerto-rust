@@ -34,6 +34,11 @@ mod compact;
 /// fast path of the WASM binding (js-compat only).
 #[cfg(feature = "js-compat")]
 pub use compact::to_validator_value as compact_validator_value;
+/// P5-101 (E-7): the same reader for the Serializer fast path's binary
+/// input: the document as a `Value`, and a `serde` seed run over it
+/// (js-compat only).
+#[cfg(feature = "js-compat")]
+pub use compact::{deserialize_seed as compact_deserialize_seed, to_value as compact_value};
 pub mod declaration;
 pub mod decorator;
 pub mod field;
