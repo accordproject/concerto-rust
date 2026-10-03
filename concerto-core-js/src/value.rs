@@ -20,21 +20,22 @@
 //! validator's options. That is the order `Object.getOwnPropertyNames`
 //! reports, which `ResourceValidator` walks (first undeclared field wins).
 
+use concerto_core::hash::SeededState;
 use indexmap::IndexMap;
 use serde_json::Value;
 
 /// The key-ordered map behind a plain object ([`JsValue::Object`]), an
 /// instance's own properties ([`Instance::props`]) and the serializer
-/// options (`SerializerOptions`): an `IndexMap` hashed with FxHash rather
-/// than the standard library's SipHash. P5-16
-/// (accordproject/concerto-rust#310): these maps are small, built and
-/// probed several times per property on every `fromJSON`, and SipHash was
-/// the largest single cost in the populate and validate steps. P5-104
-/// (C-14): FxHash, the hasher concerto-core's lookup maps use, in place of
-/// foldhash, so the workspace has one. Unlike SipHash, it is not designed
-/// to resist crafted colliding keys; the iteration order is the
-/// insertion order either way.
-pub type JsObject = IndexMap<String, JsValue, rustc_hash::FxBuildHasher>;
+/// options (`SerializerOptions`): an `IndexMap`, so iteration is in
+/// insertion order (`Object.keys` order).
+///
+/// Its keys come from user-supplied JSON instances, so it hashes with
+/// SipHash under secret keys ([`SeededState`]), not FxHash: with an unseeded
+/// or publicly keyed hash an attacker can send an object whose keys all
+/// collide, making building, validating or serializing it quadratic (P5-110,
+/// accordproject/concerto-rust#477, tests/hashdos.rs; PORTING.md 3.7).
+/// FxHash stays for the engine's internal tables keyed by identifiers.
+pub type JsObject = IndexMap<String, JsValue, SeededState>;
 
 use concerto_core::error::Result;
 use concerto_core::instance::dayjs::Dayjs;

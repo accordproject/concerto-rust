@@ -9,6 +9,7 @@ dependencies = [
  "accordproject-concerto-macros",
  "accordproject-concerto-metamodel",
  "chrono",
+ "foldhash",
  "indexmap",
  "regress",
  "rustc-hash",
@@ -267,7 +268,6 @@ name = "concerto-core-js"
 version = "0.0.0"
 dependencies = [
  "accordproject-concerto-core",
- "foldhash",
  "indexmap",
  "serde_json",
 ]

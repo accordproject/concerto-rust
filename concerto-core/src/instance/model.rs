@@ -122,6 +122,7 @@ impl<'a> TypeRef<'a> {
     }
 
     /// TS `isConcept?.()`.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn is_concept(&self) -> bool {
         self.class_kind() == Some(ClassKind::Concept)
     }
@@ -149,11 +150,13 @@ impl<'a> TypeRef<'a> {
     }
 
     /// TS `isIdentified()`.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn is_identified(&self) -> Result<bool> {
         Ok(self.identifier_field_name()?.is_some())
     }
 
     /// TS `isSystemIdentified()`.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn is_system_identified(&self) -> Result<bool> {
         Ok(self.identifier_field_name()? == Some("$identifier"))
     }
@@ -267,6 +270,7 @@ impl Field<'_> {
     }
 
     /// TS `RelationshipDeclaration.toString()`.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn relationship_to_string(&self) -> String {
         format!(
             "RelationshipDeclaration {{name={}, type={}, array={}, optional={}}}",

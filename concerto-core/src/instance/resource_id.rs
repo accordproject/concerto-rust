@@ -157,6 +157,7 @@ fn is_scheme(candidate: &str) -> bool {
 /// `encodeURI`'s unescaped set beyond alphanumerics: the "mark" characters
 /// and the reserved characters it leaves alone (only `%` itself, and the
 /// characters not in either set, are percent-encoded).
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 const ENCODE_URI_UNESCAPED_EXTRA: &str = "-_.!~*'();,/?:@&=+$#";
 
 /// `encodeURI(id)`: every byte outside the unescaped set becomes `%XX`
@@ -164,6 +165,7 @@ const ENCODE_URI_UNESCAPED_EXTRA: &str = "-_.!~*'();,/?:@&=+$#";
 /// characters).
 ///
 /// TS: `encodeURI` (built in), called from `ResourceId.prototype.toURI`
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 fn encode_uri(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -368,6 +370,7 @@ impl ResourceId {
     /// URI representation of this identifier.
     ///
     /// TS: ResourceId.prototype.toURI (`src/model/resourceid.ts`)
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn to_uri(&self) -> String {
         let qualified_type = model_util::qualify(&self.namespace, &self.type_name);
         format!(

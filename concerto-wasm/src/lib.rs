@@ -86,7 +86,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use concerto_core::dcs;
@@ -158,6 +158,11 @@ mod validate_resource;
 
 // P5-101 (D-7): the process-global state, in one module.
 mod caches;
+
+// P5-110: seeds the hasher of the untrusted-keyed maps (`JsObject`,
+// concerto-core's `SeededState` tables) from the host's entropy at
+// instantiation.
+mod hash_seed;
 
 // P5-101 (D-7, D-13): a handle's staging slot.
 mod staging;

@@ -142,7 +142,7 @@ impl ModelManager {
             // (every file's implicit import) and the transitive closure of
             // its imports, each with the file held under it.
             let mut closure: Vec<(Box<str>, Arc<ModelFile>)> = Vec::new();
-            let mut seen: FxHashSet<&str> = FxHashSet::default();
+            let mut seen: SeededHashSet<&str> = SeededHashSet::default();
             let mut pending: Vec<&str> = vec![namespace];
             pending.extend(EXCLUDE_NS.iter().copied().filter(|ns| self.namespaces.contains_key(*ns)));
             while let Some(ns) = pending.pop() {

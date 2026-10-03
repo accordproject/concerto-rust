@@ -289,6 +289,7 @@ impl<'a> Params<'a> {
 /// always its own `$class`, since `this` supplies both) and hands it to
 /// `ResourceValidator` as `classDeclaration`, with `[this]` as the visitor
 /// stack's only entry.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn validate_instance(
     mm: &ModelManager,
     value: &Value,
@@ -1079,6 +1080,7 @@ pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
 }
 
 /// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn js_bigint(text: &str) -> Value {
     serde_json::json!({ BIGINT_TAG: text })
 }
@@ -1116,6 +1118,7 @@ fn map_entries(value: &Value) -> Option<impl Iterator<Item = (&Value, &Value)>> 
 
 /// ECMAScript `Number::toString` (radix 10): `1` not `1.0`, `1e+21`,
 /// `NaN`, `Infinity`, and `-0` gives `"0"`.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn js_number_to_string(n: f64) -> String {
     ecma::number_to_string(n)
 }

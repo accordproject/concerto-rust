@@ -58,6 +58,7 @@ enum Zone {
     Utc,
     /// Local time, which under `TZ=UTC` reads as UTC: `utcOffset()` is
     /// `-0`, dayjs's `-Math.round(0 / 15) * 15`.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     Local,
     /// A fixed offset in minutes, as `utcOffset(n)` set it (any number,
     /// fractional or beyond a day included, as dayjs keeps it).
@@ -71,6 +72,7 @@ pub enum UtcOffset {
     /// A number of minutes, or of hours when `|n| <= 16`.
     Number(f64),
     /// A `±HH:mm` offset string.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     String(String),
 }
 
@@ -123,6 +125,7 @@ impl Dayjs {
     /// rebuilt the way `codec.js`'s decoder does it (`dayjs.utc(iso)`, then
     /// `.utcOffset(offset)` when the offset is not 0; a non-UTC one through
     /// `dayjs(iso)`, the local, equal-offset case under `TZ=UTC`).
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn from_recorded(valid: bool, iso: Option<&str>, offset: f64, utc: bool) -> Self {
         let zone = if utc { Zone::Utc } else { Zone::Local };
         if !valid {
@@ -176,11 +179,13 @@ impl Dayjs {
     }
 
     /// `isUTC()`.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn is_utc(&self) -> bool {
         self.zone == Zone::Utc
     }
 
     /// `utcOffset()`, in minutes.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn utc_offset(&self) -> f64 {
         match self.zone {
             Zone::Utc => 0.0,
@@ -267,6 +272,7 @@ impl Dayjs {
 
     /// `toString()`: `this.toDate().toUTCString()` (`"Invalid Date"` when
     /// invalid).
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn to_js_string(&self) -> String {
         let Some(time) = time_clip(self.epoch_ms()) else {
             return "Invalid Date".to_string();
@@ -292,6 +298,7 @@ impl Dayjs {
     /// `JSONGenerator.convertToJSON` uses (TS: `inZ ? '[Z]' : 'Z'`), of the
     /// local time. An invalid date formats as `"Invalid Date"`
     /// (`C.INVALID_DATE_STRING`).
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub fn format_json(&self) -> String {
         let Some(local) = self.local_ms() else {
             return "Invalid Date".to_string();
@@ -317,6 +324,7 @@ impl Dayjs {
 }
 
 /// dayjs `Utils.s` (`padStart`): `String(n).padStart(length, '0')`.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 fn pad_start(s: &str, length: usize) -> String {
     let n = s.encode_utf16().count();
     if n >= length {
@@ -327,6 +335,7 @@ fn pad_start(s: &str, length: usize) -> String {
 }
 
 /// dayjs `Utils.z` (`padZoneStr`): `±HH:mm` from `utcOffset()`.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 fn pad_zone_str(utc_offset: f64) -> String {
     let neg_minutes = -utc_offset;
     let minutes = neg_minutes.abs();
@@ -405,6 +414,7 @@ fn strict_instant(s: &str) -> Option<i64> {
 /// `±YYYYYY` year) read back as a time value, `None` when `s` is not one:
 /// the inverse of [`Dayjs::to_iso_string`], for values this engine (or the
 /// oracle's recorder) formatted itself. Not a parser for user input.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 fn iso_string_instant(s: &str) -> Option<i64> {
     static ISO_STRING: LazyLock<regress::Regex> = LazyLock::new(|| {
         regress::Regex::new(r"^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$")
@@ -445,6 +455,7 @@ struct Fields {
     second: i64,
     ms: i64,
     /// 0 (Sunday) to 6.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     weekday: i64,
 }
 

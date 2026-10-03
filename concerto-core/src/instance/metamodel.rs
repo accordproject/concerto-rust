@@ -151,6 +151,7 @@ pub enum MetaModelPreset {
     /// `validateMetaModel`'s check ([`validate_meta_model_instance`]).
     /// `Object.assign({}, baseDefaultOptions, {})`, so the same options
     /// as [`Self::Default`], named apart for its caller.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     Serializer,
 }
 
@@ -301,6 +302,7 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
 /// `newMetaModelManager` names the file `concerto.metamodel` and keeps the
 /// metamodel's CTO text as its definitions; neither is observable here
 /// beyond an error message's wording (error parity compares the class).
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
     let options = MetaModelPreset::Serializer.from_json_options();
     with_resident_metamodel_manager(|mm| {
@@ -328,6 +330,7 @@ pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
 /// `metaModel.models.forEach` on something that is not an array is V8's
 /// `TypeError`, as in TS: reading `models` of `null`, `forEach` of a
 /// missing or `null` `models`, or `forEach` not being a function.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Result<ModelManager> {
     if validate {
         validate_meta_model_instance(meta_model)?;
@@ -422,6 +425,7 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
 /// error are always theirs. The JS API's `ModelFile` constructor runs the
 /// same fold inside its one load of the AST
 /// (`ModelFile::from_json_text_checked_with_imports`).
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn check_ast_shape(ast: &Value) -> Result<()> {
     if crate::introspect::shape::ast_conforms(ast) {
         return Ok(());

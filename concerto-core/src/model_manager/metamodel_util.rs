@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use crate::hash::SeededHashMap;
 
 use serde_json::Value;
 
@@ -23,7 +23,7 @@ struct ResolvedName {
 /// The registered models (`getAst(false, true).models`), borrowed and
 /// keyed by namespace (first model wins, as TS `findNamespace`'s
 /// `Array.find` does); see `ModelManager::prior_models`.
-pub(super) type PriorModels<'a> = FxHashMap<&'a str, &'a Value>;
+pub(super) type PriorModels<'a> = SeededHashMap<&'a str, &'a Value>;
 
 /// TS `findNamespace`: the model in `prior_models` whose namespace is
 /// `namespace`, if one is registered.
@@ -99,8 +99,8 @@ fn undefined_declarations() -> Error {
 fn create_name_table(
     prior_models: &PriorModels<'_>,
     meta_model: &Value,
-) -> Result<FxHashMap<String, ResolvedName>> {
-    let mut table: FxHashMap<String, ResolvedName> =
+) -> Result<SeededHashMap<String, ResolvedName>> {
+    let mut table: SeededHashMap<String, ResolvedName> =
         ["Concept", "Asset", "Participant", "Transaction", "Event"]
             .into_iter()
             .map(|name| {
@@ -150,7 +150,7 @@ fn create_name_table(
                 // TS only reads `modelFile.declarations` inside
                 // `imp.types.forEach`, so an import of no types from an
                 // unregistered namespace does not throw.
-                let aliases: FxHashMap<&str, &str> = imp
+                let aliases: SeededHashMap<&str, &str> = imp
                     .get("aliasedTypes")
                     .and_then(Value::as_array)
                     .into_iter()
@@ -252,7 +252,7 @@ fn create_name_table(
 fn set_resolved_type_identifier(
     node: &mut Value,
     name: &str,
-    table: &FxHashMap<String, ResolvedName>,
+    table: &SeededHashMap<String, ResolvedName>,
 ) -> Result<()> {
     let entry = table.get(name).ok_or_else(|| name_not_found(name))?;
     let Some(map) = node.as_object_mut() else {
@@ -272,7 +272,7 @@ fn set_resolved_type_identifier(
 /// of its descendants carries — a super type, an object/relationship
 /// property's or map key/value's `type`, a decorator type reference
 /// argument, and a scalar declaration's own name.
-fn resolve_type_names(node: &mut Value, table: &FxHashMap<String, ResolvedName>) -> Result<()> {
+fn resolve_type_names(node: &mut Value, table: &SeededHashMap<String, ResolvedName>) -> Result<()> {
     // Any element can carry a decorator (including a primitive field),
     // so resolve those first, exactly as TS does before its `switch`.
     if let Some(decorators) = node.get_mut("decorators").and_then(Value::as_array_mut) {

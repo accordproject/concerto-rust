@@ -469,6 +469,7 @@ pub struct ResourceCheck {
 /// system-identified type given a nullish id.
 ///
 /// TS: Factory.newResource (src/factory.ts), up to the construction.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn check_new_resource(
     mm: &ModelManager,
     ns: &str,
@@ -617,6 +618,7 @@ pub enum FieldDefault {
 /// handed to `assign` (TS `this.setPropertyValue`) with the property's
 /// name, in `getProperties()` order. A relationship is not a `Field`, and
 /// has none.
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn assign_field_defaults(
     mm: &ModelManager,
     class_fqn: &str,
@@ -658,6 +660,7 @@ pub fn assign_field_defaults_of(
 /// throws, in `getProperties()` order: read off the cached defaults, and
 /// empty for almost every declaration (and when a field's type does not
 /// resolve, which fails the instance's creation first).
+#[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn invalid_date_time_defaults_of(class_decl: &TypeRef) -> Vec<(String, Error)> {
     let Ok(defaults) = class_decl
         .mm

@@ -104,7 +104,9 @@ pub(crate) fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
 #[wasm_bindgen(js_name = decoratedFindDuplicateName)]
 pub fn decorated_find_duplicate_name(names: JsValue) -> JsResult<JsValue> {
     run(|| {
-        let mut seen = HashSet::new();
+        // Decorator names come from user models: a seeded set (P5-110,
+        // PORTING.md 3.7).
+        let mut seen = concerto_core::hash::SeededHashSet::default();
         for name in Array::from(&names).iter() {
             let name = js_string(&name)?;
             if !seen.insert(name.clone()) {
