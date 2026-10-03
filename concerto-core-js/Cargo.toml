@@ -18,12 +18,14 @@ name = "concerto_core_js"
 # on, which is not in core's default API.
 accordproject-concerto-core = { path = "../concerto-core", features = ["js-compat"] }
 indexmap = { workspace = true }
-# P5-16: the hasher of `JsObject` (src/value.rs); P5-104 (C-14): the
-# workspace's one fast hasher, FxHash, as in concerto-core.
-rustc-hash = { workspace = true }
 # `preserve_order` (the JS objects' key order) comes with
 # accordproject-concerto-core, which turns it on for the whole graph.
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# tests/hashdos.rs (P5-110): checks that its crafted keys collide under
+# FxHash, the unseeded hasher `JsObject` must not use.
+rustc-hash = { workspace = true }
 
 [lints]
 workspace = true

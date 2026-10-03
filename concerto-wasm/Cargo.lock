@@ -70,7 +70,6 @@ version = "0.0.0"
 dependencies = [
  "accordproject-concerto-core",
  "indexmap",
- "rustc-hash",
  "serde_json",
 ]
 

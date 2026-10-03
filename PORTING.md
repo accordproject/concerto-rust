@@ -985,6 +985,17 @@ The ported test asserts the TS behaviour.
   change when they are ported.
 - Arrays keep AST order. JS `Set` and `Map` keep insertion order. Sort only
   where TS sorts, and with TS's comparator (3.1).
+- **Maps keyed by untrusted input use a seeded hasher
+  (`std::collections::hash_map::RandomState`); FxHash only for internal
+  identifiers.** An unseeded hash lets crafted colliding keys make a map
+  quadratic (P5-110, accordproject/concerto-rust#477). `JsObject`
+  (concerto-core-js) holds a user instance's keys and is seeded; its
+  regression test is `concerto-core-js/tests/hashdos.rs`. Tables keyed by
+  model names or regex patterns, which a multi-tenant server also takes from
+  users, are seeded too, except three per-lookup tables that stay FxHash
+  pending a maintainer decision on their 20-60% introspection cost:
+  `ModelManager`'s namespaces, `ModelFile`'s local types and its import
+  short names.
 
 ---
 
