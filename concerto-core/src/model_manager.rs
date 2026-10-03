@@ -3063,6 +3063,12 @@ impl ModelManager {
     /// confirmed with `getType`'s error surface — `is_assignable_to`'s own
     /// lookup raises a different one (the pre-port `TypeNotFound` of `Error::type_not_found`, not
     /// the catalogued `IllegalModelException` `getType` raises).
+    ///
+    /// For a map declaration `fqt1` this is `true` against itself and
+    /// otherwise `false`, where TS 5.0.0 throws a `TypeError` (its
+    /// `MapDeclaration` has no `getSuperTypeDeclaration`): DV-022,
+    /// maintainer-accepted. A scalar matches TS (its
+    /// `getSuperTypeDeclaration()` is `null`).
     pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> Result<bool> {
         self.get_type_declaration(fqt1)?;
         self.is_assignable_to(fqt1, fqt2)
@@ -3078,15 +3084,20 @@ impl ModelManager {
         /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
         /// `false` even against itself — and a lookup failure is caught, not
         /// propagated.
+        ///
+        /// A scalar is abstract here, as TS 5.0.0's
+        /// `ScalarDeclaration.isAbstract()` answers `true`, so a scalar `fqn`
+        /// is `false` even against itself (P5-98). A map declaration answers
+        /// as [`ModelManager::derives_from`] does, where TS 5.0.0 throws a
+        /// `TypeError` (its `MapDeclaration` has no `isAbstract`): DV-022,
+        /// maintainer-accepted.
         pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
             let Ok(id) = self.get_type_declaration(fqn) else {
                 return false;
             };
-            if self
-                .declaration(id)
-                .and_then(Declaration::as_class)
-                .is_some_and(|class| class.is_abstract())
-            {
+            if self.declaration(id).is_some_and(|decl| {
+                decl.is_scalar_declaration() || decl.as_class().is_some_and(|class| class.is_abstract())
+            }) {
                 return false;
             }
             self.derives_from(fqn, base_fqn).unwrap_or(false)
@@ -5656,6 +5667,58 @@ mod tests {
         assert!(mgr.is_type_assignable_to(color, concept));
         assert!(!mgr.derives_from(color, "org.example@1.0.0.Person").unwrap());
         assert!(!mgr.derives_from("org.scalar@1.0.0.SSN", concept).unwrap());
+    }
+
+    /// DV-022 (maintainer-accepted, P5-98): TS 5.0.0 `derivesFrom(map,
+    /// other)` throws a `TypeError` (`typeDeclaration.getSuperTypeDeclaration
+    /// is not a function`: `MapDeclaration` has none), and `isAssignableTo`
+    /// with a map `fqn` always throws one (`typeDeclaration.isAbstract is not
+    /// a function`). The engine answers instead: a map derives from, and is
+    /// assignable to, only itself. `derivesFrom(map, map)` is `true` in TS
+    /// too (the exact-name check comes before the walk).
+    ///
+    /// A scalar is not part of DV-022: TS answers without throwing
+    /// (`getSuperTypeDeclaration()` is `null`, `isAbstract()` is `true`),
+    /// and the engine matches it, `isAssignableTo(scalar, scalar)` `false`
+    /// included.
+    #[test]
+    fn a_map_derives_only_from_itself_and_a_scalar_is_never_assignable() {
+        let mut mgr = manager();
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.dv022@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
+                      "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
+                    { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "SSN" },
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Person",
+                      "isAbstract": false, "properties": [] }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let map = "org.dv022@1.0.0.Lookup";
+        let scalar = "org.dv022@1.0.0.SSN";
+        let person = "org.dv022@1.0.0.Person";
+        let concept = "concerto@1.0.0.Concept";
+
+        // Map (DV-022): TS throws a TypeError for each `false` here and for
+        // every `is_type_assignable_to`.
+        assert!(!mgr.derives_from(map, concept).unwrap());
+        assert!(!mgr.derives_from(map, person).unwrap());
+        assert!(mgr.derives_from(map, map).unwrap());
+        assert!(!mgr.is_type_assignable_to(map, concept));
+        assert!(!mgr.is_type_assignable_to(map, person));
+        assert!(mgr.is_type_assignable_to(map, map));
+
+        // Scalar: TS parity.
+        assert!(!mgr.derives_from(scalar, concept).unwrap());
+        assert!(mgr.derives_from(scalar, scalar).unwrap());
+        assert!(!mgr.is_type_assignable_to(scalar, concept));
+        assert!(!mgr.is_type_assignable_to(scalar, scalar));
     }
 
     fn concept_with(name: &str, super_type: Option<&str>, properties: Value) -> Value {
