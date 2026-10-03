@@ -168,8 +168,7 @@ impl ModelManager {
         hidden: Option<&str>,
     ) -> Result<()> {
         let attach = |e| attach_model_file(e, model_file);
-        validate_decorators(self, model_file.namespace(), model_file, None).map_err(attach)?;
-        check_unique_decorators(model_file, None).map_err(attach)?;
+        check_decorators(self, model_file.namespace(), model_file, None, None).map_err(attach)?;
         check_imports(import_scope, hidden, model_file).map_err(attach)?;
         check_unique_declaration_names(model_file)?;
         for declaration in model_file.declarations() {
@@ -525,8 +524,7 @@ impl Validate for Declaration {
                 // decorator checks, `Decorated.validate` runs each
                 // decorator's own `.validate()` before the duplicate-name
                 // scan (F4, #152).
-                validate_decorators(manager, namespace, enm, Some(&fqn))?;
-                check_unique_decorators(enm, None)?;
+                check_decorators(manager, namespace, enm, Some(&fqn), None)?;
                 check_import_clash(manager, namespace, enm.name(), enm.location())?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
                 // check, inherited unchanged by `EnumDeclaration` — run in
@@ -540,8 +538,7 @@ impl Validate for Declaration {
                     // check will read it.
                     let value_fqn = decorator_context(manager, value)
                         .then(|| format!("{fqn}.{}", value.name()));
-                    validate_decorators(manager, namespace, value, value_fqn.as_deref())?;
-                    check_unique_decorators(value, None)?;
+                    check_decorators(manager, namespace, value, value_fqn.as_deref(), None)?;
                 }
                 Ok(())
             }
@@ -559,8 +556,7 @@ impl Validate for Declaration {
                 // gets this far. Within the decorator checks, `Decorated
                 // .validate` runs each decorator's own `.validate()` before
                 // the duplicate-name scan (F4, #152).
-                validate_decorators(manager, namespace, scalar, Some(&fqn))?;
-                check_unique_decorators(scalar, None)?;
+                check_decorators(manager, namespace, scalar, Some(&fqn), None)?;
                 check_import_clash(manager, namespace, scalar.name(), None)
             }
         }
@@ -578,8 +574,7 @@ impl Validate for ClassDeclaration {
         // import-clash check ([`check_import_clash`]'s doc comment), before
         // this method's own super-type block (P2-08, reordered #152: this
         // used to run the decorator checks last).
-        validate_decorators(manager, namespace, self, Some(&fqn))?;
-        check_unique_decorators(self, self.location())?;
+        check_decorators(manager, namespace, self, Some(&fqn), self.location())?;
         check_import_clash(manager, namespace, self.name(), self.location())?;
         check_super_type(manager, namespace, self)?;
         // TS: the `if (this.idField)` identity block — `check_identifier`'s
@@ -647,9 +642,14 @@ fn validate_property(
     // call (property.ts). `check_property_type` below is that
     // `resolveType`/relationship logic, so the decorator checks run first
     // here too (P2-08 review carry-over (b) from P2-04's review, #48).
-    validate_decorators(manager, owner_ns, property, property_fqn.as_deref())
-        .map_err(in_owner_file)?;
-    check_unique_decorators(property, property.location()).map_err(in_owner_file)?;
+    check_decorators(
+        manager,
+        owner_ns,
+        property,
+        property_fqn.as_deref(),
+        property.location(),
+    )
+    .map_err(in_owner_file)?;
 
     let type_name = property.type_identifier().map(|t| t.name.as_str());
     let is_primitive = type_name.is_none_or(is_primitive_type);
@@ -687,6 +687,22 @@ fn validate_property(
 /// (P5-48, so that a caller builds the context string only then).
 fn decorator_context(manager: &ModelManager, element: &impl Decorated) -> bool {
     manager.decorator_validation().is_enabled() && !element.decorators().is_empty()
+}
+
+/// TS `Decorated.validate`: each decorator's own `.validate()`
+/// ([`validate_decorators`]), then the duplicate-name scan
+/// ([`check_unique_decorators`]), in that order (F4, #152). `context` is the
+/// element's FQN for the decorator checks; `location` is where a duplicate
+/// is reported.
+fn check_decorators(
+    manager: &ModelManager,
+    namespace: &str,
+    element: &impl Decorated,
+    context: Option<&str>,
+    location: Option<&mm::Range>,
+) -> Result<()> {
+    validate_decorators(manager, namespace, element, context)?;
+    check_unique_decorators(element, location)
 }
 
 /// Runs [`crate::introspect::decorator::Decorator::validate`] over every
@@ -1349,8 +1365,7 @@ impl Validate for MapDeclaration {
     /// `tests/oracle/ops.rs`).
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         let fqn = qualify(namespace, self.name());
-        validate_decorators(manager, namespace, self, Some(&fqn))?;
-        check_unique_decorators(self, None)?;
+        check_decorators(manager, namespace, self, Some(&fqn), None)?;
         check_import_clash(manager, namespace, self.name(), None)?;
         validate_map_key(manager, namespace, self)?;
         validate_map_value(manager, namespace, self)
