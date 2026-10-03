@@ -11,19 +11,18 @@ use super::*;
 #[cfg(feature = "js-compat")]
 use crate::introspect::DeclarationKind;
 
-js_compat_pub! {
-    /// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
-    /// `FileLoader` returns it, before it becomes a [`ModelFile`] —
-    /// [`ModelManager::update_external_models`]' input.
-    #[derive(Debug, Clone)]
-    pub struct ModelFileSource {
-        /// The model's metamodel AST.
-        pub ast: Value,
-        /// Its CTO source text, when it has one.
-        pub definitions: Option<String>,
-        /// Its file name (a downloaded file's starts with `@`).
-        pub file_name: Option<String>,
-    }
+/// TS `ModelFileSource` (basemodelmanager.ts): a model file as a
+/// `FileLoader` returns it, before it becomes a [`ModelFile`] —
+/// [`ModelManager::update_external_models`]' input.
+#[cfg(feature = "js-compat")]
+#[derive(Debug, Clone)]
+pub struct ModelFileSource {
+    /// The model's metamodel AST.
+    pub ast: Value,
+    /// Its CTO source text, when it has one.
+    pub definitions: Option<String>,
+    /// Its file name (a downloaded file's starts with `@`).
+    pub file_name: Option<String>,
 }
 
 impl ModelManager {
@@ -40,34 +39,33 @@ impl ModelManager {
         Ok(self.declaration_id(&super_fqn))
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`
-        /// (basemodelmanager.ts). This is a different method from
-        /// [`ModelManager::is_assignable_to`] — TS itself gives `ModelManager`
-        /// two unrelated `isAssignableTo`s, `ModelUtil`'s own static
-        /// (`crate::model_util::is_assignable_to`) and this one: `fqn` must
-        /// resolve to a *concrete* (non-abstract) type before
-        /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
-        /// `false` even against itself — and a lookup failure is caught, not
-        /// propagated.
-        ///
-        /// A scalar is abstract here, as TS 5.0.0's
-        /// `ScalarDeclaration.isAbstract()` answers `true`, so a scalar `fqn`
-        /// is `false` even against itself (P5-98). A map declaration answers
-        /// as [`ModelManager::derives_from`] does, where TS 5.0.0 throws a
-        /// `TypeError` (its `MapDeclaration` has no `isAbstract`): DV-022,
-        /// maintainer-accepted.
-        pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
-            let Ok(id) = self.get_type_declaration(fqn) else {
-                return false;
-            };
-            if self.declaration(id).is_some_and(|decl| {
-                decl.is_scalar_declaration() || decl.as_class().is_some_and(|class| class.is_abstract())
-            }) {
-                return false;
-            }
-            self.derives_from(fqn, base_fqn).unwrap_or(false)
+    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`
+    /// (basemodelmanager.ts). This is a different method from
+    /// [`ModelManager::is_assignable_to`] — TS itself gives `ModelManager`
+    /// two unrelated `isAssignableTo`s, `ModelUtil`'s own static
+    /// (`crate::model_util::is_assignable_to`) and this one: `fqn` must
+    /// resolve to a *concrete* (non-abstract) type before
+    /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
+    /// `false` even against itself — and a lookup failure is caught, not
+    /// propagated.
+    ///
+    /// A scalar is abstract here, as TS 5.0.0's
+    /// `ScalarDeclaration.isAbstract()` answers `true`, so a scalar `fqn`
+    /// is `false` even against itself (P5-98). A map declaration answers
+    /// as [`ModelManager::derives_from`] does, where TS 5.0.0 throws a
+    /// `TypeError` (its `MapDeclaration` has no `isAbstract`): DV-022,
+    /// maintainer-accepted.
+    #[cfg(feature = "js-compat")]
+    pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
+        let Ok(id) = self.get_type_declaration(fqn) else {
+            return false;
+        };
+        if self.declaration(id).is_some_and(|decl| {
+            decl.is_scalar_declaration() || decl.as_class().is_some_and(|class| class.is_abstract())
+        }) {
+            return false;
         }
+        self.derives_from(fqn, base_fqn).unwrap_or(false)
     }
 
     /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`
@@ -211,68 +209,62 @@ impl ModelManager {
         self.filter_declarations(|fqn, _| keep_fqn(fqn), disable_validation)
     }
 
-    js_compat_pub! {
-        /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
-        /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
-        /// stays in JS). `external_models` is what
-        /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
-        /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
-        /// then registered without validation — `updateModelFile(mf, name,
-        /// true)` when its namespace is already registered (by `self` or an
-        /// earlier download in the same batch), `addModelFile(mf, null, name,
-        /// true)` otherwise — and finally every registered model file is
-        /// validated (`validateModelFiles`). The model files are returned in the
-        /// same order, as TS's `externalModelFiles`.
-        ///
-        /// Any error leaves `self` exactly as it was, as TS's `catch` restores
-        /// `this.modelFiles` before rethrowing.
-        pub fn update_external_models(
-            &mut self,
-            external_models: impl IntoIterator<Item = ModelFileSource>,
-        ) -> Result<Vec<Arc<ModelFile>>> {
-            self.update_external_models_naming_file(external_models)
-                .map_err(|(_, err)| err)
-        }
+    /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
+    /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
+    /// stays in JS). `external_models` is what
+    /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
+    /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
+    /// then registered without validation — `updateModelFile(mf, name,
+    /// true)` when its namespace is already registered (by `self` or an
+    /// earlier download in the same batch), `addModelFile(mf, null, name,
+    /// true)` otherwise — and finally every registered model file is
+    /// validated (`validateModelFiles`). The model files are returned in the
+    /// same order, as TS's `externalModelFiles`.
+    ///
+    /// Any error leaves `self` exactly as it was, as TS's `catch` restores
+    /// `this.modelFiles` before rethrowing.
+    #[cfg(feature = "js-compat")]
+    pub fn update_external_models(
+        &mut self,
+        external_models: impl IntoIterator<Item = ModelFileSource>,
+    ) -> Result<Vec<Arc<ModelFile>>> {
+        self.update_external_models_naming_file(external_models)
+            .map_err(|(_, err)| err)
     }
 
-    js_compat_pub! {
-        /// [`ModelManager::update_external_models`], with the namespace of
-        /// the model file whose validation failed, when that is the failure
-        /// (P5-11, accordproject/concerto-rust#287): TS's final
-        /// `validateModelFiles()` throws that file's own `validate()` error,
-        /// which names the file.
-        pub fn update_external_models_naming_file(
-            &mut self,
-            external_models: impl IntoIterator<Item = ModelFileSource>,
-        ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
-            self.update_external_model_files(external_models.into_iter().map(|source| {
-                ModelFile::from_json_with_definitions(
-                    &source.ast,
-                    source.definitions,
-                    source.file_name,
-                )
+    /// [`ModelManager::update_external_models`], with the namespace of
+    /// the model file whose validation failed, when that is the failure
+    /// (P5-11, accordproject/concerto-rust#287): TS's final
+    /// `validateModelFiles()` throws that file's own `validate()` error,
+    /// which names the file.
+    #[cfg(feature = "js-compat")]
+    pub fn update_external_models_naming_file(
+        &mut self,
+        external_models: impl IntoIterator<Item = ModelFileSource>,
+    ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
+        self.update_external_model_files(external_models.into_iter().map(|source| {
+            ModelFile::from_json_with_definitions(&source.ast, source.definitions, source.file_name)
                 .map(Arc::new)
-            }))
-        }
+        }))
     }
 
-    js_compat_pub! {
-        /// [`ModelManager::update_external_models_naming_file`] for model
-        /// files already built (P5-100, accordproject/concerto-rust#454): the
-        /// files the TS view staged when it built each downloaded
-        /// `ModelFile`, so their ASTs are not sent and parsed again.
-        pub fn update_external_model_files_naming_file(
-            &mut self,
-            external_model_files: impl IntoIterator<Item = Arc<ModelFile>>,
-        ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
-            self.update_external_model_files(external_model_files.into_iter().map(Ok))
-        }
+    /// [`ModelManager::update_external_models_naming_file`] for model
+    /// files already built (P5-100, accordproject/concerto-rust#454): the
+    /// files the TS view staged when it built each downloaded
+    /// `ModelFile`, so their ASTs are not sent and parsed again.
+    #[cfg(feature = "js-compat")]
+    pub fn update_external_model_files_naming_file(
+        &mut self,
+        external_model_files: impl IntoIterator<Item = Arc<ModelFile>>,
+    ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
+        self.update_external_model_files(external_model_files.into_iter().map(Ok))
     }
 
     /// The core of [`ModelManager::update_external_models_naming_file`] and
     /// [`ModelManager::update_external_model_files_naming_file`]: each model
     /// file in turn (an error building one fails the update there), then the
     /// validation.
+    #[cfg(feature = "js-compat")]
     pub(super) fn update_external_model_files(
         &mut self,
         external_model_files: impl IntoIterator<Item = Result<Arc<ModelFile>>>,

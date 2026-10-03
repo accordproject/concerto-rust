@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::fmt;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
+#[cfg(feature = "js-compat")]
 use concerto_metamodel::utils::class_name;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -109,6 +110,7 @@ fn report_error<F: ValidatedElement>(
 /// (accordproject/concerto-rust#217): every comparison downstream already
 /// treats `NaN` as "never crossed", the same outcome TS's own comparison
 /// against the untouched mutated value gives.
+#[cfg(feature = "js-compat")]
 fn validator_number_field(ast: &Value, key: &str) -> Option<f64> {
     match ast.get(key) {
         None | Some(Value::Null) => None,
@@ -163,6 +165,7 @@ fn bounds_out_of_order(
 /// array, an object, or a fuzz-mutated non-string of any kind
 /// (accordproject/concerto-rust#217) — goes through the same
 /// [`ecma::to_js_string`] coercion `ToString` gives it.
+#[cfg(feature = "js-compat")]
 fn validator_string_field(ast: &Value, key: &str) -> String {
     match ast.get(key) {
         None => String::new(),
@@ -170,53 +173,51 @@ fn validator_string_field(ast: &Value, key: &str) -> String {
     }
 }
 
-js_compat_pub! {
-    /// Builds a [`mm::CollectionSizeValidator`] straight from the raw
-    /// `sizeValidator` AST node, bypassing `serde`'s strict decode of its
-    /// `minSize`/`maxSize` fields (which requires an actual JSON number) the way
-    /// `validator_number_field`'s doc comment describes. `$class` is never read
-    /// by any behaviour this crate ports (only kept for a faithful struct), so a
-    /// non-string or absent one is coerced/defaulted the same permissive way.
-    /// `raw` is `ast.get("sizeValidator")`; `None` (the key absent) and an
-    /// explicit JSON `null` both give `None`, matching `serde`'s own
-    /// `Option<T>` field semantics for the well-formed AST this replaces.
-    ///
-    /// TS: this is `ClassDeclaration.process`'s properties loop constructing a
-    /// `Field`/`Property`, whose own `sizeValidator` is a
-    /// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
-    /// (property.ts/field.ts) — the AST node itself, read with no type check.
-    /// `pub`, not `pub(crate)`: concerto-wasm's own `collectionSizeValidatorNew`
-    /// binding is TS's *other* call site for this exact constructor (`Property.process`
-    /// builds the view directly, per this module's own doc comment on
-    /// `CollectionSizeValidator::new`) and needs the same leniency
-    /// (accordproject/concerto-rust#217) — a fuzz-mutated `minSize`/`maxSize`
-    /// there hits `serde`'s strict decode just as surely as it did here, since
-    /// that binding decoded the raw AST the same strict way before calling
-    /// through to `CollectionSizeValidator::new`.
-    pub fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
-        let raw = raw.filter(|value| !value.is_null())?;
-        Some(mm::CollectionSizeValidator {
-            _class: class_name(&validator_string_field(raw, "$class")),
-            min_size: validator_number_field(raw, "minSize"),
-            max_size: validator_number_field(raw, "maxSize"),
-        })
-    }
+/// Builds a [`mm::CollectionSizeValidator`] straight from the raw
+/// `sizeValidator` AST node, bypassing `serde`'s strict decode of its
+/// `minSize`/`maxSize` fields (which requires an actual JSON number) the way
+/// `validator_number_field`'s doc comment describes. `$class` is never read
+/// by any behaviour this crate ports (only kept for a faithful struct), so a
+/// non-string or absent one is coerced/defaulted the same permissive way.
+/// `raw` is `ast.get("sizeValidator")`; `None` (the key absent) and an
+/// explicit JSON `null` both give `None`, matching `serde`'s own
+/// `Option<T>` field semantics for the well-formed AST this replaces.
+///
+/// TS: this is `ClassDeclaration.process`'s properties loop constructing a
+/// `Field`/`Property`, whose own `sizeValidator` is a
+/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
+/// (property.ts/field.ts) — the AST node itself, read with no type check.
+/// `pub`, not `pub(crate)`: concerto-wasm's own `collectionSizeValidatorNew`
+/// binding is TS's *other* call site for this exact constructor (`Property.process`
+/// builds the view directly, per this module's own doc comment on
+/// `CollectionSizeValidator::new`) and needs the same leniency
+/// (accordproject/concerto-rust#217) — a fuzz-mutated `minSize`/`maxSize`
+/// there hits `serde`'s strict decode just as surely as it did here, since
+/// that binding decoded the raw AST the same strict way before calling
+/// through to `CollectionSizeValidator::new`.
+#[cfg(feature = "js-compat")]
+pub fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::CollectionSizeValidator {
+        _class: class_name(&validator_string_field(raw, "$class")),
+        min_size: validator_number_field(raw, "minSize"),
+        max_size: validator_number_field(raw, "maxSize"),
+    })
 }
 
-js_compat_pub! {
-    /// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
-    /// `lengthValidator` (`mm::StringLengthValidator`, `{minLength, maxLength}`).
-    /// `pub` for the same reason as [`size_validator_from_ast`]: concerto-wasm's
-    /// `stringValidatorNew` binding is TS's own call site for
-    /// `new StringValidator(...)` and needs the same leniency.
-    pub fn length_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringLengthValidator> {
-        let raw = raw.filter(|value| !value.is_null())?;
-        Some(mm::StringLengthValidator {
-            _class: class_name(&validator_string_field(raw, "$class")),
-            min_length: length_bound_field(raw, "minLength"),
-            max_length: length_bound_field(raw, "maxLength"),
-        })
-    }
+/// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
+/// `lengthValidator` (`mm::StringLengthValidator`, `{minLength, maxLength}`).
+/// `pub` for the same reason as [`size_validator_from_ast`]: concerto-wasm's
+/// `stringValidatorNew` binding is TS's own call site for
+/// `new StringValidator(...)` and needs the same leniency.
+#[cfg(feature = "js-compat")]
+pub fn length_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringLengthValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::StringLengthValidator {
+        _class: class_name(&validator_string_field(raw, "$class")),
+        min_length: length_bound_field(raw, "minLength"),
+        max_length: length_bound_field(raw, "maxLength"),
+    })
 }
 
 /// [`validator_number_field`], for `StringLengthValidator`'s own
@@ -232,25 +233,25 @@ js_compat_pub! {
 /// `CollectionSizeValidator`: `None` for both. Anything else is coerced
 /// through `ToNumber`, so a fuzz-mutated non-number becomes `NaN`, whose
 /// comparisons are always false.
+#[cfg(feature = "js-compat")]
 fn length_bound_field(ast: &Value, key: &str) -> Option<f64> {
     validator_number_field(ast, key)
 }
 
-js_compat_pub! {
-    /// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
-    /// `validator` (`mm::StringRegexValidator`, `{pattern, flags}`) —
-    /// `validator_string_field`'s doc comment covers the `pattern`/`flags`
-    /// coercion, which mirrors `new RegExp(validator.pattern, validator.flags)`
-    /// rather than a plain `ToString`. `pub` for the same reason as
-    /// [`size_validator_from_ast`].
-    pub fn regex_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringRegexValidator> {
-        let raw = raw.filter(|value| !value.is_null())?;
-        Some(mm::StringRegexValidator {
-            _class: class_name(&validator_string_field(raw, "$class")),
-            pattern: validator_string_field(raw, "pattern"),
-            flags: validator_string_field(raw, "flags"),
-        })
-    }
+/// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
+/// `validator` (`mm::StringRegexValidator`, `{pattern, flags}`) —
+/// `validator_string_field`'s doc comment covers the `pattern`/`flags`
+/// coercion, which mirrors `new RegExp(validator.pattern, validator.flags)`
+/// rather than a plain `ToString`. `pub` for the same reason as
+/// [`size_validator_from_ast`].
+#[cfg(feature = "js-compat")]
+pub fn regex_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringRegexValidator> {
+    let raw = raw.filter(|value| !value.is_null())?;
+    Some(mm::StringRegexValidator {
+        _class: class_name(&validator_string_field(raw, "$class")),
+        pattern: validator_string_field(raw, "pattern"),
+        flags: validator_string_field(raw, "flags"),
+    })
 }
 
 /// A validator that keeps non-null numbers between two bounds, inclusive.
@@ -270,6 +271,7 @@ pub struct NumberValidator {
 
 /// `ast.<key>` when `ast` has it as an own property, else JS `null`. A
 /// present `null` is also `null`.
+#[cfg(feature = "js-compat")]
 fn bound(ast: &Value, key: &str) -> Option<Value> {
     match ast.get(key) {
         None | Some(Value::Null) => None,
@@ -278,15 +280,14 @@ fn bound(ast: &Value, key: &str) -> Option<Value> {
 }
 
 impl NumberValidator {
-    js_compat_pub! {
-        /// Builds the validator from its AST (`{lower, upper}`), checking the
-        /// bounds and the element's default value.
-        ///
-        /// TS: NumberValidator.constructor (src/introspect/numbervalidator.ts)
-        pub fn new<F: ValidatedElement>(field: &F, ast: &Value) -> Result<Self, F::Error> {
-            // The hasOwnProperty guards: an absent bound stays null.
-            Self::checked(field, bound(ast, "lower"), bound(ast, "upper"))
-        }
+    /// Builds the validator from its AST (`{lower, upper}`), checking the
+    /// bounds and the element's default value.
+    ///
+    /// TS: NumberValidator.constructor (src/introspect/numbervalidator.ts)
+    #[cfg(feature = "js-compat")]
+    pub fn new<F: ValidatedElement>(field: &F, ast: &Value) -> Result<Self, F::Error> {
+        // The hasOwnProperty guards: an absent bound stays null.
+        Self::checked(field, bound(ast, "lower"), bound(ast, "upper"))
     }
 
     /// [`NumberValidator::new`] from typed bounds (A-9, P5-99): a property's

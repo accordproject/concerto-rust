@@ -19,6 +19,8 @@
 //! `ModelManager.getType`, which is `Relationship`'s own job and stays out
 //! of scope here).
 
+use std::fmt::Write as _;
+
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::model_util;
 
@@ -170,8 +172,8 @@ fn encode_uri(input: &str) -> String {
         } else {
             let mut buf = [0u8; 4];
             for byte in ch.encode_utf8(&mut buf).as_bytes() {
-                out.push('%');
-                out.push_str(&format!("{byte:02X}"));
+                // Writing to a `String` cannot fail.
+                let _ = write!(out, "%{byte:02X}");
             }
         }
     }

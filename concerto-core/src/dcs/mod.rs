@@ -46,12 +46,13 @@
 //! result is the same as resolving once, as in ts mode.
 pub mod dcsconverter;
 #[cfg(test)]
+#[path = "tests/decoratormanager.rs"]
 mod decoratormanager_tests;
 pub mod extractor;
 mod yaml_quote;
 
 pub use dcsconverter::{json_to_yaml, yaml_to_json};
-pub use yaml_quote::{DECORATOR_STRING_TYPE, quote_string_value};
+use yaml_quote::quote_string_value;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -67,7 +68,7 @@ use crate::model_util::{self, ParsedNamespace};
 
 /// `DCS_VERSION` (`src/decoratormanager.ts`): the decorator command set
 /// model version this port targets.
-pub const DCS_VERSION: &str = "0.4.0";
+pub(crate) const DCS_VERSION: &str = "0.4.0";
 
 /// The metamodel's `MapDeclaration` class.
 const MAP_DECLARATION_CLASS: &str = metamodel_class!("MapDeclaration");
@@ -122,20 +123,20 @@ fn falsy_or_equal_in_string(test: Option<&Value>, values: &str) -> bool {
 /// (P5-102, C-3): a command reached through several maps, or through
 /// several entries of `target.properties`, is never copied.
 #[derive(Debug, Clone, Copy)]
-pub struct DcsIndexWrapper<'a> {
+pub(crate) struct DcsIndexWrapper<'a> {
     command: &'a Value,
     index: usize,
 }
 
 impl<'a> DcsIndexWrapper<'a> {
     /// The decorator command.
-    pub fn command(&self) -> &'a Value {
+    pub(crate) fn command(&self) -> &'a Value {
         self.command
     }
 
     /// The command's index in the (possibly flattened) command set it came
     /// from.
-    pub fn index(&self) -> usize {
+    pub(crate) fn index(&self) -> usize {
         self.index
     }
 }
@@ -145,18 +146,18 @@ impl<'a> DcsIndexWrapper<'a> {
 /// it share.
 /// Keyed by the target value the commands share, borrowed from the commands.
 #[derive(Debug, Clone, Default)]
-pub struct DecoratorMaps<'a> {
+pub(crate) struct DecoratorMaps<'a> {
     /// Commands targeting a `target.namespace`.
-    pub namespace_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) namespace_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.declaration`.
-    pub declaration_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) declaration_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.property` (or one entry of
     /// `target.properties`).
-    pub property_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) property_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.mapElement`.
-    pub map_element_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) map_element_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.type`.
-    pub type_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) type_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
 }
 
 /// `DecoratorManager.addDcsWithIndexToMap` (`src/decoratormanager.ts`).
@@ -175,7 +176,9 @@ fn add_dcs_with_index_to_map<'a>(
 /// `declaration`, `namespace` — matching the reference's `switch (true)`,
 /// whose `case`s fall through to nothing (each `break`s) and so also try in
 /// that order.
-pub fn get_decorator_maps<'a>(commands: impl IntoIterator<Item = &'a Value>) -> DecoratorMaps<'a> {
+pub(crate) fn get_decorator_maps<'a>(
+    commands: impl IntoIterator<Item = &'a Value>,
+) -> DecoratorMaps<'a> {
     let mut maps = DecoratorMaps::default();
     for (index, command) in commands.into_iter().enumerate() {
         let target = command.get("target");
@@ -244,25 +247,27 @@ fn sorted_by_index(mut commands: Vec<DcsIndexWrapper<'_>>) -> Vec<DcsIndexWrappe
 ///
 /// As in TS, the rewrite reads the version through `ModelUtil.getNamespace`
 /// and `ModelUtil.parseNamespace`, whose errors (an unparseable namespace
-/// in a nested `$class`) propagate; a namespace with no version leaves the
-/// `$class` unchanged (TS `replace(undefined, …)` finds nothing to replace).
+/// in a nested `$class`) propagate, and since BC-02 that includes a
+/// namespace with no version.
 pub fn migrate_to(value: &mut Value) -> Result<()> {
     match value {
         Value::Object(map) => {
-            if let Some(Value::String(class)) = map.get("$class").cloned().as_ref()
-                && class.contains("org.accordproject.decoratorcommands")
-            {
-                let ns = model_util::get_namespace(Some(class))?;
-                if let ParsedNamespace::Full {
-                    version: Some(version),
-                    ..
-                } = model_util::parse_namespace_with(Some(ns), false)?
+            // P5-104 (C-13): the `$class` is read borrowed, and copied only
+            // when it is rewritten.
+            let migrated = match map.get("$class") {
+                Some(Value::String(class))
+                    if class.contains("org.accordproject.decoratorcommands") =>
                 {
+                    let ns = model_util::get_namespace(Some(class))?;
+                    let (_, version) = model_util::namespace_parts(ns)?;
                     // `String.prototype.replace` with a string pattern
                     // replaces only the first occurrence.
-                    let migrated = class.replacen(version.as_str(), DCS_VERSION, 1);
-                    map.insert("$class".to_string(), Value::String(migrated));
+                    Some(class.replacen(version, DCS_VERSION, 1))
                 }
+                _ => None,
+            };
+            if let Some(migrated) = migrated {
+                map.insert("$class".to_string(), Value::String(migrated));
             }
             for v in map.values_mut() {
                 migrate_to(v)?;
@@ -283,18 +288,6 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
 /// components above 2^53 compare exactly.
 fn parse_version(version: &str) -> Option<semver::Version> {
     semver::Version::parse(version).ok()
-}
-
-/// node-semver's `new SemVer(undefined)` (`classes/semver.js`), which
-/// `semver.major`/`semver.minor` raise for a `$class` namespace that has no
-/// version.
-fn semver_not_a_string() -> Error {
-    ContractError::pre_port(
-        ErrorKind::MalformedInput,
-        "Invalid version. Must be a string. Got type \"undefined\".".to_string(),
-        None,
-    )
-    .into()
 }
 
 /// A JS `TypeError` for reading `property` of `undefined` (`is_null` false)
@@ -333,7 +326,7 @@ fn js_read<'a>(object: Option<&'a Value>, key: &str) -> Result<Option<&'a Value>
 /// `$class` ("FQN is invalid."), and `ModelUtil.parseNamespace` an invalid
 /// namespace, including, since BC-02 (R1, P5-50), one with no version (in
 /// TS 5.0.0 node-semver rejected that one, with a `TypeError`).
-pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Result<bool> {
+pub(crate) fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Result<bool> {
     let class = js_read(Some(decorator_command_set), "$class")?;
     let class = match class {
         Some(Value::String(s)) => Some(s.as_str()),
@@ -350,14 +343,8 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
         _ => None,
     };
     let ns = model_util::get_namespace(class)?;
-    let input_version = match model_util::parse_namespace_with(Some(ns), false)? {
-        ParsedNamespace::Full {
-            version: Some(v), ..
-        } => v,
-        _ => return Err(semver_not_a_string()),
-    };
-    let (Some(input), Some(target)) =
-        (parse_version(&input_version), parse_version(target_version))
+    let (_, input_version) = model_util::namespace_parts(ns)?;
+    let (Some(input), Some(target)) = (parse_version(input_version), parse_version(target_version))
     else {
         // `parseNamespace` already validated `input_version` as a semver,
         // and `target_version` is always `DCS_VERSION`.
@@ -370,7 +357,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
 /// raises an `IllegalModelException` (its constructor's location suffix
 /// included, [`ContractError::final_message`]) if `decorated_ast.decorators`
 /// names the same decorator twice.
-pub fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
+pub(crate) fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
     let mut seen = FxHashSet::default();
     if let Some(decorators) = decorated_ast.get("decorators").and_then(Value::as_array) {
         for d in decorators {
@@ -397,7 +384,7 @@ pub fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
 /// for the duplicate it may just have created) for `"APPEND"`. Any other
 /// `command_type` (the command's `type` as JS would print it, `"undefined"`
 /// when it has none) is an error.
-pub fn apply_decorator(
+pub(crate) fn apply_decorator(
     decorated: &mut Value,
     command_type: &str,
     new_decorator: &Value,
@@ -527,7 +514,7 @@ fn check_for_namespace_target_and_apply_decorator(
 /// `DecoratorManager.executeNamespaceCommand` (`src/decoratormanager.ts`):
 /// applies a bare `{ $class, namespace }` command target — exactly two keys,
 /// one of them a truthy `namespace` — directly to the model itself.
-pub fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<()> {
+pub(crate) fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<()> {
     let (command_type, decorator, target) = command_parts(command);
     let is_bare_namespace_target = target
         .as_object()
@@ -539,9 +526,9 @@ pub fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<(
         .get("namespace")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let name = match model_util::parse_namespace_with(namespace.as_deref(), false)? {
-        ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
-    };
+    let name = model_util::namespace_parts(namespace.as_deref().unwrap_or_default())?
+        .0
+        .to_string();
     let namespace = namespace.unwrap_or_default();
     if falsy_or_equal(
         target.get("namespace"),
@@ -585,7 +572,7 @@ pub fn execute_property_command(property: &mut Value, command: &Value) -> Result
 /// `command` to `declaration` (a `Model`'s AST declaration node), or to
 /// `property` when the command's target reaches a property and one is
 /// given, honouring `MapDeclaration`'s `key`/`value`/`mapElement` targeting.
-pub fn execute_command(
+pub(crate) fn execute_command(
     namespace: &str,
     declaration: &mut Value,
     command: &Value,
@@ -686,7 +673,7 @@ pub fn execute_command(
 /// message text: the exact `{kind, code}` catalogue entry (PORTING.md
 /// section 2.2) is left for the task that ports `resolveType`'s error
 /// messages generally (the module doc comment's divergence note).
-pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result<()> {
+pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) -> Result<()> {
     // `command.target.type`: reading through an absent or `null` target is
     // a JS `TypeError`.
     let target = js_read(Some(command), "target")?.cloned();
@@ -770,15 +757,20 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
         let model_file = resolved_model_file.expect("guarded above: namespace resolved or errored");
         let fqn = format!("{}.{declaration}", model_file.namespace());
 
-        if let Some(property) = target
+        // `target.property`, then each of `target.properties` (P5-104,
+        // C-13: one check, on the borrowed lookup).
+        let property = target
             .get("property")
             .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
-        {
-            let found = model_manager
-                .property(&fqn, property)
-                .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
-            if found.is_none() {
+            .filter(|v| !v.is_empty());
+        let properties = target
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
+        for property in property.into_iter().chain(properties) {
+            if model_manager.property(&fqn, property)?.is_none() {
                 return Err(ContractError::pre_port(
                     ErrorKind::InvalidArgument,
                     format!(
@@ -787,24 +779,6 @@ pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result
                     None,
                 )
                 .into());
-            }
-        }
-
-        if let Some(properties) = target.get("properties").and_then(Value::as_array) {
-            for property in properties.iter().filter_map(Value::as_str) {
-                let found = model_manager
-                    .property(&fqn, property)
-                    .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
-                if found.is_none() {
-                    return Err(ContractError::pre_port(
-                        ErrorKind::InvalidArgument,
-                        format!(
-                            "Decorator Command references property \"{namespace}.{declaration}.{property}\" which does not exist."
-                        ),
-                        None,
-                    )
-                    .into());
-                }
             }
         }
     }
@@ -1074,7 +1048,7 @@ pub fn validated_yaml_to_json(yaml_input: &str) -> Result<Value> {
 /// `should_validate_commands` alone (`should_validate` false) validates
 /// nothing at all, exactly as the reference's `if (shouldValidate) { ...
 /// if (shouldValidateCommands) {...} }` does.
-pub fn migrate_and_validate(
+pub(crate) fn migrate_and_validate(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
     should_migrate: bool,
@@ -1284,7 +1258,7 @@ pub fn apply_decoration(
 ) -> Result<ModelManager> {
     // `options?.disableMetamodelResolution ? getAst(false, true) : getAst(true, true)`.
     let resolve = options.disable_metamodel_resolution != Some(true);
-    let mut models = models_of(model_manager.models_ast(resolve, true)?);
+    let mut models = model_manager.model_asts(resolve, true)?;
     for model in models.iter_mut() {
         decorate_model(model, &prepared.decorator_imports, &prepared.maps)?;
     }
@@ -1405,9 +1379,7 @@ fn decorate_model(
         }
     }
 
-    let namespace_name = match model_util::parse_namespace_with(Some(&namespace), false)? {
-        ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
-    };
+    let namespace_name = model_util::namespace_parts(&namespace)?.0.to_string();
 
     // Detach `declarations` into an owned local: once it is out of `model`,
     // `execute_namespace_command` below (which mutates `model` itself, for a
@@ -1552,17 +1524,6 @@ impl Default for ExtractOptions {
     }
 }
 
-/// The `models` of a [`ModelManager::get_ast`] envelope.
-fn models_of(ast: Value) -> Vec<Value> {
-    match ast {
-        Value::Object(mut m) => match m.remove("models") {
-            Some(Value::Array(models)) => models,
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    }
-}
-
 /// `DecoratorManager.extractDecorators`, `extractVocabularies` or
 /// `extractNonVocabDecorators(modelManager, options)`
 /// (`src/decoratormanager.ts`), by `action`, with the command sets encoded
@@ -1596,12 +1557,11 @@ pub fn extract(
     let include_system = action != extractor::Action::ExtractNonVocab;
     extractor::DecoratorExtractor::new(
         options.remove_decorators_from_model,
-        options.locale.clone(),
+        &options.locale,
         DCS_VERSION,
-        model_manager.models_ast(true, include_system)?,
         action,
     )
-    .extract(keep_source)
+    .extract(model_manager.model_asts(true, include_system)?, keep_source)
 }
 
 /// The command sets (JSON text) and vocabularies [`extract`] gives
@@ -1616,797 +1576,12 @@ pub fn encode_extract_source(
 ) -> Result<(String, Vec<String>)> {
     extractor::DecoratorExtractor::new(
         options.remove_decorators_from_model,
-        options.locale.clone(),
+        &options.locale,
         DCS_VERSION,
-        Value::Null,
         action,
     )
     .encode_source(models)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    /// `org.acme@1.0.0` with a single `Person { name: String }`.
-    fn sample_manager() -> ModelManager {
-        let mut mgr = ModelManager::new().unwrap();
-        mgr.load_model(
-            &json!({
-                "$class": "concerto.metamodel@1.0.0.Model",
-                "namespace": "org.acme@1.0.0",
-                "declarations": [
-                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Person", "isAbstract": false,
-                      "properties": [
-                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "name", "isArray": false, "isOptional": false }
-                      ] }
-                ]
-            }),
-            None,
-        )
-        .unwrap();
-        mgr
-    }
-
-    #[test]
-    fn falsy_or_equal_treats_absent_null_and_empty_string_as_true() {
-        assert!(falsy_or_equal(None, &["x"]));
-        assert!(falsy_or_equal(Some(&Value::Null), &["x"]));
-        assert!(falsy_or_equal(Some(&json!("")), &["x"]));
-    }
-
-    #[test]
-    fn falsy_or_equal_matches_a_string_by_membership() {
-        assert!(falsy_or_equal(Some(&json!("x")), &["x", "y"]));
-        assert!(!falsy_or_equal(Some(&json!("z")), &["x", "y"]));
-    }
-
-    #[test]
-    fn falsy_or_equal_matches_an_array_by_intersection() {
-        assert!(falsy_or_equal(Some(&json!(["z", "y"])), &["x", "y"]));
-        assert!(!falsy_or_equal(Some(&json!(["z", "w"])), &["x", "y"]));
-        // P5-102 (C-3): the intersection's own rules, without building it:
-        // an empty array (truthy) intersects nothing, a non-string element
-        // is never in the string array, and a repeated one counts once.
-        assert!(!falsy_or_equal(Some(&json!([])), &["x"]));
-        assert!(!falsy_or_equal(
-            Some(&json!([1, null, true])),
-            &["1", "null", "true"]
-        ));
-        assert!(falsy_or_equal(Some(&json!([1, "y", "y"])), &["y"]));
-    }
-
-    /// P5-102 (C-10): the compile-time class names are the namespace's.
-    #[test]
-    fn metamodel_class_names_are_qualified_by_the_metamodel_namespace() {
-        use crate::instance::metamodel::METAMODEL_NAMESPACE;
-        assert_eq!(
-            MAP_DECLARATION_CLASS,
-            model_util::qualify(METAMODEL_NAMESPACE, "MapDeclaration")
-        );
-        assert_eq!(
-            IMPORT_TYPE_CLASS,
-            model_util::qualify(METAMODEL_NAMESPACE, "ImportType")
-        );
-    }
-
-    /// P5-102 (C-2): the validation manager shares the metamodel, the DCS
-    /// model and the caller's files, and parses none of them again.
-    #[test]
-    fn validate_shares_every_model_file() {
-        let sample = sample_manager();
-        let files: Vec<Arc<ModelFile>> = sample
-            .shared_model_files()
-            .filter(|mf| mf.namespace() == "org.acme@1.0.0")
-            .cloned()
-            .collect();
-        let mgr = validate(&valid_command_set(), Some(&files)).unwrap();
-        let shared = |namespace: &str| {
-            mgr.shared_model_files()
-                .find(|mf| mf.namespace() == namespace)
-                .cloned()
-                .unwrap()
-        };
-        assert!(Arc::ptr_eq(&shared("org.acme@1.0.0"), &files[0]));
-        assert!(Arc::ptr_eq(
-            &shared(crate::instance::metamodel::METAMODEL_NAMESPACE),
-            &crate::instance::metamodel::metamodel_model_file().unwrap()
-        ));
-        let dcs = shared("org.accordproject.decoratorcommands@0.4.0");
-        assert!(Arc::ptr_eq(
-            &dcs,
-            &dcs_model_file(VALIDATE_DCS_FILE_NAME).unwrap()
-        ));
-        assert_eq!(dcs.file_name(), Some(VALIDATE_DCS_FILE_NAME));
-        // The files keep TS's order: system models, metamodel, the
-        // caller's, then the DCS model.
-        let order: Vec<&str> = mgr.model_files().map(ModelFile::namespace).collect();
-        assert_eq!(
-            order[order.len() - 3..],
-            [
-                crate::instance::metamodel::METAMODEL_NAMESPACE,
-                "org.acme@1.0.0",
-                "org.accordproject.decoratorcommands@0.4.0"
-            ]
-        );
-        // `migrateAndValidate` names the DCS model file its own way.
-        let migrate = dcs_model_file(MIGRATE_DCS_FILE_NAME).unwrap();
-        assert_eq!(migrate.file_name(), Some(MIGRATE_DCS_FILE_NAME));
-        assert!(!Arc::ptr_eq(&migrate, &dcs));
-    }
-
-    /// P5-102 (C-2): an invalid model file given to `validate` is still
-    /// validated, and fails as before.
-    #[test]
-    fn validate_still_validates_the_callers_model_files() {
-        let mut broken = ModelManager::new().unwrap();
-        broken
-            .load_model(
-                &json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "namespace": "org.broken@1.0.0",
-                    "declarations": [{
-                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                        "name": "A",
-                        "isAbstract": false,
-                        "superType": {
-                            "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
-                            "name": "Missing"
-                        },
-                        "properties": []
-                    }]
-                }),
-                None,
-            )
-            .unwrap();
-        let files: Vec<Arc<ModelFile>> = broken
-            .shared_model_files()
-            .filter(|mf| mf.namespace() == "org.broken@1.0.0")
-            .cloned()
-            .collect();
-        let err = validate(&valid_command_set(), Some(&files)).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::IllegalModel, "{err}");
-    }
-
-    /// P5-102 (C-2): an empty decorate shares the input's model files and
-    /// options.
-    #[test]
-    fn decorate_with_no_command_sets_shares_the_model_files() {
-        let sample = sample_manager();
-        let same = decorate_models(&sample, &mut [], &mut DecorateOptions::default()).unwrap();
-        let mine: Vec<&Arc<ModelFile>> = sample.shared_model_files().collect();
-        let theirs: Vec<&Arc<ModelFile>> = same.shared_model_files().collect();
-        assert_eq!(mine.len(), theirs.len());
-        for (a, b) in mine.iter().zip(&theirs) {
-            assert!(Arc::ptr_eq(a, b), "{}", a.namespace());
-        }
-    }
-
-    #[test]
-    fn migrate_to_rewrites_only_the_decoratorcommands_class_version() {
-        let mut value = json!({
-            "$class": "org.accordproject.decoratorcommands@0.3.0.DecoratorCommandSet",
-            "commands": [
-                { "$class": "org.accordproject.decoratorcommands@0.3.0.Command", "type": "UPSERT" }
-            ],
-            "unrelated": { "$class": "concerto.metamodel@1.0.0.Decorator" }
-        });
-        migrate_to(&mut value).unwrap();
-        assert_eq!(
-            value["$class"],
-            "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet"
-        );
-        assert_eq!(
-            value["commands"][0]["$class"],
-            "org.accordproject.decoratorcommands@0.4.0.Command"
-        );
-        assert_eq!(
-            value["unrelated"]["$class"],
-            "concerto.metamodel@1.0.0.Decorator"
-        );
-    }
-
-    #[test]
-    fn can_migrate_only_within_the_same_major_and_to_a_strictly_higher_minor() {
-        let older =
-            json!({ "$class": "org.accordproject.decoratorcommands@0.3.0.DecoratorCommandSet" });
-        assert!(can_migrate(&older, DCS_VERSION).unwrap());
-
-        let same =
-            json!({ "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet" });
-        assert!(!can_migrate(&same, DCS_VERSION).unwrap());
-
-        let other_major =
-            json!({ "$class": "org.accordproject.decoratorcommands@1.0.0.DecoratorCommandSet" });
-        assert!(!can_migrate(&other_major, DCS_VERSION).unwrap());
-    }
-
-    #[test]
-    fn can_migrate_takes_strict_semver_only() {
-        // BC-41 (P5-38): no leading `v` and no surrounding whitespace, with
-        // the error `parseNamespace` throws for any invalid version.
-        for class in [
-            "org.accordproject.decoratorcommands@v0.3.0.DecoratorCommandSet",
-            "org.accordproject.decoratorcommands@ 0.3.0.DecoratorCommandSet",
-        ] {
-            let err = can_migrate(&json!({ "$class": class }), DCS_VERSION)
-                .err()
-                .unwrap_or_else(|| panic!("{class} was accepted"));
-            assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
-        }
-        // BC-02 (P5-50): an unversioned `$class` namespace is
-        // `parseNamespace`'s invalid namespace, a plain `Error`.
-        let err = can_migrate(
-            &json!({ "$class": "org.accordproject.decoratorcommands.DecoratorCommandSet" }),
-            DCS_VERSION,
-        )
-        .unwrap_err();
-        assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{err}");
-        // Components above 2^53 are compared exactly: 2^53 + 1 and 2^53
-        // are the same `f64`, but different majors.
-        let big = json!({
-            "$class": "org.accordproject.decoratorcommands@9007199254740993.0.0.DecoratorCommandSet"
-        });
-        assert!(!can_migrate(&big, "9007199254740992.1.0").unwrap());
-        assert!(can_migrate(&big, "9007199254740993.1.0").unwrap());
-    }
-
-    #[test]
-    fn check_for_duplicate_decorators_rejects_a_repeated_name() {
-        let ast = json!({ "decorators": [ {"name": "Foo"}, {"name": "Foo"} ] });
-        let err = match check_for_duplicate_decorators(&ast) {
-            Ok(()) => panic!("expected a duplicate-decorator error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("Duplicate decorator Foo"));
-    }
-
-    #[test]
-    fn check_for_duplicate_decorators_accepts_distinct_names() {
-        let ast = json!({ "decorators": [ {"name": "Foo"}, {"name": "Bar"} ] });
-        assert!(check_for_duplicate_decorators(&ast).is_ok());
-    }
-
-    #[test]
-    fn apply_decorator_upsert_replaces_by_name_or_adds_a_new_one() {
-        let mut decorated =
-            json!({ "decorators": [ {"name": "Foo", "arguments": [{"value": 1}]} ] });
-        apply_decorator(
-            &mut decorated,
-            "UPSERT",
-            &json!({"name": "Foo", "arguments": [{"value": 2}]}),
-        )
-        .unwrap();
-        assert_eq!(decorated["decorators"].as_array().unwrap().len(), 1);
-        assert_eq!(decorated["decorators"][0]["arguments"][0]["value"], 2);
-
-        apply_decorator(&mut decorated, "UPSERT", &json!({"name": "Bar"})).unwrap();
-        assert_eq!(decorated["decorators"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn apply_decorator_append_adds_then_rejects_the_duplicate_it_created() {
-        let mut decorated = json!({ "decorators": [ {"name": "Foo"} ] });
-        let err = match apply_decorator(&mut decorated, "APPEND", &json!({"name": "Foo"})) {
-            Ok(()) => panic!("expected a duplicate-decorator error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("Duplicate decorator Foo"));
-        // TS applies (pushes) the decorator, then checks: the duplicate is
-        // still there to see, not rolled back.
-        assert_eq!(decorated["decorators"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn apply_decorator_rejects_an_unknown_command_type() {
-        let mut decorated = json!({});
-        let err = match apply_decorator(&mut decorated, "REMOVE", &json!({"name": "Foo"})) {
-            Ok(()) => panic!("expected an unknown-command-type error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("Unknown command type REMOVE"));
-    }
-
-    #[test]
-    fn get_decorator_maps_indexes_by_the_first_target_field_in_priority_order() {
-        let commands = vec![
-            json!({"target": {"type": "T"}}),
-            json!({"target": {"property": "p"}}),
-            json!({"target": {"properties": ["a", "b"]}}),
-            json!({"target": {"mapElement": "KEY"}}),
-            json!({"target": {"declaration": "D"}}),
-            json!({"target": {"namespace": "N"}}),
-            // `type` wins over `declaration` when a command's target sets both.
-            json!({"target": {"type": "T2", "declaration": "D2"}}),
-        ];
-        let maps = get_decorator_maps(&commands);
-        assert_eq!(maps.type_commands.get("T").unwrap().len(), 1);
-        assert_eq!(maps.property_commands.get("p").unwrap().len(), 1);
-        assert_eq!(maps.property_commands.get("a").unwrap().len(), 1);
-        assert_eq!(maps.property_commands.get("b").unwrap().len(), 1);
-        assert_eq!(maps.map_element_commands.get("KEY").unwrap().len(), 1);
-        assert_eq!(maps.declaration_commands.get("D").unwrap().len(), 1);
-        assert_eq!(maps.namespace_commands.get("N").unwrap().len(), 1);
-        assert_eq!(maps.type_commands.get("T2").unwrap().len(), 1);
-        assert!(!maps.declaration_commands.contains_key("D2"));
-    }
-
-    #[test]
-    fn validate_command_rejects_a_namespace_that_does_not_exist() {
-        let mgr = sample_manager();
-        let command = json!({ "target": { "namespace": "does.not.exist@1.0.0" } });
-        let err = match validate_command(&mgr, &command) {
-            Ok(()) => panic!("expected a namespace-does-not-exist error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("does not exist"));
-    }
-
-    #[test]
-    fn validate_command_rejects_an_unversioned_target_namespace() {
-        // BC-02 (P5-50, #371 option 1): `org.acme` no longer matches the
-        // loaded `org.acme@1.0.0`; it is `parseNamespace`'s invalid
-        // namespace, a plain `Error`.
-        let mgr = sample_manager();
-        for target in [
-            json!({ "namespace": "org.acme" }),
-            json!({ "namespace": "org.acme", "declaration": "Person", "property": "name" }),
-        ] {
-            let err = validate_command(&mgr, &json!({ "target": target })).unwrap_err();
-            assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{err}");
-            assert!(err.to_string().contains("Invalid namespace"), "{err}");
-        }
-    }
-
-    #[test]
-    fn decorate_models_rejects_an_unversioned_target_namespace_without_validation() {
-        // BC-02 (P5-50, #371 option 1): applying the commands rejects an
-        // unversioned `target.namespace` too, with or without
-        // `validateCommands`; a versioned one still applies.
-        let mgr = sample_manager();
-        let command_set = |namespace: &str| {
-            json!({
-                "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
-                "name": "x",
-                "version": "1.0.0",
-                "commands": [{
-                    "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
-                    "type": "UPSERT",
-                    "target": {
-                        "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget",
-                        "namespace": namespace,
-                        "declaration": "Person"
-                    },
-                    "decorator": {
-                        "$class": "concerto.metamodel@1.0.0.Decorator",
-                        "name": "Hello",
-                        "arguments": []
-                    }
-                }]
-            })
-        };
-        for validate in [false, true] {
-            let mut options = DecorateOptions {
-                validate,
-                validate_commands: validate,
-                ..Default::default()
-            };
-            let mut sets = [command_set("org.acme")];
-            let err = decorate_models(&mgr, &mut sets, &mut options).unwrap_err();
-            assert_eq!(err.contract().kind, ErrorKind::InvalidArgument, "{err}");
-            assert!(err.to_string().contains("Invalid namespace"), "{err}");
-
-            let mut sets = [command_set("org.acme@1.0.0")];
-            let decorated = decorate_models(&mgr, &mut sets, &mut options).unwrap();
-            let person = &decorated.model_file("org.acme@1.0.0").unwrap().ast()["declarations"][0];
-            assert_eq!(
-                person["decorators"][0]["name"], "Hello",
-                "validate={validate}"
-            );
-        }
-    }
-
-    #[test]
-    fn validate_command_accepts_a_real_namespace_declaration_and_property() {
-        let mgr = sample_manager();
-        let command = json!({
-            "target": { "namespace": "org.acme@1.0.0", "declaration": "Person", "property": "name" }
-        });
-        assert!(validate_command(&mgr, &command).is_ok());
-    }
-
-    #[test]
-    fn validate_command_rejects_a_property_that_does_not_exist() {
-        let mgr = sample_manager();
-        let command = json!({
-            "target": { "namespace": "org.acme@1.0.0", "declaration": "Person", "property": "nope" }
-        });
-        let err = match validate_command(&mgr, &command) {
-            Ok(()) => panic!("expected a property-does-not-exist error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("does not exist"));
-    }
-
-    #[test]
-    fn validate_command_rejects_a_declaration_that_does_not_exist() {
-        // `test/decoratormanager.js` "#validateCommand should detect invalid
-        // target declaration": a namespace that resolves but a declaration
-        // that does not, with *no* `property`/`properties` — TS's
-        // `resolveType('DecoratorCommand.target.declaration', fqn)` still
-        // runs and throws (this is what the missing declaration-resolution
-        // check let through silently before this fix).
-        let mgr = sample_manager();
-        let command =
-            json!({ "target": { "namespace": "org.acme@1.0.0", "declaration": "Missing" } });
-        let err = match validate_command(&mgr, &command) {
-            Ok(()) => panic!("expected a declaration-does-not-exist error"),
-            Err(e) => e,
-        };
-        // TS: `No type "org.acme@1.0.0.Missing" in namespace "org.acme@1.0.0"
-        // for "DecoratorCommand.target.declaration".` (golden catalogue text,
-        // `modelmanager-resolvetype-notypeinnsforcontext`).
-        assert_eq!(
-            err.to_string(),
-            "No type \"org.acme@1.0.0.Missing\" in namespace \"org.acme@1.0.0\" for \"DecoratorCommand.target.declaration\"."
-        );
-    }
-
-    #[test]
-    fn validate_command_rejects_an_unrecognised_target_type() {
-        let mgr = sample_manager();
-        let command = json!({ "target": { "type": "concerto.metamodel@1.0.0.Foo" } });
-        let err = match validate_command(&mgr, &command) {
-            Ok(()) => panic!("expected an unrecognised-type error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("Foo"), "{err}");
-    }
-
-    #[test]
-    fn validate_command_rejects_properties_containing_a_property_that_does_not_exist() {
-        let mgr = sample_manager();
-        let command = json!({
-            "target": { "namespace": "org.acme@1.0.0", "declaration": "Person", "properties": ["name", "nope"] }
-        });
-        let err = match validate_command(&mgr, &command) {
-            Ok(()) => panic!("expected a property-does-not-exist error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("does not exist"), "{err}");
-    }
-
-    #[test]
-    fn validate_command_rejects_both_property_and_properties() {
-        let mgr = sample_manager();
-        let command = json!({ "target": { "property": "a", "properties": ["b"] } });
-        let err = match validate_command(&mgr, &command) {
-            Ok(()) => panic!("expected a property/properties conflict error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("both property and properties"));
-    }
-
-    #[test]
-    fn decorate_models_applies_a_declaration_level_upsert() {
-        let mgr = sample_manager();
-        let mut command_set = json!({
-            "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
-            "name": "test",
-            "version": "0.4.0",
-            "commands": [{
-                "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
-                "type": "UPSERT",
-                "target": { "namespace": "org.acme@1.0.0", "declaration": "Person" },
-                "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Important" }
-            }]
-        });
-        let decorated = decorate_models(
-            &mgr,
-            std::slice::from_mut(&mut command_set),
-            &mut DecorateOptions::default(),
-        )
-        .unwrap();
-        let ast = decorated.model_file("org.acme@1.0.0").unwrap().ast();
-        let person = &ast["declarations"][0];
-        let names: Vec<&str> = person["decorators"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, vec!["Important"]);
-    }
-
-    #[test]
-    fn decorate_models_applies_a_property_level_upsert() {
-        let mgr = sample_manager();
-        let mut command_set = json!({
-            "commands": [{
-                "type": "UPSERT",
-                "target": { "namespace": "org.acme@1.0.0", "declaration": "Person", "property": "name" },
-                "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Required" }
-            }]
-        });
-        let decorated = decorate_models(
-            &mgr,
-            std::slice::from_mut(&mut command_set),
-            &mut DecorateOptions::default(),
-        )
-        .unwrap();
-        let ast = decorated.model_file("org.acme@1.0.0").unwrap().ast();
-        let name_prop = &ast["declarations"][0]["properties"][0];
-        assert_eq!(name_prop["decorators"][0]["name"], "Required");
-    }
-
-    #[test]
-    fn decorate_models_applies_a_bare_namespace_command_to_the_model_itself() {
-        let mgr = sample_manager();
-        let mut command_set = json!({
-            "commands": [{
-                "type": "UPSERT",
-                "target": {
-                    "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget",
-                    "namespace": "org.acme@1.0.0"
-                },
-                "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Stamped" }
-            }]
-        });
-        let decorated = decorate_models(
-            &mgr,
-            std::slice::from_mut(&mut command_set),
-            &mut DecorateOptions::default(),
-        )
-        .unwrap();
-        let ast = decorated.model_file("org.acme@1.0.0").unwrap().ast();
-        assert_eq!(ast["decorators"][0]["name"], "Stamped");
-        // A bare namespace target has no `declaration`, so it does not also
-        // land on `Person` (`checkForNamespaceTargetAndApplyDecorator`
-        // requires `target.declaration`).
-        assert!(ast["declarations"][0].get("decorators").is_none());
-    }
-
-    #[test]
-    fn decorate_models_with_no_command_sets_leaves_the_model_untouched() {
-        let mgr = sample_manager();
-        let decorated = decorate_models(&mgr, &mut [], &mut DecorateOptions::default()).unwrap();
-        let ast = decorated.model_file("org.acme@1.0.0").unwrap().ast();
-        assert!(ast["declarations"][0].get("decorators").is_none());
-    }
-
-    #[test]
-    fn decorate_models_upsert_replaces_an_existing_decorator_of_the_same_name() {
-        let mut mgr = ModelManager::new().unwrap();
-        mgr.load_model(
-            &json!({
-                "$class": "concerto.metamodel@1.0.0.Model",
-                "namespace": "org.acme@1.0.0",
-                "declarations": [
-                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Person", "isAbstract": false,
-                      "decorators": [ { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Important", "arguments": [] } ],
-                      "properties": [] }
-                ]
-            }),
-            None,
-        )
-        .unwrap();
-        let mut command_set = json!({
-            "commands": [{
-                "type": "UPSERT",
-                "target": { "namespace": "org.acme@1.0.0", "declaration": "Person" },
-                "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Important",
-                    "arguments": [{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "yes"}] }
-            }]
-        });
-        let decorated = decorate_models(
-            &mgr,
-            std::slice::from_mut(&mut command_set),
-            &mut DecorateOptions::default(),
-        )
-        .unwrap();
-        let ast = decorated.model_file("org.acme@1.0.0").unwrap().ast();
-        let decorators = ast["declarations"][0]["decorators"].as_array().unwrap();
-        assert_eq!(decorators.len(), 1);
-        assert_eq!(decorators[0]["arguments"][0]["value"], "yes");
-    }
-
-    fn valid_command_set() -> Value {
-        json!({
-            "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
-            "name": "web",
-            "version": "1.0.0",
-            "commands": [{
-                "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
-                "type": "UPSERT",
-                "target": { "namespace": "org.acme@1.0.0", "declaration": "Person" },
-                "decorator": { "name": "Important" }
-            }]
-        })
-    }
-
-    /// P5-27 (F6): `validate_against` on the manager `validate` built
-    /// accepts and rejects what `validate` does, with the same error.
-    #[test]
-    fn validate_against_matches_validate_on_its_own_manager() {
-        let sample = sample_manager();
-        let files: Vec<Arc<ModelFile>> = sample
-            .shared_model_files()
-            .filter(|mf| mf.namespace() == "org.acme@1.0.0")
-            .cloned()
-            .collect();
-        let mgr = validate(&valid_command_set(), Some(&files)).unwrap();
-        assert!(validate_against(&mgr, &valid_command_set()).is_ok());
-
-        let mut unknown_type = valid_command_set();
-        unknown_type["commands"][0]["type"] = json!("DELETE");
-        let mut no_class = valid_command_set();
-        no_class.as_object_mut().unwrap().remove("$class");
-        let mut unknown_class = valid_command_set();
-        unknown_class["$class"] = json!("org.acme@1.0.0.Missing");
-        for bad in [
-            unknown_type,
-            no_class,
-            unknown_class,
-            json!({ "$class": 1 }),
-        ] {
-            let expected = validate(&bad, Some(&files)).unwrap_err().to_string();
-            let actual = validate_against(&mgr, &bad).unwrap_err().to_string();
-            assert_eq!(actual, expected, "{bad}");
-        }
-    }
-
-    #[test]
-    fn migrate_and_validate_with_should_validate_false_accepts_a_structurally_invalid_set_unchanged()
-     {
-        // Matches the reference: `shouldValidateCommands` alone, with
-        // `shouldValidate` false, runs no check at all (TS nests the whole
-        // block, including the per-command loop, inside `if (shouldValidate)`).
-        let mgr = sample_manager();
-        let mut sets = [json!({ "name": "x", "version": "1.0.0" })]; // no "commands" at all
-        assert!(migrate_and_validate(&mgr, &mut sets, false, false, true).is_ok());
-    }
-
-    #[test]
-    fn migrate_and_validate_with_should_validate_true_rejects_a_missing_commands_array() {
-        let mgr = sample_manager();
-        let mut sets = [json!({
-            "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
-            "name": "x",
-            "version": "1.0.0"
-        })];
-        let err = migrate_and_validate(&mgr, &mut sets, false, true, false).unwrap_err();
-        assert!(err.to_string().contains("commands"), "{err}");
-    }
-
-    #[test]
-    fn migrate_and_validate_with_should_validate_true_rejects_a_command_missing_target() {
-        let mgr = sample_manager();
-        let mut command_set = valid_command_set();
-        command_set["commands"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("target");
-        let mut sets = [command_set];
-        let err = migrate_and_validate(&mgr, &mut sets, false, true, false).unwrap_err();
-        assert!(err.to_string().contains("target"), "{err}");
-    }
-
-    #[test]
-    fn migrate_and_validate_runs_command_validation_only_when_both_flags_are_set() {
-        let mgr = sample_manager();
-        // A structurally valid command whose target references a namespace
-        // that does not exist: only `validate_command` (semantic) catches
-        // this, and only when both `should_validate` and
-        // `should_validate_commands` are true.
-        let mut command_set = valid_command_set();
-        command_set["commands"][0]["target"] = json!({ "namespace": "does.not.exist@1.0.0" });
-        let mut sets = [command_set.clone()];
-        assert!(migrate_and_validate(&mgr, &mut sets, false, true, false).is_ok());
-
-        let mut sets = [command_set];
-        let err = migrate_and_validate(&mgr, &mut sets, false, true, true).unwrap_err();
-        assert!(err.to_string().contains("does not exist"), "{err}");
-    }
-
-    #[test]
-    fn decorate_models_validate_option_rejects_a_structurally_invalid_command_set() {
-        let mgr = sample_manager();
-        let mut command_set = valid_command_set();
-        command_set.as_object_mut().unwrap().remove("commands");
-        let mut options = DecorateOptions {
-            validate: true,
-            ..Default::default()
-        };
-        let err = decorate_models(&mgr, std::slice::from_mut(&mut command_set), &mut options)
-            .unwrap_err();
-        assert!(err.to_string().contains("commands"), "{err}");
-    }
-
-    #[test]
-    fn decorate_models_default_options_skip_the_structural_check_and_fail_as_js_does() {
-        // `validate` defaults to `false` (`DecorateOptions::default()`), so
-        // the command set is not checked against `DCS_MODEL` first — but TS
-        // then flattens `commandSet.commands` (`undefined` here) into one
-        // `undefined` command and reads `command.decorator` through it: a
-        // `TypeError`, not a silently skipped command set.
-        let mgr = sample_manager();
-        let mut command_set = valid_command_set();
-        command_set.as_object_mut().unwrap().remove("commands");
-        let err = decorate_models(
-            &mgr,
-            std::slice::from_mut(&mut command_set),
-            &mut DecorateOptions::default(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "Cannot read properties of undefined (reading 'decorator')"
-        );
-    }
-
-    /// P5-56 (T2, F-A2): on a manager (system models included for
-    /// `ExtractAll`/`ExtractVocab`, not for `ExtractNonVocab`),
-    /// `extract` keeping its source gives the same result as without, and
-    /// `encode_extract_source` over the kept models rebuilds its command
-    /// sets and vocabularies.
-    #[test]
-    fn the_kept_source_rebuilds_the_extracted_command_sets() {
-        let mut mgr = sample_manager();
-        mgr.load_model(
-            &json!({
-                "$class": "concerto.metamodel@1.0.0.Model",
-                "namespace": "org.deco@1.0.0",
-                "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "org.acme@1.0.0", "name": "Person" }],
-                "decorators": [{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Term",
-                    "arguments": [{ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "Deco" }] }],
-                "declarations": [
-                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Staff", "isAbstract": false,
-                      "decorators": [{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Ref",
-                        "arguments": [{ "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
-                          "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" }, "isArray": false }] }],
-                      "properties": [
-                        { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id", "isArray": false, "isOptional": false,
-                          "decorators": [{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Term",
-                            "arguments": [{ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": "Id" }] }] }
-                      ] }
-                ]
-            }),
-            None,
-        )
-        .unwrap();
-        for action in [
-            extractor::Action::ExtractAll,
-            extractor::Action::ExtractVocab,
-            extractor::Action::ExtractNonVocab,
-        ] {
-            let options = ExtractOptions::default();
-            let direct = extract(&mgr, &options, action, false).unwrap();
-            let mut kept = extract(&mgr, &options, action, true).unwrap();
-            let source = kept.source_models.take().unwrap();
-            assert_eq!(kept.decorator_command_set, direct.decorator_command_set);
-            assert_eq!(kept.vocabularies, direct.vocabularies);
-            let asts = |mm: &ModelManager| {
-                mm.model_files()
-                    .map(|f| f.ast().clone())
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(asts(&kept.model_manager), asts(&direct.model_manager));
-            let system = source
-                .iter()
-                .any(|m| m.get("namespace").and_then(Value::as_str) == Some("concerto@1.0.0"));
-            assert_eq!(system, action != extractor::Action::ExtractNonVocab);
-            for locale in ["en", "fr"] {
-                let options = ExtractOptions {
-                    remove_decorators_from_model: false,
-                    locale: locale.to_string(),
-                };
-                let fresh = extract(&mgr, &options, action, false).unwrap();
-                let (sets, vocabularies) =
-                    encode_extract_source(&source, &options, action).unwrap();
-                assert_eq!(sets, fresh.decorator_command_set, "{action:?} {locale}");
-                assert_eq!(vocabularies, fresh.vocabularies, "{action:?} {locale}");
-            }
-        }
-    }
-}
+mod tests;

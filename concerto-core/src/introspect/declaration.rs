@@ -20,12 +20,12 @@ use crate::introspect::decorator::{Decorator, WithDecorators, parse_decorator_li
 use crate::introspect::kept::{Kept, Location};
 use crate::introspect::model_file::unreadable_ast;
 use crate::introspect::property::Property;
+#[cfg(feature = "js-compat")]
+use crate::introspect::qualified_class;
 use crate::introspect::scalar::{self, ScalarDeclaration};
 use crate::introspect::typed_ast::{self, PropertyKept, TypedDeclaration, TypedProperties};
-use crate::introspect::{
-    DeclarationKind, HasValidators, Named, Typed, declared_class, qualified_class,
-};
-use crate::model_util::{is_system_property, is_valid_identifier, qualify, short_name};
+use crate::introspect::{DeclarationKind, HasValidators, Named, Typed, declared_class};
+use crate::model_util::{is_system_property, is_valid_identifier, qualify};
 
 /// Which class-like declaration a [`ClassDeclaration`] represents. Its
 /// [`DeclarationKind`] is the metamodel `$class` short name for the kind.
@@ -217,23 +217,22 @@ fn implicit_super_types() -> &'static [mm::TypeIdentifier; 5] {
     &NODES
 }
 
-js_compat_pub! {
-    /// [`ClassDeclaration::process_decision`]'s result: the `superType`/`idField`
-    /// decision `ClassDeclaration.process` (src/introspect/classdeclaration.ts)
-    /// makes before its `ast.properties` loop.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct ProcessDecision {
-        /// TS: `this.superType`, once `process()` has set it.
-        pub super_type: Option<String>,
-        /// TS: `this.idField`, once `process()` has set it.
-        pub id_field: Option<String>,
-        /// Whether the view must still call its own `addIdentifierField()`
-        /// (pushes a real `Field` view, constructed in TS; since P4-07 that
-        /// view's `process` delegates to the Rust `fieldProcess` binding).
-        pub add_identifier_field: bool,
-        /// Whether the view must still call its own `addTimestampField()`.
-        pub add_timestamp_field: bool,
-    }
+/// [`ClassDeclaration::process_decision`]'s result: the `superType`/`idField`
+/// decision `ClassDeclaration.process` (src/introspect/classdeclaration.ts)
+/// makes before its `ast.properties` loop.
+#[cfg(feature = "js-compat")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessDecision {
+    /// TS: `this.superType`, once `process()` has set it.
+    pub super_type: Option<String>,
+    /// TS: `this.idField`, once `process()` has set it.
+    pub id_field: Option<String>,
+    /// Whether the view must still call its own `addIdentifierField()`
+    /// (pushes a real `Field` view, constructed in TS; since P4-07 that
+    /// view's `process` delegates to the Rust `fieldProcess` binding).
+    pub add_identifier_field: bool,
+    /// Whether the view must still call its own `addTimestampField()`.
+    pub add_timestamp_field: bool,
 }
 
 impl ClassDeclaration {
@@ -393,17 +392,16 @@ impl ClassDeclaration {
         false
     }
 
-    js_compat_pub! {
-        /// The string representation TS's `ClassDeclaration.toString`
-        /// (src/introspect/classdeclaration.ts) builds: `super_type_name` is the
-        /// raw (unqualified) name TS keeps in `this.superType` — the AST's own
-        /// `superType.name`, or the implicit `'Concept'` — never a resolved FQN.
-        pub fn to_string(fqn: &str, super_type_name: Option<&str>, is_abstract: bool) -> String {
-            let super_part = super_type_name.map_or_else(String::new, |n| format!(" super={n}"));
-            // `EnumDeclaration` overrides `toString`, so a `ClassDeclaration`
-            // receiver is never an enum here (`is_enum` above).
-            format!("ClassDeclaration {{id={fqn}{super_part} enum=false abstract={is_abstract}}}")
-        }
+    /// The string representation TS's `ClassDeclaration.toString`
+    /// (src/introspect/classdeclaration.ts) builds: `super_type_name` is the
+    /// raw (unqualified) name TS keeps in `this.superType` — the AST's own
+    /// `superType.name`, or the implicit `'Concept'` — never a resolved FQN.
+    #[cfg(feature = "js-compat")]
+    pub fn to_string(fqn: &str, super_type_name: Option<&str>, is_abstract: bool) -> String {
+        let super_part = super_type_name.map_or_else(String::new, |n| format!(" super={n}"));
+        // `EnumDeclaration` overrides `toString`, so a `ClassDeclaration`
+        // receiver is never an enum here (`is_enum` above).
+        format!("ClassDeclaration {{id={fqn}{super_part} enum=false abstract={is_abstract}}}")
     }
 
     /// `true` for the system model's own `Concept` declaration: the root of
@@ -417,114 +415,98 @@ impl ClassDeclaration {
         is_system_model_namespace(namespace) && name == "Concept"
     }
 
-    js_compat_pub! {
-        /// TS: the kind-compatibility check in `ClassDeclaration._resolveSuperType`
-        /// (src/introspect/classdeclaration.ts): `classDecl.declarationKind() !==
-        /// 'ConceptDeclaration' && this.declarationKind() !== classDecl.declarationKind()`,
-        /// negated (`true` when compatible — a subtype may always extend a
-        /// concept, and otherwise both sides must be the same kind). Each side is
-        /// the receiver's own `declarationKind()` string
-        /// ([`DeclarationKind::declaration_kind`]); resolving the super type
-        /// declaration itself is a collaborator call the binding still makes.
-        pub fn kinds_compatible(child_kind: &str, super_kind: &str) -> bool {
-            super_kind == "ConceptDeclaration" || child_kind == super_kind
+    /// TS: the kind-compatibility check in `ClassDeclaration._resolveSuperType`
+    /// (src/introspect/classdeclaration.ts): `classDecl.declarationKind() !==
+    /// 'ConceptDeclaration' && this.declarationKind() !== classDecl.declarationKind()`,
+    /// negated (`true` when compatible — a subtype may always extend a
+    /// concept, and otherwise both sides must be the same kind). Each side is
+    /// the receiver's own `declarationKind()` string
+    /// ([`DeclarationKind::declaration_kind`]); resolving the super type
+    /// declaration itself is a collaborator call the binding still makes.
+    #[cfg(feature = "js-compat")]
+    pub fn kinds_compatible(child_kind: &str, super_kind: &str) -> bool {
+        super_kind == "ConceptDeclaration" || child_kind == super_kind
+    }
+
+    /// TS: the super-type identifier redeclaration check in
+    /// `ClassDeclaration.validate` (src/introspect/classdeclaration.ts), the
+    /// block guarded by `superType.isIdentified()` (the caller checks that
+    /// before calling this): `true` when the super type's existing
+    /// identifier cannot be redeclared. Resolving `superType` itself is a
+    /// collaborator call the binding still makes.
+    #[cfg(feature = "js-compat")]
+    pub fn identifier_redeclare_conflict(
+        child_is_system_identified: bool,
+        super_is_system_identified: bool,
+        super_is_explicitly_identified: bool,
+    ) -> bool {
+        if child_is_system_identified {
+            !super_is_system_identified
+        } else {
+            super_is_explicitly_identified
         }
     }
 
-    js_compat_pub! {
-        /// TS: the super-type identifier redeclaration check in
-        /// `ClassDeclaration.validate` (src/introspect/classdeclaration.ts), the
-        /// block guarded by `superType.isIdentified()` (the caller checks that
-        /// before calling this): `true` when the super type's existing
-        /// identifier cannot be redeclared. Resolving `superType` itself is a
-        /// collaborator call the binding still makes.
-        pub fn identifier_redeclare_conflict(
-            child_is_system_identified: bool,
-            super_is_system_identified: bool,
-            super_is_explicitly_identified: bool,
-        ) -> bool {
-            if child_is_system_identified {
-                !super_is_system_identified
-            } else {
-                super_is_explicitly_identified
+    /// The `superType`/`idField` decision `ClassDeclaration.process` makes
+    /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
+    /// the loop itself builds `Field`/`RelationshipDeclaration`/
+    /// `EnumValueDeclaration` views, kept in TS). TS: `if (this.ast.superType)
+    /// { this.superType = this.ast.superType.name; } else if (!(isSystemModelFile
+    /// && name === 'Concept')) { this.superType = 'Concept'; }` — a truthiness
+    /// test on the AST *node*, not on its `name`.
+    ///
+    /// `explicit_super_type` tells this function only whether that outer
+    /// truthiness test took the first branch at all (`Some`) or fell through
+    /// to the implicit-default branch (`None`) — **not** what
+    /// `this.ast.superType.name` itself was. When the outer node is truthy,
+    /// TS's own plain, unconditional assignment (`this.superType =
+    /// this.ast.superType.name`) can leave `this.superType` as a string, but
+    /// also as `undefined`, `null`, a number, a boolean, or any other JSON
+    /// value the AST carries; a bare `Option<&str>` cannot represent all of
+    /// those (accordproject/concerto-rust#217, #219), so a caller that needs
+    /// that raw value on its own snapshot (the WASM binding does) threads it
+    /// through separately and never reads `ProcessDecision::super_type` on
+    /// this branch at all — this function's own `Some(t) => Some(t.to_string())`
+    /// exists only to keep the type honest for direct unit testing and any
+    /// caller that genuinely has nothing more specific than a string; the
+    /// binding passes a placeholder here and ignores what comes back.
+    /// `identified_class` is `this.ast.identified.$class`; `identified_name`
+    /// is `this.ast.identified.name`, again exactly as given (only
+    /// meaningful for an explicit `IdentifiedBy`, and subject to the same
+    /// raw-value caveat as `explicit_super_type`). `fqn` is `this.fqn`, read
+    /// once `this.name` and `this.modelFile` are set (`Declaration.process`
+    /// runs first).
+    #[cfg(feature = "js-compat")]
+    pub fn process_decision(
+        explicit_super_type: Option<&str>,
+        is_system_model_file: bool,
+        name: &str,
+        identified_class: Option<&str>,
+        identified_name: Option<&str>,
+        fqn: &str,
+    ) -> ProcessDecision {
+        let super_type = match explicit_super_type {
+            Some(t) => Some(t.to_string()),
+            None if Self::is_system_concept_file(is_system_model_file, name) => None,
+            None => Some("Concept".to_string()),
+        };
+
+        let (id_field, add_identifier_field) = match identified_class {
+            None => (None, false),
+            Some(class) if class == qualified_class("IdentifiedBy") => {
+                (identified_name.map(str::to_string), false)
             }
-        }
-    }
+            Some(_) => (Some("$identifier".to_string()), true),
+        };
 
-    js_compat_pub! {
-        /// TS: `ClassDeclaration.isAsset`/`isParticipant`/`isTransaction`/
-        /// `isEvent`/`isConcept`/`isEnum`/`isMapDeclaration`
-        /// (src/introspect/classdeclaration.ts): each compares `this.type` (the
-        /// AST's own `$class`, already set by `process()`) against one metamodel
-        /// `$class`'s short name. `ast_class` is the receiver's `this.type`;
-        /// `want` is the metamodel short name to compare against
-        /// (`"AssetDeclaration"`, …).
-        pub fn is_kind(ast_class: &str, want: &str) -> bool {
-            short_name(ast_class) == want
-        }
-    }
+        let add_timestamp_field =
+            fqn == "concerto@1.0.0.Transaction" || fqn == "concerto@1.0.0.Event";
 
-    js_compat_pub! {
-        /// The `superType`/`idField` decision `ClassDeclaration.process` makes
-        /// before its `ast.properties` loop (src/introspect/classdeclaration.ts;
-        /// the loop itself builds `Field`/`RelationshipDeclaration`/
-        /// `EnumValueDeclaration` views, kept in TS). TS: `if (this.ast.superType)
-        /// { this.superType = this.ast.superType.name; } else if (!(isSystemModelFile
-        /// && name === 'Concept')) { this.superType = 'Concept'; }` — a truthiness
-        /// test on the AST *node*, not on its `name`.
-        ///
-        /// `explicit_super_type` tells this function only whether that outer
-        /// truthiness test took the first branch at all (`Some`) or fell through
-        /// to the implicit-default branch (`None`) — **not** what
-        /// `this.ast.superType.name` itself was. When the outer node is truthy,
-        /// TS's own plain, unconditional assignment (`this.superType =
-        /// this.ast.superType.name`) can leave `this.superType` as a string, but
-        /// also as `undefined`, `null`, a number, a boolean, or any other JSON
-        /// value the AST carries; a bare `Option<&str>` cannot represent all of
-        /// those (accordproject/concerto-rust#217, #219), so a caller that needs
-        /// that raw value on its own snapshot (the WASM binding does) threads it
-        /// through separately and never reads `ProcessDecision::super_type` on
-        /// this branch at all — this function's own `Some(t) => Some(t.to_string())`
-        /// exists only to keep the type honest for direct unit testing and any
-        /// caller that genuinely has nothing more specific than a string; the
-        /// binding passes a placeholder here and ignores what comes back.
-        /// `identified_class` is `this.ast.identified.$class`; `identified_name`
-        /// is `this.ast.identified.name`, again exactly as given (only
-        /// meaningful for an explicit `IdentifiedBy`, and subject to the same
-        /// raw-value caveat as `explicit_super_type`). `fqn` is `this.fqn`, read
-        /// once `this.name` and `this.modelFile` are set (`Declaration.process`
-        /// runs first).
-        pub fn process_decision(
-            explicit_super_type: Option<&str>,
-            is_system_model_file: bool,
-            name: &str,
-            identified_class: Option<&str>,
-            identified_name: Option<&str>,
-            fqn: &str,
-        ) -> ProcessDecision {
-            let super_type = match explicit_super_type {
-                Some(t) => Some(t.to_string()),
-                None if Self::is_system_concept_file(is_system_model_file, name) => None,
-                None => Some("Concept".to_string()),
-            };
-
-            let (id_field, add_identifier_field) = match identified_class {
-                None => (None, false),
-                Some(class) if class == qualified_class("IdentifiedBy") => {
-                    (identified_name.map(str::to_string), false)
-                }
-                Some(_) => (Some("$identifier".to_string()), true),
-            };
-
-            let add_timestamp_field =
-                fqn == "concerto@1.0.0.Transaction" || fqn == "concerto@1.0.0.Event";
-
-            ProcessDecision {
-                super_type,
-                id_field,
-                add_identifier_field,
-                add_timestamp_field,
-            }
+        ProcessDecision {
+            super_type,
+            id_field,
+            add_identifier_field,
+            add_timestamp_field,
         }
     }
 
@@ -532,6 +514,7 @@ impl ClassDeclaration {
     /// (which also needs the namespace, not available to the binding at this
     /// point), the caller already knows whether its model file is the system
     /// model file.
+    #[cfg(feature = "js-compat")]
     fn is_system_concept_file(is_system_model_file: bool, name: &str) -> bool {
         is_system_model_file && name == "Concept"
     }
@@ -820,14 +803,13 @@ impl EnumDeclaration {
         &self.values
     }
 
-    js_compat_pub! {
-        /// The string representation TS's `EnumDeclaration.toString`
-        /// (src/introspect/enumdeclaration.ts) builds: `'EnumDeclaration {id=' +
-        /// this.getFullyQualifiedName() + '}'`, an override of
-        /// [`ClassDeclaration::to_string`] with no super type or abstract flag.
-        pub fn to_string(fqn: &str) -> String {
-            format!("EnumDeclaration {{id={fqn}}}")
-        }
+    /// The string representation TS's `EnumDeclaration.toString`
+    /// (src/introspect/enumdeclaration.ts) builds: `'EnumDeclaration {id=' +
+    /// this.getFullyQualifiedName() + '}'`, an override of
+    /// [`ClassDeclaration::to_string`] with no super type or abstract flag.
+    #[cfg(feature = "js-compat")]
+    pub fn to_string(fqn: &str) -> String {
+        format!("EnumDeclaration {{id={fqn}}}")
     }
 
     /// The enum's values.
@@ -1007,12 +989,11 @@ impl MapDeclaration {
         }
     }
 
-    js_compat_pub! {
-        /// `MapDeclaration.toString` (src/introspect/mapdeclaration.ts):
-        /// `MapDeclaration {id=<fully qualified name>}`.
-        pub fn to_string(fully_qualified_name: &str) -> String {
-            format!("MapDeclaration {{id={fully_qualified_name}}}")
-        }
+    /// `MapDeclaration.toString` (src/introspect/mapdeclaration.ts):
+    /// `MapDeclaration {id=<fully qualified name>}`.
+    #[cfg(feature = "js-compat")]
+    pub fn to_string(fully_qualified_name: &str) -> String {
+        format!("MapDeclaration {{id={fully_qualified_name}}}")
     }
 
     /// Reads a map declaration node, as the typed read keeps it (a

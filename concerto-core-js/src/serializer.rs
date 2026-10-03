@@ -1360,7 +1360,7 @@ mod tests {
         let car = serializer()
             .from_json(&mm, &car_json(), None, &mut Env)
             .expect("a car");
-        let mut stale = car.clone();
+        let mut stale = car;
         stale.set("$identifier", JsValue::String("old".into()));
         let mut synced = stale.clone();
         resource::sync_identifiers(&mm, &mut synced).expect("synced");

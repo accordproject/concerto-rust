@@ -83,6 +83,7 @@ impl Primitive {
 /// caller that needs the number itself rather than a comparison (e.g. a
 /// fuzz-mutated model AST's numeric validator bound, read with no type check
 /// at all by the TS reference: DV-002/accordproject/concerto-rust#217).
+#[cfg(feature = "js-compat")]
 pub(crate) fn to_number(value: &Value) -> f64 {
     Primitive::of(value).to_number()
 }

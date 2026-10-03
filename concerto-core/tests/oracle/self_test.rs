@@ -671,7 +671,7 @@ fn replays_a_cached_parse_exception_as_the_outcome() {
         "location": { "start": { "line": 1, "column": 1, "offset": 0 }, "end": { "line": 1, "column": 1, "offset": 0 } }
     });
     write_cache_entry(&cache, "x", Some("bad.cto"), json!({ "error": error }));
-    let mut expected = error.clone();
+    let mut expected = error;
     expected["component"] = json!("@accordproject/concerto-util");
     // Recorded ParseException locations carry peggy's `source: undefined`,
     // which the cache's JSON drops (ops.rs, `restore_location_source`).
@@ -928,7 +928,7 @@ fn a_run_passes_only_when_it_matches_the_baseline_exactly() {
     report_filtered(&dir, &new_pass).assert_no_regressions();
 
     // Missing: a baselined fixture that is not in the corpus.
-    let mut stale = exact.clone();
+    let mut stale = exact;
     stale.extend([entry("gone", Pass)]);
     let report = report_against(&dir, &stale);
     let json = serde_json::to_value(&report).unwrap();

@@ -29,7 +29,7 @@ license = "Apache-2.0"
 authors = ["Accord Project <accordproject.org>"]
 keywords = ["concerto", "accordproject", "semantic-data"]
 repository = "https://github.com/accordproject/concerto-rust"
-categories = ["cryptography", "data-structures", "template-engine"]
+categories = ["data-structures", "template-engine"]
 homepage = "https://concerto.accordproject.org"
 
 [workspace.dependencies]
@@ -47,3 +47,23 @@ thiserror = "1.0"
 # or a time zone database, so `clock`/`wasmbind` (js-sys, wasm-bindgen) and
 # `iana-time-zone` stay out of the build (P5-23 follow-up 7).
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# PORTING.md OD-8: insertion-ordered maps (3.7): a model file's external
+# imports (concerto-core) and the JS objects' own properties
+# (concerto-core-js).
+indexmap = "2"
+# The one fast, non-cryptographic hasher of the internal lookup maps
+# (P5-13, accordproject/concerto-rust#297; P5-104, C-14: concerto-core-js
+# too, in place of foldhash). None of them is iterated on an observable
+# path (PORTING.md 3.7).
+rustc-hash = "2"
+# The native oracle harness's CTO -> AST cache key (P1-07a), as
+# migration/oracle/bin/build-cto-cache.js keys it.
+sha2 = "0.10"
+
+# P5-104 (C-14): lints every member opts into with `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+format_push_string = "warn"
+redundant_clone = "warn"

@@ -10,6 +10,9 @@ keywords.workspace = true
 repository.workspace = true
 categories.workspace = true
 homepage.workspace = true
+# P5-104 (C-15): the DCS test fixtures (about 220 KB) stay out of the
+# published package; the tests that read them run from a checkout.
+exclude = ["src/**/testdata"]
 
 [lib]
 name = "concerto_core"
@@ -31,15 +34,16 @@ serde = { workspace = true }
 # OD-3: keep the given AST in its original key order. DV-001
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
+# PORTING.md OD-8: insertion-ordered maps (3.7), for a model file's external
+# imports.
+indexmap = { workspace = true }
 # PORTING.md OD-8: ECMAScript regular expressions (ID_REGEX) and ECMAScript
 # Number::toString.
-# PORTING.md OD-8: insertion-ordered maps (3.7), for instance fields.
-indexmap = "2"
 regress = "0.12"
+ryu-js = "1.0"
 # P5-24 (accordproject/concerto-rust#328): strict ISO 8601 / RFC 3339
 # `DateTime` parsing, behind the `strictQualifiedDateTimes` regex.
 chrono = { workspace = true }
-ryu-js = "1.0"
 # P5-25 (accordproject/concerto-rust#329): namespace and import versions
 # (`model_util::semver_parse`) are parsed by the `semver` crate: strict
 # SemVer 2.0.0 since BC-41 (P5-38, accordproject/concerto-rust#348).
@@ -48,7 +52,7 @@ semver = "1"
 # hasher, for the manager's and model files' internal lookup maps (namespace
 # and declaration names). None of them is ever iterated on an observable
 # path (PORTING.md 3.7).
-rustc-hash = "2"
+rustc-hash = { workspace = true }
 
 [features]
 # P6-01 (accordproject/concerto-rust#83, docs/public-api.md section 4.6):
@@ -83,8 +87,11 @@ accordproject-concerto-core = { path = ".", features = ["js-compat", "validation
 concerto-core-js = { path = "../concerto-core-js" }
 # The native oracle harness (tests/oracle) keys the P1-07a CTO -> AST cache
 # by SHA-256, as migration/oracle/bin/build-cto-cache.js does.
-sha2 = "0.10"
+sha2 = { workspace = true }
 # `test/decoratormanager.js`'s vocabulary tests parse the extracted
 # vocabulary YAML (the `yaml` npm package, YAML 1.2) to check its values;
-# src/dcs/decoratormanager_tests.rs does the same.
+# src/dcs/tests/decoratormanager.rs does the same.
 yaml-rust2 = "0.10"
+
+[lints]
+workspace = true

@@ -8,22 +8,28 @@
 //! and its result, `ProcessedScalar`, is what the getters read. The WASM
 //! binding returns the same result to the TS view as its snapshot.
 
+#[cfg(feature = "js-compat")]
 use rustc_hash::FxHashSet;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde_json::Value;
 
+#[cfg(feature = "js-compat")]
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::decorator::{Decorated, Decorator};
 use crate::introspect::kept::Kept;
+#[cfg(feature = "js-compat")]
 use crate::introspect::validators;
 use crate::introspect::validators::{NumberValidator, StringValidator};
 use crate::introspect::{DeclarationKind, FullyQualified, HasValidators, Named, Typed};
-use crate::model_manager::{ResolutionContext, ValidatedElement};
+#[cfg(feature = "js-compat")]
+use crate::model_manager::ResolutionContext;
+use crate::model_manager::ValidatedElement;
 use crate::model_util::is_primitive_type;
 
 /// The metamodel namespace (`MetaModelNamespace`).
+#[cfg(feature = "js-compat")]
 const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
 /// The validator `ScalarDeclaration.process` attaches.
@@ -56,11 +62,13 @@ js_compat_pub! {
 /// The scalar as the element its own `NumberValidator` is attached to: TS
 /// passes `this`, so the validator reads `this.ast.defaultValue` and
 /// `this.getFullyQualifiedName()`.
+#[cfg(feature = "js-compat")]
 struct ScalarElement<'a, E> {
     ast: &'a Value,
     fully_qualified_name: &'a dyn Fn() -> Result<String, E>,
 }
 
+#[cfg(feature = "js-compat")]
 impl<E: From<ContractError>> FullyQualified for ScalarElement<'_, E> {
     type Error = E;
 
@@ -69,6 +77,7 @@ impl<E: From<ContractError>> FullyQualified for ScalarElement<'_, E> {
     }
 }
 
+#[cfg(feature = "js-compat")]
 impl<E: From<ContractError>> ValidatedElement for ScalarElement<'_, E> {
     fn default_value(&self) -> Result<Option<Value>, E> {
         Ok(self.ast.get("defaultValue").cloned())
@@ -121,108 +130,107 @@ pub struct ScalarDeclaration {
 }
 
 impl ScalarDeclaration {
-    js_compat_pub! {
-        /// Computes the scalar's type, validator and default value from its AST,
-        /// in the TS order: the primitive-name check, the type, the validator
-        /// (whose constructor may fail), then the default value.
-        ///
-        /// `model_file_name` is `modelFile.getName()` of the file TS passes to the
-        /// exception; `fully_qualified_name` is `this.getFullyQualifiedName()`,
-        /// called only if the validator reports an error.
-        ///
-        /// TS: ScalarDeclaration.process (src/introspect/scalardeclaration.ts)
-        pub fn process<E: From<ContractError>>(
-            ast: &Value,
-            model_file_name: Option<&str>,
-            fully_qualified_name: &dyn Fn() -> Result<String, E>,
-        ) -> Result<ProcessedScalar, E> {
-            // `ModelUtil.isPrimitiveType(this.getName())`: a name that is not a
-            // string is never a primitive.
-            if let Some(scalar_name) = ast.get("name").and_then(Value::as_str)
-                && is_primitive_type(scalar_name)
-            {
-                let mut err = ContractError::new(
-                    ErrorKind::IllegalModel,
-                    "scalardeclaration-process-primitivename",
-                    vec![("scalarName", scalar_name.to_string())],
-                );
-                err.model_file = Some(model_file_name.map(str::to_string));
-                err.location = ast.get("location").cloned();
-                return Err(err.into());
-            }
-
-            // P5-93: the `$class` taken apart, where each candidate's own
-            // `$class` used to be formatted to compare it with.
-            let primitive_of_class = ast.get("$class").and_then(Value::as_str).and_then(|class| {
-                class
-                    .strip_prefix(METAMODEL_NAMESPACE)?
-                    .strip_prefix('.')?
-                    .strip_suffix("Scalar")
-            });
-            let scalar_type = ["Boolean", "Integer", "Long", "Double", "String", "DateTime"]
-                .into_iter()
-                .find(|primitive| primitive_of_class == Some(*primitive));
-
-            let truthy = |key: &str| ast.get(key).is_some_and(ecma::is_truthy);
-            let validator = match scalar_type {
-                Some("Integer" | "Double" | "Long") if truthy("validator") => {
-                    let element = ScalarElement {
-                        ast,
-                        fully_qualified_name,
-                    };
-                    let validator_ast = ast.get("validator").unwrap_or(&Value::Null);
-                    Some(ScalarValidator::Number(NumberValidator::new(
-                        &element,
-                        validator_ast,
-                    )?))
-                }
-                Some("String") if truthy("validator") || truthy("lengthValidator") => {
-                    // TS: `this.validator = new StringValidator(this, this.ast.validator,
-                    // this.ast.lengthValidator)` — built eagerly here, exactly like the
-                    // `NumberValidator` arm above (F5: this used to be deferred to a
-                    // loader-only, ad hoc `check_pattern`/`check_length` pass — see
-                    // `HasValidators::check_validators` below — that neither this
-                    // scalar's own `defaultValue` (TS validates it right here, in the
-                    // constructor) nor `build_standalone`'s callers ever ran).
-                    let element = ScalarElement {
-                        ast,
-                        fully_qualified_name,
-                    };
-                    // On the model-file load path, `declaration::load_scalar`
-                    // has already read this node strictly (P5-61, BR-09), so
-                    // `validator`/`lengthValidator` are well-formed here and a
-                    // wrongly-typed one never reaches this point.
-                    // `validators::regex_validator_from_ast`/`length_validator_from_ast`
-                    // read the raw AST untyped, as TS's `StringValidator`
-                    // constructor does, only because `process` also runs on
-                    // ASTs that bypass the loader: `build_standalone` (a
-                    // `new ScalarDeclaration(modelFile, ast)` never added to
-                    // its file) and concerto-wasm's standalone bindings.
-                    let validator = validators::regex_validator_from_ast(ast.get("validator"));
-                    let length_validator =
-                        validators::length_validator_from_ast(ast.get("lengthValidator"));
-                    Some(ScalarValidator::String(StringValidator::new(
-                        &element,
-                        validator.as_ref(),
-                        length_validator.as_ref(),
-                        ast.get("lengthValidator"),
-                    )?))
-                }
-                _ => None,
-            };
-
-            // `!Util.isNull(this.ast.defaultValue)`.
-            let default_value = match ast.get("defaultValue") {
-                None | Some(Value::Null) => None,
-                Some(value) => Some(value.clone()),
-            };
-
-            Ok(ProcessedScalar {
-                scalar_type,
-                validator,
-                default_value,
-            })
+    /// Computes the scalar's type, validator and default value from its AST,
+    /// in the TS order: the primitive-name check, the type, the validator
+    /// (whose constructor may fail), then the default value.
+    ///
+    /// `model_file_name` is `modelFile.getName()` of the file TS passes to the
+    /// exception; `fully_qualified_name` is `this.getFullyQualifiedName()`,
+    /// called only if the validator reports an error.
+    ///
+    /// TS: ScalarDeclaration.process (src/introspect/scalardeclaration.ts)
+    #[cfg(feature = "js-compat")]
+    pub fn process<E: From<ContractError>>(
+        ast: &Value,
+        model_file_name: Option<&str>,
+        fully_qualified_name: &dyn Fn() -> Result<String, E>,
+    ) -> Result<ProcessedScalar, E> {
+        // `ModelUtil.isPrimitiveType(this.getName())`: a name that is not a
+        // string is never a primitive.
+        if let Some(scalar_name) = ast.get("name").and_then(Value::as_str)
+            && is_primitive_type(scalar_name)
+        {
+            let mut err = ContractError::new(
+                ErrorKind::IllegalModel,
+                "scalardeclaration-process-primitivename",
+                vec![("scalarName", scalar_name.to_string())],
+            );
+            err.model_file = Some(model_file_name.map(str::to_string));
+            err.location = ast.get("location").cloned();
+            return Err(err.into());
         }
+
+        // P5-93: the `$class` taken apart, where each candidate's own
+        // `$class` used to be formatted to compare it with.
+        let primitive_of_class = ast.get("$class").and_then(Value::as_str).and_then(|class| {
+            class
+                .strip_prefix(METAMODEL_NAMESPACE)?
+                .strip_prefix('.')?
+                .strip_suffix("Scalar")
+        });
+        let scalar_type = ["Boolean", "Integer", "Long", "Double", "String", "DateTime"]
+            .into_iter()
+            .find(|primitive| primitive_of_class == Some(*primitive));
+
+        let truthy = |key: &str| ast.get(key).is_some_and(ecma::is_truthy);
+        let validator = match scalar_type {
+            Some("Integer" | "Double" | "Long") if truthy("validator") => {
+                let element = ScalarElement {
+                    ast,
+                    fully_qualified_name,
+                };
+                let validator_ast = ast.get("validator").unwrap_or(&Value::Null);
+                Some(ScalarValidator::Number(NumberValidator::new(
+                    &element,
+                    validator_ast,
+                )?))
+            }
+            Some("String") if truthy("validator") || truthy("lengthValidator") => {
+                // TS: `this.validator = new StringValidator(this, this.ast.validator,
+                // this.ast.lengthValidator)` — built eagerly here, exactly like the
+                // `NumberValidator` arm above (F5: this used to be deferred to a
+                // loader-only, ad hoc `check_pattern`/`check_length` pass — see
+                // `HasValidators::check_validators` below — that neither this
+                // scalar's own `defaultValue` (TS validates it right here, in the
+                // constructor) nor `build_standalone`'s callers ever ran).
+                let element = ScalarElement {
+                    ast,
+                    fully_qualified_name,
+                };
+                // On the model-file load path, `declaration::load_scalar`
+                // has already read this node strictly (P5-61, BR-09), so
+                // `validator`/`lengthValidator` are well-formed here and a
+                // wrongly-typed one never reaches this point.
+                // `validators::regex_validator_from_ast`/`length_validator_from_ast`
+                // read the raw AST untyped, as TS's `StringValidator`
+                // constructor does, only because `process` also runs on
+                // ASTs that bypass the loader: `build_standalone` (a
+                // `new ScalarDeclaration(modelFile, ast)` never added to
+                // its file) and concerto-wasm's standalone bindings.
+                let validator = validators::regex_validator_from_ast(ast.get("validator"));
+                let length_validator =
+                    validators::length_validator_from_ast(ast.get("lengthValidator"));
+                Some(ScalarValidator::String(StringValidator::new(
+                    &element,
+                    validator.as_ref(),
+                    length_validator.as_ref(),
+                    ast.get("lengthValidator"),
+                )?))
+            }
+            _ => None,
+        };
+
+        // `!Util.isNull(this.ast.defaultValue)`.
+        let default_value = match ast.get("defaultValue") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.clone()),
+        };
+
+        Ok(ProcessedScalar {
+            scalar_type,
+            validator,
+            default_value,
+        })
     }
 
     /// [`ScalarDeclaration::process`] on the model-file load path (A-10,
@@ -351,30 +359,28 @@ impl ScalarDeclaration {
         Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
     }
 
-    js_compat_pub! {
-        /// The same construction as [`ScalarDeclaration::validate_new`], but
-        /// returning what [`ScalarDeclaration::process`] computed as well as the
-        /// fully qualified name, for callers that need `getType`, `getValidator`
-        /// or `getDefaultValue` on a scalar built this way (the oracle harness's
-        /// `declnew` fixtures: a later call on a `new ScalarDeclaration(modelFile,
-        /// ast)` receiver never added to its model file, so it re-encodes the
-        /// same recipe rather than a `declref`).
-        pub fn build_standalone(
-            namespace: &str,
-            file_name: Option<&str>,
-            ast: &Value,
-        ) -> crate::error::Result<(String, ProcessedScalar)> {
-            let fqn = crate::model_util::qualify(
-                namespace,
-                ast.get("name").and_then(Value::as_str).unwrap_or_default(),
-            );
-            // F5: `process` itself now builds (and so validates) the scalar's
-            // `StringValidator` eagerly, exactly as it already did for
-            // `NumberValidator`, so there is nothing left to check here.
-            let processed =
-                Self::process::<crate::error::Error>(ast, file_name, &|| Ok(fqn.clone()))?;
-            Ok((fqn, processed))
-        }
+    /// The same construction as [`ScalarDeclaration::validate_new`], but
+    /// returning what [`ScalarDeclaration::process`] computed as well as the
+    /// fully qualified name, for callers that need `getType`, `getValidator`
+    /// or `getDefaultValue` on a scalar built this way (the oracle harness's
+    /// `declnew` fixtures: a later call on a `new ScalarDeclaration(modelFile,
+    /// ast)` receiver never added to its model file, so it re-encodes the
+    /// same recipe rather than a `declref`).
+    #[cfg(feature = "js-compat")]
+    pub fn build_standalone(
+        namespace: &str,
+        file_name: Option<&str>,
+        ast: &Value,
+    ) -> crate::error::Result<(String, ProcessedScalar)> {
+        let fqn = crate::model_util::qualify(
+            namespace,
+            ast.get("name").and_then(Value::as_str).unwrap_or_default(),
+        );
+        // F5: `process` itself now builds (and so validates) the scalar's
+        // `StringValidator` eagerly, exactly as it already did for
+        // `NumberValidator`, so there is nothing left to check here.
+        let processed = Self::process::<crate::error::Error>(ast, file_name, &|| Ok(fqn.clone()))?;
+        Ok((fqn, processed))
     }
 
     /// The generated metamodel node.
@@ -414,40 +420,38 @@ impl ScalarDeclaration {
         self.processed.default_value.as_ref()
     }
 
-    js_compat_pub! {
-        /// `ScalarDeclaration {id=<fully qualified name>}`.
-        ///
-        /// TS: ScalarDeclaration.toString (src/introspect/scalardeclaration.ts)
-        pub fn to_string(fully_qualified_name: &str) -> String {
-            format!("ScalarDeclaration {{id={fully_qualified_name}}}")
-        }
+    /// `ScalarDeclaration {id=<fully qualified name>}`.
+    ///
+    /// TS: ScalarDeclaration.toString (src/introspect/scalardeclaration.ts)
+    #[cfg(feature = "js-compat")]
+    pub fn to_string(fully_qualified_name: &str) -> String {
+        format!("ScalarDeclaration {{id={fully_qualified_name}}}")
     }
 
-    js_compat_pub! {
-        /// The scalar's own semantic check, run after `Declaration.validate`: no
-        /// two declarations of its model file may share a fully qualified name.
-        ///
-        /// TS: ScalarDeclaration.validate (src/introspect/scalardeclaration.ts)
-        pub fn validate<C: ResolutionContext>(ctx: &C, declaration: &C::Node) -> Result<(), C::Error> {
-            let model_file = ctx.get_model_file(declaration)?;
-            let declarations = ctx.get_all_declarations(&model_file)?;
-            let names = declarations
-                .iter()
-                .map(|d| ctx.get_fully_qualified_name(d))
-                .collect::<Result<Vec<_>, _>>()?;
-            // The first name equal to an earlier one is `duplicateElements[0]`.
-            // The set is only probed, never iterated.
-            let mut seen = FxHashSet::default();
-            if let Some(duplicate) = names.iter().find(|name| !seen.insert(name.as_str())) {
-                return Err(ContractError::new(
-                    ErrorKind::IllegalModel,
-                    "scalardeclaration-validate-duplicateclassname",
-                    vec![("name", duplicate.clone())],
-                )
-                .into());
-            }
-            Ok(())
+    /// The scalar's own semantic check, run after `Declaration.validate`: no
+    /// two declarations of its model file may share a fully qualified name.
+    ///
+    /// TS: ScalarDeclaration.validate (src/introspect/scalardeclaration.ts)
+    #[cfg(feature = "js-compat")]
+    pub fn validate<C: ResolutionContext>(ctx: &C, declaration: &C::Node) -> Result<(), C::Error> {
+        let model_file = ctx.get_model_file(declaration)?;
+        let declarations = ctx.get_all_declarations(&model_file)?;
+        let names = declarations
+            .iter()
+            .map(|d| ctx.get_fully_qualified_name(d))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The first name equal to an earlier one is `duplicateElements[0]`.
+        // The set is only probed, never iterated.
+        let mut seen = FxHashSet::default();
+        if let Some(duplicate) = names.iter().find(|name| !seen.insert(name.as_str())) {
+            return Err(ContractError::new(
+                ErrorKind::IllegalModel,
+                "scalardeclaration-validate-duplicateclassname",
+                vec![("name", duplicate.clone())],
+            )
+            .into());
         }
+        Ok(())
     }
 }
 

@@ -41,12 +41,14 @@ js_compat_pub! {
         ) -> std::result::Result<Option<Self::Node>, Self::Error>;
 
         /// TS: ClassDeclaration.getAllSuperTypeDeclarations (src/introspect/classdeclaration.ts)
+        #[cfg(feature = "js-compat")]
         fn get_all_super_type_declarations(
             &self,
             declaration: &Self::Node,
         ) -> std::result::Result<Vec<Self::Node>, Self::Error>;
 
         /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts)
+        #[cfg(feature = "js-compat")]
         fn get_fully_qualified_name(
             &self,
             declaration: &Self::Node,
@@ -79,6 +81,7 @@ js_compat_pub! {
 
         /// TS: `declaration.isMapDeclaration?.()`; `None` when the method is
         /// missing.
+        #[cfg(feature = "js-compat")]
         fn is_map_declaration(
             &self,
             declaration: &Self::Node,
@@ -86,18 +89,21 @@ js_compat_pub! {
 
         /// TS: `declaration.isScalarDeclaration?.()`; `None` when the method is
         /// missing.
+        #[cfg(feature = "js-compat")]
         fn is_scalar_declaration(
             &self,
             declaration: &Self::Node,
         ) -> std::result::Result<Option<bool>, Self::Error>;
 
         /// TS: `declaration.ast.$class`; `None` when it is not a string.
+        #[cfg(feature = "js-compat")]
         fn get_ast_class(
             &self,
             declaration: &Self::Node,
         ) -> std::result::Result<Option<String>, Self::Error>;
 
         /// TS: ModelFile.getAllDeclarations (src/introspect/modelfile.ts)
+        #[cfg(feature = "js-compat")]
         fn get_all_declarations(
             &self,
             model_file: &Self::Node,
@@ -136,6 +142,7 @@ js_compat_pub! {
 impl ModelManager {
     /// The AST node an element was built from, as TS keeps it in `ast`;
     /// `None` for a primitive type name, whose `ast` is `undefined`.
+    #[cfg(feature = "js-compat")]
     pub(super) fn node_ast(&self, node: Node) -> Result<Option<&Value>> {
         let found = match node {
             Node::ModelFile(id) => self.file(id).map(ModelFile::ast),
@@ -202,6 +209,7 @@ impl ResolutionContext for ModelManager {
         Ok(self.local_type(file, type_name).map(Node::Declaration))
     }
 
+    #[cfg(feature = "js-compat")]
     fn get_all_super_type_declarations(&self, declaration: &Node) -> Result<Vec<Node>> {
         let not_a_function = || not_a_function("typeDeclaration.getAllSuperTypeDeclarations");
         let Node::Declaration(id) = *declaration else {
@@ -220,6 +228,7 @@ impl ResolutionContext for ModelManager {
         }
     }
 
+    #[cfg(feature = "js-compat")]
     fn get_fully_qualified_name(&self, declaration: &Node) -> Result<String> {
         match *declaration {
             Node::Declaration(id) => self.declaration_fqn(id),
@@ -327,6 +336,7 @@ impl ResolutionContext for ModelManager {
         Ok(found.is_enum_declaration())
     }
 
+    #[cfg(feature = "js-compat")]
     fn is_map_declaration(&self, declaration: &Node) -> Result<Option<bool>> {
         match *declaration {
             Node::Declaration(id) => Ok(Some(
@@ -339,6 +349,7 @@ impl ResolutionContext for ModelManager {
         }
     }
 
+    #[cfg(feature = "js-compat")]
     fn is_scalar_declaration(&self, declaration: &Node) -> Result<Option<bool>> {
         match *declaration {
             Node::Declaration(id) => Ok(Some(
@@ -351,6 +362,7 @@ impl ResolutionContext for ModelManager {
         }
     }
 
+    #[cfg(feature = "js-compat")]
     fn get_ast_class(&self, declaration: &Node) -> Result<Option<String>> {
         let Some(ast) = self.node_ast(*declaration)? else {
             return Err(ContractError::new(
@@ -369,6 +381,7 @@ impl ResolutionContext for ModelManager {
             .map(str::to_string))
     }
 
+    #[cfg(feature = "js-compat")]
     fn get_all_declarations(&self, model_file: &Node) -> Result<Vec<Node>> {
         let Node::ModelFile(id) = *model_file else {
             return Err(not_a_function("this.getModelFile().getAllDeclarations"));

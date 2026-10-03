@@ -38,15 +38,13 @@ use crate::introspect::Declaration;
 use crate::model_manager::{DeclId, ModelManager, Node, ResolutionContext};
 use crate::{Error, ecma, model_util};
 
-js_compat_pub! {
-    /// What the TS `Factory` gets from its environment rather than from the
-    /// model (D7): a new identifier and the current time.
-    pub trait InstanceEnv {
-        /// TS: `Factory.newId()`, `uuid.v4()`.
-        fn new_id(&mut self) -> String;
-        /// TS: the time `dayjs.utc()` reads, in ms since the epoch.
-        fn now_ms(&mut self) -> f64;
-    }
+/// What the TS `Factory` gets from its environment rather than from the
+/// model (D7): a new identifier and the current time.
+pub trait InstanceEnv {
+    /// TS: `Factory.newId()`, `uuid.v4()`.
+    fn new_id(&mut self) -> String;
+    /// TS: the time `dayjs.utc()` reads, in ms since the epoch.
+    fn now_ms(&mut self) -> f64;
 }
 
 /// The environment of a native check: a fixed identifier and clock. No
@@ -62,32 +60,30 @@ impl InstanceEnv for FixedEnv {
     }
 }
 
-js_compat_pub! {
-    /// The `Serializer.fromJSON` options this route reads, after the
-    /// serializer has merged them with its defaults.
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct FromJsonOptions {
-        /// `validate`: validate the populated instance
-        /// (`ValidatedResource.validate`).
-        pub validate: bool,
-        /// `utcOffset || 0`: the offset a `DateTime` gets unless
-        /// `strictQualifiedDateTimes` is `true`.
-        pub utc_offset: UtcOffset,
-        /// `strictQualifiedDateTimes === true`. Since P5-24 (BC-07, R1)
-        /// every `DateTime` string must have the strict format either way;
-        /// the flag only decides whether `utc_offset` is applied.
-        pub strict_qualified_date_times: bool,
-        /// `acceptResourcesForRelationships`.
-        pub accept_resources_for_relationships: bool,
-        /// `rejectUnknownKeys` (accordproject/concerto#1273).
-        pub reject_unknown_keys: bool,
-        /// `rejectRequiredNull` (accordproject/concerto#1273).
-        pub reject_required_null: bool,
-        /// The options the validator walk runs with. `Serializer.fromJSON`
-        /// always validates with the defaults (the `ValidatedResource`'s own
-        /// validator).
-        pub validator: ValidateOptions,
-    }
+/// The `Serializer.fromJSON` options this route reads, after the
+/// serializer has merged them with its defaults.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FromJsonOptions {
+    /// `validate`: validate the populated instance
+    /// (`ValidatedResource.validate`).
+    pub validate: bool,
+    /// `utcOffset || 0`: the offset a `DateTime` gets unless
+    /// `strictQualifiedDateTimes` is `true`.
+    pub utc_offset: UtcOffset,
+    /// `strictQualifiedDateTimes === true`. Since P5-24 (BC-07, R1)
+    /// every `DateTime` string must have the strict format either way;
+    /// the flag only decides whether `utc_offset` is applied.
+    pub strict_qualified_date_times: bool,
+    /// `acceptResourcesForRelationships`.
+    pub accept_resources_for_relationships: bool,
+    /// `rejectUnknownKeys` (accordproject/concerto#1273).
+    pub reject_unknown_keys: bool,
+    /// `rejectRequiredNull` (accordproject/concerto#1273).
+    pub reject_required_null: bool,
+    /// The options the validator walk runs with. `Serializer.fromJSON`
+    /// always validates with the defaults (the `ValidatedResource`'s own
+    /// validator).
+    pub validator: ValidateOptions,
 }
 
 impl Default for FromJsonOptions {
@@ -106,18 +102,16 @@ impl Default for FromJsonOptions {
     }
 }
 
-js_compat_pub! {
-    /// TS: `Serializer.fromJSON(json, options)` for a plain JSON `json`,
-    /// then, when `options.validate` is set, `ValidatedResource.validate`.
-    /// Returns the populated instance in the validator's value shape.
-    pub fn from_json(
-        mm: &ModelManager,
-        json: &Value,
-        options: &FromJsonOptions,
-        env: &mut dyn InstanceEnv,
-    ) -> Result<Value> {
-        with_document_class(json, |class_name| from_json_as(mm, json, class_name, options, env))
-    }
+/// TS: `Serializer.fromJSON(json, options)` for a plain JSON `json`,
+/// then, when `options.validate` is set, `ValidatedResource.validate`.
+/// Returns the populated instance in the validator's value shape.
+pub fn from_json(
+    mm: &ModelManager,
+    json: &Value,
+    options: &FromJsonOptions,
+    env: &mut dyn InstanceEnv,
+) -> Result<Value> {
+    with_document_class(json, |class_name| from_json_as(mm, json, class_name, options, env))
 }
 
 /// `fromJSON`'s read of the document's own `$class`, handed to `then`.
@@ -426,20 +420,18 @@ fn not_a_string_class(class_name: Option<&Value>) -> Error {
 // Factory
 // ---------------------------------------------------------------------
 
-js_compat_pub! {
-    /// The identifier `Factory.newResource` is given, as its checks read it.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum IdentifierArg<'a> {
-        /// `undefined` or `null`.
-        Nullish,
-        /// A string.
-        String(&'a str),
-        /// Any other value, and whether it is truthy.
-        Other {
-            /// `!!id`.
-            truthy: bool,
-        },
-    }
+/// The identifier `Factory.newResource` is given, as its checks read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentifierArg<'a> {
+    /// `undefined` or `null`.
+    Nullish,
+    /// A string.
+    String(&'a str),
+    /// Any other value, and whether it is truthy.
+    Other {
+        /// `!!id`.
+        truthy: bool,
+    },
 }
 
 impl<'a> IdentifierArg<'a> {
@@ -454,249 +446,233 @@ impl<'a> IdentifierArg<'a> {
     }
 }
 
-js_compat_pub! {
-    /// What [`check_new_resource`] settles: everything `newResource` needs
-    /// from the model before it builds the object.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct ResourceCheck {
-        /// `classDecl.getFullyQualifiedName()`.
-        pub class_fqn: String,
-        /// `classDecl.getIdentifierFieldName()`.
-        pub identifier_field_name: Option<String>,
-        /// The identifier `Factory.newId()` made for a system-identified
-        /// type given a nullish one; it replaces the one given.
-        pub generated_id: Option<String>,
-        /// `classDecl.isTransaction() || classDecl.isEvent()`: the instance
-        /// gets `dayjs.utc()` as its `$timestamp`.
-        pub timestamped: bool,
-    }
+/// What [`check_new_resource`] settles: everything `newResource` needs
+/// from the model before it builds the object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceCheck {
+    /// `classDecl.getFullyQualifiedName()`.
+    pub class_fqn: String,
+    /// `classDecl.getIdentifierFieldName()`.
+    pub identifier_field_name: Option<String>,
+    /// The identifier `Factory.newId()` made for a system-identified
+    /// type given a nullish one; it replaces the one given.
+    pub generated_id: Option<String>,
+    /// `classDecl.isTransaction() || classDecl.isEvent()`: the instance
+    /// gets `dayjs.utc()` as its `$timestamp`.
+    pub timestamped: bool,
 }
 
-js_compat_pub! {
-    /// The model checks of `Factory.newResource`, in TS order (#32 point 4):
-    /// the type lookup, the abstract type, the identifier's type, the empty
-    /// identifier and the identifier regex, plus the non-identifiable type
-    /// given an identifier. `new_id` is `Factory.newId`, called only for a
-    /// system-identified type given a nullish id.
-    ///
-    /// TS: Factory.newResource (src/factory.ts), up to the construction.
-    pub fn check_new_resource(
-        mm: &ModelManager,
-        ns: &str,
-        type_name: &str,
-        id: IdentifierArg<'_>,
-        new_id: &mut dyn FnMut() -> String,
-    ) -> Result<ResourceCheck> {
-        let qualified_name = model_util::qualify(ns, type_name);
-        let class_decl = model::get_type(mm, &qualified_name)?;
-        check_new_resource_of(&class_decl, ns, type_name, id, new_id)
-    }
+/// The model checks of `Factory.newResource`, in TS order (#32 point 4):
+/// the type lookup, the abstract type, the identifier's type, the empty
+/// identifier and the identifier regex, plus the non-identifiable type
+/// given an identifier. `new_id` is `Factory.newId`, called only for a
+/// system-identified type given a nullish id.
+///
+/// TS: Factory.newResource (src/factory.ts), up to the construction.
+pub fn check_new_resource(
+    mm: &ModelManager,
+    ns: &str,
+    type_name: &str,
+    id: IdentifierArg<'_>,
+    new_id: &mut dyn FnMut() -> String,
+) -> Result<ResourceCheck> {
+    let qualified_name = model_util::qualify(ns, type_name);
+    let class_decl = model::get_type(mm, &qualified_name)?;
+    check_new_resource_of(&class_decl, ns, type_name, id, new_id)
 }
 
-js_compat_pub! {
-    /// [`check_new_resource`] once its type lookup found `class_decl`
-    /// (P5-13): a caller that already holds the declaration of `ns` and
-    /// `type_name` need not look it up again.
-    pub fn check_new_resource_of(
-        class_decl: &TypeRef,
-        ns: &str,
-        type_name: &str,
-        id: IdentifierArg<'_>,
-        new_id: &mut dyn FnMut() -> String,
-    ) -> Result<ResourceCheck> {
-        let ns_and_type = || {
-            vec![
-                ("namespace", ns.to_string()),
-                ("type", type_name.to_string()),
-            ]
+/// [`check_new_resource`] once its type lookup found `class_decl`
+/// (P5-13): a caller that already holds the declaration of `ns` and
+/// `type_name` need not look it up again.
+pub fn check_new_resource_of(
+    class_decl: &TypeRef,
+    ns: &str,
+    type_name: &str,
+    id: IdentifierArg<'_>,
+    new_id: &mut dyn FnMut() -> String,
+) -> Result<ResourceCheck> {
+    let ns_and_type = || {
+        vec![
+            ("namespace", ns.to_string()),
+            ("type", type_name.to_string()),
+        ]
+    };
+
+    if class_decl.is_abstract("classDecl.isAbstract")? {
+        return Err(Error::new(ErrorKind::InvalidArgument, "factory-newinstance-abstracttype", ns_and_type()));
+    }
+
+    let id_field = class_decl.identifier_field_name()?;
+    // `isSystemIdentified()`: the same inherited identifying field.
+    let generated_id =
+        (id_field == Some("$identifier") && id == IdentifierArg::Nullish).then(new_id);
+    let id = match &generated_id {
+        Some(generated) => IdentifierArg::String(generated),
+        None => id,
+    };
+    if id_field.is_some() {
+        let IdentifierArg::String(id_text) = id else {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                "factory-newinstance-invalididentifier",
+                ns_and_type(),
+            ));
         };
-
-        if class_decl.is_abstract("classDecl.isAbstract")? {
-            return Err(Error::new(ErrorKind::InvalidArgument, "factory-newinstance-abstracttype", ns_and_type()));
+        if ecma::js_trim(id_text).is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                "factory-newinstance-missingidentifier",
+                ns_and_type(),
+            ));
         }
-
-        let id_field = class_decl.identifier_field_name()?;
-        // `isSystemIdentified()`: the same inherited identifying field.
-        let generated_id =
-            (id_field == Some("$identifier") && id == IdentifierArg::Nullish).then(new_id);
-        let id = match &generated_id {
-            Some(generated) => IdentifierArg::String(generated),
-            None => id,
+        // `if (id)`: a non-empty string here. The regex validator comes
+        // from the validation plan, built once (P5-88), as does the
+        // error building it.
+        let planned = plan::class_plan(class_decl.mm, class_decl.id)?;
+        let regex = match &planned.id_regex {
+            Prepared::Built(v) => Some(v),
+            Prepared::None => None,
+            Prepared::Failed(err) => return Err(err.clone()),
         };
-        if id_field.is_some() {
-            let IdentifierArg::String(id_text) = id else {
-                return Err(Error::new(
-                    ErrorKind::InvalidArgument,
-                    "factory-newinstance-invalididentifier",
-                    ns_and_type(),
-                ));
-            };
-            if ecma::js_trim(id_text).is_empty() {
-                return Err(Error::new(
-                    ErrorKind::InvalidArgument,
-                    "factory-newinstance-missingidentifier",
-                    ns_and_type(),
-                ));
-            }
-            // `if (id)`: a non-empty string here. The regex validator comes
-            // from the validation plan, built once (P5-88), as does the
-            // error building it.
-            let planned = plan::class_plan(class_decl.mm, class_decl.id)?;
-            let regex = match &planned.id_regex {
-                Prepared::Built(v) => Some(v),
-                Prepared::None => None,
-                Prepared::Failed(err) => return Err(err.clone()),
-            };
-            if let Some(regex) = regex
-                && !regex.matches_regex(id_text)
-            {
-                return Err(Error::new(
-                    ErrorKind::InvalidArgument,
-                    "factory-newresource-idregexmismatch",
-                    vec![("regex", regex.regex().unwrap_or_default())],
-                ));
-            }
-        } else if matches!(id, IdentifierArg::String(s) if !s.is_empty())
-            || matches!(id, IdentifierArg::Other { truthy: true })
+        if let Some(regex) = regex
+            && !regex.matches_regex(id_text)
         {
             return Err(Error::new(
                 ErrorKind::InvalidArgument,
-                "factory-newresource-notidentifiable",
-                vec![("fqn", class_decl.fqn().to_string())],
+                "factory-newresource-idregexmismatch",
+                vec![("regex", regex.regex().unwrap_or_default())],
             ));
         }
+    } else if matches!(id, IdentifierArg::String(s) if !s.is_empty())
+        || matches!(id, IdentifierArg::Other { truthy: true })
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidArgument,
+            "factory-newresource-notidentifiable",
+            vec![("fqn", class_decl.fqn().to_string())],
+        ));
+    }
 
-        Ok(ResourceCheck {
-            class_fqn: class_decl.fqn().to_string(),
-            identifier_field_name: id_field.map(str::to_string),
-            generated_id,
-            timestamped: class_decl.is_transaction() || class_decl.is_event(),
+    Ok(ResourceCheck {
+        class_fqn: class_decl.fqn().to_string(),
+        identifier_field_name: id_field.map(str::to_string),
+        generated_id,
+        timestamped: class_decl.is_transaction() || class_decl.is_event(),
+    })
+}
+
+/// The `$identifierFieldName` the `Identifiable` constructor caches:
+/// `modelManager.getModelFile(ns)?.getType(fqt)?.getIdentifierFieldName()
+/// || '$identifier'`, with `fqt` the class declaration's name. `None`
+/// stands for the `'$identifier'` fallback.
+pub fn identifiable_field_name(
+    mm: &ModelManager,
+    ns: &str,
+    class_fqn: &str,
+) -> Result<Option<String>> {
+    let Some(file) = mm.model_file_id(ns) else {
+        return Ok(None);
+    };
+    let Some(Node::Declaration(id)) = mm.get_type(&Node::ModelFile(file), Some(class_fqn))?
+    else {
+        return Ok(None);
+    };
+    let decl = TypeRef {
+        mm,
+        id,
+        decl: mm.declaration(id).expect("a live handle"),
+    };
+    Ok(decl
+        .identifier_field_name()?
+        .filter(|f| !f.is_empty())
+        .map(str::to_string))
+}
+
+/// A property default, converted by the field's type as
+/// `Typed.assignFieldDefaults` converts it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldDefault {
+    /// An `Integer`, `Long` or `Double` default: `parseInt`/`parseFloat`
+    /// of its text.
+    Number(f64),
+    /// A `Boolean` default: `default === true`.
+    Bool(bool),
+    /// A `DateTime` default: `dayjs.utc(default)`, of a strict
+    /// `DateTime` string (BC-45).
+    DateTime(Dayjs),
+    /// P5-24 (BC-45, R1; accordproject/concerto-rust#328): a `DateTime`
+    /// default that is not a strict `DateTime` string. It is not
+    /// rejected at model load but when it is applied: the error to
+    /// throw then, a `ValidationException`
+    /// (`typed-assignfielddefaults-datetime`). Instance creation
+    /// (`Factory.newResource`) always applies it; population
+    /// (`fromJSON`) only when the document gives the field no value.
+    InvalidDateTime(Error),
+    /// A `String` or enum default, as it is in the AST.
+    Json(Value),
+}
+
+/// TS: `Typed.assignFieldDefaults` (src/model/typed.ts): each field of
+/// `class_fqn` with a non-null default, converted by the field's type,
+/// handed to `assign` (TS `this.setPropertyValue`) with the property's
+/// name, in `getProperties()` order. A relationship is not a `Field`, and
+/// has none.
+pub fn assign_field_defaults(
+    mm: &ModelManager,
+    class_fqn: &str,
+    assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
+) -> Result<()> {
+    let class_decl = model::get_type(mm, class_fqn)?;
+    assign_field_defaults_of(&class_decl, assign)
+}
+
+/// [`assign_field_defaults`] for the declaration `class_fqn` names.
+///
+/// Every step but `assign` depends only on the model, so the converted
+/// defaults are cached per declaration (P5-13,
+/// `ModelManager::cached_field_defaults`). TS resolves each field's
+/// type and assigns its default in one pass, so a field whose type does
+/// not resolve fails only after every earlier default was assigned: the
+/// list is cached only when every field resolves, and otherwise this
+/// runs that same pass field by field, so the first error is TS's.
+pub fn assign_field_defaults_of(
+    class_decl: &TypeRef,
+    assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
+) -> Result<()> {
+    let defaults = class_decl
+        .mm
+        .cached_field_defaults(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())));
+    let Ok(defaults) = defaults else {
+        field_defaults(class_decl, assign)?;
+        return Ok(());
+    };
+    for (name, value) in &defaults.0 {
+        assign(name, value.clone())?;
+    }
+    Ok(())
+}
+
+/// P5-24 (BC-45, R1): the fields of `class_decl` whose `DateTime`
+/// default is not a strict `DateTime` string
+/// ([`FieldDefault::InvalidDateTime`]), each with the error applying it
+/// throws, in `getProperties()` order: read off the cached defaults, and
+/// empty for almost every declaration (and when a field's type does not
+/// resolve, which fails the instance's creation first).
+pub fn invalid_date_time_defaults_of(class_decl: &TypeRef) -> Vec<(String, Error)> {
+    let Ok(defaults) = class_decl
+        .mm
+        .cached_field_defaults(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())))
+    else {
+        return Vec::new();
+    };
+    defaults
+        .0
+        .iter()
+        .filter_map(|(name, value)| match value {
+            FieldDefault::InvalidDateTime(err) => Some((name.clone(), err.clone())),
+            _ => None,
         })
-    }
-}
-
-js_compat_pub! {
-    /// The `$identifierFieldName` the `Identifiable` constructor caches:
-    /// `modelManager.getModelFile(ns)?.getType(fqt)?.getIdentifierFieldName()
-    /// || '$identifier'`, with `fqt` the class declaration's name. `None`
-    /// stands for the `'$identifier'` fallback.
-    pub fn identifiable_field_name(
-        mm: &ModelManager,
-        ns: &str,
-        class_fqn: &str,
-    ) -> Result<Option<String>> {
-        let Some(file) = mm.model_file_id(ns) else {
-            return Ok(None);
-        };
-        let Some(Node::Declaration(id)) = mm.get_type(&Node::ModelFile(file), Some(class_fqn))?
-        else {
-            return Ok(None);
-        };
-        let decl = TypeRef {
-            mm,
-            id,
-            decl: mm.declaration(id).expect("a live handle"),
-        };
-        Ok(decl
-            .identifier_field_name()?
-            .filter(|f| !f.is_empty())
-            .map(str::to_string))
-    }
-}
-
-js_compat_pub! {
-    /// A property default, converted by the field's type as
-    /// `Typed.assignFieldDefaults` converts it.
-    #[derive(Debug, Clone, PartialEq)]
-    pub enum FieldDefault {
-        /// An `Integer`, `Long` or `Double` default: `parseInt`/`parseFloat`
-        /// of its text.
-        Number(f64),
-        /// A `Boolean` default: `default === true`.
-        Bool(bool),
-        /// A `DateTime` default: `dayjs.utc(default)`, of a strict
-        /// `DateTime` string (BC-45).
-        DateTime(Dayjs),
-        /// P5-24 (BC-45, R1; accordproject/concerto-rust#328): a `DateTime`
-        /// default that is not a strict `DateTime` string. It is not
-        /// rejected at model load but when it is applied: the error to
-        /// throw then, a `ValidationException`
-        /// (`typed-assignfielddefaults-datetime`). Instance creation
-        /// (`Factory.newResource`) always applies it; population
-        /// (`fromJSON`) only when the document gives the field no value.
-        InvalidDateTime(Error),
-        /// A `String` or enum default, as it is in the AST.
-        Json(Value),
-    }
-}
-
-js_compat_pub! {
-    /// TS: `Typed.assignFieldDefaults` (src/model/typed.ts): each field of
-    /// `class_fqn` with a non-null default, converted by the field's type,
-    /// handed to `assign` (TS `this.setPropertyValue`) with the property's
-    /// name, in `getProperties()` order. A relationship is not a `Field`, and
-    /// has none.
-    pub fn assign_field_defaults(
-        mm: &ModelManager,
-        class_fqn: &str,
-        assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
-    ) -> Result<()> {
-        let class_decl = model::get_type(mm, class_fqn)?;
-        assign_field_defaults_of(&class_decl, assign)
-    }
-}
-
-js_compat_pub! {
-    /// [`assign_field_defaults`] for the declaration `class_fqn` names.
-    ///
-    /// Every step but `assign` depends only on the model, so the converted
-    /// defaults are cached per declaration (P5-13,
-    /// `ModelManager::cached_field_defaults`). TS resolves each field's
-    /// type and assigns its default in one pass, so a field whose type does
-    /// not resolve fails only after every earlier default was assigned: the
-    /// list is cached only when every field resolves, and otherwise this
-    /// runs that same pass field by field, so the first error is TS's.
-    pub fn assign_field_defaults_of(
-        class_decl: &TypeRef,
-        assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
-    ) -> Result<()> {
-        let defaults = class_decl
-            .mm
-            .cached_field_defaults(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())));
-        let Ok(defaults) = defaults else {
-            field_defaults(class_decl, assign)?;
-            return Ok(());
-        };
-        for (name, value) in &defaults.0 {
-            assign(name, value.clone())?;
-        }
-        Ok(())
-    }
-}
-
-js_compat_pub! {
-    /// P5-24 (BC-45, R1): the fields of `class_decl` whose `DateTime`
-    /// default is not a strict `DateTime` string
-    /// ([`FieldDefault::InvalidDateTime`]), each with the error applying it
-    /// throws, in `getProperties()` order: read off the cached defaults, and
-    /// empty for almost every declaration (and when a field's type does not
-    /// resolve, which fails the instance's creation first).
-    pub fn invalid_date_time_defaults_of(class_decl: &TypeRef) -> Vec<(String, Error)> {
-        let Ok(defaults) = class_decl
-            .mm
-            .cached_field_defaults(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())))
-        else {
-            return Vec::new();
-        };
-        defaults
-            .0
-            .iter()
-            .filter_map(|(name, value)| match value {
-                FieldDefault::InvalidDateTime(err) => Some((name.clone(), err.clone())),
-                _ => None,
-            })
-            .collect()
-    }
+        .collect()
 }
 
 /// The defaults [`assign_field_defaults_of`] caches for one declaration.
@@ -1468,55 +1444,51 @@ fn relationship_defaults(slot: &RelationshipSlot) -> Result<(String, String)> {
     Ok((default_namespace, model_util::short_name(type_fqn).to_string()))
 }
 
-js_compat_pub! {
-    /// The `rejectUnknownKeys` rejection (accordproject/concerto#1273): the
-    /// keys of the object at `path` that `fqn` does not declare, in one
-    /// `ValidationException` with one `UNKNOWN_PROPERTY` detail per key.
-    pub fn unknown_keys_error(fqn: &str, path: &str, unknown: &[String]) -> Error {
-        let mut error = ContractError::new(
-            ErrorKind::Validation,
-            "jsonpopulator-rejectunknownkeys-unknownproperties",
-            vec![("fqn", fqn.to_string()), ("properties", unknown.join(", "))],
-        );
-        error.details = unknown
-            .iter()
-            .map(|property| Detail {
-                path: format!("{path}.{property}"),
-                code: DetailCode::UnknownProperty,
-                expected: None,
-                actual: None,
-            })
-            .collect();
-        error.into()
-    }
+/// The `rejectUnknownKeys` rejection (accordproject/concerto#1273): the
+/// keys of the object at `path` that `fqn` does not declare, in one
+/// `ValidationException` with one `UNKNOWN_PROPERTY` detail per key.
+pub fn unknown_keys_error(fqn: &str, path: &str, unknown: &[String]) -> Error {
+    let mut error = ContractError::new(
+        ErrorKind::Validation,
+        "jsonpopulator-rejectunknownkeys-unknownproperties",
+        vec![("fqn", fqn.to_string()), ("properties", unknown.join(", "))],
+    );
+    error.details = unknown
+        .iter()
+        .map(|property| Detail {
+            path: format!("{path}.{property}"),
+            code: DetailCode::UnknownProperty,
+            expected: None,
+            actual: None,
+        })
+        .collect();
+    error.into()
 }
 
-js_compat_pub! {
-    /// The `rejectRequiredNull` rejection (accordproject/concerto#1273): the
-    /// required `property`, set to `null` under the key `key` of the object
-    /// at `path`, with its path and declared type and a `TYPE_VIOLATION`
-    /// detail.
-    pub fn required_null_error(path: &str, key: &str, property: &crate::Property) -> Error {
-        let path = format!("{path}.{key}");
-        let mut type_name = crate::introspect::Typed::type_name(property)
-            .unwrap_or_default()
-            .to_string();
-        if property.is_array() {
-            type_name.push_str("[]");
-        }
-        let mut error = ContractError::new(
-            ErrorKind::Validation,
-            "jsonpopulator-rejectrequirednull-requirednull",
-            vec![("path", path.clone()), ("type", type_name.clone())],
-        );
-        error.details = vec![Detail {
-            path,
-            code: DetailCode::TypeViolation,
-            expected: Some(type_name),
-            actual: Some("null".to_string()),
-        }];
-        error.into()
+/// The `rejectRequiredNull` rejection (accordproject/concerto#1273): the
+/// required `property`, set to `null` under the key `key` of the object
+/// at `path`, with its path and declared type and a `TYPE_VIOLATION`
+/// detail.
+pub fn required_null_error(path: &str, key: &str, property: &crate::Property) -> Error {
+    let path = format!("{path}.{key}");
+    let mut type_name = crate::introspect::Typed::type_name(property)
+        .unwrap_or_default()
+        .to_string();
+    if property.is_array() {
+        type_name.push_str("[]");
     }
+    let mut error = ContractError::new(
+        ErrorKind::Validation,
+        "jsonpopulator-rejectrequirednull-requirednull",
+        vec![("path", path.clone()), ("type", type_name.clone())],
+    );
+    error.details = vec![Detail {
+        path,
+        code: DetailCode::TypeViolation,
+        expected: Some(type_name),
+        actual: Some("null".to_string()),
+    }];
+    error.into()
 }
 
 /// TS: `Relationship.fromURI(modelManager, uri, defaultNamespace,
@@ -1641,14 +1613,12 @@ fn validate_properties(
     ))
 }
 
-js_compat_pub! {
-    /// `json.match(/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/)`:
-    /// the `strictQualifiedDateTimes` format, the only `DateTime` string
-    /// form accepted (P5-24, BC-07). A string with this format can still
-    /// name an impossible instant ([`Dayjs::utc_parse`] is then invalid).
-    pub fn strict_qualified_date_time(s: &str) -> bool {
-        super::dayjs::is_strict_date_time_format(s)
-    }
+/// `json.match(/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/)`:
+/// the `strictQualifiedDateTimes` format, the only `DateTime` string
+/// form accepted (P5-24, BC-07). A string with this format can still
+/// name an impossible instant ([`Dayjs::utc_parse`] is then invalid).
+pub fn strict_qualified_date_time(s: &str) -> bool {
+    super::dayjs::is_strict_date_time_format(s)
 }
 
 #[cfg(test)]

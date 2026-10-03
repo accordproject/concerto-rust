@@ -224,132 +224,132 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.addModelFile`'s validate-then-register for a
-        /// model file this manager does not hold yet: the same checks, the
-        /// same first error and the same result as
-        /// [`ModelManager::validate_detached_model_file`] followed, once it
-        /// passes, by [`ModelManager::add_model_file`], returning the new
-        /// file's handle.
-        ///
-        /// P5-48 (accordproject/concerto-rust#369): when this manager does
-        /// not hold the file's namespace (the common case), the file is
-        /// registered first and validated in place, and taken out again if
-        /// validation fails, rather than validated in a scratch copy of the
-        /// manager holding a deep copy of the file
-        /// ([`ModelManager::with_model_file_registered`]) and then
-        /// registered. The manager validated is the one the scratch copy
-        /// would be (the same files, in the same order, the same options),
-        /// and `check_imports` still sees the manager without the file's
-        /// namespace (P2-08d). Any other case takes the two-step path.
-        ///
-        /// On a validation error the manager is as it was (its caches aside)
-        /// and the file is handed back (boxed) with the error; an error from the
-        /// registration itself (a namespace already registered, only on the
-        /// two-step path) consumes it, as [`ModelManager::add_model_file`]
-        /// does.
-        pub fn validate_and_add_model_file(
-            &mut self,
-            model_file: ModelFile,
-        ) -> std::result::Result<crate::model_manager::ModelFileId, (Error, Option<Box<ModelFile>>)> {
-            self.validate_and_add_shared_model_file(std::sync::Arc::new(model_file))
-                .map_err(|(err, handed_back)| {
-                    let handed_back = handed_back.map(|shared| {
-                        Box::new(std::sync::Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone()))
-                    });
-                    (err, handed_back)
-                })
-        }
+    /// TS `BaseModelManager.addModelFile`'s validate-then-register for a
+    /// model file this manager does not hold yet: the same checks, the
+    /// same first error and the same result as
+    /// [`ModelManager::validate_detached_model_file`] followed, once it
+    /// passes, by [`ModelManager::add_model_file`], returning the new
+    /// file's handle.
+    ///
+    /// P5-48 (accordproject/concerto-rust#369): when this manager does
+    /// not hold the file's namespace (the common case), the file is
+    /// registered first and validated in place, and taken out again if
+    /// validation fails, rather than validated in a scratch copy of the
+    /// manager holding a deep copy of the file
+    /// ([`ModelManager::with_model_file_registered`]) and then
+    /// registered. The manager validated is the one the scratch copy
+    /// would be (the same files, in the same order, the same options),
+    /// and `check_imports` still sees the manager without the file's
+    /// namespace (P2-08d). Any other case takes the two-step path.
+    ///
+    /// On a validation error the manager is as it was (its caches aside)
+    /// and the file is handed back (boxed) with the error; an error from the
+    /// registration itself (a namespace already registered, only on the
+    /// two-step path) consumes it, as [`ModelManager::add_model_file`]
+    /// does.
+    #[cfg(feature = "js-compat")]
+    pub fn validate_and_add_model_file(
+        &mut self,
+        model_file: ModelFile,
+    ) -> std::result::Result<crate::model_manager::ModelFileId, (Error, Option<Box<ModelFile>>)>
+    {
+        self.validate_and_add_shared_model_file(std::sync::Arc::new(model_file))
+            .map_err(|(err, handed_back)| {
+                let handed_back = handed_back.map(|shared| {
+                    Box::new(
+                        std::sync::Arc::try_unwrap(shared)
+                            .unwrap_or_else(|shared| (*shared).clone()),
+                    )
+                });
+                (err, handed_back)
+            })
     }
 
-    js_compat_pub! {
-        /// [`ModelManager::validate_and_add_model_file`] for a model file that
-        /// may also be held elsewhere (P5-101, D-9,
-        /// accordproject/concerto-rust#455): the same checks, the same first
-        /// error and the same result, but the file is registered shared, as
-        /// [`ModelManager::add_shared_model_file`] registers it, not copied.
-        /// On a validation error the shared file is handed back with the
-        /// error; an error from the registration itself consumes it.
-        pub fn validate_and_add_shared_model_file(
-            &mut self,
-            shared: std::sync::Arc<ModelFile>,
-        ) -> std::result::Result<
-            crate::model_manager::ModelFileId,
-            (Error, Option<std::sync::Arc<ModelFile>>),
-        > {
-            if let Some((id, mark)) = self.append_for_validation(&shared) {
-                let namespace = shared.namespace();
-                return match self.validate_model_file_with_import_scope(&shared, self, Some(namespace)) {
-                    Ok(()) => {
-                        // P5-97: it passed with its own namespace hidden from
-                        // its imports, so it passes `validate_models` too.
-                        self.mark_validated(id);
-                        Ok(id)
-                    }
-                    Err(err) => {
-                        self.undo_append(mark);
-                        Err((err, Some(shared)))
-                    }
-                };
-            }
-            if let Err(err) = self.validate_detached_model_file(&shared) {
-                return Err((err, Some(shared)));
-            }
-            self.add_shared_model_file_with_proof(shared, None)
-                .map_err(|err| (err, None))
+    /// [`ModelManager::validate_and_add_model_file`] for a model file that
+    /// may also be held elsewhere (P5-101, D-9,
+    /// accordproject/concerto-rust#455): the same checks, the same first
+    /// error and the same result, but the file is registered shared, as
+    /// [`ModelManager::add_shared_model_file`] registers it, not copied.
+    /// On a validation error the shared file is handed back with the
+    /// error; an error from the registration itself consumes it.
+    #[cfg(feature = "js-compat")]
+    pub fn validate_and_add_shared_model_file(
+        &mut self,
+        shared: std::sync::Arc<ModelFile>,
+    ) -> std::result::Result<
+        crate::model_manager::ModelFileId,
+        (Error, Option<std::sync::Arc<ModelFile>>),
+    > {
+        if let Some((id, mark)) = self.append_for_validation(&shared) {
+            let namespace = shared.namespace();
+            return match self.validate_model_file_with_import_scope(&shared, self, Some(namespace))
+            {
+                Ok(()) => {
+                    // P5-97: it passed with its own namespace hidden from
+                    // its imports, so it passes `validate_models` too.
+                    self.mark_validated(id);
+                    Ok(id)
+                }
+                Err(err) => {
+                    self.undo_append(mark);
+                    Err((err, Some(shared)))
+                }
+            };
         }
+        if let Err(err) = self.validate_detached_model_file(&shared) {
+            return Err((err, Some(shared)));
+        }
+        self.add_shared_model_file_with_proof(shared, None)
+            .map_err(|err| (err, None))
     }
 
-    js_compat_pub! {
-        /// TS `declaration.validate()` called directly on one declaration of a
-        /// `ModelFile` built with `new ModelFile(modelManager, ast)` and never
-        /// registered — `MapDeclaration.validate`'s oracle fixtures do exactly
-        /// this (the fixture's `declref` targets an `mfnew` model file, P2-06b).
-        /// Reuses [`ModelManager::validate_detached_model_file`]'s
-        /// scratch-registration resolution, but for the one declaration at
-        /// `index` in [`ModelFile::declarations`] rather than the whole file, so
-        /// this is never charged for a sibling declaration's own errors, or for
-        /// `ModelFile.validate`'s own import and duplicate-name checks — neither
-        /// of which the recorded op ever runs.
-        ///
-        /// A pre-port `IllegalModel` error (`Error::illegal_model`, no TS
-        /// class corresponds to it) if `model_file` has no declaration at
-        /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
-        /// `next_index` documents.
-        pub fn validate_detached_declaration(
-            &self,
-            model_file: &ModelFile,
-            index: usize,
-        ) -> Result<()> {
-            let (scratch, namespace) = self.detached_scratch(model_file)?;
-            let declaration = scratch
-                .model_file(&namespace)
-                .expect("with_model_file_registered registers the file under its namespace")
-                .declarations()
-                .get(index)
-                .cloned()
-                .ok_or_else(|| no_such_detached_declaration(model_file, index))?;
-            declaration.validate(&scratch, &namespace)
-        }
+    /// TS `declaration.validate()` called directly on one declaration of a
+    /// `ModelFile` built with `new ModelFile(modelManager, ast)` and never
+    /// registered — `MapDeclaration.validate`'s oracle fixtures do exactly
+    /// this (the fixture's `declref` targets an `mfnew` model file, P2-06b).
+    /// Reuses [`ModelManager::validate_detached_model_file`]'s
+    /// scratch-registration resolution, but for the one declaration at
+    /// `index` in [`ModelFile::declarations`] rather than the whole file, so
+    /// this is never charged for a sibling declaration's own errors, or for
+    /// `ModelFile.validate`'s own import and duplicate-name checks — neither
+    /// of which the recorded op ever runs.
+    ///
+    /// A pre-port `IllegalModel` error (`Error::illegal_model`, no TS
+    /// class corresponds to it) if `model_file` has no declaration at
+    /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
+    /// `next_index` documents.
+    #[cfg(feature = "js-compat")]
+    pub fn validate_detached_declaration(
+        &self,
+        model_file: &ModelFile,
+        index: usize,
+    ) -> Result<()> {
+        let (scratch, namespace) = self.detached_scratch(model_file)?;
+        let declaration = scratch
+            .model_file(&namespace)
+            .expect("with_model_file_registered registers the file under its namespace")
+            .declarations()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| no_such_detached_declaration(model_file, index))?;
+        declaration.validate(&scratch, &namespace)
     }
 
-    js_compat_pub! {
-        /// [`ModelManager::validate_detached_declaration`], but for just the key
-        /// half of the map declaration at `index` (TS `MapKeyType.validate`,
-        /// called directly rather than through `MapDeclaration.validate`).
-        pub fn validate_detached_map_key(&self, model_file: &ModelFile, index: usize) -> Result<()> {
-            let (scratch, map) = self.detached_map(model_file, index)?;
-            validate_map_key(&scratch, model_file.namespace(), &map)
-        }
+    /// [`ModelManager::validate_detached_declaration`], but for just the key
+    /// half of the map declaration at `index` (TS `MapKeyType.validate`,
+    /// called directly rather than through `MapDeclaration.validate`).
+    #[cfg(feature = "js-compat")]
+    pub fn validate_detached_map_key(&self, model_file: &ModelFile, index: usize) -> Result<()> {
+        let (scratch, map) = self.detached_map(model_file, index)?;
+        validate_map_key(&scratch, model_file.namespace(), &map)
     }
 
-    js_compat_pub! {
-        /// [`ModelManager::validate_detached_map_key`], for the value half (TS
-        /// `MapValueType.validate`).
-        pub fn validate_detached_map_value(&self, model_file: &ModelFile, index: usize) -> Result<()> {
-            let (scratch, map) = self.detached_map(model_file, index)?;
-            validate_map_value(&scratch, model_file.namespace(), &map)
-        }
+    /// [`ModelManager::validate_detached_map_key`], for the value half (TS
+    /// `MapValueType.validate`).
+    #[cfg(feature = "js-compat")]
+    pub fn validate_detached_map_value(&self, model_file: &ModelFile, index: usize) -> Result<()> {
+        let (scratch, map) = self.detached_map(model_file, index)?;
+        validate_map_value(&scratch, model_file.namespace(), &map)
     }
 
     /// The scratch-registered copy of `self`
@@ -358,6 +358,7 @@ impl ModelManager {
     /// whatever `self` holds there), plus that namespace as an owned
     /// `String` — every caller here goes on to borrow `model_file`'s
     /// declaration back out of the *scratch* copy, not `self`.
+    #[cfg(feature = "js-compat")]
     fn detached_scratch(&self, model_file: &ModelFile) -> Result<(Self, String)> {
         let scratch = self.with_model_file_registered(std::sync::Arc::new(model_file.clone()))?;
         Ok((scratch, model_file.namespace().to_string()))
@@ -366,6 +367,7 @@ impl ModelManager {
     /// [`ModelManager::detached_scratch`], plus the `MapDeclaration` at
     /// `index`, cloned out so it can be validated against the scratch copy
     /// without borrowing the copy at the same time.
+    #[cfg(feature = "js-compat")]
     fn detached_map(&self, model_file: &ModelFile, index: usize) -> Result<(Self, MapDeclaration)> {
         let (scratch, namespace) = self.detached_scratch(model_file)?;
         let declaration = scratch
@@ -386,6 +388,7 @@ impl ModelManager {
 /// [`ModelManager::detached_map`], not one that loaded as a
 /// `MapDeclaration`). No TS class corresponds to this, the same convention
 /// `model_manager.rs`'s `next_index` documents.
+#[cfg(feature = "js-compat")]
 fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> Error {
     Error::illegal_model(
         format!("no MapDeclaration at index {index}"),
