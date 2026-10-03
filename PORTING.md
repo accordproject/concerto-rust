@@ -991,16 +991,19 @@ The ported test asserts the TS behaviour.
   crafted colliding keys make a map quadratic (P5-110,
   accordproject/concerto-rust#477). `JsObject` (concerto-core-js) holds a
   user instance's keys. Tables keyed by model names or regex patterns, which
-  a multi-tenant server also takes from users, are seeded too, except three
-  per-lookup tables that stay FxHash pending a maintainer decision on their
-  20-60% introspection cost: `ModelManager`'s namespaces, `ModelFile`'s
-  local types and its import short names. Natively the keys come from the
-  OS-seeded `RandomState`. On `wasm32-unknown-unknown`, where
-  `RandomState`'s keys are fixed and so public, concerto-wasm sets them from
-  `crypto.getRandomValues` at instantiation (`seed_hasher`,
-  concerto-wasm/src/hash_seed.rs). The regression tests are
-  `concerto-core-js/tests/hashdos.rs` and `tests/hash_seed.rs`; the
-  concerto-wasm Node smoke checks the WASM seeding.
+  a multi-tenant server also takes from users, are seeded too. Three
+  per-lookup tables, where SipHash cost 20-60% on the introspection rows,
+  use `FastSeededState` instead (foldhash under a seed derived from the
+  same process-wide keys; maintainer decision on #477): `ModelManager`'s
+  namespaces, `ModelFile`'s local types and its import short names. Never
+  use foldhash's own `RandomState` or `FixedState`: on WASM its global seed
+  has no entropy. Natively the keys come from the OS-seeded `RandomState`.
+  On `wasm32-unknown-unknown`, where `RandomState`'s keys are fixed and so
+  public, concerto-wasm sets them from `crypto.getRandomValues` at
+  instantiation (`seed_hasher`, concerto-wasm/src/hash_seed.rs). The
+  regression tests are `concerto-core-js/tests/hashdos.rs`,
+  `tests/hash_seed.rs` and concerto-core's `hash::tests`; the concerto-wasm
+  Node smoke checks the WASM seeding.
 
 ---
 

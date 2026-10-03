@@ -11,6 +11,7 @@ dependencies = [
  "accordproject-concerto-metamodel",
  "chrono",
  "concerto-core-js",
+ "foldhash",
  "indexmap",
  "regress",
  "rustc-hash",

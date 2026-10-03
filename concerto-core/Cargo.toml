@@ -49,10 +49,15 @@ chrono = { workspace = true }
 # SemVer 2.0.0 since BC-41 (P5-38, accordproject/concerto-rust#348).
 semver = "1"
 # P5-13 (accordproject/concerto-rust#297): FxHash, a fast non-cryptographic
-# hasher, for the manager's and model files' internal lookup maps (namespace
-# and declaration names). None of them is ever iterated on an observable
-# path (PORTING.md 3.7).
+# hasher, for the internal lookup maps keyed by identifiers (the user-keyed
+# namespace and name tables use the seeded foldhash below). None of them is
+# ever iterated on an observable path (PORTING.md 3.7).
 rustc-hash = { workspace = true }
+# P5-110 (accordproject/concerto-rust#477): foldhash under a per-process
+# secret seed (`hash::FastSeededState`) for the manager's namespaces and a
+# model file's local types and import short names, which are keyed by user
+# model names.
+foldhash = { workspace = true }
 
 [features]
 # P6-01 (accordproject/concerto-rust#83, docs/public-api.md section 4.6):

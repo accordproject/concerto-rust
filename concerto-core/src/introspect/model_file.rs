@@ -17,6 +17,7 @@ use std::sync::{Arc, LazyLock, OnceLock};
 use indexmap::IndexMap;
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
+use crate::hash::{FastSeededHashMap, FastSeededState};
 use crate::introspect::declaration::{ClassDeclaration, Declaration};
 use crate::introspect::decorator::{Decorated, Decorator, parse_decorator_list};
 use crate::introspect::import::Import;
@@ -24,13 +25,15 @@ use crate::introspect::shape;
 use crate::introspect::typed_ast::{self, ModelHeader, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
-/// The key of a declaration name in [`ModelFile`]'s `local_types`.
-/// Unseeded FxHash, although the names come from user models (PORTING.md
-/// 3.7): a seeded hash cost 20-60% on the introspection rows (P5-110,
-/// accordproject/concerto-rust#477, left for a maintainer decision).
+/// The key of a declaration name in [`ModelFile`]'s `local_types`. The
+/// names come from user models, so the hash is seeded per process
+/// ([`FastSeededState`], foldhash; PORTING.md 3.7): with an unseeded hash
+/// crafted names could all share one hash ([`SHARED_HASH`]) and turn every
+/// lookup into a scan (P5-110, accordproject/concerto-rust#477; SipHash
+/// cost 20-60% on the introspection rows, so the maintainer chose foldhash).
 fn name_hash(name: &str) -> u64 {
     use std::hash::BuildHasher;
-    rustc_hash::FxBuildHasher.hash_one(name)
+    FastSeededState::default().hash_one(name)
 }
 
 /// `local_types`' value for a hash two different declaration names share.
@@ -60,9 +63,10 @@ pub struct ModelFile {
     /// whose only import is the built-in one.
     import_short_names: Cow<'static, ImportShortNames>,
     declarations: Vec<Declaration>,
-    /// Declaration names to their index, for `getLocalType` (FxHash,
-    /// P5-13: only ever looked up, never iterated). P5-93: keyed by the
-    /// name's hash ([`name_hash`]), not a copy of the name; a hash two
+    /// Declaration names to their index, for `getLocalType` (only ever
+    /// looked up, never iterated). P5-93: keyed by the name's seeded hash
+    /// ([`name_hash`]), not a copy of the name, so FxHash over that
+    /// already-secret `u64` is enough (P5-13, P5-110); a hash two
     /// different names share maps to [`SHARED_HASH`]. Empty, and the
     /// declarations scanned instead, for a file of at most
     /// [`LOCAL_SCAN_MAX`] declarations ([`ModelFile::local_index`]).
@@ -1393,9 +1397,9 @@ fn built_in_import_typed() -> Result<Import> {
 /// index in the file's imports) and the position in that import's
 /// `imported_names` it stands for.
 ///
-/// Unseeded FxHash, although the names come from user models: see
-/// [`name_hash`] (P5-110).
-type ImportShortNames = rustc_hash::FxHashMap<Box<str>, (u32, u32)>;
+/// Keyed by names from user models, so hashed with the per-process seeded
+/// foldhash ([`FastSeededState`], P5-110; see [`name_hash`]).
+type ImportShortNames = FastSeededHashMap<Box<str>, (u32, u32)>;
 
 /// TS `ModelFile.fromAst`'s `importShortNames.set` loop: one forward pass
 /// over `imports`, so the last import of a local name wins.

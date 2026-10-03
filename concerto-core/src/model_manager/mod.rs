@@ -40,8 +40,8 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use crate::hash::SeededHashSet;
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::hash::{FastSeededHashMap, SeededHashSet};
+use rustc_hash::FxHashSet;
 
 use serde_json::Value;
 
@@ -201,11 +201,11 @@ struct ManagerOptions {
 #[derive(Debug, Default)]
 pub struct ModelManager {
     files: Vec<FileSlot>,
-    /// Unseeded FxHash, although namespaces come from user models
-    /// (PORTING.md 3.7): a seeded hash cost 20-60% on the introspection
-    /// rows (P5-110, accordproject/concerto-rust#477, left for a maintainer
-    /// decision).
-    namespaces: FxHashMap<String, ModelFileId>,
+    /// Keyed by namespaces from user models, so hashed with the per-process
+    /// seeded foldhash ([`FastSeededState`](crate::hash::FastSeededState);
+    /// PORTING.md 3.7; P5-110, accordproject/concerto-rust#477: SipHash cost
+    /// 20-60% on the introspection rows, so the maintainer chose foldhash).
+    namespaces: FastSeededHashMap<String, ModelFileId>,
     declarations: Vec<DeclSlot>,
     properties: Vec<PropSlot>,
     state_version: u64,

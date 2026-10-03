@@ -57,6 +57,11 @@ indexmap = "2"
 # names and regex patterns) use concerto_core::hash's seeded SipHash instead
 # (PORTING.md 3.7).
 rustc-hash = "2"
+# The seeded fast hasher of the per-lookup tables keyed by user model names
+# (concerto_core::hash::FastSeededState; P5-110, accordproject/concerto-rust#477:
+# maintainer-approved re-adding of foldhash, its seed taken from the
+# process-wide keys, never foldhash's own global seed).
+foldhash = "0.1"
 # The native oracle harness's CTO -> AST cache key (P1-07a), as
 # migration/oracle/bin/build-cto-cache.js keys it.
 sha2 = "0.10"

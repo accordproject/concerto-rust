@@ -8,8 +8,8 @@
 //! arguments; `parameters.seenResources` and `dedupeResources` are
 //! `Generator`'s sets.
 
+use concerto_core::hash::SeededHashSet;
 use std::borrow::Cow;
-use std::collections::HashSet;
 
 use super::populator::read_properties_error;
 use crate::value::{Instance, InstanceKind, JsObject, JsValue};
@@ -75,10 +75,11 @@ pub fn convert_primitive(
 pub(crate) struct Generator<'a> {
     mm: &'a ModelManager,
     options: &'a GeneratorOptions,
-    /// `parameters.seenResources`.
-    seen_resources: HashSet<String>,
-    /// `parameters.dedupeResources`.
-    dedupe_resources: HashSet<String>,
+    /// `parameters.seenResources`. Keyed by identifiers from the instance,
+    /// so seeded (P5-110, PORTING.md 3.7).
+    seen_resources: SeededHashSet<String>,
+    /// `parameters.dedupeResources`, seeded like `seen_resources`.
+    dedupe_resources: SeededHashSet<String>,
 }
 
 /// `obj instanceof Resource` (a `ValidatedResource` is one; a
@@ -134,8 +135,8 @@ impl<'a> Generator<'a> {
         Self {
             mm,
             options,
-            seen_resources: HashSet::new(),
-            dedupe_resources: HashSet::new(),
+            seen_resources: SeededHashSet::default(),
+            dedupe_resources: SeededHashSet::default(),
         }
     }
 
