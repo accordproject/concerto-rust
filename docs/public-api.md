@@ -284,7 +284,7 @@ models, and `default()` does not, so the two constructors disagree. See Q7.
 | Group (3.3) | At revision 4 |
 |---|---|
 | Stable | Public with default features, under the names of sections 5.2 to 5.8. The TS-named forms they replace are `#[deprecated]` aliases (5.8's policy). |
-| JS object model | Moved to the `concerto-core-js` crate (step 5b): `JsValue`, `Instance`, `InstanceKind`, `Serializer`, `SerializerOptions`, the factory, populator, generator and `Resource` functions, and `DeserializeOptions`. `Dayjs`, `UtcOffset` and `ResourceId` stay in core's seam (4.4). |
+| JS object model | Moved to the `concerto-core-js` crate (step 5b): `JsValue`, `Instance`, `InstanceKind`, `Serializer`, `SerializerOptions`, the factory, populator, generator and `Resource` functions, and `DeserializeOptions` (since P5-102, core's `ValidationOptions` and `FromJsonOptions` in its place, with `STRICT_VALIDATE_OPTIONS` and `serializer_options` for the option bag). `Dayjs`, `UtcOffset` and `ResourceId` stay in core's seam (4.4). |
 | Seam | Behind `js-compat`: the handle API but the four cheap-key lookups (5.3), the collaborator traits (`ResolutionContext`, `ValidatedElement`, `FullyQualified`, `Node`), the `process` family, the option setters, the CTO and file-level loaders, `resolve_type_name_at`, `filter_by_fqn`, `parse_namespace_with`, and the TS side of the error contract (5.6). |
 | Follow-up | In `concerto-core-js` with the object model (`Serializer`, `Factory`, `Resource`, `InstanceGenerator`'s JSON generator). |
 | Internal | `HasValidators` and `Validate` are behind `js-compat` rather than crate-private, since the oracle harness calls `Validate`. `SemVer` and `PrereleaseIdentifier` stay public, because the stable `ParsedNamespace::Full` carries a `SemVer`. |

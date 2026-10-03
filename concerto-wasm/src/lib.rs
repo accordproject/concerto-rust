@@ -17,12 +17,12 @@
 //!   collaborator call; `Decorator.validate`'s argument and type-reference
 //!   checks, and `Decorated.validate`'s duplicate-decorator check, are new
 //!   code here rather than a binding of the existing (concrete-`ModelManager`)
-//!   `Decorator::validate`, because the model graph these views meet is still
-//!   TS (same reason as the trial units, above): they read [`JsContext`]
-//!   collaborators the same way the trial units do, following the TS source
-//!   directly rather than the native method's `ModelManager`-specific
-//!   shortcuts. `Decorated.process`'s `DecoratorFactory` selection is not
-//!   bound: that stays TS (decorator.rs module doc);
+//!   `Decorator::validate`, following the TS source directly rather than
+//!   the native method's `ModelManager`-specific shortcuts. Since P5-106
+//!   (BC-52) `Decorator.validate` reads the model from the arena, by the
+//!   handle of the decorator's model file (`decoratorValidate`, "Arena
+//!   answers" below). `Decorated.process`'s `DecoratorFactory` selection is
+//!   not bound: that stays TS (decorator.rs module doc);
 //! - `ModelFile` (P4-08c): `getImports`, `isLocalType`, `filter` and
 //!   `validate`, keyed by the same `ModelFileId` handle every other by-file
 //!   lookup here already uses. P5-103 removed the bindings concerto-core no
@@ -32,9 +32,10 @@
 //! Everything JS-shaped lives here, never in core (PORTING.md 4):
 //! - **argument coercion** (3.5): each binding converts its JS arguments the
 //!   way the TS member uses them, and says what it does not model;
-//! - **the JS-callback [`ResolutionContext`]** (1.4): the model graph is still
-//!   TS during the trial, so every collaborator call a ported member makes
-//!   goes back to the JS objects it was given;
+//! - **JS collaborator calls** (1.4): a binding that is handed JS objects
+//!   reads them back through their methods. P5-106 (BC-52) retired the
+//!   JS-callback [`ResolutionContext`] (`JsContext`): the members it served
+//!   take handles and answer from the arena ("Arena answers", below);
 //! - **the error mapping** (2.3): an error leaves as the payload
 //!   `{kind, code, params, message, location, errorType, modelFile}`, which
 //!   the error factory the shim registers at load turns into the TS exception;
@@ -63,7 +64,7 @@ use std::collections::HashSet;
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
-use concerto_core::instance::from_json::FromJsonOptions as NativeFromJsonOptions;
+use concerto_core::instance::from_json::FromJsonOptions;
 use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::instance::{
     Diagnostic, InstanceEnv, Severity, ValidateOptions, diagnose, diagnose_read,
@@ -79,12 +80,12 @@ use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
-use concerto_core::model_manager::{ModelFileId, ModelFileSource, Node};
+use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
-use concerto_core_js::{FromJsonOptions, Serializer, SerializerOptions};
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
+use concerto_core_js::{Serializer, SerializerOptions, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde::Serialize;
@@ -513,99 +514,46 @@ fn receiver(value: &JsValue, expression: &str, method: &str) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
-// The JS-callback context (PORTING.md 1.4)
+// JS collaborator calls (PORTING.md 1.4)
 // ---------------------------------------------------------------------------
+//
+// P5-106 (BC-52, accordproject/concerto-rust#460) retired the JS-callback
+// `ResolutionContext` (`JsContext`): the ModelUtil predicates, scalar and
+// decorator validation and the subclass queries now answer from the
+// manager's arena (the handle methods in "Arena answers", below). These two
+// helpers are what is left of it, for `MapKeyType.validate` and
+// `MapValueType.validate`, which still read the declaration
+// `this.modelFile.getType(...)` returns.
 
-/// Answers collaborator calls by calling the JS objects the view passed.
-struct JsContext;
+/// TS `decl?.isScalarDeclaration?.()` and `decl?.isMapDeclaration?.()`:
+/// `None` when the method is missing.
+fn js_declaration_is(declaration: &JsValue, method: &str) -> Result<Option<bool>> {
+    Ok(call_optional(declaration, method)?.map(|v| v.is_truthy()))
+}
 
-impl ResolutionContext for JsContext {
-    type Node = JsValue;
-    type Error = Error;
-
-    fn get_type(&self, model_file: &JsValue, type_name: Option<&str>) -> Result<Option<JsValue>> {
-        let type_name = type_name.map_or(JsValue::NULL, JsValue::from_str);
-        let found = call(model_file, "getType", &[type_name], "modelFile.getType")?;
-        Ok((!nullish(&found)).then_some(found))
-    }
-
-    fn get_all_super_type_declarations(&self, declaration: &JsValue) -> Result<Vec<JsValue>> {
-        let list = call(
-            declaration,
-            "getAllSuperTypeDeclarations",
-            &[],
-            "typeDeclaration.getAllSuperTypeDeclarations",
-        )?;
-        if !Array::is_array(&list) {
-            return Err(type_error(
-                "engine-typeerror-notafunction",
-                vec![(
-                    "expression",
-                    "typeDeclaration.getAllSuperTypeDeclarations(...).some".to_string(),
-                )],
-            ));
-        }
-        Ok(Array::from(&list).iter().collect())
-    }
-
-    fn get_fully_qualified_name(&self, declaration: &JsValue) -> Result<String> {
-        js_string(&call(
-            declaration,
-            "getFullyQualifiedName",
-            &[],
-            "type.getFullyQualifiedName",
-        )?)
-    }
-
-    fn get_fully_qualified_type_name(&self, property: &JsValue) -> Result<String> {
-        js_string(&call(
-            property,
-            "getFullyQualifiedTypeName",
-            &[],
-            "property.getFullyQualifiedTypeName",
-        )?)
-    }
-
-    fn get_parent(&self, property: &JsValue) -> Result<JsValue> {
-        call(property, "getParent", &[], "field.getParent")
-    }
-
-    fn get_model_file(&self, declaration: &JsValue) -> Result<JsValue> {
-        call(declaration, "getModelFile", &[], "getModelFile")
-    }
-
-    fn get_type_name(&self, property: &JsValue) -> Result<Option<String>> {
-        let type_name = call(property, "getType", &[], "field.getType")?;
-        if nullish(&type_name) {
+/// TS `ModelUtil.isValidMapKeyScalar(decl)` over the JS declaration
+/// `MapKeyType.validate` resolved: `decl?.isScalarDeclaration?.() &&
+/// decl?.ast.$class === <StringScalar> || <the same for DateTimeScalar>`,
+/// keeping JS's `&&`/`||` result (`None`: JS `undefined`). The arena
+/// answers the same question in [`mu::is_valid_map_key_scalar`].
+fn js_is_valid_map_key_scalar(decl: Option<&JsValue>) -> Result<Option<bool>> {
+    let side = |scalar: &str| -> Result<Option<bool>> {
+        let Some(decl) = decl else {
             return Ok(None);
+        };
+        match js_declaration_is(decl, "isScalarDeclaration")? {
+            Some(true) => {
+                let class = get(&get(decl, "ast")?, "$class")?.as_string();
+                Ok(Some(
+                    class.as_deref() == Some(format!("concerto.metamodel@1.0.0.{scalar}").as_str()),
+                ))
+            }
+            falsy => Ok(falsy),
         }
-        js_string(&type_name).map(Some)
-    }
-
-    fn is_enum(&self, declaration: &JsValue) -> Result<bool> {
-        Ok(call(declaration, "isEnum", &[], "typeDeclaration.isEnum")?.is_truthy())
-    }
-
-    fn is_map_declaration(&self, declaration: &JsValue) -> Result<Option<bool>> {
-        Ok(call_optional(declaration, "isMapDeclaration")?.map(|v| v.is_truthy()))
-    }
-
-    fn is_scalar_declaration(&self, declaration: &JsValue) -> Result<Option<bool>> {
-        Ok(call_optional(declaration, "isScalarDeclaration")?.map(|v| v.is_truthy()))
-    }
-
-    fn get_ast_class(&self, declaration: &JsValue) -> Result<Option<String>> {
-        Ok(get(&get(declaration, "ast")?, "$class")?.as_string())
-    }
-
-    fn get_all_declarations(&self, model_file: &JsValue) -> Result<Vec<JsValue>> {
-        let list = call(
-            model_file,
-            "getAllDeclarations",
-            &[],
-            "this.getModelFile().getAllDeclarations",
-        )?;
-        Ok(Array::from(&list).iter().collect())
+    };
+    match side("StringScalar")? {
+        Some(true) => Ok(Some(true)),
+        _ => side("DateTimeScalar"),
     }
 }
 
@@ -715,21 +663,6 @@ pub fn model_util_is_primitive_type(type_name: JsValue) -> bool {
         .is_some_and(|t| mu::is_primitive_type(&t))
 }
 
-/// TS: ModelUtil.isAssignableTo, over the JS model file and property. A
-/// non-string `typeName` is converted with `String()`: not modelled beyond
-/// that.
-#[wasm_bindgen(js_name = modelUtilIsAssignableTo)]
-pub fn model_util_is_assignable_to(
-    model_file: JsValue,
-    type_name: JsValue,
-    property: JsValue,
-) -> std::result::Result<bool, JsValue> {
-    run(|| {
-        let type_name = js_string(&type_name)?;
-        mu::is_assignable_to(&JsContext, &model_file, &type_name, &property)
-    })
-}
-
 /// TS: ModelUtil.capitalizeFirstLetter
 #[wasm_bindgen(js_name = modelUtilCapitalizeFirstLetter)]
 pub fn model_util_capitalize_first_letter(string: JsValue) -> std::result::Result<String, JsValue> {
@@ -738,24 +671,6 @@ pub fn model_util_capitalize_first_letter(string: JsValue) -> std::result::Resul
             &string, "string", "charAt",
         )?))
     })
-}
-
-/// TS: ModelUtil.isEnum; `undefined` when the type is not found.
-#[wasm_bindgen(js_name = modelUtilIsEnum)]
-pub fn model_util_is_enum(field: JsValue) -> std::result::Result<JsValue, JsValue> {
-    run(|| Ok(js_opt_bool(mu::is_enum(&JsContext, &field)?)))
-}
-
-/// TS: ModelUtil.isMap; `undefined` when the type is not found.
-#[wasm_bindgen(js_name = modelUtilIsMap)]
-pub fn model_util_is_map(field: JsValue) -> std::result::Result<JsValue, JsValue> {
-    run(|| Ok(js_opt_bool(mu::is_map(&JsContext, &field)?)))
-}
-
-/// TS: ModelUtil.isScalar; `undefined` when the type is not found.
-#[wasm_bindgen(js_name = modelUtilIsScalar)]
-pub fn model_util_is_scalar(field: JsValue) -> std::result::Result<JsValue, JsValue> {
-    run(|| Ok(js_opt_bool(mu::is_scalar(&JsContext, &field)?)))
 }
 
 /// TS: ModelUtil.isValidIdentifier. A non-string (`undefined`, `null`, a
@@ -839,18 +754,6 @@ fn class_node(node: &JsValue) -> Result<Option<Value>> {
 #[wasm_bindgen(js_name = modelUtilIsValidMapKey)]
 pub fn model_util_is_valid_map_key(key: JsValue) -> std::result::Result<bool, JsValue> {
     run(|| Ok(mu::is_valid_map_key(class_node(&key)?.as_ref())?))
-}
-
-/// TS: ModelUtil.isValidMapKeyScalar; `undefined` for a nullish declaration.
-#[wasm_bindgen(js_name = modelUtilIsValidMapKeyScalar)]
-pub fn model_util_is_valid_map_key_scalar(decl: JsValue) -> std::result::Result<JsValue, JsValue> {
-    run(|| {
-        let decl = (!nullish(&decl)).then_some(decl);
-        Ok(js_opt_bool(mu::is_valid_map_key_scalar(
-            &JsContext,
-            decl.as_ref(),
-        )?))
-    })
 }
 
 /// TS: ModelUtil.isValidMapValue
@@ -2452,12 +2355,6 @@ pub fn scalar_declaration_process(declaration: JsValue) -> std::result::Result<J
     })
 }
 
-/// TS: ScalarDeclaration.validate, after `super.validate()`.
-#[wasm_bindgen(js_name = scalarDeclarationValidate)]
-pub fn scalar_declaration_validate(declaration: JsValue) -> std::result::Result<(), JsValue> {
-    run(|| ScalarDeclaration::validate(&JsContext, &declaration))
-}
-
 /// TS: ScalarDeclaration.toString
 #[wasm_bindgen(js_name = scalarDeclarationToString)]
 pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result<String, JsValue> {
@@ -3360,169 +3257,6 @@ pub fn class_declaration_get_properties(
     })
 }
 
-/// TS: `Introspector.getClassDeclarations`, inlined: every model file's
-/// declarations, minus map and scalar declarations (which have no
-/// superType-based subclass relationship, and whose `isMapDeclaration`/
-/// `isScalarDeclaration` TS calls with `?.`, so a class-family declaration
-/// without either method is just treated as neither).
-fn get_class_declarations(model_manager: &JsValue) -> Result<Vec<JsValue>> {
-    let model_files = call(
-        model_manager,
-        "getModelFiles",
-        &[],
-        "modelManager.getModelFiles",
-    )?;
-    let mut result = Vec::new();
-    for model_file in Array::from(&model_files).iter() {
-        let declarations = call(
-            &model_file,
-            "getAllDeclarations",
-            &[],
-            "modelFile.getAllDeclarations",
-        )?;
-        for declaration in Array::from(&declarations).iter() {
-            let is_map =
-                call_optional(&declaration, "isMapDeclaration")?.is_some_and(|v| v.is_truthy());
-            let is_scalar =
-                call_optional(&declaration, "isScalarDeclaration")?.is_some_and(|v| v.is_truthy());
-            if !is_map && !is_scalar {
-                result.push(declaration);
-            }
-        }
-    }
-    Ok(result)
-}
-
-/// Builds the same `subclassMap` TS does in `getAssignableClassDeclarations`
-/// and `getDirectSubclasses`: every loaded class-like declaration, keyed by
-/// its own super type's fully qualified name (in `getModelFiles`/
-/// `getAllDeclarations` order, so each bucket's insertion order matches TS's
-/// `Array.forEach` too).
-fn build_subclass_map(
-    model_manager: &JsValue,
-) -> Result<std::collections::HashMap<String, Vec<JsValue>>> {
-    let all = get_class_declarations(model_manager)?;
-    let mut subclass_map: std::collections::HashMap<String, Vec<JsValue>> =
-        std::collections::HashMap::new();
-    for decl in &all {
-        let super_type = call(decl, "getSuperType", &[], "declaration.getSuperType")?;
-        if super_type.is_truthy() {
-            let key = js_string(&super_type)?;
-            subclass_map.entry(key).or_default().push(decl.clone());
-        }
-    }
-    Ok(subclass_map)
-}
-
-/// TS: `ClassDeclaration.getAssignableClassDeclarations`: `this` plus every
-/// direct and indirect subclass, deduplicated the way TS's
-/// `Set<ClassDeclaration>` deduplicates — by declaration identity, which
-/// (every FQN in a validated model manager names exactly one declaration
-/// instance) is the same as deduplicating by fully qualified name here.
-///
-/// A declaration met again below itself is a cyclic inheritance chain: the
-/// BC-11 `IllegalModelException` (R1; TS 5.0.0 recursed until V8's stack
-/// overflowed, DV-013).
-#[wasm_bindgen(js_name = classDeclarationGetAssignableClassDeclarations)]
-pub fn class_declaration_get_assignable_class_declarations(
-    declaration: JsValue,
-) -> std::result::Result<Array, JsValue> {
-    run(|| {
-        let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
-        let model_manager = call(
-            &model_file,
-            "getModelManager",
-            &[],
-            "this.getModelFile().getModelManager",
-        )?;
-        let subclass_map = build_subclass_map(&model_manager)?;
-
-        /// `path` is the declarations from `this` down to `declarations`'
-        /// super type, with their names.
-        fn collect(
-            declarations: &[JsValue],
-            subclass_map: &std::collections::HashMap<String, Vec<JsValue>>,
-            seen: &mut Vec<JsValue>,
-            seen_keys: &mut HashSet<String>,
-            path: &mut Vec<(String, JsValue)>,
-        ) -> Result<()> {
-            for decl in declarations {
-                let fqn = js_string(&call(
-                    decl,
-                    "getFullyQualifiedName",
-                    &[],
-                    "declaration.getFullyQualifiedName",
-                )?)?;
-                if let Some(start) = path.iter().position(|(name, _)| *name == fqn) {
-                    // `path` runs from super type to subclass; the chain
-                    // runs the other way, from `decl` up to `decl` again.
-                    let cycle = std::iter::once(decl.clone())
-                        .chain(path.iter().skip(start + 1).rev().map(|(_, d)| d.clone()))
-                        .collect::<Vec<_>>();
-                    return Err(circular_inheritance_error(&cycle, decl)?);
-                }
-                if seen_keys.insert(fqn.clone()) {
-                    seen.push(decl.clone());
-                }
-                if let Some(children) = subclass_map.get(&fqn) {
-                    path.push((fqn, decl.clone()));
-                    let walked = collect(children, subclass_map, seen, seen_keys, path);
-                    path.pop();
-                    walked?;
-                }
-            }
-            Ok(())
-        }
-
-        let mut seen = Vec::new();
-        let mut seen_keys = HashSet::new();
-        collect(
-            std::slice::from_ref(&declaration),
-            &subclass_map,
-            &mut seen,
-            &mut seen_keys,
-            &mut Vec::new(),
-        )?;
-
-        let result = Array::new();
-        for d in seen {
-            result.push(&d);
-        }
-        Ok(result)
-    })
-}
-
-/// TS: `ClassDeclaration.getDirectSubclasses`: just the receiver's own
-/// bucket in the same `subclassMap`, excluding the receiver itself.
-#[wasm_bindgen(js_name = classDeclarationGetDirectSubclasses)]
-pub fn class_declaration_get_direct_subclasses(
-    declaration: JsValue,
-) -> std::result::Result<Array, JsValue> {
-    run(|| {
-        let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
-        let model_manager = call(
-            &model_file,
-            "getModelManager",
-            &[],
-            "this.getModelFile().getModelManager",
-        )?;
-        let subclass_map = build_subclass_map(&model_manager)?;
-        let fqn = js_string(&call(
-            &declaration,
-            "getFullyQualifiedName",
-            &[],
-            "this.getFullyQualifiedName",
-        )?)?;
-        let result = Array::new();
-        if let Some(children) = subclass_map.get(&fqn) {
-            for d in children {
-                result.push(d);
-            }
-        }
-        Ok(result)
-    })
-}
-
 /// TS: `ClassDeclaration.getNestedProperty`: walks a dotted property path
 /// one name at a time, resolving each step's class through
 /// `getFullyQualifiedTypeName` and `modelManager.getType`, and stopping with
@@ -3723,8 +3457,8 @@ pub fn map_key_type_process(view: JsValue) -> std::result::Result<JsValue, JsVal
 
 /// TS: MapKeyType.validate. `this.modelFile.getType(...)` is a live TS
 /// collaborator call (`ModelFile` is not yet Rust-backed, P2-08); the
-/// scalar-kind check itself is [`mu::is_valid_map_key_scalar`], already
-/// shared with the native engine's own `validate_map_key`.
+/// scalar-kind check is [`js_is_valid_map_key_scalar`], over that JS
+/// declaration (the arena's own is [`mu::is_valid_map_key_scalar`]).
 #[wasm_bindgen(js_name = mapKeyTypeValidate)]
 pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> {
     run(|| {
@@ -3747,7 +3481,7 @@ pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> 
         // chains off that (`decl?.isScalarDeclaration?.()`), so a nullish
         // `decl` here must become `None`, not `Some` of a JS null.
         let decl_opt = if nullish(&decl) { None } else { Some(&decl) };
-        let valid = mu::is_valid_map_key_scalar(&JsContext, decl_opt)?;
+        let valid = js_is_valid_map_key_scalar(decl_opt)?;
         if valid != Some(true) {
             let parent = get(&view, "parent")?;
             let parent_name = js_string(&get(&parent, "name")?)?;
@@ -3862,9 +3596,8 @@ pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsV
 }
 
 /// TS: MapValueType.validate. `this.modelFile.getType(...)` is a live TS
-/// collaborator call (`ModelFile` is not yet Rust-backed, P2-08); the
-/// "is this a map declaration" check itself goes through [`JsContext`]'s
-/// existing [`ResolutionContext::is_map_declaration`].
+/// collaborator call (`ModelFile` is not yet Rust-backed, P2-08), and so is
+/// the declaration's `isMapDeclaration?.()` ([`js_declaration_is`]).
 #[wasm_bindgen(js_name = mapValueTypeValidate)]
 pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue> {
     run(|| {
@@ -3882,7 +3615,7 @@ pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue
             &[type_name_ast],
             "modelFile.getType",
         )?;
-        if JsContext.is_map_declaration(&decl)?.unwrap_or(false) {
+        if js_declaration_is(&decl, "isMapDeclaration")?.unwrap_or(false) {
             return Err(ContractError::new(
                 ErrorKind::IllegalModel,
                 "mapvaluetype-validate-mapnotsupported",
@@ -4039,34 +3772,13 @@ fn json_stringify(value: &JsValue) -> Result<String> {
 
 /// One property of a decorator's own type declaration, as
 /// `Decorator.validate` reads it: `p.getName()`, `p.isOptional()`,
-/// `p.getType()`. `node` is kept for the [`mu::is_assignable_to`] call, which
-/// reads it as a [`ResolutionContext`] node.
+/// `p.getType()`, from the arena (P5-106, BC-52). `id` is kept for the
+/// [`mu::is_assignable_to`] call.
 struct PropertyView {
-    node: JsValue,
+    id: PropId,
     name: String,
     optional: bool,
     type_name: Option<String>,
-}
-
-/// TS: `p.getName()`, `p.isOptional()`, `p.getType()`, read together for one
-/// element of `decoratorDecl.getProperties()`.
-fn property_view(node: JsValue) -> Result<PropertyView> {
-    let name = js_string(&call(&node, "getName", &[], "property.getName")?)?;
-    let optional = call(&node, "isOptional", &[], "property.isOptional")?.is_truthy();
-    let type_name = {
-        let t = call(&node, "getType", &[], "property.getType")?;
-        if nullish(&t) {
-            None
-        } else {
-            Some(js_string(&t)?)
-        }
-    };
-    Ok(PropertyView {
-        node,
-        name,
-        optional,
-        type_name,
-    })
 }
 
 /// An option level (`'error'`, `'warn'`, ...) of a `DecoratorValidationOptions`
@@ -4092,8 +3804,9 @@ fn level_js(level: &Option<String>) -> JsValue {
 /// method builds the exact `IllegalModelException` (message, model file,
 /// location) and logs through `Logger.dispatch`, exactly as every other
 /// call site of `handleError` does. `err` is a message string for one of
-/// this function's own checks, or (from the outer catch, [`decorator_validate`])
-/// whatever the try-equivalent threw — TS passes `handleError` either shape.
+/// this function's own checks, or (from the outer catch,
+/// [`ModelManagerHandle::decorator_validate`]) whatever the try-equivalent
+/// threw — TS passes `handleError` either shape.
 fn handle_error(view: &JsValue, level: &Option<String>, err: &JsValue) -> Result<()> {
     call(
         view,
@@ -4110,262 +3823,459 @@ fn report_invalid(view: &JsValue, invalid: &Option<String>, message: String) -> 
     handle_error(view, invalid, &JsValue::from_str(&message))
 }
 
-/// TS: `Decorator.validate`, driven through [`JsContext`] since the model
-/// graph these views meet is still TS (module doc: "until P4-06 … P4-08").
-/// `view` is the Decorator, already processed (`name`/`arguments` set);
-/// `model_file` is `this.getParent().getModelFile()`; `context` is
-/// `this.getParent().getFullyQualifiedName?.()` — nullish for a model file's
-/// own decorator, exactly as TS's optional call leaves it.
-///
-/// Every exception this function and its helpers raise is built by calling
-/// back into `view.handleError` (or, for the try block's own resolution
-/// failure, the shim's own `IllegalModelException`): the
-/// `IllegalModelException` construction, its "File '...': " decoration and
-/// the log call are never reimplemented here, so they cannot drift from
-/// TS's. `handleError` rethrows a caught `IllegalModelException` as it is
-/// (BC-14, R1; TS 5.0.0 wrapped it again, DV-016). TS's outer `catch` re-reports *every* thrown value —
-/// including a raw host `TypeError` from reading a collaborator that does
-/// not behave like a real model element (e.g. a decorator named after a
-/// primitive, so `mf.getType` resolves it to a type with no
-/// `getProperties`) — through `missingDecorator`, so both of this binding's
-/// [`Error`] variants are routed the same way: a [`Error::Contract`] (a host
-/// `TypeError` this module's own `call`/`get` raised, or any other core
-/// error [`try_validate_decorator`]'s collaborators produced) is first
-/// turned into the JS exception it would coerce to ([`throw`], the same
-/// mapping the whole binding uses to leave the module), so `handleError`
-/// sees the same kind of value TS's `catch (err)` would have caught.
-#[wasm_bindgen(js_name = decoratorValidate)]
-pub fn decorator_validate(
-    view: JsValue,
-    model_file: JsValue,
-    context: JsValue,
-) -> std::result::Result<(), JsValue> {
-    let body = || -> Result<()> {
-        let mm = call(&model_file, "getModelManager", &[], "mf.getModelManager")?;
-        let options = call(
-            &mm,
-            "getDecoratorValidation",
-            &[],
-            "mm.getDecoratorValidation",
-        )?;
-        let missing = level_option(&options, "missingDecorator")?;
-        let invalid = level_option(&options, "invalidDecorator")?;
-        if missing.is_none() && invalid.is_none() {
-            return Ok(());
-        }
-        let context_name = if nullish(&context) {
-            None
-        } else {
-            Some(js_string(&context)?)
-        };
-        match try_validate_decorator(&view, &model_file, context_name.as_deref(), &invalid) {
-            Ok(()) => Ok(()),
-            Err(Error::Js(caught)) => handle_error(&view, &missing, &caught),
-            Err(err @ (Error::Contract(_) | Error::Instance(..) | Error::Unsupported(_))) => {
-                let caught = throw(err, Some(&model_file));
-                handle_error(&view, &missing, &caught)
-            }
-        }
-    };
-    body().map_err(|e| throw(e, Some(&model_file)))
+/// TS `Decorator.validate`'s reads of the model, answered by the arena
+/// (P5-106, BC-52): `mf` is the model file the decorator's parent belongs
+/// to, by handle. The decorator itself (`name`, `arguments`,
+/// `ast.location`) and its `handleError` are the JS view's.
+struct DecoratorCheck<'a> {
+    manager: &'a ModelManager,
+    view: &'a JsValue,
+    model_file: &'a JsValue,
+    file: ModelFileId,
+    invalid: &'a Option<String>,
 }
 
-/// The body of TS `Decorator.validate`'s `try` block.
-fn try_validate_decorator(
-    view: &JsValue,
-    model_file: &JsValue,
-    context: Option<&str>,
-    invalid: &Option<String>,
-) -> Result<()> {
-    let name = js_string(&get(view, "name")?)?;
-    // TS: `mf.resolveType(decoratedName, this.getName(), this.ast.location);
-    // const decoratorDecl = mf.getType(this.getName());` — `getType`
-    // returning nothing is treated as `resolveType` failing to resolve the
-    // name, the same simplification the native `Decorator::validate` already
-    // makes (P2-07 module doc, `resolve_own_name`).
-    let Some(decorator_decl) = JsContext.get_type(model_file, Some(&name))? else {
-        let raw = format!(
-            "Undeclared type \"{}\" in \"{}\".",
-            name,
-            context.unwrap_or("undefined"),
-        );
-        // `ModelFile.resolveType`'s own `IllegalModelException(message, mf,
-        // location)`, built by the shim, so that `handleError` rethrows it
-        // as it is (BC-14, R1).
-        let location = to_json(&opt_get(&get(view, "ast")?, "location")?)?;
-        let err = illegal_model_error(raw, location);
-        return Err(Error::Js(throw(err, Some(model_file))));
-    };
+impl DecoratorCheck<'_> {
+    /// The body of TS `Decorator.validate`'s `try` block.
+    fn try_validate(&self, context: Option<&str>) -> Result<()> {
+        let view = self.view;
+        let name = js_string(&get(view, "name")?)?;
+        // TS: `mf.resolveType(decoratedName, this.getName(), this.ast.location);
+        // const decoratorDecl = mf.getType(this.getName());` — `getType`
+        // returning nothing is treated as `resolveType` failing to resolve the
+        // name, the same simplification the native `Decorator::validate`
+        // already makes (P2-07 module doc, `resolve_own_name`).
+        let Some(decorator_decl) =
+            ResolutionContext::get_type(self.manager, &Node::ModelFile(self.file), Some(&name))?
+        else {
+            let raw = format!(
+                "Undeclared type \"{}\" in \"{}\".",
+                name,
+                context.unwrap_or("undefined"),
+            );
+            // `ModelFile.resolveType`'s own `IllegalModelException(message, mf,
+            // location)`, built by the shim, so that `handleError` rethrows it
+            // as it is (BC-14, R1).
+            let location = to_json(&opt_get(&get(view, "ast")?, "location")?)?;
+            let err = illegal_model_error(raw, location);
+            return Err(Error::Js(throw(err, Some(self.model_file))));
+        };
 
-    let properties: Vec<PropertyView> = {
-        let list = call(
-            &decorator_decl,
-            "getProperties",
-            &[],
-            "decoratorDecl.getProperties",
-        )?;
-        Array::from(&list)
+        let properties = self.properties_of(decorator_decl)?;
+        let (required, optional): (Vec<&PropertyView>, Vec<&PropertyView>) =
+            properties.iter().partition(|p| !p.optional);
+        let ordered: Vec<&PropertyView> = required
             .iter()
-            .map(property_view)
-            .collect::<Result<Vec<_>>>()?
-    };
-    let (required, optional): (Vec<&PropertyView>, Vec<&PropertyView>) =
-        properties.iter().partition(|p| !p.optional);
-    let ordered: Vec<&PropertyView> = required
-        .iter()
-        .copied()
-        .chain(optional.iter().copied())
-        .collect();
+            .copied()
+            .chain(optional.iter().copied())
+            .collect();
 
-    let arguments = Array::from(&get(view, "arguments")?);
-    let arg_count = arguments.length() as usize;
+        let arguments = Array::from(&get(view, "arguments")?);
+        let arg_count = arguments.length() as usize;
 
-    if arg_count < required.len() {
-        let names = required
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        report_invalid(
-            view,
-            invalid,
-            format!("Decorator {name} has too few arguments. Required properties are: [{names}]"),
-        )?;
-    }
-
-    for n in 0..arg_count {
-        let arg = arguments.get(n as u32);
-        let Some(property) = ordered.get(n) else {
-            let names = ordered
+        if arg_count < required.len() {
+            let names = required
                 .iter()
                 .map(|p| p.name.as_str())
                 .collect::<Vec<_>>()
                 .join(",");
             report_invalid(
                 view,
-                invalid,
-                format!("Decorator {name} has too many arguments. Properties are: [{names}]"),
+                self.invalid,
+                format!(
+                    "Decorator {name} has too few arguments. Required properties are: [{names}]"
+                ),
             )?;
-            continue;
+        }
+
+        for n in 0..arg_count {
+            let arg = arguments.get(n as u32);
+            let Some(property) = ordered.get(n) else {
+                let names = ordered
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                report_invalid(
+                    view,
+                    self.invalid,
+                    format!("Decorator {name} has too many arguments. Properties are: [{names}]"),
+                )?;
+                continue;
+            };
+            self.check_argument(&name, property, &arg)?;
+        }
+        Ok(())
+    }
+
+    /// TS: `decoratorDecl.getProperties()`, each read as a [`PropertyView`].
+    /// Only a class-like or enum declaration has the method: anything else
+    /// `mf.getType` returns (a scalar or map declaration, a primitive type's
+    /// name) is V8's "is not a function" `TypeError`, as TS raises.
+    fn properties_of(&self, decorator_decl: Node) -> Result<Vec<PropertyView>> {
+        let not_a_function = || {
+            type_error(
+                "engine-typeerror-notafunction",
+                vec![("expression", "decoratorDecl.getProperties".to_string())],
+            )
         };
-        check_argument(view, &name, model_file, property, &arg, invalid)?;
+        let Node::Declaration(id) = decorator_decl else {
+            return Err(not_a_function());
+        };
+        let declaration = self
+            .manager
+            .declaration(id)
+            .ok_or_else(|| unknown(decorator_decl))?;
+        if declaration.is_scalar_declaration() || declaration.is_map_declaration() {
+            return Err(not_a_function());
+        }
+        let properties = self.manager.class_properties_of(id)?;
+        properties
+            .ids()
+            .map(|id| {
+                let property = self
+                    .manager
+                    .property_by_id(id)
+                    .ok_or_else(|| unknown(Node::Property(id)))?;
+                Ok(PropertyView {
+                    id,
+                    name: property.name().to_string(),
+                    optional: property.is_optional(),
+                    type_name: property.type_name().map(str::to_string),
+                })
+            })
+            .collect()
     }
-    Ok(())
+
+    /// TS: one iteration of the `switch (property.getType())` in
+    /// `Decorator.validate`.
+    fn check_argument(&self, name: &str, property: &PropertyView, arg: &JsValue) -> Result<()> {
+        let expected = match property.type_name.as_deref() {
+            Some("Integer") | Some("Double") | Some("Long") => {
+                (arg.as_f64().is_none()).then_some("number")
+            }
+            Some("String") => (arg.as_string().is_none()).then_some("string"),
+            Some("Boolean") => (arg.as_bool().is_none()).then_some("boolean"),
+            _ => return self.check_type_reference_argument(name, property, arg),
+        };
+        if let Some(expected) = expected {
+            return report_invalid(
+                self.view,
+                self.invalid,
+                format!(
+                    "Decorator {name} has invalid decorator argument. Expected {expected}. Found {}, with value {}",
+                    js_typeof(arg),
+                    json_stringify(arg)?,
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// TS: the `default:` arm — the argument must be a type reference,
+    /// resolvable, and assignable to the property's declared type.
+    fn check_type_reference_argument(
+        &self,
+        name: &str,
+        property: &PropertyView,
+        arg: &JsValue,
+    ) -> Result<()> {
+        let (view, invalid) = (self.view, self.invalid);
+        // TS: `typeof arg !== 'object' || arg?.type !== 'Identifier'`.
+        let is_type_reference = js_typeof(arg) == "object"
+            && opt_get(arg, "type")?.as_string().as_deref() == Some("Identifier");
+        if !is_type_reference {
+            report_invalid(
+                view,
+                invalid,
+                format!(
+                    "Decorator {name} has invalid decorator argument. Expected object. Found {}, with value {}",
+                    js_typeof(arg),
+                    json_stringify(arg)?,
+                ),
+            )?;
+        }
+        // TS: `handleError` above only throws when the decorator validation
+        // option is `'error'` (a `?` propagation here, matching TS's `throw`),
+        // so under `'warn'` control falls through to here with no
+        // `return`/`else` guarding it in the TS `default:` arm, even though
+        // `arg` may still not be a type reference. `typeReference.name` is a
+        // direct (non-optional) property read of `arg`, which is exactly what
+        // `get` already reproduces: V8's own `TypeError` for a nullish `arg`,
+        // `undefined` for a non-object `arg`.
+        let type_name = js_string(&get(arg, "name")?)?;
+        // TS: `mf.getType(typeReference.name)` — non-throwing.
+        let manager = self.manager;
+        let Some(type_decl) =
+            ResolutionContext::get_type(manager, &Node::ModelFile(self.file), Some(&type_name))?
+        else {
+            return report_invalid(
+                view,
+                invalid,
+                format!(
+                    "Decorator {name} references a type {type_name} which has not been defined/imported."
+                ),
+            );
+        };
+        let type_model_file = ResolutionContext::get_model_file(manager, &type_decl)?;
+        let type_fqn = ResolutionContext::get_fully_qualified_name(manager, &type_decl)?;
+        let property_node = Node::Property(property.id);
+        if !mu::is_assignable_to(manager, &type_model_file, &type_fqn, &property_node)? {
+            let property_fqn =
+                ResolutionContext::get_fully_qualified_type_name(manager, &property_node)?;
+            report_invalid(
+                view,
+                invalid,
+                format!(
+                    "Decorator {name} references a type {type_name} which cannot be assigned to the declared type {property_fqn}"
+                ),
+            )?;
+        }
+        Ok(())
+    }
 }
 
-/// TS: one iteration of the `switch (property.getType())` in
-/// `Decorator.validate`.
-fn check_argument(
-    view: &JsValue,
-    name: &str,
-    model_file: &JsValue,
-    property: &PropertyView,
-    arg: &JsValue,
-    invalid: &Option<String>,
-) -> Result<()> {
-    match property.type_name.as_deref() {
-        Some("Integer") | Some("Double") | Some("Long") => {
-            if arg.as_f64().is_none() {
-                return report_invalid(
-                    view,
-                    invalid,
-                    format!(
-                        "Decorator {name} has invalid decorator argument. Expected number. Found {}, with value {}",
-                        js_typeof(arg),
-                        json_stringify(arg)?,
-                    ),
-                );
-            }
-        }
-        Some("String") => {
-            if arg.as_string().is_none() {
-                return report_invalid(
-                    view,
-                    invalid,
-                    format!(
-                        "Decorator {name} has invalid decorator argument. Expected string. Found {}, with value {}",
-                        js_typeof(arg),
-                        json_stringify(arg)?,
-                    ),
-                );
-            }
-        }
-        Some("Boolean") => {
-            if arg.as_bool().is_none() {
-                return report_invalid(
-                    view,
-                    invalid,
-                    format!(
-                        "Decorator {name} has invalid decorator argument. Expected boolean. Found {}, with value {}",
-                        js_typeof(arg),
-                        json_stringify(arg)?,
-                    ),
-                );
-            }
-        }
-        _ => {
-            return check_type_reference_argument(view, name, model_file, property, arg, invalid);
-        }
+// ---------------------------------------------------------------------------
+// Arena answers for the retired JsContext bindings (P5-106, BC-52)
+// ---------------------------------------------------------------------------
+//
+// accordproject/concerto-rust#460 (maintainer decision 2026-10-03, BC-52):
+// `ModelUtil.isAssignableTo`, `isEnum`, `isMap`, `isScalar` and
+// `isValidMapKeyScalar`, `ScalarDeclaration.validate`, `Decorator.validate`
+// and `ClassDeclaration.getAssignableClassDeclarations`/`getDirectSubclasses`
+// were free bindings over the JS objects, reading the model back through
+// JS callbacks (`JsContext`: `modelFile.getType`, which itself calls back
+// into this module, `getSuperType`, `getModelFiles`, ...). They are now
+// methods of the manager's handle, taking the model file, declaration or
+// property handle the view looked up, and answered by the arena and its
+// caches ([`ResolutionContext`] for [`ModelManager`]). A replaced view
+// method is not called; `isAssignableTo` still reads the property's own
+// type (`getFullyQualifiedTypeName`) in TS, since the serializer hands it
+// stand-ins for relationship map values.
+
+impl ModelManagerHandle {
+    /// TS `ModelUtil.isEnum(field)`'s `field.getParent().getModelFile()
+    /// .getType(field.getType())`, by the model file's handle and the
+    /// field's type name (`None`: a nullish type, as an enum value has).
+    /// A map key or value type crosses the same way as a property.
+    fn field_type(&self, model_file: u32, type_name: Option<&str>) -> Result<Option<Node>> {
+        Ok(ResolutionContext::get_type(
+            &self.manager,
+            &Node::ModelFile(ModelFileId::from_index(model_file)),
+            type_name,
+        )?)
     }
-    Ok(())
 }
 
-/// TS: the `default:` arm — the argument must be a type reference,
-/// resolvable, and assignable to the property's declared type.
-fn check_type_reference_argument(
-    view: &JsValue,
-    name: &str,
-    model_file: &JsValue,
-    property: &PropertyView,
-    arg: &JsValue,
-    invalid: &Option<String>,
-) -> Result<()> {
-    // TS: `typeof arg !== 'object' || arg?.type !== 'Identifier'`.
-    let is_type_reference = js_typeof(arg) == "object"
-        && opt_get(arg, "type")?.as_string().as_deref() == Some("Identifier");
-    if !is_type_reference {
-        report_invalid(
-            view,
-            invalid,
-            format!(
-                "Decorator {name} has invalid decorator argument. Expected object. Found {}, with value {}",
-                js_typeof(arg),
-                json_stringify(arg)?,
-            ),
-        )?;
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// TS: `ModelUtil.isAssignableTo(modelFile, typeName, property)`, for the
+    /// model file by handle, and `property`'s fully qualified type name,
+    /// which the view reads with `property.getFullyQualifiedTypeName()` (the
+    /// property may be a relationship map value's stand-in): `typeName`'s
+    /// declaration in the model file, or one of its super types, must be
+    /// that type ([`mu::is_assignable_to_type`]).
+    #[wasm_bindgen(js_name = modelUtilIsAssignableTo)]
+    pub fn model_util_is_assignable_to(
+        &self,
+        model_file: u32,
+        type_name: &str,
+        property_type: &str,
+    ) -> std::result::Result<bool, JsValue> {
+        run(|| {
+            Ok(mu::is_assignable_to_type(
+                &self.manager,
+                &Node::ModelFile(ModelFileId::from_index(model_file)),
+                type_name,
+                property_type,
+            )?)
+        })
     }
-    // TS: `handleError` above only throws when the decorator validation
-    // option is `'error'` (a `?` propagation here, matching TS's `throw`),
-    // so under `'warn'` control falls through to here with no
-    // `return`/`else` guarding it in the TS `default:` arm, even though
-    // `arg` may still not be a type reference. `typeReference.name` is a
-    // direct (non-optional) property read of `arg`, which is exactly what
-    // `get` already reproduces: V8's own `TypeError` for a nullish `arg`,
-    // `undefined` for a non-object `arg`.
-    let type_name = js_string(&get(arg, "name")?)?;
-    // TS: `mf.getType(typeReference.name)` — non-throwing.
-    let Some(type_decl) = JsContext.get_type(model_file, Some(&type_name))? else {
-        return report_invalid(
-            view,
-            invalid,
-            format!(
-                "Decorator {name} references a type {type_name} which has not been defined/imported."
-            ),
-        );
-    };
-    let type_model_file = JsContext.get_model_file(&type_decl)?;
-    let type_fqn = JsContext.get_fully_qualified_name(&type_decl)?;
-    if !mu::is_assignable_to(&JsContext, &type_model_file, &type_fqn, &property.node)? {
-        let property_fqn = JsContext.get_fully_qualified_type_name(&property.node)?;
-        report_invalid(
-            view,
-            invalid,
-            format!(
-                "Decorator {name} references a type {type_name} which cannot be assigned to the declared type {property_fqn}"
-            ),
-        )?;
+
+    /// TS: `ModelUtil.isEnum(field)`: whether the field's type is an enum;
+    /// `undefined` when the type is not found. `model_file` is the handle of
+    /// the model file of the field's parent, `type_name` the field's type.
+    #[wasm_bindgen(js_name = modelUtilIsEnum)]
+    pub fn model_util_is_enum(
+        &self,
+        model_file: u32,
+        type_name: Option<String>,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            let found = match self.field_type(model_file, type_name.as_deref())? {
+                Some(declaration) => Some(ResolutionContext::is_enum(&self.manager, &declaration)?),
+                None => None,
+            };
+            Ok(js_opt_bool(found))
+        })
     }
-    Ok(())
+
+    /// TS: `ModelUtil.isMap(field)`, as [`Self::model_util_is_enum`];
+    /// `undefined` when the type is not found or is a primitive.
+    #[wasm_bindgen(js_name = modelUtilIsMap)]
+    pub fn model_util_is_map(
+        &self,
+        model_file: u32,
+        type_name: Option<String>,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            let found = match self.field_type(model_file, type_name.as_deref())? {
+                Some(declaration) => {
+                    ResolutionContext::is_map_declaration(&self.manager, &declaration)?
+                }
+                None => None,
+            };
+            Ok(js_opt_bool(found))
+        })
+    }
+
+    /// TS: `ModelUtil.isScalar(field)`, as [`Self::model_util_is_enum`];
+    /// `undefined` when the type is not found or is a primitive.
+    #[wasm_bindgen(js_name = modelUtilIsScalar)]
+    pub fn model_util_is_scalar(
+        &self,
+        model_file: u32,
+        type_name: Option<String>,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            let found = match self.field_type(model_file, type_name.as_deref())? {
+                Some(declaration) => {
+                    ResolutionContext::is_scalar_declaration(&self.manager, &declaration)?
+                }
+                None => None,
+            };
+            Ok(js_opt_bool(found))
+        })
+    }
+
+    /// TS: `ModelUtil.isValidMapKeyScalar(decl)` for a declaration by
+    /// handle: whether it is a String or DateTime scalar.
+    #[wasm_bindgen(js_name = modelUtilIsValidMapKeyScalar)]
+    pub fn model_util_is_valid_map_key_scalar(
+        &self,
+        declaration: u32,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| {
+            let node = Node::Declaration(DeclId::from_index(declaration));
+            Ok(js_opt_bool(mu::is_valid_map_key_scalar(
+                &self.manager,
+                Some(&node),
+            )?))
+        })
+    }
+
+    /// TS: `ScalarDeclaration.validate`, after `super.validate()`: no two
+    /// declarations of the scalar's model file share a fully qualified name.
+    #[wasm_bindgen(js_name = scalarDeclarationValidate)]
+    pub fn scalar_declaration_validate(
+        &self,
+        declaration: u32,
+    ) -> std::result::Result<(), JsValue> {
+        run(|| {
+            Ok(ScalarDeclaration::validate(
+                &self.manager,
+                &Node::Declaration(DeclId::from_index(declaration)),
+            )?)
+        })
+    }
+
+    /// TS: `ClassDeclaration.getAssignableClassDeclarations`, as the fully
+    /// qualified names of the declaration and of every declaration that
+    /// (transitively) extends it, in TS's order
+    /// ([`ModelManager::assignable_ids`], over the cached subclass map). A
+    /// cyclic chain below it is the BC-11 `IllegalModelException`.
+    #[wasm_bindgen(js_name = classDeclarationGetAssignableClassDeclarations)]
+    pub fn class_declaration_get_assignable_class_declarations(
+        &self,
+        declaration: u32,
+    ) -> std::result::Result<Vec<String>, JsValue> {
+        run(|| {
+            self.manager
+                .assignable_ids(DeclId::from_index(declaration))?
+                .into_iter()
+                .map(|id| Ok(self.manager.decl_fqn(id)?.to_string()))
+                .collect()
+        })
+    }
+
+    /// TS: `ClassDeclaration.getDirectSubclasses`, as the fully qualified
+    /// names of the declarations that directly extend the declaration, in
+    /// load order ([`ModelManager::direct_subclasses_of`]).
+    #[wasm_bindgen(js_name = classDeclarationGetDirectSubclasses)]
+    pub fn class_declaration_get_direct_subclasses(
+        &self,
+        declaration: u32,
+    ) -> std::result::Result<Vec<String>, JsValue> {
+        run(|| {
+            self.manager
+                .direct_subclasses_of(DeclId::from_index(declaration))?
+                .iter()
+                .map(|id| Ok(self.manager.decl_fqn(*id)?.to_string()))
+                .collect()
+        })
+    }
+
+    /// TS: `Decorator.validate`. `view` is the Decorator, already processed
+    /// (`name`/`arguments` set), whose `handleError` reports each problem;
+    /// `model_file` is `this.getParent().getModelFile()` (for the errors it
+    /// names) and `model_file_id` its handle, which every type is resolved
+    /// in; `context` is `this.getParent().getFullyQualifiedName?.()` —
+    /// nullish for a model file's own decorator, exactly as TS's optional
+    /// call leaves it; `options` is the manager's
+    /// `getDecoratorValidation()`.
+    ///
+    /// Every exception this method raises is built by calling back into
+    /// `view.handleError` (or, for the try block's own resolution failure,
+    /// the shim's own `IllegalModelException`): the `IllegalModelException`
+    /// construction, its "File '...': " decoration and the log call are
+    /// never reimplemented here, so they cannot drift from TS's.
+    /// `handleError` rethrows a caught `IllegalModelException` as it is
+    /// (BC-14, R1; TS 5.0.0 wrapped it again, DV-016). TS's outer `catch`
+    /// re-reports *every* thrown value — including V8's `TypeError` for a
+    /// type with no `getProperties` (a decorator named after a primitive or
+    /// a scalar) — through `missingDecorator`, so both of this method's
+    /// [`Error`] variants are routed the same way: a [`Error::Contract`] is
+    /// first turned into the JS exception it would coerce to ([`throw`]), so
+    /// `handleError` sees the same kind of value TS's `catch (err)` would
+    /// have caught.
+    #[wasm_bindgen(js_name = decoratorValidate)]
+    pub fn decorator_validate(
+        &self,
+        view: JsValue,
+        model_file: JsValue,
+        model_file_id: u32,
+        context: JsValue,
+        options: JsValue,
+    ) -> std::result::Result<(), JsValue> {
+        let body = || -> Result<()> {
+            let missing = level_option(&options, "missingDecorator")?;
+            let invalid = level_option(&options, "invalidDecorator")?;
+            if missing.is_none() && invalid.is_none() {
+                return Ok(());
+            }
+            let context_name = if nullish(&context) {
+                None
+            } else {
+                Some(js_string(&context)?)
+            };
+            let check = DecoratorCheck {
+                manager: &self.manager,
+                view: &view,
+                model_file: &model_file,
+                file: ModelFileId::from_index(model_file_id),
+                invalid: &invalid,
+            };
+            match check.try_validate(context_name.as_deref()) {
+                Ok(()) => Ok(()),
+                Err(Error::Js(caught)) => handle_error(&view, &missing, &caught),
+                Err(err @ (Error::Contract(_) | Error::Instance(..) | Error::Unsupported(_))) => {
+                    let caught = throw(err, Some(&model_file));
+                    handle_error(&view, &missing, &caught)
+                }
+            }
+        };
+        body().map_err(|e| throw(e, Some(&model_file)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5177,7 +5087,7 @@ pub(crate) struct SerializerOptionsEntry {
     from_json: FromJsonOptions,
     /// The merged options as `validateInstance`'s walk reads them
     /// ([`native_from_json_options`] of [`validator_options`]).
-    native: NativeFromJsonOptions,
+    native: FromJsonOptions,
 }
 
 impl SerializerOptionsEntry {
@@ -5187,7 +5097,7 @@ impl SerializerOptionsEntry {
     fn new(text: &str) -> Result<Self> {
         let options = decode_wire_options(text)?;
         let serializer = Serializer::new(true, true, options.as_ref())?;
-        let from_json = FromJsonOptions::new(&serializer.default_options);
+        let from_json = populator::from_json_options(&serializer.default_options);
         // The text has just decoded, so it reads as plain JSON too.
         let native = native_from_json_options(&validator_options(text).unwrap_or(Value::Null));
         Ok(Self {
@@ -5289,12 +5199,7 @@ impl ModelManagerHandle {
     /// diagnostic for the document, read from the same wire encoding the
     /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
     /// a failure, so a success costs nothing more.
-    fn instance_error(
-        &self,
-        err: CoreError,
-        doc: WireDoc,
-        options: &NativeFromJsonOptions,
-    ) -> Error {
+    fn instance_error(&self, err: CoreError, doc: WireDoc, options: &FromJsonOptions) -> Error {
         match validator_readings_of(doc) {
             Some(readings) => {
                 let diagnosis =
@@ -5309,6 +5214,61 @@ impl ModelManagerHandle {
             None => err.into(),
         }
     }
+}
+
+/// TS `validateMetaModel(input)` (`src/introspect/metamodel.ts`) and the
+/// other metamodel-instance checks, in one engine call on the engine's one
+/// resident metamodel manager
+/// (`concerto_core::instance::with_resident_metamodel_manager`; P5-102,
+/// F-7, accordproject/concerto-rust#456), so TS keeps no metamodel
+/// `ModelManagerHandle` of its own. Validates `json_text`, the instance in
+/// `Serializer.fromJSON`'s wire encoding (module doc above "Serializer fast
+/// path"; plain JSON is its own encoding), as `Serializer.fromJSON` over a
+/// metamodel manager would with the options `preset` names:
+///
+/// - `"strict"`: accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`
+///   (`validateAst`'s check);
+/// - `"default"`: the manager's serializer defaults, `baseDefaultOptions`;
+/// - `"serializer"`: a `new Serializer(factory, modelManager)`'s own
+///   defaults (`validateMetaModel`'s), the same options as `"default"`.
+///
+/// Throws what `validateInstance` (mode 0) throws for the same document and
+/// options, which is what `serializerFromJson` throws for them, unwrapped
+/// (`validateAst`'s `MetamodelException` wrapping is its caller's), with
+/// the same diagnostics attached, without building a resource (P5-101,
+/// D-3); an unknown `preset` is a plain `Error`. Additive: no other binding
+/// changes.
+#[wasm_bindgen(js_name = validateMetaModelInstance)]
+pub fn validate_meta_model_instance(
+    json_text: &str,
+    preset: &str,
+) -> std::result::Result<(), JsValue> {
+    use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
+    run(|| {
+        let preset = match preset {
+            "strict" => MetaModelPreset::Strict,
+            "default" => MetaModelPreset::Default,
+            "serializer" => MetaModelPreset::Serializer,
+            other => {
+                return Err(CoreError::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("unknown metamodel preset: {other}"),
+                    None,
+                ))
+                .into());
+            }
+        };
+        let wire = serde_json::from_str::<Value>(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let options = preset.from_json_options();
+        let serializer = Serializer::new(true, true, None)?;
+        let mut outcome = Ok(String::new());
+        with_resident_metamodel_manager(|mm| {
+            outcome = validate_wire(mm, &wire, &serializer, &options, &options, None, 0);
+            Ok(())
+        })?;
+        outcome.map(|_| ())
+    })
 }
 
 /// The document `doc` (a wire encoding, module doc above "Serializer
@@ -5439,11 +5399,11 @@ fn has_wire_tag(value: &Value) -> bool {
 
 /// The options [`diagnose`] reads, from a `fromJSON` call's merged options
 /// as plain JSON, the way `Serializer.fromJSON` reads them (concerto-core-js
-/// `populator_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
+/// `from_json_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
 /// true`, `acceptResourcesForRelationships === true`, the two #1273 options
 /// for their truthiness, and the validator's own defaults, as
 /// `ValidatedResource.validate` has them.
-fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
+fn native_from_json_options(options: &Value) -> FromJsonOptions {
     let get = |key: &str| options.get(key);
     let utc_offset = match get("utcOffset") {
         v if !json_truthy(v) => UtcOffset::Number(0.0),
@@ -5452,7 +5412,7 @@ fn native_from_json_options(options: &Value) -> NativeFromJsonOptions {
         Some(Value::Bool(_)) => UtcOffset::Number(1.0),
         _ => UtcOffset::Number(f64::NAN),
     };
-    NativeFromJsonOptions {
+    FromJsonOptions {
         validate: json_truthy(get("validate")),
         utc_offset,
         strict_qualified_date_times: get("strictQualifiedDateTimes") == Some(&Value::Bool(true)),
@@ -5530,48 +5490,60 @@ impl ModelManagerHandle {
             // the serializer built from them reused, as `serializerFromJsonCompact`
             // reuses them ([`with_serializer_options`]).
             with_serializer_options(options_text, |entry| {
-                let options = &entry.native;
-                let diagnosis = if has_wire_tag(&wire) {
-                    // Not plain JSON: read by `Serializer.fromJSON`'s own
-                    // engine, from the same decoded document, for the
-                    // verdict and the error; the walk reads its validator
-                    // form.
-                    let object = decode_wire(&wire)?;
-                    let readings = validator_readings(&object);
-                    diagnose_read(
-                        &self.manager,
-                        fqn.as_deref(),
-                        &readings,
-                        options,
-                        mode == 2,
-                        || {
-                            entry
-                                .serializer
-                                .from_json_prepared(
-                                    &self.manager,
-                                    &with_class(object, fqn.as_deref()),
-                                    &entry.from_json,
-                                    &mut ValidationEnv,
-                                )
-                                .map(|_| ())
-                        },
-                    )
-                } else {
-                    diagnose(&self.manager, fqn.as_deref(), &wire, options, mode == 2)
-                };
-                let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
-                if mode == 0 {
-                    return match diagnosis.error {
-                        Some(err) => {
-                            Err(Error::Instance(Box::new(err.into_contract()), diagnostics))
-                        }
-                        None => Ok(String::new()),
-                    };
-                }
-                snapshot(&json!({ "diagnostics": diagnostics }))
+                validate_wire(
+                    &self.manager,
+                    &wire,
+                    &entry.serializer,
+                    &entry.from_json,
+                    &entry.native,
+                    fqn.as_deref(),
+                    mode,
+                )
             })?
         })
     }
+}
+
+/// [`ModelManagerHandle::validate_instance`]'s check of the wire document
+/// `wire` on `manager`, with `serializer` and the merged options as
+/// `from_json` (`from_json`) and the walk (`options`) read them; shared
+/// with `validateMetaModelInstance` (P5-102, F-7).
+fn validate_wire(
+    manager: &ModelManager,
+    wire: &Value,
+    serializer: &Serializer,
+    from_json: &FromJsonOptions,
+    options: &FromJsonOptions,
+    fqn: Option<&str>,
+    mode: u32,
+) -> Result<String> {
+    let diagnosis = if has_wire_tag(wire) {
+        // Not plain JSON: read by `Serializer.fromJSON`'s own engine, from
+        // the same decoded document, for the verdict and the error; the
+        // walk reads its validator form.
+        let object = decode_wire(wire)?;
+        let readings = validator_readings(&object);
+        diagnose_read(manager, fqn, &readings, options, mode == 2, || {
+            serializer
+                .from_json_prepared(
+                    manager,
+                    &with_class(object, fqn),
+                    from_json,
+                    &mut ValidationEnv,
+                )
+                .map(|_| ())
+        })
+    } else {
+        diagnose(manager, fqn, wire, options, mode == 2)
+    };
+    let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
+    if mode == 0 {
+        return match diagnosis.error {
+            Some(err) => Err(Error::Instance(Box::new(err.into_contract()), diagnostics)),
+            None => Ok(String::new()),
+        };
+    }
+    snapshot(&json!({ "diagnostics": diagnostics }))
 }
 
 /// Calls back the view's `env.newId()`/`env.nowMs()` (D7: the identifier
@@ -5761,6 +5733,14 @@ impl ModelManagerHandle {
         #[allow(clippy::cast_precision_loss)]
         let epoch = self.epoch as f64;
         epoch
+    }
+
+    /// The handle of a declaration, by its exact fully-qualified name;
+    /// `undefined` if none. P5-106 (BC-52): the views pass it to the arena
+    /// answers of the retired JsContext bindings.
+    #[wasm_bindgen(js_name = declarationId)]
+    pub fn declaration_id(&self, fqn: &str) -> Option<u32> {
+        self.manager.declaration_id(fqn).map(DeclId::index)
     }
 
     /// The handle of the model file for a namespace; `undefined` if none.
@@ -7460,6 +7440,30 @@ fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
     }
 }
 
+/// P5-41 (F-C, accordproject/concerto-rust#351): the `{ "$class", "models" }`
+/// AST [`model_manager_to_ast`] builds, serialised straight from the
+/// manager's own model ASTs, without cloning them into a new `Value`.
+struct ModelManagerAstView<'a>(&'a ModelManager);
+
+impl serde::Serialize for ModelManagerAstView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(2))?;
+        map.serialize_entry("$class", "concerto.metamodel@1.0.0.Models")?;
+        map.serialize_entry("models", &ModelAstsView(self.0))?;
+        map.end()
+    }
+}
+
+/// The `models` array of [`ModelManagerAstView`].
+struct ModelAstsView<'a>(&'a ModelManager);
+
+impl serde::Serialize for ModelAstsView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_seq(self.0.model_files().map(ModelFile::ast))
+    }
+}
+
 /// TS: `DecoratorManager.falsyOrEqual`. `values` is always a plain string
 /// array (every call site passes one).
 #[wasm_bindgen(js_name = decoratorManagerFalsyOrEqual)]
@@ -7720,8 +7724,7 @@ fn staged_decorate_models(
     decorator_command_sets: &JsValue,
     options: &JsValue,
 ) -> Result<JsValue> {
-    let sets_json = to_json(decorator_command_sets)?.unwrap_or(Value::Array(Vec::new()));
-    let mut sets: Vec<Value> = sets_json.as_array().cloned().unwrap_or_default();
+    let mut sets = owned_array(to_json(decorator_command_sets)?);
 
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let mut opts = decorate_options_from_js(&options_json);
@@ -7732,12 +7735,64 @@ fn staged_decorate_models(
     let applied = !sets.is_empty();
     let decorated = dcs::decorate_models(manager, &mut sets, &mut opts)?;
     let validated = applied && opts.disable_metamodel_validation != Some(true);
+    // P5-102 (D-5, C-3): extract's writer. `{ast, staged, validated}` is
+    // written as text straight from the result's model ASTs
+    // ([`ModelManagerAstView`]), then parsed once; the intermediate `Value`
+    // (every AST deep-copied by `model_manager_to_ast`, then `to_js`) is
+    // only the fallback. The result's ASTs are not compacted as extract's
+    // are (P5-77): a decorated manager is usually read again (extracted
+    // from, validated, serialised), and re-parsing every compacted AST in
+    // WASM then cost far more than compaction saved (P5-102 measured the
+    // `extract_cold` row 3.7x slower on the synthetic-large set).
     let staged = stage_result(target, &decorated);
-    Ok(to_js(&json!({
-        "ast": model_manager_to_ast(&decorated),
+    Ok(decorate_result_js(&decorated, staged, validated))
+}
+
+/// A JS array argument's elements, moved out of its `Value` rather than
+/// copied (P5-102): anything but an array (`undefined` included) gives
+/// none, as `as_array().cloned().unwrap_or_default()` read it.
+fn owned_array(value: Option<Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
+/// The JSON text of `{ast, staged, validated}` for a decorate result:
+/// byte for byte `serde_json`'s text of [`staged_decorate_models`]'s former
+/// intermediate `Value`, written without copying any AST.
+fn decorate_result_text(
+    decorated: &ModelManager,
+    staged: &[Value],
+    validated: bool,
+) -> serde_json::Result<String> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"{\"ast\":");
+    serde_json::to_writer(&mut out, &ModelManagerAstView(decorated))?;
+    out.extend_from_slice(b",\"staged\":");
+    serde_json::to_writer(&mut out, staged)?;
+    out.extend_from_slice(if validated {
+        b",\"validated\":true}"
+    } else {
+        b",\"validated\":false}"
+    });
+    String::from_utf8(out).map_err(serde::ser::Error::custom)
+}
+
+/// The JS value of a decorate result: [`decorate_result_text`], parsed, or
+/// the intermediate-`Value` fallback, which gives the same value.
+fn decorate_result_js(decorated: &ModelManager, staged: Vec<Value>, validated: bool) -> JsValue {
+    if let Some(js) = decorate_result_text(decorated, &staged, validated)
+        .ok()
+        .and_then(|text| JSON::parse(&text).ok())
+    {
+        return js;
+    }
+    to_js(&json!({
+        "ast": model_manager_to_ast(decorated),
         "staged": staged,
         "validated": validated,
-    })))
+    }))
 }
 
 /// [`DcsManagerHandle::extract`]'s body, on `manager`: one extract
@@ -8483,7 +8538,7 @@ mod tests {
         assert!(wire.native.validate && wire.native.reject_unknown_keys);
         assert_eq!(
             wire.from_json,
-            FromJsonOptions::new(&wire.serializer.default_options)
+            populator::from_json_options(&wire.serializer.default_options)
         );
         let none = SerializerOptionsEntry::new("null").unwrap_or_else(|_| panic!("null reads"));
         assert_eq!(

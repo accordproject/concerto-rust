@@ -8,6 +8,11 @@
 //! ([`concerto_core::instance::validate`]), which is where their Rust behaviour lives. These
 //! functions are the glue the Rust serializer needs to build and validate
 //! an instance the way TS does.
+//!
+//! The validator reads the instance's own values in place
+//! ([`concerto_core::instance::validate::ValidatorInput`], P5-102,
+//! accordproject/concerto-rust#456, C-6): no call copies the value or the
+//! object graph it checks.
 
 use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
@@ -51,7 +56,7 @@ pub fn set_property_value(
             mm,
             &class_plan,
             index,
-            &value.to_validator_value(),
+            &value,
             instance.fully_qualified_identifier(),
             &instance.validator_options,
         )?;
@@ -60,18 +65,16 @@ pub fn set_property_value(
     Ok(())
 }
 
-/// TS `Typed.addArrayValue`: `this[propName].push(value)`, or a new
-/// one-element array when the property is falsy.
+/// TS `Typed.addArrayValue`: `this[propName].push(value)`, in place
+/// (P5-102, C-6: the array is not copied), or a new one-element array when
+/// the property is falsy.
 fn typed_add_array_value(instance: &mut Instance, prop_name: &str, value: JsValue) -> Result<()> {
-    let current = instance.get(prop_name).clone();
-    if current.is_truthy() {
-        let JsValue::Array(mut items) = current else {
+    match instance.props.get_mut(prop_name) {
+        Some(JsValue::Array(items)) => items.push(value),
+        Some(current) if current.is_truthy() => {
             return Err(model::not_a_function("this[propName].push"));
-        };
-        items.push(value);
-        instance.set(prop_name, JsValue::Array(items));
-    } else {
-        instance.set(prop_name, JsValue::Array(vec![value]));
+        }
+        _ => instance.set(prop_name, JsValue::Array(vec![value])),
     }
     Ok(())
 }
@@ -103,25 +106,47 @@ pub fn add_array_value(
             )
             .into());
         }
-        // `this[propName] ? this[propName].slice(0) : []`, then push.
+        // `this[propName] ? this[propName].slice(0) : []`, then push, then
+        // validate that array; `Typed.addArrayValue` then pushes onto the
+        // property itself. P5-102 (C-6): the value is pushed onto the
+        // property's own array first and validated there (and popped
+        // again when it fails), so neither the array nor the value is
+        // copied: three O(n) copies a push (O(n^2) to build an array one
+        // element at a time) became none.
         let current = instance.get(prop_name);
-        let mut new_array = if current.is_truthy() {
-            match current {
-                JsValue::Array(items) => items.clone(),
-                _ => return Err(model::not_a_function("this[propName].slice")),
+        if current.is_truthy() && !matches!(current, JsValue::Array(_)) {
+            return Err(model::not_a_function("this[propName].slice"));
+        }
+        let root_resource_identifier = instance.fully_qualified_identifier();
+        let options = instance.validator_options;
+        if let Some(JsValue::Array(items)) = instance.props.get_mut(prop_name) {
+            items.push(value);
+            let outcome = validate::validate_property_value(
+                mm,
+                &class_plan,
+                index,
+                instance.get(prop_name),
+                root_resource_identifier,
+                &options,
+            );
+            if outcome.is_err()
+                && let Some(JsValue::Array(items)) = instance.props.get_mut(prop_name)
+            {
+                items.pop();
             }
-        } else {
-            Vec::new()
-        };
-        new_array.push(value.clone());
+            return outcome;
+        }
+        let new_array = JsValue::Array(vec![value]);
         validate::validate_property_value(
             mm,
             &class_plan,
             index,
-            &JsValue::Array(new_array).to_validator_value(),
-            instance.fully_qualified_identifier(),
-            &instance.validator_options,
+            &new_array,
+            root_resource_identifier,
+            &options,
         )?;
+        instance.set(prop_name, new_array);
+        return Ok(());
     }
     typed_add_array_value(instance, prop_name, value)
 }
@@ -129,13 +154,22 @@ pub fn add_array_value(
 /// TS: `ValidatedResource.validate`: the instance against its class
 /// declaration, then what `ResourceValidator.visitClassDeclaration` writes
 /// back ([`sync_identifiers`]).
+///
+/// The instance is validated in place (P5-102, C-6): it is moved into a
+/// [`JsValue`] for the walk and back out, without being copied.
 pub fn validate(mm: &ModelManager, instance: &mut Instance) -> Result<()> {
-    validate_instance_from(
-        mm,
-        &instance.to_validator_value(),
-        &instance.validator_options,
-        instance.fully_qualified_identifier(),
-    )?;
+    let options = instance.validator_options;
+    let root_resource_identifier = instance.fully_qualified_identifier();
+    let root = JsValue::Instance(Box::new(std::mem::replace(
+        instance,
+        Instance::placeholder(),
+    )));
+    let outcome = validate_instance_from(mm, &root, &options, root_resource_identifier);
+    let JsValue::Instance(validated) = root else {
+        unreachable!("the root was built as an instance just above");
+    };
+    *instance = *validated;
+    outcome?;
     sync_identifiers(mm, instance)
 }
 
@@ -166,6 +200,52 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     Ok(())
 }
 
+/// Whether [`sync_identifiers`] would change `instance`: the same walk, in
+/// the same order and with the same errors, read only. P5-102 (C-6):
+/// `Serializer.toJSON` copies the resource to sync it only when it would
+/// change, which it seldom does (the constructor sets both fields).
+pub(crate) fn sync_needed(mm: &ModelManager, instance: &Instance) -> Result<bool> {
+    if instance.kind == InstanceKind::Relationship {
+        return Ok(false);
+    }
+    let identifier = plan::class_plan_by_name(mm, &instance.class_fqn)?.identifier_field(mm);
+    if let Some(field) = identifier
+        && field != "$identifier"
+        && instance.props.get("$identifier") != Some(instance.get_identifier())
+    {
+        return Ok(true);
+    }
+    for value in instance.props.values() {
+        if sync_value_needed(mm, value)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn sync_value_needed(mm: &ModelManager, value: &JsValue) -> Result<bool> {
+    match value {
+        JsValue::Instance(i) => sync_needed(mm, i),
+        JsValue::Array(items) => {
+            for item in items {
+                if sync_value_needed(mm, item)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        JsValue::Map(entries) => {
+            for (_, item) in entries {
+                if sync_value_needed(mm, item)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn sync_value(mm: &ModelManager, value: &mut JsValue) -> Result<()> {
     match value {
         JsValue::Instance(i) => sync_identifiers(mm, i),
@@ -177,13 +257,17 @@ fn sync_value(mm: &ModelManager, value: &mut JsValue) -> Result<()> {
 
 /// TS: `Resource.toJSON`: `this.getModelManager().getSerializer().toJSON(this)`,
 /// with `serializer` the model manager's own; for a `Relationship`, which
-/// is not a `Resource`, `Typed.toJSON`, which throws.
+/// is not a `Resource`, `Typed.toJSON`, which throws. `resource` holds the
+/// instance (anything else is the serializer's own error), and is passed
+/// on as it is, not copied (P5-102, C-6).
 pub fn to_json(
     mm: &ModelManager,
-    instance: &Instance,
+    resource: &JsValue,
     serializer: &super::serializer::Serializer,
 ) -> Result<JsValue> {
-    if instance.kind == InstanceKind::Relationship {
+    if let JsValue::Instance(instance) = resource
+        && instance.kind == InstanceKind::Relationship
+    {
         return Err(ContractError::new(
             ErrorKind::InvalidArgument,
             "typed-tojson-useserializer",
@@ -191,5 +275,5 @@ pub fn to_json(
         )
         .into());
     }
-    serializer.to_json(mm, &JsValue::Instance(Box::new(instance.clone())), None)
+    serializer.to_json(mm, resource, None)
 }

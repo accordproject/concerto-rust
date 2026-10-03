@@ -516,9 +516,25 @@ js_compat_pub! {
         property: &C::Node,
     ) -> std::result::Result<bool, C::Error> {
         let property_type_name = ctx.get_fully_qualified_type_name(property)?;
+        is_assignable_to_type(ctx, model_file, type_name, &property_type_name)
+    }
+}
 
+js_compat_pub! {
+    /// [`is_assignable_to`] for a property whose fully qualified type name
+    /// the caller has already read (`property.getFullyQualifiedTypeName()`):
+    /// the WASM binding reads it from the JS property, which may be a
+    /// stand-in such as a relationship map value (P5-106, BC-52).
+    ///
+    /// TS: ModelUtil.isAssignableTo (src/modelutil.ts), after its first line
+    pub fn is_assignable_to_type<C: ResolutionContext>(
+        ctx: &C,
+        model_file: &C::Node,
+        type_name: &str,
+        property_type_name: &str,
+    ) -> std::result::Result<bool, C::Error> {
         let is_direct_match = type_name == property_type_name;
-        if is_direct_match || is_primitive_type(type_name) || is_primitive_type(&property_type_name) {
+        if is_direct_match || is_primitive_type(type_name) || is_primitive_type(property_type_name) {
             return Ok(is_direct_match);
         }
 

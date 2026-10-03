@@ -36,7 +36,7 @@
 //! `Node` as its handle; `concerto-wasm` implements it over JS objects, for
 //! views a white-box test builds over stubbed collaborators (PORTING.md 1.4).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
@@ -376,6 +376,13 @@ impl<'a> ClassProperties<'a> {
         })
     }
 
+    js_compat_pub! {
+        /// Each property's handle, in `getProperties()` order (P5-106).
+        pub fn ids(&self) -> impl Iterator<Item = PropId> + '_ {
+            self.info.properties.iter().copied()
+        }
+    }
+
     /// The first property named `name` (TS `getProperty(name)`).
     pub fn find(&self, name: &str) -> Option<(&'a str, &'a Property)> {
         self.iter().find(|(_, p)| p.name() == name)
@@ -588,6 +595,10 @@ struct DeclFacts {
     /// ([`crate::instance::from_json::assign_field_defaults_of`]); only a
     /// successful answer.
     field_defaults: Option<Arc<crate::instance::from_json::FieldDefaults>>,
+    /// The declarations that directly extend it (TS `getDirectSubclasses`),
+    /// in load order; filled for every declaration at once by
+    /// [`ModelManager::direct_subclass_ids`] (P5-106, BC-52).
+    direct_subclasses: Option<Arc<[DeclId]>>,
 }
 
 /// The per-declaration cache of a [`ModelManager`]: one slot of
@@ -631,6 +642,25 @@ impl DeclCache {
         self.0
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The answer `field` selects for declaration `id`, if one is cached.
+    fn get<T: Clone>(&self, id: DeclId, field: fn(&DeclFacts) -> &Option<T>) -> Option<T> {
+        lock(&self.0)
+            .get(id.slot())
+            .and_then(|facts| field(facts).clone())
+    }
+
+    /// Stores `answers[i]` as the answer `field` selects for the declaration
+    /// of slot `i`, for every slot `answers` covers.
+    fn fill<T>(&self, field: fn(&mut DeclFacts) -> &mut Option<T>, answers: Vec<T>) {
+        let mut cache = lock(&self.0);
+        if cache.len() < answers.len() {
+            cache.resize_with(answers.len(), DeclFacts::default);
+        }
+        for (facts, answer) in cache.iter_mut().zip(answers) {
+            *field(facts) = Some(answer);
+        }
     }
 
     /// Reads every answer under the lock.
@@ -1592,39 +1622,22 @@ impl ModelManager {
     /// manager ([`ModelManager::validate_ast_value`]), when this manager's
     /// system model files match that manager's. `false` also when the
     /// resident manager cannot be built, so the caller's own path reports
-    /// that error.
+    /// that error. The resident manager is the crate's one
+    /// (`instance::metamodel::with_resident_metamodel_manager`, P5-102:
+    /// before, this kept a second one of its own).
     fn passes_on_resident_metamodel(&self, ast: &Value) -> bool {
-        use crate::instance::metamodel::{deserialize_ast, metamodel_model_file};
-        thread_local! {
-            static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
-                const { std::cell::RefCell::new(None) };
-        }
-        RESIDENT.with(|cell| {
-            let Ok(mut cell) = cell.try_borrow_mut() else {
-                return false;
-            };
-            if cell.is_none() {
-                let Ok(mut resident) = ModelManager::new() else {
-                    return false;
-                };
-                let Ok(metamodel) = metamodel_model_file() else {
-                    return false;
-                };
-                if resident.insert_shared(metamodel).is_err() {
-                    return false;
-                }
-                *cell = Some(resident);
-            }
-            let Some(resident) = cell.as_ref() else {
-                return false;
-            };
-            self.has_system_files_of(resident) && deserialize_ast(resident, ast).is_ok()
+        use crate::instance::metamodel::{deserialize_ast, with_resident_metamodel_manager};
+        with_resident_metamodel_manager(|resident| {
+            Ok(self.has_system_files_of(resident) && deserialize_ast(resident, ast).is_ok())
         })
+        .unwrap_or(false)
     }
 
     /// Whether this manager holds the same decorator and root model files
-    /// as `other` (by AST, which is all a model file's lookups are built
-    /// from). Answered once per [`ModelManager::state_version`].
+    /// as `other`: the same shared file (P5-102, A-12: the usual case, as
+    /// both managers hold `system_model_files`' own), or else the same AST,
+    /// which is all a model file's lookups are built from. Answered once
+    /// per [`ModelManager::state_version`].
     fn has_system_files_of(&self, other: &ModelManager) -> bool {
         use std::sync::atomic::Ordering;
         // `state_version + 1`, so that the default 0 means "not checked".
@@ -1632,17 +1645,25 @@ impl ModelManager {
         if self.system_files_checked.load(Ordering::Relaxed) == checked {
             return true;
         }
-        let same = EXCLUDE_NS
-            .iter()
-            .all(|ns| match (self.model_file(ns), other.model_file(ns)) {
-                (Some(mine), Some(theirs)) => mine.ast() == theirs.ast(),
+        let same = EXCLUDE_NS.iter().all(|ns| {
+            match (self.shared_model_file(ns), other.shared_model_file(ns)) {
+                (Some(mine), Some(theirs)) => {
+                    Arc::ptr_eq(mine, theirs) || mine.ast() == theirs.ast()
+                }
                 (None, None) => true,
                 _ => false,
-            });
+            }
+        });
         if same {
             self.system_files_checked.store(checked, Ordering::Relaxed);
         }
         same
+    }
+
+    /// The shared handle of the model file registered under `namespace`.
+    fn shared_model_file(&self, namespace: &str) -> Option<&Arc<ModelFile>> {
+        let id = self.namespaces.get(namespace)?;
+        self.files.get(id.slot()).map(|slot| &slot.model_file)
     }
 
     /// TS `new ModelManager({ addMetamodel: true })` (`src/basemodelmanager.ts`
@@ -2467,39 +2488,140 @@ impl ModelManager {
         self.assignable_type_names(fqn)
     }
 
-    /// `fqn` itself, plus every declaration that (transitively) extends it.
+    /// `fqn` itself, plus every declaration that (transitively) extends it,
+    /// in TS's pre-order: each declaration before its own direct
+    /// subclasses, which come in load order.
+    ///
+    /// A declaration met again below itself is a cyclic inheritance chain:
+    /// the BC-11 `IllegalModelException` naming the cycle (R1; TS 5.0.0
+    /// recursed until V8's stack overflowed, DV-013). Only a model loaded
+    /// with validation disabled has one.
     ///
     /// TS: `ClassDeclaration.getAssignableClassDeclarations`, inherited
     /// unchanged by `EnumDeclaration`.
     fn assignable_type_names(&self, fqn: &str) -> Result<Vec<String>> {
-        // Builds the same `subclassMap` TS does: every loaded class-like
-        // declaration's direct super type FQN to the declarations that name
-        // it, in the order they were first seen walking the population.
-        let mut subclasses: HashMap<String, Vec<String>> = HashMap::new();
-        for (child_fqn, id) in self.all_class_like() {
-            let class =
-                ClassLike::from_declaration(self.declaration(id).expect("all_class_like found it"))
-                    .expect("all_class_like already filtered to class-like");
-            if let Some(super_fqn) = self.super_type_fqn(&class, namespace_of(&child_fqn))? {
-                subclasses.entry(super_fqn).or_default().push(child_fqn);
+        Ok(match self.declaration_id(fqn) {
+            Some(id) => self
+                .assignable_ids(id)?
+                .into_iter()
+                .map(|id| self.declaration_fqn(id))
+                .collect::<Result<_>>()?,
+            None => {
+                // No declaration has this name, so none extends it; the
+                // population is still resolved, for its errors.
+                self.direct_subclass_ids(None)?;
+                vec![fqn.to_string()]
+            }
+        })
+    }
+
+    js_compat_pub! {
+        /// The handles of the declaration `id` and of every declaration that
+        /// (transitively) extends it: [`ModelManager::assignable_types`] by
+        /// handle (P5-106, BC-52), answered from the cached direct
+        /// subclasses ([`ModelManager::direct_subclass_ids`]).
+        ///
+        /// TS: `ClassDeclaration.getAssignableClassDeclarations`.
+        pub fn assignable_ids(&self, id: DeclId) -> Result<Vec<DeclId>> {
+            /// `path` holds the declarations from `id` down to `children`'
+            /// super type.
+            fn walk(
+                mm: &ModelManager,
+                children: &[DeclId],
+                seen: &mut HashSet<DeclId>,
+                results: &mut Vec<DeclId>,
+                path: &mut Vec<DeclId>,
+            ) -> Result<()> {
+                for &child in children {
+                    if let Some(start) = path.iter().position(|seen| *seen == child) {
+                        // `path` runs from super type to subclass; the
+                        // chain runs the other way, from `child` up to
+                        // `child` again.
+                        let cycle = std::iter::once(child)
+                            .chain(path[start + 1..].iter().rev().copied())
+                            .collect::<Vec<_>>();
+                        return Err(mm.circular_inheritance(&cycle, child));
+                    }
+                    if seen.insert(child) {
+                        results.push(child);
+                    }
+                    let grandchildren = mm
+                        .direct_subclass_ids(Some(child))?
+                        .unwrap_or_else(|| Arc::from([]));
+                    if !grandchildren.is_empty() {
+                        path.push(child);
+                        let walked = walk(mm, &grandchildren, seen, results, path);
+                        path.pop();
+                        walked?;
+                    }
+                }
+                Ok(())
+            }
+            if self.declaration(id).is_none() {
+                return Err(unknown(Node::Declaration(id)));
+            }
+            let mut results = Vec::new();
+            walk(self, &[id], &mut HashSet::new(), &mut results, &mut Vec::new())?;
+            Ok(results)
+        }
+    }
+
+    js_compat_pub! {
+        /// The handles of the declarations that directly extend the
+        /// declaration `id`, in load order: [`ModelManager::subclasses`] by
+        /// handle (P5-106, BC-52).
+        ///
+        /// TS: `ClassDeclaration.getDirectSubclasses`.
+        pub fn direct_subclasses_of(&self, id: DeclId) -> Result<Arc<[DeclId]>> {
+            if self.declaration(id).is_none() {
+                return Err(unknown(Node::Declaration(id)));
+            }
+            Ok(self
+                .direct_subclass_ids(Some(id))?
+                .unwrap_or_else(|| Arc::from([])))
+        }
+    }
+
+    /// The direct subclasses of `id` (`None`: of no declaration, only
+    /// resolving the population), from the cache, or from one pass that
+    /// builds TS's `subclassMap` and caches every declaration's bucket at
+    /// once: every loaded class-like declaration ([`Self::all_class_like`])
+    /// under the declaration its super type resolves to, in the order they
+    /// are met. A super type that does not resolve fails the pass, as it
+    /// fails TS's `getSuperType()`, and nothing is cached.
+    fn direct_subclass_ids(&self, id: Option<DeclId>) -> Result<Option<Arc<[DeclId]>>> {
+        if let Some(id) = id
+            && let Some(found) = self.decl_cache.get(id, |facts| &facts.direct_subclasses)
+        {
+            return Ok(Some(found));
+        }
+        let mut buckets: Vec<Vec<DeclId>> = vec![Vec::new(); self.declarations.len()];
+        for (child_fqn, child) in self.all_class_like() {
+            let class = ClassLike::from_declaration(
+                self.declaration(child).expect("all_class_like found it"),
+            )
+            .expect("all_class_like already filtered to class-like");
+            if let Some(super_fqn) = self.super_type_fqn(&class, namespace_of(&child_fqn))?
+                && let Some(parent) = self.declaration_id(&super_fqn)
+            {
+                buckets[parent.slot()].push(child);
             }
         }
-        // TS's `collectSubclasses` is a pre-order walk from `[this]` that adds
-        // each declaration to a `Set` (so a later revisit is a no-op) before
-        // recursing into its own direct subclasses.
-        let mut seen = HashSet::new();
-        let mut results = Vec::new();
-        let mut stack = vec![fqn.to_string()];
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            let mut children = subclasses.remove(&current).unwrap_or_default();
-            results.push(current);
-            children.reverse();
-            stack.extend(children);
-        }
-        Ok(results)
+        let empty: Arc<[DeclId]> = Arc::from([]);
+        let answers: Vec<Arc<[DeclId]>> = buckets
+            .into_iter()
+            .map(|bucket| {
+                if bucket.is_empty() {
+                    empty.clone()
+                } else {
+                    Arc::from(bucket)
+                }
+            })
+            .collect();
+        let found = id.and_then(|id| answers.get(id.slot()).cloned());
+        self.decl_cache
+            .fill(|facts| &mut facts.direct_subclasses, answers);
+        Ok(found)
     }
 
     /// Just the declarations that directly extend `fqn`, excluding `fqn`
@@ -2518,20 +2640,14 @@ impl ModelManager {
     /// TS: `ClassDeclaration.getDirectSubclasses`, inherited unchanged by
     /// `EnumDeclaration`.
     fn direct_subclass_names(&self, fqn: &str) -> Result<Vec<String>> {
-        let mut results = Vec::new();
-        for (child_fqn, id) in self.all_class_like() {
-            let class =
-                ClassLike::from_declaration(self.declaration(id).expect("all_class_like found it"))
-                    .expect("all_class_like already filtered to class-like");
-            if self
-                .super_type_fqn(&class, namespace_of(&child_fqn))?
-                .as_deref()
-                == Some(fqn)
-            {
-                results.push(child_fqn);
-            }
-        }
-        Ok(results)
+        let id = self.declaration_id(fqn);
+        let Some(children) = self.direct_subclass_ids(id)? else {
+            return Ok(Vec::new());
+        };
+        children
+            .iter()
+            .map(|child| self.declaration_fqn(*child))
+            .collect()
     }
 
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
@@ -2816,7 +2932,9 @@ impl ModelManager {
     /// - a validation plan is kept only when nothing in it was left
     ///   unresolved or unplanned ([`crate::instance::plan::ClassPlan::is_settled`]);
     ///   any other plan, and a declaration recorded as having none, is built
-    ///   again on next use.
+    ///   again on next use;
+    /// - the direct subclasses of a declaration are dropped: the appended
+    ///   file can declare new ones (P5-106).
     ///
     /// So adding a request's user files to a manager forked from a base
     /// ([`ModelManager::fork`]) keeps every warmed answer about the base's
@@ -2827,6 +2945,9 @@ impl ModelManager {
             if !matches!(&facts.plan, Some(Some(plan)) if plan.is_settled()) {
                 facts.plan = None;
             }
+            // An appended file can declare a new subclass of any loaded
+            // declaration (P5-106).
+            facts.direct_subclasses = None;
         }
     }
 
@@ -3358,11 +3479,6 @@ impl ModelManager {
         keep: impl Fn(&str, &Declaration) -> bool,
         disable_validation: bool,
     ) -> Result<Self> {
-        // A-5: every option, `metamodel_validation` included, as TS's
-        // `new BaseModelManager({...this.options})` does.
-        let mut result = Self::new()?;
-        result.options = self.options.clone();
-
         // `ModelFile::filter`'s predicate carries no namespace of its own
         // (its doc): it is called both on the file being filtered *and*,
         // for that file's own imports, on a *different* file's declarations
@@ -3382,6 +3498,7 @@ impl ModelManager {
         // `Self::new()` counts as kept without asking `keep`, so an import
         // of one (a user type extending `Decorator`) is never pruned while
         // the file it names stays whole in `result`.
+        let mut result = self.empty_like()?;
         let keep = &keep;
         let result_ref = &result;
         let kept: std::collections::HashSet<*const Declaration> = self
@@ -3426,6 +3543,44 @@ impl ModelManager {
         }
         result.insert_models(filtered_files, !disable_validation)?;
         Ok(result)
+    }
+
+    /// P5-102 (accordproject/concerto-rust#456, C-2): a new manager with
+    /// this one's options and the system models, holding `files` (shared,
+    /// each with the [`ValidityProof`] it came with, if any), validated
+    /// together unless `validate` is false. The shape `filter`'s result and
+    /// the empty-input result of `crate::dcs::decorate_models` share.
+    pub(crate) fn new_like_with(
+        &self,
+        files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
+        validate: bool,
+    ) -> Result<Self> {
+        let mut result = self.empty_like()?;
+        result.insert_models(files, validate)?;
+        Ok(result)
+    }
+
+    /// A new manager with this one's options and only the system models
+    /// (`Self::new()`). A-5: every option, `metamodel_validation` included,
+    /// as TS's `new BaseModelManager({...this.options})` does.
+    fn empty_like(&self) -> Result<Self> {
+        let mut result = Self::new()?;
+        result.options = self.options.clone();
+        Ok(result)
+    }
+
+    /// P5-102 (C-2): this manager's own model files (those of `EXCLUDE_NS`
+    /// left out, as `getModelFiles()` leaves them out), shared, each with its [`ValidityProof`] here: what another
+    /// manager registers to hold the same models without copying or, where
+    /// the proof holds there, validating them again
+    /// ([`ModelManager::insert_models`]).
+    pub(crate) fn user_files_with_proofs(
+        &self,
+    ) -> Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)> {
+        self.shared_model_files()
+            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            .map(|mf| (Arc::clone(mf), self.validity_proof(mf.namespace())))
+            .collect()
     }
 
     js_compat_pub! {
@@ -3615,7 +3770,7 @@ impl ModelManager {
     /// [`ModelManager::validate_models`] once over the whole manager; either
     /// failure undoes every insert this call made, exactly as `add_models`
     /// does for its own AST-building version of the same loop.
-    fn insert_models(
+    pub(crate) fn insert_models(
         &mut self,
         files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
         validate: bool,
@@ -4533,6 +4688,111 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// P5-106 (BC-52): the subclass queries by handle answer from the
+    /// cached subclass map, and a model change (here an appended file)
+    /// drops it.
+    #[test]
+    fn subclass_queries_by_handle_follow_an_appended_file() {
+        let mut mgr = manager();
+        let person = mgr.declaration_id("org.example@1.0.0.Person").unwrap();
+        let fqns = |mgr: &ModelManager, ids: &[DeclId]| -> Vec<String> {
+            ids.iter()
+                .map(|id| mgr.decl_fqn(*id).unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            fqns(&mgr, &mgr.assignable_ids(person).unwrap()),
+            [
+                "org.example@1.0.0.Person",
+                "org.example@1.0.0.Employee",
+                "org.example@1.0.0.Manager",
+            ]
+        );
+        // Answered again from the cache.
+        assert_eq!(
+            fqns(&mgr, &mgr.direct_subclasses_of(person).unwrap()),
+            ["org.example@1.0.0.Employee"]
+        );
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.other@1.0.0",
+                "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType",
+                    "namespace": "org.example@1.0.0", "name": "Person" }],
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Student",
+                      "isAbstract": false, "properties": [],
+                      "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" } }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fqns(&mgr, &mgr.direct_subclasses_of(person).unwrap()),
+            ["org.example@1.0.0.Employee", "org.other@1.0.0.Student"]
+        );
+        assert_eq!(
+            fqns(&mgr, &mgr.assignable_ids(person).unwrap()),
+            [
+                "org.example@1.0.0.Person",
+                "org.example@1.0.0.Employee",
+                "org.example@1.0.0.Manager",
+                "org.other@1.0.0.Student",
+            ]
+        );
+        #[allow(deprecated)]
+        let by_name = mgr
+            .get_assignable_class_declarations("org.example@1.0.0.Person")
+            .unwrap();
+        assert_eq!(by_name.len(), 4);
+        assert!(mgr.assignable_ids(DeclId::from_index(100_000)).is_err());
+        assert!(
+            mgr.direct_subclasses_of(DeclId::from_index(100_000))
+                .is_err()
+        );
+    }
+
+    /// P5-106 (BC-52, BC-11): a cyclic chain below a declaration is the
+    /// `IllegalModelException` naming the cycle; its direct subclasses are
+    /// still found.
+    #[test]
+    fn assignable_ids_below_a_cyclic_chain_is_an_illegal_model_error() {
+        let concept = |name: &str, sup: &str| {
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                "name": name, "isAbstract": false, "properties": [],
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup } })
+        };
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.load_model(
+            &serde_json::json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.cycle@1.0.0",
+                "declarations": [concept("A", "C"), concept("B", "A"), concept("C", "B")]
+            }),
+            None,
+        )
+        .unwrap();
+        let a = mgr.declaration_id("org.cycle@1.0.0.A").unwrap();
+        let err = mgr.assignable_ids(a).unwrap_err();
+        let c = err.ported().unwrap();
+        assert_eq!(c.kind, ErrorKind::IllegalModel);
+        assert_eq!(c.code, "classdeclaration-circularinheritance");
+        assert_eq!(
+            c.message(),
+            "The super type chain of \"org.cycle@1.0.0.A\" is circular: org.cycle@1.0.0.A -> org.cycle@1.0.0.C -> org.cycle@1.0.0.B -> org.cycle@1.0.0.A."
+        );
+        let direct = mgr.direct_subclasses_of(a).unwrap();
+        assert_eq!(
+            direct
+                .iter()
+                .map(|id| mgr.decl_fqn(*id).unwrap())
+                .collect::<Vec<_>>(),
+            ["org.cycle@1.0.0.B"]
+        );
+        assert!(mgr.assignable_types("org.cycle@1.0.0.A").is_err());
     }
 
     #[test]
