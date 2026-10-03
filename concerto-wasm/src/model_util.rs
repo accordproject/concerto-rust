@@ -263,3 +263,75 @@ pub fn resource_id_to_uri(namespace: JsValue, type_name: JsValue, id: JsValue) -
         Ok(resource.to_uri())
     })
 }
+
+/// TS: `ResourceId.fromURI` over many URIs at once, for the visitor path of
+/// a relationship-typed map (P5-113, accordproject/concerto-rust#480): one
+/// crossing per map rather than one per value. `uris` is an array of URI
+/// strings, all read with the same legacy namespace and type. The result is
+/// flat, three slots per URI: its `namespace`, `type` and `id`, or
+/// `undefined` in all three when that URI is not a string or does not parse.
+/// The caller then reads that one URI with `resourceIdFromURI`, which throws
+/// its error at the same point of the walk as before.
+#[wasm_bindgen(js_name = resourceIdsFromURIs)]
+pub fn resource_ids_from_uris(
+    uris: Array,
+    legacy_namespace: JsValue,
+    legacy_type: JsValue,
+) -> JsResult<Array> {
+    run(|| {
+        let legacy_namespace = if nullish(&legacy_namespace) {
+            None
+        } else {
+            Some(js_string(&legacy_namespace)?)
+        };
+        let legacy_type = if nullish(&legacy_type) {
+            None
+        } else {
+            Some(js_string(&legacy_type)?)
+        };
+        let out = Array::new_with_length(uris.length().saturating_mul(3));
+        for i in 0..uris.length() {
+            let Some(uri) = uris.get(i).as_string() else {
+                continue;
+            };
+            let Ok(id) =
+                ResourceId::from_uri(&uri, legacy_namespace.as_deref(), legacy_type.as_deref())
+            else {
+                continue;
+            };
+            let at = i * 3;
+            out.set(at, JsValue::from_str(&id.namespace));
+            out.set(at + 1, JsValue::from_str(&id.type_name));
+            out.set(at + 2, JsValue::from_str(&id.id));
+        }
+        Ok(out)
+    })
+}
+
+/// TS: `ResourceId.prototype.toURI` over many identifiers at once, for the
+/// visitor path of a relationship-typed map (P5-113): one crossing per map
+/// rather than one per value. `fields` is flat, three slots per identifier
+/// (`namespace`, `type`, `id`). The result holds one URI per identifier, or
+/// `undefined` where a slot is not a string or the identifier is invalid;
+/// the caller then writes that one with `resourceIdToURI`.
+#[wasm_bindgen(js_name = resourceIdsToURIs)]
+pub fn resource_ids_to_uris(fields: Array) -> JsResult<Array> {
+    run(|| {
+        let count = fields.length() / 3;
+        let out = Array::new_with_length(count);
+        for i in 0..count {
+            let (Some(namespace), Some(type_name), Some(id)) = (
+                fields.get(i * 3).as_string(),
+                fields.get(i * 3 + 1).as_string(),
+                fields.get(i * 3 + 2).as_string(),
+            ) else {
+                continue;
+            };
+            let Ok(resource) = ResourceId::new(namespace, type_name, id) else {
+                continue;
+            };
+            out.set(i, JsValue::from_str(&resource.to_uri()));
+        }
+        Ok(out)
+    })
+}
