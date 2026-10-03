@@ -254,7 +254,31 @@ impl ModelManager {
             &mut self,
             model_file: ModelFile,
         ) -> std::result::Result<crate::model_manager::ModelFileId, (Error, Option<Box<ModelFile>>)> {
-            let shared = std::sync::Arc::new(model_file);
+            self.validate_and_add_shared_model_file(std::sync::Arc::new(model_file))
+                .map_err(|(err, handed_back)| {
+                    let handed_back = handed_back.map(|shared| {
+                        Box::new(std::sync::Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone()))
+                    });
+                    (err, handed_back)
+                })
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::validate_and_add_model_file`] for a model file that
+        /// may also be held elsewhere (P5-101, D-9,
+        /// accordproject/concerto-rust#455): the same checks, the same first
+        /// error and the same result, but the file is registered shared, as
+        /// [`ModelManager::add_shared_model_file`] registers it, not copied.
+        /// On a validation error the shared file is handed back with the
+        /// error; an error from the registration itself consumes it.
+        pub fn validate_and_add_shared_model_file(
+            &mut self,
+            shared: std::sync::Arc<ModelFile>,
+        ) -> std::result::Result<
+            crate::model_manager::ModelFileId,
+            (Error, Option<std::sync::Arc<ModelFile>>),
+        > {
             if let Some((id, mark)) = self.append_for_validation(&shared) {
                 let namespace = shared.namespace();
                 return match self.validate_model_file_with_import_scope(&shared, self, Some(namespace)) {
@@ -266,21 +290,15 @@ impl ModelManager {
                     }
                     Err(err) => {
                         self.undo_append(mark);
-                        let model_file = std::sync::Arc::try_unwrap(shared)
-                            .unwrap_or_else(|shared| (*shared).clone());
-                        Err((err, Some(Box::new(model_file))))
+                        Err((err, Some(shared)))
                     }
                 };
             }
-            let model_file = std::sync::Arc::try_unwrap(shared)
-                .unwrap_or_else(|shared| (*shared).clone());
-            if let Err(err) = self.validate_detached_model_file(&model_file) {
-                return Err((err, Some(Box::new(model_file))));
+            if let Err(err) = self.validate_detached_model_file(&shared) {
+                return Err((err, Some(shared)));
             }
-            let namespace = model_file.namespace().to_string();
-            self.add_model_file(model_file).map_err(|err| (err, None))?;
-            self.model_file_id(&namespace)
-                .ok_or_else(|| (Error::type_not_found(namespace), None))
+            self.add_shared_model_file_with_proof(shared, None)
+                .map_err(|err| (err, None))
         }
     }
 
@@ -3662,6 +3680,41 @@ mod tests {
             .unwrap_err();
         assert!(handed_back.is_none());
         assert!(err.to_string().contains("already"), "{err}");
+    }
+
+    /// P5-101 (D-9): [`ModelManager::validate_and_add_shared_model_file`]
+    /// registers the very file it is given (no copy) and hands the same file
+    /// back on a validation error.
+    #[test]
+    fn validate_and_add_shared_model_file_shares_the_file() {
+        use crate::introspect::model_file::ModelFile;
+        use std::sync::Arc;
+        let good = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.good@1.0.0",
+            "declarations": [concept(serde_json::json!({ "name": "Good" }))]
+        });
+        let mut bad = good.clone();
+        bad["declarations"][0]["superType"] = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" });
+        let mut manager = ModelManager::new().unwrap();
+        let rejected = Arc::new(ModelFile::from_json(&bad, None).unwrap());
+        let (_, handed_back) = manager
+            .validate_and_add_shared_model_file(Arc::clone(&rejected))
+            .unwrap_err();
+        assert!(handed_back.is_some_and(|f| Arc::ptr_eq(&f, &rejected)));
+        assert!(manager.model_file("org.good@1.0.0").is_none());
+        let shared = Arc::new(ModelFile::from_json(&good, None).unwrap());
+        let id = manager
+            .validate_and_add_shared_model_file(Arc::clone(&shared))
+            .map_err(|(err, _)| err)
+            .unwrap();
+        assert_eq!(Some(id), manager.model_file_id("org.good@1.0.0"));
+        assert!(
+            manager
+                .shared_model_files()
+                .any(|f| Arc::ptr_eq(f, &shared))
+        );
+        manager.validate_models().unwrap();
     }
 
     /// P5-48: a self-import still fails as "namespace not defined" in

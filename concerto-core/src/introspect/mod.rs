@@ -30,6 +30,10 @@
 
 #[cfg(feature = "js-compat")]
 mod compact;
+/// P5-101 (F-8): the compact binary layout's one reader, for the instance
+/// fast path of the WASM binding (js-compat only).
+#[cfg(feature = "js-compat")]
+pub use compact::to_validator_value as compact_validator_value;
 pub mod declaration;
 pub mod decorator;
 pub mod field;

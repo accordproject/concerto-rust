@@ -20,7 +20,10 @@
 //! no `to_validator_value` on this path. wasm-bindgen copies the bytes in as
 //! a `&[u8]`.
 //!
-//! One tag byte, then:
+//! P5-101 (F-8, accordproject/concerto-rust#455): the layout is concerto-core
+//! `introspect::compact`'s, the model AST's too, with one TS writer (src/
+//! engine/wire.ts) and one reader ([`compact_validator_value`]). One tag
+//! byte, then:
 //!
 //! | tag | value |
 //! |---|---|
@@ -60,12 +63,11 @@
 //! The error stays in a thread-local slot until TS takes it, or until the
 //! next call replaces it.
 
-use std::cell::RefCell;
-
 use concerto_core::error::ErrorKind;
 use concerto_core::instance::ValidateOptions;
 use concerto_core::instance::validate::{validate_instance_from, validate_property_value};
-use serde_json::{Map, Number, Value};
+use concerto_core::introspect::compact_validator_value;
+use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
 use super::{Error, ModelManagerHandle, Result, throw, wire_error};
@@ -78,15 +80,6 @@ const CODE_VALIDATION: u32 = 1;
 const CODE_ERROR: u32 = 2;
 /// The transport cannot carry the value (module doc).
 const CODE_UNSUPPORTED: u32 = 3;
-
-/// How deep a value may nest before the transport gives up on it (the TS
-/// visitor then runs instead).
-const MAX_DEPTH: u32 = 512;
-
-thread_local! {
-    /// The error behind the last non-zero code.
-    static LAST_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
-}
 
 /// A failure of the transport itself, not of the validator.
 struct Unsupported(Error);
@@ -110,7 +103,7 @@ fn code_of(result: std::result::Result<Result<()>, Unsupported>) -> u32 {
         }
         Err(Unsupported(err)) => (CODE_UNSUPPORTED, err),
     };
-    LAST_ERROR.with(|l| *l.borrow_mut() = Some(err));
+    crate::caches::LAST_ERROR.with(|l| *l.borrow_mut() = Some(err));
     code
 }
 
@@ -118,8 +111,8 @@ fn code_of(result: std::result::Result<Result<()>, Unsupported>) -> u32 {
 /// drops it. Empty when there is none.
 #[wasm_bindgen(js_name = validateErrorMessage)]
 pub fn validate_error_message() -> String {
-    LAST_ERROR.with(|l| match l.borrow_mut().take() {
-        Some(Error::Contract(c)) => c.message(),
+    crate::caches::LAST_ERROR.with(|l| match l.borrow_mut().take() {
+        Some(Error::Contract(c) | Error::Unsupported(c)) => c.message(),
         _ => String::new(),
     })
 }
@@ -129,7 +122,7 @@ pub fn validate_error_message() -> String {
 /// there is none.
 #[wasm_bindgen(js_name = validateTakeError)]
 pub fn validate_take_error() -> JsValue {
-    LAST_ERROR.with(|l| match l.borrow_mut().take() {
+    crate::caches::LAST_ERROR.with(|l| match l.borrow_mut().take() {
         Some(err) => throw(err, None),
         None => JsValue::UNDEFINED,
     })
@@ -146,104 +139,12 @@ fn unsupported(reason: &str) -> Unsupported {
     Unsupported(wire_error(format!("a binary wire value: {reason}")))
 }
 
-/// A double as `validate::js_number` spells a finite one: an integral value
-/// below 2^53 as a JSON integer.
-fn validator_number(n: f64) -> Value {
-    if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
-        return Value::Number(Number::from(n as i64));
-    }
-    // The TS side only writes finite doubles here (a non-finite number
-    // crosses as a `$$number` marker object), so `from_f64` succeeds.
-    Number::from_f64(n).map_or(Value::Null, Value::Number)
-}
-
-/// A reader over the binary layout (module doc).
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> std::result::Result<&'a [u8], Unsupported> {
-        let end = self
-            .pos
-            .checked_add(n)
-            .ok_or_else(|| unsupported("truncated"))?;
-        let out = self
-            .bytes
-            .get(self.pos..end)
-            .ok_or_else(|| unsupported("truncated"))?;
-        self.pos = end;
-        Ok(out)
-    }
-
-    fn array<const N: usize>(&mut self) -> std::result::Result<[u8; N], Unsupported> {
-        let mut a = [0u8; N];
-        a.copy_from_slice(self.take(N)?);
-        Ok(a)
-    }
-
-    fn u32(&mut self) -> std::result::Result<usize, Unsupported> {
-        Ok(u32::from_le_bytes(self.array()?) as usize)
-    }
-
-    fn string(&mut self) -> std::result::Result<String, Unsupported> {
-        let len = self.u32()?;
-        let bytes = self.take(len)?;
-        std::str::from_utf8(bytes)
-            .map(str::to_string)
-            .map_err(|_| unsupported("invalid UTF-8"))
-    }
-
-    fn value(&mut self, depth: u32) -> std::result::Result<Value, Unsupported> {
-        if depth > MAX_DEPTH {
-            return Err(unsupported("nested too deeply"));
-        }
-        let [tag] = self.array()?;
-        match tag {
-            0 => Ok(Value::Null),
-            1 => Ok(Value::Bool(false)),
-            2 => Ok(Value::Bool(true)),
-            3 => Ok(validator_number(f64::from_le_bytes(self.array()?))),
-            4 => Ok(Value::Number(Number::from(i32::from_le_bytes(
-                self.array()?,
-            )))),
-            5 => self.string().map(Value::String),
-            6 => {
-                let n = self.u32()?;
-                // Each item is at least one byte: a count past what is left
-                // is truncated input, not a reason to allocate.
-                let mut items = Vec::with_capacity(n.min(self.bytes.len() - self.pos));
-                for _ in 0..n {
-                    items.push(self.value(depth + 1)?);
-                }
-                Ok(Value::Array(items))
-            }
-            7 => {
-                let n = self.u32()?;
-                let mut map = Map::with_capacity(n.min(self.bytes.len() - self.pos));
-                for _ in 0..n {
-                    let key = self.string()?;
-                    let value = self.value(depth + 1)?;
-                    // `IndexMap` insert: a repeated key keeps its first
-                    // position and takes the last value, as a JS object does.
-                    map.insert(key, value);
-                }
-                Ok(Value::Object(map))
-            }
-            _ => Err(unsupported("unknown tag")),
-        }
-    }
-}
-
-/// The whole of `bytes` as one value.
+/// The whole of `bytes` as one value, in the validator's shape: P5-101
+/// (F-8, accordproject/concerto-rust#455) through concerto-core's one
+/// reader of the layout ([`compact_validator_value`]), which the AST's
+/// staging path reads too. Bytes not in the layout cannot cross.
 fn decode(bytes: &[u8]) -> std::result::Result<Value, Unsupported> {
-    let mut reader = Reader { bytes, pos: 0 };
-    let value = reader.value(0)?;
-    if reader.pos != bytes.len() {
-        return Err(unsupported("trailing bytes"));
-    }
-    Ok(value)
+    compact_validator_value(bytes).map_err(|e| unsupported(&e.to_string()))
 }
 
 #[wasm_bindgen]
@@ -367,6 +268,10 @@ mod tests {
         assert_eq!(keys, ["a", "b"]);
         assert_eq!(v["a"], Value::Bool(false));
     }
+
+    /// How deep a value may nest before the transport gives up on it (the
+    /// TS visitor then runs instead): concerto-core's reader's limit.
+    const MAX_DEPTH: u32 = 512;
 
     #[test]
     fn rejects_malformed_input() {

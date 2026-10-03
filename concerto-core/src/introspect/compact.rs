@@ -134,6 +134,22 @@ fn number(v: f64) -> Number {
     integer.unwrap_or(Number::Float(v))
 }
 
+/// The finite double `v` as the instance validator spells a JS number
+/// (`instance::validate::js_number`): an integral one below `2^53` in
+/// magnitude as an integer, any other as itself (P5-101, F-8).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn validator_number(v: f64) -> Number {
+    if v.trunc() == v && v.abs() < MAX_SAFE_INTEGER {
+        if v >= 0.0 {
+            Number::PosInt(v as u64)
+        } else {
+            Number::NegInt(v as i64)
+        }
+    } else {
+        Number::Float(v)
+    }
+}
+
 impl Number {
     fn visit<'de, V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
         match self {
@@ -158,6 +174,10 @@ pub(crate) struct Compact<'de> {
     bytes: &'de [u8],
     pos: usize,
     depth: usize,
+    /// P5-101 (F-8): a double read as the instance validator spells a JS
+    /// number ([`to_validator_value`]) rather than as `serde_json` reads
+    /// `JSON.stringify`'s text of it.
+    validator_numbers: bool,
 }
 
 impl<'de> Compact<'de> {
@@ -166,6 +186,7 @@ impl<'de> Compact<'de> {
             bytes,
             pos: 0,
             depth: 0,
+            validator_numbers: false,
         }
     }
 
@@ -232,7 +253,11 @@ impl<'de> Compact<'de> {
             if !v.is_finite() {
                 return Err(malformed("a number that is not finite"));
             }
-            number(v)
+            if self.validator_numbers {
+                validator_number(v)
+            } else {
+                number(v)
+            }
         })
     }
 
@@ -567,6 +592,22 @@ pub(crate) fn to_value(bytes: &[u8]) -> Result<Value, Error> {
     Ok(value)
 }
 
+/// P5-101 (F-8, accordproject/concerto-rust#455): the value `bytes` hold
+/// as the instance validator reads it, for the instance fast path
+/// (concerto-wasm `validate_resource.rs`, whose TS writer, src/engine/
+/// wire.ts, is the AST's too): the one reader of the layout, with a double
+/// spelled as `instance::validate::js_number` spells a finite JS number (an
+/// integral one below `2^53` as an integer, any other as itself) rather
+/// than as `JSON.stringify`'s text of it reads. Everything else is
+/// [`to_value`]'s. An error for bytes not in the layout.
+pub fn to_validator_value(bytes: &[u8]) -> Result<Value, Error> {
+    let mut compact = Compact::new(bytes);
+    compact.validator_numbers = true;
+    let value = Value::deserialize(&mut compact)?;
+    compact.end()?;
+    Ok(value)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use serde_json::Value;
@@ -620,6 +661,35 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// P5-101 (F-8): the validator's reading is [`to_value`]'s, but for a
+    /// double, spelt as `instance::validate::js_number` spells a finite JS
+    /// number: an integer below `2^53` in magnitude, itself otherwise.
+    #[test]
+    fn to_validator_value_spells_doubles_as_the_validator_does() {
+        use super::to_validator_value;
+        use crate::instance::validate::js_number;
+        for v in [
+            -0.0,
+            0.5,
+            3.0e9,
+            -3.0e9,
+            2f64.powi(53) - 1.0,
+            2f64.powi(53),
+            2f64.powi(60),
+            1e21,
+            -2.5e-7,
+        ] {
+            let mut bytes = vec![F64];
+            bytes.extend_from_slice(&v.to_le_bytes());
+            assert_eq!(to_validator_value(&bytes).unwrap(), js_number(v), "{v}");
+        }
+        let value: Value =
+            serde_json::from_str(r#"{"a":1,"b":[true,false,null,"x"],"c":{"d":-2}}"#).unwrap();
+        assert_eq!(to_validator_value(&encode(&value)).unwrap(), value);
+        assert!(to_validator_value(&[9]).is_err());
+        assert!(to_validator_value(&[NULL, NULL]).is_err());
     }
 
     #[test]

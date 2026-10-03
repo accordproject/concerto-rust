@@ -7,7 +7,8 @@
 //!   and properties cross the boundary as their dense `u32` handles
 //!   (`ModelFileId`, `DeclId`, `PropId`), plain JS numbers; their state
 //!   crosses as one JSON snapshot per element, which a view caches until
-//!   `generation()` moves (spike REPORT §3, "Input to P1-04");
+//!   `epoch()` moves (spike REPORT §3, "Input to P1-04"; the epoch rule is
+//!   on `ModelManagerHandle::epoch`, P5-101 D-7);
 //! - the three P0-04b trial units, `ModelUtil`, `NumberValidator` and
 //!   `ScalarDeclaration`, whose views still hand their JS objects back (the
 //!   model graph they meet is TS until P4-06 … P4-08);
@@ -40,7 +41,10 @@
 //!   `{kind, code, params, message, location, errorType, modelFile}`, which
 //!   the error factory the shim registers at load turns into the TS exception;
 //!   an error about an instance (`serializerFromJson`, `validateInstance`)
-//!   also carries its diagnostics as `details` (P5-89, #1325);
+//!   also carries its diagnostics as `details` (P5-89, #1325), and a value
+//!   the serializer fast path's wire codec cannot carry carries
+//!   `fastPathUnsupported: true` (P5-101, E-11), the TS side's fallback
+//!   signal;
 //! - **JS object construction**: `semver.parse` builds `versionParsed`, through
 //!   a function the shim registers at load.
 //!
@@ -76,9 +80,7 @@ use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
-use concerto_core::model_manager::{
-    DeclId, ModelFileId, ModelFileSource, Node, PropId, ValidityProof,
-};
+use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
@@ -95,22 +97,18 @@ use wasm_bindgen::prelude::*;
 // ---------------------------------------------------------------------------
 
 /// The JS functions the shim registers at load.
-struct Host {
+pub(crate) struct Host {
     /// `(payload) => Error`: builds the TS exception for an error payload.
     error_factory: Function,
     /// `semver.parse`.
     semver_parse: Function,
 }
 
-thread_local! {
-    static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
-}
-
 /// Registers the error factory and `semver.parse`. The shim calls it once,
 /// right after loading the module.
 #[wasm_bindgen(js_name = setHost)]
 pub fn set_host(error_factory: Function, semver_parse: Function) {
-    HOST.with(|h| {
+    caches::HOST.with(|h| {
         *h.borrow_mut() = Some(Host {
             error_factory,
             semver_parse,
@@ -127,6 +125,11 @@ enum Error {
     /// with its diagnostics as the JSON array the payload carries as
     /// `details` ([`diagnostics_json`]).
     Instance(Box<ContractError>, Value),
+    /// P5-101 (E-11, accordproject/concerto-rust#455): a value the
+    /// serializer fast path's wire codec cannot carry ([`wire_error`]): the
+    /// payload says so (`fastPathUnsupported`), so the TS side falls back
+    /// to its visitor path on that flag rather than on the message text.
+    Unsupported(Box<ContractError>),
 }
 
 impl From<ContractError> for Error {
@@ -181,12 +184,17 @@ fn to_js(value: &Value) -> JsValue {
 /// file TS passes to an `IllegalModelException`, when the core error says TS
 /// passes one.
 fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
+    let unsupported = matches!(err, Error::Unsupported(_));
     let (err, details) = match err {
         Error::Js(value) => return value,
         Error::Contract(err) => (err, None),
         Error::Instance(err, details) => (err, Some(details)),
+        Error::Unsupported(err) => (err, None),
     };
     let payload = Object::new();
+    if unsupported {
+        set(&payload, "fastPathUnsupported", &JsValue::TRUE);
+    }
     if let Some(details) = &details {
         set(&payload, "details", &to_js(details));
     }
@@ -240,7 +248,7 @@ fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
     {
         set(&payload, "modelFile", model_file);
     }
-    HOST.with(|h| match h.borrow().as_ref() {
+    caches::HOST.with(|h| match h.borrow().as_ref() {
         Some(host) => host
             .error_factory
             .call1(&JsValue::NULL, &payload)
@@ -680,7 +688,7 @@ pub fn model_util_parse_namespace(
                 let version_js = version.as_deref().map_or(JsValue::NULL, JsValue::from_str);
                 set(&out, "version", &version_js);
                 let parsed_js = match version_parsed {
-                    Some(semver) => HOST
+                    Some(semver) => caches::HOST
                         .with(|h| {
                             h.borrow().as_ref().map(|host| {
                                 host.semver_parse
@@ -2878,16 +2886,7 @@ fn circular_inheritance_error(cycle: &[JsValue], repeated: &JsValue) -> Result<E
     Ok(err.into())
 }
 
-thread_local! {
-    /// The declarations whose `getProperties`, `getProperty` or
-    /// `getIdentifierFieldName` binding is running, with the binding's name,
-    /// outermost first: each recurses into its super type through JS, so a
-    /// declaration met again by the same binding is a cyclic inheritance
-    /// chain (BC-11).
-    static SUPER_WALKS: RefCell<Vec<(&'static str, JsValue)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// A running step of a super type walk, removed from [`SUPER_WALKS`] when
+/// A running step of a super type walk, removed from [`caches::SUPER_WALKS`] when
 /// dropped.
 struct SuperWalk;
 
@@ -2896,7 +2895,7 @@ impl SuperWalk {
     /// returns the BC-11 error when that binding is already walking it
     /// further out (a cyclic chain).
     fn enter(properties: &'static str, declaration: &JsValue) -> Result<Self> {
-        let cycle = SUPER_WALKS.with(|walks| {
+        let cycle = caches::SUPER_WALKS.with(|walks| {
             let walks = walks.borrow();
             walks
                 .iter()
@@ -2913,14 +2912,15 @@ impl SuperWalk {
         if let Some(cycle) = cycle {
             return Err(circular_inheritance_error(&cycle, declaration)?);
         }
-        SUPER_WALKS.with(|walks| walks.borrow_mut().push((properties, declaration.clone())));
+        caches::SUPER_WALKS
+            .with(|walks| walks.borrow_mut().push((properties, declaration.clone())));
         Ok(SuperWalk)
     }
 }
 
 impl Drop for SuperWalk {
     fn drop(&mut self) {
-        SUPER_WALKS.with(|walks| {
+        caches::SUPER_WALKS.with(|walks| {
             walks.borrow_mut().pop();
         });
     }
@@ -4301,7 +4301,7 @@ pub fn decorator_validate(
         match try_validate_decorator(&view, &model_file, context_name.as_deref(), &invalid) {
             Ok(()) => Ok(()),
             Err(Error::Js(caught)) => handle_error(&view, &missing, &caught),
-            Err(err @ (Error::Contract(_) | Error::Instance(..))) => {
+            Err(err @ (Error::Contract(_) | Error::Instance(..) | Error::Unsupported(_))) => {
                 let caught = throw(err, Some(&model_file));
                 handle_error(&view, &missing, &caught)
             }
@@ -4560,8 +4560,16 @@ const WIRE_TAG: &str = "@@oracle";
 /// a TS bug (the view controls what it sends), so it is reported the same
 /// way as any other not-yet-ported call site (PORTING.md 7.2), rather than
 /// through the message catalogue.
+///
+/// P5-101 (E-11): an [`Error::Unsupported`], whose payload carries
+/// `fastPathUnsupported: true`, so the caller's fallback no longer depends
+/// on this message's wording.
 fn wire_error(reason: String) -> Error {
-    ContractError::pre_port(ErrorKind::InvalidArgument, reason, None).into()
+    Error::Unsupported(Box::new(ContractError::pre_port(
+        ErrorKind::InvalidArgument,
+        reason,
+        None,
+    )))
 }
 
 /// A JS number that is not finite, or `-0`, in [`WIRE_TAG`]'s `"number"`
@@ -4726,6 +4734,7 @@ fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
 
 /// A JS number in [`WIRE_TAG`]'s `"number"` encoding: non-finite or `-0`
 /// values only, since JSON already holds every other number.
+#[cfg(test)]
 fn encode_wire_number(n: f64) -> Value {
     if !n.is_finite() {
         let text = if n.is_nan() {
@@ -4745,6 +4754,7 @@ fn encode_wire_number(n: f64) -> Value {
 
 /// A dayjs as `(epoch ms, utcOffset minutes)` (PORTING.md 3.3): an invalid
 /// one crosses as `{valid: false}`, carrying no time value.
+#[cfg(test)]
 fn encode_wire_dayjs(d: &Dayjs) -> Value {
     if !d.is_valid() {
         return json!({ WIRE_TAG: "dayjs", "valid": false });
@@ -4759,6 +4769,7 @@ fn encode_wire_dayjs(d: &Dayjs) -> Value {
 
 /// An [`Instance`] in [`WIRE_TAG`]'s `"typed"` encoding (module doc): every
 /// own property, `fields`, plus its class and TS constructor.
+#[cfg(test)]
 fn encode_wire_instance(i: &Instance) -> Value {
     let fields: serde_json::Map<String, Value> = i
         .props
@@ -4774,6 +4785,10 @@ fn encode_wire_instance(i: &Instance) -> Value {
 }
 
 /// A [`CoreValue`] as the wire value the view reads back (module doc).
+/// P5-101 (D-3): test-only since `serializerToJson` writes its result
+/// straight to text ([`WireOut`]), as every other binding does; the tests
+/// check [`WireOut`] against it.
+#[cfg(test)]
 fn encode_wire(v: &CoreValue) -> Value {
     match v {
         CoreValue::Undefined => json!({ WIRE_TAG: "undefined" }),
@@ -5262,23 +5277,77 @@ impl serde::Serialize for CompactInstanceOut<'_> {
     }
 }
 
-/// The serializer of the last `serializerFromJson` call and its merged
-/// options as `from_json` reads them, keyed by that call's options text
-/// (P5-16): a caller normally passes the same merged options on every call,
-/// and both depend on nothing else, so a call with the same text reuses
-/// them instead of decoding the options and building them again.
-type SerializerCacheEntry = (String, Serializer, FromJsonOptions);
+/// A serializer call's merged options, read once per options text (P5-16;
+/// P5-101, D-3: shared by `serializerFromJson`, `serializerFromJsonCompact`,
+/// `serializerToJson` and `validateInstance`, where only the first two
+/// kept it before): the `Serializer` built from them, what `from_json`
+/// reads of them, and what `validateInstance`'s walk reads of them. A
+/// caller normally passes the same merged options on every call, and all
+/// three depend on nothing else, so a call with the same text reuses them
+/// instead of decoding the options and building them again
+/// ([`caches::SERIALIZER_OPTIONS`]).
+pub(crate) struct SerializerOptionsEntry {
+    /// The options text the entry was read from (its key).
+    text: String,
+    /// `new Serializer(factory, modelManager, options)`.
+    serializer: Serializer,
+    /// The merged options as `from_json` reads them. `from_json(options)`
+    /// merges `options` over the serializer's defaults, which were built
+    /// from the same `options` over the base defaults: merging them again
+    /// changes nothing, so the defaults are the merged options (and
+    /// `to_json(None)` reads the same options as `to_json(Some(options))`).
+    from_json: FromJsonOptions,
+    /// The merged options as `validateInstance`'s walk reads them
+    /// ([`native_from_json_options`] of [`validator_options`]).
+    native: NativeFromJsonOptions,
+}
 
-thread_local! {
-    static FROM_JSON_SERIALIZER: RefCell<Option<SerializerCacheEntry>> =
-        const { RefCell::new(None) };
+impl SerializerOptionsEntry {
+    /// Reads `text` (a wire encoding, module doc above "Serializer fast
+    /// path", or `"null"`): malformed JSON throws a JS `SyntaxError`, an
+    /// unrecognised wire shape its [`wire_error`].
+    fn new(text: &str) -> Result<Self> {
+        let options = decode_wire_options(text)?;
+        let serializer = Serializer::new(true, true, options.as_ref())?;
+        let from_json = FromJsonOptions::new(&serializer.default_options);
+        // The text has just decoded, so it reads as plain JSON too.
+        let native = native_from_json_options(&validator_options(text).unwrap_or(Value::Null));
+        Ok(Self {
+            text: text.to_string(),
+            serializer,
+            from_json,
+            native,
+        })
+    }
+}
+
+/// Runs `body` with the [`SerializerOptionsEntry`] of `options_text`, the
+/// cached one when the last call had the same text. The entry is taken out
+/// of the cache for the call, so a call `body` makes back into JS that
+/// reaches the serializer again (`env.newId`) builds its own.
+fn with_serializer_options<R>(
+    options_text: &str,
+    body: impl FnOnce(&SerializerOptionsEntry) -> R,
+) -> Result<R> {
+    let cached = caches::SERIALIZER_OPTIONS.with(|slot| {
+        slot.borrow_mut()
+            .take()
+            .filter(|entry| entry.text == options_text)
+    });
+    let entry = match cached {
+        Some(entry) => entry,
+        None => SerializerOptionsEntry::new(options_text)?,
+    };
+    let out = body(&entry);
+    caches::SERIALIZER_OPTIONS.with(|slot| *slot.borrow_mut() = Some(entry));
+    Ok(out)
 }
 
 impl ModelManagerHandle {
     /// The resource `serializerFromJson` and `serializerFromJsonCompact`
     /// build (module doc above "Serializer fast path"), in one pass each way
     /// ([`parse_wire`]) and with the serializer reused while the options
-    /// text is unchanged ([`FROM_JSON_SERIALIZER`], P5-16).
+    /// text is unchanged ([`with_serializer_options`], P5-16).
     fn build_from_json(
         &self,
         json_text: &str,
@@ -5286,45 +5355,33 @@ impl ModelManagerHandle {
         env: JsValue,
     ) -> Result<Instance> {
         let object = parse_wire(json_text)?;
-        let cached = FROM_JSON_SERIALIZER.with(|slot| {
-            slot.borrow_mut()
-                .take()
-                .filter(|(text, _, _)| text == options_text)
-        });
-        let (text, serializer, prepared) = match cached {
-            Some(entry) => entry,
-            None => {
-                let options = decode_wire_options(options_text)?;
-                let serializer = Serializer::new(true, true, options.as_ref())?;
-                // `from_json(options)` merges `options` over the
-                // serializer's defaults, which were built from the same
-                // `options` over the base defaults: merging them again
-                // changes nothing, so the defaults are the merged options.
-                let prepared = FromJsonOptions::new(&serializer.default_options);
-                (options_text.to_string(), serializer, prepared)
-            }
-        };
-        let mut js_env = JsInstanceEnv { env };
-        let resource =
-            serializer.from_json_prepared(&self.manager, &object, &prepared, &mut js_env);
-        FROM_JSON_SERIALIZER.with(|slot| *slot.borrow_mut() = Some((text, serializer, prepared)));
-        resource.map_err(|err| self.instance_error(err, json_text, options_text))
+        with_serializer_options(options_text, |entry| {
+            let mut js_env = JsInstanceEnv { env };
+            entry
+                .serializer
+                .from_json_prepared(&self.manager, &object, &entry.from_json, &mut js_env)
+                .map_err(|err| self.instance_error(err, json_text, &entry.native))
+        })?
     }
 
     /// `err`, an error `serializerFromJson` raised for the document
-    /// `json_text` with the options `options_text`, with its diagnostics
+    /// `json_text` with the merged options `options` (as the walk reads
+    /// them, [`SerializerOptionsEntry::native`]), with its diagnostics
     /// attached as the exception's `details` (P5-89,
     /// accordproject/concerto#1325): the same as `validateInstance`'s first
     /// diagnostic for the document, read from the same wire encoding the
     /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
     /// a failure, so a success costs nothing more.
-    fn instance_error(&self, err: CoreError, json_text: &str, options_text: &str) -> Error {
-        let read = validator_readings_of(json_text).zip(validator_options(options_text));
-        match read {
-            Some((readings, options)) => {
-                let options = native_from_json_options(&options);
+    fn instance_error(
+        &self,
+        err: CoreError,
+        json_text: &str,
+        options: &NativeFromJsonOptions,
+    ) -> Error {
+        match validator_readings_of(json_text) {
+            Some(readings) => {
                 let diagnosis =
-                    diagnose_read(&self.manager, None, &readings, &options, false, || {
+                    diagnose_read(&self.manager, None, &readings, options, false, || {
                         Err(err.clone())
                     });
                 Error::Instance(
@@ -5523,7 +5580,8 @@ impl ModelManagerHandle {
     /// document in `Serializer.fromJSON`'s own wire encoding (module doc
     /// above "Serializer fast path"; plain JSON is its own encoding), as
     /// `Serializer.fromJSON` with `validate: true` and the options
-    /// `options_text` (plain JSON: a `fromJSON` call's merged options) would,
+    /// `options_text` (a `fromJSON` call's merged options, in the same wire
+    /// encoding as `serializerFromJson`'s, plain JSON included) would,
     /// without handing any resource back. Plain JSON is checked by the
     /// native walk alone ([`diagnose`]); a document with a wire tag (an
     /// `undefined` field, `-0`, `NaN`, ...) is read by `serializerFromJson`'s
@@ -5549,48 +5607,52 @@ impl ModelManagerHandle {
         mode: u32,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let parse = |text: &str| {
-                serde_json::from_str::<Value>(text)
-                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))
-            };
-            let wire = parse(json_text)?;
-            let options = native_from_json_options(&parse(options_text)?);
-            let diagnosis = if has_wire_tag(&wire) {
-                // Not plain JSON: read by `Serializer.fromJSON`'s own engine,
-                // from the same decoded document, for the verdict and the
-                // error; the walk reads its validator form.
-                let object = decode_wire(&wire)?;
-                let readings = validator_readings(&object);
-                let js_options = decode_wire_options(options_text)?;
-                diagnose_read(
-                    &self.manager,
-                    fqn.as_deref(),
-                    &readings,
-                    &options,
-                    mode == 2,
-                    || {
-                        let serializer = Serializer::new(true, true, js_options.as_ref())?;
-                        serializer
-                            .from_json(
-                                &self.manager,
-                                &with_class(object, fqn.as_deref()),
-                                js_options.as_ref(),
-                                &mut ValidationEnv,
-                            )
-                            .map(|_| ())
-                    },
-                )
-            } else {
-                diagnose(&self.manager, fqn.as_deref(), &wire, &options, mode == 2)
-            };
-            let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
-            if mode == 0 {
-                return match diagnosis.error {
-                    Some(err) => Err(Error::Instance(Box::new(err.into_contract()), diagnostics)),
-                    None => Ok(String::new()),
+            let wire = serde_json::from_str::<Value>(json_text)
+                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            // P5-101 (D-3): the options are read once per options text, and
+            // the serializer built from them reused, as `serializerFromJson`
+            // reuses them ([`with_serializer_options`]).
+            with_serializer_options(options_text, |entry| {
+                let options = &entry.native;
+                let diagnosis = if has_wire_tag(&wire) {
+                    // Not plain JSON: read by `Serializer.fromJSON`'s own
+                    // engine, from the same decoded document, for the
+                    // verdict and the error; the walk reads its validator
+                    // form.
+                    let object = decode_wire(&wire)?;
+                    let readings = validator_readings(&object);
+                    diagnose_read(
+                        &self.manager,
+                        fqn.as_deref(),
+                        &readings,
+                        options,
+                        mode == 2,
+                        || {
+                            entry
+                                .serializer
+                                .from_json_prepared(
+                                    &self.manager,
+                                    &with_class(object, fqn.as_deref()),
+                                    &entry.from_json,
+                                    &mut ValidationEnv,
+                                )
+                                .map(|_| ())
+                        },
+                    )
+                } else {
+                    diagnose(&self.manager, fqn.as_deref(), &wire, options, mode == 2)
                 };
-            }
-            snapshot(&json!({ "diagnostics": diagnostics }))
+                let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
+                if mode == 0 {
+                    return match diagnosis.error {
+                        Some(err) => {
+                            Err(Error::Instance(Box::new(err.into_contract()), diagnostics))
+                        }
+                        None => Ok(String::new()),
+                    };
+                }
+                snapshot(&json!({ "diagnostics": diagnostics }))
+            })?
         })
     }
 }
@@ -5633,15 +5695,23 @@ impl InstanceEnv for JsInstanceEnv {
 #[wasm_bindgen]
 pub struct ModelManagerHandle {
     manager: ModelManager,
-    /// Bumped by every `&mut self` binding (and by [`Self::model_file_filter`]
-    /// on its `target`), so a view can cache what it read from this handle
-    /// for as long as the epoch is unchanged ([`Self::epoch`], P5-06). It
-    /// moves on every `&mut self` call, an option change included, where
-    /// [`ModelManager::generation`] counts only the changes to the model
-    /// files. (Since A-3, accordproject/concerto-rust#448, the generation
-    /// never goes back either: `updateModelFile`/`deleteModelFile` adopt the
-    /// rebuilt manager with [`ModelManager::adopt`]. Both stay exported:
-    /// removing either from the wasm surface is not additive.)
+    /// The epoch ([`Self::epoch`], P5-06), under one rule (P5-101, D-7,
+    /// accordproject/concerto-rust#455; A-3, #448): **the epoch moves iff
+    /// `manager` may have changed** — a model file added, replaced or
+    /// removed, an option set, or a check that may leave a model file
+    /// registered (`validateAstValue`'s metamodel copy) — and never goes
+    /// back. The staging slot (`staged`) and the extract memo (`dcs_memo`)
+    /// never move it: staging, dropping a stage and every read leave the
+    /// manager as it was, so a view's cache of what it read from this
+    /// handle stays current across them. Being a `&mut self` binding is not
+    /// the test (the `stage*` bindings, `dropStagedModelFile` and
+    /// `dcsDecorateModels` take `&mut self` and leave the epoch alone); a
+    /// binding that changes the manager calls [`Self::bump_epoch`], and so
+    /// does [`Self::model_file_filter`] for its `target`. The TS views key
+    /// their caches on the epoch only (engine/views.ts); the exported
+    /// `generation()` ([`ModelManager::state_version`]) counts only the
+    /// changes to the model files and stays exported, unused by them,
+    /// since removing it from the wasm surface is not additive.
     epoch: u64,
     /// Model files loaded by [`Self::stage_model_file`] and not yet
     /// committed or dropped (lazy views: P5-06a, P5-10a).
@@ -5653,33 +5723,6 @@ pub struct ModelManagerHandle {
     dcs_memo: std::cell::RefCell<Option<DcsExtractMemo>>,
 }
 
-/// The staging slot of a [`ModelManagerHandle`] (lazy views: P5-06a, P5-10a):
-/// model files loaded from their AST once, by
-/// [`ModelManagerHandle::stage_model_file`], kept until the view registers
-/// ([`ModelManagerHandle::commit_staged_model_file`]), validates
-/// ([`ModelManagerHandle::model_file_validate_staged`]) or drops them.
-/// Staging never changes the manager, so it never moves the epoch.
-///
-/// Bounded: past [`StagedModelFiles::CAPACITY`] entries the oldest one is
-/// evicted. A view whose stage id was evicted gets `undefined` back and
-/// falls back to sending the AST again, so eviction only costs time.
-///
-/// P5-77 (accordproject/concerto-rust#419): each file is kept shared
-/// (`Arc`), so a DecoratorManager result staged from a manager that keeps
-/// its files (the extract memo, P5-56) or is about to drop them
-/// ([`stage_result`]) is staged without a deep copy, and registered as the
-/// same shared file ([`ModelManager::add_shared_model_file`]).
-#[derive(Default)]
-struct StagedModelFiles {
-    files: std::collections::BTreeMap<u32, std::sync::Arc<ModelFile>>,
-    /// P5-97 (accordproject/concerto-rust#448): the source manager's
-    /// [`ValidityProof`] of a file staged shared by
-    /// [`ModelManagerHandle::model_file_filter_staged`], by stage id;
-    /// registered with the file ([`ModelManagerHandle::commit_staged_model_file`]).
-    proofs: std::collections::BTreeMap<u32, std::sync::Arc<ValidityProof>>,
-    next: u32,
-}
-
 impl ModelManagerHandle {
     /// Moves the epoch on ([`Self::epoch`]): the manager has, or may have,
     /// changed. Also drops the extract result memo (P5-56), which is only
@@ -5687,34 +5730,6 @@ impl ModelManagerHandle {
     fn bump_epoch(&mut self) {
         self.epoch += 1;
         *self.dcs_memo.get_mut() = None;
-    }
-}
-
-impl StagedModelFiles {
-    /// The most staged files kept at once.
-    const CAPACITY: usize = 256;
-
-    /// The id the next [`Self::insert`] gives.
-    fn next_id(&self) -> u32 {
-        self.next
-    }
-
-    fn insert(&mut self, file: ModelFile) -> u32 {
-        self.insert_shared(std::sync::Arc::new(file))
-    }
-
-    /// [`Self::insert`] for a model file that may also be held elsewhere
-    /// (P5-77): the file is shared, not copied.
-    fn insert_shared(&mut self, file: std::sync::Arc<ModelFile>) -> u32 {
-        while self.files.len() >= Self::CAPACITY {
-            if let Some((evicted, _)) = self.files.pop_first() {
-                self.proofs.remove(&evicted);
-            }
-        }
-        let id = self.next;
-        self.next = self.next.wrapping_add(1);
-        self.files.insert(id, file);
-        id
     }
 }
 
@@ -5877,10 +5892,10 @@ impl ModelManagerHandle {
         })
     }
 
-    /// The handle's own mutation counter (P5-06): bumped by every binding
-    /// that can change this handle, and never reset, so anything a view
-    /// read from the handle is still current while the epoch is unchanged.
-    /// Additive; a JS number (exact up to 2^53).
+    /// The handle's own mutation counter (P5-06): it moves iff the manager
+    /// may have changed (the rule on the field, P5-101 D-7), and never goes
+    /// back, so anything a view read from the handle is still current while
+    /// the epoch is unchanged. Additive; a JS number (exact up to 2^53).
     pub fn epoch(&self) -> f64 {
         // Precision loss only past 2^53 mutations.
         #[allow(clippy::cast_precision_loss)]
@@ -6105,13 +6120,15 @@ impl ModelManagerHandle {
         options_text: &str,
     ) -> std::result::Result<String, JsValue> {
         run(|| {
-            let wire_value: Value = serde_json::from_str(wire_text)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
-            let resource = decode_wire(&wire_value)?;
-            let options = decode_wire_options(options_text)?;
-            let serializer = Serializer::new(true, true, options.as_ref())?;
-            let result = serializer.to_json(&self.manager, &resource, options.as_ref())?;
-            snapshot(&encode_wire(&result))
+            // P5-101 (D-3): one pass each way ([`parse_wire`], [`WireOut`])
+            // and the serializer reused while the options text is unchanged
+            // ([`with_serializer_options`]), as for `serializerFromJson`.
+            let resource = parse_wire(wire_text)?;
+            let result = with_serializer_options(options_text, |entry| {
+                entry.serializer.to_json(&self.manager, &resource, None)
+            })??;
+            serde_json::to_string(&WireOut::<false>(&result))
+                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
         })
     }
 
@@ -6195,7 +6212,7 @@ impl ModelManagerHandle {
     /// engine call, from one decode of the AST text. Stages the file exactly
     /// as [`Self::stage_model_file`] does (the same load, the same errors),
     /// and returns JSON text `{"id": <stage id>, "header": <header>}`, where
-    /// `header` is [`staged_header`]'s reading of the loaded file's
+    /// `header` is [`staged_header_from_parts`]'s reading of the loaded file's
     /// namespace and `imports` node, or `null` when it cannot vouch that
     /// [`model_file_from_ast_header`] would set exactly that (the caller then
     /// runs that binding, as before). Does not change the manager or its
@@ -6353,6 +6370,53 @@ impl ModelManagerHandle {
         })
     }
 
+    /// P5-101 (D-4, D-10; accordproject/concerto-rust#455): the one staging
+    /// binding, which the TS side stages every model file through: loads
+    /// the AST from `ast`, its JSON text as UTF-8 bytes (a `TextEncoder`'s
+    /// output, P5-76) or, with [`STAGE_COMPACT`], its compact binary layout
+    /// (P5-92), with BC-19's shape check folded into the load when
+    /// [`STAGE_CHECKED`] is set (P5-69), and stages it, as the bindings it
+    /// stands for do: `stageModelFileCheckedUtf8`,
+    /// `stageModelFileWithHeaderUtf8`, `stageModelFileCheckedCompactFlat`
+    /// and `stageModelFileWithHeaderCompactFlat` (the same load, the same
+    /// stage and the same errors). Returns the stage and its header in the
+    /// flat layout ([`FlatStaged`]). Bytes that are not UTF-8, or not in the
+    /// compact layout, throw a `TypeError`; malformed JSON a `SyntaxError`.
+    /// Does not change the manager or its epoch. Additive: the bindings it
+    /// stands for are unchanged.
+    #[wasm_bindgen(js_name = stageModelFileBytes)]
+    pub fn stage_model_file_bytes(
+        &mut self,
+        ast: &[u8],
+        definitions: Option<String>,
+        file_name: Option<String>,
+        flags: u32,
+    ) -> std::result::Result<String, JsValue> {
+        let checked = flags & STAGE_CHECKED != 0;
+        if flags & STAGE_COMPACT != 0 {
+            return run(|| {
+                let loaded = if checked {
+                    ModelFile::from_compact_checked_with_imports(ast, definitions, file_name)
+                } else {
+                    ModelFile::from_compact_with_imports(ast, definitions, file_name)
+                };
+                self.stage_loaded_flat(loaded.map_err(compact_layout_error)??)
+            });
+        }
+        let text = utf8_text(ast)?;
+        run(|| {
+            let loaded = if checked {
+                ModelFile::from_json_text_checked_with_imports(text, definitions, file_name)
+            } else {
+                ModelFile::from_json_text_with_imports(text, definitions, file_name)
+            };
+            self.stage_loaded_flat(
+                loaded
+                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??,
+            )
+        })
+    }
+
     /// P5-94: [`Self::stage_loaded`], with the result in the flat layout
     /// ([`flat_staged_text`]).
     fn stage_loaded_flat(&mut self, loaded: (ModelFile, Option<Value>)) -> Result<String> {
@@ -6422,6 +6486,55 @@ impl ModelManagerHandle {
             let id = self.manager.add_shared_model_file_with_proof(file, proof)?;
             Ok(Some(ModelFileId::index(id)))
         })
+    }
+
+    /// P5-101 (D-10, M5; accordproject/concerto-rust#455):
+    /// [`Self::commit_staged_model_file`] for several staged files, in
+    /// order, in one call: the batch `addModelFiles` and the
+    /// DecoratorManager results (`adoptStagedModels`) register each of their
+    /// files from its stage this way, where they used to cross once per
+    /// file. Returns the files' handles, in order, or `undefined`, having
+    /// changed nothing, when any stage id is unknown (evicted, or already
+    /// consumed): the caller then registers each file as before. A
+    /// registration error is thrown as [`Self::commit_staged_model_file`]
+    /// throws it, with the files before it registered and the stages after
+    /// it left staged, as the same commits one by one would leave them.
+    /// Additive.
+    #[wasm_bindgen(js_name = commitStagedModelFiles)]
+    pub fn commit_staged_model_files(
+        &mut self,
+        stages: &[u32],
+    ) -> std::result::Result<Option<Vec<u32>>, JsValue> {
+        if stages
+            .iter()
+            .any(|stage| !self.staged.files.contains_key(stage))
+        {
+            return Ok(None);
+        }
+        if stages.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        self.bump_epoch();
+        let mut ids = Vec::with_capacity(stages.len());
+        for stage in stages {
+            let Some(file) = self.staged.files.remove(stage) else {
+                // A stage id given twice: the second is already consumed,
+                // as a second `commit_staged_model_file` would find it.
+                return Err(throw(
+                    ContractError::pre_port(
+                        ErrorKind::InvalidArgument,
+                        format!("the stage {stage} given twice"),
+                        None,
+                    )
+                    .into(),
+                    None,
+                ));
+            };
+            let proof = self.staged.proofs.remove(stage);
+            let id = run(|| Ok(self.manager.add_shared_model_file_with_proof(file, proof)?))?;
+            ids.push(ModelFileId::index(id));
+        }
+        Ok(Some(ids))
     }
 
     /// P5-100 (E-6, accordproject/concerto-rust#454): replaces the model
@@ -6512,29 +6625,56 @@ impl ModelManagerHandle {
     pub fn validate_and_commit_staged_model_file(
         &mut self,
         stage: u32,
+        metamodel: Option<bool>,
     ) -> std::result::Result<Option<u32>, JsValue> {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
         self.staged.proofs.remove(&stage);
+        // P5-101 (D-9, accordproject/concerto-rust#455): with `metamodel`,
+        // `BaseModelManager.validateAst`'s check runs first, over the staged
+        // file's AST ([`Self::validate_ast_staged`]'s check, in the same
+        // call): its error is thrown as that binding throws it, the epoch
+        // moved as it moves it, and the file stays staged. Additive: an
+        // omitted `metamodel` is `false`.
+        if metamodel == Some(true) {
+            self.bump_epoch();
+            if let Err(err) = self.manager.validate_ast_value(file.ast()) {
+                self.staged.files.insert(stage, file);
+                // Marked (`metamodelCheck`, not enumerable, as the error
+                // factory's own internal flags are), so the caller throws it
+                // as `validateAst` throws it, not as `ModelFile.validate()`
+                // re-wraps a validation error.
+                let thrown = throw(err.into(), None);
+                if let Some(target) = thrown.dyn_ref::<Object>() {
+                    let descriptor = Object::new();
+                    set(&descriptor, "value", &JsValue::TRUE);
+                    set(&descriptor, "configurable", &JsValue::TRUE);
+                    let _ = Reflect::define_property(
+                        target,
+                        &JsValue::from_str("metamodelCheck"),
+                        &descriptor,
+                    );
+                }
+                return Err(thrown);
+            }
+        }
         // P5-48 (accordproject/concerto-rust#369): validated and registered
-        // in one step (`ModelManager::validate_and_add_model_file`), without
-        // a scratch copy of the manager and of the file. A validation error
-        // hands the file back, and it stays staged under the same id, as
-        // before; the epoch moves once validation has passed, as
-        // `commit_staged_model_file` moves it.
-        // P5-77: a file staged shared (a DecoratorManager result) is
-        // copied here, as it was copied when it was staged before.
-        match self
-            .manager
-            .validate_and_add_model_file(std::sync::Arc::unwrap_or_clone(file))
-        {
+        // in one step, without a scratch copy of the manager and of the
+        // file. A validation error hands the file back, and it stays staged
+        // under the same id, as before; the epoch moves once validation has
+        // passed, as `commit_staged_model_file` moves it.
+        // P5-101 (D-9): registered shared, as `commit_staged_model_file`
+        // registers it ([`ModelManager::validate_and_add_shared_model_file`]),
+        // where a file staged shared (a DecoratorManager result) used to be
+        // deep-copied here.
+        match self.manager.validate_and_add_shared_model_file(file) {
             Ok(id) => {
                 self.bump_epoch();
                 Ok(Some(ModelFileId::index(id)))
             }
             Err((err, Some(file))) => {
-                self.staged.files.insert(stage, std::sync::Arc::new(*file));
+                self.staged.files.insert(stage, file);
                 run(|| Err(err.into()))
             }
             Err((err, None)) => {
@@ -7412,22 +7552,12 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
     body().map_err(|e| throw(e, Some(&view)))
 }
 
-thread_local! {
-    /// P5-73: for each fixed system model text
-    /// ([`concerto_core::rootmodel::system_model_json_texts`]), the header
-    /// text [`ModelManagerHandle::system_model_file_header`] returns, or
-    /// `None` when its checked load failed (never expected; that text is then
-    /// loaded and checked every time, as any other). Filled on first use.
-    static SYSTEM_MODEL_HEADERS: std::cell::OnceCell<Vec<(&'static str, Option<String>)>> =
-        const { std::cell::OnceCell::new() };
-}
-
 /// [`ModelManagerHandle::system_model_file_header`]: the header text of the
 /// fixed system model whose AST is exactly `ast`, from one checked load of
 /// that text ([`ModelFile::from_json_text_checked_with_imports`], what
 /// `stageModelFileChecked` runs) on first use. `None` for any other text.
 fn system_model_header(ast: &str) -> Option<String> {
-    SYSTEM_MODEL_HEADERS.with(|cell| {
+    caches::SYSTEM_MODEL_HEADERS.with(|cell| {
         cell.get_or_init(|| {
             concerto_core::rootmodel::system_model_json_texts()
                 .into_iter()
@@ -7437,8 +7567,11 @@ fn system_model_header(ast: &str) -> Option<String> {
                         None,
                         Some(file_name.to_string()),
                     ) {
-                        Ok(Ok((file, imports))) => serde_json::to_string(
-                            &staged_header_from_parts(file.namespace(), imports.as_ref()),
+                        // P5-101 (D-4): in the flat layout, its stage id 0
+                        // (nothing is staged).
+                        Ok(Ok((file, imports))) => flat_staged_text(
+                            0,
+                            staged_header_from_parts(file.namespace(), imports.as_ref()).as_ref(),
                         )
                         .ok(),
                         _ => None,
@@ -7497,7 +7630,7 @@ fn staged_header_from_parts<'a>(
     let import_types = format!("{METAMODEL_NAMESPACE}.ImportTypes");
     let import_type = format!("{METAMODEL_NAMESPACE}.ImportType");
     let mut short_names: Vec<(Cow<'a, str>, Cow<'a, str>)> = Vec::new();
-    let mut uri_map: Vec<(Cow<'a, str>, &'a str)> = Vec::new();
+    let mut uri_map: Vec<(Cow<'a, str>, Cow<'a, str>)> = Vec::new();
     for imp in ast_imports {
         let imp = imp.as_object()?;
         let class = imp.get("$class")?.as_str()?;
@@ -7557,7 +7690,7 @@ fn staged_header_from_parts<'a>(
         match imp.get("uri") {
             None | Some(Value::Null) => {}
             Some(Value::String(uri)) if uri.is_empty() => {}
-            Some(Value::String(uri)) => uri_map.push((first?, uri)),
+            Some(Value::String(uri)) => uri_map.push((first?, Cow::Borrowed(uri.as_str()))),
             Some(Value::Bool(false)) => {}
             Some(_) => return None,
         }
@@ -7574,7 +7707,7 @@ fn staged_header_from_parts<'a>(
         );
     }
     Some(StagedHeader {
-        namespace,
+        namespace: Cow::Borrowed(namespace),
         version,
         system,
         short_names,
@@ -7593,23 +7726,45 @@ const IMPLICIT_IMPORT_SHORT_NAMES: [(&str, &str); 5] = [
     ("Event", "concerto@1.0.0.Event"),
 ];
 
-/// [`staged_header_from_parts`]'s header (P5-76: serialized straight to its
-/// JSON text, `{namespace, version, system, shortNames, uriMap}`, without a
-/// `Value`). `shortNames` and `uriMap` are arrays of `[key, value]` pairs.
+/// [`staged_header_from_parts`]'s header: what `modelFileFromAstHeader`
+/// would set on a JS `ModelFile`. P5-101 (D-4, accordproject/concerto-rust#455):
+/// the one staged-header format, which every staging path returns in the
+/// flat layout ([`FlatStaged`]): a model file staged from its AST
+/// ([`ModelManagerHandle::stage_model_file_bytes`]), a fixed system model's
+/// verdict ([`ModelManagerHandle::system_model_file_header`]) and a
+/// DecoratorManager result ([`stage_shared`]). The legacy staging bindings
+/// still serialize it as `{namespace, version, system, shortNames,
+/// uriMap}` ([`StagedResult`]), unchanged.
 #[derive(Debug, Serialize)]
 struct StagedHeader<'a> {
-    namespace: &'a str,
+    namespace: Cow<'a, str>,
     version: Option<String>,
     system: bool,
     #[serde(rename = "shortNames")]
     short_names: Vec<(Cow<'a, str>, Cow<'a, str>)>,
     #[serde(rename = "uriMap")]
-    uri_map: Vec<(Cow<'a, str>, &'a str)>,
+    uri_map: Vec<(Cow<'a, str>, Cow<'a, str>)>,
 }
 
-/// P5-94 (accordproject/concerto-rust#444): a staging result in the flat
-/// layout the `...Flat` staging bindings return, as JSON text: `[id]` when
-/// there is no header, otherwise
+impl StagedHeader<'_> {
+    /// The header, owning what it borrowed from the AST it was read from
+    /// (for a header kept past that AST, [`DcsExtractKept`]).
+    fn into_owned(self) -> StagedHeader<'static> {
+        let own = |(a, b): (Cow<'_, str>, Cow<'_, str>)| {
+            (Cow::Owned(a.into_owned()), Cow::Owned(b.into_owned()))
+        };
+        StagedHeader {
+            namespace: Cow::Owned(self.namespace.into_owned()),
+            version: self.version,
+            system: self.system,
+            short_names: self.short_names.into_iter().map(own).collect(),
+            uri_map: self.uri_map.into_iter().map(own).collect(),
+        }
+    }
+}
+
+/// P5-94 (accordproject/concerto-rust#444), P5-101 (D-4): a staging result
+/// in the flat layout: `[id]` when there is no header, otherwise
 ///
 /// ```text
 /// [id, namespace, version, system, n, key_1, name_1, ..., key_n, name_n,
@@ -7619,45 +7774,49 @@ struct StagedHeader<'a> {
 /// where the `n` key/name pairs are the header's `shortNames` without the
 /// implicit system import's five, which every non-system header ends with
 /// ([`IMPLICIT_IMPORT_SHORT_NAMES`]) and the TS side appends itself, and
-/// the pairs after them are its `uriMap`, in order.
-fn flat_staged_text(id: u32, header: Option<&StagedHeader<'_>>) -> serde_json::Result<String> {
-    let mut out = Vec::with_capacity(64);
-    out.push(b'[');
-    serde_json::to_writer(&mut out, &id)?;
-    if let Some(header) = header {
-        let implicit = if header.system {
-            0
-        } else {
-            IMPLICIT_IMPORT_SHORT_NAMES.len()
-        };
-        let explicit = header
-            .short_names
-            .get(..header.short_names.len().saturating_sub(implicit))
-            .unwrap_or_default();
-        out.push(b',');
-        serde_json::to_writer(&mut out, header.namespace)?;
-        out.push(b',');
-        serde_json::to_writer(&mut out, &header.version)?;
-        out.push(b',');
-        serde_json::to_writer(&mut out, &header.system)?;
-        out.push(b',');
-        serde_json::to_writer(&mut out, &explicit.len())?;
-        for (key, name) in explicit {
-            out.push(b',');
-            serde_json::to_writer(&mut out, key)?;
-            out.push(b',');
-            serde_json::to_writer(&mut out, name)?;
+/// the pairs after them are its `uriMap`, in order. The one writer of the
+/// staged-header wire format; the TS side has the one reader (engine/views.ts
+/// `applyStagedFileHeader`).
+struct FlatStaged<'h, 'a> {
+    id: u32,
+    header: Option<&'h StagedHeader<'a>>,
+}
+
+impl Serialize for FlatStaged<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(None)?;
+        seq.serialize_element(&self.id)?;
+        if let Some(header) = self.header {
+            let implicit = if header.system {
+                0
+            } else {
+                IMPLICIT_IMPORT_SHORT_NAMES.len()
+            };
+            let explicit = header
+                .short_names
+                .get(..header.short_names.len().saturating_sub(implicit))
+                .unwrap_or_default();
+            seq.serialize_element(&header.namespace)?;
+            seq.serialize_element(&header.version)?;
+            seq.serialize_element(&header.system)?;
+            seq.serialize_element(&explicit.len())?;
+            for (key, name) in explicit {
+                seq.serialize_element(key)?;
+                seq.serialize_element(name)?;
+            }
+            for (key, uri) in &header.uri_map {
+                seq.serialize_element(key)?;
+                seq.serialize_element(uri)?;
+            }
         }
-        for (key, uri) in &header.uri_map {
-            out.push(b',');
-            serde_json::to_writer(&mut out, key)?;
-            out.push(b',');
-            serde_json::to_writer(&mut out, uri)?;
-        }
+        seq.end()
     }
-    out.push(b']');
-    // Every piece is serde_json output: valid UTF-8.
-    String::from_utf8(out).map_err(serde::ser::Error::custom)
+}
+
+/// [`FlatStaged`]'s JSON text.
+fn flat_staged_text(id: u32, header: Option<&StagedHeader<'_>>) -> serde_json::Result<String> {
+    serde_json::to_string(&FlatStaged { id, header })
 }
 
 /// What the staging bindings return: `{"id": <stage id>, "header": <header
@@ -8215,7 +8374,7 @@ pub fn decorator_manager_extract_non_vocab_decorators(
 // and model files are unchanged (engine/views.ts `dcsManagerFor`). Each of
 // its operations stages the result's model files into the new
 // ModelManager's own handle (`target`) and returns, with the result AST,
-// each file's stage id and header ([`staged_header`]), and whether the
+// each file's stage id and header ([`stage_shared`], in the flat layout since P5-101), and whether the
 // result was validated. The view builds each ModelFile from its stage id and
 // header without sending the AST again, and skips its own
 // `validateModelFiles` when Rust has already validated the same files.
@@ -8225,145 +8384,49 @@ pub fn decorator_manager_extract_non_vocab_decorators(
 /// `fromAst` skips, since the new manager already has them.
 const DCS_EXCLUDE_NS: [&str; 3] = ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
 
-/// The system type names every non-system model file imports implicitly
-/// (the `imports.push` in [`model_file_from_ast_header`]).
-const IMPLICIT_SYSTEM_TYPES: [&str; 5] =
-    ["Concept", "Asset", "Transaction", "Participant", "Event"];
-
-/// What [`model_file_from_ast_header`] would set on a JS `ModelFile` built
-/// from `ast`, when it would succeed: `[version, shortNames, uris]`, where
-/// `shortNames` is the `importShortNames` entries and `uris` the
-/// `importUriMap` entries, each flattened to `[key, value, key, value, …]`
-/// in insertion order (the implicit system import included). The view sets
-/// `namespace` to `ast.namespace` and `imports` to a copy of `ast.imports`
-/// plus the implicit import, as the binding does, and applies these.
-///
-/// `None` whenever the header is not the plain case: a system namespace (no
-/// implicit import), an unversioned or invalid namespace, an import the
-/// binding would reject (unversioned, wildcard, aliased to a primitive
-/// type), or any value that is not the JSON type the plain case reads. The
-/// view then calls [`model_file_from_ast_header`] itself, which throws what
-/// it throws. So a header returned here is always the one that binding
-/// would set.
-fn staged_header(ast: &Value) -> Option<Value> {
-    let namespace = ast.get("namespace")?.as_str()?;
-    if namespace.is_empty() || namespace == "concerto" || namespace.starts_with("concerto@") {
-        return None;
-    }
-    let (name, version) = match mu::parse_namespace(namespace).ok()? {
-        mu::ParsedNamespace::Full {
-            name,
-            version: Some(version),
-            ..
-        } if !version.is_empty() => (name, version),
-        _ => return None,
-    };
-    if !name.split('.').all(mu::is_valid_identifier) {
-        return None;
-    }
-
-    let implicit = json!({
-        "$class": format!("{METAMODEL_NAMESPACE}.ImportTypes"),
-        "namespace": "concerto@1.0.0",
-        "types": IMPLICIT_SYSTEM_TYPES,
-    });
-    let own: &[Value] = match ast.get("imports") {
-        None | Some(Value::Null) => &[],
-        Some(Value::Array(imports)) => imports,
-        Some(_) => return None,
-    };
-    let import_types = format!("{METAMODEL_NAMESPACE}.ImportTypes");
-    let import_type = format!("{METAMODEL_NAMESPACE}.ImportType");
-    let mut short_names: Vec<Value> = Vec::new();
-    let mut uris: Vec<Value> = Vec::new();
-    for imp in own.iter().chain(std::iter::once(&implicit)) {
-        // `enforceImportVersioning(imp)`: a versioned namespace.
-        let imp_namespace = imp.get("namespace")?.as_str()?;
-        match mu::parse_namespace(imp_namespace).ok()? {
-            mu::ParsedNamespace::Full {
-                version: Some(v), ..
-            } if !v.is_empty() => {}
-            _ => return None,
-        }
-        let class = imp.get("$class")?.as_str()?;
-        if class == import_types {
-            let aliases: Option<std::collections::HashMap<&str, &str>> =
-                match imp.get("aliasedTypes") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::Array(entries)) if entries.is_empty() => None,
-                    Some(Value::Array(entries)) => {
-                        let mut map = std::collections::HashMap::new();
-                        for entry in entries {
-                            let alias_name = entry.get("name")?.as_str()?;
-                            let aliased_name = entry.get("aliasedName")?.as_str()?;
-                            if mu::is_primitive_type(aliased_name) {
-                                return None;
-                            }
-                            map.insert(alias_name, aliased_name);
-                        }
-                        Some(map)
-                    }
-                    Some(_) => return None,
-                };
-            for type_name in imp.get("types")?.as_array()? {
-                let type_name = type_name.as_str()?;
-                let key = aliases
-                    .as_ref()
-                    .and_then(|a| a.get(type_name).copied())
-                    .unwrap_or(type_name);
-                short_names.push(Value::from(key));
-                short_names.push(Value::from(format!("{imp_namespace}.{type_name}")));
-            }
-        } else if class == import_type {
-            let local = imp.get("name")?.as_str()?;
-            short_names.push(Value::from(local));
-            short_names.push(Value::from(format!("{imp_namespace}.{local}")));
-        } else {
-            return None;
-        }
-        match imp.get("uri") {
-            None | Some(Value::Null) => {}
-            Some(Value::String(uri)) if uri.is_empty() => {}
-            Some(Value::String(uri)) => {
-                let first = mu::import_fully_qualified_names(Some(imp))
-                    .ok()?
-                    .into_iter()
-                    .next()?;
-                uris.push(Value::from(first));
-                uris.push(Value::from(uri.as_str()));
-            }
-            Some(_) => return None,
-        }
-    }
-    Some(json!([version, short_names, uris]))
-}
-
-/// Stages every non-system model file of `result` into `target`'s staging
-/// slot, while it has room (a file past [`StagedModelFiles::CAPACITY`] is
-/// not staged, so no other stage is evicted), and returns one entry per
-/// model file of `result`, in [`model_manager_to_ast`]'s order: `null` for a
-/// file not staged, or `[stageId, header]` ([`staged_header`], `null` when
-/// the view must read the header itself). Staging never changes `target`'s
-/// manager or epoch.
+/// P5-101 (D-4, D-13; accordproject/concerto-rust#455): stages each of a
+/// DecoratorManager result's model files, with its header, into `target`'s
+/// staging slot, and returns one entry per file, in
+/// [`model_manager_to_ast`]'s order: `null` for a system file `fromAst`
+/// skips ([`DCS_EXCLUDE_NS`]), otherwise the stage in the flat layout every
+/// staging path returns ([`FlatStaged`]). The one helper both
+/// [`stage_result`] and [`dcs_memo::DcsExtractKept::stage`] stage through. Staging
+/// never changes `target`'s manager or epoch, and has one capacity policy:
+/// past [`StagedModelFiles::CAPACITY`] the oldest stage is evicted
+/// ([`StagedModelFiles::insert_shared`]), and its file falls back to
+/// sending its AST, as any evicted stage does.
 ///
 /// P5-77 (accordproject/concerto-rust#419): each file is staged shared with
-/// `result` ([`ModelManager::shared_model_files`]), not deep-copied; every
-/// caller drops `result` (or keeps it unchanged, in the extract memo) once
-/// the call returns.
-fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<Value> {
-    result
-        .shared_model_files()
-        .map(|mf| {
-            if DCS_EXCLUDE_NS.contains(&mf.namespace())
-                || target.staged.files.len() >= StagedModelFiles::CAPACITY
-            {
+/// the result (`ModelManager::shared_model_files`), not deep-copied.
+fn stage_shared<'h, 'a: 'h>(
+    target: &mut ModelManagerHandle,
+    files: impl Iterator<Item = (&'h std::sync::Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
+) -> Vec<Value> {
+    files
+        .map(|(mf, header)| {
+            if DCS_EXCLUDE_NS.contains(&mf.namespace()) {
                 return Value::Null;
             }
-            let header = staged_header(mf.ast()).unwrap_or(Value::Null);
             let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
-            json!([id, header])
+            serde_json::to_value(FlatStaged { id, header }).unwrap_or(Value::Null)
         })
         .collect()
+}
+
+/// [`stage_shared`] for a result the caller drops (or keeps unchanged)
+/// once the call returns, each header read from its file's AST
+/// ([`staged_header_from_parts`]).
+fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<Value> {
+    let headers: Vec<Option<StagedHeader<'_>>> = result
+        .model_files()
+        .map(|mf| staged_header_from_parts(mf.namespace(), mf.ast().get("imports")))
+        .collect();
+    stage_shared(
+        target,
+        result
+            .shared_model_files()
+            .zip(headers.iter().map(Option::as_ref)),
+    )
 }
 
 /// The input manager of the `DecoratorManager` operations, kept resident
@@ -8419,6 +8482,22 @@ impl DcsManagerHandle {
         self.manager
             .set_decorator_validation(target.manager.decorator_validation().clone());
         run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
+    }
+
+    /// P5-101 (D-10, accordproject/concerto-rust#455): the three extract
+    /// operations as one binding, `action` selecting which
+    /// ([`extract_action`]: 0 `extractDecorators`, 1 `extractVocabularies`,
+    /// 2 `extractNonVocabDecorators`): the same result, staged the same way,
+    /// as the binding it selects. Additive: those bindings are unchanged.
+    #[wasm_bindgen(js_name = extract)]
+    pub fn extract_with_action(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+        action: u32,
+    ) -> std::result::Result<JsValue, JsValue> {
+        let action = extract_action(action).map_err(|e| throw(e, None))?;
+        self.extract(target, &options, action)
     }
 
     /// [`decorator_manager_extract_decorators`] on the resident manager,
@@ -8477,6 +8556,25 @@ impl ModelManagerHandle {
             dcs::validate_against(&self.manager, &command_set)?;
             Ok(())
         })
+    }
+}
+
+/// P5-101 (D-10): the extract operation the `action` argument of
+/// `dcsExtract`/`extract` names: 0 `ExtractAll` (`extractDecorators`), 1
+/// `ExtractVocab` (`extractVocabularies`), 2 `ExtractNonVocab`
+/// (`extractNonVocabDecorators`). Any other number is a plain `Error`, which
+/// the view never passes.
+fn extract_action(action: u32) -> Result<dcs::extractor::Action> {
+    match action {
+        0 => Ok(dcs::extractor::Action::ExtractAll),
+        1 => Ok(dcs::extractor::Action::ExtractVocab),
+        2 => Ok(dcs::extractor::Action::ExtractNonVocab),
+        other => Err(ContractError::pre_port(
+            ErrorKind::InvalidArgument,
+            format!("an unknown extract action {other}"),
+            None,
+        )
+        .into()),
     }
 }
 
@@ -8578,6 +8676,19 @@ impl ModelManagerHandle {
         result
     }
 
+    /// P5-101 (D-10): [`DcsManagerHandle::extract_with_action`] on this
+    /// handle's own manager, through the per-epoch memo, as the three
+    /// `dcsExtract*` bindings run it. Additive: those are unchanged.
+    #[wasm_bindgen(js_name = dcsExtract)]
+    pub fn dcs_extract(
+        &self,
+        target: &mut ModelManagerHandle,
+        options: JsValue,
+        action: u32,
+    ) -> std::result::Result<JsValue, JsValue> {
+        run(|| self.memo_extract(target, &options, extract_action(action)?))
+    }
+
     /// [`DcsManagerHandle::extract_decorators`] on this handle's own
     /// manager, staged into `target` (the new ModelManager's handle, never
     /// this one). Never changes this manager.
@@ -8613,260 +8724,22 @@ impl ModelManagerHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// P5-56 (T2, F-A2, accordproject/concerto-rust#377): a per-epoch extract
-// result memo on the source handle (the P5-42 report's Design 2, on #352).
-//
-// With `removeDecoratorsFromModel` false, an extract's result models are the
-// handle's own models, resolved, whatever the action and locale; only the
-// command sets and vocabularies depend on those. So while the epoch is
-// unchanged, a repeated `dcsExtract*` call reuses the result manager, its
-// encoded AST and its staged headers, and rebuilds only the command sets
-// and vocabularies from the kept source models
-// ([`dcs::encode_extract_source`]): no resolve, no result-manager build,
-// validation or drop, no AST encode.
-//
-// - Filled on the second call at the same epoch (and system flag), so a
-//   one-shot caller never pays for it; the first call only notes its key.
-// - Dropped when the epoch moves ([`ModelManagerHandle::bump_epoch`]), on
-//   [`ModelManagerHandle::drop_dcs_memo`] and with the handle.
-// - Errors are never memoised: a call that throws leaves no memo, and the
-//   next call runs in full. A memo exists only after a call whose result
-//   models loaded and validated, which is the only error that
-//   `extract_encoded` reports ahead of the transform's, so a repeated call
-//   throws what a full one throws.
-// - Nothing shared is returned: the JS result is parsed from new text on
-//   every call. P5-77: each staged model file is shared with the kept
-//   result manager (a model file never changes once built), not cloned.
-//
-// P5-77 (accordproject/concerto-rust#419): with `removeDecoratorsFromModel`
-// true, the result models are the handle's own models, resolved, with the
-// decorators the action strips removed: they depend on the action, but not
-// on the locale, and the command sets and vocabularies are read before any
-// decorator is stripped ([`dcs::encode_extract_source`]). So the same memo
-// serves that case too, keyed by the action as well; everything above
-// holds for it unchanged.
-// ---------------------------------------------------------------------------
-
-/// A [`ModelManagerHandle`]'s extract memo (P5-56): its key, and the kept
-/// result once the second call at that key has filled it.
-struct DcsExtractMemo {
-    /// `(epoch, system models walked, stripping action)`: `ExtractAll` and
-    /// `ExtractVocab` walk the system models too, `ExtractNonVocab` does not
-    /// ([`dcs::extract_encoded`]); the stripping action is the action when
-    /// `removeDecoratorsFromModel` is true (P5-77), and `None` when it is
-    /// false, since then every action gives the same result models.
-    key: (u64, bool, Option<dcs::extractor::Action>),
-    /// `None` after the first call at `key`, `Some` from the second on.
-    kept: Option<DcsExtractKept>,
-}
-
-/// [`ModelManagerAstView`]'s text, from each model's own AST text
-/// ([`ModelManager::compact_model_asts`]): the same compact envelope, byte
-/// for byte (P5-77).
-fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
-    let mut out = String::with_capacity(64 + texts.iter().map(|t| t.len() + 1).sum::<usize>());
-    out.push_str("{\"$class\":\"concerto.metamodel@1.0.0.Models\",\"models\":[");
-    for (i, text) in texts.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(text);
-    }
-    out.push_str("]}");
-    out
-}
-
-/// P5-77: [`stage_result`] then [`extract_result_js`] for a result the
-/// caller drops once the call returns, through [`DcsExtractKept`], so the
-/// files staged into `target` keep their ASTs as text
-/// ([`DcsExtractKept::new`]). The same JS value, the same stages.
-fn compacted_extract_js(
-    target: &mut ModelManagerHandle,
-    result: dcs::extractor::EncodedExtractResult,
-    source: Vec<Value>,
-) -> (JsValue, DcsExtractKept) {
-    let dcs::extractor::EncodedExtractResult {
-        model_manager,
-        decorator_command_set,
-        vocabularies,
-    } = result;
-    let kept = DcsExtractKept::new(source, model_manager);
-    let staged = kept.stage(target);
-    let js = kept.result_js(&decorator_command_set, &vocabularies, staged);
-    (js, kept)
-}
-
-/// What a repeated extract at the same key reuses.
-struct DcsExtractKept {
-    /// The resolved source models the extractor walks.
-    source: Vec<Value>,
-    /// The result manager, staged from on every call.
-    result: ModelManager,
-    /// The JSON text of the result manager's AST ([`ModelManagerAstView`]).
-    ast_text: String,
-    /// [`staged_header`] of each of `result`'s model files, in order.
-    headers: Vec<Value>,
-}
-
-impl DcsExtractKept {
-    /// P5-77 (accordproject/concerto-rust#419): the staged headers are read
-    /// from the result's parsed ASTs first, then the ASTs are compacted
-    /// ([`ModelManager::compact_model_asts`]): each result model file keeps
-    /// its AST as the JSON text [`ModelManagerAstView`] writes for it, and
-    /// [`Self::ast_text`] is spliced from those texts, byte for byte that
-    /// view's text. So the files staged from it (shared, see
-    /// [`Self::stage`]) hold text, not a parsed tree, for as long as the
-    /// result ModelManager lives. Should the compaction fail, `ast_text` is
-    /// left empty and [`Self::result_js`] takes its fallback, as before
-    /// when the view's text failed.
-    fn new(source: Vec<Value>, mut result: ModelManager) -> Self {
-        let headers = result
-            .model_files()
-            .map(|mf| staged_header(mf.ast()).unwrap_or(Value::Null))
-            .collect();
-        let ast_text = result
-            .compact_model_asts()
-            .map(|texts| models_envelope_text(&texts))
-            .unwrap_or_default();
-        Self {
-            source,
-            result,
-            ast_text,
-            headers,
-        }
-    }
-
-    /// [`stage_result`] from the kept result manager, with its kept headers.
-    /// P5-77: each file is staged shared with the kept manager, which never
-    /// changes, so a repeated extract copies no model file.
-    fn stage(&self, target: &mut ModelManagerHandle) -> Vec<Value> {
-        self.result
-            .shared_model_files()
-            .zip(&self.headers)
-            .map(|(mf, header)| {
-                if DCS_EXCLUDE_NS.contains(&mf.namespace())
-                    || target.staged.files.len() >= StagedModelFiles::CAPACITY
-                {
-                    return Value::Null;
-                }
-                let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
-                json!([id, header])
-            })
-            .collect()
-    }
-
-    /// [`extract_result_text`] for the kept result and this call's command
-    /// sets and vocabularies, byte for byte, with the AST spliced in from
-    /// [`Self::ast_text`].
-    fn result_text(
-        &self,
-        command_sets: &str,
-        vocabularies: &[String],
-        staged: &[Value],
-    ) -> serde_json::Result<String> {
-        if self.ast_text.is_empty() {
-            return Err(serde::ser::Error::custom("no kept AST text"));
-        }
-        let mut out = Vec::new();
-        out.extend_from_slice(b"{\"modelManager\":");
-        out.extend_from_slice(self.ast_text.as_bytes());
-        out.extend_from_slice(b",\"decoratorCommandSet\":");
-        out.extend_from_slice(command_sets.as_bytes());
-        out.extend_from_slice(b",\"vocabularies\":");
-        serde_json::to_writer(&mut out, vocabularies)?;
-        out.extend_from_slice(b",\"staged\":");
-        serde_json::to_writer(&mut out, staged)?;
-        out.extend_from_slice(b",\"validated\":true}");
-        String::from_utf8(out).map_err(serde::ser::Error::custom)
-    }
-
-    /// [`extract_result_js`] for the kept result: [`Self::result_text`],
-    /// parsed, or the same intermediate-`Value` fallback.
-    fn result_js(
-        &self,
-        command_sets: &str,
-        vocabularies: &[String],
-        staged: Vec<Value>,
-    ) -> JsValue {
-        let text = self.result_text(command_sets, vocabularies, &staged);
-        if let Some(js) = text.ok().and_then(|text| JSON::parse(&text).ok()) {
-            return js;
-        }
-        // The intermediate-`Value` fallback, as [`extract_result_js`]'s.
-        let decorator_command_set: Value =
-            serde_json::from_str(command_sets).unwrap_or(Value::Null);
-        to_js(&json!({
-            "modelManager": model_manager_to_ast(&self.result),
-            "decoratorCommandSet": decorator_command_set,
-            "vocabularies": vocabularies,
-            "staged": staged,
-            "validated": true,
-        }))
-    }
-}
-
-impl ModelManagerHandle {
-    /// [`staged_extract`] on this handle's own manager, through the
-    /// per-epoch memo (P5-56; P5-77 for `removeDecoratorsFromModel` true).
-    fn memo_extract(
-        &self,
-        target: &mut ModelManagerHandle,
-        options: &JsValue,
-        action: dcs::extractor::Action,
-    ) -> Result<JsValue> {
-        let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
-        let opts = extract_options_from_js(&options_json);
-        let key = (
-            self.epoch,
-            action != dcs::extractor::Action::ExtractNonVocab,
-            opts.remove_decorators_from_model.then_some(action),
-        );
-        let mut memo = self.dcs_memo.borrow_mut();
-        match memo.as_mut() {
-            Some(DcsExtractMemo {
-                key: memo_key,
-                kept: Some(kept),
-            }) if *memo_key == key => {
-                let (command_sets, vocabularies) =
-                    dcs::encode_extract_source(&kept.source, &opts, action)?;
-                let staged = kept.stage(target);
-                Ok(kept.result_js(&command_sets, &vocabularies, staged))
-            }
-            Some(DcsExtractMemo {
-                key: memo_key,
-                kept: kept @ None,
-            }) if *memo_key == key => {
-                let (result, source) =
-                    dcs::extract_encoded_keeping_source(&self.manager, &opts, action)?;
-                let (js, filled) = compacted_extract_js(target, result, source);
-                *kept = Some(filled);
-                Ok(js)
-            }
-            _ => {
-                *memo = Some(DcsExtractMemo { key, kept: None });
-                drop(memo);
-                let result = dcs::extract_encoded(&self.manager, &opts, action)?;
-                Ok(compacted_extract_js(target, result, Vec::new()).0)
-            }
-        }
-    }
-}
-
-#[wasm_bindgen]
-impl ModelManagerHandle {
-    /// Drops this handle's extract result memo (P5-56), freeing the result
-    /// models it keeps; the next repeated extract fills it again. Never
-    /// changes the manager or its epoch. Additive.
-    #[wasm_bindgen(js_name = dropDcsMemo)]
-    pub fn drop_dcs_memo(&self) {
-        *self.dcs_memo.borrow_mut() = None;
-    }
-}
-
 // P5-12c (accordproject/concerto-rust#293): `ValidatedResource.validate()`,
 // `setPropertyValue` and `addArrayValue` in one engine call each.
 mod validate_resource;
+
+// P5-101 (D-7): the process-global state, in one module.
+mod caches;
+
+// P5-101 (D-7, D-13): a handle's staging slot.
+mod staging;
+
+// P5-101 (D-7): a handle's per-epoch DCS extract memo (P5-56).
+mod dcs_memo;
+#[cfg(test)]
+use dcs_memo::DcsExtractKept;
+use dcs_memo::{DcsExtractMemo, compacted_extract_js};
+use staging::{STAGE_CHECKED, STAGE_COMPACT, StagedModelFiles};
 
 #[cfg(test)]
 mod tests {
@@ -9125,7 +8998,7 @@ mod tests {
         assert_eq!(flat_staged_text(7, None).unwrap(), "[7]");
     }
 
-    /// P5-28: [`staged_header`] of a canonical file gives what
+    /// P5-28: [`staged_header_from_parts`] of a canonical file gives what
     /// `modelFileFromAstHeader` sets: the version, the short names in
     /// order (an alias in place of its type's name, the implicit system
     /// import last) and the URI map keyed by each import's first name.
@@ -9163,13 +9036,15 @@ mod tests {
     /// system namespace gives a `null` version; no `imports` node is none.
     #[test]
     fn staged_header_reads_a_system_file() {
-        let header = header_value("concerto", None).unwrap();
-        assert_eq!(
-            header,
-            json!({"namespace": "concerto", "version": null, "system": true, "shortNames": [], "uriMap": []})
-        );
+        // The unversioned `concerto` parses as a name only, so it gets no
+        // header and the view reads it through `modelFileFromAstHeader`, as
+        // for any other unversioned namespace (P5-101: this test expected
+        // a header, which `staged_header_from_parts` has never given; it
+        // failed on the integration head before this change).
+        assert_eq!(header_value("concerto", None), None);
         let header = header_value("concerto@1.0.0", Some(&Value::Null)).unwrap();
         assert_eq!(header["version"], json!("1.0.0"));
+        assert_eq!(header["system"], json!(true));
         assert_eq!(header["shortNames"], json!([]));
     }
 
@@ -9495,7 +9370,36 @@ mod tests {
         }
     }
 
-    /// A model AST for [`staged_header`] with these imports.
+    /// P5-101 (D-3, E-7): the merged options read once per options text
+    /// ([`SerializerOptionsEntry`]) give `validateInstance`'s walk the same
+    /// reading from `fromJSON`'s wire encoding (`-0` tagged, an `undefined`
+    /// option kept as a tag) as from `JSON.stringify`'s text of the same
+    /// options, and `from_json` the serializer's merged defaults.
+    #[test]
+    fn serializer_options_read_wire_and_plain_text_alike() {
+        let wire = SerializerOptionsEntry::new(
+            r#"{"validate":true,"utcOffset":{"@@oracle":"number","value":"-0"},"strictQualifiedDateTimes":{"@@oracle":"undefined"},"rejectUnknownKeys":true}"#,
+        )
+        .unwrap_or_else(|_| panic!("wire options read"));
+        let plain = SerializerOptionsEntry::new(
+            r#"{"validate":true,"utcOffset":0,"rejectUnknownKeys":true}"#,
+        )
+        .unwrap_or_else(|_| panic!("plain options read"));
+        assert_eq!(wire.native, plain.native);
+        assert!(wire.native.validate && wire.native.reject_unknown_keys);
+        assert_eq!(
+            wire.from_json,
+            FromJsonOptions::new(&wire.serializer.default_options)
+        );
+        let none = SerializerOptionsEntry::new("null").unwrap_or_else(|_| panic!("null reads"));
+        assert_eq!(
+            none.native,
+            native_from_json_options(&Value::Object(Default::default()))
+        );
+        assert!(SerializerOptionsEntry::new("[1]").is_err());
+    }
+
+    /// A model AST with these imports.
     fn header_model(namespace: &str, imports: Value) -> Value {
         json!({
             "$class": "concerto.metamodel@1.0.0.Model",
@@ -9505,26 +9409,34 @@ mod tests {
         })
     }
 
-    /// The implicit system import's `importShortNames` entries.
-    fn implicit_short_names() -> Vec<Value> {
-        IMPLICIT_SYSTEM_TYPES
-            .iter()
-            .flat_map(|t| [json!(t), json!(format!("concerto@1.0.0.{t}"))])
-            .collect()
+    /// P5-101 (D-4): the staged entry [`stage_shared`] writes for a model
+    /// file of a DecoratorManager result with this AST, as a value: its
+    /// header ([`staged_header_from_parts`]) in the flat layout, under the
+    /// stage id 0. `None` when there is no header.
+    fn dcs_entry(ast: &Value) -> Option<Value> {
+        let namespace = ast.get("namespace")?.as_str()?;
+        let header = staged_header_from_parts(namespace, ast.get("imports"))?;
+        Some(
+            serde_json::to_value(FlatStaged {
+                id: 0,
+                header: Some(&header),
+            })
+            .unwrap(),
+        )
     }
 
     #[test]
-    fn staged_header_has_the_version_and_the_implicit_import() {
-        let header = staged_header(&header_model("org.acme@1.2.3", json!([]))).unwrap();
-        assert_eq!(header, json!(["1.2.3", implicit_short_names(), []]));
+    fn a_dcs_staged_entry_has_the_version_and_leaves_out_the_implicit_import() {
+        let entry = dcs_entry(&header_model("org.acme@1.2.3", json!([]))).unwrap();
+        assert_eq!(entry, json!([0, "org.acme@1.2.3", "1.2.3", false, 0]));
         // An absent `imports` is read as none, as `ast.imports.concat` is skipped.
         let mut ast = header_model("org.acme@1.2.3", json!(null));
         ast.as_object_mut().unwrap().remove("imports");
-        assert_eq!(staged_header(&ast).unwrap(), header);
+        assert_eq!(dcs_entry(&ast).unwrap(), entry);
     }
 
     #[test]
-    fn staged_header_maps_imports_in_order_with_aliases_and_uris() {
+    fn a_dcs_staged_entry_maps_imports_in_order_with_aliases_and_uris() {
         let imports = json!([
             {
                 "$class": "concerto.metamodel@1.0.0.ImportTypes",
@@ -9549,44 +9461,46 @@ mod tests {
                 "uri": "",
             },
         ]);
-        let header = staged_header(&header_model("org.acme@1.0.0", imports)).unwrap();
-        let mut short_names = vec![
-            json!("A"),
-            json!("org.other@1.0.0.A"),
-            json!("Bee"),
-            json!("org.other@1.0.0.B"),
-            json!("C"),
-            json!("org.third@2.0.0.C"),
-            json!("D"),
-            json!("org.fourth@1.0.0.D"),
-        ];
-        short_names.extend(implicit_short_names());
+        let entry = dcs_entry(&header_model("org.acme@1.0.0", imports)).unwrap();
         assert_eq!(
-            header,
+            entry,
             json!([
+                0,
+                "org.acme@1.0.0",
                 "1.0.0",
-                short_names,
-                [
-                    "org.other@1.0.0.A",
-                    "https://example.com/other.cto",
-                    "org.third@2.0.0.C",
-                    "https://example.com/third.cto",
-                ],
+                false,
+                4,
+                "A",
+                "org.other@1.0.0.A",
+                "Bee",
+                "org.other@1.0.0.B",
+                "C",
+                "org.third@2.0.0.C",
+                "D",
+                "org.fourth@1.0.0.D",
+                "org.other@1.0.0.A",
+                "https://example.com/other.cto",
+                "org.third@2.0.0.C",
+                "https://example.com/third.cto",
             ])
         );
     }
 
+    /// P5-101 (D-4): a system namespace has a header (no implicit import),
+    /// as for any other staged file; every other case the binding would
+    /// treat in its own way has none.
     #[test]
-    fn staged_header_leaves_every_other_case_to_the_binding() {
+    fn a_dcs_staged_entry_leaves_every_other_case_to_the_binding() {
+        assert_eq!(
+            dcs_entry(&header_model("concerto@1.0.0", json!([]))).unwrap(),
+            json!([0, "concerto@1.0.0", "1.0.0", true, 0])
+        );
         let import = |value: Value| header_model("org.acme@1.0.0", json!([value]));
         let cases = [
-            // System and unversioned or invalid namespaces.
-            header_model("concerto@1.0.0", json!([])),
-            header_model("concerto", json!([])),
+            // Unversioned or invalid namespaces.
             header_model("org.acme", json!([])),
             header_model("org.1acme@1.0.0", json!([])),
             header_model("org.acme@x", json!([])),
-            json!({"$class": "concerto.metamodel@1.0.0.Model", "namespace": 1}),
             // Imports the binding rejects.
             import(json!({
                 "$class": "concerto.metamodel@1.0.0.ImportType",
@@ -9624,7 +9538,7 @@ mod tests {
             })),
         ];
         for ast in cases {
-            assert_eq!(staged_header(&ast), None, "{ast}");
+            assert_eq!(dcs_entry(&ast), None, "{ast}");
         }
     }
 
@@ -9639,9 +9553,15 @@ mod tests {
                 ModelFile::from_json_text_with_imports(text, None, Some(file_name.into()))
                     .unwrap()
                     .unwrap();
-            let expected = header_value(file.namespace(), imports.as_ref()).unwrap();
+            // P5-101 (D-4): the flat layout, its stage id 0.
+            let expected = flat_staged_text(
+                0,
+                staged_header_from_parts(file.namespace(), imports.as_ref()).as_ref(),
+            )
+            .unwrap();
+            assert!(expected.len() > "[0]".len(), "{expected}");
             let header = system_model_header(text).unwrap();
-            assert_eq!(serde_json::from_str::<Value>(&header).unwrap(), expected);
+            assert_eq!(header, expected);
 
             let mut value: Value = serde_json::from_str(text).unwrap();
             let pretty = serde_json::to_string_pretty(&value).unwrap();
