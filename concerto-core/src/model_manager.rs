@@ -332,6 +332,7 @@ impl<'a> ClassProperties<'a> {
     }
 
     /// Whether a property named `name` exists.
+    #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
     pub fn contains(&self, name: &str) -> bool {
         self.find(name).is_some()
     }

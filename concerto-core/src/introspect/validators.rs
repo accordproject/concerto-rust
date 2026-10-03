@@ -284,71 +284,90 @@ impl NumberValidator {
         /// TS: NumberValidator.constructor (src/introspect/numbervalidator.ts)
         pub fn new<F: ValidatedElement>(field: &F, ast: &Value) -> Result<Self, F::Error> {
             // The hasOwnProperty guards: an absent bound stays null.
-            let lower_bound = bound(ast, "lower");
-            let upper_bound = bound(ast, "upper");
-
-            match (&lower_bound, &upper_bound) {
-                (None, None) => {
-                    return Err(report_error(
-                        field,
-                        ErrorKind::IllegalModel,
-                        None,
-                        DEFAULT_VALIDATOR_EXCEPTION,
-                        "numbervalidator-constructor-nobounds",
-                        Vec::new(),
-                    ));
-                }
-                (Some(lower), Some(upper)) if ecma::greater_than(lower, upper) => {
-                    return Err(report_error(
-                        field,
-                        ErrorKind::IllegalModel,
-                        None,
-                        DEFAULT_VALIDATOR_EXCEPTION,
-                        "numbervalidator-constructor-lowerhigherthanupper",
-                        Vec::new(),
-                    ));
-                }
-                _ => {}
-            }
-
-            if let Some(value) = field.default_value()? {
-                if let Some(lower) = &lower_bound
-                    && ecma::less_than(&value, lower)
-                {
-                    return Err(report_error(
-                        field,
-                        ErrorKind::IllegalModel,
-                        None,
-                        DEFAULT_VALIDATOR_EXCEPTION,
-                        "numbervalidator-constructor-outsidelowerbound",
-                        vec![
-                            ("value", ecma::to_js_string(&value)),
-                            ("lowerBound", ecma::to_js_string(lower)),
-                        ],
-                    ));
-                }
-                if let Some(upper) = &upper_bound
-                    && ecma::greater_than(&value, upper)
-                {
-                    return Err(report_error(
-                        field,
-                        ErrorKind::IllegalModel,
-                        None,
-                        DEFAULT_VALIDATOR_EXCEPTION,
-                        "numbervalidator-constructor-outsideupperbound",
-                        vec![
-                            ("value", ecma::to_js_string(&value)),
-                            ("upperBound", ecma::to_js_string(upper)),
-                        ],
-                    ));
-                }
-            }
-
-            Ok(Self {
-                lower_bound,
-                upper_bound,
-            })
+            Self::checked(field, bound(ast, "lower"), bound(ast, "upper"))
         }
+    }
+
+    /// [`NumberValidator::new`] from typed bounds (A-9, P5-99): a property's
+    /// or a scalar's `{lower, upper}` as the strict read gives them, with
+    /// the same checks and errors. `new` stays for the AST a caller hands
+    /// in as JSON (the WASM binding's standalone validator).
+    pub(crate) fn from_bounds<F: ValidatedElement>(
+        field: &F,
+        lower: Option<f64>,
+        upper: Option<f64>,
+    ) -> Result<Self, F::Error> {
+        let bound = |b: Option<f64>| b.and_then(serde_json::Number::from_f64).map(Value::Number);
+        Self::checked(field, bound(lower), bound(upper))
+    }
+
+    /// The constructor's checks, over its bounds.
+    fn checked<F: ValidatedElement>(
+        field: &F,
+        lower_bound: Option<Value>,
+        upper_bound: Option<Value>,
+    ) -> Result<Self, F::Error> {
+        match (&lower_bound, &upper_bound) {
+            (None, None) => {
+                return Err(report_error(
+                    field,
+                    ErrorKind::IllegalModel,
+                    None,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "numbervalidator-constructor-nobounds",
+                    Vec::new(),
+                ));
+            }
+            (Some(lower), Some(upper)) if ecma::greater_than(lower, upper) => {
+                return Err(report_error(
+                    field,
+                    ErrorKind::IllegalModel,
+                    None,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "numbervalidator-constructor-lowerhigherthanupper",
+                    Vec::new(),
+                ));
+            }
+            _ => {}
+        }
+
+        if let Some(value) = field.default_value()? {
+            if let Some(lower) = &lower_bound
+                && ecma::less_than(&value, lower)
+            {
+                return Err(report_error(
+                    field,
+                    ErrorKind::IllegalModel,
+                    None,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "numbervalidator-constructor-outsidelowerbound",
+                    vec![
+                        ("value", ecma::to_js_string(&value)),
+                        ("lowerBound", ecma::to_js_string(lower)),
+                    ],
+                ));
+            }
+            if let Some(upper) = &upper_bound
+                && ecma::greater_than(&value, upper)
+            {
+                return Err(report_error(
+                    field,
+                    ErrorKind::IllegalModel,
+                    None,
+                    DEFAULT_VALIDATOR_EXCEPTION,
+                    "numbervalidator-constructor-outsideupperbound",
+                    vec![
+                        ("value", ecma::to_js_string(&value)),
+                        ("upperBound", ecma::to_js_string(upper)),
+                    ],
+                ));
+            }
+        }
+
+        Ok(Self {
+            lower_bound,
+            upper_bound,
+        })
     }
 
     /// The lower bound, or `None` (JS `null`) when there is none.

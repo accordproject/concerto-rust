@@ -1,16 +1,19 @@
 //! P5-88 (accordproject/concerto-rust#434): the validation plan's parity
-//! property over the oracle's instance fixtures. Every fixture that runs an
-//! instance op, or decodes an instance among its inputs, is replayed twice
-//! on the same thread: once as shipped (the plan on), once with the plan
-//! turned off (`concerto_core::instance::plan::testing::without_plan`, the
-//! unplanned path the plan falls back to). The two outcomes must be equal:
-//! the same success value, or the same error (class, message and location),
-//! so the plan changes no throw scenario, no exception class and not the
-//! order in which the first error is found.
+//! property over the oracle's instance fixtures, since P5-99
+//! (accordproject/concerto-rust#453, one walk, no unplanned path) a "cached
+//! plan equals fresh plan" check. Every fixture that runs an instance op, or
+//! decodes an instance among its inputs, is replayed twice on the same
+//! thread: once as shipped (each plan, and each plan-build error, read from
+//! the manager's cache), once with every plan built afresh
+//! (`concerto_core::instance::plan::testing::uncached`). The two outcomes
+//! must be equal: the same success value, or the same error (class, message
+//! and location), so a cached plan, or a cached build error, changes no
+//! throw scenario, no exception class and not the order in which the first
+//! error is found.
 
 use std::fmt::Write as _;
 
-use concerto_core::instance::plan::testing::without_plan;
+use concerto_core::instance::plan::testing::uncached;
 use serde_json::Value;
 
 use crate::Harness;
@@ -67,20 +70,20 @@ fn run(harness: &Harness, fx: &Fixture) -> String {
     }
 }
 
-/// Replays every instance fixture with the plan on and off; returns how
-/// many were compared, and a description of each that differed.
+/// Replays every instance fixture with cached and with fresh plans; returns
+/// how many were compared, and a description of each that differed.
 pub fn compare(harness: &Harness, fixtures: &[Fixture]) -> (usize, Vec<String>) {
     let mut compared = 0;
     let mut differences = Vec::new();
     for fx in fixtures.iter().filter(|fx| is_instance_fixture(fx)) {
         compared += 1;
-        let planned = run(harness, fx);
-        let unplanned = without_plan(|| run(harness, fx));
-        if planned != unplanned {
+        let cached = run(harness, fx);
+        let fresh = uncached(|| run(harness, fx));
+        if cached != fresh {
             let mut d = String::new();
             let _ = write!(
                 d,
-                "{} {} ({}):\n  plan on:  {planned}\n  plan off: {unplanned}",
+                "{} {} ({}):\n  cached plans: {cached}\n  fresh plans:  {fresh}",
                 fx.op,
                 fx.id,
                 fx.path.display()

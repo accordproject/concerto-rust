@@ -63,9 +63,10 @@ rustc-hash = "2"
 # native API is built on it), and is crate-private without the feature.
 js-compat = []
 # P5-88 (accordproject/concerto-rust#434): dev-only access to the instance
-# validation plan (`instance::plan::testing`): run a closure with the plan
-# off on the current thread, so a test can compare planned and unplanned
-# outcomes, and count the plans a manager holds. Only this crate's own
+# validation plan (`instance::plan::testing`): run a closure with every plan
+# built afresh on the current thread (P5-99: there is one, plan-based walk),
+# so a test can compare cached and fresh outcomes, and count the plans a
+# manager holds. Only this crate's own
 # dev-dependency (the oracle harness's plan parity test) and the benches'
 # opt-in `plan-stats` feature enable it; no release build does, and it
 # carries no stability promise.

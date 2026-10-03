@@ -205,8 +205,9 @@ pub enum FieldType<'a> {
     Map(&'a str),
     /// A field whose type is a concept-like declaration.
     Class(&'a str),
-    /// A relationship: the fully-qualified name of its target.
-    Relationship(String),
+    /// A relationship: the fully-qualified name of its target, borrowed
+    /// from the validation plan where the plan resolved it (P5-99).
+    Relationship(std::borrow::Cow<'a, str>),
     /// An enum value member (an `EnumDeclaration`'s own property), which
     /// has no type.
     EnumValue,
@@ -387,7 +388,11 @@ pub fn field<'a>(
     let field_type = match property {
         Property::Relationship(rp) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
-            FieldType::Relationship(mm.resolve_type_name_at(namespace, &rp.type_.name, None)?)
+            FieldType::Relationship(std::borrow::Cow::Owned(mm.resolve_type_name_at(
+                namespace,
+                &rp.type_.name,
+                None,
+            )?))
         }
         Property::Object(op) => {
             let namespace = model_util::get_namespace(Some(owner_fqn))?;
