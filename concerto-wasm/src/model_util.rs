@@ -10,13 +10,13 @@ use super::*;
 
 /// TS: ModelUtil.getShortName
 #[wasm_bindgen(js_name = modelUtilGetShortName)]
-pub fn model_util_get_short_name(fqn: JsValue) -> std::result::Result<String, JsValue> {
+pub fn model_util_get_short_name(fqn: JsValue) -> JsResult<String> {
     run(|| Ok(mu::short_name(&receiver(&fqn, "fqn", "lastIndexOf")?).to_string()))
 }
 
 /// TS: ModelUtil.getNamespace. `!fqn` covers every falsy value.
 #[wasm_bindgen(js_name = modelUtilGetNamespace)]
-pub fn model_util_get_namespace(fqn: JsValue) -> std::result::Result<String, JsValue> {
+pub fn model_util_get_namespace(fqn: JsValue) -> JsResult<String> {
     run(|| {
         if !fqn.is_truthy() {
             return Ok(mu::get_namespace(None)?.to_string());
@@ -65,10 +65,7 @@ pub(crate) fn is_unversioned_namespace(ns: &JsValue) -> bool {
 ///   `semver.parse` returns `null`, as the engine's own `versionParsed` is
 ///   `None` (`model_util::semver_parse`).
 #[wasm_bindgen(js_name = modelUtilParseNamespaceChecked)]
-pub fn model_util_parse_namespace_checked(
-    ns: JsValue,
-    options: JsValue,
-) -> std::result::Result<String, JsValue> {
+pub fn model_util_parse_namespace_checked(ns: JsValue, options: JsValue) -> JsResult<String> {
     run(|| {
         let disable = !nullish(&options) && get(&options, "disableVersionParsing")?.is_truthy();
         Ok(match parse_namespace_js(&ns, disable)? {
@@ -91,9 +88,7 @@ pub fn model_util_parse_namespace_checked(
 
 /// TS: ModelUtil.importFullyQualifiedNames
 #[wasm_bindgen(js_name = modelUtilImportFullyQualifiedNames)]
-pub fn model_util_import_fully_qualified_names(
-    imp: JsValue,
-) -> std::result::Result<Array, JsValue> {
+pub fn model_util_import_fully_qualified_names(imp: JsValue) -> JsResult<Array> {
     run(|| {
         let imp = to_json(&imp)?;
         let names = mu::import_fully_qualified_names(imp.as_ref())?;
@@ -112,7 +107,7 @@ pub fn model_util_is_primitive_type(type_name: JsValue) -> bool {
 
 /// TS: ModelUtil.capitalizeFirstLetter
 #[wasm_bindgen(js_name = modelUtilCapitalizeFirstLetter)]
-pub fn model_util_capitalize_first_letter(string: JsValue) -> std::result::Result<String, JsValue> {
+pub fn model_util_capitalize_first_letter(string: JsValue) -> JsResult<String> {
     run(|| {
         Ok(mu::capitalize_first_letter(&receiver(
             &string, "string", "charAt",
@@ -125,7 +120,7 @@ pub fn model_util_capitalize_first_letter(string: JsValue) -> std::result::Resul
 /// `RegExp.prototype.test`, which converts it with `String()`, so
 /// `undefined` and `null` answered `true` (DV-002).
 #[wasm_bindgen(js_name = modelUtilIsValidIdentifier)]
-pub fn model_util_is_valid_identifier(name: JsValue) -> std::result::Result<bool, JsValue> {
+pub fn model_util_is_valid_identifier(name: JsValue) -> JsResult<bool> {
     run(|| {
         Ok(name
             .as_string()
@@ -139,7 +134,7 @@ pub fn model_util_is_valid_identifier(name: JsValue) -> std::result::Result<bool
 pub fn model_util_get_fully_qualified_name(
     namespace: JsValue,
     type_name: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+) -> JsResult<JsValue> {
     run(|| {
         if !namespace.is_truthy() {
             return Ok(type_name);
@@ -153,7 +148,7 @@ pub fn model_util_get_fully_qualified_name(
 #[wasm_bindgen(js_name = modelUtilRemoveNamespaceVersionFromFullyQualifiedName)]
 pub fn model_util_remove_namespace_version_from_fully_qualified_name(
     fqn: JsValue,
-) -> std::result::Result<String, JsValue> {
+) -> JsResult<String> {
     run(|| {
         if !fqn.is_truthy() {
             return Ok(mu::remove_namespace_version_from_fully_qualified_name(
@@ -199,13 +194,13 @@ pub(crate) fn class_node(node: &JsValue) -> Result<Option<Value>> {
 
 /// TS: ModelUtil.isValidMapKey
 #[wasm_bindgen(js_name = modelUtilIsValidMapKey)]
-pub fn model_util_is_valid_map_key(key: JsValue) -> std::result::Result<bool, JsValue> {
+pub fn model_util_is_valid_map_key(key: JsValue) -> JsResult<bool> {
     run(|| Ok(mu::is_valid_map_key(class_node(&key)?.as_ref())?))
 }
 
 /// TS: ModelUtil.isValidMapValue
 #[wasm_bindgen(js_name = modelUtilIsValidMapValue)]
-pub fn model_util_is_valid_map_value(value: JsValue) -> std::result::Result<bool, JsValue> {
+pub fn model_util_is_valid_map_value(value: JsValue) -> JsResult<bool> {
     run(|| Ok(mu::is_valid_map_value(class_node(&value)?.as_ref())?))
 }
 
@@ -221,7 +216,7 @@ pub fn resource_id_from_uri(
     uri: JsValue,
     legacy_namespace: JsValue,
     legacy_type: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+) -> JsResult<JsValue> {
     run(|| {
         // TS's private `parseUri` calls `uri.match(...)`, which throws a
         // `TypeError` for a non-string `uri`; `fromURI` catches that and
@@ -259,11 +254,7 @@ pub fn resource_id_from_uri(
 /// ledger's HYBRID constructor row), so the view still holds its own state
 /// and only the URI encoding runs in Rust.
 #[wasm_bindgen(js_name = resourceIdToURI)]
-pub fn resource_id_to_uri(
-    namespace: JsValue,
-    type_name: JsValue,
-    id: JsValue,
-) -> std::result::Result<String, JsValue> {
+pub fn resource_id_to_uri(namespace: JsValue, type_name: JsValue, id: JsValue) -> JsResult<String> {
     run(|| {
         let namespace = js_string(&namespace)?;
         let type_name = js_string(&type_name)?;

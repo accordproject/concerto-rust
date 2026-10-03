@@ -71,8 +71,7 @@ pub(crate) fn number_validator(
         Ok(to_json(&value)?.unwrap_or(Value::Null))
     };
     let snapshot = json!({ "lowerBound": read(lower)?, "upperBound": read(upper)? });
-    serde_json::from_value(snapshot)
-        .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    serde_json::from_value(snapshot).map_err(internal)
 }
 
 /// The `{lowerBound, upperBound}` snapshot as a JS object.
@@ -84,7 +83,7 @@ pub(crate) fn number_snapshot(validator: &NumberValidator) -> JsValue {
 /// object under construction; the result is its `{lowerBound, upperBound}`.
 /// `ast.lower`/`ast.upper` are read only when they are own properties.
 #[wasm_bindgen(js_name = numberValidatorNew)]
-pub fn number_validator_new(view: JsValue, ast: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn number_validator_new(view: JsValue, ast: JsValue) -> JsResult<JsValue> {
     run(|| {
         let own = |key: &str| -> Result<Option<Value>> {
             // `Object.prototype.hasOwnProperty.call(ast, key)`
@@ -115,7 +114,7 @@ pub fn number_validator_validate(
     view: JsValue,
     identifier: JsValue,
     value: JsValue,
-) -> std::result::Result<(), JsValue> {
+) -> JsResult<()> {
     run(|| {
         let validator = number_validator(&view, "lowerBound", "upperBound")?;
         let identifier = if identifier.is_null() {
@@ -139,7 +138,7 @@ pub fn number_validator_validate(
 
 /// TS: NumberValidator.toString
 #[wasm_bindgen(js_name = numberValidatorToString)]
-pub fn number_validator_to_string(view: JsValue) -> std::result::Result<String, JsValue> {
+pub fn number_validator_to_string(view: JsValue) -> JsResult<String> {
     run(|| Ok(number_validator(&view, "lowerBound", "upperBound")?.to_string()))
 }
 
@@ -151,7 +150,7 @@ pub fn number_validator_compatible_with(
     view: JsValue,
     other: JsValue,
     number_validator_class: Function,
-) -> std::result::Result<bool, JsValue> {
+) -> JsResult<bool> {
     run(|| {
         // `other instanceof NumberValidator`
         let prototype = get(&number_validator_class, "prototype")?;
@@ -260,7 +259,7 @@ pub fn string_validator_new(
     view: JsValue,
     validator: JsValue,
     length_validator: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+) -> JsResult<JsValue> {
     run(|| {
         let regex_ast = string_regex_ast(&validator)?;
         let length_ast = string_length_ast(&length_validator)?;
@@ -307,10 +306,7 @@ pub(crate) fn string_validator(view: &JsValue) -> Result<StringValidator> {
             }),
             "concerto.metamodel@1.0.0.StringLengthValidator",
         );
-        Some(
-            serde_json::from_value::<mm::StringLengthValidator>(json)
-                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?,
-        )
+        Some(serde_json::from_value::<mm::StringLengthValidator>(json).map_err(internal)?)
     };
     StringValidator::new(
         &JsElement { validator: view },
@@ -330,7 +326,7 @@ pub fn string_validator_validate(
     view: JsValue,
     identifier: JsValue,
     value: JsValue,
-) -> std::result::Result<(), JsValue> {
+) -> JsResult<()> {
     run(|| {
         let validator = string_validator(&view)?;
         let identifier = if identifier.is_null() {
@@ -358,7 +354,7 @@ pub fn string_validator_compatible_with(
     view: JsValue,
     other: JsValue,
     string_validator_class: Function,
-) -> std::result::Result<bool, JsValue> {
+) -> JsResult<bool> {
     run(|| {
         // `other instanceof StringValidator`
         let prototype = get(&string_validator_class, "prototype")?;
@@ -375,10 +371,7 @@ pub fn string_validator_compatible_with(
 /// `view` is the object under construction; the result is its `{minSize,
 /// maxSize}` snapshot.
 #[wasm_bindgen(js_name = collectionSizeValidatorNew)]
-pub fn collection_size_validator_new(
-    view: JsValue,
-    ast: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn collection_size_validator_new(view: JsValue, ast: JsValue) -> JsResult<JsValue> {
     run(|| {
         let typed = collection_size_ast(&ast)?;
         // The raw `sizeValidator` AST itself, not just its typed `{minSize,
@@ -415,7 +408,7 @@ pub fn collection_size_validator_validate(
     view: JsValue,
     identifier: JsValue,
     value: JsValue,
-) -> std::result::Result<(), JsValue> {
+) -> JsResult<()> {
     run(|| {
         let validator = collection_size_validator(&view)?;
         let identifier = if identifier.is_null() {
@@ -441,7 +434,7 @@ pub fn collection_size_validator_compatible_with(
     view: JsValue,
     other: JsValue,
     collection_size_validator_class: Function,
-) -> std::result::Result<bool, JsValue> {
+) -> JsResult<bool> {
     run(|| {
         // `other instanceof CollectionSizeValidator`
         let prototype = get(&collection_size_validator_class, "prototype")?;

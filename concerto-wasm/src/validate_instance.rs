@@ -93,10 +93,9 @@ impl ModelManagerHandle {
         options_text: &str,
         fqn: Option<String>,
         mode: u32,
-    ) -> std::result::Result<String, JsValue> {
+    ) -> JsResult<String> {
         run(|| {
-            let wire = serde_json::from_str::<Value>(json_text)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let wire = serde_json::from_str::<Value>(json_text).map_err(json_syntax)?;
             // P5-101 (D-3): the options are read once per options text, and
             // the serializer built from them reused, as `serializerFromJsonCompact`
             // reuses them ([`with_serializer_options`]).

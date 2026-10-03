@@ -70,7 +70,7 @@ use concerto_core::introspect::compact_validator_value;
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
-use super::{Error, ModelManagerHandle, Result, throw, wire_error};
+use super::{Error, JsResult, ModelManagerHandle, Result, throw, wire_error};
 
 /// The value is valid.
 const CODE_VALID: u32 = 0;
@@ -254,7 +254,7 @@ impl ModelManagerHandle {
         epoch: u32,
         root_id: &str,
         flags: u32,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         if epoch != self.epoch_low() {
             return Ok(JsValue::from(CODE_STALE));
         }

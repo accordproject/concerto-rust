@@ -18,7 +18,7 @@ pub(crate) fn unknown(node: Node) -> Error {
 /// element, which the view parses once (spike REPORT §3: JSON text beats
 /// serde-wasm-bindgen and per-field getters for trees).
 pub(crate) fn snapshot(value: &Value) -> Result<String> {
-    serde_json::to_string(value).map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+    serde_json::to_string(value).map_err(internal)
 }
 
 /// A `ModelManager`, exported to JS as one object (spike "Input to P1-04",
@@ -74,7 +74,7 @@ impl ModelManagerHandle {
 impl ModelManagerHandle {
     /// A fresh manager with the `concerto@1.0.0` system model loaded.
     #[wasm_bindgen(constructor)]
-    pub fn new() -> std::result::Result<ModelManagerHandle, JsValue> {
+    pub fn new() -> JsResult<ModelManagerHandle> {
         run(|| {
             Ok(Self {
                 manager: ModelManager::new()?,
@@ -105,20 +105,13 @@ impl ModelManagerHandle {
     /// `JSON.stringify(ast)`: spike REPORT §3), and returns the handle of its
     /// model file. Malformed JSON throws a JS `SyntaxError`.
     #[wasm_bindgen(js_name = addModel)]
-    pub fn add_model(
-        &mut self,
-        ast: &str,
-        file_name: Option<String>,
-    ) -> std::result::Result<u32, JsValue> {
+    pub fn add_model(&mut self, ast: &str, file_name: Option<String>) -> JsResult<u32> {
         self.bump_epoch();
         run(|| {
             let model_file = model_file_from_text(ast, None, file_name)?;
             let namespace = model_file.namespace().to_string();
             self.manager.add_model_file(model_file)?;
-            self.manager
-                .model_file_id(&namespace)
-                .map(ModelFileId::index)
-                .ok_or_else(|| CoreError::type_not_found(namespace.to_string()).into())
+            self.file_handle(&namespace)
         })
     }
 
@@ -136,10 +129,7 @@ impl ModelManagerHandle {
     /// `validationOptions.missingDecorator || ...` truthiness TS uses when it
     /// reads these fields elsewhere.
     #[wasm_bindgen(js_name = setDecoratorValidation)]
-    pub fn set_decorator_validation(
-        &mut self,
-        options: &JsValue,
-    ) -> std::result::Result<(), JsValue> {
+    pub fn set_decorator_validation(&mut self, options: &JsValue) -> JsResult<()> {
         self.bump_epoch();
         run(|| {
             let missing_decorator = level_option(options, "missingDecorator")?;
@@ -162,11 +152,10 @@ impl ModelManagerHandle {
     /// `MetamodelException`. The TS caller already holds the `ModelFile`.
     /// Additive; malformed JSON throws a JS `SyntaxError`.
     #[wasm_bindgen(js_name = validateAstValue)]
-    pub fn validate_ast_value(&mut self, ast: &str) -> std::result::Result<(), JsValue> {
+    pub fn validate_ast_value(&mut self, ast: &str) -> JsResult<()> {
         self.bump_epoch();
         run(|| {
-            let value: Value = serde_json::from_str(ast)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+            let value = parse_json(ast)?;
             Ok(self.manager.validate_ast_value(&value)?)
         })
     }
@@ -228,7 +217,7 @@ impl ModelManagerHandle {
     /// `{namespace, version, fileName, ast}`. `fileName` is `null` when the
     /// file has none; `ast` is the AST as it was loaded (OD-3).
     #[wasm_bindgen(js_name = modelFileSnapshot)]
-    pub fn model_file_snapshot(&self, model_file: u32) -> std::result::Result<String, JsValue> {
+    pub fn model_file_snapshot(&self, model_file: u32) -> JsResult<String> {
         run(|| {
             let id = ModelFileId::from_index(model_file);
             let file = self
@@ -255,11 +244,10 @@ impl ModelManagerHandle {
         json_text: &str,
         options_text: &str,
         env: JsValue,
-    ) -> std::result::Result<String, JsValue> {
+    ) -> JsResult<String> {
         run(|| {
             let resource = self.build_from_json(WireDoc::Text(json_text), options_text, env)?;
-            serde_json::to_string(&CompactInstanceOut(&resource))
-                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+            serde_json::to_string(&CompactInstanceOut(&resource)).map_err(internal)
         })
     }
 
@@ -268,11 +256,7 @@ impl ModelManagerHandle {
     /// resource's `"typed"` wire encoding (module doc), `options_text` its
     /// merged options or `"null"`.
     #[wasm_bindgen(js_name = serializerToJson)]
-    pub fn serializer_to_json(
-        &self,
-        wire_text: &str,
-        options_text: &str,
-    ) -> std::result::Result<String, JsValue> {
+    pub fn serializer_to_json(&self, wire_text: &str, options_text: &str) -> JsResult<String> {
         run(|| {
             // P5-101 (D-3): one pass each way ([`parse_wire`], [`WireOut`])
             // and the serializer reused while the options text is unchanged
@@ -288,11 +272,7 @@ impl ModelManagerHandle {
     /// object: the same result and the same errors as its JSON text gives.
     /// Additive.
     #[wasm_bindgen(js_name = serializerToJsonBytes)]
-    pub fn serializer_to_json_bytes(
-        &self,
-        bytes: &[u8],
-        options_text: &str,
-    ) -> std::result::Result<String, JsValue> {
+    pub fn serializer_to_json_bytes(&self, bytes: &[u8], options_text: &str) -> JsResult<String> {
         run(|| self.to_json_text(WireDoc::Bytes(bytes), options_text))
     }
 
@@ -307,11 +287,10 @@ impl ModelManagerHandle {
         bytes: &[u8],
         options_text: &str,
         env: JsValue,
-    ) -> std::result::Result<String, JsValue> {
+    ) -> JsResult<String> {
         run(|| {
             let resource = self.build_from_json(WireDoc::Bytes(bytes), options_text, env)?;
-            serde_json::to_string(&CompactInstanceOut(&resource))
-                .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+            serde_json::to_string(&CompactInstanceOut(&resource)).map_err(internal)
         })
     }
 
@@ -342,7 +321,7 @@ impl ModelManagerHandle {
         definitions: Option<String>,
         file_name: Option<String>,
         validate: bool,
-    ) -> std::result::Result<u32, JsValue> {
+    ) -> JsResult<u32> {
         self.bump_epoch();
         run(|| {
             // P5-06c: the file is built once, through the typed AST path,
@@ -361,10 +340,7 @@ impl ModelManagerHandle {
                     .map_err(|(err, _)| err.into());
             }
             self.manager.add_model_file(model_file)?;
-            self.manager
-                .model_file_id(&namespace)
-                .map(ModelFileId::index)
-                .ok_or_else(|| CoreError::type_not_found(namespace).into())
+            self.file_handle(&namespace)
         })
     }
 
@@ -388,7 +364,7 @@ impl ModelManagerHandle {
         definitions: Option<String>,
         file_name: Option<String>,
         flags: u32,
-    ) -> std::result::Result<String, JsValue> {
+    ) -> JsResult<String> {
         let checked = flags & STAGE_CHECKED != 0;
         if flags & STAGE_COMPACT != 0 {
             return run(|| {
@@ -407,10 +383,7 @@ impl ModelManagerHandle {
             } else {
                 ModelFile::from_json_text_with_imports(text, definitions, file_name)
             };
-            self.stage_loaded_flat(
-                loaded
-                    .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??,
-            )
+            self.stage_loaded_flat(loaded.map_err(json_syntax)??)
         })
     }
 
@@ -423,8 +396,7 @@ impl ModelManagerHandle {
     ) -> Result<String> {
         let (file, imports) = loaded;
         let header = staged_header_from_parts(file.namespace(), imports.as_ref());
-        let text = flat_staged_text(self.staged.next_id(), header.as_ref())
-            .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))?;
+        let text = flat_staged_text(self.staged.next_id(), header.as_ref()).map_err(internal)?;
         self.staged.insert(file);
         Ok(text)
     }
@@ -437,10 +409,7 @@ impl ModelManagerHandle {
     /// if the stage id is unknown (evicted, or already consumed); the caller
     /// then falls back to [`Self::add_model_with_definitions`].
     #[wasm_bindgen(js_name = commitStagedModelFile)]
-    pub fn commit_staged_model_file(
-        &mut self,
-        stage: u32,
-    ) -> std::result::Result<Option<u32>, JsValue> {
+    pub fn commit_staged_model_file(&mut self, stage: u32) -> JsResult<Option<u32>> {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
@@ -473,10 +442,7 @@ impl ModelManagerHandle {
     /// it left staged, as the same commits one by one would leave them.
     /// Additive.
     #[wasm_bindgen(js_name = commitStagedModelFiles)]
-    pub fn commit_staged_model_files(
-        &mut self,
-        stages: &mut [u32],
-    ) -> std::result::Result<bool, JsValue> {
+    pub fn commit_staged_model_files(&mut self, stages: &mut [u32]) -> JsResult<bool> {
         if stages
             .iter()
             .any(|stage| !self.staged.files.contains_key(stage))
@@ -518,10 +484,7 @@ impl ModelManagerHandle {
     /// consumed); the caller then falls back to [`Self::update_model_file`].
     /// Additive.
     #[wasm_bindgen(js_name = updateStagedModelFile)]
-    pub fn update_staged_model_file(
-        &mut self,
-        stage: u32,
-    ) -> std::result::Result<Option<u32>, JsValue> {
+    pub fn update_staged_model_file(&mut self, stage: u32) -> JsResult<Option<u32>> {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
@@ -532,11 +495,7 @@ impl ModelManagerHandle {
             let namespace = model_file.namespace().to_string();
             let updated = self.manager.update_model_file(model_file, false)?;
             self.manager.adopt(updated);
-            self.manager
-                .model_file_id(&namespace)
-                .map(ModelFileId::index)
-                .map(Some)
-                .ok_or_else(|| CoreError::type_not_found(namespace).into())
+            self.file_handle(&namespace).map(Some)
         })
     }
 
@@ -546,7 +505,7 @@ impl ModelManagerHandle {
     /// before); throws what [`Self::validate_ast_value`] throws. The file
     /// stays staged. Additive.
     #[wasm_bindgen(js_name = validateAstStaged)]
-    pub fn validate_ast_staged(&mut self, stage: u32) -> std::result::Result<bool, JsValue> {
+    pub fn validate_ast_staged(&mut self, stage: u32) -> JsResult<bool> {
         let Some(file) = self.staged.files.get(&stage).cloned() else {
             return Ok(false);
         };
@@ -598,7 +557,7 @@ impl ModelManagerHandle {
         &mut self,
         stage: u32,
         metamodel: Option<bool>,
-    ) -> std::result::Result<Option<u32>, JsValue> {
+    ) -> JsResult<Option<u32>> {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
@@ -647,11 +606,11 @@ impl ModelManagerHandle {
             }
             Err((err, Some(file))) => {
                 self.staged.files.insert(stage, file);
-                run(|| Err(err.into()))
+                Err(throw(err.into(), None))
             }
             Err((err, None)) => {
                 self.bump_epoch();
-                run(|| Err(err.into()))
+                Err(throw(err.into(), None))
             }
         }
     }
@@ -662,7 +621,7 @@ impl ModelManagerHandle {
     /// [`Self::model_file_validate_detached`]. Throws the first problem
     /// found, as that binding does. The staged file stays staged.
     #[wasm_bindgen(js_name = modelFileValidateStaged)]
-    pub fn model_file_validate_staged(&self, stage: u32) -> std::result::Result<bool, JsValue> {
+    pub fn model_file_validate_staged(&self, stage: u32) -> JsResult<bool> {
         let Some(file) = self.staged.files.get(&stage) else {
             return Ok(false);
         };
@@ -685,17 +644,13 @@ impl ModelManagerHandle {
     /// every model the view has mirrored in with [`Self::add_model`]/
     /// [`Self::add_model_with_definitions`].
     #[wasm_bindgen(js_name = resolveType)]
-    pub fn resolve_type(
-        &self,
-        context: &str,
-        type_name: &str,
-    ) -> std::result::Result<String, JsValue> {
+    pub fn resolve_type(&self, context: &str, type_name: &str) -> JsResult<String> {
         run(|| Ok(self.manager.resolve_type(context, type_name)?))
     }
 
     /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)` (P4-08).
     #[wasm_bindgen(js_name = derivesFrom)]
-    pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> std::result::Result<bool, JsValue> {
+    pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> JsResult<bool> {
         run(|| Ok(self.manager.derives_from(fqt1, fqt2)?))
     }
 
@@ -730,23 +685,20 @@ impl ModelManagerHandle {
         definitions: Option<String>,
         file_name: Option<String>,
         validate: bool,
-    ) -> std::result::Result<u32, JsValue> {
+    ) -> JsResult<u32> {
         self.bump_epoch();
         run(|| {
             let model_file = model_file_from_text(ast, definitions, file_name)?;
             let namespace = model_file.namespace().to_string();
             let updated = self.manager.update_model_file(model_file, validate)?;
             self.manager.adopt(updated);
-            self.manager
-                .model_file_id(&namespace)
-                .map(ModelFileId::index)
-                .ok_or_else(|| CoreError::type_not_found(namespace).into())
+            self.file_handle(&namespace)
         })
     }
 
     /// Mirrors TS `BaseModelManager.deleteModelFile(namespace)` (P4-08).
     #[wasm_bindgen(js_name = deleteModelFile)]
-    pub fn delete_model_file(&mut self, namespace: &str) -> std::result::Result<(), JsValue> {
+    pub fn delete_model_file(&mut self, namespace: &str) -> JsResult<()> {
         self.bump_epoch();
         run(|| {
             let deleted = self.manager.delete_model_file(namespace)?;
@@ -771,7 +723,7 @@ impl ModelManagerHandle {
     /// imports (the built-in system import included for a non-system file),
     /// as `ModelFile::get_imports` already resolves them.
     #[wasm_bindgen(js_name = modelFileGetImports)]
-    pub fn model_file_get_imports(&self, model_file: u32) -> std::result::Result<Array, JsValue> {
+    pub fn model_file_get_imports(&self, model_file: u32) -> JsResult<Array> {
         run(|| {
             Ok(self
                 .require_file(model_file)?
@@ -784,11 +736,7 @@ impl ModelManagerHandle {
 
     /// TS: `ModelFile.isLocalType`.
     #[wasm_bindgen(js_name = modelFileIsLocalType)]
-    pub fn model_file_is_local_type(
-        &self,
-        model_file: u32,
-        type_name: &str,
-    ) -> std::result::Result<bool, JsValue> {
+    pub fn model_file_is_local_type(&self, model_file: u32, type_name: &str) -> JsResult<bool> {
         run(|| Ok(self.require_file(model_file)?.is_local_type(type_name)))
     }
 
@@ -803,7 +751,7 @@ impl ModelManagerHandle {
         &self,
         model_file: u32,
         type_name: &str,
-    ) -> std::result::Result<Option<String>, JsValue> {
+    ) -> JsResult<Option<String>> {
         run(|| {
             self.require_file(model_file)?;
             Ok(self
@@ -820,7 +768,7 @@ impl ModelManagerHandle {
         &self,
         model_file: u32,
         type_name: &str,
-    ) -> std::result::Result<Option<String>, JsValue> {
+    ) -> JsResult<Option<String>> {
         run(|| {
             Ok(self
                 .require_file(model_file)?
@@ -841,7 +789,7 @@ impl ModelManagerHandle {
         type_name: &str,
         file_location: JsValue,
         view: JsValue,
-    ) -> std::result::Result<(), JsValue> {
+    ) -> JsResult<()> {
         let body = || -> Result<()> {
             self.require_file(model_file)?;
             let location = to_json(&file_location)?;
@@ -852,7 +800,7 @@ impl ModelManagerHandle {
                 location,
             )?)
         };
-        body().map_err(|e| throw(e, Some(&view)))
+        run_naming(|| view.clone(), body)
     }
 
     /// TS: `BaseModelManager.getType(qualifiedName)` (P5-11,
@@ -861,7 +809,7 @@ impl ModelManagerHandle {
     /// of the declaration found, or the `TypeNotFoundException` TS throws.
     /// The view maps the name to its own declaration view. Additive.
     #[wasm_bindgen(js_name = getTypeName)]
-    pub fn get_type_name(&self, qualified_name: &str) -> std::result::Result<String, JsValue> {
+    pub fn get_type_name(&self, qualified_name: &str) -> JsResult<String> {
         run(|| Ok(self.manager.type_declaration_name(qualified_name)?))
     }
 
@@ -872,10 +820,12 @@ impl ModelManagerHandle {
     /// naming the JS `ModelFile` it was found in, as that file's own
     /// `validate()` does. Additive.
     #[wasm_bindgen(js_name = validateModelFiles)]
-    pub fn validate_model_files(&self, model_files: &JsValue) -> std::result::Result<(), JsValue> {
+    pub fn validate_model_files(&self, model_files: &JsValue) -> JsResult<()> {
         self.manager
             .validate_models_naming_file()
-            .map_err(|(namespace, err)| throw_naming_file(err.into(), model_files, &namespace))
+            .map_err(|(namespace, err)| {
+                throw_naming_file(err.into(), model_files, Some(&namespace))
+            })
     }
 
     /// TS: `BaseModelManager._throwAlreadyExists(modelFile)` (P5-11,
@@ -885,11 +835,7 @@ impl ModelManagerHandle {
     /// ([`ModelManager::check_namespace_available`]). Returns normally only
     /// when nothing is registered under `namespace`. Additive.
     #[wasm_bindgen(js_name = throwAlreadyExists)]
-    pub fn throw_already_exists(
-        &self,
-        namespace: &str,
-        file_name: Option<String>,
-    ) -> std::result::Result<(), JsValue> {
+    pub fn throw_already_exists(&self, namespace: &str, file_name: Option<String>) -> JsResult<()> {
         run(|| {
             Ok(self
                 .manager
@@ -909,15 +855,10 @@ impl ModelManagerHandle {
     /// applied (namespace to JS `ModelFile`): a validation failure is thrown
     /// naming the JS `ModelFile` it was found in. Additive.
     #[wasm_bindgen(js_name = updateExternalModels)]
-    pub fn update_external_models(
-        &mut self,
-        sources: &str,
-        model_files: &JsValue,
-    ) -> std::result::Result<(), JsValue> {
+    pub fn update_external_models(&mut self, sources: &str, model_files: &JsValue) -> JsResult<()> {
         self.bump_epoch();
-        let parsed = (|| -> Result<Vec<ModelFileSource>> {
-            let value: Value = serde_json::from_str(sources)
-                .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let parsed = run(|| -> Result<Vec<ModelFileSource>> {
+            let value = parse_json(sources)?;
             let text = |source: &Value, key: &str| {
                 source.get(key).and_then(Value::as_str).map(str::to_string)
             };
@@ -933,14 +874,12 @@ impl ModelManagerHandle {
                         .collect()
                 })
                 .unwrap_or_default())
-        })()
-        .map_err(|e| throw(e, None))?;
+        })?;
         self.manager
             .update_external_models_naming_file(parsed)
             .map(|_| ())
-            .map_err(|(namespace, err)| match namespace {
-                Some(namespace) => throw_naming_file(err.into(), model_files, &namespace),
-                None => throw(err.into(), None),
+            .map_err(|(namespace, err)| {
+                throw_naming_file(err.into(), model_files, namespace.as_deref())
             })
     }
 
@@ -958,7 +897,7 @@ impl ModelManagerHandle {
         &mut self,
         stages: Vec<u32>,
         model_files: &JsValue,
-    ) -> std::result::Result<bool, JsValue> {
+    ) -> JsResult<bool> {
         if !stages
             .iter()
             .all(|stage| self.staged.files.contains_key(stage))
@@ -976,9 +915,8 @@ impl ModelManagerHandle {
         self.manager
             .update_external_model_files_naming_file(files)
             .map(|_| true)
-            .map_err(|(namespace, err)| match namespace {
-                Some(namespace) => throw_naming_file(err.into(), model_files, &namespace),
-                None => throw(err.into(), None),
+            .map_err(|(namespace, err)| {
+                throw_naming_file(err.into(), model_files, namespace.as_deref())
             })
     }
 
@@ -987,7 +925,7 @@ impl ModelManagerHandle {
     /// `getModelManager()` is this handle (`ModelManager::validate_model_file`).
     /// Throws the first problem found.
     #[wasm_bindgen(js_name = modelFileValidate)]
-    pub fn model_file_validate(&self, model_file: u32) -> std::result::Result<(), JsValue> {
+    pub fn model_file_validate(&self, model_file: u32) -> JsResult<()> {
         run(|| {
             let file = self.require_file(model_file)?;
             Ok(self.manager.validate_model_file(file)?)
@@ -1008,7 +946,7 @@ impl ModelManagerHandle {
         ast: &str,
         definitions: Option<String>,
         file_name: Option<String>,
-    ) -> std::result::Result<(), JsValue> {
+    ) -> JsResult<()> {
         run(|| {
             let file = model_file_from_text(ast, definitions, file_name)?;
             Ok(self.manager.validate_detached_model_file(&file)?)
@@ -1042,7 +980,7 @@ impl ModelManagerHandle {
         model_file: u32,
         predicate: Function,
         target: &mut ModelManagerHandle,
-    ) -> std::result::Result<Option<u32>, JsValue> {
+    ) -> JsResult<Option<u32>> {
         target.bump_epoch();
         run(|| {
             let file = self.require_file(model_file)?;
@@ -1107,12 +1045,7 @@ impl ModelManagerHandle {
             target
                 .manager
                 .add_model_with_definitions(&ast, None, new_file_name)?;
-            target
-                .manager
-                .model_file_id(&ns)
-                .map(ModelFileId::index)
-                .map(Some)
-                .ok_or_else(|| CoreError::type_not_found(ns.clone()).into())
+            target.file_handle(&ns).map(Some)
         })
     }
 }
@@ -1146,7 +1079,7 @@ impl ModelManagerHandle {
         model_file: u32,
         predicate: Function,
         target: &mut ModelManagerHandle,
-    ) -> std::result::Result<Option<String>, JsValue> {
+    ) -> JsResult<Option<String>> {
         run(|| {
             let id = ModelFileId::from_index(model_file);
             self.require_file(model_file)?;
@@ -1233,6 +1166,16 @@ impl ModelManagerHandle {
 }
 
 impl ModelManagerHandle {
+    /// The handle of the model file registered under `namespace`, or the
+    /// `TypeNotFound` error naming it (P5-104, D-8): read back after a
+    /// binding registers a file.
+    pub(crate) fn file_handle(&self, namespace: &str) -> Result<u32> {
+        self.manager
+            .model_file_id(namespace)
+            .map(ModelFileId::index)
+            .ok_or_else(|| CoreError::type_not_found(namespace.to_string()).into())
+    }
+
     /// A model file, by its handle; the same [`unknown`] `TypeNotFound` every
     /// other by-handle lookup here throws for one that names nothing.
     pub(crate) fn require_file(&self, model_file: u32) -> Result<&concerto_core::ModelFile> {

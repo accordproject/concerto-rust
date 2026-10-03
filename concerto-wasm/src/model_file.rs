@@ -37,7 +37,7 @@ pub(crate) fn enforce_import_versioning(imp: &JsValue) -> Result<()> {
 /// TS: `ModelFile.enforceImportVersioning(imp)` (P5-11,
 /// accordproject/concerto-rust#287), [`enforce_import_versioning`]. Additive.
 #[wasm_bindgen(js_name = modelFileEnforceImportVersioning)]
-pub fn model_file_enforce_import_versioning(imp: JsValue) -> std::result::Result<(), JsValue> {
+pub fn model_file_enforce_import_versioning(imp: JsValue) -> JsResult<()> {
     run(|| enforce_import_versioning(&imp))
 }
 
@@ -50,7 +50,7 @@ pub fn model_file_enforce_import_versioning(imp: JsValue) -> std::result::Result
 /// node-semver can parse (`satisfies` and `minSatisfying` both give up on
 /// it), so it is always that `Error`. Additive.
 #[wasm_bindgen(js_name = modelFileIsCompatibleVersion)]
-pub fn model_file_is_compatible_version(view: JsValue) -> std::result::Result<(), JsValue> {
+pub fn model_file_is_compatible_version(view: JsValue) -> JsResult<()> {
     use concerto_core::introspect::model_file::{
         compatible_concerto_version, incompatible_concerto_version,
     };
@@ -82,7 +82,7 @@ pub fn model_file_is_compatible_version(view: JsValue) -> std::result::Result<()
 /// TS's own property reads and calls raise on a malformed AST keep theirs,
 /// since this runs over the same JS values in the same order. Additive.
 #[wasm_bindgen(js_name = modelFileFromAstHeader)]
-pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::Result<(), JsValue> {
+pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
         let namespace = get(&ast, "namespace")?;
         // BC-02 (R1, P5-50): an unversioned namespace keeps this header's
@@ -226,7 +226,7 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
         }
         Ok(())
     };
-    body().map_err(|e| throw(e, Some(&view)))
+    run_naming(|| view.clone(), body)
 }
 
 /// P5-101 (D-7, accordproject/concerto-rust#455): the strict AST shape check
@@ -236,10 +236,9 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> std::result::R
 /// shape; malformed JSON throws a JS `SyntaxError`. Additive: the handle
 /// method stays, and calls this.
 #[wasm_bindgen(js_name = checkAstShape)]
-pub fn check_ast_shape(ast: &str) -> std::result::Result<(), JsValue> {
+pub fn check_ast_shape(ast: &str) -> JsResult<()> {
     run(|| {
-        let value: Value = serde_json::from_str(ast)
-            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let value = parse_json(ast)?;
         Ok(concerto_core::instance::check_ast_shape(&value)?)
     })
 }

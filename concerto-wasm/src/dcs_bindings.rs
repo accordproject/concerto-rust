@@ -134,10 +134,7 @@ impl serde::Serialize for ModelAstsView<'_> {
 /// TS: `DecoratorManager.falsyOrEqual`. `values` is always a plain string
 /// array (every call site passes one).
 #[wasm_bindgen(js_name = decoratorManagerFalsyOrEqual)]
-pub fn decorator_manager_falsy_or_equal(
-    test: JsValue,
-    values: JsValue,
-) -> std::result::Result<bool, JsValue> {
+pub fn decorator_manager_falsy_or_equal(test: JsValue, values: JsValue) -> JsResult<bool> {
     run(|| {
         let test_json = to_json(&test)?;
         let values_json = to_json(&values)?.unwrap_or(Value::Array(Vec::new()));
@@ -160,9 +157,7 @@ pub fn decorator_manager_falsy_or_equal(
 /// back onto its own variable exactly as the TS body's `return
 /// decoratorCommandSet` does.
 #[wasm_bindgen(js_name = decoratorManagerMigrateTo)]
-pub fn decorator_manager_migrate_to(
-    decorator_command_set: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn decorator_manager_migrate_to(decorator_command_set: JsValue) -> JsResult<JsValue> {
     run(|| {
         let mut value = to_json(&decorator_command_set)?.unwrap_or(Value::Null);
         dcs::migrate_to(&mut value)?;
@@ -177,7 +172,7 @@ pub fn decorator_manager_migrate_to(
 pub fn decorator_manager_execute_property_command(
     property: JsValue,
     command: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+) -> JsResult<JsValue> {
     run(|| {
         let mut prop = to_json(&property)?.unwrap_or(Value::Null);
         let cmd = to_json(&command)?.unwrap_or(Value::Null);
@@ -277,7 +272,7 @@ impl DcsManagerHandle {
     /// Loads `models` (a JSON array of model ASTs, none of them the system
     /// ones), throwing what `new ModelManager().fromAst` throws for them.
     #[wasm_bindgen(constructor)]
-    pub fn new(models: JsValue) -> std::result::Result<DcsManagerHandle, JsValue> {
+    pub fn new(models: JsValue) -> JsResult<DcsManagerHandle> {
         run(|| {
             let models_json = to_json(&models)?.unwrap_or(Value::Array(Vec::new()));
             let manager = model_manager_from_owned_asts(models_json)?;
@@ -308,7 +303,7 @@ impl DcsManagerHandle {
         target: &mut ModelManagerHandle,
         decorator_command_sets: JsValue,
         options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         self.manager
             .set_decorator_validation(target.manager.decorator_validation().clone());
         run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
@@ -325,8 +320,8 @@ impl DcsManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
         action: u32,
-    ) -> std::result::Result<JsValue, JsValue> {
-        let action = extract_action(action).map_err(|e| throw(e, None))?;
+    ) -> JsResult<JsValue> {
+        let action = run(|| extract_action(action))?;
         self.extract(target, &options, action)
     }
 }
@@ -343,7 +338,7 @@ impl ModelManagerHandle {
     /// [`dcs::validate_against`] throws what [`dcs::validate`] throws at the
     /// same step. Never changes the manager.
     #[wasm_bindgen(js_name = dcsValidate)]
-    pub fn dcs_validate(&self, decorator_command_set: JsValue) -> std::result::Result<(), JsValue> {
+    pub fn dcs_validate(&self, decorator_command_set: JsValue) -> JsResult<()> {
         run(|| {
             let command_set = to_json(&decorator_command_set)?.unwrap_or(Value::Null);
             dcs::validate_against(&self.manager, &command_set)?;
@@ -378,7 +373,7 @@ impl DcsManagerHandle {
         target: &mut ModelManagerHandle,
         options: &JsValue,
         action: dcs::extractor::Action,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         run(|| staged_extract(&self.manager, target, options, action))
     }
 }
@@ -513,7 +508,7 @@ impl ModelManagerHandle {
         target: &mut ModelManagerHandle,
         decorator_command_sets: JsValue,
         options: JsValue,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         let own = self.manager.decorator_validation().clone();
         self.manager
             .set_decorator_validation(target.manager.decorator_validation().clone());
@@ -533,7 +528,7 @@ impl ModelManagerHandle {
         target: &mut ModelManagerHandle,
         options: JsValue,
         action: u32,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         run(|| self.memo_extract(target, &options, extract_action(action)?))
     }
 }

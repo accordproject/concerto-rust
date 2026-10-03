@@ -187,15 +187,13 @@ pub(crate) fn model_file_from_text(
     definitions: Option<String>,
     file_name: Option<String>,
 ) -> Result<ModelFile> {
-    Ok(ModelFile::from_json_text(ast, definitions, file_name)
-        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))??)
+    Ok(ModelFile::from_json_text(ast, definitions, file_name).map_err(json_syntax)??)
 }
 
 /// The options object a serializer call's `optionsText` decodes to
 /// (`JSON.stringify`d by the view, `"null"` for no options).
 pub(crate) fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
-    let value: Value = serde_json::from_str(text)
-        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+    let value = parse_json(text)?;
     match value {
         Value::Null => Ok(None),
         Value::Object(map) => {
@@ -546,7 +544,7 @@ pub(crate) fn parse_wire(text: &str) -> Result<CoreValue> {
     let value = WireSeed { error: &error }
         .deserialize(&mut deserializer)
         .and_then(|value| deserializer.end().map(|()| value))
-        .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        .map_err(json_syntax)?;
     match error.into_inner() {
         Some(error) => Err(error),
         None => Ok(value),
@@ -901,8 +899,7 @@ impl ModelManagerHandle {
         let result = with_serializer_options(options_text, |entry| {
             entry.serializer.to_json(&self.manager, &resource, None)
         })??;
-        serde_json::to_string(&WireOut::<false>(&result))
-            .map_err(|e| Error::Js(js_sys::Error::new(&e.to_string()).into()))
+        serde_json::to_string(&WireOut::<false>(&result)).map_err(internal)
     }
 
     /// `err`, an error `serializerFromJsonCompact` raised for the document
@@ -958,10 +955,7 @@ impl ModelManagerHandle {
 /// D-3); an unknown `preset` is a plain `Error`. Additive: no other binding
 /// changes.
 #[wasm_bindgen(js_name = validateMetaModelInstance)]
-pub fn validate_meta_model_instance(
-    json_text: &str,
-    preset: &str,
-) -> std::result::Result<(), JsValue> {
+pub fn validate_meta_model_instance(json_text: &str, preset: &str) -> JsResult<()> {
     use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
     run(|| {
         let preset = match preset {
@@ -977,8 +971,7 @@ pub fn validate_meta_model_instance(
                 .into());
             }
         };
-        let wire = serde_json::from_str::<Value>(json_text)
-            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
+        let wire = serde_json::from_str::<Value>(json_text).map_err(json_syntax)?;
         let options = preset.from_json_options();
         let serializer = Serializer::new(true, true, None)?;
         let mut outcome = Ok(String::new());

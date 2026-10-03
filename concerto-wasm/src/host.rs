@@ -25,6 +25,13 @@ pub fn set_host(error_factory: Function) {
 
 /// What a binding can fail with: a JS exception raised by a callback (passed
 /// through unchanged), or a core error to map.
+///
+/// The rule for errors raised here rather than by the error factory
+/// (P5-104, D-8): malformed JSON text is the JS `SyntaxError` `JSON.parse`
+/// throws ([`json_syntax`]); bytes not in the encoding a binding reads,
+/// which the TS side never writes, are a bare JS `TypeError` ([`utf8_text`],
+/// [`compact_layout_error`]); and a failure no input can cause is a plain
+/// JS `Error` ([`internal`]). Everything else goes through [`throw`].
 pub(crate) enum Error {
     Js(JsValue),
     Contract(Box<ContractError>),
@@ -57,6 +64,28 @@ impl From<CoreError> for Error {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
+
+/// What a binding returns to JS: its value, or the exception to throw
+/// (P5-104, D-8).
+pub(crate) type JsResult<T> = std::result::Result<T, JsValue>;
+
+/// The JS `SyntaxError` that `JSON.parse` throws for malformed JSON text
+/// (P5-104, D-8).
+pub(crate) fn json_syntax(e: serde_json::Error) -> Error {
+    Error::Js(js_sys::SyntaxError::new(&e.to_string()).into())
+}
+
+/// JSON text a binding was given, parsed; malformed text is the
+/// [`json_syntax`] error (P5-104, D-8).
+pub(crate) fn parse_json(text: &str) -> Result<Value> {
+    serde_json::from_str(text).map_err(json_syntax)
+}
+
+/// A plain JS `Error` for a failure no input can cause, such as serializing
+/// a value serde built (P5-104, D-8).
+pub(crate) fn internal(e: impl std::fmt::Display) -> Error {
+    Error::Js(js_sys::Error::new(&e.to_string()).into())
+}
 
 pub(crate) fn kind_name(kind: ErrorKind) -> &'static str {
     match kind {
@@ -170,13 +199,19 @@ pub(crate) fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
 /// accordproject/concerto-rust#287): that file is attached exactly when
 /// concerto-core names a file for the error (`needsModelFile`), as
 /// `ModelFile.validate()` re-wraps the error of its own Rust call with
-/// `this` (modelfile.ts).
-pub(crate) fn throw_naming_file(err: Error, model_files: &JsValue, namespace: &str) -> JsValue {
+/// `this` (modelfile.ts). With no `namespace`, it is [`throw`] naming no
+/// file.
+pub(crate) fn throw_naming_file(
+    err: Error,
+    model_files: &JsValue,
+    namespace: Option<&str>,
+) -> JsValue {
     let names_file = matches!(&err, Error::Contract(c) if matches!(c.model_file, Some(Some(_))));
-    let model_file = if names_file && model_files.is_object() {
-        Reflect::get(model_files, &JsValue::from_str(namespace)).ok()
-    } else {
-        None
+    let model_file = match namespace {
+        Some(namespace) if names_file && model_files.is_object() => {
+            Reflect::get(model_files, &JsValue::from_str(namespace)).ok()
+        }
+        _ => None,
     };
     throw(err, model_file.as_ref().filter(|mf| !nullish(mf)))
 }
@@ -184,7 +219,7 @@ pub(crate) fn throw_naming_file(err: Error, model_files: &JsValue, namespace: &s
 /// P5-76: text a binding was given as UTF-8 bytes (a JS `TextEncoder`'s
 /// output); a `TypeError` for bytes that are not UTF-8, which a
 /// `TextEncoder` never writes.
-pub(crate) fn utf8_text(bytes: &[u8]) -> std::result::Result<&str, JsValue> {
+pub(crate) fn utf8_text(bytes: &[u8]) -> JsResult<&str> {
     std::str::from_utf8(bytes)
         .map_err(|e| js_sys::TypeError::new(&format!("the text is not UTF-8: {e}")).into())
 }
@@ -197,7 +232,18 @@ pub(crate) fn compact_layout_error(e: serde_json::Error) -> Error {
     Error::Js(js_sys::TypeError::new(&e.to_string()).into())
 }
 
-/// Runs a binding body and maps its error.
-pub(crate) fn run<T>(body: impl FnOnce() -> Result<T>) -> std::result::Result<T, JsValue> {
+/// Runs a binding body and maps its error: the one way a binding turns a
+/// [`Result`] into a [`JsResult`] (P5-104, D-8), with [`run_naming`].
+pub(crate) fn run<T>(body: impl FnOnce() -> Result<T>) -> JsResult<T> {
     body().map_err(|e| throw(e, None))
+}
+
+/// [`run`] for a binding whose error may name a JS model file:
+/// `model_file` is read only when the body fails, and attached as
+/// [`throw`] attaches it.
+pub(crate) fn run_naming<T>(
+    model_file: impl FnOnce() -> JsValue,
+    body: impl FnOnce() -> Result<T>,
+) -> JsResult<T> {
+    body().map_err(|e| throw(e, Some(&model_file())))
 }

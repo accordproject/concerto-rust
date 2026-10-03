@@ -14,7 +14,7 @@ use super::*;
 /// `{kind: "StringValidator"}` (the view builds the TS `StringValidator`
 /// until P2-02 ports it).
 #[wasm_bindgen(js_name = scalarDeclarationProcess)]
-pub fn scalar_declaration_process(declaration: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn scalar_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let ast = to_json(&get(&declaration, "ast")?)?.unwrap_or(Value::Null);
         let fqn = || {
@@ -43,15 +43,15 @@ pub fn scalar_declaration_process(declaration: JsValue) -> std::result::Result<J
             "defaultValue": processed.default_value,
         })))
     };
-    body().map_err(|e| {
-        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: ScalarDeclaration.toString
 #[wasm_bindgen(js_name = scalarDeclarationToString)]
-pub fn scalar_declaration_to_string(declaration: JsValue) -> std::result::Result<String, JsValue> {
+pub fn scalar_declaration_to_string(declaration: JsValue) -> JsResult<String> {
     run(|| {
         let fqn = js_string(&call(
             &declaration,
@@ -114,7 +114,7 @@ pub(crate) fn short_class(ast_class: &str) -> &str {
 ///   `addIdentifierField()` (it pushes a real `Field` view).
 /// - `addTimestampField`: `this.fqn` is the system `Transaction` or `Event`.
 #[wasm_bindgen(js_name = classDeclarationProcess)]
-pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let ast = get(&declaration, "ast")?;
 
@@ -264,10 +264,10 @@ pub fn class_declaration_process(declaration: JsValue) -> std::result::Result<Js
         );
         Ok(result.into())
     };
-    body().map_err(|e| {
-        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: the super-type identifier redeclaration check in
@@ -453,7 +453,7 @@ pub(crate) const RESERVED_SYSTEM_TYPE_KINDS: [&str; 5] = [
 /// the `IllegalModelException` TS throws, naming `this.modelFile` and at
 /// `this.ast.location`; a collaborator's own error propagates unchanged.
 #[wasm_bindgen(js_name = declarationValidate)]
-pub fn declaration_validate(declaration: JsValue) -> std::result::Result<(), JsValue> {
+pub fn declaration_validate(declaration: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
         let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
         let name = call(&declaration, "getName", &[], "this.getName")?;
@@ -500,10 +500,10 @@ pub fn declaration_validate(declaration: JsValue) -> std::result::Result<(), JsV
             ast_location(&declaration)?,
         ))
     };
-    body().map_err(|e| {
-        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: `Declaration.isReservedSystemTypeImport(modelFile, typeName)`
@@ -517,7 +517,7 @@ pub fn declaration_validate(declaration: JsValue) -> std::result::Result<(), JsV
 pub fn declaration_is_reserved_system_type_import(
     model_file: JsValue,
     type_name: JsValue,
-) -> std::result::Result<bool, JsValue> {
+) -> JsResult<bool> {
     run(|| {
         let imported = call(&model_file, "getType", &[type_name], "modelFile.getType")?;
         if !imported.is_truthy() || imported.is_string() {
@@ -551,9 +551,7 @@ pub fn declaration_is_reserved_system_type_import(
 /// caches the result onto `this.superTypeDeclaration` before returning it —
 /// the same field `getSuperTypeDeclaration` reads back as a cache.
 #[wasm_bindgen(js_name = classDeclarationResolveSuperType)]
-pub fn class_declaration_resolve_super_type(
-    declaration: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn class_declaration_resolve_super_type(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let super_type = get(&declaration, "superType")?;
         if !super_type.is_truthy() {
@@ -594,19 +592,17 @@ pub fn class_declaration_resolve_super_type(
         set_property(&declaration, "superTypeDeclaration", &class_decl)?;
         Ok(class_decl)
     };
-    body().map_err(|e| {
-        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: `ClassDeclaration.getSuperTypeDeclaration`: the branch is pure field
 /// reads; the fallback calls back `this._resolveSuperType()` (a collaborator
 /// call — that method resolves and validates the super type).
 #[wasm_bindgen(js_name = classDeclarationGetSuperTypeDeclaration)]
-pub fn class_declaration_get_super_type_declaration(
-    declaration: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn class_declaration_get_super_type_declaration(declaration: JsValue) -> JsResult<JsValue> {
     run(|| {
         if !get(&declaration, "superType")?.is_truthy() {
             return Ok(JsValue::NULL);
@@ -627,9 +623,7 @@ pub fn class_declaration_get_super_type_declaration(
 /// TS: `ClassDeclaration.getSuperType`: `this.getSuperTypeDeclaration()`,
 /// then `getFullyQualifiedName()` on the result if there is one.
 #[wasm_bindgen(js_name = classDeclarationGetSuperType)]
-pub fn class_declaration_get_super_type(
-    declaration: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn class_declaration_get_super_type(declaration: JsValue) -> JsResult<JsValue> {
     run(|| {
         let super_type_decl = call(
             &declaration,
@@ -655,9 +649,7 @@ pub fn class_declaration_get_super_type(
 /// the BC-11 `IllegalModelException` (R1; TS 5.0.0 looped until it ran out
 /// of memory, DV-013).
 #[wasm_bindgen(js_name = classDeclarationGetAllSuperTypeDeclarations)]
-pub fn class_declaration_get_all_super_type_declarations(
-    declaration: JsValue,
-) -> std::result::Result<Array, JsValue> {
+pub fn class_declaration_get_all_super_type_declarations(declaration: JsValue) -> JsResult<Array> {
     run(|| {
         let results = Array::new();
         let mut chain = vec![declaration.clone()];
@@ -693,9 +685,7 @@ pub fn class_declaration_get_all_super_type_declarations(
 /// (and the same host `TypeError` `call` raises for it). A declaration met
 /// again is a cyclic inheritance chain (BC-11, [`SuperWalk`]).
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldName)]
-pub fn class_declaration_get_identifier_field_name(
-    declaration: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn class_declaration_get_identifier_field_name(declaration: JsValue) -> JsResult<JsValue> {
     run(|| {
         let _walk = SuperWalk::enter("getIdentifierFieldName", &declaration)?;
         let id_field = get(&declaration, "idField")?;
@@ -768,9 +758,7 @@ pub fn class_declaration_get_identifier_field_name(
 /// on more than the chain's fields (engine/views.ts keeps the answer only
 /// when it is true).
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldNameWalk)]
-pub fn class_declaration_get_identifier_field_name_walk(
-    declaration: JsValue,
-) -> std::result::Result<Array, JsValue> {
+pub fn class_declaration_get_identifier_field_name_walk(declaration: JsValue) -> JsResult<Array> {
     run(|| {
         let mut cacheable = true;
         let mut chain: Vec<JsValue> = vec![declaration.clone()];
@@ -872,10 +860,7 @@ pub fn class_declaration_get_identifier_field_name_walk(
 /// `getSuperType`/`_resolveSuperType`'s own, separate, truthiness guard
 /// would (accordproject/concerto-rust#219, P5-05 stage-2 T2c).
 #[wasm_bindgen(js_name = classDeclarationGetProperty)]
-pub fn class_declaration_get_property(
-    declaration: JsValue,
-    name: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn class_declaration_get_property(declaration: JsValue, name: JsValue) -> JsResult<JsValue> {
     run(|| {
         let _walk = SuperWalk::enter("getProperty", &declaration)?;
         let own = call(
@@ -908,9 +893,7 @@ pub fn class_declaration_get_property(
 /// Same `this.superType !== null` guard as `getProperty` above (not
 /// truthiness): accordproject/concerto-rust#219.
 #[wasm_bindgen(js_name = classDeclarationGetProperties)]
-pub fn class_declaration_get_properties(
-    declaration: JsValue,
-) -> std::result::Result<Array, JsValue> {
+pub fn class_declaration_get_properties(declaration: JsValue) -> JsResult<Array> {
     let body = || -> Result<Array> {
         let _walk = SuperWalk::enter("getProperties", &declaration)?;
         let own = call(
@@ -945,10 +928,10 @@ pub fn class_declaration_get_properties(
         }
         Ok(result)
     };
-    body().map_err(|e| {
-        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: `ClassDeclaration.getNestedProperty`: walks a dotted property path
@@ -960,7 +943,7 @@ pub fn class_declaration_get_properties(
 pub fn class_declaration_get_nested_property(
     declaration: JsValue,
     property_path: JsValue,
-) -> std::result::Result<JsValue, JsValue> {
+) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let path = js_string(&property_path)?;
         let names: Vec<&str> = path.split('.').collect();
@@ -1031,10 +1014,10 @@ pub fn class_declaration_get_nested_property(
 
         Ok(result)
     };
-    body().map_err(|e| {
-        let model_file = get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,7 +1033,7 @@ pub fn class_declaration_get_nested_property(
 /// `MapKeyType`/`MapValueType` child views itself afterwards, the same way
 /// `propertyProcess` still builds its own `CollectionSizeValidator`.
 #[wasm_bindgen(js_name = mapDeclarationProcess)]
-pub fn map_declaration_process(view: JsValue) -> std::result::Result<(), JsValue> {
+pub fn map_declaration_process(view: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
         let ast = get(&view, "ast")?;
         // TS interpolates the raw `this.ast.name` into a template literal
@@ -1115,10 +1098,10 @@ pub fn map_declaration_process(view: JsValue) -> std::result::Result<(), JsValue
         }
         Ok(())
     };
-    body().map_err(|e| {
-        let model_file = get(&view, "modelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || get(&view, "modelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: MapKeyType.processType. Pure AST logic (module doc); the `$class`
@@ -1127,7 +1110,7 @@ pub fn map_declaration_process(view: JsValue) -> std::result::Result<(), JsValue
 /// the AST to one of these three kinds before a `MapKeyType` is ever built —
 /// the empty-string fallback below is never actually observed.
 #[wasm_bindgen(js_name = mapKeyTypeProcess)]
-pub fn map_key_type_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn map_key_type_process(view: JsValue) -> JsResult<JsValue> {
     run(|| {
         let ast = get(&view, "ast")?;
         let class = get(&ast, "$class")?;
@@ -1154,7 +1137,7 @@ pub fn map_key_type_process(view: JsValue) -> std::result::Result<JsValue, JsVal
 /// scalar-kind check is [`js_is_valid_map_key_scalar`], over that JS
 /// declaration (the arena's own is [`mu::is_valid_map_key_scalar`]).
 #[wasm_bindgen(js_name = mapKeyTypeValidate)]
-pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> {
+pub fn map_key_type_validate(view: JsValue) -> JsResult<()> {
     run(|| {
         let type_name = js_string(&get(&view, "type")?)?;
         if mu::is_primitive_type(&type_name) {
@@ -1194,7 +1177,7 @@ pub fn map_key_type_validate(view: JsValue) -> std::result::Result<(), JsValue> 
 /// `ObjectMapValueType`/`RelationshipMapValueType` arm's own shape checks,
 /// which TS throws inline for.
 #[wasm_bindgen(js_name = mapValueTypeProcess)]
-pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn map_value_type_process(view: JsValue) -> JsResult<JsValue> {
     run(|| {
         let ast = get(&view, "ast")?;
         let parent = get(&view, "parent")?;
@@ -1293,7 +1276,7 @@ pub fn map_value_type_process(view: JsValue) -> std::result::Result<JsValue, JsV
 /// collaborator call (`ModelFile` is not yet Rust-backed, P2-08), and so is
 /// the declaration's `isMapDeclaration?.()` ([`js_declaration_is`]).
 #[wasm_bindgen(js_name = mapValueTypeValidate)]
-pub fn map_value_type_validate(view: JsValue) -> std::result::Result<(), JsValue> {
+pub fn map_value_type_validate(view: JsValue) -> JsResult<()> {
     run(|| {
         let type_name = js_string(&get(&view, "type")?)?;
         if mu::is_primitive_type(&type_name) {

@@ -54,7 +54,7 @@ impl ModelManagerHandle {
         model_file: u32,
         type_name: &str,
         property_type: &str,
-    ) -> std::result::Result<bool, JsValue> {
+    ) -> JsResult<bool> {
         run(|| {
             Ok(mu::is_assignable_to_type(
                 &self.manager,
@@ -73,7 +73,7 @@ impl ModelManagerHandle {
         &self,
         model_file: u32,
         type_name: Option<String>,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         run(|| {
             let found = match self.field_type(model_file, type_name.as_deref())? {
                 Some(declaration) => Some(ResolutionContext::is_enum(&self.manager, &declaration)?),
@@ -90,7 +90,7 @@ impl ModelManagerHandle {
         &self,
         model_file: u32,
         type_name: Option<String>,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         run(|| {
             let found = match self.field_type(model_file, type_name.as_deref())? {
                 Some(declaration) => {
@@ -109,7 +109,7 @@ impl ModelManagerHandle {
         &self,
         model_file: u32,
         type_name: Option<String>,
-    ) -> std::result::Result<JsValue, JsValue> {
+    ) -> JsResult<JsValue> {
         run(|| {
             let found = match self.field_type(model_file, type_name.as_deref())? {
                 Some(declaration) => {
@@ -124,10 +124,7 @@ impl ModelManagerHandle {
     /// TS: `ModelUtil.isValidMapKeyScalar(decl)` for a declaration by
     /// handle: whether it is a String or DateTime scalar.
     #[wasm_bindgen(js_name = modelUtilIsValidMapKeyScalar)]
-    pub fn model_util_is_valid_map_key_scalar(
-        &self,
-        declaration: u32,
-    ) -> std::result::Result<JsValue, JsValue> {
+    pub fn model_util_is_valid_map_key_scalar(&self, declaration: u32) -> JsResult<JsValue> {
         run(|| {
             let node = Node::Declaration(DeclId::from_index(declaration));
             Ok(js_opt_bool(mu::is_valid_map_key_scalar(
@@ -140,10 +137,7 @@ impl ModelManagerHandle {
     /// TS: `ScalarDeclaration.validate`, after `super.validate()`: no two
     /// declarations of the scalar's model file share a fully qualified name.
     #[wasm_bindgen(js_name = scalarDeclarationValidate)]
-    pub fn scalar_declaration_validate(
-        &self,
-        declaration: u32,
-    ) -> std::result::Result<(), JsValue> {
+    pub fn scalar_declaration_validate(&self, declaration: u32) -> JsResult<()> {
         run(|| {
             Ok(ScalarDeclaration::validate(
                 &self.manager,
@@ -161,7 +155,7 @@ impl ModelManagerHandle {
     pub fn class_declaration_get_assignable_class_declarations(
         &self,
         declaration: u32,
-    ) -> std::result::Result<Vec<String>, JsValue> {
+    ) -> JsResult<Vec<String>> {
         run(|| {
             self.manager
                 .assignable_ids(DeclId::from_index(declaration))?
@@ -178,7 +172,7 @@ impl ModelManagerHandle {
     pub fn class_declaration_get_direct_subclasses(
         &self,
         declaration: u32,
-    ) -> std::result::Result<Vec<String>, JsValue> {
+    ) -> JsResult<Vec<String>> {
         run(|| {
             self.manager
                 .direct_subclasses_of(DeclId::from_index(declaration))?
@@ -219,7 +213,7 @@ impl ModelManagerHandle {
         model_file_id: u32,
         context: JsValue,
         options: JsValue,
-    ) -> std::result::Result<(), JsValue> {
+    ) -> JsResult<()> {
         let body = || -> Result<()> {
             let missing = level_option(&options, "missingDecorator")?;
             let invalid = level_option(&options, "invalidDecorator")?;
@@ -247,6 +241,6 @@ impl ModelManagerHandle {
                 }
             }
         };
-        body().map_err(|e| throw(e, Some(&model_file)))
+        run_naming(|| model_file.clone(), body)
     }
 }

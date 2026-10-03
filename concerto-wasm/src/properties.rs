@@ -698,17 +698,16 @@ pub(crate) fn class_declaration_view_decision(
 /// `CollectionSizeValidator`, whose own binding already ports that TS
 /// constructor.
 #[wasm_bindgen(js_name = propertyProcess)]
-pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn property_process(view: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let ast = to_json(&get(&view, "ast")?)?.unwrap_or(Value::Null);
         let processed = property::process::<Error>(&ast)?;
         Ok(to_js(&property_snapshot(&processed)))
     };
-    body().map_err(|e| {
-        let model_file =
-            call(&view, "getModelFile", &[], "this.getModelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || call(&view, "getModelFile", &[], "this.getModelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: Property.validate, after `super.validate()` (`Decorated`'s, which the
@@ -723,10 +722,7 @@ pub fn property_process(view: JsValue) -> std::result::Result<JsValue, JsValue> 
 /// propagates unchanged (`Error::Js`, from the `?` on `call`), so its message
 /// and class are never reimplemented here.
 #[wasm_bindgen(js_name = propertyValidate)]
-pub fn property_validate(
-    property: JsValue,
-    class_decl: JsValue,
-) -> std::result::Result<(), JsValue> {
+pub fn property_validate(property: JsValue, class_decl: JsValue) -> JsResult<()> {
     let model_file = call(&class_decl, "getModelFile", &[], "classDecl.getModelFile")
         .unwrap_or(JsValue::UNDEFINED);
     let body = || -> Result<()> {
@@ -791,7 +787,7 @@ pub fn property_validate(
         }
         Ok(())
     };
-    body().map_err(|e| throw(e, Some(&model_file)))
+    run_naming(|| model_file.clone(), body)
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +801,7 @@ pub fn property_validate(
 /// `scalarDeclarationProcess` returns for `ScalarDeclaration`, reusing the
 /// same [`ScalarValidator`] shape (field.rs module doc).
 #[wasm_bindgen(js_name = fieldProcess)]
-pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn field_process(view: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let ast = to_json(&get(&view, "ast")?)?.unwrap_or(Value::Null);
         let property_type = get(&view, "type")?;
@@ -825,11 +821,10 @@ pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
         let processed = field::process(property_type.as_deref(), &ast, &fqn)?;
         Ok(to_js(&field_snapshot(&processed)))
     };
-    body().map_err(|e| {
-        let model_file =
-            call(&view, "getModelFile", &[], "this.getModelFile").unwrap_or(JsValue::UNDEFINED);
-        throw(e, Some(&model_file))
-    })
+    run_naming(
+        || call(&view, "getModelFile", &[], "this.getModelFile").unwrap_or(JsValue::UNDEFINED),
+        body,
+    )
 }
 
 /// TS: `Field.getScalarField`, after the `this.scalarField` cache check
@@ -845,7 +840,7 @@ pub fn field_process(view: JsValue) -> std::result::Result<JsValue, JsValue> {
 /// as the TS body's `new Field(this.getParent(), fieldAst)` and
 /// `this.scalarField.array = this.isArray()` do.
 #[wasm_bindgen(js_name = fieldGetScalarField)]
-pub fn field_get_scalar_field(view: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn field_get_scalar_field(view: JsValue) -> JsResult<JsValue> {
     run(|| {
         // `isTypeScalar()`.
         let is_primitive = call(&view, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
@@ -909,7 +904,7 @@ pub fn field_get_scalar_field(view: JsValue) -> std::result::Result<JsValue, JsV
 /// (P4-07's issue #195 supplement fixtures cover this — the type name is
 /// never the underlying primitive).
 #[wasm_bindgen(js_name = fieldToString)]
-pub fn field_to_string(view: JsValue) -> std::result::Result<String, JsValue> {
+pub fn field_to_string(view: JsValue) -> JsResult<String> {
     run(|| {
         let name = js_string(&get(&view, "name")?)?;
         let fully_qualified_type_name = js_string(&call(
@@ -943,10 +938,7 @@ pub fn field_to_string(view: JsValue) -> std::result::Result<String, JsValue> {
 /// resolution itself is the small context interface PORTING.md section 3
 /// describes.
 #[wasm_bindgen(js_name = relationshipDeclarationValidate)]
-pub fn relationship_declaration_validate(
-    view: JsValue,
-    class_decl: JsValue,
-) -> std::result::Result<(), JsValue> {
+pub fn relationship_declaration_validate(view: JsValue, class_decl: JsValue) -> JsResult<()> {
     let model_file = call(&class_decl, "getModelFile", &[], "classDecl.getModelFile")
         .unwrap_or(JsValue::UNDEFINED);
     let body = || -> Result<()> {
@@ -1052,5 +1044,5 @@ pub fn relationship_declaration_validate(
         }
         Ok(())
     };
-    body().map_err(|e| throw(e, Some(&model_file)))
+    run_naming(|| model_file.clone(), body)
 }

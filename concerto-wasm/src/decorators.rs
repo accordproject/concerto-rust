@@ -21,7 +21,7 @@ use super::*;
 /// `getParent().getModelFile()` is the model file the exception names, as
 /// TS's `Decorator.handleError` passes it.
 #[wasm_bindgen(js_name = decoratorProcess)]
-pub fn decorator_process(ast: JsValue, view: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn decorator_process(ast: JsValue, view: JsValue) -> JsResult<JsValue> {
     if ast.is_null() || ast.is_undefined() {
         let mut err = decorator::not_an_object(if ast.is_null() { "null" } else { "undefined" });
         err.model_file = Some(None);
@@ -102,7 +102,7 @@ pub(crate) fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
 /// `null`; the view throws the `IllegalModelException` itself (a plain
 /// string message, no engine error payload needed).
 #[wasm_bindgen(js_name = decoratedFindDuplicateName)]
-pub fn decorated_find_duplicate_name(names: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn decorated_find_duplicate_name(names: JsValue) -> JsResult<JsValue> {
     run(|| {
         let mut seen = HashSet::new();
         for name in Array::from(&names).iter() {

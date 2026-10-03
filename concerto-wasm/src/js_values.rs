@@ -117,7 +117,7 @@ pub(crate) fn to_json(value: &JsValue) -> Result<Option<Value>> {
             let sanitized = sanitize_lone_surrogate_escapes(&text);
             serde_json::from_str(&sanitized)
                 .map(Some)
-                .map_err(|e| Error::Js(js_sys::Error::new(&format!("to_json: {e}")).into()))
+                .map_err(|e| internal(format!("to_json: {e}")))
         }
     }
 }
