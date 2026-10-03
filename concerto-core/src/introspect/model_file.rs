@@ -521,6 +521,7 @@ impl ModelFile {
         /// specified`); `ModelFile`'s rejects an `ast` that is not an object,
         /// then a truthy `definitions` that is not a string, then a truthy
         /// `fileName` that is not a string (P2-08).
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
         pub fn check_constructor_arguments(
             ast: Option<&serde_json::Value>,
             definitions: Option<&serde_json::Value>,

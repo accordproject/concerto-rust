@@ -463,6 +463,7 @@ impl ModelManager {
         /// [`ModelFile::from_json_text`] read (P5-06c): the duplicate-namespace
         /// check and registration [`ModelManager::add_model_with_definitions`]
         /// runs once it has built the file itself.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
         pub fn add_model_file(&mut self, mf: ModelFile) -> Result<()> {
             self.add_loaded_model_file(mf).map(drop)
         }

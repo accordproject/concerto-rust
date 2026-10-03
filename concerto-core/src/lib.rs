@@ -51,13 +51,15 @@ macro_rules! js_compat_pub {
 /// Declares a module that is `pub` with the `js-compat` feature and
 /// crate-private without it (docs/public-api.md section 4.6). Its items are
 /// plain `pub`: the module's visibility is the seam, so they need no
-/// [`js_compat_pub!`] of their own (P5-104, C-9).
+/// [`js_compat_pub!`] of their own (P5-104, C-9). The crate-private arm
+/// allows no dead code: a seam item that the native build doesn't use carries
+/// its own `#[cfg_attr(not(feature = "js-compat"), expect(dead_code, ...))]`,
+/// so one that the JS layer stops using too is reported (P5-110).
 macro_rules! js_compat_mod {
     ($name:ident) => {
         #[cfg(feature = "js-compat")]
         pub mod $name;
         #[cfg(not(feature = "js-compat"))]
-        #[allow(dead_code, unused_imports)]
         #[allow(clippy::enum_variant_names, clippy::wrong_self_convention)]
         pub(crate) mod $name;
     };

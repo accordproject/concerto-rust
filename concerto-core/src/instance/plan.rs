@@ -204,6 +204,7 @@ pub struct PlanProp {
     /// The property.
     pub prop: PropId,
     /// The declaration that declares it.
+    #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     pub owner: DeclId,
     /// What its type resolves to.
     pub kind: PlanKind,

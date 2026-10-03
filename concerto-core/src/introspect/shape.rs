@@ -580,6 +580,10 @@ fn optional_nodes(value: Option<&Kept>, allowed: &'static [&'static str]) -> boo
 
 /// [`conforms`], for an AST given as a `Value`: the typed read of `ast`
 /// ([`super::typed_ast::from_value`]) succeeds and conforms.
+#[cfg_attr(
+    not(feature = "js-compat"),
+    expect(dead_code, reason = "js-compat seam only")
+)]
 pub(crate) fn ast_conforms(ast: &Value) -> bool {
     super::typed_ast::from_value(ast).is_ok_and(|model| conforms(&model))
 }
