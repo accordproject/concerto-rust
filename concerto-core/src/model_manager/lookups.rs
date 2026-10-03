@@ -553,12 +553,26 @@ impl ModelManager {
     }
 
     /// The body of [`ModelManager::ast`] and the deprecated
-    /// [`ModelManager::get_ast`], whose docs say what it returns (A-11).
+    /// [`ModelManager::get_ast`], whose docs say what it returns (A-11):
+    /// [`ModelManager::model_asts`] in the metamodel's `Models` envelope.
     pub(crate) fn models_ast(
         &self,
         resolve: bool,
         include_concerto_namespaces: bool,
     ) -> Result<Value> {
+        Ok(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Models",
+            "models": self.model_asts(resolve, include_concerto_namespaces)?,
+        }))
+    }
+
+    /// The models of [`ModelManager::models_ast`]'s envelope, without it:
+    /// what the decorator command sets walk (P5-104, C-8).
+    pub(crate) fn model_asts(
+        &self,
+        resolve: bool,
+        include_concerto_namespaces: bool,
+    ) -> Result<Vec<Value>> {
         // TS re-reads `getAst(false, true)` inside every `resolveMetaModel`
         // call, but nothing registers or removes a model file in between, so
         // one borrowed snapshot of the registered models serves every file
@@ -578,10 +592,7 @@ impl ModelManager {
                 None => mf.ast().clone(),
             });
         }
-        Ok(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.Models",
-            "models": models,
-        }))
+        Ok(models)
     }
 
     /// TS `BaseModelManager.resolveMetaModel(metaModel)` (basemodelmanager.ts):

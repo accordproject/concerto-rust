@@ -52,7 +52,7 @@ pub mod extractor;
 mod yaml_quote;
 
 pub use dcsconverter::{json_to_yaml, yaml_to_json};
-pub use yaml_quote::{DECORATOR_STRING_TYPE, quote_string_value};
+use yaml_quote::quote_string_value;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -68,7 +68,7 @@ use crate::model_util::{self, ParsedNamespace};
 
 /// `DCS_VERSION` (`src/decoratormanager.ts`): the decorator command set
 /// model version this port targets.
-pub const DCS_VERSION: &str = "0.4.0";
+pub(crate) const DCS_VERSION: &str = "0.4.0";
 
 /// The metamodel's `MapDeclaration` class.
 const MAP_DECLARATION_CLASS: &str = metamodel_class!("MapDeclaration");
@@ -123,20 +123,20 @@ fn falsy_or_equal_in_string(test: Option<&Value>, values: &str) -> bool {
 /// (P5-102, C-3): a command reached through several maps, or through
 /// several entries of `target.properties`, is never copied.
 #[derive(Debug, Clone, Copy)]
-pub struct DcsIndexWrapper<'a> {
+pub(crate) struct DcsIndexWrapper<'a> {
     command: &'a Value,
     index: usize,
 }
 
 impl<'a> DcsIndexWrapper<'a> {
     /// The decorator command.
-    pub fn command(&self) -> &'a Value {
+    pub(crate) fn command(&self) -> &'a Value {
         self.command
     }
 
     /// The command's index in the (possibly flattened) command set it came
     /// from.
-    pub fn index(&self) -> usize {
+    pub(crate) fn index(&self) -> usize {
         self.index
     }
 }
@@ -146,18 +146,18 @@ impl<'a> DcsIndexWrapper<'a> {
 /// it share.
 /// Keyed by the target value the commands share, borrowed from the commands.
 #[derive(Debug, Clone, Default)]
-pub struct DecoratorMaps<'a> {
+pub(crate) struct DecoratorMaps<'a> {
     /// Commands targeting a `target.namespace`.
-    pub namespace_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) namespace_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.declaration`.
-    pub declaration_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) declaration_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.property` (or one entry of
     /// `target.properties`).
-    pub property_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) property_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.mapElement`.
-    pub map_element_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) map_element_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
     /// Commands targeting a `target.type`.
-    pub type_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
+    pub(crate) type_commands: FxHashMap<&'a str, Vec<DcsIndexWrapper<'a>>>,
 }
 
 /// `DecoratorManager.addDcsWithIndexToMap` (`src/decoratormanager.ts`).
@@ -176,7 +176,9 @@ fn add_dcs_with_index_to_map<'a>(
 /// `declaration`, `namespace` — matching the reference's `switch (true)`,
 /// whose `case`s fall through to nothing (each `break`s) and so also try in
 /// that order.
-pub fn get_decorator_maps<'a>(commands: impl IntoIterator<Item = &'a Value>) -> DecoratorMaps<'a> {
+pub(crate) fn get_decorator_maps<'a>(
+    commands: impl IntoIterator<Item = &'a Value>,
+) -> DecoratorMaps<'a> {
     let mut maps = DecoratorMaps::default();
     for (index, command) in commands.into_iter().enumerate() {
         let target = command.get("target");
@@ -334,7 +336,7 @@ fn js_read<'a>(object: Option<&'a Value>, key: &str) -> Result<Option<&'a Value>
 /// `$class` ("FQN is invalid."), and `ModelUtil.parseNamespace` an invalid
 /// namespace, including, since BC-02 (R1, P5-50), one with no version (in
 /// TS 5.0.0 node-semver rejected that one, with a `TypeError`).
-pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Result<bool> {
+pub(crate) fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Result<bool> {
     let class = js_read(Some(decorator_command_set), "$class")?;
     let class = match class {
         Some(Value::String(s)) => Some(s.as_str()),
@@ -371,7 +373,7 @@ pub fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Resul
 /// raises an `IllegalModelException` (its constructor's location suffix
 /// included, [`ContractError::final_message`]) if `decorated_ast.decorators`
 /// names the same decorator twice.
-pub fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
+pub(crate) fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
     let mut seen = FxHashSet::default();
     if let Some(decorators) = decorated_ast.get("decorators").and_then(Value::as_array) {
         for d in decorators {
@@ -398,7 +400,7 @@ pub fn check_for_duplicate_decorators(decorated_ast: &Value) -> Result<()> {
 /// for the duplicate it may just have created) for `"APPEND"`. Any other
 /// `command_type` (the command's `type` as JS would print it, `"undefined"`
 /// when it has none) is an error.
-pub fn apply_decorator(
+pub(crate) fn apply_decorator(
     decorated: &mut Value,
     command_type: &str,
     new_decorator: &Value,
@@ -528,7 +530,7 @@ fn check_for_namespace_target_and_apply_decorator(
 /// `DecoratorManager.executeNamespaceCommand` (`src/decoratormanager.ts`):
 /// applies a bare `{ $class, namespace }` command target — exactly two keys,
 /// one of them a truthy `namespace` — directly to the model itself.
-pub fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<()> {
+pub(crate) fn execute_namespace_command(model: &mut Value, command: &Value) -> Result<()> {
     let (command_type, decorator, target) = command_parts(command);
     let is_bare_namespace_target = target
         .as_object()
@@ -586,7 +588,7 @@ pub fn execute_property_command(property: &mut Value, command: &Value) -> Result
 /// `command` to `declaration` (a `Model`'s AST declaration node), or to
 /// `property` when the command's target reaches a property and one is
 /// given, honouring `MapDeclaration`'s `key`/`value`/`mapElement` targeting.
-pub fn execute_command(
+pub(crate) fn execute_command(
     namespace: &str,
     declaration: &mut Value,
     command: &Value,
@@ -687,7 +689,7 @@ pub fn execute_command(
 /// message text: the exact `{kind, code}` catalogue entry (PORTING.md
 /// section 2.2) is left for the task that ports `resolveType`'s error
 /// messages generally (the module doc comment's divergence note).
-pub fn validate_command(model_manager: &ModelManager, command: &Value) -> Result<()> {
+pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) -> Result<()> {
     // `command.target.type`: reading through an absent or `null` target is
     // a JS `TypeError`.
     let target = js_read(Some(command), "target")?.cloned();
@@ -1075,7 +1077,7 @@ pub fn validated_yaml_to_json(yaml_input: &str) -> Result<Value> {
 /// `should_validate_commands` alone (`should_validate` false) validates
 /// nothing at all, exactly as the reference's `if (shouldValidate) { ...
 /// if (shouldValidateCommands) {...} }` does.
-pub fn migrate_and_validate(
+pub(crate) fn migrate_and_validate(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
     should_migrate: bool,
@@ -1285,7 +1287,7 @@ pub fn apply_decoration(
 ) -> Result<ModelManager> {
     // `options?.disableMetamodelResolution ? getAst(false, true) : getAst(true, true)`.
     let resolve = options.disable_metamodel_resolution != Some(true);
-    let mut models = models_of(model_manager.models_ast(resolve, true)?);
+    let mut models = model_manager.model_asts(resolve, true)?;
     for model in models.iter_mut() {
         decorate_model(model, &prepared.decorator_imports, &prepared.maps)?;
     }
@@ -1553,17 +1555,6 @@ impl Default for ExtractOptions {
     }
 }
 
-/// The `models` of a [`ModelManager::get_ast`] envelope.
-fn models_of(ast: Value) -> Vec<Value> {
-    match ast {
-        Value::Object(mut m) => match m.remove("models") {
-            Some(Value::Array(models)) => models,
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    }
-}
-
 /// `DecoratorManager.extractDecorators`, `extractVocabularies` or
 /// `extractNonVocabDecorators(modelManager, options)`
 /// (`src/decoratormanager.ts`), by `action`, with the command sets encoded
@@ -1597,12 +1588,11 @@ pub fn extract(
     let include_system = action != extractor::Action::ExtractNonVocab;
     extractor::DecoratorExtractor::new(
         options.remove_decorators_from_model,
-        options.locale.clone(),
+        &options.locale,
         DCS_VERSION,
-        model_manager.models_ast(true, include_system)?,
         action,
     )
-    .extract(keep_source)
+    .extract(model_manager.model_asts(true, include_system)?, keep_source)
 }
 
 /// The command sets (JSON text) and vocabularies [`extract`] gives
@@ -1617,9 +1607,8 @@ pub fn encode_extract_source(
 ) -> Result<(String, Vec<String>)> {
     extractor::DecoratorExtractor::new(
         options.remove_decorators_from_model,
-        options.locale.clone(),
+        &options.locale,
         DCS_VERSION,
-        Value::Null,
         action,
     )
     .encode_source(models)

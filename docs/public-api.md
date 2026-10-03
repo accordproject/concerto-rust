@@ -215,7 +215,7 @@ Each item falls into one of five groups:
 | `instance::{validate_metamodel, validate_ast, METAMODEL_NAMESPACE}` | 3 | Stable | `validateAst`. `concerto-validate-rs` is a CLI over it (D3). |
 | `instance::validate::{validate_instance_from, validate_property_value, DAYJS_TAG, RELATIONSHIP_TAG, UNDEFINED_TAG, NUMBER_TAG, MAP_TAG, js_map, js_special_number, js_bigint, js_undefined, is_js_undefined}` | 12 | Seam | The `$$` tag encoding of JS values inside `serde_json::Value` (section 4.1). |
 | `instance::value::{JsValue, Instance, InstanceKind}`, `instance::dayjs::{Dayjs, UtcOffset}`, `instance::serializer::{Serializer, SerializerOptions}`, `instance::factory::*` (`InstanceEnv`, `NewResourceCheck`), `instance::populator::*`, `instance::generator::*`, `instance::resource::*`, `instance::resource_id::ResourceId` | about 60 | JS object model (and Follow-up) | The state of the TS `Resource` objects, which D7 keeps in TS. |
-| `dcs::*`, `dcs::extractor::*`, `dcs::dcsconverter::*` | 25 functions, 7 types, 2 constants | Outside D11 (Q3) | Ports of `DecoratorManager` and `DecoratorExtractor`, with TS-shaped signatures over `serde_json::Value`. |
+| `dcs::*`, `dcs::extractor::*`, `dcs::dcsconverter::*` | 15 functions, 5 types | Outside D11 (Q3) | Ports of `DecoratorManager` and `DecoratorExtractor`, with TS-shaped signatures over `serde_json::Value`. Only what concerto-wasm and the oracle harness call is `pub` (P5-104, C-8); the rest, `DecoratorExtractor` included, is `pub(crate)`. |
 | `derive` (the `concerto-macros` re-export) | 1 | Internal to the workspace | The derives implement core's own traits on core's own types. |
 
 ### 3.4 Findings

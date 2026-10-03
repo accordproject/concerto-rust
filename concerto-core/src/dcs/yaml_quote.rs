@@ -42,7 +42,7 @@ use regress::Regex;
 
 /// `DECORATOR_STRING_TYPE` (`src/decoratorextractor.ts`): the `$class` of a
 /// decorator argument that carries a string value.
-pub const DECORATOR_STRING_TYPE: &str = "concerto.metamodel@1.0.0.DecoratorString";
+pub(crate) const DECORATOR_STRING_TYPE: &str = "concerto.metamodel@1.0.0.DecoratorString";
 
 /// `plainString`'s "not allowed" test (`dist/stringify/stringifyString.js`):
 /// starts with an indicator character (other than `?`/`-`), is exactly `?`
@@ -229,7 +229,7 @@ pub(crate) fn json_quote_for_dcsconverter(value: &str) -> String {
 /// `value` is `String(value)` already applied — see
 /// [`crate::dcs::extractor::DecoratorExtractor`]'s call sites, which apply
 /// the same JS `String()` coercion the reference does before reaching here.
-pub fn quote_string_value(value: &str, type_class: Option<&str>) -> String {
+pub(crate) fn quote_string_value(value: &str, type_class: Option<&str>) -> String {
     if type_class != Some(DECORATOR_STRING_TYPE) {
         return value.to_string();
     }

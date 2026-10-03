@@ -85,31 +85,30 @@ struct CommandClasses {
     type_reference: &'static str,
 }
 
-/// `DecoratorExtractor` (`src/decoratorextractor.ts`).
-pub struct DecoratorExtractor {
+/// `DecoratorExtractor` (`src/decoratorextractor.ts`): its configuration
+/// only. The models it walks are each call's input
+/// ([`Self::extract`], [`Self::encode_source`]), not part of it (P5-104,
+/// C-8), so an extractor borrows its locale rather than owning a copy.
+pub(crate) struct DecoratorExtractor<'a> {
     remove_decorators_from_model: bool,
-    locale: String,
-    dcs_version: String,
-    updated_model_ast: Value,
+    locale: &'a str,
+    dcs_version: &'a str,
     action: Action,
 }
 
-impl DecoratorExtractor {
-    /// `new DecoratorExtractor(...)` (`src/decoratorextractor.ts`).
-    /// `source_model_ast` is `IModels`-shaped: `{ "$class": "...Models",
-    /// "models": [...] }`.
-    pub fn new(
+impl<'a> DecoratorExtractor<'a> {
+    /// `new DecoratorExtractor(...)` (`src/decoratorextractor.ts`), without
+    /// its source models, which [`Self::extract`] takes.
+    pub(crate) fn new(
         remove_decorators_from_model: bool,
-        locale: impl Into<String>,
-        dcs_version: impl Into<String>,
-        source_model_ast: Value,
+        locale: &'a str,
+        dcs_version: &'a str,
         action: Action,
     ) -> Self {
         Self {
             remove_decorators_from_model,
-            locale: locale.into(),
-            dcs_version: dcs_version.into(),
-            updated_model_ast: source_model_ast,
+            locale,
+            dcs_version,
             action,
         }
     }
@@ -176,7 +175,7 @@ impl DecoratorExtractor {
 
     /// The `$class` strings of this extraction's commands.
     fn command_classes(&self) -> CommandClasses {
-        let version = &self.dcs_version;
+        let version = self.dcs_version;
         CommandClasses {
             command: format!("org.accordproject.decoratorcommands@{version}.Command"),
             target: format!("org.accordproject.decoratorcommands@{version}.CommandTarget"),
@@ -237,7 +236,7 @@ impl DecoratorExtractor {
                 });
             }
             if self.action != Action::ExtractNonVocab
-                && let Some(yaml) = vocab.to_yaml(&self.locale, namespace)
+                && let Some(yaml) = vocab.to_yaml(self.locale, namespace)
             {
                 vocab_data.push(yaml);
             }
@@ -332,7 +331,7 @@ impl DecoratorExtractor {
     /// extractor's own source AST is not read. The command sets and
     /// vocabularies are read before any decorator is stripped, so
     /// `removeDecoratorsFromModel` does not change them.
-    pub fn encode_source(&self, models: &[Value]) -> Result<(String, Vec<String>)> {
+    pub(crate) fn encode_source(&self, models: &[Value]) -> Result<(String, Vec<String>)> {
         let mut extraction_dictionary = ExtractionDictionary::new();
         collect_models(&mut extraction_dictionary, models);
         self.encode_decorators_and_vocabularies(&extraction_dictionary)
@@ -351,11 +350,14 @@ impl DecoratorExtractor {
     /// models are then moved, not copied, into the result manager. Errors
     /// keep TS's order: a load or validation failure of the result models
     /// is thrown ahead of a vocabulary-key error from the transform.
-    pub fn extract(mut self, keep_source: bool) -> Result<ExtractResult> {
-        let mut models = match self.updated_model_ast.get_mut("models").map(std::mem::take) {
-            Some(Value::Array(models)) => models,
-            _ => Vec::new(),
-        };
+    ///
+    /// `models` are the source models, the `models` of an `IModels`
+    /// envelope (TS's `sourceModelAst.models`).
+    pub(crate) fn extract(
+        &self,
+        mut models: Vec<Value>,
+        keep_source: bool,
+    ) -> Result<ExtractResult> {
         let source_models = keep_source.then(|| models.clone());
         let transformed = {
             let mut extraction_dictionary = ExtractionDictionary::new();

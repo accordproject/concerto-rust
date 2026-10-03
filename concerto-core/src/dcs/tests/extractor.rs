@@ -1,6 +1,18 @@
-use super::super::DECORATOR_STRING_TYPE;
 use super::*;
+use crate::dcs::yaml_quote::DECORATOR_STRING_TYPE;
 use serde_json::json;
+
+/// The `models` of a `Models` envelope, as [`DecoratorExtractor::extract`]
+/// takes them.
+fn models_in(envelope: Value) -> Vec<Value> {
+    match envelope {
+        Value::Object(mut m) => match m.remove("models") {
+            Some(Value::Array(models)) => models,
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
 
 fn decorator(name: &str, value: &str) -> Value {
     json!({
@@ -42,9 +54,10 @@ fn sample_models() -> Value {
 
 #[test]
 fn extracts_a_vocabulary_and_a_non_vocabulary_command_set() {
-    let extractor =
-        DecoratorExtractor::new(true, "en", "0.4.0", sample_models(), Action::ExtractAll);
-    let result = extractor.extract(false).expect("extraction succeeds");
+    let extractor = DecoratorExtractor::new(true, "en", "0.4.0", Action::ExtractAll);
+    let result = extractor
+        .extract(models_in(sample_models()), false)
+        .expect("extraction succeeds");
 
     let sets = sets(&result);
     assert_eq!(sets.len(), 1);
@@ -66,9 +79,10 @@ fn extracts_a_vocabulary_and_a_non_vocabulary_command_set() {
 
 #[test]
 fn extract_vocab_only_leaves_non_vocab_decorators_in_place() {
-    let extractor =
-        DecoratorExtractor::new(true, "en", "0.4.0", sample_models(), Action::ExtractVocab);
-    let result = extractor.extract(false).expect("extraction succeeds");
+    let extractor = DecoratorExtractor::new(true, "en", "0.4.0", Action::ExtractVocab);
+    let result = extractor
+        .extract(models_in(sample_models()), false)
+        .expect("extraction succeeds");
     assert_eq!(result.decorator_command_set, "[]");
     assert_eq!(result.vocabularies.len(), 1);
 
@@ -85,9 +99,10 @@ fn extract_vocab_only_leaves_non_vocab_decorators_in_place() {
 #[test]
 fn without_remove_the_result_models_are_the_source_models() {
     let source = sample_models();
-    let extractor =
-        DecoratorExtractor::new(false, "en", "0.4.0", source.clone(), Action::ExtractAll);
-    let result = extractor.extract(false).expect("extraction succeeds");
+    let extractor = DecoratorExtractor::new(false, "en", "0.4.0", Action::ExtractAll);
+    let result = extractor
+        .extract(models_in(source.clone()), false)
+        .expect("extraction succeeds");
     assert_eq!(sets(&result).len(), 1);
     assert_eq!(result.vocabularies.len(), 1);
     assert_eq!(
@@ -106,8 +121,10 @@ fn a_model_without_declarations_is_given_an_empty_array() {
             "decorators": [decorator("Term", "Test")]
         }]
     });
-    let extractor = DecoratorExtractor::new(true, "en", "0.4.0", models, Action::ExtractAll);
-    let result = extractor.extract(false).expect("extraction succeeds");
+    let extractor = DecoratorExtractor::new(true, "en", "0.4.0", Action::ExtractAll);
+    let result = extractor
+        .extract(models_in(models), false)
+        .expect("extraction succeeds");
     let ast = result.model_manager.model_file("test@1.0.0").unwrap().ast();
     assert!(ast.get("decorators").is_none());
     assert_eq!(ast["declarations"], json!([]));
@@ -138,8 +155,10 @@ fn map_keys_and_values_are_extracted_and_stripped() {
             }]
         }]
     });
-    let extractor = DecoratorExtractor::new(true, "en", "0.4.0", models, Action::ExtractNonVocab);
-    let result = extractor.extract(false).expect("extraction succeeds");
+    let extractor = DecoratorExtractor::new(true, "en", "0.4.0", Action::ExtractNonVocab);
+    let result = extractor
+        .extract(models_in(models), false)
+        .expect("extraction succeeds");
     let sets = sets(&result);
     let commands = sets[0]["commands"].as_array().unwrap();
     let targets: Vec<&Value> = commands
@@ -174,8 +193,8 @@ fn assert_routes_agree(models: &Value, expect_ok: bool) {
         Action::ExtractNonVocab,
     ] {
         for remove in [false, true] {
-            let result = DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action)
-                .extract(false);
+            let result = DecoratorExtractor::new(remove, "fr", "0.4.0", action)
+                .extract(models_in(models.clone()), false);
             // A reserved vocabulary key fails every action that reads
             // the vocabulary decorators; `ExtractNonVocab` never does.
             let expect_ok = expect_ok || action == Action::ExtractNonVocab;
@@ -202,10 +221,10 @@ fn assert_routes_agree(models: &Value, expect_ok: bool) {
 /// error) as `extract` with any locale and either
 /// `removeDecoratorsFromModel`, every time it is called.
 fn assert_memo_route_agrees(models: &Value, action: Action, remove: bool) {
-    let direct =
-        DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action).extract(false);
-    let keeping =
-        DecoratorExtractor::new(remove, "fr", "0.4.0", models.clone(), action).extract(true);
+    let direct = DecoratorExtractor::new(remove, "fr", "0.4.0", action)
+        .extract(models_in(models.clone()), false);
+    let keeping = DecoratorExtractor::new(remove, "fr", "0.4.0", action)
+        .extract(models_in(models.clone()), true);
     let (kept_result, source) = match (direct, keeping) {
         (Ok(d), Ok(mut k)) => {
             assert!(d.source_models.is_none());
@@ -237,10 +256,10 @@ fn assert_memo_route_agrees(models: &Value, action: Action, remove: bool) {
         assert_eq!(&source, models["models"].as_array().unwrap());
     }
     for (other_remove, locale) in [(remove, "fr"), (!remove, "de"), (remove, "fr")] {
-        let encoded = DecoratorExtractor::new(other_remove, locale, "0.4.0", Value::Null, action)
-            .encode_source(&source);
-        let fresh = DecoratorExtractor::new(other_remove, locale, "0.4.0", models.clone(), action)
-            .extract(false);
+        let encoded =
+            DecoratorExtractor::new(other_remove, locale, "0.4.0", action).encode_source(&source);
+        let fresh = DecoratorExtractor::new(other_remove, locale, "0.4.0", action)
+            .extract(models_in(models.clone()), false);
         match (encoded, fresh) {
             (Ok(e), Ok(f)) => {
                 assert_eq!(e.0, f.decorator_command_set, "{action:?} {locale}");
@@ -372,8 +391,8 @@ fn the_encoding_matches_its_golden_text() {
         }]
     });
     assert_routes_agree(&models, true);
-    let result = DecoratorExtractor::new(false, "fr", "0.4.0", models, Action::ExtractAll)
-        .extract(false)
+    let result = DecoratorExtractor::new(false, "fr", "0.4.0", Action::ExtractAll)
+        .extract(models_in(models), false)
         .unwrap();
     assert_eq!(
         result.decorator_command_set,
@@ -435,8 +454,8 @@ fn a_vocabulary_number_argument_is_written_as_js_string_does() {
             }]
         }]
     });
-    let result = DecoratorExtractor::new(false, "en", "0.4.0", models.clone(), Action::ExtractAll)
-        .extract(false)
+    let result = DecoratorExtractor::new(false, "en", "0.4.0", Action::ExtractAll)
+        .extract(models_in(models.clone()), false)
         .unwrap();
     assert_eq!(
         result.vocabularies,
@@ -463,8 +482,8 @@ fn a_term_extension_key_matching_the_declaration_name_is_rejected() {
             }]
         }]
     });
-    let extractor = DecoratorExtractor::new(false, "en", "0.4.0", models, Action::ExtractAll);
-    let err = match extractor.extract(false) {
+    let extractor = DecoratorExtractor::new(false, "en", "0.4.0", Action::ExtractAll);
+    let err = match extractor.extract(models_in(models), false) {
         Ok(_) => panic!("expected extraction to reject the reserved vocabulary key"),
         Err(e) => e,
     };
