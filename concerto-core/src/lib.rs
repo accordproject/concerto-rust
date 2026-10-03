@@ -57,10 +57,6 @@ pub use concerto_macros as derive;
 // (docs/public-api.md Q3): public only for the WASM binding.
 #[cfg(feature = "js-compat")]
 pub mod dcs;
-#[cfg(not(feature = "js-compat"))]
-#[allow(dead_code, unused_imports)]
-#[allow(clippy::enum_variant_names, clippy::wrong_self_convention)]
-pub(crate) mod dcs;
 mod ecma;
 pub mod error;
 pub mod instance;
