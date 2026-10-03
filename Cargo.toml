@@ -52,15 +52,22 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 # (concerto-core-js).
 indexmap = "2"
 # The one fast, non-cryptographic hasher of the internal lookup maps
-# (P5-13, accordproject/concerto-rust#297; P5-104, C-14: concerto-core-js
-# too, in place of foldhash). None of them is iterated on an observable
-# path (PORTING.md 3.7).
+# (P5-13, accordproject/concerto-rust#297). None of them is iterated on an
+# observable path; maps keyed by untrusted input (concerto-core-js's
+# JsObject) use the seeded std RandomState instead (PORTING.md 3.7).
 rustc-hash = "2"
 # The native oracle harness's CTO -> AST cache key (P1-07a), as
 # migration/oracle/bin/build-cto-cache.js keys it.
 sha2 = "0.10"
 
 # P5-104 (C-14): lints every member opts into with `[lints] workspace = true`.
+# The panic lints (`unwrap_used`, `expect_used`, `indexing_slicing`, `panic`)
+# are denied only in concerto-wasm's own manifest, at the JS boundary. They
+# are not workspace lints (P5-110, C-14(f)): the library code of
+# concerto-core and concerto-core-js has 58 `expect`s on invariants and 49
+# index expressions, and CI runs clippy with `-D warnings`, so even `warn`
+# would need all of them rewritten first, and `expect_used` alone would not
+# keep panics out of the boundary path.
 [workspace.lints.rust]
 missing_docs = "warn"
 
