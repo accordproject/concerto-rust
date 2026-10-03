@@ -370,7 +370,7 @@ fn decorators_read_as_they_are_read_from_a_kept() {
         let kept = KeptSeed
             .deserialize(&mut serde_json::Deserializer::from_str(text))
             .unwrap();
-        let expected = describe(Decorators::from_kept(kept.clone()));
+        let expected = describe(Decorators::from_kept(kept));
         let read = DecoratorsSeed
             .deserialize(&mut serde_json::Deserializer::from_str(text))
             .unwrap();
