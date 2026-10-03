@@ -39,7 +39,8 @@ use concerto_core::error::Result;
 use concerto_core::instance::dayjs::Dayjs;
 use concerto_core::instance::resource_id::ResourceId;
 use concerto_core::instance::validate::{
-    RELATIONSHIP_TAG, ValidateOptions, js_bigint, js_map, js_number, js_number_to_string,
+    BIGINT_TAG, DAYJS_TAG, MAP_TAG, NUMBER_TAG, RELATIONSHIP_TAG, UNDEFINED_TAG, ValidateOptions,
+    ValidatorInput, ValidatorObject, js_bigint, js_map, js_number, js_number_to_string,
     js_undefined,
 };
 
@@ -115,6 +116,25 @@ pub struct Instance {
 /// `undefined`, for a property that is not there.
 static UNDEFINED: JsValue = JsValue::Undefined;
 
+/// The own properties of a `Resource` that the validator never sees
+/// ([`Instance::to_validator_value`] leaves them out).
+const PRIVATE_ONLY_KEYS: [&str; 9] = [
+    "$modelManager",
+    "$classDeclaration",
+    "$namespace",
+    "$type",
+    "$identifierFieldName",
+    "$validator",
+    "$imports",
+    "$superTypes",
+    "$id",
+];
+
+/// Whether `key` is one of [`PRIVATE_ONLY_KEYS`].
+fn is_private_only(key: &str) -> bool {
+    key.starts_with('$') && PRIVATE_ONLY_KEYS.contains(&key)
+}
+
 impl Instance {
     /// TS: the `Identifiable` constructor (`src/model/identifiable.ts`),
     /// with `Typed`'s before it and, for a `Relationship`, its own after it.
@@ -156,6 +176,17 @@ impl Instance {
             instance.set("$class", JsValue::String("Relationship".to_string()));
         }
         instance
+    }
+
+    /// An empty stand-in, for while the instance itself is moved out
+    /// ([`crate::resource::validate`]). Allocates nothing.
+    pub(crate) fn placeholder() -> Self {
+        Self {
+            kind: InstanceKind::Resource,
+            class_fqn: String::new(),
+            props: JsObject::default(),
+            validator_options: ValidateOptions::default(),
+        }
     }
 
     /// `this[key]`.
@@ -270,21 +301,10 @@ impl Instance {
             }
             return Value::Object(wire);
         }
-        const PRIVATE_ONLY_KEYS: [&str; 9] = [
-            "$modelManager",
-            "$classDeclaration",
-            "$namespace",
-            "$type",
-            "$identifierFieldName",
-            "$validator",
-            "$imports",
-            "$superTypes",
-            "$id",
-        ];
         let mut wire = serde_json::Map::with_capacity(self.props.len() + 1);
         wire.insert("$class".to_string(), Value::String(self.class_fqn.clone()));
         for (key, value) in &self.props {
-            if key.starts_with('$') && PRIVATE_ONLY_KEYS.contains(&key.as_str()) {
+            if is_private_only(key) {
                 continue;
             }
             wire.insert(key.clone(), value.to_validator_value());
@@ -408,6 +428,340 @@ impl JsValue {
             Self::DateTime(d) => d.validator_value(),
             Self::Instance(i) => i.to_validator_value(),
             Self::BigInt(s) => js_bigint(s),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// The validator's view of a JS value (P5-102, accordproject/concerto-rust#456,
+// C-6)
+// ---------------------------------------------------------------------
+
+/// `true`, for a relationship's [`RELATIONSHIP_TAG`] property.
+static TRUE: JsValue = JsValue::Bool(true);
+
+/// The one-key tagged object `{tag: <one value>}` of the validator's
+/// plain-JSON shape, as a plain object holding it (`$$undefined`,
+/// `$$number`, `$$bigint` or `$$map`) is read there.
+fn sole_tag<'a>(map: &'a JsObject, tag: &str) -> Option<&'a JsValue> {
+    if map.len() == 1 { map.get(tag) } else { None }
+}
+
+/// A JS object of the validator's walk ([`ValidatorObject`]), read in
+/// place: each answers what its plain-JSON shape
+/// ([`JsValue::to_validator_value`]) would.
+#[derive(Debug, Clone, Copy)]
+pub enum JsObjectView<'a> {
+    /// A `Resource` or `ValidatedResource`: `$class`, then every own
+    /// property but the private ones.
+    Resource(&'a Instance),
+    /// A `Relationship`: [`RELATIONSHIP_TAG`], `$class`, and its
+    /// identifying field when that holds a string.
+    Relationship(&'a Instance),
+    /// A plain object: its own properties.
+    Plain(&'a JsObject),
+    /// A dayjs, a `Map` or a `BigInt`: the one tag key its shape has
+    /// ([`DAYJS_TAG`], [`MAP_TAG`] or [`BIGINT_TAG`]), so no `$class`, and
+    /// so no property the walk reads.
+    Tagged(&'static str),
+}
+
+impl Instance {
+    /// A relationship's identifying field, when it holds a string: the key
+    /// and the value [`Instance::to_validator_value`] writes.
+    fn relationship_identifier(&self) -> Option<(&str, &JsValue)> {
+        let (key, value) = self
+            .props
+            .get_key_value(&*self.identifier_field_name_ref())?;
+        matches!(value, JsValue::String(_)).then_some((key.as_str(), value))
+    }
+}
+
+impl<'a> ValidatorObject<'a, JsValue> for JsObjectView<'a> {
+    fn class(&self) -> Option<&'a str> {
+        match *self {
+            // A `$class` own property is written over the declaration's.
+            Self::Resource(i) => match i.props.get("$class") {
+                Some(class) => class.as_str(),
+                None => Some(&i.class_fqn),
+            },
+            Self::Relationship(i) => Some(&i.class_fqn),
+            Self::Plain(map) => map.get("$class").and_then(JsValue::as_str),
+            Self::Tagged(_) => None,
+        }
+    }
+
+    fn is_relationship(&self) -> bool {
+        match *self {
+            Self::Resource(i) => i.props.contains_key(RELATIONSHIP_TAG),
+            Self::Relationship(_) => true,
+            Self::Plain(map) => map.contains_key(RELATIONSHIP_TAG),
+            Self::Tagged(_) => false,
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&'a JsValue> {
+        match *self {
+            Self::Resource(i) => {
+                if key == "$class" || is_private_only(key) {
+                    None
+                } else {
+                    i.props.get(key)
+                }
+            }
+            Self::Relationship(i) => {
+                if key == RELATIONSHIP_TAG {
+                    return Some(&TRUE);
+                }
+                i.relationship_identifier()
+                    .filter(|(field, _)| *field == key)
+                    .map(|(_, value)| value)
+            }
+            Self::Plain(map) => map.get(key),
+            Self::Tagged(_) => None,
+        }
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &'a str> {
+        let (head, props, own_only, tail): ([Option<&'a str>; 2], Option<&'a JsObject>, bool, _) =
+            match *self {
+                Self::Resource(i) => ([Some("$class"), None], Some(&i.props), true, None),
+                Self::Relationship(i) => (
+                    [Some(RELATIONSHIP_TAG), Some("$class")],
+                    None,
+                    false,
+                    i.relationship_identifier().map(|(field, _)| field),
+                ),
+                Self::Plain(map) => ([None, None], Some(map), false, None),
+                Self::Tagged(tag) => ([Some(tag), None], None, false, None),
+            };
+        head.into_iter()
+            .flatten()
+            .chain(
+                props
+                    .into_iter()
+                    .flat_map(|map| map.keys())
+                    .map(String::as_str)
+                    .filter(move |key| !own_only || (*key != "$class" && !is_private_only(key))),
+            )
+            .chain(tail)
+    }
+}
+
+impl ValidatorInput for JsValue {
+    type Object<'a> = JsObjectView<'a>;
+
+    fn is_undefined(&self) -> bool {
+        match self {
+            Self::Undefined => true,
+            Self::Object(map) => sole_tag(map, UNDEFINED_TAG).is_some(),
+            _ => false,
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    fn as_object(&self) -> Option<JsObjectView<'_>> {
+        match self {
+            Self::Object(map) => {
+                let special = sole_tag(map, UNDEFINED_TAG).is_some()
+                    || sole_tag(map, NUMBER_TAG).is_some_and(|n| n.as_str().is_some());
+                (!special).then_some(JsObjectView::Plain(map))
+            }
+            Self::Instance(i) if i.kind == InstanceKind::Relationship => {
+                Some(JsObjectView::Relationship(i))
+            }
+            Self::Instance(i) => Some(JsObjectView::Resource(i)),
+            Self::DateTime(_) => Some(JsObjectView::Tagged(DAYJS_TAG)),
+            Self::Map(_) => Some(JsObjectView::Tagged(MAP_TAG)),
+            Self::BigInt(_) => Some(JsObjectView::Tagged(BIGINT_TAG)),
+            // A non-finite number is a one-key tagged object, but not a JS
+            // object.
+            Self::Undefined
+            | Self::Null
+            | Self::Bool(_)
+            | Self::Number(_)
+            | Self::String(_)
+            | Self::Array(_) => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&[JsValue]> {
+        match self {
+            Self::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        JsValue::as_str(self)
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            // `js_number`: a finite number, `-0` written as the integer `0`.
+            Self::Number(n) if n.is_finite() => Some(if *n == 0.0 { 0.0 } else { *n }),
+            _ => None,
+        }
+    }
+
+    fn is_boolean(&self) -> bool {
+        matches!(self, Self::Bool(_))
+    }
+
+    fn is_dayjs(&self) -> bool {
+        match self {
+            Self::DateTime(_) => true,
+            Self::Object(map) => map.contains_key(DAYJS_TAG),
+            Self::Instance(i) => {
+                i.kind != InstanceKind::Relationship && i.props.contains_key(DAYJS_TAG)
+            }
+            _ => false,
+        }
+    }
+
+    fn map_entries(&self) -> Option<Vec<(&JsValue, &JsValue)>> {
+        match self {
+            Self::Map(entries) => Some(entries.iter().map(|(k, v)| (k, v)).collect()),
+            Self::Object(map) => {
+                let JsValue::Array(entries) = sole_tag(map, MAP_TAG)? else {
+                    return None;
+                };
+                Some(
+                    entries
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            JsValue::Array(pair) => Some((pair.first()?, pair.get(1)?)),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn to_value(&self) -> std::borrow::Cow<'_, Value> {
+        std::borrow::Cow::Owned(self.to_validator_value())
+    }
+}
+
+#[cfg(test)]
+mod validator_input_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Everything the validator reads of `value`, through `V`'s
+    /// [`ValidatorInput`], in the plain-JSON shape, for comparison.
+    fn reading<V: ValidatorInput>(value: &V) -> Value {
+        let object = value.as_object().map(|o| {
+            let keys: Vec<&str> = o.keys().collect();
+            // The walk reads the properties of an object with a `$class`
+            // only (`ValidatorObject::get`).
+            let gets: Vec<Value> = keys
+                .iter()
+                .filter(|k| **k != "$class" && o.class().is_some())
+                .map(|k| o.get(k).map_or(Value::Null, |v| v.to_value().into_owned()))
+                .collect();
+            json!({
+                "class": o.class(),
+                "relationship": o.is_relationship(),
+                "keys": keys,
+                "gets": gets,
+            })
+        });
+        let entries = value.map_entries().map(|entries| {
+            entries
+                .iter()
+                .map(|(k, v)| json!([k.to_value(), v.to_value()]))
+                .collect::<Vec<_>>()
+        });
+        json!({
+            "undefined": value.is_undefined(),
+            "null": value.is_null(),
+            "object": object,
+            "array": value.as_array().map(|items| items.iter().map(|i| i.to_value().into_owned()).collect::<Vec<_>>()),
+            "str": ValidatorInput::as_str(value),
+            "f64": ValidatorInput::as_f64(value).map(|n| (n.to_bits(), n.is_sign_negative())),
+            "boolean": ValidatorInput::is_boolean(value),
+            "dayjs": value.is_dayjs(),
+            "entries": entries,
+        })
+    }
+
+    /// P5-102 (C-6): a JS value reads exactly as its plain-JSON shape
+    /// ([`JsValue::to_validator_value`]) does, the tagged one-key objects
+    /// a plain object may spell included.
+    #[test]
+    fn a_js_value_reads_as_its_plain_json_shape() {
+        let instance = |kind: InstanceKind| {
+            let mut i = Instance::new(
+                kind,
+                "org.acme@1.0.0.Person",
+                "org.acme@1.0.0",
+                "Person",
+                Some("email".into()),
+                JsValue::String("bob".into()),
+                JsValue::Undefined,
+            );
+            i.set("name", JsValue::String("Bob".into()));
+            JsValue::Instance(Box::new(i))
+        };
+        let mut overridden = instance(InstanceKind::Resource);
+        if let JsValue::Instance(i) = &mut overridden {
+            i.set("$class", JsValue::Number(1.0));
+            i.set(DAYJS_TAG, JsValue::Bool(true));
+        }
+        let mut numeric_id = instance(InstanceKind::Relationship);
+        if let JsValue::Instance(i) = &mut numeric_id {
+            i.set_identifier(JsValue::Number(1.0));
+        }
+        let mut values = vec![
+            JsValue::Undefined,
+            JsValue::Null,
+            JsValue::Bool(false),
+            JsValue::Number(1.5),
+            JsValue::Number(-0.0),
+            JsValue::Number(1e300),
+            JsValue::Number(f64::NAN),
+            JsValue::Number(f64::NEG_INFINITY),
+            JsValue::String("x".into()),
+            JsValue::BigInt("12".into()),
+            JsValue::DateTime(Dayjs::utc_parse("2021-01-01T00:00:00Z")),
+            JsValue::Array(vec![JsValue::Number(1.0), JsValue::Undefined]),
+            JsValue::Map(vec![
+                (JsValue::String("k".into()), JsValue::Number(1.0)),
+                (JsValue::Number(2.0), JsValue::Undefined),
+            ]),
+            instance(InstanceKind::Resource),
+            instance(InstanceKind::ValidatedResource),
+            instance(InstanceKind::Relationship),
+            overridden,
+            numeric_id,
+        ];
+        for plain in [
+            json!({ "$class": "org.acme@1.0.0.Person", "email": "e", "n": 1 }),
+            json!({ "$$undefined": true }),
+            json!({ "$$undefined": true, "a": 1 }),
+            json!({ "$$number": "NaN" }),
+            json!({ "$$number": 1 }),
+            json!({ "$$bigint": "1" }),
+            json!({ "$$map": [["k", 1], ["only"], 3] }),
+            json!({ "$$map": "no" }),
+            json!({ "$$dayjs": "x", "$class": "a@1.0.0.B" }),
+            json!({ "$$relationship": true, "$class": "a@1.0.0.B", "id": "x" }),
+            json!({}),
+        ] {
+            values.push(JsValue::from_json(&plain));
+        }
+        for value in &values {
+            assert_eq!(
+                reading(value),
+                reading(&value.to_validator_value()),
+                "{value:?}"
+            );
         }
     }
 }

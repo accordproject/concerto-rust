@@ -13,12 +13,11 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use super::factory::{self, InstanceEnv};
-use crate::deserialize::DeserializeOptions;
 use crate::value::{Instance, JsObject, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{
-    required_null_error, strict_qualified_date_time, unknown_keys_error,
+    FromJsonOptions, required_null_error, strict_qualified_date_time, unknown_keys_error,
 };
 use concerto_core::instance::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
 use concerto_core::instance::plan::{self, ClassPlan};
@@ -26,27 +25,11 @@ use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::{Error, model_util};
 
-/// The `JSONPopulator` constructor's options.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PopulatorOptions {
-    /// `acceptResourcesForRelationships`.
-    pub accept_resources_for_relationships: bool,
-    /// `utcOffset || 0`: the offset `DateTime` values get unless
-    /// `strictQualifiedDateTimes` is `true`.
-    pub utc_offset: JsValue,
-    /// `strictQualifiedDateTimes === true`. Since P5-24 (BC-07, R1) every
-    /// `DateTime` string must have the strict format either way; the flag
-    /// only decides whether `utc_offset` is applied.
-    pub strict_qualified_date_times: bool,
-    /// `rejectUnknownKeys` and `rejectRequiredNull` (accordproject/concerto#1273).
-    pub deserialize: DeserializeOptions,
-}
-
 /// The visitor's state: its options and `parameters`.
 pub(crate) struct Populator<'a> {
     pub mm: &'a ModelManager,
     pub env: &'a mut dyn InstanceEnv,
-    pub options: &'a PopulatorOptions,
+    pub options: &'a FromJsonOptions,
     /// `parameters.path`, a `TypedStack` that starts as `['$']`, kept
     /// joined (P5-13): what `path.stack.join('')` reads, with
     /// [`Self::path_marks`] recording where each pushed segment starts.
@@ -72,7 +55,7 @@ fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error
 pub fn convert_primitive(
     type_name: &str,
     json: &JsValue,
-    options: &PopulatorOptions,
+    options: &FromJsonOptions,
     path: &str,
 ) -> Result<JsValue> {
     let wrong_type = || {
@@ -99,7 +82,7 @@ pub fn convert_primitive(
                     if options.strict_qualified_date_times {
                         parsed
                     } else {
-                        parsed.utc_offset_set(&utc_offset_input(&options.utc_offset))
+                        parsed.utc_offset_set(&options.utc_offset)
                     }
                 }
                 _ => return Err(wrong_type()),
@@ -414,7 +397,7 @@ impl<'a> Populator<'a> {
     pub fn new(
         mm: &'a ModelManager,
         env: &'a mut dyn InstanceEnv,
-        options: &'a PopulatorOptions,
+        options: &'a FromJsonOptions,
     ) -> Self {
         Self {
             mm,
@@ -493,7 +476,7 @@ impl<'a> Populator<'a> {
         mut resource: Instance,
     ) -> Result<Instance> {
         let entries = get_assignable_entries(json, class_declaration)?;
-        let options = self.options.deserialize;
+        let options = self.options;
         // `classDeclaration.getProperties()`, and each `getProperty` below
         // and in the `reject_*` options, from the validation plan (P5-88;
         // the only route since P5-99): the same answer every time, and the
@@ -944,23 +927,32 @@ fn utc_offset_input(value: &JsValue) -> UtcOffset {
     }
 }
 
-/// The populator's options from the serializer's merged options. `pub`
-/// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
-/// `PopulatorOptions` for [`convert_primitive`] from the options object the
-/// TS visitor shell already has.
-pub fn populator_options(options: &JsObject) -> PopulatorOptions {
-    let get = |key: &str| options.get(key).cloned().unwrap_or(JsValue::Undefined);
+/// What `Serializer.fromJSON` reads from its merged options (the
+/// populator's options, and `validate`), as core's own
+/// [`FromJsonOptions`] (P5-102, accordproject/concerto-rust#456, C-7: this
+/// crate kept its own copies of the same options, with `utcOffset` as a JS
+/// value). `pub` so the concerto-wasm binding (P4-10) can read them for
+/// [`convert_primitive`] from the options object the TS visitor shell
+/// already has. The validator's own options are not read here: a
+/// `ValidatedResource` validates with its own.
+pub fn from_json_options(options: &JsObject) -> FromJsonOptions {
+    let get = |key: &str| options.get(key).unwrap_or(&JsValue::Undefined);
+    let truthy = |key: &str| get(key).is_truthy();
+    // `utcOffset || 0`, as `utcOffset(this.utcOffset)` reads it.
     let utc_offset = get("utcOffset");
-    PopulatorOptions {
-        accept_resources_for_relationships: get("acceptResourcesForRelationships")
-            == JsValue::Bool(true),
+    FromJsonOptions {
+        validate: truthy("validate"),
         utc_offset: if utc_offset.is_truthy() {
-            utc_offset
+            utc_offset_input(utc_offset)
         } else {
-            JsValue::Number(0.0)
+            UtcOffset::Number(0.0)
         },
-        strict_qualified_date_times: get("strictQualifiedDateTimes") == JsValue::Bool(true),
-        deserialize: DeserializeOptions::from_serializer_options(options),
+        strict_qualified_date_times: *get("strictQualifiedDateTimes") == JsValue::Bool(true),
+        accept_resources_for_relationships: *get("acceptResourcesForRelationships")
+            == JsValue::Bool(true),
+        reject_unknown_keys: truthy(crate::deserialize::REJECT_UNKNOWN_KEYS),
+        reject_required_null: truthy(crate::deserialize::REJECT_REQUIRED_NULL),
+        ..FromJsonOptions::default()
     }
 }
 
@@ -1026,13 +1018,13 @@ mod tests {
     /// either way, with `utcOffset` applied only when the flag is not set.
     #[test]
     fn datetime_strings_are_strict_either_way() {
-        let non_strict = PopulatorOptions {
+        let non_strict = FromJsonOptions {
             accept_resources_for_relationships: false,
-            utc_offset: JsValue::Number(60.0),
+            utc_offset: UtcOffset::Number(60.0),
             strict_qualified_date_times: false,
-            deserialize: DeserializeOptions::default(),
+            ..FromJsonOptions::default()
         };
-        let strict = PopulatorOptions {
+        let strict = FromJsonOptions {
             strict_qualified_date_times: true,
             ..non_strict.clone()
         };
@@ -1066,12 +1058,7 @@ mod tests {
     /// fractional number. `NaN` was already rejected.
     #[test]
     fn non_finite_integers_and_longs_are_rejected() {
-        let options = PopulatorOptions {
-            accept_resources_for_relationships: false,
-            utc_offset: JsValue::Number(0.0),
-            strict_qualified_date_times: false,
-            deserialize: DeserializeOptions::default(),
-        };
+        let options = FromJsonOptions::default();
         for type_name in ["Integer", "Long"] {
             for n in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 1.5] {
                 let err = convert_primitive(type_name, &JsValue::Number(n), &options, "$.i")

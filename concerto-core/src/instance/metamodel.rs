@@ -48,61 +48,125 @@ use crate::model_util;
 /// `basemodelmanager.ts` imports it.
 pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
-/// The metamodel's own AST: the same vendored copy
-/// `crate::dcs` includes (`concerto-core/src/dcs/metamodel.json`, identical
-/// byte for byte to `concerto-metamodel/vendor/concerto.metamodel@1.0.0.json`
-/// — `MetaModelUtil.metaModelAst`, the document `new ModelManager({
-/// addMetamodel: true })` adds), so this module vendors no copy of its own.
-const METAMODEL_AST_JSON: &str = include_str!("../dcs/metamodel.json");
+/// The fully-qualified name of the metamodel declaration `$short`, as a
+/// `&'static str` literal: `metamodel_class!("MapDeclaration")` is
+/// `"concerto.metamodel@1.0.0.MapDeclaration"` ([`METAMODEL_NAMESPACE`],
+/// a dot, the short name), built at compile time rather than with
+/// `format!` on each call (P5-102, C-10).
+macro_rules! metamodel_class {
+    ($short:literal) => {
+        concat!("concerto.metamodel@1.0.0.", $short)
+    };
+}
+pub(crate) use metamodel_class;
 
-/// A fresh [`ModelManager`] with the metamodel model itself loaded. TS's
+/// The metamodel's own AST, `MetaModelUtil.metaModelAst` (the document
+/// `new ModelManager({ addMetamodel: true })` adds): the vendored copy
+/// `concerto-core/src/metamodel.json`, next to the system models'
+/// `rootmodel.json`, identical byte for byte to
+/// `concerto-metamodel/vendor/concerto.metamodel@1.0.0.json`. Read only by
+/// [`metamodel_model_file`], the crate's one loader of it (P5-102, C-10).
+const METAMODEL_AST_JSON: &str = include_str!("../metamodel.json");
+
+/// A fresh [`ModelManager`] holding the system models and the metamodel
+/// file ([`metamodel_model_file`], shared, not copied), validated. TS's
 /// `validateAst` adds `this.metamodelModelFile` only for the duration of
 /// the check (and only when a metamodel is not already present) rather
-/// than caching it; [`validate_metamodel`] runs on
+/// than caching it; the checks here run on
 /// [`with_resident_metamodel_manager`]'s per-thread copy of this manager
 /// instead (P5-21), which holds the same models and gives the same answer.
 fn metamodel_model_manager() -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
-    let metamodel: Value =
-        serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    mm.load_models([(&metamodel, Some(format!("{METAMODEL_NAMESPACE}.cto")))])?;
+    mm.add_shared_model_file(metamodel_model_file()?)?;
+    mm.validate_models()?;
     Ok(mm)
 }
 
-/// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
-/// P5-21, accordproject/concerto-rust#319), as P5-13's
-/// `ModelManager::validate_ast_value` does for its own resident manager:
-/// built on the first call on each thread, then kept with its caches warm,
-/// so a later call pays for no system-model or metamodel load.
-///
-/// The manager is only ever read ([`from_json`] takes it by shared
-/// reference, and nothing else can reach it), so every call sees the same
-/// models a fresh manager would hold, and gets the same result and error.
-/// A build error is returned and not cached, exactly as an uncached build
-/// returns it. Being per-thread, the cache adds no shared state: nothing
-/// here changes what is `Send` or `Sync` (P6-01).
-fn with_resident_metamodel_manager<R>(f: impl FnOnce(&ModelManager) -> Result<R>) -> Result<R> {
-    thread_local! {
-        static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
-            const { std::cell::RefCell::new(None) };
-    }
-    RESIDENT.with(|cell| {
-        if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
-            let mm = metamodel_model_manager()?;
-            if let Ok(mut slot) = cell.try_borrow_mut() {
-                *slot = Some(mm);
+js_compat_pub! {
+    /// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
+    /// P5-21, accordproject/concerto-rust#319): built on the first call on each
+    /// thread, then kept with its caches warm, so a later call pays for no
+    /// system-model or metamodel load.
+    ///
+    /// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
+    /// [`validate_metamodel`], [`validate_meta_model_instance`],
+    /// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
+    /// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
+    ///
+    /// The concerto-wasm binding `validateMetaModelInstance` runs on it too
+    /// (P5-102, F-7), so TS's `validateMetaModel` holds no metamodel manager
+    /// of its own; that is why it is `pub` under `js-compat`.
+    ///
+    /// The manager is only ever read (`f` gets it by shared reference, and
+    /// nothing else can reach it), so every call sees the same models a
+    /// fresh manager would hold, and gets the same result and error.
+    /// A build error is returned and not cached, exactly as an uncached build
+    /// returns it. Being per-thread, the cache adds no shared state: nothing
+    /// here changes what is `Send` or `Sync` (P6-01).
+    pub fn with_resident_metamodel_manager<R>(
+        f: impl FnOnce(&ModelManager) -> Result<R>,
+    ) -> Result<R> {
+        thread_local! {
+            static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        RESIDENT.with(|cell| {
+            if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
+                let mm = metamodel_model_manager()?;
+                if let Ok(mut slot) = cell.try_borrow_mut() {
+                    *slot = Some(mm);
+                }
             }
-        }
-        match cell.try_borrow() {
-            Ok(resident) => match resident.as_ref() {
-                Some(mm) => f(mm),
-                None => f(&metamodel_model_manager()?),
+            match cell.try_borrow() {
+                Ok(resident) => match resident.as_ref() {
+                    Some(mm) => f(mm),
+                    None => f(&metamodel_model_manager()?),
+                },
+                // Unreachable in practice (the closure cannot re-enter this
+                // function), but a fresh manager is always a correct answer.
+                Err(_) => f(&metamodel_model_manager()?),
+            }
+        })
+    }
+}
+
+js_compat_pub! {
+    /// The `Serializer.fromJSON` options a metamodel instance is checked
+    /// with, one per caller of [`with_resident_metamodel_manager`] (P5-102,
+    /// F-7), so the concerto-wasm binding `validateMetaModelInstance` can
+    /// take the preset as an argument and its TS caller hold no metamodel
+    /// manager of its own.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MetaModelPreset {
+        /// accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`:
+        /// `validateAst`'s check ([`validate_metamodel`]).
+        Strict,
+        /// The manager's serializer defaults, `baseDefaultOptions`
+        /// (`{validate: true, utcOffset}`): `validateAst`'s check over the
+        /// caller's own manager (`deserialize_ast`).
+        Default,
+        /// A `new Serializer(factory, modelManager)`'s defaults:
+        /// `validateMetaModel`'s check ([`validate_meta_model_instance`]).
+        /// `Object.assign({}, baseDefaultOptions, {})`, so the same options
+        /// as [`Self::Default`], named apart for its caller.
+        Serializer,
+    }
+}
+
+impl MetaModelPreset {
+    /// The options this preset reads as. `utcOffset` is `0` in each: the
+    /// metamodel declares no `DateTime` property, so no offset can change a
+    /// metamodel document's outcome.
+    pub fn from_json_options(self) -> FromJsonOptions {
+        match self {
+            Self::Strict => FromJsonOptions {
+                reject_unknown_keys: true,
+                reject_required_null: true,
+                ..FromJsonOptions::default()
             },
-            // Unreachable in practice (the closure cannot re-enter this
-            // function), but a fresh manager is always a correct answer.
-            Err(_) => f(&metamodel_model_manager()?),
+            Self::Default | Self::Serializer => FromJsonOptions::default(),
         }
-    })
+    }
 }
 
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
@@ -136,11 +200,7 @@ fn ts_message(err: &Error) -> String {
 /// The metamodel manager is resident per thread (task P5-21,
 /// `with_resident_metamodel_manager`), not rebuilt on every call.
 pub fn validate_metamodel(ast: &Value) -> Result<()> {
-    let options = FromJsonOptions {
-        reject_unknown_keys: true,
-        reject_required_null: true,
-        ..FromJsonOptions::default()
-    };
+    let options = MetaModelPreset::Strict.from_json_options();
     with_resident_metamodel_manager(|mm| {
         from_json(mm, ast, &options, &mut FixedEnv)
             .map(|_resource| ())
@@ -179,8 +239,9 @@ pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
     }
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    let model_file = std::sync::Arc::new(ModelFile::from_json(
-        &metamodel,
+    let model_file = std::sync::Arc::new(ModelFile::from_owned_json_with_definitions(
+        metamodel,
+        None,
         Some(METAMODEL_NAMESPACE.to_string()),
     )?);
     METAMODEL_MODEL_FILE.with(|cache| *cache.borrow_mut() = Some(std::sync::Arc::clone(&model_file)));
@@ -203,9 +264,14 @@ pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
 /// only a manager option `validate: false` would, and no
 /// `ModelManager` in this port carries a serializer option bag.
 pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
-    from_json(mm, ast, &FromJsonOptions::default(), &mut FixedEnv)
-        .map(|_resource| ())
-        .map_err(|err| wrapped(&err))
+    from_json(
+        mm,
+        ast,
+        &MetaModelPreset::Default.from_json_options(),
+        &mut FixedEnv,
+    )
+    .map(|_resource| ())
+    .map_err(|err| wrapped(&err))
 }
 
 /// `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`):
@@ -236,13 +302,17 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
 /// This one runs the default options, and a failure is the serializer's own
 /// error, unwrapped, as TS throws it.
 ///
-/// The metamodel manager is `metamodel_model_manager`'s. TS's
+/// The metamodel manager is the resident one
+/// ([`with_resident_metamodel_manager`], P5-102), which holds the models a
+/// fresh `newMetaModelManager()` holds and is only read. TS's
 /// `newMetaModelManager` names the file `concerto.metamodel` and keeps the
 /// metamodel's CTO text as its definitions; neither is observable here
 /// beyond an error message's wording (error parity compares the class).
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
-    let mm = metamodel_model_manager()?;
-    from_json(&mm, input, &FromJsonOptions::default(), &mut FixedEnv).map(|_resource| ())
+    let options = MetaModelPreset::Serializer.from_json_options();
+    with_resident_metamodel_manager(|mm| {
+        from_json(mm, input, &options, &mut FixedEnv).map(|_resource| ())
+    })
 }
 
 /// TS `modelManagerFromMetaModel(metaModel, validate = true)`
@@ -542,6 +612,42 @@ fn namespace_version(ns: &str) -> Result<Option<String>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// P5-102 (F-7/B-8/A-12): one resident manager, holding the one shared
+    /// metamodel file under its namespace, as `validateAst` registers it.
+    #[test]
+    fn the_resident_manager_holds_the_shared_metamodel_file() {
+        let file = metamodel_model_file().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&file, &metamodel_model_file().unwrap()));
+        assert_eq!(file.file_name(), Some(METAMODEL_NAMESPACE));
+        with_resident_metamodel_manager(|mm| {
+            let held = mm
+                .shared_model_files()
+                .find(|mf| mf.namespace() == METAMODEL_NAMESPACE)
+                .expect("the resident manager holds the metamodel");
+            assert!(std::sync::Arc::ptr_eq(held, &file));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// P5-102 (F-7): the presets the `validateMetaModelInstance` binding
+    /// takes read as the options their callers used before: strict for
+    /// `validateAst`, a Serializer's defaults (the same as the manager's)
+    /// for `validateMetaModel`.
+    #[test]
+    fn metamodel_presets_read_as_their_callers_options() {
+        let strict = MetaModelPreset::Strict.from_json_options();
+        assert!(strict.reject_unknown_keys && strict.reject_required_null && strict.validate);
+        assert_eq!(
+            MetaModelPreset::Default.from_json_options(),
+            FromJsonOptions::default()
+        );
+        assert_eq!(
+            MetaModelPreset::Serializer.from_json_options(),
+            FromJsonOptions::default()
+        );
+    }
 
     // ---- ported from concerto-validate-rs's src/lib.rs tests (issue
     //      accordproject/concerto-rust#59's exit condition, as narrowed by

@@ -8,6 +8,7 @@
 //! arguments; `parameters.seenResources` and `dedupeResources` are
 //! `Generator`'s sets.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use super::populator::read_properties_error;
@@ -90,15 +91,16 @@ fn as_resource(value: &JsValue) -> Option<&Instance> {
 }
 
 /// `for (let index in obj)`: the values a `for...in` over `obj` visits, in
-/// order.
-fn for_in_values(obj: &JsValue) -> Result<Vec<JsValue>> {
+/// order: an array's items and an object's values borrowed, not copied
+/// (P5-102, C-6), and a string's UTF-16 units each as a new string.
+fn for_in_values(obj: &JsValue) -> Result<Vec<Cow<'_, JsValue>>> {
     Ok(match obj {
-        JsValue::Array(items) => items.clone(),
+        JsValue::Array(items) => items.iter().map(Cow::Borrowed).collect(),
         JsValue::String(s) => s
             .encode_utf16()
-            .map(|u| JsValue::String(String::from_utf16_lossy(&[u])))
+            .map(|u| Cow::Owned(JsValue::String(String::from_utf16_lossy(&[u]))))
             .collect(),
-        JsValue::Object(map) => map.values().cloned().collect(),
+        JsValue::Object(map) => map.values().map(Cow::Borrowed).collect(),
         JsValue::Undefined
         | JsValue::Null
         | JsValue::Bool(_)
@@ -191,20 +193,19 @@ impl<'a> Generator<'a> {
         let class_plan = plan::class_plan(self.mm, class_declaration.id)?;
         for index in 0..class_plan.props.len() {
             let (_, property) = class_plan.property(self.mm, index);
-            let name = concerto_core::Named::name(property).to_string();
-            let value = resource.get(&name).clone();
+            let name = concerto_core::Named::name(property);
+            // P5-102 (C-6): the field's value is read in place, not copied.
+            let value = resource.get(name);
             if value.is_nullish() {
                 continue;
             }
             let field = class_plan.field(self.mm, index)?;
             let converted = match &field.field_type {
-                FieldType::Relationship(_) => {
-                    self.visit_relationship_declaration(&field, &value)?
-                }
+                FieldType::Relationship(_) => self.visit_relationship_declaration(&field, value)?,
                 FieldType::EnumValue => return Err(model::unrecognised_field(&field)),
-                _ => self.visit_field(&field, &value)?,
+                _ => self.visit_field(&field, value)?,
             };
-            result.insert(name, converted);
+            result.insert(name.to_string(), converted);
         }
         Ok(JsValue::Object(result))
     }
@@ -226,7 +227,7 @@ impl<'a> Generator<'a> {
         // target type is resolved at the first value, as TS resolves it.
         let is_relationship = model::is_relationship_map(map_declaration);
         let mut relationship_target: Option<String> = None;
-        let mut result: Vec<(String, JsValue)> = Vec::new();
+        let mut result = JsObject::default();
         for (key, value) in entries {
             let key = key.to_js_string();
             // Don't serialize system properties, other than $class (which is
@@ -234,7 +235,8 @@ impl<'a> Generator<'a> {
             if model_util::is_system_property(&key) {
                 continue;
             }
-            let mut value = value.clone();
+            // Read in place; only a converted value is a new one (P5-102).
+            let mut value = Cow::Borrowed(value);
             if is_relationship {
                 if relationship_target.is_none() {
                     relationship_target = model::map_relationship_target(map_declaration)?;
@@ -243,9 +245,9 @@ impl<'a> Generator<'a> {
                     .as_deref()
                     .expect("is_relationship_map was checked");
                 let slot = model::map_relationship_slot(map_declaration, target);
-                value = self.relationship_item(&slot, &value)?;
+                value = Cow::Owned(self.relationship_item(&slot, &value)?);
             } else if value.type_of() == "object" {
-                let value_type = match &value {
+                let value_type = match &*value {
                     JsValue::Null => {
                         return Err(read_properties_error(&value, "getFullyQualifiedType"));
                     }
@@ -263,15 +265,15 @@ impl<'a> Generator<'a> {
                         unreachable!("getNamespace(null) throws");
                     }
                 };
-                value = self.accept_declaration(&decl, &value)?;
+                value = Cow::Owned(self.accept_declaration(&decl, &value)?);
             }
-            // `map.set(key, value)`, then `Object.fromEntries(map)`.
-            match result.iter_mut().find(|(k, _)| *k == key) {
-                Some(entry) => entry.1 = value,
-                None => result.push((key, value)),
-            }
+            // `map.set(key, value)`, then `Object.fromEntries(map)`: a key
+            // set again keeps its place and takes the new value, which is
+            // what an insert into the key-ordered map does, in one hashed
+            // lookup (P5-102; it was a linear search per entry, O(n^2)).
+            result.insert(key, value.into_owned());
         }
-        Ok(JsValue::Object(result.into_iter().collect()))
+        Ok(JsValue::Object(result))
     }
 
     /// TS: JSONGenerator.visitField, for a field already unboxed by
@@ -280,21 +282,22 @@ impl<'a> Generator<'a> {
         if field.is_array() {
             let mut array = Vec::new();
             for item in for_in_values(obj)? {
+                let item = &*item;
                 if !field.is_primitive() && !matches!(field.field_type, FieldType::Enum(_)) {
                     // `parameters.stack.push(item, Typed)`
-                    let JsValue::Instance(typed) = &item else {
+                    let JsValue::Instance(typed) = item else {
                         return Err(plain_error(
                             "typedstack-push-unexpectedtype",
                             vec![
                                 ("type", "Typed".to_string()),
-                                ("obj", typed_stack_found(&item)?),
+                                ("obj", typed_stack_found(item)?),
                             ],
                         ));
                     };
                     let declaration = model::get_type(self.mm, &typed.class_fqn)?;
-                    array.push(self.accept_declaration(&declaration, &item)?);
+                    array.push(self.accept_declaration(&declaration, item)?);
                 } else {
-                    array.push(self.convert_to_json(field, &item)?);
+                    array.push(self.convert_to_json(field, item)?);
                 }
             }
             return Ok(JsValue::Array(array));
