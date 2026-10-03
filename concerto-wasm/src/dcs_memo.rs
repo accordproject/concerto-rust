@@ -55,9 +55,10 @@ pub(crate) struct DcsExtractMemo {
     pub(crate) kept: Option<DcsExtractKept>,
 }
 
-/// [`ModelManagerAstView`]'s text, from each model's own AST text
-/// ([`ModelManager::compact_model_asts`]): the same compact envelope, byte
-/// for byte (P5-77).
+/// The `{"$class", "models"}` envelope of a manager's model ASTs
+/// (`model_manager_to_ast`'s), from each model's own AST text
+/// ([`ModelManager::compact_model_asts`]): the same compact text, byte for
+/// byte (P5-77).
 fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
     let mut out = String::with_capacity(64 + texts.iter().map(|t| t.len() + 1).sum::<usize>());
     out.push_str("{\"$class\":\"concerto.metamodel@1.0.0.Models\",\"models\":[");
@@ -71,10 +72,11 @@ fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
     out
 }
 
-/// P5-77: [`stage_result`] then [`extract_result_js`] for a result the
-/// caller drops once the call returns, through [`DcsExtractKept`], so the
-/// files staged into `target` keep their ASTs as text
-/// ([`DcsExtractKept::new`]). The same JS value, the same stages.
+/// P5-77: stages an extract result into `target` and returns its JS value,
+/// for a result the caller drops once the call returns, through
+/// [`DcsExtractKept`], so the files staged into `target` keep their ASTs as
+/// text ([`DcsExtractKept::new`]). The same JS value, and the same stages,
+/// as [`stage_result`] gives.
 pub(crate) fn compacted_extract_js(
     target: &mut ModelManagerHandle,
     result: dcs::extractor::EncodedExtractResult,
@@ -97,7 +99,7 @@ pub(crate) struct DcsExtractKept {
     pub(crate) source: Vec<Value>,
     /// The result manager, staged from on every call.
     pub(crate) result: ModelManager,
-    /// The JSON text of the result manager's AST ([`ModelManagerAstView`]).
+    /// The JSON text of the result manager's AST ([`models_envelope_text`]).
     pub(crate) ast_text: String,
     /// The staged header of each of `result`'s model files, in order
     /// ([`staged_header_from_parts`]).
@@ -108,9 +110,9 @@ impl DcsExtractKept {
     /// P5-77 (accordproject/concerto-rust#419): the staged headers are read
     /// from the result's parsed ASTs first, then the ASTs are compacted
     /// ([`ModelManager::compact_model_asts`]): each result model file keeps
-    /// its AST as the JSON text [`ModelManagerAstView`] writes for it, and
-    /// [`Self::ast_text`] is spliced from those texts, byte for byte that
-    /// view's text. So the files staged from it (shared, see
+    /// its AST as compact JSON text, and [`Self::ast_text`] is spliced
+    /// from those texts, byte for byte the text of `model_manager_to_ast`'s
+    /// value. So the files staged from it (shared, see
     /// [`Self::stage`]) hold text, not a parsed tree, for as long as the
     /// result ModelManager lives. Should the compaction fail, `ast_text` is
     /// left empty and [`Self::result_js`] takes its fallback, as before
@@ -147,9 +149,10 @@ impl DcsExtractKept {
         )
     }
 
-    /// [`extract_result_text`] for the kept result and this call's command
-    /// sets and vocabularies, byte for byte, with the AST spliced in from
-    /// [`Self::ast_text`].
+    /// The JSON text of the extract result (`{modelManager,
+    /// decoratorCommandSet, vocabularies, staged, validated}`) for the kept
+    /// result and this call's command sets and vocabularies, with the AST
+    /// spliced in from [`Self::ast_text`].
     pub(crate) fn result_text(
         &self,
         command_sets: &str,
@@ -172,8 +175,8 @@ impl DcsExtractKept {
         String::from_utf8(out).map_err(serde::ser::Error::custom)
     }
 
-    /// [`extract_result_js`] for the kept result: [`Self::result_text`],
-    /// parsed, or the same intermediate-`Value` fallback.
+    /// The JS value of the extract result: [`Self::result_text`], parsed,
+    /// or, should that fail, the same object built as a `Value`.
     fn result_js(
         &self,
         command_sets: &str,
@@ -184,7 +187,7 @@ impl DcsExtractKept {
         if let Some(js) = text.ok().and_then(|text| JSON::parse(&text).ok()) {
             return js;
         }
-        // The intermediate-`Value` fallback, as [`extract_result_js`]'s.
+        // The intermediate-`Value` fallback.
         let decorator_command_set: Value =
             serde_json::from_str(command_sets).unwrap_or(Value::Null);
         to_js(&json!({
@@ -241,16 +244,5 @@ impl ModelManagerHandle {
                 Ok(compacted_extract_js(target, result, Vec::new()).0)
             }
         }
-    }
-}
-
-#[wasm_bindgen]
-impl ModelManagerHandle {
-    /// Drops this handle's extract result memo (P5-56), freeing the result
-    /// models it keeps; the next repeated extract fills it again. Never
-    /// changes the manager or its epoch. Additive.
-    #[wasm_bindgen(js_name = dropDcsMemo)]
-    pub fn drop_dcs_memo(&self) {
-        *self.dcs_memo.borrow_mut() = None;
     }
 }
