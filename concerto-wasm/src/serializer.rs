@@ -90,7 +90,7 @@ pub(crate) fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<
         kind,
         class_fqn: fqn,
         props,
-        validator_options: concerto_core::instance::ValidateOptions::default(),
+        validator_options: ValidateOptions::default(),
     })
 }
 
@@ -507,7 +507,7 @@ pub(crate) fn decode_wire_tagged(kind: &str, mut map: SerializerOptions) -> Resu
                 kind,
                 class_fqn: fqn,
                 props,
-                validator_options: concerto_core::instance::ValidateOptions::default(),
+                validator_options: ValidateOptions::default(),
             })))
         }
         other => Err(wire_error(format!(

@@ -35,20 +35,6 @@ pub(crate) fn model_manager_from_owned_asts(models: Value) -> Result<ModelManage
     Ok(mm)
 }
 
-/// A native `ModelManager`'s own models (the system ones included, in load
-/// order) as `{ $class, models }` — the shape
-/// `BaseModelManager.getAst`/`fromAst` (`src/basemodelmanager.ts`) use. The
-/// view's own `fromAst` filters the system ones back out (`EXCLUDE_NS`)
-/// exactly as it already does for the ts-mode `decorateModels`/`extract*`
-/// bodies, so this need not filter them here.
-pub(crate) fn model_manager_to_ast(mm: &ModelManager) -> Value {
-    let models: Vec<Value> = mm.model_files().map(|mf| mf.ast().clone()).collect();
-    json!({
-        "$class": "concerto.metamodel@1.0.0.Models",
-        "models": models,
-    })
-}
-
 /// An `Option<bool>` the way [`dcs::DecorateOptions`]' `disable_*` fields
 /// read a JS option: `Some(b)` only for a literal JS boolean, `None` for
 /// anything else (absent, `null`, `undefined`, or a non-boolean value),
@@ -108,8 +94,9 @@ pub(crate) fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
 }
 
 /// P5-41 (F-C, accordproject/concerto-rust#351): the `{ "$class", "models" }`
-/// AST [`model_manager_to_ast`] builds, serialised straight from the
-/// manager's own model ASTs, without cloning them into a new `Value`.
+/// AST of a manager's own models (the system ones included, in load
+/// order), serialised straight from its model ASTs, without cloning them
+/// into a new `Value`.
 pub(crate) struct ModelManagerAstView<'a>(&'a ModelManager);
 
 impl serde::Serialize for ModelManagerAstView<'_> {
@@ -213,7 +200,7 @@ pub(crate) const DCS_EXCLUDE_NS: [&str; 3] =
 /// P5-101 (D-4, D-13; accordproject/concerto-rust#455): stages each of a
 /// DecoratorManager result's model files, with its header, into `target`'s
 /// staging slot, and returns one entry per file, in
-/// [`model_manager_to_ast`]'s order: `null` for a system file `fromAst`
+/// the manager's load order: `null` for a system file `fromAst`
 /// skips ([`DCS_EXCLUDE_NS`]), otherwise the stage in the flat layout every
 /// staging path returns ([`FlatStaged`]). The one helper both
 /// [`stage_result`] and [`dcs_memo::DcsExtractKept::stage`] stage through. Staging
@@ -226,14 +213,14 @@ pub(crate) const DCS_EXCLUDE_NS: [&str; 3] =
 /// the result (`ModelManager::shared_model_files`), not deep-copied.
 pub(crate) fn stage_shared<'h, 'a: 'h>(
     target: &mut ModelManagerHandle,
-    files: impl Iterator<Item = (&'h std::sync::Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
+    files: impl Iterator<Item = (&'h Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
 ) -> Vec<Value> {
     files
         .map(|(mf, header)| {
             if DCS_EXCLUDE_NS.contains(&mf.namespace()) {
                 return Value::Null;
             }
-            let id = target.staged.insert_shared(std::sync::Arc::clone(mf));
+            let id = target.staged.insert_shared(Arc::clone(mf));
             serde_json::to_value(FlatStaged { id, header }).unwrap_or(Value::Null)
         })
         .collect()
@@ -261,7 +248,11 @@ pub(crate) fn stage_result(target: &mut ModelManagerHandle, result: &ModelManage
 /// false).models`, loaded once ([`model_manager_from_owned_asts`]). The
 /// view builds one per operation and frees it (P5-103 removed the copy it
 /// kept per source manager, which only a manager the source handle serves
-/// could use). The operations never change it.
+/// could use). The operations never change its models; `decorateModels`
+/// sets its `decoratorValidation` to `target`'s and leaves it so (P5-54),
+/// which is harmless, since the view frees it after the one operation
+/// (P5-104, D-11; the source handle's [`ModelManagerHandle::dcs_decorate_models`]
+/// restores its own).
 #[wasm_bindgen]
 pub struct DcsManagerHandle {
     manager: ModelManager,
@@ -400,15 +391,14 @@ pub(crate) fn staged_decorate_models(
     let validated = applied && opts.disable_metamodel_validation != Some(true);
     // P5-102 (D-5, C-3): extract's writer. `{ast, staged, validated}` is
     // written as text straight from the result's model ASTs
-    // ([`ModelManagerAstView`]), then parsed once; the intermediate `Value`
-    // (every AST deep-copied by `model_manager_to_ast`, then `to_js`) is
-    // only the fallback. The result's ASTs are not compacted as extract's
+    // ([`ModelManagerAstView`]), then parsed once, with no intermediate
+    // `Value` (P5-104, D-11 removed that fallback). The result's ASTs are not compacted as extract's
     // are (P5-77): a decorated manager is usually read again (extracted
     // from, validated, serialised), and re-parsing every compacted AST in
     // WASM then cost far more than compaction saved (P5-102 measured the
     // `extract_cold` row 3.7x slower on the synthetic-large set).
     let staged = stage_result(target, &decorated);
-    Ok(decorate_result_js(&decorated, staged, validated))
+    decorate_result_js(&decorated, &staged, validated)
 }
 
 /// A JS array argument's elements, moved out of its `Value` rather than
@@ -442,24 +432,16 @@ pub(crate) fn decorate_result_text(
     String::from_utf8(out).map_err(serde::ser::Error::custom)
 }
 
-/// The JS value of a decorate result: [`decorate_result_text`], parsed, or
-/// the intermediate-`Value` fallback, which gives the same value.
+/// The JS value of a decorate result: [`decorate_result_text`], parsed.
+/// The text is written from values serde built, so neither step fails
+/// (P5-104, D-11: the intermediate-`Value` fallback is gone).
 pub(crate) fn decorate_result_js(
     decorated: &ModelManager,
-    staged: Vec<Value>,
+    staged: &[Value],
     validated: bool,
-) -> JsValue {
-    if let Some(js) = decorate_result_text(decorated, &staged, validated)
-        .ok()
-        .and_then(|text| JSON::parse(&text).ok())
-    {
-        return js;
-    }
-    to_js(&json!({
-        "ast": model_manager_to_ast(decorated),
-        "staged": staged,
-        "validated": validated,
-    }))
+) -> Result<JsValue> {
+    let text = decorate_result_text(decorated, staged, validated).map_err(internal)?;
+    JSON::parse(&text).map_err(Error::Js)
 }
 
 /// [`DcsManagerHandle::extract`]'s body, on `manager`: one extract
@@ -474,7 +456,7 @@ pub(crate) fn staged_extract(
     let opts = extract_options_from_js(&options_json);
     let result = dcs::extract(manager, &opts, action, false)?;
     // P5-77: staged shared, with the result's ASTs kept as text.
-    Ok(compacted_extract_js(target, result).0)
+    Ok(compacted_extract_js(target, result)?.0)
 }
 
 // ---------------------------------------------------------------------------

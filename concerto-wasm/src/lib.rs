@@ -56,10 +56,38 @@
 //!
 //! Strings cross the boundary as UTF-8, so a lone UTF-16 surrogate becomes
 //! U+FFFD. No oracle fixture or unit test passes one.
+//!
+//! # Export names (P5-104, D-11)
+//!
+//! The JS names are an interface the TS views call, so they stay as they
+//! are; new bindings follow the rule each existing group follows:
+//! - a free function binding a TS member is `<tsClass><Method>`
+//!   (`modelUtilGetNamespace`, `classDeclarationProcess`);
+//! - a handle method binding a `ModelManager` member is the TS method name
+//!   (`getNamespaces`, `resolveType`, `isAssignableTo`); one binding a
+//!   member of another TS class, by handle, is `<tsClass><Method>`
+//!   (`modelFileGetTypeName`, `modelManagerGetModelFileByFileName`);
+//! - an engine operation with no TS member is an engine verb (`stage*`,
+//!   `commit*`, `dcs*`).
+//!
+//! The Rust name is the snake case of the JS name (an acronym in lower
+//! case, `resource_id_from_uri`), except `DcsManagerHandle::extract_with_action`
+//! (`extract`), whose Rust name `extract` is its body's.
+//!
+//! # Layout
+//!
+//! One module per section of the binding (P5-104, review M7): `host`
+//! (the error mapping), `js_values`, `model_util`,
+//! `validator_bindings`, `properties`, `declarations`,
+//! `decorators`, `arena`, `handle`, `serializer`,
+//! `validate_instance`, `model_file` and `dcs_bindings`, next to the
+//! process-global state (`caches`), the staging slot (`staging`), the
+//! extract memo (`dcs_memo`) and `validate_resource`.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use concerto_core::dcs;
 use concerto_core::error::{ContractError, ErrorKind};
@@ -108,8 +136,13 @@ mod validate_instance;
 mod validator_bindings;
 
 use dcs_bindings::*;
+
+// The two exported handle types stay at the crate root, where the docs
+// link them.
+pub use dcs_bindings::DcsManagerHandle;
 use declarations::*;
 use decorators::*;
+pub use handle::ModelManagerHandle;
 use handle::*;
 use host::*;
 use js_values::*;

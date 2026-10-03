@@ -43,22 +43,22 @@ pub(crate) fn field_snapshot(processed: &field::ProcessedField) -> Value {
 /// `field::process` read. A `null` value reads as absent, which both treat
 /// the same way (`as_str`/`as_bool`/truthiness/`!Util.isNull`).
 #[derive(serde::Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct LightProperty {
     #[serde(rename = "$class")]
     class: Option<Value>,
     name: Option<Value>,
     #[serde(rename = "type")]
     type_: Option<Value>,
-    isArray: Option<Value>,
-    isOptional: Option<Value>,
+    is_array: Option<Value>,
+    is_optional: Option<Value>,
     validator: Option<Value>,
-    lengthValidator: Option<Value>,
-    defaultValue: Option<Value>,
+    length_validator: Option<Value>,
+    default_value: Option<Value>,
     // P5-10b: read by `model_file_view_snapshot` only, never part of
     // `into_value`.
     decorators: Option<Value>,
-    sizeValidator: Option<Value>,
+    size_validator: Option<Value>,
 }
 
 impl LightProperty {
@@ -70,11 +70,11 @@ impl LightProperty {
             ("$class", self.class),
             ("name", self.name),
             ("type", self.type_),
-            ("isArray", self.isArray),
-            ("isOptional", self.isOptional),
+            ("isArray", self.is_array),
+            ("isOptional", self.is_optional),
             ("validator", self.validator),
-            ("lengthValidator", self.lengthValidator),
-            ("defaultValue", self.defaultValue),
+            ("lengthValidator", self.length_validator),
+            ("defaultValue", self.default_value),
         ] {
             if let Some(value) = value {
                 map.insert(key.to_string(), value);
@@ -250,7 +250,7 @@ pub(crate) fn write_view_property_entry(
     mut property: LightProperty,
 ) -> Option<()> {
     let decorators = property.decorators.take();
-    let size_validator = property.sizeValidator.take();
+    let size_validator = property.size_validator.take();
     let ast = property.into_value();
     let start = out.len();
     write_property_entry(out, &ast)?;
@@ -425,8 +425,8 @@ pub(crate) fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Valu
     ast.insert("name".to_string(), json!(name));
     for (key, value) in [
         ("validator", &declaration.validator),
-        ("lengthValidator", &declaration.lengthValidator),
-        ("defaultValue", &declaration.defaultValue),
+        ("lengthValidator", &declaration.length_validator),
+        ("defaultValue", &declaration.default_value),
     ] {
         if let Some(value) = value {
             ast.insert(key.to_string(), value.clone());
@@ -541,20 +541,20 @@ pub(crate) struct ViewModel {
 /// A declaration, as far as [`model_file_view_snapshot`] reads it. A `null`
 /// value reads as absent; both are falsy to the TS tests this mirrors.
 #[derive(serde::Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ViewDeclaration {
     #[serde(rename = "$class")]
     class: Option<Value>,
     name: Option<Value>,
-    superType: Option<Value>,
+    super_type: Option<Value>,
     identified: Option<Value>,
     properties: Option<Vec<LightProperty>>,
     // P5-10b: the declaration's decorators, a scalar's validators and
     // default value, and a map's key and value types.
     decorators: Option<Value>,
     validator: Option<Value>,
-    lengthValidator: Option<Value>,
-    defaultValue: Option<Value>,
+    length_validator: Option<Value>,
+    default_value: Option<Value>,
     key: Option<Value>,
     value: Option<Value>,
 }
@@ -604,7 +604,7 @@ pub(crate) fn declaration_view_entry(
 
     // `ModelFile.fromAst`'s default super type for four declaration kinds.
     let class = declaration.class.as_ref().and_then(Value::as_str);
-    let defaulted_to = if json_truthy(declaration.superType.as_ref()) {
+    let defaulted_to = if json_truthy(declaration.super_type.as_ref()) {
         None
     } else {
         DEFAULT_SUPER_TYPES
@@ -633,8 +633,8 @@ pub(crate) fn class_declaration_view_decision(
     // `this.ast.superType`: truthy, then its raw `.name`.
     let super_type: Option<String> = if let Some(t) = defaulted_to {
         Some(t.to_string())
-    } else if json_truthy(declaration.superType.as_ref()) {
-        match declaration.superType.as_ref() {
+    } else if json_truthy(declaration.super_type.as_ref()) {
+        match declaration.super_type.as_ref() {
             Some(Value::Object(node)) => match node.get("name") {
                 Some(Value::String(s)) => Some(s.clone()),
                 _ => return Value::Null,

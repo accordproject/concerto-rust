@@ -57,7 +57,7 @@ pub struct ModelManagerHandle {
     /// [`DcsExtractMemo`]): dropped whenever the epoch moves
     /// ([`Self::bump_epoch`]). A `RefCell`,
     /// so the extract bindings keep taking `&self` and never move the epoch.
-    pub(crate) dcs_memo: std::cell::RefCell<Option<DcsExtractMemo>>,
+    pub(crate) dcs_memo: RefCell<Option<DcsExtractMemo>>,
 }
 
 impl ModelManagerHandle {
@@ -80,7 +80,7 @@ impl ModelManagerHandle {
                 manager: ModelManager::new()?,
                 epoch: 0,
                 staged: StagedModelFiles::default(),
-                dcs_memo: std::cell::RefCell::new(None),
+                dcs_memo: RefCell::new(None),
             })
         })
     }
@@ -491,7 +491,7 @@ impl ModelManagerHandle {
         self.staged.proofs.remove(&stage);
         self.bump_epoch();
         run(|| {
-            let model_file = std::sync::Arc::unwrap_or_clone(file);
+            let model_file = Arc::unwrap_or_clone(file);
             let namespace = model_file.namespace().to_string();
             let updated = self.manager.update_model_file(model_file, false)?;
             self.manager.adopt(updated);
@@ -656,7 +656,7 @@ impl ModelManagerHandle {
 
     /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)` (P4-08).
     #[wasm_bindgen(js_name = isAssignableTo)]
-    pub fn is_assignable_to_type(&self, fqn: &str, base_fqn: &str) -> bool {
+    pub fn is_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
         self.manager.is_type_assignable_to(fqn, base_fqn)
     }
 
@@ -996,10 +996,7 @@ impl ModelManagerHandle {
             // real namespace for every declaration reachable from this
             // filter call is looked up by identity up front, across every
             // file `self.manager` holds.
-            let fqn_by_decl: std::collections::HashMap<
-                *const concerto_core::introspect::Declaration,
-                String,
-            > = self
+            let fqn_by_decl: HashMap<*const concerto_core::introspect::Declaration, String> = self
                 .manager
                 .model_files()
                 .flat_map(|mf| {
@@ -1090,10 +1087,7 @@ impl ModelManagerHandle {
                 .ok_or_else(|| unknown(Node::ModelFile(id)))?;
             // The fully-qualified name of every declaration the predicate can
             // be handed, by identity, as `model_file_filter` builds it.
-            let fqn_by_decl: std::collections::HashMap<
-                *const concerto_core::introspect::Declaration,
-                String,
-            > = self
+            let fqn_by_decl: HashMap<*const concerto_core::introspect::Declaration, String> = self
                 .manager
                 .model_files()
                 .flat_map(|mf| {
@@ -1135,7 +1129,7 @@ impl ModelManagerHandle {
                 FilterOutcome::Empty => Ok(None),
                 FilterOutcome::Unchanged => {
                     let proof = self.manager.validity_proof(&file_namespace);
-                    let stage = target.staged.insert_shared(std::sync::Arc::clone(file));
+                    let stage = target.staged.insert_shared(Arc::clone(file));
                     if let Some(proof) = proof {
                         target.staged.proofs.insert(stage, proof);
                     }
@@ -1160,7 +1154,7 @@ impl ModelManagerHandle {
             manager: self.manager.fork(),
             epoch: 0,
             staged: StagedModelFiles::default(),
-            dcs_memo: std::cell::RefCell::new(None),
+            dcs_memo: RefCell::new(None),
         }
     }
 }

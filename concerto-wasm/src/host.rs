@@ -185,13 +185,16 @@ pub(crate) fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
     {
         set(&payload, "modelFile", model_file);
     }
-    caches::HOST.with(|h| match h.borrow().as_ref() {
-        Some(host) => host
-            .error_factory
+    // P5-104 (D-11): the factory is cloned out, and the borrow of `HOST`
+    // released, before it is called, so a re-entrant engine call from the
+    // factory (`setHost` included) cannot find `HOST` still borrowed.
+    let factory = caches::HOST.with(|h| h.borrow().as_ref().map(|host| host.error_factory.clone()));
+    match factory {
+        Some(factory) => factory
             .call1(&JsValue::NULL, &payload)
             .unwrap_or_else(|thrown| thrown),
         None => js_sys::Error::new(&err.message()).into(),
-    })
+    }
 }
 
 /// [`throw`] for an error found in the model file registered under

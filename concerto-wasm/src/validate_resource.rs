@@ -124,10 +124,14 @@ pub fn validate_error_message() -> String {
 /// there is none.
 #[wasm_bindgen(js_name = validateTakeError)]
 pub fn validate_take_error() -> JsValue {
-    crate::caches::LAST_ERROR.with(|l| match l.borrow_mut().take() {
+    // P5-104 (D-11): the error is taken out, and the borrow released,
+    // before `throw` calls the JS error factory, so a re-entrant engine
+    // call from the factory cannot find `LAST_ERROR` still borrowed.
+    let err = crate::caches::LAST_ERROR.with(|l| l.borrow_mut().take());
+    match err {
         Some(err) => throw(err, None),
         None => JsValue::UNDEFINED,
-    })
+    }
 }
 
 fn options_from_flags(flags: u32) -> ValidateOptions {

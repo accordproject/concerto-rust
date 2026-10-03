@@ -59,7 +59,7 @@ pub(crate) struct DcsExtractMemo {
 /// (`model_manager_to_ast`'s), from each model's own AST text
 /// ([`ModelManager::compact_model_asts`]): the same compact text, byte for
 /// byte (P5-77).
-fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
+fn models_envelope_text(texts: &[Arc<str>]) -> String {
     let mut out = String::with_capacity(64 + texts.iter().map(|t| t.len() + 1).sum::<usize>());
     out.push_str("{\"$class\":\"concerto.metamodel@1.0.0.Models\",\"models\":[");
     for (i, text) in texts.iter().enumerate() {
@@ -80,17 +80,17 @@ fn models_envelope_text(texts: &[std::sync::Arc<str>]) -> String {
 pub(crate) fn compacted_extract_js(
     target: &mut ModelManagerHandle,
     result: dcs::extractor::ExtractResult,
-) -> (JsValue, DcsExtractKept) {
+) -> Result<(JsValue, DcsExtractKept)> {
     let dcs::extractor::ExtractResult {
         model_manager,
         decorator_command_set,
         vocabularies,
         source_models,
     } = result;
-    let kept = DcsExtractKept::new(source_models.unwrap_or_default(), model_manager);
+    let kept = DcsExtractKept::new(source_models.unwrap_or_default(), model_manager)?;
     let staged = kept.stage(target);
-    let js = kept.result_js(&decorator_command_set, &vocabularies, staged);
-    (js, kept)
+    let js = kept.result_js(&decorator_command_set, &vocabularies, &staged)?;
+    Ok((js, kept))
 }
 
 /// What a repeated extract at the same key reuses.
@@ -114,10 +114,10 @@ impl DcsExtractKept {
     /// from those texts, byte for byte the text of `model_manager_to_ast`'s
     /// value. So the files staged from it (shared, see
     /// [`Self::stage`]) hold text, not a parsed tree, for as long as the
-    /// result ModelManager lives. Should the compaction fail, `ast_text` is
-    /// left empty and [`Self::result_js`] takes its fallback, as before
-    /// when the view's text failed.
-    pub(crate) fn new(source: Vec<Value>, mut result: ModelManager) -> Self {
+    /// result ModelManager lives. Compaction serialises values serde built,
+    /// which cannot fail; should it, the error is [`internal`] (P5-104,
+    /// D-11: no intermediate-`Value` fallback).
+    pub(crate) fn new(source: Vec<Value>, mut result: ModelManager) -> Result<Self> {
         let headers = result
             .model_files()
             .map(|mf| {
@@ -125,16 +125,13 @@ impl DcsExtractKept {
                     .map(StagedHeader::into_owned)
             })
             .collect();
-        let ast_text = result
-            .compact_model_asts()
-            .map(|texts| models_envelope_text(&texts))
-            .unwrap_or_default();
-        Self {
+        let ast_text = models_envelope_text(&result.compact_model_asts().map_err(internal)?);
+        Ok(Self {
             source,
             result,
             ast_text,
             headers,
-        }
+        })
     }
 
     /// [`stage_shared`] from the kept result manager, with its kept headers.
@@ -159,9 +156,6 @@ impl DcsExtractKept {
         vocabularies: &[String],
         staged: &[Value],
     ) -> serde_json::Result<String> {
-        if self.ast_text.is_empty() {
-            return Err(serde::ser::Error::custom("no kept AST text"));
-        }
         let mut out = Vec::new();
         out.extend_from_slice(b"{\"modelManager\":");
         out.extend_from_slice(self.ast_text.as_bytes());
@@ -175,28 +169,19 @@ impl DcsExtractKept {
         String::from_utf8(out).map_err(serde::ser::Error::custom)
     }
 
-    /// The JS value of the extract result: [`Self::result_text`], parsed,
-    /// or, should that fail, the same object built as a `Value`.
+    /// The JS value of the extract result: [`Self::result_text`], parsed.
+    /// The text is written from values serde built, so neither step fails
+    /// (P5-104, D-11: the intermediate-`Value` fallback is gone).
     fn result_js(
         &self,
         command_sets: &str,
         vocabularies: &[String],
-        staged: Vec<Value>,
-    ) -> JsValue {
-        let text = self.result_text(command_sets, vocabularies, &staged);
-        if let Some(js) = text.ok().and_then(|text| JSON::parse(&text).ok()) {
-            return js;
-        }
-        // The intermediate-`Value` fallback.
-        let decorator_command_set: Value =
-            serde_json::from_str(command_sets).unwrap_or(Value::Null);
-        to_js(&json!({
-            "modelManager": model_manager_to_ast(&self.result),
-            "decoratorCommandSet": decorator_command_set,
-            "vocabularies": vocabularies,
-            "staged": staged,
-            "validated": true,
-        }))
+        staged: &[Value],
+    ) -> Result<JsValue> {
+        let text = self
+            .result_text(command_sets, vocabularies, staged)
+            .map_err(internal)?;
+        JSON::parse(&text).map_err(Error::Js)
     }
 }
 
@@ -225,14 +210,14 @@ impl ModelManagerHandle {
                 let (command_sets, vocabularies) =
                     dcs::encode_extract_source(&kept.source, &opts, action)?;
                 let staged = kept.stage(target);
-                Ok(kept.result_js(&command_sets, &vocabularies, staged))
+                kept.result_js(&command_sets, &vocabularies, &staged)
             }
             Some(DcsExtractMemo {
                 key: memo_key,
                 kept: kept @ None,
             }) if *memo_key == key => {
                 let result = dcs::extract(&self.manager, &opts, action, true)?;
-                let (js, filled) = compacted_extract_js(target, result);
+                let (js, filled) = compacted_extract_js(target, result)?;
                 *kept = Some(filled);
                 Ok(js)
             }
@@ -240,7 +225,7 @@ impl ModelManagerHandle {
                 *memo = Some(DcsExtractMemo { key, kept: None });
                 drop(memo);
                 let result = dcs::extract(&self.manager, &opts, action, false)?;
-                Ok(compacted_extract_js(target, result).0)
+                Ok(compacted_extract_js(target, result)?.0)
             }
         }
     }

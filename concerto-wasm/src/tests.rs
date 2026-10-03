@@ -11,6 +11,22 @@
 
 use super::*;
 
+/// The reference the extract and decorate writers are checked against
+/// (P5-104, D-11: test-only since the intermediate-`Value` fallbacks went):
+/// a native `ModelManager`'s own models (the system ones included, in load
+/// order) as `{ $class, models }` — the shape
+/// `BaseModelManager.getAst`/`fromAst` (`src/basemodelmanager.ts`) use. The
+/// view's own `fromAst` filters the system ones back out (`EXCLUDE_NS`)
+/// exactly as it already does for the ts-mode `decorateModels`/`extract*`
+/// bodies, so this need not filter them here.
+fn model_manager_to_ast(mm: &ModelManager) -> Value {
+    let models: Vec<Value> = mm.model_files().map(|mf| mf.ast().clone()).collect();
+    json!({
+        "$class": "concerto.metamodel@1.0.0.Models",
+        "models": models,
+    })
+}
+
 /// [`staged_header_from_parts`]'s header as a `Value` (P5-76: it is
 /// serialized without one).
 fn header_value(namespace: &str, imports: Option<&Value>) -> Option<Value> {
@@ -88,7 +104,8 @@ fn the_extract_memo_writes_what_a_full_extract_writes() {
             ..dcs::ExtractOptions::default()
         };
         let result = dcs::extract(&handle.manager, &fill, action, true).unwrap();
-        let kept = DcsExtractKept::new(result.source_models.unwrap(), result.model_manager);
+        let kept = DcsExtractKept::new(result.source_models.unwrap(), result.model_manager)
+            .unwrap_or_else(|_| panic!("the result compacts"));
         for locale in ["en", "fr"] {
             let opts = dcs::ExtractOptions {
                 remove_decorators_from_model: remove,

@@ -6,6 +6,9 @@
 //! falls back to sending its AST). Staging never changes the manager, so it
 //! never moves the epoch (the rule on `ModelManagerHandle::epoch`).
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use concerto_core::ModelFile;
 use concerto_core::model_manager::ValidityProof;
 
@@ -27,12 +30,12 @@ use concerto_core::model_manager::ValidityProof;
 /// same shared file ([`concerto_core::ModelManager::add_shared_model_file`]).
 #[derive(Default)]
 pub(crate) struct StagedModelFiles {
-    pub(crate) files: std::collections::BTreeMap<u32, std::sync::Arc<ModelFile>>,
+    pub(crate) files: BTreeMap<u32, Arc<ModelFile>>,
     /// P5-97 (accordproject/concerto-rust#448): the source manager's
     /// [`ValidityProof`] of a file staged shared by
     /// [`crate::ModelManagerHandle::model_file_filter_staged`], by stage id;
     /// registered with the file ([`crate::ModelManagerHandle::commit_staged_model_file`]).
-    pub(crate) proofs: std::collections::BTreeMap<u32, std::sync::Arc<ValidityProof>>,
+    pub(crate) proofs: BTreeMap<u32, Arc<ValidityProof>>,
     next: u32,
 }
 
@@ -53,12 +56,12 @@ impl StagedModelFiles {
     }
 
     pub(crate) fn insert(&mut self, file: ModelFile) -> u32 {
-        self.insert_shared(std::sync::Arc::new(file))
+        self.insert_shared(Arc::new(file))
     }
 
     /// [`Self::insert`] for a model file that may also be held elsewhere
     /// (P5-77): the file is shared, not copied.
-    pub(crate) fn insert_shared(&mut self, file: std::sync::Arc<ModelFile>) -> u32 {
+    pub(crate) fn insert_shared(&mut self, file: Arc<ModelFile>) -> u32 {
         while self.files.len() >= Self::CAPACITY {
             if let Some((evicted, _)) = self.files.pop_first() {
                 self.proofs.remove(&evicted);
