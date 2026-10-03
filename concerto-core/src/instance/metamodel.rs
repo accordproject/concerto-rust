@@ -82,46 +82,91 @@ fn metamodel_model_manager() -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
-/// P5-21, accordproject/concerto-rust#319): built on the first call on each
-/// thread, then kept with its caches warm, so a later call pays for no
-/// system-model or metamodel load.
-///
-/// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
-/// [`validate_metamodel`], [`validate_meta_model_instance`],
-/// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
-/// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
-///
-/// The manager is only ever read ([`from_json`] takes it by shared
-/// reference, and nothing else can reach it), so every call sees the same
-/// models a fresh manager would hold, and gets the same result and error.
-/// A build error is returned and not cached, exactly as an uncached build
-/// returns it. Being per-thread, the cache adds no shared state: nothing
-/// here changes what is `Send` or `Sync` (P6-01).
-pub(crate) fn with_resident_metamodel_manager<R>(
-    f: impl FnOnce(&ModelManager) -> Result<R>,
-) -> Result<R> {
-    thread_local! {
-        static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
-            const { std::cell::RefCell::new(None) };
-    }
-    RESIDENT.with(|cell| {
-        if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
-            let mm = metamodel_model_manager()?;
-            if let Ok(mut slot) = cell.try_borrow_mut() {
-                *slot = Some(mm);
+js_compat_pub! {
+    /// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
+    /// P5-21, accordproject/concerto-rust#319): built on the first call on each
+    /// thread, then kept with its caches warm, so a later call pays for no
+    /// system-model or metamodel load.
+    ///
+    /// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
+    /// [`validate_metamodel`], [`validate_meta_model_instance`],
+    /// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
+    /// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
+    ///
+    /// The concerto-wasm binding `validateMetaModelInstance` runs on it too
+    /// (P5-102, F-7), so TS's `validateMetaModel` holds no metamodel manager
+    /// of its own; that is why it is `pub` under `js-compat`.
+    ///
+    /// The manager is only ever read (`f` gets it by shared reference, and
+    /// nothing else can reach it), so every call sees the same models a
+    /// fresh manager would hold, and gets the same result and error.
+    /// A build error is returned and not cached, exactly as an uncached build
+    /// returns it. Being per-thread, the cache adds no shared state: nothing
+    /// here changes what is `Send` or `Sync` (P6-01).
+    pub fn with_resident_metamodel_manager<R>(
+        f: impl FnOnce(&ModelManager) -> Result<R>,
+    ) -> Result<R> {
+        thread_local! {
+            static RESIDENT: std::cell::RefCell<Option<ModelManager>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        RESIDENT.with(|cell| {
+            if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
+                let mm = metamodel_model_manager()?;
+                if let Ok(mut slot) = cell.try_borrow_mut() {
+                    *slot = Some(mm);
+                }
             }
-        }
-        match cell.try_borrow() {
-            Ok(resident) => match resident.as_ref() {
-                Some(mm) => f(mm),
-                None => f(&metamodel_model_manager()?),
+            match cell.try_borrow() {
+                Ok(resident) => match resident.as_ref() {
+                    Some(mm) => f(mm),
+                    None => f(&metamodel_model_manager()?),
+                },
+                // Unreachable in practice (the closure cannot re-enter this
+                // function), but a fresh manager is always a correct answer.
+                Err(_) => f(&metamodel_model_manager()?),
+            }
+        })
+    }
+}
+
+js_compat_pub! {
+    /// The `Serializer.fromJSON` options a metamodel instance is checked
+    /// with, one per caller of [`with_resident_metamodel_manager`] (P5-102,
+    /// F-7), so the concerto-wasm binding `validateMetaModelInstance` can
+    /// take the preset as an argument and its TS caller hold no metamodel
+    /// manager of its own.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MetaModelPreset {
+        /// accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`:
+        /// `validateAst`'s check ([`validate_metamodel`]).
+        Strict,
+        /// The manager's serializer defaults, `baseDefaultOptions`
+        /// (`{validate: true, utcOffset}`): `validateAst`'s check over the
+        /// caller's own manager (`deserialize_ast`).
+        Default,
+        /// A `new Serializer(factory, modelManager)`'s defaults:
+        /// `validateMetaModel`'s check ([`validate_meta_model_instance`]).
+        /// `Object.assign({}, baseDefaultOptions, {})`, so the same options
+        /// as [`Self::Default`], named apart for its caller.
+        Serializer,
+    }
+}
+
+impl MetaModelPreset {
+    /// The options this preset reads as. `utcOffset` is `0` in each: the
+    /// metamodel declares no `DateTime` property, so no offset can change a
+    /// metamodel document's outcome.
+    pub fn from_json_options(self) -> FromJsonOptions {
+        match self {
+            Self::Strict => FromJsonOptions {
+                reject_unknown_keys: true,
+                reject_required_null: true,
+                ..FromJsonOptions::default()
             },
-            // Unreachable in practice (the closure cannot re-enter this
-            // function), but a fresh manager is always a correct answer.
-            Err(_) => f(&metamodel_model_manager()?),
+            Self::Default | Self::Serializer => FromJsonOptions::default(),
         }
-    })
+    }
 }
 
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
@@ -155,11 +200,7 @@ fn ts_message(err: &Error) -> String {
 /// The metamodel manager is resident per thread (task P5-21,
 /// `with_resident_metamodel_manager`), not rebuilt on every call.
 pub fn validate_metamodel(ast: &Value) -> Result<()> {
-    let options = FromJsonOptions {
-        reject_unknown_keys: true,
-        reject_required_null: true,
-        ..FromJsonOptions::default()
-    };
+    let options = MetaModelPreset::Strict.from_json_options();
     with_resident_metamodel_manager(|mm| {
         from_json(mm, ast, &options, &mut FixedEnv)
             .map(|_resource| ())
@@ -223,9 +264,14 @@ pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
 /// only a manager option `validate: false` would, and no
 /// `ModelManager` in this port carries a serializer option bag.
 pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
-    from_json(mm, ast, &FromJsonOptions::default(), &mut FixedEnv)
-        .map(|_resource| ())
-        .map_err(|err| wrapped(&err))
+    from_json(
+        mm,
+        ast,
+        &MetaModelPreset::Default.from_json_options(),
+        &mut FixedEnv,
+    )
+    .map(|_resource| ())
+    .map_err(|err| wrapped(&err))
 }
 
 /// `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`):
@@ -263,8 +309,9 @@ pub fn validate_ast(ast: &Value) -> Result<()> {
 /// metamodel's CTO text as its definitions; neither is observable here
 /// beyond an error message's wording (error parity compares the class).
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
+    let options = MetaModelPreset::Serializer.from_json_options();
     with_resident_metamodel_manager(|mm| {
-        from_json(mm, input, &FromJsonOptions::default(), &mut FixedEnv).map(|_resource| ())
+        from_json(mm, input, &options, &mut FixedEnv).map(|_resource| ())
     })
 }
 
@@ -582,6 +629,24 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// P5-102 (F-7): the presets the `validateMetaModelInstance` binding
+    /// takes read as the options their callers used before: strict for
+    /// `validateAst`, a Serializer's defaults (the same as the manager's)
+    /// for `validateMetaModel`.
+    #[test]
+    fn metamodel_presets_read_as_their_callers_options() {
+        let strict = MetaModelPreset::Strict.from_json_options();
+        assert!(strict.reject_unknown_keys && strict.reject_required_null && strict.validate);
+        assert_eq!(
+            MetaModelPreset::Default.from_json_options(),
+            FromJsonOptions::default()
+        );
+        assert_eq!(
+            MetaModelPreset::Serializer.from_json_options(),
+            FromJsonOptions::default()
+        );
     }
 
     // ---- ported from concerto-validate-rs's src/lib.rs tests (issue

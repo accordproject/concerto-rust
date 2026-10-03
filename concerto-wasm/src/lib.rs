@@ -5319,22 +5319,97 @@ impl ModelManagerHandle {
     /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
     /// a failure, so a success costs nothing more.
     fn instance_error(&self, err: CoreError, json_text: &str, options_text: &str) -> Error {
-        let read = validator_readings_of(json_text).zip(validator_options(options_text));
-        match read {
-            Some((readings, options)) => {
-                let options = native_from_json_options(&options);
-                let diagnosis =
-                    diagnose_read(&self.manager, None, &readings, &options, false, || {
-                        Err(err.clone())
-                    });
-                Error::Instance(
-                    Box::new(err.into_contract()),
-                    diagnostics_json(diagnosis.report.diagnostics()),
-                )
-            }
-            None => err.into(),
-        }
+        let options = validator_options(options_text).map(|o| native_from_json_options(&o));
+        instance_error_in(&self.manager, err, json_text, options.as_ref())
     }
+}
+
+/// [`ModelManagerHandle::instance_error`] over any manager `manager`, with
+/// the options already read (`None` when they could not be): `err` with
+/// its diagnostics attached, or `err` alone when the document or the
+/// options cannot be read.
+fn instance_error_in(
+    manager: &ModelManager,
+    err: CoreError,
+    json_text: &str,
+    options: Option<&FromJsonOptions>,
+) -> Error {
+    match validator_readings_of(json_text).zip(options) {
+        Some((readings, options)) => {
+            let diagnosis =
+                diagnose_read(
+                    manager,
+                    None,
+                    &readings,
+                    options,
+                    false,
+                    || Err(err.clone()),
+                );
+            Error::Instance(
+                Box::new(err.into_contract()),
+                diagnostics_json(diagnosis.report.diagnostics()),
+            )
+        }
+        None => err.into(),
+    }
+}
+
+/// TS `validateMetaModel(input)` (`src/introspect/metamodel.ts`) and the
+/// other metamodel-instance checks, in one engine call on the engine's one
+/// resident metamodel manager
+/// (`concerto_core::instance::with_resident_metamodel_manager`; P5-102,
+/// F-7, accordproject/concerto-rust#456), so TS keeps no metamodel
+/// `ModelManagerHandle` of its own. Validates `json_text`, the instance in
+/// `Serializer.fromJSON`'s wire encoding (module doc above "Serializer fast
+/// path"; plain JSON is its own encoding), as `Serializer.fromJSON` over a
+/// metamodel manager would with the options `preset` names:
+///
+/// - `"strict"`: accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`
+///   (`validateAst`'s check);
+/// - `"default"`: the manager's serializer defaults, `baseDefaultOptions`;
+/// - `"serializer"`: a `new Serializer(factory, modelManager)`'s own
+///   defaults (`validateMetaModel`'s), the same options as `"default"`.
+///
+/// Throws what `serializerFromJson` throws for the same document and
+/// options, unwrapped (`validateAst`'s `MetamodelException` wrapping is its
+/// caller's), with the same diagnostics attached; an unknown `preset` is a plain
+/// `Error`. `env` is the `newId()`/`nowMs()`
+/// object `serializerFromJson` takes (D7). Additive: no other binding
+/// changes.
+#[wasm_bindgen(js_name = validateMetaModelInstance)]
+pub fn validate_meta_model_instance(
+    json_text: &str,
+    preset: &str,
+    env: JsValue,
+) -> std::result::Result<(), JsValue> {
+    use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
+    run(|| {
+        let preset = match preset {
+            "strict" => MetaModelPreset::Strict,
+            "default" => MetaModelPreset::Default,
+            "serializer" => MetaModelPreset::Serializer,
+            other => {
+                return Err(CoreError::from(ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("unknown metamodel preset: {other}"),
+                    None,
+                ))
+                .into());
+            }
+        };
+        let object = parse_wire(json_text)?;
+        let options = preset.from_json_options();
+        let serializer = Serializer::new(true, true, None)?;
+        let mut js_env = JsInstanceEnv { env };
+        let mut failure = None;
+        with_resident_metamodel_manager(|mm| {
+            if let Err(err) = serializer.from_json_prepared(mm, &object, &options, &mut js_env) {
+                failure = Some(instance_error_in(mm, err, json_text, Some(&options)));
+            }
+            Ok(())
+        })?;
+        failure.map_or(Ok(()), Err)
+    })
 }
 
 /// The document `json_text` (a wire encoding, module doc above "Serializer
