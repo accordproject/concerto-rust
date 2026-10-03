@@ -519,8 +519,9 @@ fn bench(c: &mut Criterion) {
                 }
             })
         });
-        let decls: Vec<_> = user_files(&decorated, &d)
-            .into_iter()
+        let decorated_files = user_files(&decorated, &d);
+        let decls: Vec<_> = decorated_files
+            .iter()
             .flat_map(|mf| mf.declarations().iter())
             .collect();
         n("get_decorators", decls.len());
