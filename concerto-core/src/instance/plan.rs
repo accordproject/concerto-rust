@@ -235,9 +235,24 @@ pub struct ClassPlan {
     /// The error building the plan met (the declaration's chain does not
     /// resolve), which [`class_plan`] returns in place of the plan.
     failure: Option<Error>,
+    /// P5-97 (accordproject/concerto-rust#448): whether every part of the
+    /// plan resolved and was built ([`ClassPlan::is_settled`]).
+    settled: bool,
 }
 
 impl ClassPlan {
+    /// P5-97 (accordproject/concerto-rust#448): true when nothing in the
+    /// plan was left unresolved or unplanned: every property's kind
+    /// resolved (a map's key and value too), and every validator, including
+    /// the identifier's, was built or is absent. Such a plan reads only
+    /// declarations that resolved, so adding a model file to the manager
+    /// cannot change it, and the plan cache keeps it across an append
+    /// (`ModelManager::keep_caches_for_append`); any other plan is built
+    /// again.
+    pub fn is_settled(&self) -> bool {
+        self.settled
+    }
+
     /// The index into [`ClassPlan::props`] of the property called `name`.
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(name).map(|i| *i as usize)
@@ -342,6 +357,7 @@ fn build(mm: &ModelManager, id: DeclId) -> ClassPlan {
                 index: FxHashMap::default(),
                 id_regex: Prepared::None,
                 failure: Some(err),
+                settled: false,
             };
         }
     };
@@ -386,9 +402,33 @@ fn build(mm: &ModelManager, id: DeclId) -> ClassPlan {
         index,
         id_regex: Prepared::None,
         failure: None,
+        settled: false,
     };
     plan.id_regex = identifier_regex(mm, &plan);
+    plan.settled = !matches!(plan.id_regex, Prepared::Failed(_))
+        && plan.props.iter().all(|p| {
+            kind_is_settled(&p.kind)
+                && !matches!(p.validator, Prepared::Failed(_))
+                && !matches!(p.size, Prepared::Failed(_))
+        });
     plan
+}
+
+/// P5-97: whether a property's kind resolved completely (a map's key and
+/// value, and a map relationship's target, too). A kind holding a resolution
+/// error could resolve once another model file is added, so its plan is not
+/// settled.
+fn kind_is_settled(kind: &PlanKind) -> bool {
+    let slot_is_settled = |slot: &MapSlot| {
+        !matches!(slot, MapSlot::Unresolved(_) | MapSlot::Relationship(Err(_)))
+    };
+    match kind {
+        PlanKind::Unresolved(_) => false,
+        PlanKind::Map { entries, .. } => entries
+            .as_ref()
+            .is_ok_and(|m| slot_is_settled(&m.key) && slot_is_settled(&m.value)),
+        _ => true,
+    }
 }
 
 /// A property's type, resolved as [`super::model::field`] resolves it, with

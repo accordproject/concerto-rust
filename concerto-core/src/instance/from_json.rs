@@ -652,7 +652,7 @@ js_compat_pub! {
     ///
     /// Every step but `assign` depends only on the model, so the converted
     /// defaults are cached per declaration (P5-13,
-    /// [`ModelManager::cached_instance_facts`]). TS resolves each field's
+    /// `ModelManager::cached_field_defaults`). TS resolves each field's
     /// type and assigns its default in one pass, so a field whose type does
     /// not resolve fails only after every earlier default was assigned: the
     /// list is cached only when every field resolves, and otherwise this
@@ -663,7 +663,7 @@ js_compat_pub! {
     ) -> Result<()> {
         let defaults = class_decl
             .mm
-            .cached_instance_facts(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())));
+            .cached_field_defaults(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())));
         let Ok(defaults) = defaults else {
             field_defaults(class_decl, assign)?;
             return Ok(());
@@ -685,7 +685,7 @@ js_compat_pub! {
     pub fn invalid_date_time_defaults_of(class_decl: &TypeRef) -> Vec<(String, Error)> {
         let Ok(defaults) = class_decl
             .mm
-            .cached_instance_facts(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())))
+            .cached_field_defaults(class_decl.id, || field_defaults(class_decl, &mut |_, _| Ok(())))
         else {
             return Vec::new();
         };
@@ -701,7 +701,8 @@ js_compat_pub! {
 }
 
 /// The defaults [`assign_field_defaults_of`] caches for one declaration.
-struct FieldDefaults(Vec<(String, FieldDefault)>);
+#[derive(Debug)]
+pub(crate) struct FieldDefaults(Vec<(String, FieldDefault)>);
 
 /// `assignFieldDefaults`' pass over `class_decl`'s fields: each converted
 /// default is handed to `assign` as it is found, and also returned.

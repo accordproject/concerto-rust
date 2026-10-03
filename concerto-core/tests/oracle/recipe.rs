@@ -2025,7 +2025,7 @@ impl Replayed {
         let ns = mf.namespace().to_string();
         match self.mm.update_model_file(mf, validate) {
             Ok(updated) => {
-                self.mm = updated;
+                self.mm.adopt(updated);
                 if let Some(entry) = self
                     .files
                     .iter_mut()
@@ -2050,7 +2050,7 @@ impl Replayed {
     fn delete_file(&mut self, namespace: &str) -> Faulty<Outcome> {
         match self.mm.delete_model_file(namespace) {
             Ok(updated) => {
-                self.mm = updated;
+                self.mm.adopt(updated);
                 self.files
                     .retain(|e| e.ast.get("namespace").and_then(Value::as_str) != Some(namespace));
                 Ok(Ok(undefined()))

@@ -1067,96 +1067,157 @@ impl ModelFile {
         predicate: impl Fn(&Declaration) -> bool,
         source_manager: &crate::model_manager::ModelManager,
     ) -> Result<Option<Self>> {
-        let declarations: Vec<serde_json::Value> = self
-            .ast()
-            .get("declarations")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .zip(&self.declarations)
-            .filter(|(_, decl)| predicate(decl))
-            .map(|(ast, _)| ast.clone())
-            .collect();
-
-        if declarations.is_empty() {
-            return Ok(None);
+        match self.filter_outcome(predicate, source_manager)? {
+            FilterOutcome::Empty => Ok(None),
+            FilterOutcome::Unchanged => Self::from_json_with_definitions(
+                self.ast(),
+                self.definitions.clone(),
+                self.file_name.clone(),
+            )
+            .map(Some),
+            FilterOutcome::Filtered(filtered) => Ok(Some(*filtered)),
         }
+    }
 
-        let mut filtered = self.ast().clone();
-        filtered["declarations"] = serde_json::Value::Array(declarations);
-
-        if let Some(imports) = self
-            .ast()
-            .get("imports")
-            .and_then(|v| v.as_array())
-            .cloned()
-        {
-            let kept: Vec<serde_json::Value> = imports
-                .into_iter()
-                .filter_map(|mut imp| {
-                    let namespace = imp.get("namespace").and_then(|v| v.as_str())?.to_string();
-                    if namespace.starts_with("concerto@") || namespace == "concerto" {
-                        return Some(imp);
-                    }
-                    let short_class =
-                        short_name(imp.get("$class").and_then(|v| v.as_str()).unwrap_or(""));
-                    let source_file = source_manager.model_file(&namespace);
-                    match short_class {
-                        "ImportType" => {
-                            let name = imp.get("name").and_then(|v| v.as_str())?;
-                            let keep = source_file
-                                .is_none_or(|sf| sf.local_type(name).is_none_or(&predicate));
-                            keep.then_some(imp)
-                        }
-                        "ImportTypes" => {
-                            let Some(sf) = source_file else {
-                                return Some(imp);
-                            };
-                            let types = imp.get("types").and_then(|v| v.as_array())?.clone();
-                            let kept_types: Vec<String> = types
-                                .iter()
-                                .filter_map(|t| t.as_str())
-                                .filter(|name| sf.local_type(name).is_none_or(&predicate))
-                                .map(str::to_string)
-                                .collect();
-                            if kept_types.is_empty() {
-                                return None;
-                            }
-                            if let Some(aliased) =
-                                imp.get("aliasedTypes").and_then(|v| v.as_array()).cloned()
-                                && !aliased.is_empty()
-                            {
-                                let kept_aliased: Vec<serde_json::Value> = aliased
-                                    .into_iter()
-                                    .filter(|a| {
-                                        a.get("name")
-                                            .and_then(|v| v.as_str())
-                                            .is_some_and(|n| kept_types.iter().any(|k| k == n))
-                                    })
-                                    .collect();
-                                imp["aliasedTypes"] = serde_json::Value::Array(kept_aliased);
-                            }
-                            imp["types"] = serde_json::Value::Array(
-                                kept_types
-                                    .into_iter()
-                                    .map(serde_json::Value::String)
-                                    .collect(),
-                            );
-                            Some(imp)
-                        }
-                        _ => Some(imp),
-                    }
-                })
+    js_compat_pub! {
+        /// P5-97 (accordproject/concerto-rust#448): [`ModelFile::filter`],
+        /// telling apart a filter that keeps the file exactly as it is: every
+        /// declaration kept and every import unchanged
+        /// ([`FilterOutcome::Unchanged`]). The model file `filter` would then
+        /// build is this one, rebuilt from the same AST, definitions and file
+        /// name, so a caller may keep this file (shared) instead. The
+        /// predicate is called on the same declarations, in the same order,
+        /// as `filter` calls it, and the same errors are returned.
+        pub fn filter_outcome(
+            &self,
+            predicate: impl Fn(&Declaration) -> bool,
+            source_manager: &crate::model_manager::ModelManager,
+        ) -> Result<FilterOutcome> {
+            let ast_declarations: &[serde_json::Value] = self
+                .ast()
+                .get("declarations")
+                .and_then(|v| v.as_array())
+                .map_or(&[], Vec::as_slice);
+            let keep: Vec<bool> = ast_declarations
+                .iter()
+                .zip(&self.declarations)
+                .map(|(_, decl)| predicate(decl))
                 .collect();
-            filtered["imports"] = serde_json::Value::Array(kept);
-        }
+            let kept = keep.iter().filter(|k| **k).count();
 
-        Self::from_json_with_definitions(
-            &filtered,
-            self.definitions.clone(),
-            self.file_name.clone(),
-        )
-        .map(Some)
+            if kept == 0 {
+                return Ok(FilterOutcome::Empty);
+            }
+            let all_declarations_kept =
+                kept == ast_declarations.len() && kept == self.declarations.len();
+
+            let original_imports = self.ast().get("imports").and_then(|v| v.as_array());
+            let kept_imports: Option<Vec<serde_json::Value>> = original_imports.cloned().map(|imports| {
+                imports
+                    .into_iter()
+                    .filter_map(|imp| filter_import(imp, &predicate, source_manager))
+                    .collect()
+            });
+            let imports_unchanged = match (original_imports, &kept_imports) {
+                (Some(original), Some(kept)) => original == kept,
+                _ => true,
+            };
+            if all_declarations_kept && imports_unchanged {
+                return Ok(FilterOutcome::Unchanged);
+            }
+
+            let declarations: Vec<serde_json::Value> = ast_declarations
+                .iter()
+                .zip(&keep)
+                .filter(|(_, keep)| **keep)
+                .map(|(ast, _)| ast.clone())
+                .collect();
+            let mut filtered = self.ast().clone();
+            filtered["declarations"] = serde_json::Value::Array(declarations);
+            if let Some(kept) = kept_imports {
+                filtered["imports"] = serde_json::Value::Array(kept);
+            }
+
+            Self::from_json_with_definitions(
+                &filtered,
+                self.definitions.clone(),
+                self.file_name.clone(),
+            )
+            .map(|filtered| FilterOutcome::Filtered(Box::new(filtered)))
+        }
+    }
+}
+
+js_compat_pub! {
+    /// What [`ModelFile::filter_outcome`] found (P5-97).
+    #[derive(Debug)]
+    pub enum FilterOutcome {
+        /// No declaration was kept: `filter` returns `None` (TS `null`).
+        Empty,
+        /// Every declaration was kept and every import is unchanged: the
+        /// filtered file is the file itself.
+        Unchanged,
+        /// The filtered file.
+        Filtered(Box<ModelFile>),
+    }
+}
+
+/// One import of [`ModelFile::filter_outcome`]: kept as it is, kept with
+/// its `types`/`aliasedTypes` pruned, or dropped (`None`), as TS
+/// `ModelFile.filter` prunes it.
+fn filter_import(
+    mut imp: serde_json::Value,
+    predicate: &impl Fn(&Declaration) -> bool,
+    source_manager: &crate::model_manager::ModelManager,
+) -> Option<serde_json::Value> {
+    let namespace = imp.get("namespace").and_then(|v| v.as_str())?.to_string();
+    if namespace.starts_with("concerto@") || namespace == "concerto" {
+        return Some(imp);
+    }
+    let short_class = short_name(imp.get("$class").and_then(|v| v.as_str()).unwrap_or(""));
+    let source_file = source_manager.model_file(&namespace);
+    match short_class {
+        "ImportType" => {
+            let name = imp.get("name").and_then(|v| v.as_str())?;
+            let keep = source_file.is_none_or(|sf| sf.local_type(name).is_none_or(predicate));
+            keep.then_some(imp)
+        }
+        "ImportTypes" => {
+            let Some(sf) = source_file else {
+                return Some(imp);
+            };
+            let types = imp.get("types").and_then(|v| v.as_array())?.clone();
+            let kept_types: Vec<String> = types
+                .iter()
+                .filter_map(|t| t.as_str())
+                .filter(|name| sf.local_type(name).is_none_or(predicate))
+                .map(str::to_string)
+                .collect();
+            if kept_types.is_empty() {
+                return None;
+            }
+            if let Some(aliased) = imp.get("aliasedTypes").and_then(|v| v.as_array()).cloned()
+                && !aliased.is_empty()
+            {
+                let kept_aliased: Vec<serde_json::Value> = aliased
+                    .into_iter()
+                    .filter(|a| {
+                        a.get("name")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|n| kept_types.iter().any(|k| k == n))
+                    })
+                    .collect();
+                imp["aliasedTypes"] = serde_json::Value::Array(kept_aliased);
+            }
+            imp["types"] = serde_json::Value::Array(
+                kept_types
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            );
+            Some(imp)
+        }
+        _ => Some(imp),
     }
 }
 

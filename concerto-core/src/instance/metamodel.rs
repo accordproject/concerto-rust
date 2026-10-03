@@ -164,12 +164,14 @@ fn wrapped(err: &Error) -> Error {
 /// MetaModelNamespace)` (`src/basemodelmanager.ts`'s constructor), so its
 /// file name is the namespace itself and it has no CTO definitions.
 ///
-/// Loaded once per thread and cloned on every later call (P5-06:
-/// `validateAst` registers it on every call); a load error is returned, and
-/// not cached, exactly as an uncached load would return it.
-pub(crate) fn metamodel_model_file() -> Result<ModelFile> {
+/// Loaded once per thread and shared on every later call (P5-06:
+/// `validateAst` registers it on every call; A-4,
+/// accordproject/concerto-rust#448: an `Arc`, as the system model files
+/// are, never a deep copy); a load error is returned, and not cached,
+/// exactly as an uncached load would return it.
+pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
     thread_local! {
-        static METAMODEL_MODEL_FILE: std::cell::RefCell<Option<ModelFile>> =
+        static METAMODEL_MODEL_FILE: std::cell::RefCell<Option<std::sync::Arc<ModelFile>>> =
             const { std::cell::RefCell::new(None) };
     }
     if let Some(model_file) = METAMODEL_MODEL_FILE.with(|cache| cache.borrow().clone()) {
@@ -177,8 +179,11 @@ pub(crate) fn metamodel_model_file() -> Result<ModelFile> {
     }
     let metamodel: Value =
         serde_json::from_str(METAMODEL_AST_JSON).expect("the vendored metamodel AST is JSON");
-    let model_file = ModelFile::from_json(&metamodel, Some(METAMODEL_NAMESPACE.to_string()))?;
-    METAMODEL_MODEL_FILE.with(|cache| *cache.borrow_mut() = Some(model_file.clone()));
+    let model_file = std::sync::Arc::new(ModelFile::from_json(
+        &metamodel,
+        Some(METAMODEL_NAMESPACE.to_string()),
+    )?);
+    METAMODEL_MODEL_FILE.with(|cache| *cache.borrow_mut() = Some(std::sync::Arc::clone(&model_file)));
     Ok(model_file)
 }
 
