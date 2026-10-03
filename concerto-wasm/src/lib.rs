@@ -6488,55 +6488,6 @@ impl ModelManagerHandle {
         })
     }
 
-    /// P5-101 (D-10, M5; accordproject/concerto-rust#455):
-    /// [`Self::commit_staged_model_file`] for several staged files, in
-    /// order, in one call: the batch `addModelFiles` and the
-    /// DecoratorManager results (`adoptStagedModels`) register each of their
-    /// files from its stage this way, where they used to cross once per
-    /// file. Returns the files' handles, in order, or `undefined`, having
-    /// changed nothing, when any stage id is unknown (evicted, or already
-    /// consumed): the caller then registers each file as before. A
-    /// registration error is thrown as [`Self::commit_staged_model_file`]
-    /// throws it, with the files before it registered and the stages after
-    /// it left staged, as the same commits one by one would leave them.
-    /// Additive.
-    #[wasm_bindgen(js_name = commitStagedModelFiles)]
-    pub fn commit_staged_model_files(
-        &mut self,
-        stages: &[u32],
-    ) -> std::result::Result<Option<Vec<u32>>, JsValue> {
-        if stages
-            .iter()
-            .any(|stage| !self.staged.files.contains_key(stage))
-        {
-            return Ok(None);
-        }
-        if stages.is_empty() {
-            return Ok(Some(Vec::new()));
-        }
-        self.bump_epoch();
-        let mut ids = Vec::with_capacity(stages.len());
-        for stage in stages {
-            let Some(file) = self.staged.files.remove(stage) else {
-                // A stage id given twice: the second is already consumed,
-                // as a second `commit_staged_model_file` would find it.
-                return Err(throw(
-                    ContractError::pre_port(
-                        ErrorKind::InvalidArgument,
-                        format!("the stage {stage} given twice"),
-                        None,
-                    )
-                    .into(),
-                    None,
-                ));
-            };
-            let proof = self.staged.proofs.remove(stage);
-            let id = run(|| Ok(self.manager.add_shared_model_file_with_proof(file, proof)?))?;
-            ids.push(ModelFileId::index(id));
-        }
-        Ok(Some(ids))
-    }
-
     /// P5-100 (E-6, accordproject/concerto-rust#454): replaces the model
     /// file registered under a staged file's namespace with it, as
     /// [`Self::update_model_file`] with `validate: false` would replace it
