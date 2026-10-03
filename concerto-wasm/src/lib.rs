@@ -8893,8 +8893,15 @@ use staging::{STAGE_CHECKED, STAGE_COMPACT, StagedModelFiles};
 #[cfg(test)]
 mod tests {
     // Host-side tests of the pure wire codec (no `js_sys` call is reached on
-    // these paths): `cargo test` from concerto-wasm/.
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // these paths): `cargo test` from concerto-wasm/. A test may unwrap,
+    // index and panic: the crate's deny list guards the boundary path, where
+    // a panic poisons the object (P5-104: `clippy --all-targets` clean).
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
 
     use super::*;
 
