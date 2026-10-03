@@ -10,6 +10,9 @@ keywords.workspace = true
 repository.workspace = true
 categories.workspace = true
 homepage.workspace = true
+# P5-104 (C-15): the DCS test fixtures (about 220 KB) stay out of the
+# published package; the tests that read them run from a checkout.
+exclude = ["src/**/testdata"]
 
 [lib]
 name = "concerto_core"
@@ -86,5 +89,5 @@ concerto-core-js = { path = "../concerto-core-js" }
 sha2 = "0.10"
 # `test/decoratormanager.js`'s vocabulary tests parse the extracted
 # vocabulary YAML (the `yaml` npm package, YAML 1.2) to check its values;
-# src/dcs/decoratormanager_tests.rs does the same.
+# src/dcs/tests/decoratormanager.rs does the same.
 yaml-rust2 = "0.10"
