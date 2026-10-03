@@ -1087,4 +1087,83 @@ mod tests {
             Some(&JsValue::Bool(true))
         );
     }
+
+    /// P5-99 (B-4, B-5): a relationship map's values are populated in the
+    /// document's order, one entry per key, each as a relationship with the
+    /// map's target as its default type.
+    #[test]
+    fn from_json_populates_every_entry_of_a_relationship_map() {
+        let mm = model();
+        let drivers: serde_json::Map<String, serde_json::Value> = (0..50)
+            .map(|i| (format!("d{i}"), json!(format!("p{i}"))))
+            .collect();
+        let json = JsValue::from_json(&json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A", "drivers": drivers
+        }));
+        let car = serializer()
+            .from_json(&mm, &json, None, &mut Env)
+            .expect("a car");
+        let JsValue::Map(entries) = car.get("drivers") else {
+            panic!("a map");
+        };
+        assert_eq!(entries.len(), 50);
+        for (i, (key, value)) in entries.iter().enumerate() {
+            assert_eq!(key, &JsValue::String(format!("d{i}")));
+            let JsValue::Instance(driver) = value else {
+                panic!("a relationship");
+            };
+            assert_eq!(driver.kind, InstanceKind::Relationship);
+            assert_eq!(driver.get_identifier(), &JsValue::String(format!("p{i}")));
+        }
+    }
+
+    /// P5-99 (B-3): `rejectUnknownKeys` and `rejectRequiredNull` read the
+    /// declaration's properties from the validation plan.
+    #[test]
+    fn from_json_strict_options_reject_unknown_keys_and_required_nulls() {
+        let mm = model();
+        let options: SerializerOptions = [
+            ("rejectUnknownKeys".to_string(), JsValue::Bool(true)),
+            ("rejectRequiredNull".to_string(), JsValue::Bool(true)),
+        ]
+        .into_iter()
+        .collect();
+        let from = |v: serde_json::Value| {
+            serializer().from_json(&mm, &JsValue::from_json(&v), Some(&options), &mut Env)
+        };
+        let err = from(json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A", "extra": null, "more": 1, "wheels": null
+        }))
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Validation, "{err}");
+        assert_eq!(
+            err.code(),
+            "jsonpopulator-rejectunknownkeys-unknownproperties"
+        );
+        let paths: Vec<&str> = err.details().iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(paths, ["$.extra", "$.more"]);
+        assert!(
+            err.details()
+                .iter()
+                .all(|d| d.code == DetailCode::UnknownProperty)
+        );
+
+        let err = from(json!({
+            "$class": "org.acme@1.0.0.Car", "vin": "A", "wheels": null,
+            "address": { "$class": "org.acme@1.0.0.Address", "city": null }
+        }))
+        .unwrap_err();
+        assert_eq!(err.code(), "jsonpopulator-rejectrequirednull-requirednull");
+        let [detail] = err.details() else {
+            panic!("one detail: {:?}", err.details());
+        };
+        assert_eq!(detail.path, "$.address.city");
+        assert_eq!(detail.code, DetailCode::TypeViolation);
+        assert_eq!(detail.expected.as_deref(), Some("String"));
+        assert_eq!(detail.actual.as_deref(), Some("null"));
+
+        // An optional `null` is not rejected.
+        from(json!({ "$class": "org.acme@1.0.0.Car", "vin": "A", "wheels": null }))
+            .expect("an optional null is allowed");
+    }
 }

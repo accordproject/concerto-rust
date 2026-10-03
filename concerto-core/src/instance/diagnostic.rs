@@ -111,8 +111,9 @@ impl std::fmt::Display for DiagnosticCode {
     }
 }
 
-/// One violation found while validating an instance, as the collect-all walk
-/// (`super::validate::collect_diagnostics`) reports it.
+/// One violation found while validating an instance, as the validation walk
+/// reports it when it collects (`super::validate`, module doc "Stop or
+/// collect").
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Diagnostic {
@@ -125,13 +126,11 @@ pub struct Diagnostic {
     pub code: DiagnosticCode,
     /// How serious it is.
     pub severity: Severity,
-    /// A human-readable description, reusing the same message catalogue and
-    /// rendering [`ModelManager::validate_instance`]'s first-error walk
-    /// uses for the same underlying check, where the
-    /// diagnostic is raised by that shared check (module doc); a violation
-    /// only the collect-all walk itself detects (an unresolvable `$class`, a
-    /// value that is not `Resource`-shaped) gets its own short description
-    /// instead, since it has no ported TS message to reuse.
+    /// A human-readable description: the message of the error
+    /// [`ModelManager::validate_instance`] raises for the same violation,
+    /// from the same message catalogue (TS's wording). The first-error and
+    /// collect-all modes run one walk (P5-99), so a violation reads the
+    /// same in both.
     pub message: String,
     /// What the model expects at [`pointer`](Self::pointer), when it
     /// expects a type there (accordproject/concerto#1239, #1325): the
@@ -277,7 +276,7 @@ impl ModelManager {
         instance: &Value,
         options: &ValidationOptions,
     ) -> ValidationReport {
-        collect(self, None, instance, &options.populate_options(false))
+        report(self, None, instance, &options.populate_options(false))
     }
 
     /// [`check_instance`](Self::check_instance) against the type `fqn`
@@ -289,7 +288,7 @@ impl ModelManager {
         instance: &Value,
         options: &ValidationOptions,
     ) -> ValidationReport {
-        collect(self, Some(fqn), instance, &options.populate_options(false))
+        report(self, Some(fqn), instance, &options.populate_options(false))
     }
 
     /// Reads `instance` as `Serializer.fromJSON` does: as its own `$class`
@@ -310,51 +309,115 @@ impl ModelManager {
     }
 }
 
-/// The collect-all walk: `instance` read as `Serializer.fromJSON` reads it
-/// (`options`, never validating), then every violation found
-/// ([`ModelManager::check_instance`] and its `_as` form). A document that
-/// cannot be read is reported by that failure alone.
-fn collect(
+/// What validating a document found: the outcome of one read and one walk
+/// (P5-99).
+enum Found {
+    /// The document's own `$class` is not the named type, nor a subtype of
+    /// it: the named type's check, which comes first.
+    NamedType(Error),
+    /// The document could not be read as an instance: the read's error.
+    Unread(Error),
+    /// The walk's violations (every one, or the first), each with the JSON
+    /// Pointer of the value it was found at; none for a valid instance.
+    Walked(Vec<(String, Error)>),
+}
+
+/// `instance` read as `Serializer.fromJSON` reads it (as the type `fqn`,
+/// when one is given, which its own `$class` must then be or extend), then
+/// walked collecting every violation (or, without `all`, the first). The
+/// first violation is the error `Serializer.fromJSON` with `validate: true`
+/// throws for the document.
+fn find(
+    mm: &ModelManager,
+    fqn: Option<&str>,
+    instance: &Value,
+    options: &from_json::FromJsonOptions,
+    all: bool,
+) -> Found {
+    if let Some(fqn) = fqn
+        && let Err(err) = validate::check_assignable_to_declaration(mm, fqn, instance)
+    {
+        return Found::NamedType(err);
+    }
+    match from_json::collect_violations(mm, instance, fqn, options, all) {
+        Ok(found) => Found::Walked(found),
+        Err(err) => Found::Unread(err),
+    }
+}
+
+/// [`ModelManager::check_instance`] and its `_as` form: every violation
+/// found. A document that cannot be read is reported by that failure alone.
+fn report(
     mm: &ModelManager,
     fqn: Option<&str>,
     instance: &Value,
     options: &from_json::FromJsonOptions,
 ) -> ValidationReport {
-    walk(mm, fqn, instance, options).0
+    match find(mm, fqn, instance, options, true) {
+        Found::NamedType(err) => ValidationReport::new(vec![named_type_diagnostic(&err, &err)]),
+        Found::Unread(err) => report_of_error(&err),
+        Found::Walked(found) => ValidationReport::new(
+            found
+                .iter()
+                .map(|(pointer, err)| walk_diagnostic(pointer, err))
+                .collect(),
+        ),
+    }
 }
 
-/// [`collect`], and whether the document could be read (and so was
-/// walked): `false` when the report is that of the error that stopped the
-/// read, or of the named type's own check.
-fn walk(
-    mm: &ModelManager,
-    fqn: Option<&str>,
-    instance: &Value,
-    options: &from_json::FromJsonOptions,
-) -> (ValidationReport, bool) {
-    if let Some(fqn) = fqn
-        && let Some(report) = validate::assignability_diagnostic(mm, fqn, instance)
-    {
-        return (report, false);
+/// The diagnostic of a violation the walk found at `pointer`: its code, and
+/// the error's own message.
+pub(super) fn walk_diagnostic(pointer: &str, err: &Error) -> Diagnostic {
+    Diagnostic::error(pointer.to_string(), walk_code(err), err.to_string())
+}
+
+/// The [`DiagnosticCode`] of a violation the walk raised.
+fn walk_code(err: &Error) -> DiagnosticCode {
+    if err.kind() == crate::ErrorKind::TypeNotFound {
+        return DiagnosticCode::TypeNotFound;
     }
-    let unvalidated = from_json::FromJsonOptions {
-        validate: false,
-        ..options.clone()
+    classify_error(err)
+}
+
+/// The diagnostic of the named type's check ([`Found::NamedType`] `err`),
+/// at the root, with `message`'s message.
+fn named_type_diagnostic(err: &Error, message: &Error) -> Diagnostic {
+    let code = if err.kind() == crate::ErrorKind::TypeNotFound {
+        DiagnosticCode::TypeNotFound
+    } else {
+        DiagnosticCode::NotAssignable
     };
-    match mm.populate(fqn, instance, unvalidated) {
-        Ok(populated) => {
-            let target = match fqn {
-                Some(fqn) => fqn.to_string(),
-                None => populated
-                    .get("$class")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            };
-            let report = validate::collect_diagnostics(mm, &target, &populated, &options.validator);
-            (report, true)
-        }
-        Err(err) => (report_of_error(&err), false),
+    Diagnostic::error(String::new(), code, message.to_string())
+}
+
+/// Maps an [`Error`] to the [`DiagnosticCode`] it reports as. A code this
+/// table does not recognise (a JS-engine-shaped error, PORTING.md 2.2 step
+/// 3, or a future check this table has not been updated for) falls back to
+/// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
+/// diagnostic is always produced rather than silently dropped.
+fn classify_error(err: &Error) -> DiagnosticCode {
+    if err.unported_type_not_found().is_some() {
+        return DiagnosticCode::TypeNotFound;
+    }
+    if err.unported_illegal_model().is_some() {
+        return DiagnosticCode::TypeViolation;
+    }
+    let ce = err.contract();
+    if ce.validator.is_some() {
+        return DiagnosticCode::ValidatorFailure;
+    }
+    match ce.code {
+        "resourcevalidator-missingrequiredproperty" => DiagnosticCode::MissingRequiredProperty,
+        "resourcevalidator-undeclaredfield" => DiagnosticCode::UndeclaredField,
+        "resourcevalidator-emptyidentifier" => DiagnosticCode::EmptyIdentifier,
+        "resourcevalidator-invalidenumvalue" => DiagnosticCode::InvalidEnumValue,
+        "resourcevalidator-abstractclass" => DiagnosticCode::AbstractClass,
+        "resourcevalidator-invalidfieldassignment" => DiagnosticCode::NotAssignable,
+        "resourcevalidator-notresourceorconcept" => DiagnosticCode::NotResource,
+        "resourcevalidator-notrelationship"
+        | "resourcevalidator-checkrelationship-notidentifiable" => DiagnosticCode::NotRelationship,
+        "typenotfounderror-defaultmessage" => DiagnosticCode::TypeNotFound,
+        _ => DiagnosticCode::TypeViolation,
     }
 }
 
@@ -376,14 +439,12 @@ pub struct Diagnosis {
 /// `validate: true`), as the type `fqn` when one is given (its own `$class`
 /// must then be `fqn` or a subtype of it) and as its own `$class` otherwise.
 ///
-/// The verdict is the first-error walk's
-/// ([`ModelManager::validate_instance`]), so the instance is valid exactly
-/// when `Serializer.fromJSON` would not throw, and an invalid instance's
-/// first diagnostic is the one for [`Diagnosis::error`], the error
-/// `Serializer.fromJSON` throws ([`diagnostics_of_error`]). With
-/// `collect_all`, every other violation the collect-all walk finds follows
-/// it. A valid instance costs one walk; the collect-all walk only runs for
-/// an invalid one. Every diagnostic gets its
+/// One read and one walk (P5-99): the walk collects every violation (with
+/// `collect_all`) or the first, each at the JSON Pointer it was found at.
+/// The first violation is the error `Serializer.fromJSON` throws
+/// ([`Diagnosis::error`]), so the instance is valid exactly when
+/// `Serializer.fromJSON` would not throw, and the first diagnostic is the
+/// one for that error ([`diagnostics_of_error`]). Every diagnostic gets its
 /// [`expected`](Diagnostic::expected) type where the model gives one.
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnose(
@@ -393,42 +454,29 @@ pub fn diagnose(
     options: &from_json::FromJsonOptions,
     collect_all: bool,
 ) -> Diagnosis {
-    let checked = from_json::FromJsonOptions {
-        validate: true,
-        ..options.clone()
-    };
-    let first = match fqn {
-        Some(fqn) => validate::check_assignable_to_declaration(mm, fqn, instance)
-            .and_then(|()| mm.populate(Some(fqn), instance, checked)),
-        None => mm.populate(None, instance, checked),
-    };
-    let Err(error) = first else {
-        return Diagnosis {
-            report: ValidationReport::default(),
-            error: None,
-        };
-    };
-    let mut collected = None;
-    let mut diagnostics = first_diagnostics(mm, fqn, instance, options, &error, &mut collected);
-    if collect_all {
-        let (collected, walked) = collected.get_or_insert_with(|| walk(mm, fqn, instance, options));
-        // A document that could not be read fails the read (or the named
-        // type's check) with the first error itself: there is nothing more
-        // to report.
-        let more = if *walked {
-            collected.diagnostics()
-        } else {
-            &[]
-        };
-        for diagnostic in more {
-            if !diagnostics
-                .iter()
-                .any(|d| d.pointer == diagnostic.pointer && d.code == diagnostic.code)
-            {
-                diagnostics.push(diagnostic.clone());
-            }
+    let (error, mut diagnostics) = match find(mm, fqn, instance, options, collect_all) {
+        Found::NamedType(err) => {
+            let diagnostic = named_type_diagnostic(&err, &err);
+            (err, vec![diagnostic])
         }
-    }
+        Found::Unread(err) => {
+            let diagnostics = located(&err, instance);
+            (err, diagnostics)
+        }
+        Found::Walked(found) => {
+            let Some((_, first)) = found.first() else {
+                return Diagnosis {
+                    report: ValidationReport::default(),
+                    error: None,
+                };
+            };
+            let diagnostics = found
+                .iter()
+                .map(|(pointer, err)| walk_diagnostic(pointer, err))
+                .collect();
+            (first.clone(), diagnostics)
+        }
+    };
     fill_expected(mm, fqn, instance, &mut diagnostics);
     Diagnosis {
         report: ValidationReport::new(diagnostics),
@@ -437,11 +485,12 @@ pub fn diagnose(
 }
 
 /// The diagnostics of `err`, an error `Serializer.fromJSON` (or
-/// [`diagnose`]'s first-error walk) raised for `instance` with `options`:
-/// what the JS binding attaches to the exception as its `details`
-/// (accordproject/concerto#1325). One per #1273 detail, or one for the
-/// error, located by the collect-all walk when the error itself names no
-/// path, and with its [`expected`](Diagnostic::expected) type.
+/// [`diagnose`]) raised for `instance` with `options`: what the JS binding
+/// attaches to the exception as its `details` (accordproject/concerto#1325).
+/// One per #1273 detail, or one for the error, at the pointer the walk
+/// found it at (when the walk's first violation is the same check), or
+/// where the error itself says, and with its
+/// [`expected`](Diagnostic::expected) type.
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnostics_of_error(
     mm: &ModelManager,
@@ -450,7 +499,16 @@ pub fn diagnostics_of_error(
     options: &from_json::FromJsonOptions,
     err: &Error,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = first_diagnostics(mm, fqn, instance, options, err, &mut None);
+    let mut diagnostics = match find(mm, fqn, instance, options, false) {
+        Found::NamedType(found) => vec![named_type_diagnostic(&found, err)],
+        Found::Walked(found) => match found.first() {
+            Some((pointer, first)) if same_check(first, err) => {
+                vec![walk_diagnostic(pointer, err)]
+            }
+            _ => located(err, instance),
+        },
+        Found::Unread(_) => located(err, instance),
+    };
     fill_expected(mm, fqn, instance, &mut diagnostics);
     diagnostics
 }
@@ -469,11 +527,11 @@ pub fn diagnostics_of_error(
 /// a subtype of it, as [`diagnose`] checks it; `read` then decides. The
 /// error is always `read`'s (so the same exception class as
 /// `Serializer.fromJSON` throws for the document). The diagnostics are
-/// [`diagnose`]'s over the first reading whose first-error walk raises that
-/// same error (kind, catalogue code, parameters and #1273 details), so the
-/// codes, paths, `expected` types and collect-all report are kept;
-/// otherwise they are the error's own ([`diagnostics_of_error`]). Either
-/// way the first diagnostic is the one for the error.
+/// [`diagnose`]'s over the first reading whose walk raises that same error
+/// (kind, catalogue code, parameters and #1273 details), so the codes,
+/// paths, `expected` types and collect-all report are kept; otherwise they
+/// are the error's own ([`diagnostics_of_error`]). Either way the first
+/// diagnostic is the one for the error.
 ///
 /// # Panics
 ///
@@ -522,36 +580,20 @@ pub fn diagnose_read(
 /// Whether two errors are the same error: kind (so the same TS exception
 /// class), catalogue code, parameters and #1273 details.
 fn same_error(a: &Error, b: &Error) -> bool {
-    a.kind() == b.kind()
-        && a.code() == b.code()
-        && a.params() == b.params()
-        && a.details() == b.details()
+    same_check(a, b) && a.params() == b.params() && a.details() == b.details()
 }
 
-/// The diagnostics of the first error, `err`. A `ResourceValidator` error
-/// names no path, so its location is that of the first diagnostic of the
-/// same code (and, when the error names one, the same property) the
-/// collect-all walk finds, which `collected` keeps for the caller ([`walk`]). The
-/// message stays the error's own.
-fn first_diagnostics(
-    mm: &ModelManager,
-    fqn: Option<&str>,
-    instance: &Value,
-    options: &from_json::FromJsonOptions,
-    err: &Error,
-    collected: &mut Option<(ValidationReport, bool)>,
-) -> Vec<Diagnostic> {
-    // The named type is checked first: an instance of another type fails
-    // there, whatever else is wrong with it.
-    if let Some(fqn) = fqn
-        && let Some(report) = validate::assignability_diagnostic(mm, fqn, instance)
-    {
-        let mut diagnostics = report.into_diagnostics();
-        for diagnostic in &mut diagnostics {
-            diagnostic.message = err.to_string();
-        }
-        return diagnostics;
-    }
+/// Whether two errors come from the same check: kind and catalogue code.
+fn same_check(a: &Error, b: &Error) -> bool {
+    a.kind() == b.kind() && a.code() == b.code()
+}
+
+/// The diagnostics of `err`, an error that stopped the read of `instance`
+/// (or one no walk of it raises), located by what the error names: one per
+/// #1273 detail, at its path; or one at the populator path the error names;
+/// or at the object (or the keys) it is about ([`locate`]); or else at the
+/// root.
+fn located(err: &Error, instance: &Value) -> Vec<Diagnostic> {
     let mut diagnostics = report_of_error(err).into_diagnostics();
     if !err.details().is_empty() {
         // One diagnostic per #1273 detail, in order (`report_of_error`).
@@ -587,20 +629,6 @@ fn first_diagnostics(
                 ..template.clone()
             })
             .collect();
-    }
-    // A `ResourceValidator` error: the collect-all walk's diagnostic of the
-    // same code, for the property the error names when that is one.
-    let property = param("fieldName").or_else(|| param("propertyName"));
-    let (collected, _) = collected.get_or_insert_with(|| walk(mm, fqn, instance, options));
-    let same_code = |d: &&Diagnostic| d.code == diagnostic.code;
-    let found = collected
-        .diagnostics()
-        .iter()
-        .filter(same_code)
-        .find(|d| property.is_some_and(|name| last_segment(&d.pointer).as_deref() == Some(name)))
-        .or_else(|| collected.diagnostics().iter().find(same_code));
-    if let Some(found) = found {
-        diagnostic.pointer.clone_from(&found.pointer);
     }
     diagnostics
 }
@@ -698,13 +726,6 @@ fn find_object(
 /// A JSON Pointer one key deeper than `pointer`, escaped as RFC 6901 says.
 fn child_pointer(pointer: &str, key: &str) -> String {
     format!("{pointer}/{}", key.replace('~', "~0").replace('/', "~1"))
-}
-
-/// The last reference token of a JSON Pointer, unescaped; `None` for the
-/// root pointer.
-fn last_segment(pointer: &str) -> Option<String> {
-    let (_, last) = pointer.rsplit_once('/')?;
-    Some(last.replace("~1", "/").replace("~0", "~"))
 }
 
 /// Fills in each diagnostic's [`expected`](Diagnostic::expected) type that
@@ -844,7 +865,7 @@ fn report_of_error(err: &Error) -> ValidationReport {
         | "jsonpopulator-visitrelationshipdeclaration-noclass" => {
             (DiagnosticCode::NotRelationship, err.to_string())
         }
-        _ => validate::classify_error(err),
+        _ => (classify_error(err), err.to_string()),
     };
     let pointer = err
         .params()
@@ -1113,8 +1134,6 @@ mod tests {
             expected_at(&mm, Some("org.acme@1.0.0.Person"), &json!({}), "").as_deref(),
             Some("org.acme@1.0.0.Person")
         );
-        assert_eq!(last_segment("/a~1b/c~0d").as_deref(), Some("c~d"));
-        assert_eq!(last_segment(""), None);
     }
 
     #[test]
@@ -1329,6 +1348,60 @@ mod tests {
         assert_eq!(
             d.report.diagnostics()[0].code,
             DiagnosticCode::NotAssignable
+        );
+    }
+
+    /// P5-99: one walk, so every collect-all diagnostic carries the message
+    /// of the error the first-error walk would raise for it (the
+    /// catalogue's TS wording), at the pointer it was found at.
+    #[test]
+    fn diagnose_collects_with_the_catalogue_s_messages() {
+        let mm = manager();
+        let instance = person(json!({
+            "address": { "$class": "org.acme@1.0.0.Address" },
+            "colour": "BLUE"
+        }));
+        let d = diagnose(&mm, None, &instance, &options(), true);
+        let got: Vec<_> = d
+            .report
+            .diagnostics()
+            .iter()
+            .map(|d| (d.code, d.pointer.as_str(), d.message.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    DiagnosticCode::MissingRequiredProperty,
+                    "/address/city",
+                    "The instance \"org.acme@1.0.0.Address\" is missing the required field \"city\"."
+                ),
+                // `parameters.rootResourceIdentifier` is the last resource
+                // visited (`address`), as TS leaves it: the walk never
+                // restores it on the way back up.
+                (
+                    DiagnosticCode::InvalidEnumValue,
+                    "/colour",
+                    "Model violation in the \"org.acme@1.0.0.Address\" instance. Invalid enum value of \"BLUE\" for the field \"Colour\"."
+                ),
+            ]
+        );
+        assert_eq!(
+            d.report.diagnostics()[0].message,
+            d.error.unwrap().to_string()
+        );
+        // `check_instance` reads the same.
+        let checked = mm.check_instance(&instance, &crate::instance::ValidationOptions::default());
+        let messages: Vec<_> = checked
+            .diagnostics()
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+        assert_eq!(
+            messages,
+            got.iter()
+                .map(|(_, _, m)| m.to_string())
+                .collect::<Vec<_>>()
         );
     }
 }

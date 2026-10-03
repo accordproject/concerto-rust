@@ -185,39 +185,18 @@ impl<'a> Generator<'a> {
         {
             result.insert("$id".to_string(), JsValue::String(id));
         }
-        // Validation plan (P5-88): the property table and field types from
-        // the plan, when there is one.
-        let class_properties = class_declaration.properties("classDeclaration.getProperties")?;
-        if let Some(class_plan) = plan::class_plan(self.mm, class_declaration.id) {
-            for index in 0..class_plan.props.len() {
-                let (owner_fqn, property) = class_plan.property(self.mm, index);
-                let name = concerto_core::Named::name(property).to_string();
-                let value = resource.get(&name).clone();
-                if value.is_nullish() {
-                    continue;
-                }
-                let field = match class_plan.field(self.mm, index) {
-                    Some(field) => field,
-                    None => model::field(self.mm, owner_fqn, property)?,
-                };
-                let converted = match &field.field_type {
-                    FieldType::Relationship(_) => {
-                        self.visit_relationship_declaration(&field, &value)?
-                    }
-                    FieldType::EnumValue => return Err(model::unrecognised_field(&field)),
-                    _ => self.visit_field(&field, &value)?,
-                };
-                result.insert(name, converted);
-            }
-            return Ok(JsValue::Object(result));
-        }
-        for (owner_fqn, property) in class_properties.iter() {
+        // `classDeclaration.getProperties()`: the property table and field
+        // types from the validation plan (P5-88; the only route since
+        // P5-99), and the chain's error, as `getProperties()` raises it.
+        let class_plan = plan::class_plan(self.mm, class_declaration.id)?;
+        for index in 0..class_plan.props.len() {
+            let (_, property) = class_plan.property(self.mm, index);
             let name = concerto_core::Named::name(property).to_string();
             let value = resource.get(&name).clone();
             if value.is_nullish() {
                 continue;
             }
-            let field = model::field(self.mm, owner_fqn, property)?;
+            let field = class_plan.field(self.mm, index)?;
             let converted = match &field.field_type {
                 FieldType::Relationship(_) => {
                     self.visit_relationship_declaration(&field, &value)?

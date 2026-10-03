@@ -40,29 +40,17 @@ pub fn set_property_value(
 ) -> Result<()> {
     if instance.kind == InstanceKind::ValidatedResource {
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
-        // Validation plan (P5-88): the plan's name index and field.
-        if let Some(class_plan) = plan::class_plan(mm, class_declaration.id) {
-            let Some(index) = class_plan.find(prop_name) else {
-                return Err(undeclared(instance, prop_name));
-            };
-            validate::validate_property_value_planned(
-                mm,
-                &class_plan,
-                index,
-                &value.to_validator_value(),
-                instance.fully_qualified_identifier(),
-                &instance.validator_options,
-            )?;
-            instance.set(prop_name, value);
-            return Ok(());
-        }
-        let Some((owner_fqn, field)) = class_declaration.property(prop_name)? else {
+        // The validation plan (P5-88): its name index and field; its
+        // chain's error, when it does not resolve, is the one
+        // `getProperty` raises.
+        let class_plan = plan::class_plan(mm, class_declaration.id)?;
+        let Some(index) = class_plan.find(prop_name) else {
             return Err(undeclared(instance, prop_name));
         };
         validate::validate_property_value(
             mm,
-            owner_fqn,
-            field,
+            &class_plan,
+            index,
             &value.to_validator_value(),
             instance.fully_qualified_identifier(),
             &instance.validator_options,
@@ -98,20 +86,12 @@ pub fn add_array_value(
 ) -> Result<()> {
     if instance.kind == InstanceKind::ValidatedResource {
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
-        // Validation plan (P5-88): the plan's name index and field.
-        let class_plan = plan::class_plan(mm, class_declaration.id);
-        let found = match &class_plan {
-            Some(cp) => cp.find(prop_name).map(|i| {
-                let (owner_fqn, field) = cp.property(mm, i);
-                (owner_fqn, field, Some(i))
-            }),
-            None => class_declaration
-                .property(prop_name)?
-                .map(|(owner_fqn, field)| (owner_fqn, field, None)),
-        };
-        let Some((owner_fqn, field, index)) = found else {
+        // The validation plan (P5-88): its name index and field.
+        let class_plan = plan::class_plan(mm, class_declaration.id)?;
+        let Some(index) = class_plan.find(prop_name) else {
             return Err(undeclared(instance, prop_name));
         };
+        let (_, field) = class_plan.property(mm, index);
         if !field.is_array() {
             return Err(ContractError::new(
                 ErrorKind::InvalidArgument,
@@ -134,24 +114,14 @@ pub fn add_array_value(
             Vec::new()
         };
         new_array.push(value.clone());
-        match (&class_plan, index) {
-            (Some(cp), Some(index)) => validate::validate_property_value_planned(
-                mm,
-                cp,
-                index,
-                &JsValue::Array(new_array).to_validator_value(),
-                instance.fully_qualified_identifier(),
-                &instance.validator_options,
-            )?,
-            _ => validate::validate_property_value(
-                mm,
-                owner_fqn,
-                field,
-                &JsValue::Array(new_array).to_validator_value(),
-                instance.fully_qualified_identifier(),
-                &instance.validator_options,
-            )?,
-        }
+        validate::validate_property_value(
+            mm,
+            &class_plan,
+            index,
+            &JsValue::Array(new_array).to_validator_value(),
+            instance.fully_qualified_identifier(),
+            &instance.validator_options,
+        )?;
     }
     typed_add_array_value(instance, prop_name, value)
 }
@@ -179,10 +149,7 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
         return Ok(());
     }
     // Validation plan (P5-88): the identifier field from the plan.
-    let identifier = match plan::class_plan_by_name(mm, &instance.class_fqn) {
-        Some(class_plan) => class_plan.identifier_field(mm),
-        None => mm.identifier_field(&instance.class_fqn)?,
-    };
+    let identifier = plan::class_plan_by_name(mm, &instance.class_fqn)?.identifier_field(mm);
     if let Some(field) = identifier
         && field != "$identifier"
     {
