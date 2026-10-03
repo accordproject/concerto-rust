@@ -5430,36 +5430,19 @@ impl ModelManagerHandle {
     /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
     /// a failure, so a success costs nothing more.
     fn instance_error(&self, err: CoreError, doc: WireDoc, options: &FromJsonOptions) -> Error {
-        instance_error_in(&self.manager, err, doc, options)
-    }
-}
-
-/// [`ModelManagerHandle::instance_error`] over any manager `manager`:
-/// `err` with its diagnostics attached, or `err` alone when the document
-/// cannot be read.
-fn instance_error_in(
-    manager: &ModelManager,
-    err: CoreError,
-    doc: WireDoc,
-    options: &FromJsonOptions,
-) -> Error {
-    match validator_readings_of(doc) {
-        Some(readings) => {
-            let diagnosis =
-                diagnose_read(
-                    manager,
-                    None,
-                    &readings,
-                    options,
-                    false,
-                    || Err(err.clone()),
-                );
-            Error::Instance(
-                Box::new(err.into_contract()),
-                diagnostics_json(diagnosis.report.diagnostics()),
-            )
+        match validator_readings_of(doc) {
+            Some(readings) => {
+                let diagnosis =
+                    diagnose_read(&self.manager, None, &readings, options, false, || {
+                        Err(err.clone())
+                    });
+                Error::Instance(
+                    Box::new(err.into_contract()),
+                    diagnostics_json(diagnosis.report.diagnostics()),
+                )
+            }
+            None => err.into(),
         }
-        None => err.into(),
     }
 }
 
@@ -5479,17 +5462,16 @@ fn instance_error_in(
 /// - `"serializer"`: a `new Serializer(factory, modelManager)`'s own
 ///   defaults (`validateMetaModel`'s), the same options as `"default"`.
 ///
-/// Throws what `serializerFromJson` throws for the same document and
-/// options, unwrapped (`validateAst`'s `MetamodelException` wrapping is its
-/// caller's), with the same diagnostics attached; an unknown `preset` is a plain
-/// `Error`. `env` is the `newId()`/`nowMs()`
-/// object `serializerFromJson` takes (D7). Additive: no other binding
+/// Throws what `validateInstance` (mode 0) throws for the same document and
+/// options, which is what `serializerFromJson` throws for them, unwrapped
+/// (`validateAst`'s `MetamodelException` wrapping is its caller's), with
+/// the same diagnostics attached, without building a resource (P5-101,
+/// D-3); an unknown `preset` is a plain `Error`. Additive: no other binding
 /// changes.
 #[wasm_bindgen(js_name = validateMetaModelInstance)]
 pub fn validate_meta_model_instance(
     json_text: &str,
     preset: &str,
-    env: JsValue,
 ) -> std::result::Result<(), JsValue> {
     use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
     run(|| {
@@ -5506,23 +5488,16 @@ pub fn validate_meta_model_instance(
                 .into());
             }
         };
-        let object = parse_wire(json_text)?;
+        let wire = serde_json::from_str::<Value>(json_text)
+            .map_err(|e| Error::Js(js_sys::SyntaxError::new(&e.to_string()).into()))?;
         let options = preset.from_json_options();
         let serializer = Serializer::new(true, true, None)?;
-        let mut js_env = JsInstanceEnv { env };
-        let mut failure = None;
+        let mut outcome = Ok(String::new());
         with_resident_metamodel_manager(|mm| {
-            if let Err(err) = serializer.from_json_prepared(mm, &object, &options, &mut js_env) {
-                failure = Some(instance_error_in(
-                    mm,
-                    err,
-                    WireDoc::Text(json_text),
-                    &options,
-                ));
-            }
+            outcome = validate_wire(mm, &wire, &serializer, &options, &options, None, 0);
             Ok(())
         })?;
-        failure.map_or(Ok(()), Err)
+        outcome.map(|_| ())
     })
 }
 
@@ -5745,48 +5720,60 @@ impl ModelManagerHandle {
             // the serializer built from them reused, as `serializerFromJson`
             // reuses them ([`with_serializer_options`]).
             with_serializer_options(options_text, |entry| {
-                let options = &entry.native;
-                let diagnosis = if has_wire_tag(&wire) {
-                    // Not plain JSON: read by `Serializer.fromJSON`'s own
-                    // engine, from the same decoded document, for the
-                    // verdict and the error; the walk reads its validator
-                    // form.
-                    let object = decode_wire(&wire)?;
-                    let readings = validator_readings(&object);
-                    diagnose_read(
-                        &self.manager,
-                        fqn.as_deref(),
-                        &readings,
-                        options,
-                        mode == 2,
-                        || {
-                            entry
-                                .serializer
-                                .from_json_prepared(
-                                    &self.manager,
-                                    &with_class(object, fqn.as_deref()),
-                                    &entry.from_json,
-                                    &mut ValidationEnv,
-                                )
-                                .map(|_| ())
-                        },
-                    )
-                } else {
-                    diagnose(&self.manager, fqn.as_deref(), &wire, options, mode == 2)
-                };
-                let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
-                if mode == 0 {
-                    return match diagnosis.error {
-                        Some(err) => {
-                            Err(Error::Instance(Box::new(err.into_contract()), diagnostics))
-                        }
-                        None => Ok(String::new()),
-                    };
-                }
-                snapshot(&json!({ "diagnostics": diagnostics }))
+                validate_wire(
+                    &self.manager,
+                    &wire,
+                    &entry.serializer,
+                    &entry.from_json,
+                    &entry.native,
+                    fqn.as_deref(),
+                    mode,
+                )
             })?
         })
     }
+}
+
+/// [`ModelManagerHandle::validate_instance`]'s check of the wire document
+/// `wire` on `manager`, with `serializer` and the merged options as
+/// `from_json` (`from_json`) and the walk (`options`) read them; shared
+/// with `validateMetaModelInstance` (P5-102, F-7).
+fn validate_wire(
+    manager: &ModelManager,
+    wire: &Value,
+    serializer: &Serializer,
+    from_json: &FromJsonOptions,
+    options: &FromJsonOptions,
+    fqn: Option<&str>,
+    mode: u32,
+) -> Result<String> {
+    let diagnosis = if has_wire_tag(wire) {
+        // Not plain JSON: read by `Serializer.fromJSON`'s own engine, from
+        // the same decoded document, for the verdict and the error; the
+        // walk reads its validator form.
+        let object = decode_wire(wire)?;
+        let readings = validator_readings(&object);
+        diagnose_read(manager, fqn, &readings, options, mode == 2, || {
+            serializer
+                .from_json_prepared(
+                    manager,
+                    &with_class(object, fqn),
+                    from_json,
+                    &mut ValidationEnv,
+                )
+                .map(|_| ())
+        })
+    } else {
+        diagnose(manager, fqn, wire, options, mode == 2)
+    };
+    let diagnostics = diagnostics_json(diagnosis.report.diagnostics());
+    if mode == 0 {
+        return match diagnosis.error {
+            Some(err) => Err(Error::Instance(Box::new(err.into_contract()), diagnostics)),
+            None => Ok(String::new()),
+        };
+    }
+    snapshot(&json!({ "diagnostics": diagnostics }))
 }
 
 /// Calls back the view's `env.newId()`/`env.nowMs()` (D7: the identifier
