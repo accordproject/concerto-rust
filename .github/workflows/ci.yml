@@ -35,6 +35,14 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo clippy --manifest-path concerto-wasm/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+      # concerto-metamodel's committed src/generated/ must be exactly what
+      # codegen/generate.js produces from the pinned concerto-codegen
+      # (accordproject/concerto-rust#461); tests/drift.rs checks the
+      # fingerprints offline, this regenerates and compares byte for byte.
+      - name: Drift check (concerto-metamodel generated sources)
+        if: matrix.toolchain == 'stable'
+        working-directory: concerto-metamodel/codegen
+        run: npm ci && node generate.js --check
       - name: Build
         run: cargo build --verbose --workspace --all-targets
       # This job has no oracle fixture corpus (it lives, generated, in an

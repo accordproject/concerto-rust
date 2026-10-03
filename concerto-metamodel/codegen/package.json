@@ -1,0 +1,16 @@
+{
+  "name": "concerto-metamodel-codegen",
+  "private": true,
+  "description": "Regenerates the concerto-metamodel crate's Rust types with concerto-codegen (see generate.js).",
+  "license": "Apache-2.0",
+  "scripts": {
+    "generate": "node generate.js"
+  },
+  "dependencies": {
+    "@accordproject/concerto-codegen": "6.3.0",
+    "@accordproject/concerto-core": "5.0.0",
+    "@accordproject/concerto-metamodel": "3.17.0",
+    "@accordproject/concerto-util": "5.0.0",
+    "@accordproject/concerto-vocabulary": "5.0.0"
+  }
+}
