@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn manager_validate_ast_value_pass_leaves_the_manager_unchanged() {
         let mut mm = ModelManager::new().unwrap();
-        let (before, generation) = (namespaces(&mm), mm.generation());
+        let (before, state_version) = (namespaces(&mm), mm.state_version());
         let ast = json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.acme@1.0.0",
@@ -1048,7 +1048,7 @@ mod tests {
         for _ in 0..2 {
             mm.validate_ast_value(&ast).unwrap();
             assert_eq!(namespaces(&mm), before);
-            assert_eq!(mm.generation(), generation);
+            assert_eq!(mm.state_version(), state_version);
         }
     }
 
