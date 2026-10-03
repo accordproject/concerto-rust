@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::model_manager::ModelManager;
-use crate::model_util::{self, ParsedNamespace};
+use crate::model_util;
 
 use super::{MAP_DECLARATION_CLASS, quote_string_value};
 use crate::instance::metamodel::metamodel_class;
@@ -223,11 +223,7 @@ impl<'a> DecoratorExtractor<'a> {
                 }
             }
             if self.action != Action::ExtractVocab && !commands.is_empty() {
-                let ParsedNamespace::Full { name, version, .. } =
-                    model_util::parse_namespace_with(Some(namespace), false)?
-                else {
-                    unreachable!("parse_namespace_with(_, false) always returns Full")
-                };
+                let (name, version) = model_util::namespace_parts(namespace)?;
                 command_sets.push(CommandSetView {
                     class: &set_class,
                     name,
@@ -396,8 +392,8 @@ static NULL: Value = Value::Null;
 /// serialised from borrows.
 struct CommandSetView<'a> {
     class: &'a str,
-    name: String,
-    version: Option<String>,
+    name: &'a str,
+    version: &'a str,
     commands: Vec<CommandView<'a>>,
 }
 

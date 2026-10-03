@@ -352,6 +352,23 @@ pub enum ParsedNamespace {
     },
 }
 
+/// `parse_namespace_with(Some(ns), false)`: the same checks and errors, in
+/// its order, with its `name` and `version` borrowed from `ns` (P5-104,
+/// C-13). Since BC-02 a namespace that parses always has a version, so the
+/// result has no shape without one, as [`ParsedNamespace::NameOnly`] is.
+#[cfg(feature = "js-compat")]
+pub(crate) fn namespace_parts(ns: &str) -> Result<(&str, &str)> {
+    let (name, version) = split_namespace(ns)?;
+    let version = version.ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidArgument,
+            "modelutil-parsenamespace-invalidnamespace",
+            vec![("ns", ns.to_string())],
+        )
+    })?;
+    Ok((name, version))
+}
+
 /// Parses a namespace into its name and its version. An unversioned
 /// namespace is an error (BC-02, R1; DV-003 closed), as an empty one is.
 ///
@@ -707,12 +724,10 @@ pub fn remove_namespace_version_from_fully_qualified_name(fqn: Option<&str>) -> 
         return Ok(fqn.to_string());
     }
     let ns = get_namespace(fqn)?;
-    let namespace = match parse_namespace_with(Some(ns), false)? {
-        ParsedNamespace::NameOnly { name } | ParsedNamespace::Full { name, .. } => name,
-    };
+    let (namespace, _) = namespace_parts(ns)?;
     // `get_namespace` succeeded, so `fqn` is a non-empty string.
     let type_name = short_name(fqn.unwrap_or_default());
-    Ok(qualify(&namespace, type_name))
+    Ok(qualify(namespace, type_name))
 }
 
 /// Returns true if the property name is reserved by Concerto.

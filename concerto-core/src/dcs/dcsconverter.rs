@@ -33,7 +33,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};
-use crate::model_util::{self, ParsedNamespace};
+use crate::model_util;
 
 use super::yaml_quote;
 use crate::instance::metamodel::metamodel_class;
@@ -188,10 +188,8 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     // `ModelUtil.parseNamespace(dcsNamespace).version`. Since BC-02 (R1,
     // P5-50) an unversioned namespace is rejected there (TS 5.0.0 gave
     // `undefined`).
-    let version = match model_util::parse_namespace_with(Some(dcs_namespace), false)? {
-        ParsedNamespace::Full { version, .. } => version,
-        ParsedNamespace::NameOnly { .. } => None,
-    };
+    let (_, version) = model_util::namespace_parts(dcs_namespace)?;
+    let version = Some(version.to_string());
     // `dcsJson.commands.map(handleCommands)`.
     let commands = match dcs_json.get("commands") {
         Some(Value::Array(commands)) => commands,
@@ -241,18 +239,9 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
         "commands".to_string(),
         Yaml::Seq(commands.iter().map(handle_command).collect()),
     ));
-    let root = Yaml::Map(entries);
-
     let mut out = String::new();
-    emit_map(root_entries(&root), 0, &mut out);
+    emit_map(&entries, 0, &mut out);
     Ok(out)
-}
-
-fn root_entries(root: &Yaml) -> &[(String, Yaml)] {
-    match root {
-        Yaml::Map(entries) => entries,
-        _ => unreachable!("json_to_yaml's root is always a Map"),
-    }
 }
 
 /// A plain-or-double-quoted YAML scalar for the `failsafe` schema
@@ -267,7 +256,7 @@ fn render_scalar_failsafe(value: &str) -> String {
         return String::new();
     }
     if yaml_quote::needs_quoting_failsafe(value) {
-        yaml_quote::json_quote_for_dcsconverter(value)
+        yaml_quote::json_quote(value)
     } else {
         value.to_string()
     }

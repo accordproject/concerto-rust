@@ -12,13 +12,12 @@
 //! Both ASTs are vendored unchanged under `concerto-core`, matching the copies
 //! `concerto-metamodel` vendors for code generation, so the runtime preloads
 //! exactly what the reference implementation preloads. Nothing here is built
-//! by hand: each JSON deserializes directly into the metamodel crate's own
-//! [`mm::Model`], and [`root_model_ast`] and [`decorator_model_ast`] - kept so
-//! the rest of the crate can go on loading a model from a `serde_json::Value`
-//! - are those same typed models serialized straight back out.
+//! by hand: [`root_model`] and [`decorator_model`] deserialize each JSON into
+//! the metamodel crate's own [`mm::Model`], and [`root_model_ast`] and
+//! [`decorator_model_ast`], which the model manager loads, parse the same
+//! JSON as a `serde_json::Value`, in the file's own key order (P5-104, C-13:
+//! no typed round trip, which moved `decorators` to the end of each node).
 
-// TODO: Load concerto metamodel together with decorator and vocab metamodels from
-//       metamodel repo in build time.
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
 /// The `concerto@1.0.0` root model JSON, as shipped with `concerto-core`.
@@ -40,21 +39,19 @@ pub fn decorator_model() -> mm::Model {
         .expect("Decorator model could not be parsed as `mm::Model`.")
 }
 
-/// The `concerto@1.0.0` system model, as a JSON AST: [`root_model`] typed and
-/// serialized straight back out, so callers that load a model from a
-/// `serde_json::Value` (every one of them, [`crate::model_manager::ModelManager::new`]
-/// included) can go on doing so.
+/// The `concerto@1.0.0` system model, as a JSON AST: the vendored JSON, in
+/// its own key order, as [`crate::model_manager::ModelManager::new`] loads
+/// it.
 pub fn root_model_ast() -> serde_json::Value {
-    serde_json::to_value(root_model()).expect("Root model could not be converted to JSON.")
+    serde_json::from_str(ROOT_MODEL_JSON).expect("Root model could not be parsed as JSON.")
 }
 
-/// The `concerto.decorator@1.0.0` model, as a JSON AST: [`decorator_model`]
-/// typed and serialized straight back out, so callers that load a model from
-/// a `serde_json::Value` (every one of them,
-/// [`crate::model_manager::ModelManager::new`] included) can go on doing so.
+/// The `concerto.decorator@1.0.0` model, as a JSON AST: the vendored JSON,
+/// in its own key order, as [`crate::model_manager::ModelManager::new`]
+/// loads it.
 pub fn decorator_model_ast() -> serde_json::Value {
-    serde_json::to_value(decorator_model())
-        .expect("Decorator model could not be converted to JSON.")
+    serde_json::from_str(DECORATOR_MODEL_JSON)
+        .expect("Decorator model could not be parsed as JSON.")
 }
 
 /// P5-73 (accordproject/concerto-rust#414): the two system models' ASTs

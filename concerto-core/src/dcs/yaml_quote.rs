@@ -207,18 +207,11 @@ fn needs_quoting_with(value: &str, check_core_schema_types: bool) -> bool {
 /// the C0 control characters the JSON grammar requires (`\b \f \n \r \t`,
 /// `\u00XX` otherwise); leaves every other Unicode scalar value, including
 /// non-ASCII text, as-is, exactly as `serde_json`'s `Display` for
-/// `Value::String` does.
-fn json_quote(value: &str) -> String {
+/// `Value::String` does. Also the double-quoted rendering
+/// [`dcsconverter`](crate::dcs::dcsconverter) picks whenever a
+/// `failsafe`-schema plain scalar isn't safe ([`needs_quoting_failsafe`]).
+pub(crate) fn json_quote(value: &str) -> String {
     serde_json::to_string(value).expect("a &str always serialises")
-}
-
-/// [`json_quote`], for [`dcsconverter`](crate::dcs::dcsconverter): the
-/// double-quoted rendering this crate picks (see
-/// [`dcsconverter::render_scalar_failsafe`](crate::dcs::dcsconverter))
-/// whenever a `failsafe`-schema plain scalar isn't safe
-/// ([`needs_quoting_failsafe`]).
-pub(crate) fn json_quote_for_dcsconverter(value: &str) -> String {
-    json_quote(value)
 }
 
 /// A value safe for embedding in a YAML scalar. String values containing

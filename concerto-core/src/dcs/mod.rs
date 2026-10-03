@@ -247,25 +247,27 @@ fn sorted_by_index(mut commands: Vec<DcsIndexWrapper<'_>>) -> Vec<DcsIndexWrappe
 ///
 /// As in TS, the rewrite reads the version through `ModelUtil.getNamespace`
 /// and `ModelUtil.parseNamespace`, whose errors (an unparseable namespace
-/// in a nested `$class`) propagate; a namespace with no version leaves the
-/// `$class` unchanged (TS `replace(undefined, …)` finds nothing to replace).
+/// in a nested `$class`) propagate, and since BC-02 that includes a
+/// namespace with no version.
 pub fn migrate_to(value: &mut Value) -> Result<()> {
     match value {
         Value::Object(map) => {
-            if let Some(Value::String(class)) = map.get("$class").cloned().as_ref()
-                && class.contains("org.accordproject.decoratorcommands")
-            {
-                let ns = model_util::get_namespace(Some(class))?;
-                if let ParsedNamespace::Full {
-                    version: Some(version),
-                    ..
-                } = model_util::parse_namespace_with(Some(ns), false)?
+            // P5-104 (C-13): the `$class` is read borrowed, and copied only
+            // when it is rewritten.
+            let migrated = match map.get("$class") {
+                Some(Value::String(class))
+                    if class.contains("org.accordproject.decoratorcommands") =>
                 {
+                    let ns = model_util::get_namespace(Some(class))?;
+                    let (_, version) = model_util::namespace_parts(ns)?;
                     // `String.prototype.replace` with a string pattern
                     // replaces only the first occurrence.
-                    let migrated = class.replacen(version.as_str(), DCS_VERSION, 1);
-                    map.insert("$class".to_string(), Value::String(migrated));
+                    Some(class.replacen(version, DCS_VERSION, 1))
                 }
+                _ => None,
+            };
+            if let Some(migrated) = migrated {
+                map.insert("$class".to_string(), Value::String(migrated));
             }
             for v in map.values_mut() {
                 migrate_to(v)?;
@@ -286,18 +288,6 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
 /// components above 2^53 compare exactly.
 fn parse_version(version: &str) -> Option<semver::Version> {
     semver::Version::parse(version).ok()
-}
-
-/// node-semver's `new SemVer(undefined)` (`classes/semver.js`), which
-/// `semver.major`/`semver.minor` raise for a `$class` namespace that has no
-/// version.
-fn semver_not_a_string() -> Error {
-    ContractError::pre_port(
-        ErrorKind::MalformedInput,
-        "Invalid version. Must be a string. Got type \"undefined\".".to_string(),
-        None,
-    )
-    .into()
 }
 
 /// A JS `TypeError` for reading `property` of `undefined` (`is_null` false)
@@ -353,14 +343,8 @@ pub(crate) fn can_migrate(decorator_command_set: &Value, target_version: &str) -
         _ => None,
     };
     let ns = model_util::get_namespace(class)?;
-    let input_version = match model_util::parse_namespace_with(Some(ns), false)? {
-        ParsedNamespace::Full {
-            version: Some(v), ..
-        } => v,
-        _ => return Err(semver_not_a_string()),
-    };
-    let (Some(input), Some(target)) =
-        (parse_version(&input_version), parse_version(target_version))
+    let (_, input_version) = model_util::namespace_parts(ns)?;
+    let (Some(input), Some(target)) = (parse_version(input_version), parse_version(target_version))
     else {
         // `parseNamespace` already validated `input_version` as a semver,
         // and `target_version` is always `DCS_VERSION`.
@@ -542,9 +526,9 @@ pub(crate) fn execute_namespace_command(model: &mut Value, command: &Value) -> R
         .get("namespace")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let name = match model_util::parse_namespace_with(namespace.as_deref(), false)? {
-        ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
-    };
+    let name = model_util::namespace_parts(namespace.as_deref().unwrap_or_default())?
+        .0
+        .to_string();
     let namespace = namespace.unwrap_or_default();
     if falsy_or_equal(
         target.get("namespace"),
@@ -773,15 +757,20 @@ pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) ->
         let model_file = resolved_model_file.expect("guarded above: namespace resolved or errored");
         let fqn = format!("{}.{declaration}", model_file.namespace());
 
-        if let Some(property) = target
+        // `target.property`, then each of `target.properties` (P5-104,
+        // C-13: one check, on the borrowed lookup).
+        let property = target
             .get("property")
             .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
-        {
-            let found = model_manager
-                .property(&fqn, property)
-                .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
-            if found.is_none() {
+            .filter(|v| !v.is_empty());
+        let properties = target
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
+        for property in property.into_iter().chain(properties) {
+            if model_manager.property(&fqn, property)?.is_none() {
                 return Err(ContractError::pre_port(
                     ErrorKind::InvalidArgument,
                     format!(
@@ -790,24 +779,6 @@ pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) ->
                     None,
                 )
                 .into());
-            }
-        }
-
-        if let Some(properties) = target.get("properties").and_then(Value::as_array) {
-            for property in properties.iter().filter_map(Value::as_str) {
-                let found = model_manager
-                    .property(&fqn, property)
-                    .map(|found| found.map(|(owner, property)| (owner, property.clone())))?;
-                if found.is_none() {
-                    return Err(ContractError::pre_port(
-                        ErrorKind::InvalidArgument,
-                        format!(
-                            "Decorator Command references property \"{namespace}.{declaration}.{property}\" which does not exist."
-                        ),
-                        None,
-                    )
-                    .into());
-                }
             }
         }
     }
@@ -1408,9 +1379,7 @@ fn decorate_model(
         }
     }
 
-    let namespace_name = match model_util::parse_namespace_with(Some(&namespace), false)? {
-        ParsedNamespace::Full { name, .. } | ParsedNamespace::NameOnly { name } => name,
-    };
+    let namespace_name = model_util::namespace_parts(&namespace)?.0.to_string();
 
     // Detach `declarations` into an owned local: once it is out of `model`,
     // `execute_namespace_command` below (which mutates `model` itself, for a
