@@ -21,7 +21,7 @@ use concerto_core::instance::from_json::{
     required_null_error, strict_qualified_date_time, unknown_keys_error,
 };
 use concerto_core::instance::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
-use concerto_core::instance::plan;
+use concerto_core::instance::plan::{self, ClassPlan};
 use concerto_core::introspect::Declaration;
 use concerto_core::model_manager::ModelManager;
 use concerto_core::{Error, model_util};
@@ -494,14 +494,14 @@ impl<'a> Populator<'a> {
     ) -> Result<Instance> {
         let entries = get_assignable_entries(json, class_declaration)?;
         let options = self.options.deserialize;
-        if options.reject_unknown_keys {
-            self.reject_unknown_keys(json, class_declaration)?;
-        }
-        // `classDeclaration.getProperties()`, and each `getProperty` below,
-        // from the validation plan (P5-88; the only route since P5-99): the
-        // same answer every time, and the chain's error first, as
-        // `getProperties()` raises it.
+        // `classDeclaration.getProperties()`, and each `getProperty` below
+        // and in the `reject_*` options, from the validation plan (P5-88;
+        // the only route since P5-99): the same answer every time, and the
+        // chain's error first, as `getProperties()` raises it.
         let class_plan = plan::class_plan(self.mm, class_declaration.id)?;
+        if options.reject_unknown_keys {
+            self.reject_unknown_keys(json, class_declaration, &class_plan)?;
+        }
         // `validateProperties`, then each `getProperty` below: one lookup
         // per property serves both (P5-16).
         let declared: Vec<Option<usize>> =
@@ -514,7 +514,7 @@ impl<'a> Populator<'a> {
             class_declaration,
         )?;
         if options.reject_required_null {
-            self.reject_required_null(json, class_declaration)?;
+            self.reject_required_null(json, &class_plan)?;
         }
         for ((property, value), found) in entries.iter().zip(declared) {
             if **value != JsValue::Null {
@@ -536,11 +536,15 @@ impl<'a> Populator<'a> {
     /// not a system property and that the declaration does not declare,
     /// whatever its value (`null` included), in one error with one
     /// `UNKNOWN_PROPERTY` detail per key.
-    fn reject_unknown_keys(&self, json: &JsValue, class_declaration: &TypeRef) -> Result<()> {
-        let expected = class_declaration.properties("classDeclaration.getProperties")?;
+    fn reject_unknown_keys(
+        &self,
+        json: &JsValue,
+        class_declaration: &TypeRef,
+        class_plan: &ClassPlan,
+    ) -> Result<()> {
         let unknown: Vec<String> = object_keys_ref(json)?
             .into_iter()
-            .filter(|p| !model_util::is_system_property(p) && !expected.contains(p))
+            .filter(|p| !model_util::is_system_property(p) && !class_plan.contains(p))
             .map(Cow::into_owned)
             .collect();
         if unknown.is_empty() {
@@ -557,16 +561,17 @@ impl<'a> Populator<'a> {
     /// declared, required property (in the document's key order) whose value
     /// is `null` fails at once with its path and declared type, and a
     /// `TYPE_VIOLATION` detail.
-    fn reject_required_null(&self, json: &JsValue, class_declaration: &TypeRef) -> Result<()> {
+    fn reject_required_null(&self, json: &JsValue, class_plan: &ClassPlan) -> Result<()> {
         for key in object_keys_ref(json)? {
             if model_util::is_system_property(&key)
                 || *get_property_ref(json, &key)? != JsValue::Null
             {
                 continue;
             }
-            let Some((_, property)) = class_declaration.property(&key)? else {
+            let Some(index) = class_plan.find(&key) else {
                 continue;
             };
+            let (_, property) = class_plan.property(self.mm, index);
             if property.is_optional() {
                 continue;
             }
@@ -603,71 +608,91 @@ impl<'a> Populator<'a> {
         let value_type = map.value_type_name().to_string();
         // P5-58 (BC-05, R1; DV-007): a relationship-typed value is read as
         // a relationship property is, not as an embedded concept. Its
-        // target type is resolved at the first value, as TS resolves it.
-        let is_relationship = model::is_relationship_map(map_declaration);
-        let mut relationship: Option<(String, String, String)> = None;
+        // target type, and its slot, are resolved once (B-5, P5-99); an
+        // error resolving them is raised at the first value, as TS resolves
+        // it there.
+        let relationship = model::is_relationship_map(map_declaration).then(|| {
+            let target = model::map_relationship_target(map_declaration)?
+                .expect("is_relationship_map was checked");
+            let (default_namespace, default_type) =
+                relationship_defaults(&model::map_relationship_slot(map_declaration, &target))?;
+            Ok::<_, Error>((target, default_namespace, default_type))
+        });
+        let slot = match &relationship {
+            Some(Ok((target, _, _))) => Some(model::map_relationship_slot(map_declaration, target)),
+            _ => None,
+        };
+        // `processMapType`'s declaration for a key or value with no `$class`
+        // of its own: the same for every entry, so resolved once (B-5).
+        let mut key_declaration = None;
+        let mut value_declaration = None;
         let mut result: Vec<(JsValue, JsValue)> = Vec::new();
-        // `new Map(Object.entries(jsonObj))`
+        // `new Map(Object.entries(jsonObj))`. The keys are an object's, so
+        // each is new, and each `map.set` appends (B-4, P5-99): a key's
+        // `processMapType` hands a string back as it is, or a new
+        // `Resource`, which a JS `Map` keys by identity.
         for key in object_keys(json)? {
             let value = get_property(json, &key)?;
-            let mut key = JsValue::String(key);
-            let mut value = value;
+            let key = JsValue::String(key);
             if key.as_str() == Some("$class") {
-                map_set(&mut result, key, value);
+                result.push((key, value));
                 continue;
             }
-            if !model_util::is_primitive_type(&key_type) {
-                key = self.process_map_type(map_declaration, &key, &key_type)?;
-            }
-            if is_relationship {
-                if relationship.is_none() {
-                    let target = model::map_relationship_target(map_declaration)?
-                        .expect("is_relationship_map was checked");
-                    let slot = model::map_relationship_slot(map_declaration, &target);
-                    let (default_namespace, default_type) = relationship_defaults(&slot)?;
-                    relationship = Some((target, default_namespace, default_type));
+            let key = if model_util::is_primitive_type(&key_type) {
+                key
+            } else {
+                self.process_map_type(map_declaration, &key, &key_type, &mut key_declaration)?
+            };
+            let value = match &relationship {
+                Some(resolved) => {
+                    let (_, default_namespace, default_type) =
+                        resolved.as_ref().map_err(Clone::clone)?;
+                    let slot = slot.as_ref().expect("resolved with the target");
+                    self.convert_relationship(slot, default_namespace, default_type, &value)?
                 }
-                let (target, default_namespace, default_type) =
-                    relationship.as_ref().expect("just set");
-                let slot = model::map_relationship_slot(map_declaration, target);
-                value =
-                    self.convert_relationship(&slot, default_namespace, default_type, &value)?;
-            } else if !model_util::is_primitive_type(&value_type) {
-                value = self.process_map_type(map_declaration, &value, &value_type)?;
-            }
-            map_set(&mut result, key, value);
+                None if model_util::is_primitive_type(&value_type) => value,
+                None => self.process_map_type(
+                    map_declaration,
+                    &value,
+                    &value_type,
+                    &mut value_declaration,
+                )?,
+            };
+            result.push((key, value));
         }
         Ok(JsValue::Map(result))
     }
 
-    /// TS: JSONPopulator.processMapType.
+    /// TS: JSONPopulator.processMapType. `declaration` holds the
+    /// declaration `type_name` names in the map's model file, resolved at
+    /// the first entry that needs it (B-5, P5-99).
     fn process_map_type(
         &mut self,
         map_declaration: &TypeRef,
         value: &JsValue,
         type_name: &str,
+        declaration: &mut Option<Option<TypeRef<'a>>>,
     ) -> Result<JsValue> {
         let namespace = map_declaration.namespace();
+        let mm = self.mm;
         // `try { ... } catch (err) { decl = undefined; }`
-        let declaration = (|| -> Option<TypeRef<'a>> {
-            let class_name = match value {
-                JsValue::Object(_) | JsValue::Instance(_) | JsValue::Array(_) | JsValue::Map(_) => {
-                    get_property(value, "$class")
-                        .ok()
-                        .filter(JsValue::is_truthy)
-                }
-                _ => None,
-            };
-            let name = match class_name {
-                Some(JsValue::String(s)) => s,
-                Some(_) => return None,
-                None => self
-                    .mm
-                    .model_file_fully_qualified_type_name(namespace, type_name)?,
-            };
-            model::get_type(self.mm, &name).ok()
-        })();
-        if let Some(declaration) = declaration
+        let class_name = match value {
+            JsValue::Object(_) | JsValue::Instance(_) | JsValue::Array(_) | JsValue::Map(_) => {
+                get_property(value, "$class")
+                    .ok()
+                    .filter(JsValue::is_truthy)
+            }
+            _ => None,
+        };
+        let found = match class_name {
+            Some(JsValue::String(s)) => model::get_type(mm, &s).ok(),
+            Some(_) => None,
+            None => *declaration.get_or_insert_with(|| {
+                mm.model_file_fully_qualified_type_name(namespace, type_name)
+                    .and_then(|name| model::get_type(mm, &name).ok())
+            }),
+        };
+        if let Some(declaration) = found
             && declaration.is_class_declaration()
         {
             // `newConcept(ns, name, decl.getIdentifierFieldName())`: the
@@ -905,14 +930,6 @@ fn relationship_defaults(slot: &RelationshipSlot) -> Result<(String, String)> {
         default_namespace,
         model_util::short_name(type_fqn).to_string(),
     ))
-}
-
-/// `map.set(key, value)`: a key seen before keeps its place.
-fn map_set(entries: &mut Vec<(JsValue, JsValue)>, key: JsValue, value: JsValue) {
-    match entries.iter_mut().find(|(k, _)| *k == key) {
-        Some(entry) => entry.1 = value,
-        None => entries.push((key, value)),
-    }
 }
 
 /// What `utcOffset(this.utcOffset)` receives: a string as it is, anything
