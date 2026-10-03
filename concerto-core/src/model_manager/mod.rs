@@ -152,8 +152,10 @@ struct DeclSlot {
     fqn: Arc<str>,
 }
 
-/// The arena lengths and state version before
-/// [`ModelManager::append_for_validation`] appended a file (P5-48).
+/// The arena lengths and state version at one point, which
+/// [`ModelManager::rollback`] returns the arena to: before
+/// [`ModelManager::append_for_validation`] appended a file (P5-48), or
+/// before a batch (A-6).
 pub(crate) struct AppendMark {
     files: usize,
     declarations: usize,
@@ -393,7 +395,7 @@ impl ModelManager {
     /// then `this.addRootModel()` (src/basemodelmanager.ts), each of which
     /// builds a `ModelFile` from the vendored AST and adds it with
     /// `addModelFile(m, cto, fileName, true)` - validation disabled. The
-    /// arena's `Self::insert` never validates on load (that is a separate,
+    /// arena's `Self::insert_shared` never validates on load (that is a separate,
     /// opt-in pass, [`crate::validation`]), so it already behaves as TS's
     /// `disableValidation = true` does for both models.
     pub fn new() -> Result<Self> {
@@ -476,14 +478,7 @@ impl ModelManager {
         /// check and the same errors, but the file is shared, not copied,
         /// as [`ModelManager::shared_model_files`] hands it out.
         pub fn add_shared_model_file(&mut self, mf: Arc<ModelFile>) -> Result<()> {
-            if let Some(existing) = self
-                .namespaces
-                .get(mf.namespace())
-                .and_then(|id| self.file(*id))
-            {
-                return Err(already_exists(mf.namespace(), mf.file_name(), existing));
-            }
-            self.insert_shared(mf).map(drop)
+            self.register_new(mf).map(drop)
         }
     }
 
@@ -544,14 +539,7 @@ impl ModelManager {
             mf: Arc<ModelFile>,
             proof: Option<Arc<ValidityProof>>,
         ) -> Result<ModelFileId> {
-            if let Some(existing) = self
-                .namespaces
-                .get(mf.namespace())
-                .and_then(|id| self.file(*id))
-            {
-                return Err(already_exists(mf.namespace(), mf.file_name(), existing));
-            }
-            let id = self.insert_shared(mf)?;
+            let id = self.register_new(mf)?;
             self.files[id.slot()].proof = proof;
             Ok(id)
         }
@@ -581,14 +569,57 @@ impl ModelManager {
     /// [`ModelManager::add_model_with_definitions`] runs once the file is
     /// loaded.
     fn add_loaded_model_file(&mut self, mf: ModelFile) -> Result<ModelFileId> {
-        if let Some(existing) = self
-            .namespaces
-            .get(mf.namespace())
-            .and_then(|id| self.file(*id))
-        {
-            return Err(already_exists(mf.namespace(), mf.file_name(), existing));
+        self.register_new(Arc::new(mf))
+    }
+
+    /// Registers `model_file` under a namespace no file holds yet: TS
+    /// `addModelFile`'s already-exists check
+    /// ([`ModelManager::check_namespace_available`]), then
+    /// [`ModelManager::insert_shared`] (A-6, accordproject/concerto-rust#458).
+    fn register_new(&mut self, model_file: Arc<ModelFile>) -> Result<ModelFileId> {
+        self.check_namespace_available(model_file.namespace(), model_file.file_name())?;
+        self.insert_shared(model_file)
+    }
+
+    /// The arena lengths and state version now, for
+    /// [`ModelManager::rollback`] to return to (A-6).
+    fn mark(&self) -> AppendMark {
+        AppendMark {
+            files: self.files.len(),
+            declarations: self.declarations.len(),
+            properties: self.properties.len(),
+            state_version: self.state_version,
         }
-        self.insert(mf)
+    }
+
+    /// Takes the files appended since `mark` out of the arena: truncates
+    /// each table back to its length then, removes the namespaces those
+    /// files were registered under, and drops the caches, which may hold
+    /// their handles. Safe without a tombstone (module doc): the appended
+    /// files are the arena's tail, so no handle from before `mark` is
+    /// touched. The state version is the caller's to set.
+    fn truncate_to(&mut self, mark: &AppendMark) {
+        for slot in self.files.get(mark.files..).unwrap_or_default() {
+            let namespace = slot.model_file.namespace();
+            if self
+                .namespaces
+                .get(namespace)
+                .is_some_and(|id| id.slot() >= mark.files)
+            {
+                self.namespaces.remove(namespace);
+            }
+        }
+        self.files.truncate(mark.files);
+        self.declarations.truncate(mark.declarations);
+        self.properties.truncate(mark.properties);
+        self.invalidate_caches();
+    }
+
+    /// Undoes every append since `mark`: the arena, the namespaces and the
+    /// state version are as they were then ([`ModelManager::truncate_to`]).
+    fn rollback(&mut self, mark: AppendMark) {
+        self.truncate_to(&mark);
+        self.state_version = mark.state_version;
     }
 
     /// P5-48 (accordproject/concerto-rust#369): registers `model_file` in
@@ -608,12 +639,7 @@ impl ModelManager {
         if self.namespaces.contains_key(namespace) || self.namespaces.len() != self.files.len() {
             return None;
         }
-        let mark = AppendMark {
-            files: self.files.len(),
-            declarations: self.declarations.len(),
-            properties: self.properties.len(),
-            state_version: self.state_version,
-        };
+        let mark = self.mark();
         let id = self.insert_shared(Arc::clone(model_file)).ok()?;
         Some((id, mark))
     }
@@ -623,15 +649,7 @@ impl ModelManager {
     /// before it (as [`ModelManager::load_models`] rolls a batch back). The
     /// caches are dropped: they may hold the appended file's handles.
     pub(crate) fn undo_append(&mut self, mark: AppendMark) {
-        if let Some(slot) = self.files.get(mark.files) {
-            let namespace = slot.model_file.namespace().to_string();
-            self.namespaces.remove(&namespace);
-        }
-        self.files.truncate(mark.files);
-        self.declarations.truncate(mark.declarations);
-        self.properties.truncate(mark.properties);
-        self.state_version = mark.state_version;
-        self.invalidate_caches();
+        self.rollback(mark);
     }
 
     /// Loads a batch of models irrespective of import order between them
@@ -654,65 +672,12 @@ impl ModelManager {
         &mut self,
         models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
     ) -> Result<Vec<ModelFileId>> {
-        // A snapshot of every piece of state a load mutates, so a failure
-        // partway through — a duplicate namespace within the batch, a
-        // structural error in one of the models, or a semantic validation
-        // failure over the whole set — can be undone exactly. Because the
-        // arena is append-only and this call is the only writer while it
-        // runs, everything it adds sits in a contiguous tail of each vector;
-        // rolling back is truncating each one back to its snapshot length; no
-        // handle handed out before this call is touched, since none of them
-        // name a slot at or past that length.
-        let files_len = self.files.len();
-        let declarations_len = self.declarations.len();
-        let properties_len = self.properties.len();
-        let namespaces_snapshot = self.namespaces.clone();
-        let state_version = self.state_version;
-        let validated = self.validated_marks();
-
-        let mut result = Ok(Vec::new());
-        for (value, file_name) in models {
-            let outcome = ModelFile::from_json(value, file_name).and_then(|mf| {
-                if let Some(existing) = self
-                    .namespaces
-                    .get(mf.namespace())
-                    .and_then(|id| self.file(*id))
-                {
-                    return Err(already_exists(mf.namespace(), mf.file_name(), existing));
-                }
-                self.insert(mf)
-            });
-            match outcome {
-                Ok(id) => {
-                    if let Ok(ids) = &mut result {
-                        ids.push(id);
-                    }
-                }
-                Err(err) => {
-                    result = Err(err);
-                    break;
-                }
-            }
-        }
-        // Validate the whole manager, new models and pre-existing ones
-        // together, only once every model in the batch loaded cleanly.
-        if result.is_ok()
-            && let Err(err) = self.validate_models()
-        {
-            result = Err(err);
-        }
-
-        if let Err(err) = result {
-            self.files.truncate(files_len);
-            self.declarations.truncate(declarations_len);
-            self.properties.truncate(properties_len);
-            self.invalidate_caches();
-            self.namespaces = namespaces_snapshot;
-            self.state_version = state_version;
-            self.restore_validated(&validated);
-            return Err(err);
-        }
-        result
+        self.register_batch(
+            models.into_iter().map(|(value, file_name)| {
+                ModelFile::from_json(value, file_name).map(|mf| (Arc::new(mf), None))
+            }),
+            true,
+        )
     }
 
     /// A scratch copy of this manager — same options, same model files in the
@@ -770,16 +735,18 @@ impl ModelManager {
         Ok(scratch)
     }
 
-    /// Appends a model file, its declarations and their properties to the
-    /// arena, and counts the mutation. Nothing is changed if a handle cannot
-    /// be allocated.
+    /// [`ModelManager::insert_shared`] for an unshared model file: a test
+    /// helper (the crate's own loads all go through
+    /// [`ModelManager::register_new`]).
+    #[cfg(test)]
     fn insert(&mut self, model_file: ModelFile) -> Result<ModelFileId> {
         self.insert_shared(Arc::new(model_file))
     }
 
-    /// [`ModelManager::insert`] for a model file that may already be
-    /// registered in another manager: the file itself is shared, not
-    /// copied (P5-18).
+    /// Appends a model file, its declarations and their properties to the
+    /// arena, and counts the mutation. Nothing is changed if a handle cannot
+    /// be allocated. The file may already be registered in another manager:
+    /// it is shared, not copied (P5-18).
     fn insert_shared(&mut self, model_file: Arc<ModelFile>) -> Result<ModelFileId> {
         // P5-97: an append keeps every cached answer that cannot change
         // (`keep_caches_for_append`).
@@ -1049,9 +1016,7 @@ impl ModelManager {
             if !already_has_metamodel && self.passes_on_resident_metamodel(ast) {
                 return Ok(());
             }
-            let files_len = self.files.len();
-            let declarations_len = self.declarations.len();
-            let properties_len = self.properties.len();
+            let mark = self.mark();
             if !already_has_metamodel {
                 self.insert_shared(metamodel_model_file()?)?;
             }
@@ -1061,11 +1026,7 @@ impl ModelManager {
                 // arena's tail (nothing else was added since step 2), so
                 // removing it is truncating each table back, as `add_models`'s
                 // rollback does; the removal is a mutation of its own.
-                self.files.truncate(files_len);
-                self.declarations.truncate(declarations_len);
-                self.properties.truncate(properties_len);
-                self.invalidate_caches();
-                self.namespaces.remove(METAMODEL_NAMESPACE);
+                self.truncate_to(&mark);
                 self.state_version += 1;
             }
             Ok(())
@@ -1374,38 +1335,48 @@ impl ModelManager {
         files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
         validate: bool,
     ) -> Result<()> {
-        let files_len = self.files.len();
-        let declarations_len = self.declarations.len();
-        let properties_len = self.properties.len();
-        let namespaces_snapshot = self.namespaces.clone();
-        let state_version = self.state_version;
+        self.register_batch(files.into_iter().map(Ok), validate)
+            .map(drop)
+    }
+
+    /// The batch core of [`ModelManager::load_models`] and
+    /// [`ModelManager::insert_models`] (A-6): registers each file in turn
+    /// (with its [`ValidityProof`], if any), stopping at the first that
+    /// fails to build or whose namespace is taken, then, unless `validate`
+    /// is false, runs [`ModelManager::validate_models`] once over the whole
+    /// manager. Any failure undoes the whole batch
+    /// ([`ModelManager::rollback`], and the validated marks are restored),
+    /// exactly as if it had never been called. Because the arena is
+    /// append-only and this call is the only writer while it runs,
+    /// everything it adds sits in a contiguous tail of each table.
+    fn register_batch(
+        &mut self,
+        files: impl IntoIterator<Item = Result<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>>,
+        validate: bool,
+    ) -> Result<Vec<ModelFileId>> {
+        let mark = self.mark();
         let validated = self.validated_marks();
-
-        let mut result: Result<()> = Ok(());
-        for (mf, proof) in files {
-            if let Err(err) = self.add_shared_model_file_with_proof(mf, proof) {
-                result = Err(err);
-                break;
-            }
-        }
-        if result.is_ok()
-            && validate
-            && let Err(err) = self.validate_models()
-        {
-            result = Err(err);
-        }
-
-        if let Err(err) = result {
-            self.files.truncate(files_len);
-            self.declarations.truncate(declarations_len);
-            self.properties.truncate(properties_len);
-            self.invalidate_caches();
-            self.namespaces = namespaces_snapshot;
-            self.state_version = state_version;
+        let result = files
+            .into_iter()
+            .map(|file| {
+                let (mf, proof) = file?;
+                self.add_shared_model_file_with_proof(mf, proof)
+            })
+            .collect::<Result<Vec<_>>>()
+            .and_then(|ids| {
+                // Validate the whole manager, new models and pre-existing
+                // ones together, only once every model in the batch loaded
+                // cleanly.
+                if validate {
+                    self.validate_models()?;
+                }
+                Ok(ids)
+            });
+        if result.is_err() {
+            self.rollback(mark);
             self.restore_validated(&validated);
-            return Err(err);
         }
-        Ok(())
+        result
     }
 }
 

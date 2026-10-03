@@ -76,7 +76,7 @@ impl ModelManager {
     js_compat_pub! {
         /// The property a handle names. Resolves through `ClassLike` so that
         /// an enum's own values (P2-04), addressed the same as a class
-        /// declaration's fields (`insert`'s doc comment), resolve here too.
+        /// declaration's fields (`insert_shared`'s doc comment), resolve here too.
         pub fn property_by_id(&self, id: PropId) -> Option<&Property> {
             let slot = self.properties.get(id.slot())?;
             ClassLike::from_declaration(self.declaration(slot.declaration)?)?
@@ -492,7 +492,7 @@ impl ModelManager {
 
     js_compat_pub! {
         /// A declaration's fully-qualified name, borrowed from the arena,
-        /// where [`ModelManager::insert`] built it once (P5-13).
+        /// where [`ModelManager::insert_shared`] built it once (P5-13).
         pub fn decl_fqn(&self, id: DeclId) -> Result<&str> {
             self.declarations
                 .get(id.slot())
