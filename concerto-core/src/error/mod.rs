@@ -123,7 +123,6 @@ impl Error {
 
     /// The contract shape behind this error, unless a pre-port check made it
     /// ([`Error::type_not_found`], [`Error::illegal_model`]).
-    #[allow(dead_code)]
     pub(crate) fn ported(&self) -> Option<&ContractError> {
         matches!(self.0.legacy, Legacy::None).then_some(&self.0.contract)
     }
