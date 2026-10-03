@@ -216,7 +216,7 @@ impl ModelManager {
             {
                 return self.validate_model_file(registered);
             }
-            let scratch = self.with_model_file_registered(model_file)?;
+            let scratch = self.with_model_file_registered(std::sync::Arc::new(model_file.clone()))?;
             let registered = scratch
                 .model_file(model_file.namespace())
                 .expect("with_model_file_registered registers the file under its namespace");
@@ -343,7 +343,7 @@ impl ModelManager {
     /// `String` — every caller here goes on to borrow `model_file`'s
     /// declaration back out of the *scratch* copy, not `self`.
     fn detached_scratch(&self, model_file: &ModelFile) -> Result<(Self, String)> {
-        let scratch = self.with_model_file_registered(model_file)?;
+        let scratch = self.with_model_file_registered(std::sync::Arc::new(model_file.clone()))?;
         Ok((scratch, model_file.namespace().to_string()))
     }
 
@@ -3781,7 +3781,7 @@ mod tests {
         let orig = ModelFile::from_json(&ast, Some("orig.cto".into())).unwrap();
         let manager = ModelManager::new()
             .unwrap()
-            .with_model_file_registered(&orig)
+            .with_model_file_registered(std::sync::Arc::new(orig.clone()))
             .unwrap();
 
         let renamed = ModelFile::from_json(&ast, Some("renamed.cto".into())).unwrap();

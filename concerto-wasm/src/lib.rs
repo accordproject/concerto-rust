@@ -5673,10 +5673,13 @@ pub struct ModelManagerHandle {
     manager: ModelManager,
     /// Bumped by every `&mut self` binding (and by [`Self::model_file_filter`]
     /// on its `target`), so a view can cache what it read from this handle
-    /// for as long as the epoch is unchanged ([`Self::epoch`], P5-06). Unlike
-    /// [`ModelManager::generation`], it never goes back: `updateModelFile`/
-    /// `deleteModelFile` replace the whole manager, restarting its
-    /// generation count.
+    /// for as long as the epoch is unchanged ([`Self::epoch`], P5-06). It
+    /// moves on every `&mut self` call, an option change included, where
+    /// [`ModelManager::generation`] counts only the changes to the model
+    /// files. (Since A-3, accordproject/concerto-rust#448, the generation
+    /// never goes back either: `updateModelFile`/`deleteModelFile` adopt the
+    /// rebuilt manager with [`ModelManager::adopt`]. Both stay exported:
+    /// removing either from the wasm surface is not additive.)
     epoch: u64,
     /// Model files loaded by [`Self::stage_model_file`] and not yet
     /// committed or dropped (lazy views: P5-06a, P5-10a).
@@ -6581,7 +6584,8 @@ impl ModelManagerHandle {
         run(|| {
             let model_file = model_file_from_text(ast, definitions, file_name)?;
             let namespace = model_file.namespace().to_string();
-            self.manager = self.manager.update_model_file(model_file, validate)?;
+            let updated = self.manager.update_model_file(model_file, validate)?;
+            self.manager.adopt(updated);
             self.manager
                 .model_file_id(&namespace)
                 .map(ModelFileId::index)
@@ -6594,7 +6598,8 @@ impl ModelManagerHandle {
     pub fn delete_model_file(&mut self, namespace: &str) -> std::result::Result<(), JsValue> {
         self.bump_epoch();
         run(|| {
-            self.manager = self.manager.delete_model_file(namespace)?;
+            let deleted = self.manager.delete_model_file(namespace)?;
+            self.manager.adopt(deleted);
             Ok(())
         })
     }
