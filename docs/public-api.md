@@ -96,6 +96,20 @@ is done. Items outside the stable surface carry none of them.
    while the crate is `0.x`, and a major bump after `1.0`. P6-03 enforces this
    with `cargo public-api` and `cargo semver-checks`, run on
    `accordproject-concerto-core` alone with default features.
+
+   **Waiver until the first release (maintainer decision 2026-10-03, #458).**
+   Nothing from the Rust crates has been merged to `main` or released yet, so
+   the Rust crates may take breaking changes until their first release, with
+   no version bump. A `cargo semver-checks` failure on a PR into the
+   integration branch `claude/tender-pascal-ocwf9q` is waived until then, and
+   a Rust-only API break needs no maintainer decision. The PR body lists each
+   break. The waiver does not cover the TS `@accordproject/concerto-core`
+   public API, which the v5 types check (P5-84) still guards. P5-104 phase A
+   was the first PR under this waiver; its breaks are
+   `ScalarValidator::String` becoming a tuple variant that holds the built
+   `StringValidator`, and `Decorator::from_ast` becoming generic over the
+   sealed `introspect::decorator::AstNode` trait. The waiver ends with the
+   first release, after which item 1 applies as written.
 2. **Same verdict as the TS reference.** Loading, semantic validation and
    instance validation accept and reject what `@accordproject/concerto-core@5.0.0`
    accepts and rejects (D10), and each rejection has the `ErrorKind` of the TS
