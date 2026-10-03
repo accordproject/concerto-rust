@@ -371,11 +371,9 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
     let mut seen = HashSet::new();
     for declaration in model_file.declarations() {
         if !seen.insert(declaration.name()) {
-            return Err(failed(
-                format!(
-                    "Duplicate class name {}",
-                    qualify(model_file.namespace(), declaration.name())
-                ),
+            return Err(catalogue_error(
+                "modelfile-validate-duplicateclassname",
+                vec![("fqn", qualify(model_file.namespace(), declaration.name()))],
                 None,
             ));
         }
@@ -438,8 +436,9 @@ fn check_import_clash(
     {
         return Ok(());
     }
-    Err(failed(
-        format!("Type '{name}' clashes with an imported type with the same name."),
+    Err(catalogue_error(
+        "declaration-validate-importclash",
+        vec![("name", name.to_string())],
         lazy_location(location),
     ))
 }
@@ -569,7 +568,7 @@ impl Validate for ClassDeclaration {
         // P5-48: the borrowed property list (P5-13's `class_properties`),
         // not a copied one with an owned owner name per property.
         for (owner_fqn, property) in manager.class_properties(&fqn)?.iter() {
-            validate_property(manager, namespace, self, owner_fqn, property)?;
+            validate_property(manager, namespace, owner_fqn, property)?;
         }
         Ok(())
     }
@@ -591,12 +590,10 @@ impl Validate for ClassDeclaration {
 fn validate_property(
     manager: &ModelManager,
     namespace: &str,
-    class: &ClassDeclaration,
     owner_fqn: &str,
     property: &Property,
 ) -> Result<()> {
     let owner_ns = get_namespace(Some(owner_fqn))?;
-    let owner_name = short_name(owner_fqn);
     // P5-48: the property's own name is built only when a decorator check
     // will read it.
     let property_fqn =
@@ -622,9 +619,7 @@ fn validate_property(
     let type_name = property.type_identifier().map(|t| t.name.as_str());
     let is_primitive = type_name.is_none_or(is_primitive_type);
     if is_primitive || owner_ns == namespace {
-        return check_property_type(
-            manager, namespace, owner_ns, owner_name, owner_fqn, class, property,
-        );
+        return check_property_type(manager, namespace, owner_ns, owner_fqn, property);
     }
 
     // `field.getFullyQualifiedTypeName()`: resolved in the declaring file,
@@ -645,12 +640,11 @@ fn validate_property(
     // TS `modelManager.getType(typeFqn)`, with its own two errors.
     manager.get_type_declaration(&type_fqn)?;
     let context_ns = get_namespace(Some(&type_fqn))?;
-    check_property_type(
-        manager, context_ns, owner_ns, owner_name, owner_fqn, class, property,
-    )
-    .map_err(|e| match manager.model_file(context_ns) {
-        Some(file) if context_ns != namespace => attach_model_file(e, file),
-        _ => e,
+    check_property_type(manager, context_ns, owner_ns, owner_fqn, property).map_err(|e| {
+        match manager.model_file(context_ns) {
+            Some(file) if context_ns != namespace => attach_model_file(e, file),
+            _ => e,
+        }
     })
 }
 
@@ -689,8 +683,9 @@ fn check_unique_decorators(element: &impl Decorated, location: Option<&mm::Range
         // entry and reads `undefined` (accordproject/concerto-rust#218).
         let name = decorator.js_name();
         if !seen.insert(name) {
-            return Err(failed(
-                format!("Duplicate decorator {}", name.unwrap_or("undefined")),
+            return Err(catalogue_error(
+                "decorated-validate-duplicatedecorator",
+                vec![("name", name.unwrap_or("undefined").to_string())],
                 lazy_location(location),
             ));
         }
@@ -738,8 +733,9 @@ fn check_super_type(
     let Some(super_declaration) = super_declaration else {
         // TS: `_resolveSuperType`'s hardcoded string, not a catalogue
         // template (Globalize is never called on this path).
-        return Err(failed(
-            format!("Could not find super type {}", super_type.name),
+        return Err(catalogue_error(
+            "classdeclaration-resolvesupertype-notfound",
+            vec![("superType", super_type.name.to_string())],
             class_location(class),
         ));
     };
@@ -753,14 +749,17 @@ fn check_super_type(
     if super_declaration.declaration_kind() != "ConceptDeclaration"
         && class.declaration_kind() != super_declaration.declaration_kind()
     {
-        return Err(failed(
-            format!(
-                "{} ({}) cannot extend {} ({})",
-                class.declaration_kind(),
-                class.name(),
-                super_declaration.declaration_kind(),
-                super_declaration.name()
-            ),
+        return Err(catalogue_error(
+            "classdeclaration-resolvesupertype-kindmismatch",
+            vec![
+                ("kind", class.declaration_kind().to_string()),
+                ("name", class.name().to_string()),
+                (
+                    "superKind",
+                    super_declaration.declaration_kind().to_string(),
+                ),
+                ("superName", super_declaration.name().to_string()),
+            ],
             class_location(class),
         ));
     }
@@ -852,8 +851,9 @@ fn check_identifier(
     // TS: hardcoded, not a catalogue template (Globalize is never called on
     // this path).
     if field.is_optional() {
-        return Err(failed(
-            "Identifying fields cannot be optional.".to_string(),
+        return Err(catalogue_error(
+            "classdeclaration-validate-identifieroptional",
+            vec![],
             class_location(class),
         ));
     }
@@ -889,9 +889,7 @@ fn check_property_type(
     manager: &ModelManager,
     namespace: &str,
     owner_ns: &str,
-    owner: &str,
     owner_fqn: &str,
-    class: &ClassDeclaration,
     property: &Property,
 ) -> Result<()> {
     let Some(type_identifier) = property.type_identifier() else {
@@ -933,12 +931,12 @@ fn check_property_type(
         // (src/introspect/relationshipdeclaration.ts): `'Relationship ' +
         // this.getName() + ' cannot be to the primitive type ' +
         // this.getType()` — no owner clause.
-        return Err(failed(
-            format!(
-                "Relationship {} cannot be to the primitive type {}",
-                property.name(),
-                type_identifier.name
-            ),
+        return Err(catalogue_error(
+            "relationshipdeclaration-validate-primitivetype",
+            vec![
+                ("name", property.name().to_string()),
+                ("type", type_identifier.name.to_string()),
+            ],
             property_location(property),
         ));
     }
@@ -1019,28 +1017,25 @@ fn check_property_type(
             // `getModelManager().getType(...)` to swallow a *different* kind
             // of failure than "undeclared", which the current port does not
             // yet model.
-            return Err(failed(
-                format!(
-                    "Relationship {} points to a missing type {}",
-                    property.name(),
-                    target_fqn
-                ),
+            return Err(catalogue_error(
+                "relationshipdeclaration-validate-missingtype",
+                vec![("name", property.name().to_string()), ("type", target_fqn)],
                 property_location(property),
             ));
         }
         // Not yet observed for a non-relationship property: TS's own
         // `Property.validate` has no declaration lookup beyond `resolveType`
         // above, which just succeeded, so this is unreached in practice. Kept
-        // as a defensive pre-port fallback rather than an `unreachable!`,
-        // since `resolve` and `get_declaration` are still two separate Rust
-        // lookups that could in principle disagree.
-        return Err(failed(
-            format!(
-                "Undeclared type {} referenced by {owner}.{}",
-                type_identifier.name,
-                property.name()
-            ),
-            class_location(class),
+        // as a defensive fallback rather than an `unreachable!`, since
+        // `resolve` and `get_declaration` are still two separate Rust
+        // lookups that could in principle disagree; it raises the error
+        // `resolveType` itself raises for a type it cannot find (P5-98,
+        // B-10: no longer a `pre-port` message of its own).
+        return Err(undeclared_type_error(
+            manager,
+            namespace,
+            &type_identifier.name,
+            format!("property {owner_fqn}.{}", property.name()),
         ));
     };
 
@@ -1059,12 +1054,9 @@ fn check_property_type(
             // that has an identifier, but this is to ' +
             // this.getFullyQualifiedTypeName()` — no owner clause, and with
             // the target's own fully-qualified name appended.
-            return Err(failed(
-                format!(
-                    "Relationship {} must be to a class that has an identifier, but this is to {}",
-                    property.name(),
-                    target_fqn
-                ),
+            return Err(catalogue_error(
+                "relationshipdeclaration-validate-notidentified",
+                vec![("name", property.name().to_string()), ("type", target_fqn)],
                 property_location(property),
             ));
         }
@@ -1088,11 +1080,9 @@ fn check_size_validator_target(
     is_map_type: bool,
 ) -> Result<()> {
     if property.size_validator().is_some() && !property.is_array() && !is_map_type {
-        return Err(failed(
-            format!(
-                "size validator can only be applied to array or map properties: {owner_fqn}.{}",
-                property.name()
-            ),
+        return Err(catalogue_error(
+            "property-validate-sizevalidator",
+            vec![("fqn", format!("{owner_fqn}.{}", property.name()))],
             property_location(property),
         ));
     }
@@ -1284,10 +1274,12 @@ fn check_identity_matches_super(
         super_class.identifier_field_name().is_some()
     };
     if redeclares {
-        return Err(failed(
-            format!(
-                "Super class {super_fqn} has an explicit identifier {super_id_field} that cannot be redeclared."
-            ),
+        return Err(catalogue_error(
+            "classdeclaration-validate-redeclaredidentifier",
+            vec![
+                ("superType", super_fqn.to_string()),
+                ("idField", super_id_field.to_string()),
+            ],
             class_location(class),
         ));
     }
@@ -1393,12 +1385,11 @@ js_compat_pub! {
         if let Some(t) = map.value_type()
             && t._class != crate::introspect::qualified_class("TypeIdentifier")
         {
-            return Err(failed(
-                format!(
-                    "{} type $class must be of TypeIdentifier for MapDeclaration named {}",
-                    map.value_kind(),
-                    map.name()
-                ),
+            // TS names the value type `ObjectMapValueType` here for a
+            // relationship value too (the template's own text).
+            return Err(catalogue_error(
+                "mapvaluetype-process-invalidtypeclass",
+                vec![("name", map.name().to_string())],
                 None,
             ));
         }
@@ -1425,11 +1416,9 @@ js_compat_pub! {
                 ));
             };
             if declared.is_map_declaration() {
-                return Err(failed(
-                    format!(
-                        "MapDeclaration as Map Type Value is not supported: {}",
-                        value.name
-                    ),
+                return Err(catalogue_error(
+                    "mapvaluetype-validate-mapnotsupported",
+                    vec![("type", value.name.to_string())],
                     None,
                 ));
             }
@@ -1438,31 +1427,18 @@ js_compat_pub! {
     }
 }
 
-/// Builds a semantic-validation error from a hand-written message.
+/// Builds a semantic-validation error through a message-catalogue entry
+/// (PORTING.md 2.1, 2.2): `code` is a catalogue key, either a template TS
+/// builds with `Globalize(...).messageFormatter(code)(params)` or one of
+/// TS's own hardcoded strings ported as a [`crate::error::Renderer::Inline`]
+/// entry (P5-98, B-10: these used to be `pre-port` messages).
 ///
 /// TS: `ClassDeclaration.validate` and its callees throw
 /// `IllegalModelException` for every one of these checks (section 2.3), so
-/// `kind` is `IllegalModel`. The message text itself is not yet a faithful
-/// port of the TS wording (that is P2-01/P2-03/P2-08's job, one class at a
-/// time, PORTING.md section 7.2), so it is built with
-/// [`ContractError::pre_port`] rather than a catalogue code.
-///
-/// `location` is the AST node's `location`, copied verbatim, exactly as
-/// every real TS throw on this path passes `this.ast.location` (PORTING.md
-/// 2.1); callers pass their class's own [`class_location`], or `None` where
-/// no class-like declaration is in scope (2.2's rule that `location` is
-/// `None` exactly where TS passes none does not yet apply to every check
-/// here, since the check itself is still pre-port; `None` is a placeholder
-/// there too, not a claim that TS passes none).
-fn failed(message: String, location: Option<serde_json::Value>) -> Error {
-    ContractError::pre_port(ErrorKind::IllegalModel, message, location).into()
-}
-
-/// [`failed`], but through a real message-catalogue entry (PORTING.md 2.1,
-/// 2.2) instead of the `pre-port` stand-in: `code` is a catalogue key whose
-/// template TS builds with `Globalize(...).messageFormatter(code)(params)`,
-/// so this is used only for a check whose TS raises through Globalize, never
-/// for one of TS's own hardcoded strings (those stay on [`failed`]).
+/// `kind` is `IllegalModel`. `location` is the AST node's `location`, copied
+/// verbatim, as every TS throw on this path passes `this.ast.location`
+/// (PORTING.md 2.1); callers pass their class's own [`class_location`], or
+/// `None` where TS passes none.
 fn catalogue_error(
     code: &'static str,
     params: Vec<(&'static str, String)>,
@@ -5088,38 +5064,34 @@ mod tests {
     /// guard's `namespace` argument is `context_ns`, not the original
     /// `namespace` a naive read of the call site might assume.
     ///
-    /// Made observable by exploiting `ModelFile::resolve_local_type`'s
-    /// "imports are checked before local declarations" order (its own doc
-    /// comment) together with the five reserved system type names every
-    /// non-system file implicitly imports: `ns_x` declares its own `Concept`
-    /// under `dangerouslyAllowReservedSystemTypeNamesInUserModels`, and
-    /// `ns_a`'s `Base` explicitly imports *that* `Concept` for its `rel`
-    /// relationship. Resolving the bare name `"Concept"` therefore gives two
-    /// different answers depending on which file's import table is
-    /// consulted:
-    /// - from `ns_a` (`owner_ns`, the declaring file) — `ns_a`'s own explicit
-    ///   import wins: `ns_x.Concept` (identified, since `ns_x` declares it
-    ///   `identified by cid`);
-    /// - from `ns_x` (`context_ns`/`namespace`, `Concept`'s own declaring
-    ///   file) — resolving `"Concept"` *there* hits `ns_x`'s own implicit
-    ///   built-in import first (imports precede locals), landing on the
-    ///   *system* `Concept`, which is never identified
-    ///   ([`crate::rootmodel::tests::asset_and_participant_are_identified`]).
+    /// Made observable with an aliased import, so the bare name `"N"`
+    /// resolves differently depending on which file's names are consulted:
+    /// `ns_a`'s `Base` imports `ns_x.T` (identified by `cid`) as `N` for its
+    /// `rel` relationship, and `ns_x` also declares a local, unidentified
+    /// `N`:
+    /// - from `ns_a` (`owner_ns`, the declaring file), `N` is the alias:
+    ///   `ns_x.T`, identified;
+    /// - from `ns_x` (`context_ns`/`namespace`, the type's own file), `N` is
+    ///   `ns_x`'s own unidentified `N`.
     ///
     /// Real code's `else` branch (`owner_ns != namespace`, the case here)
     /// re-resolves through `owner_ns` and so lands on the identified
-    /// `ns_x.Concept`, passing the relationship's identifiable check. The
-    /// `==`-`!=` mutant instead takes the `if` branch, keeping the
-    /// TOP-resolved *system* `Concept` (unidentified), which fails it — this
-    /// is reached only when `ns_b.Sub` (a different namespace again) inherits
-    /// `Base.rel` and is validated, so `Sub`'s own validation exercises the
-    /// inherited/cross-namespace path the direct `ns_a.Base` validation
-    /// (`owner_ns == namespace` there) does not.
+    /// `ns_x.T`, passing the relationship's identifiable check, as TS 5.0.0
+    /// does (`validateModelFiles` succeeds). The `==`-`!=` mutant instead
+    /// takes the `if` branch, keeping the `ns_x`-resolved, unidentified `N`,
+    /// which fails it — this is reached only when `ns_b.Sub` (a different
+    /// namespace again) inherits `Base.rel` and is validated, so `Sub`'s own
+    /// validation exercises the inherited/cross-namespace path the direct
+    /// `ns_a.Base` validation (`owner_ns == namespace` there) does not.
+    ///
+    /// P5-98 (A-2): this used a user import of the system name `Concept`
+    /// under `dangerouslyAllowReservedSystemTypeNamesInUserModels`, relying
+    /// on the first import winning; TS's last import wins, so that import
+    /// resolves to the system `Concept` and TS 5.0.0 rejects that model.
     #[test]
     fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_the_type_s_own_file()
      {
         let mut manager = ModelManager::new().unwrap();
-        manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
         manager
             .load_model(
                 &serde_json::json!({
@@ -5127,11 +5099,19 @@ mod tests {
                     "namespace": "ns.x@1.0.0",
                     "declarations": [{
                         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                        "name": "Concept",
+                        "name": "T",
                         "isAbstract": false,
                         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "cid" },
                         "properties": [
                             { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "cid",
+                              "isArray": false, "isOptional": false }
+                        ]
+                    }, {
+                        "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                        "name": "N",
+                        "isAbstract": false,
+                        "properties": [
+                            { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "n",
                               "isArray": false, "isOptional": false }
                         ]
                     }]
@@ -5145,15 +5125,19 @@ mod tests {
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.a@1.0.0",
                     "imports": [
-                        { "$class": "concerto.metamodel@1.0.0.ImportType",
-                          "namespace": "ns.x@1.0.0", "name": "Concept" }
+                        { "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                          "namespace": "ns.x@1.0.0", "types": ["T"],
+                          "aliasedTypes": [
+                            { "$class": "concerto.metamodel@1.0.0.AliasedType",
+                              "name": "T", "aliasedName": "N" }
+                          ] }
                     ],
                     "declarations": [concept(serde_json::json!({
                         "name": "Base",
                         "properties": [
                             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "rel",
                               "isArray": false, "isOptional": true,
-                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Concept" } }
+                              "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "N" } }
                         ]
                     }))]
                 }),

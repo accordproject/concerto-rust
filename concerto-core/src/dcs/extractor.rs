@@ -11,6 +11,11 @@
 
 use serde_json::{Map, Value};
 
+// A decorator argument's value reads in the vocabulary YAML this module
+// hand-builds as JS template-literal interpolation writes it, `String(value)`:
+// [`to_js_string`], so a number is written the way
+// `Number.prototype.toString()` writes it (P5-98, C-11).
+use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
@@ -187,11 +192,11 @@ impl DecoratorExtractor {
             && !ns_obj.is_empty()
         {
             if let Some(term) = ns_obj.get("term") {
-                s.push_str(&format!("term: {}\n", display_value(term)));
+                s.push_str(&format!("term: {}\n", to_js_string(term)));
             }
             for (key, value) in ns_obj {
                 if key != "term" {
-                    s.push_str(&format!("{key}: {}\n", display_value(value)));
+                    s.push_str(&format!("{key}: {}\n", to_js_string(value)));
                 }
             }
         }
@@ -208,7 +213,7 @@ impl DecoratorExtractor {
                 if has_term {
                     s.push_str(&format!(
                         "  - {decl_name}: {}\n",
-                        display_value(&decl_obj["term"])
+                        to_js_string(&decl_obj["term"])
                     ));
                 }
                 let other_props: Vec<&String> = decl_obj
@@ -223,7 +228,7 @@ impl DecoratorExtractor {
                     for key in &other_props {
                         s.push_str(&format!(
                             "    {key}: {}\n",
-                            display_value(&decl_obj[key.as_str()])
+                            to_js_string(&decl_obj[key.as_str()])
                         ));
                     }
                 }
@@ -240,12 +245,12 @@ impl DecoratorExtractor {
                         };
                         let term_val = prop_obj
                             .get("term")
-                            .map(display_value)
+                            .map(to_js_string)
                             .unwrap_or_else(|| prop.clone());
                         s.push_str(&format!("      - {prop}: {term_val}\n"));
                         for (key, value) in prop_obj {
                             if key != "term" {
-                                s.push_str(&format!("        {key}: {}\n", display_value(value)));
+                                s.push_str(&format!("        {key}: {}\n", to_js_string(value)));
                             }
                         }
                     }
@@ -350,7 +355,7 @@ impl DecoratorExtractor {
         let arg0 = dcs.get("arguments").and_then(|a| a.get(0));
         let arg_value = arg0
             .and_then(|a| a.get("value"))
-            .map(display_value)
+            .map(to_js_string)
             .unwrap_or_default();
         let arg_class = arg0.and_then(|a| a.get("$class")).and_then(Value::as_str);
         quote_string_value(&arg_value, arg_class)
@@ -1209,18 +1214,6 @@ fn ensure_object<'a>(value: &'a mut Value, key: &str) -> &'a mut Map<String, Val
         .expect("just ensured an object at key")
 }
 
-/// The plain (unquoted) text a decorator argument's JSON value reads as in
-/// the vocabulary YAML this module hand-builds line by line — a string as
-/// itself (JS template-literal interpolation, `String(value)`), any other
-/// JSON scalar via its JSON text.
-fn display_value(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".to_string(),
-        other => other.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::DECORATOR_STRING_TYPE;
@@ -1618,6 +1611,49 @@ mod tests {
             node["decorators"] = json!([decorator("Custom", "first"), decorator(name, "oops")]);
             assert_routes_agree(&bad, false);
         }
+    }
+
+    /// P5-98 (C-11): a `Term_*` decorator's number argument is written in
+    /// the vocabulary YAML as JS `String(value)` writes it — TS 5.0.0's
+    /// `extractDecorators` gives `unit: 0.000001` and `max: 1e+21`, where
+    /// serde_json's own `Display` gave `1e-6` and `1e21`.
+    #[test]
+    fn a_vocabulary_number_argument_is_written_as_js_string_does() {
+        let number = |v: Value| json!([{ "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": v }]);
+        let dec = |name: &str, args: Value| json!({ "$class": "concerto.metamodel@1.0.0.Decorator", "name": name, "arguments": args });
+        let models = json!({
+            "$class": "concerto.metamodel@1.0.0.Models",
+            "models": [{
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "test@1.0.0",
+                "declarations": [{
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "P",
+                    "isAbstract": false,
+                    "properties": [{
+                        "$class": "concerto.metamodel@1.0.0.IntegerProperty",
+                        "name": "age",
+                        "isArray": false,
+                        "isOptional": false,
+                        "decorators": [
+                            dec("Term_unit", number(json!(0.000001))),
+                            dec("Term_max", number(json!(1e21))),
+                        ]
+                    }]
+                }]
+            }]
+        });
+        let result =
+            DecoratorExtractor::new(false, "en", "0.4.0", models.clone(), Action::ExtractAll)
+                .extract()
+                .unwrap();
+        assert_eq!(
+            result.vocabularies,
+            [
+                "locale: en\nnamespace: test@1.0.0\ndeclarations:\n  - P: P\n    properties:\n      - age: age\n        unit: 0.000001\n        max: 1e+21\n"
+            ]
+        );
+        assert_routes_agree(&models, true);
     }
 
     #[test]
