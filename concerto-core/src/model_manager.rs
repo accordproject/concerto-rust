@@ -3377,13 +3377,20 @@ impl ModelManager {
         // below), so a declaration kept by an earlier file is still
         // recognised when it is reached again through another file's
         // imports.
+        //
+        // BC-53: every declaration of a file `result` already holds from
+        // `Self::new()` counts as kept without asking `keep`, so an import
+        // of one (a user type extending `Decorator`) is never pruned while
+        // the file it names stays whole in `result`.
         let keep = &keep;
+        let result_ref = &result;
         let kept: std::collections::HashSet<*const Declaration> = self
             .model_files()
             .flat_map(|mf| {
                 let namespace = mf.namespace();
+                let held = mf.is_system_namespace() || result_ref.model_file(namespace).is_some();
                 mf.declarations().iter().filter_map(move |decl| {
-                    keep(&qualify(namespace, decl.name()), decl)
+                    (held || keep(&qualify(namespace, decl.name()), decl))
                         .then_some(decl as *const Declaration)
                 })
             })
@@ -6174,6 +6181,37 @@ mod tests {
                 .unwrap()
         );
         assert!(filtered.validate_models().is_ok());
+
+        // A predicate that drops the decorator model's own declarations
+        // (P5-97's bench workaround) keeps the user's import of `Decorator`
+        // too: the decorator model stays whole in the result, and the
+        // predicate is never asked about its declarations.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let workaround = mgr
+            .filter_by_fqn(
+                |fqn| {
+                    asked.borrow_mut().push(fqn.to_string());
+                    !fqn.starts_with("concerto.decorator@")
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            asked
+                .borrow()
+                .iter()
+                .all(|fqn| !fqn.starts_with("concerto.decorator@") && !fqn.starts_with("concerto@"))
+        );
+        assert!(
+            workaround
+                .is_assignable_to(
+                    "org.acme@1.0.0.CustomDecorator",
+                    "concerto.decorator@1.0.0.Decorator"
+                )
+                .unwrap()
+        );
+        assert_eq!(shape(&workaround), shape(&mgr));
+        assert!(workaround.validate_models().is_ok());
     }
 
     /// BC-53: the built-in models are kept whole whatever the predicate says
