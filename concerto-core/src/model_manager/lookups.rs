@@ -84,37 +84,35 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// The handles of a model file's declarations, in the order they appear
-        /// in the file. None for a handle the manager never handed out.
-        pub fn declaration_ids(&self, file: ModelFileId) -> impl Iterator<Item = DeclId> + use<> {
-            self.files
-                .get(file.slot())
-                .map_or(0..0, |slot| slot.declarations.clone())
-                .map(DeclId)
-        }
+    /// The handles of a model file's declarations, in the order they appear
+    /// in the file. None for a handle the manager never handed out.
+    #[cfg(feature = "js-compat")]
+    pub fn declaration_ids(&self, file: ModelFileId) -> impl Iterator<Item = DeclId> + use<> {
+        self.files
+            .get(file.slot())
+            .map_or(0..0, |slot| slot.declarations.clone())
+            .map(DeclId)
     }
 
-    js_compat_pub! {
-        /// Every class-like or enum declaration across every loaded model file
-        /// whose namespace is not in `EXCLUDE_NS`, in file order and then
-        /// declaration order — a map or scalar declaration is left out, as is
-        /// the decorator and root models' own declarations (P2-08 review: this
-        /// previously iterated every loaded file, `EXCLUDE_NS` included, which
-        /// put system declarations like `Concept` into the result).
-        ///
-        /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
-        /// `modelFile.getAllDeclarations().filter(d =>
-        /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
-        /// over `modelManager.getModelFiles()` — which, called with no argument,
-        /// already leaves the system and decorator models out by their
-        /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
-        /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
-        /// `Self::all_class_like`, which [`Self::get_assignable_class_declarations`]
-        /// and [`Self::get_direct_subclasses`] already search this same way.
-        pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
-            self.all_class_like().map(|(id, _, _)| id)
-        }
+    /// Every class-like or enum declaration across every loaded model file
+    /// whose namespace is not in `EXCLUDE_NS`, in file order and then
+    /// declaration order — a map or scalar declaration is left out, as is
+    /// the decorator and root models' own declarations (P2-08 review: this
+    /// previously iterated every loaded file, `EXCLUDE_NS` included, which
+    /// put system declarations like `Concept` into the result).
+    ///
+    /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
+    /// `modelFile.getAllDeclarations().filter(d =>
+    /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
+    /// over `modelManager.getModelFiles()` — which, called with no argument,
+    /// already leaves the system and decorator models out by their
+    /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
+    /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
+    /// `Self::all_class_like`, which [`Self::get_assignable_class_declarations`]
+    /// and [`Self::get_direct_subclasses`] already search this same way.
+    #[cfg(feature = "js-compat")]
+    pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
+        self.all_class_like().map(|(id, _, _)| id)
     }
 
     js_compat_pub! {
@@ -402,79 +400,78 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// TS `BaseModelManager.getType(qualifiedName)`, answered by name
-        /// (P5-11, accordproject/concerto-rust#287): the fully-qualified name
-        /// of the declaration [`ModelManager::type_declaration`] finds, with
-        /// its `TypeNotFoundException`s. The view maps the name to its own
-        /// declaration view.
-        pub fn type_declaration_name(&self, fqn: &str) -> Result<String> {
-            let id = self.type_declaration_impl(fqn)?;
-            self.declaration_fqn(id)
+    /// TS `BaseModelManager.getType(qualifiedName)`, answered by name
+    /// (P5-11, accordproject/concerto-rust#287): the fully-qualified name
+    /// of the declaration [`ModelManager::type_declaration`] finds, with
+    /// its `TypeNotFoundException`s. The view maps the name to its own
+    /// declaration view.
+    #[cfg(feature = "js-compat")]
+    pub fn type_declaration_name(&self, fqn: &str) -> Result<String> {
+        let id = self.type_declaration_impl(fqn)?;
+        self.declaration_fqn(id)
+    }
+
+    /// TS `ModelFile.getType(type)` of the model file `file`, answered by
+    /// name (P5-11, accordproject/concerto-rust#287): a primitive type's
+    /// own name, the fully-qualified name of the declaration the type
+    /// resolves to (a local declaration, or an import's target in the
+    /// model file registered under its namespace), or `None` (TS `null`)
+    /// when it resolves to neither. A primitive name never contains a
+    /// dot and a fully-qualified name always does, so the view tells the
+    /// two apart without another call.
+    #[cfg(feature = "js-compat")]
+    pub fn model_file_type_name(
+        &self,
+        file: ModelFileId,
+        type_name: &str,
+    ) -> Result<Option<String>> {
+        match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(type_name))? {
+            Some(Node::Primitive(primitive)) => Ok(Some(primitive.to_string())),
+            Some(Node::Declaration(id)) => self.declaration_fqn(id).map(Some),
+            Some(_) | None => Ok(None),
         }
     }
 
-    js_compat_pub! {
-        /// TS `ModelFile.getType(type)` of the model file `file`, answered by
-        /// name (P5-11, accordproject/concerto-rust#287): a primitive type's
-        /// own name, the fully-qualified name of the declaration the type
-        /// resolves to (a local declaration, or an import's target in the
-        /// model file registered under its namespace), or `None` (TS `null`)
-        /// when it resolves to neither. A primitive name never contains a
-        /// dot and a fully-qualified name always does, so the view tells the
-        /// two apart without another call.
-        pub fn model_file_type_name(
-            &self,
-            file: ModelFileId,
-            type_name: &str,
-        ) -> Result<Option<String>> {
-            match ResolutionContext::get_type(self, &Node::ModelFile(file), Some(type_name))? {
-                Some(Node::Primitive(primitive)) => Ok(Some(primitive.to_string())),
-                Some(Node::Declaration(id)) => self.declaration_fqn(id).map(Some),
-                Some(_) | None => Ok(None),
-            }
+    /// TS `ModelFile.resolveType(context, type, fileLocation)` of the
+    /// model file `file` (P5-11, accordproject/concerto-rust#287): a
+    /// primitive passes; a name the file imports must resolve in the
+    /// model file of the import's namespace
+    /// ([`ModelManager::resolve_type`], TS
+    /// `this.getModelManager().resolveType(context, this.resolveImport(type))`);
+    /// any other name must be declared locally, or the
+    /// `IllegalModelException` `modelfile-resolvetype-undecltype` naming
+    /// this file is raised, at `location` (TS `fileLocation`).
+    #[cfg(feature = "js-compat")]
+    pub fn model_file_resolve_type(
+        &self,
+        file: ModelFileId,
+        context: &str,
+        type_name: &str,
+        location: Option<serde_json::Value>,
+    ) -> Result<()> {
+        if is_primitive_type(type_name) {
+            return Ok(());
         }
-    }
-
-    js_compat_pub! {
-        /// TS `ModelFile.resolveType(context, type, fileLocation)` of the
-        /// model file `file` (P5-11, accordproject/concerto-rust#287): a
-        /// primitive passes; a name the file imports must resolve in the
-        /// model file of the import's namespace
-        /// ([`ModelManager::resolve_type`], TS
-        /// `this.getModelManager().resolveType(context, this.resolveImport(type))`);
-        /// any other name must be declared locally, or the
-        /// `IllegalModelException` `modelfile-resolvetype-undecltype` naming
-        /// this file is raised, at `location` (TS `fileLocation`).
-        pub fn model_file_resolve_type(
-            &self,
-            file: ModelFileId,
-            context: &str,
-            type_name: &str,
-            location: Option<serde_json::Value>,
-        ) -> Result<()> {
-            if is_primitive_type(type_name) {
-                return Ok(());
-            }
-            let mf = self.file(file).ok_or_else(|| unknown(Node::ModelFile(file)))?;
-            if let Some(fqn) = mf.find_import(type_name) {
-                return self.resolve_type(context, &fqn).map(|_| ());
-            }
-            if mf.is_local_type(type_name) {
-                return Ok(());
-            }
-            let mut err = ContractError::new(
-                ErrorKind::IllegalModel,
-                "modelfile-resolvetype-undecltype",
-                vec![
-                    ("type", type_name.to_string()),
-                    ("context", context.to_string()),
-                ],
-            );
-            err.model_file = Some(mf.file_name().map(str::to_string));
-            err.location = location;
-            Err(err.into())
+        let mf = self
+            .file(file)
+            .ok_or_else(|| unknown(Node::ModelFile(file)))?;
+        if let Some(fqn) = mf.find_import(type_name) {
+            return self.resolve_type(context, &fqn).map(|_| ());
         }
+        if mf.is_local_type(type_name) {
+            return Ok(());
+        }
+        let mut err = ContractError::new(
+            ErrorKind::IllegalModel,
+            "modelfile-resolvetype-undecltype",
+            vec![
+                ("type", type_name.to_string()),
+                ("context", context.to_string()),
+            ],
+        );
+        err.model_file = Some(mf.file_name().map(str::to_string));
+        err.location = location;
+        Err(err.into())
     }
 
     /// The handle of the declaration a model file's `getLocalType(type)`

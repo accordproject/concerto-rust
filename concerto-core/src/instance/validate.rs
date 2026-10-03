@@ -297,24 +297,22 @@ pub fn validate_instance(
     validate_instance_from(mm, value, options, String::new())
 }
 
-js_compat_pub! {
-    /// [`validate_instance`], with the `rootResourceIdentifier` the caller
-    /// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
-    /// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
-    /// sets none, which a report made before the walk sets one prints as
-    /// `undefined`.
-    ///
-    /// Generic over the value it reads ([`ValidatorInput`], P5-102): plain
-    /// JSON here, or the JS layer's own values, read in place.
-    pub fn validate_instance_from<V: ValidatorInput>(
-        mm: &ModelManager,
-        value: &V,
-        options: &ValidateOptions,
-        root_resource_identifier: String,
-    ) -> Result<()> {
-        let mut params = Params::new(mm, options, root_resource_identifier, Sink::Stop);
-        visit_root(&mut params, value)
-    }
+/// [`validate_instance`], with the `rootResourceIdentifier` the caller
+/// starts the walk with (task P3-01b): `ValidatedResource.validate` sets it
+/// to the instance's `getFullyQualifiedIdentifier()`, and `Serializer.toJSON`
+/// sets none, which a report made before the walk sets one prints as
+/// `undefined`.
+///
+/// Generic over the value it reads ([`ValidatorInput`], P5-102): plain
+/// JSON here, or the JS layer's own values, read in place.
+pub fn validate_instance_from<V: ValidatorInput>(
+    mm: &ModelManager,
+    value: &V,
+    options: &ValidateOptions,
+    root_resource_identifier: String,
+) -> Result<()> {
+    let mut params = Params::new(mm, options, root_resource_identifier, Sink::Stop);
+    visit_root(&mut params, value)
 }
 
 /// [`validate_instance_from`], collecting (module doc "Stop or collect"):
@@ -359,31 +357,29 @@ fn visit_root<V: ValidatorInput>(p: &mut Params, value: &V) -> Result<()> {
     visit_class_declaration(p, declared_fqn, value)
 }
 
-js_compat_pub! {
-    /// Validates one property value, as `ValidatedResource.setPropertyValue`
-    /// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
-    /// parameters)` with `value` alone on the stack and the instance's
-    /// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
-    /// accordproject/concerto-rust#124). The property is the one at `index`
-    /// of the instance's declaration's [`ClassPlan`] (P5-88; the only form
-    /// since P5-99).
-    ///
-    /// TS: `field.accept(this.$validator, parameters)` in
-    /// `ValidatedResource.setPropertyValue`/`addArrayValue`
-    /// (src/model/validatedresource.ts), which dispatches to
-    /// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
-    pub fn validate_property_value<V: ValidatorInput>(
-        mm: &ModelManager,
-        class_plan: &ClassPlan,
-        index: usize,
-        value: &V,
-        root_resource_identifier: String,
-        options: &ValidateOptions,
-    ) -> Result<()> {
-        let mut params = Params::new(mm, options, root_resource_identifier, Sink::Stop);
-        let (owner_fqn, property) = class_plan.property(mm, index);
-        visit_property(&mut params, owner_fqn, property, &class_plan.props[index], value)
-    }
+/// Validates one property value, as `ValidatedResource.setPropertyValue`
+/// and `addArrayValue` do before they assign it: `field.accept(this.$validator,
+/// parameters)` with `value` alone on the stack and the instance's
+/// `getFullyQualifiedIdentifier()` as `rootResourceIdentifier` (task P3-01b,
+/// accordproject/concerto-rust#124). The property is the one at `index`
+/// of the instance's declaration's [`ClassPlan`] (P5-88; the only form
+/// since P5-99).
+///
+/// TS: `field.accept(this.$validator, parameters)` in
+/// `ValidatedResource.setPropertyValue`/`addArrayValue`
+/// (src/model/validatedresource.ts), which dispatches to
+/// `ResourceValidator.visitField` or `visitRelationshipDeclaration`.
+pub fn validate_property_value<V: ValidatorInput>(
+    mm: &ModelManager,
+    class_plan: &ClassPlan,
+    index: usize,
+    value: &V,
+    root_resource_identifier: String,
+    options: &ValidateOptions,
+) -> Result<()> {
+    let mut params = Params::new(mm, options, root_resource_identifier, Sink::Stop);
+    let (owner_fqn, property) = class_plan.property(mm, index);
+    visit_property(&mut params, owner_fqn, property, &class_plan.props[index], value)
 }
 
 // ---------------------------------------------------------------------
@@ -1021,88 +1017,70 @@ fn visit_enum<V: ValidatorInput>(p: &Params, enum_plan: &EnumPlan, value: &V) ->
     ))
 }
 
-js_compat_pub! {
-    /// A `DateTime` value that has already gone through `JSONPopulator`'s
-    /// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
-    /// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
-    /// when it decodes an oracle `"typed"` receiver into this validator's wire
-    /// form, so `is_populated_datetime` below can tell a real (possibly
-    /// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
-    /// mirroring TS's own post-population check, `typeof obj === 'object' &&
-    /// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
-    /// does *not* itself re-validate the date's shape or calendar range: a
-    /// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
-    /// accepts it at this point regardless (`dayjs.isValid()` is never called
-    /// here). A bare `Value::String`/`Value::Number` reaching this check was
-    /// never coerced, so it is always rejected here, exactly as a raw string
-    /// left on a `Resource` field (for example by `setPropertyValue`, bypassing
-    /// `JSONPopulator`) would be in TS.
-    pub const DAYJS_TAG: &str = "$$dayjs";
+/// A `DateTime` value that has already gone through `JSONPopulator`'s
+/// coercion into a `Dayjs` instance (module doc "Scope"): the oracle harness
+/// (`tests/oracle/recipe.rs`) tags a replayed `dayjs` field value this way
+/// when it decodes an oracle `"typed"` receiver into this validator's wire
+/// form, so `is_populated_datetime` below can tell a real (possibly
+/// invalid-but-still-a-`Dayjs`) instance from an un-coerced wire string --
+/// mirroring TS's own post-population check, `typeof obj === 'object' &&
+/// typeof obj.isBefore === 'function'` (resourcevalidator.ts:420), which
+/// does *not* itself re-validate the date's shape or calendar range: a
+/// `Dayjs` built from a nonsense string is still a `Dayjs` object, so TS
+/// accepts it at this point regardless (`dayjs.isValid()` is never called
+/// here). A bare `Value::String`/`Value::Number` reaching this check was
+/// never coerced, so it is always rejected here, exactly as a raw string
+/// left on a `Resource` field (for example by `setPropertyValue`, bypassing
+/// `JSONPopulator`) would be in TS.
+pub const DAYJS_TAG: &str = "$$dayjs";
+
+/// A value that has already been populated as a `Relationship` instance
+/// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
+/// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
+/// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
+pub const RELATIONSHIP_TAG: &str = "$$relationship";
+
+/// A JS `undefined` held inside a value: an array element or a map value
+/// (module doc "Scope"). The value is the one-key object
+/// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
+/// `undefined`, and writing `null` instead would change what TS reports:
+/// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
+/// where `null` gives `'object'` and `null`.
+pub const UNDEFINED_TAG: &str = "$$undefined";
+
+/// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
+/// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
+/// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
+/// `reportFieldTypeViolation` prints it with `value.toString()`.
+pub const NUMBER_TAG: &str = "$$number";
+
+/// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
+/// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
+/// `reportFieldTypeViolation` prints it with `value.toString()` because
+/// `JSON.stringify` throws on a `BigInt`.
+pub const BIGINT_TAG: &str = "$$bigint";
+
+/// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
+/// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
+/// its keys keep their JS type (a number key is not a string), and a plain
+/// object is told apart from a `Map` (`obj instanceof Map`).
+pub const MAP_TAG: &str = "$$map";
+
+/// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
+pub fn js_special_number(text: &str) -> Value {
+    serde_json::json!({ NUMBER_TAG: text })
 }
 
-js_compat_pub! {
-    /// A value that has already been populated as a `Relationship` instance
-    /// (see [`DAYJS_TAG`]'s doc for why the tag exists): mirrors TS's `obj
-    /// instanceof Relationship` (resourcevalidator.ts:492), as opposed to a
-    /// `$class`-tagged plain object, which stands for `obj instanceof Resource`.
-    pub const RELATIONSHIP_TAG: &str = "$$relationship";
+/// The value that stands for a JS `Map` ([`MAP_TAG`]).
+pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
+    serde_json::json!({
+        MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
+    })
 }
 
-js_compat_pub! {
-    /// A JS `undefined` held inside a value: an array element or a map value
-    /// (module doc "Scope"). The value is the one-key object
-    /// `{UNDEFINED_TAG: true}` that [`js_undefined`] builds. JSON has no
-    /// `undefined`, and writing `null` instead would change what TS reports:
-    /// `typeof undefined` is `'undefined'` and `${undefined}` is `undefined`,
-    /// where `null` gives `'object'` and `null`.
-    pub const UNDEFINED_TAG: &str = "$$undefined";
-}
-
-js_compat_pub! {
-    /// A JS number that JSON cannot hold (`NaN`, `Infinity`, `-Infinity`), as
-    /// the one-key object `{NUMBER_TAG: "<its JS spelling>"}` that
-    /// [`js_special_number`] builds (task P3-01b): `typeof` is `'number'`, and
-    /// `reportFieldTypeViolation` prints it with `value.toString()`.
-    pub const NUMBER_TAG: &str = "$$number";
-}
-
-js_compat_pub! {
-    /// A JS `BigInt`, as the one-key object `{BIGINT_TAG: "<decimal digits>"}`
-    /// that [`js_bigint`] builds (task P2-11b-U6): `typeof` is `'bigint'`, and
-    /// `reportFieldTypeViolation` prints it with `value.toString()` because
-    /// `JSON.stringify` throws on a `BigInt`.
-    pub const BIGINT_TAG: &str = "$$bigint";
-}
-
-js_compat_pub! {
-    /// A JS `Map` (a populated `MapDeclaration` value), as the one-key object
-    /// `{MAP_TAG: [[key, value], ...]}` that [`js_map`] builds (task P3-01b):
-    /// its keys keep their JS type (a number key is not a string), and a plain
-    /// object is told apart from a `Map` (`obj instanceof Map`).
-    pub const MAP_TAG: &str = "$$map";
-}
-
-js_compat_pub! {
-    /// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
-    pub fn js_special_number(text: &str) -> Value {
-        serde_json::json!({ NUMBER_TAG: text })
-    }
-}
-
-js_compat_pub! {
-    /// The value that stands for a JS `Map` ([`MAP_TAG`]).
-    pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
-        serde_json::json!({
-            MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
-        })
-    }
-}
-
-js_compat_pub! {
-    /// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
-    pub fn js_bigint(text: &str) -> Value {
-        serde_json::json!({ BIGINT_TAG: text })
-    }
+/// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
+pub fn js_bigint(text: &str) -> Value {
+    serde_json::json!({ BIGINT_TAG: text })
 }
 
 /// The JS spelling of a [`NUMBER_TAG`] value.
@@ -1136,106 +1114,94 @@ fn map_entries(value: &Value) -> Option<impl Iterator<Item = (&Value, &Value)>> 
     }))
 }
 
-js_compat_pub! {
-    /// ECMAScript `Number::toString` (radix 10): `1` not `1.0`, `1e+21`,
-    /// `NaN`, `Infinity`, and `-0` gives `"0"`.
-    pub fn js_number_to_string(n: f64) -> String {
-        ecma::number_to_string(n)
-    }
+/// ECMAScript `Number::toString` (radix 10): `1` not `1.0`, `1e+21`,
+/// `NaN`, `Infinity`, and `-0` gives `"0"`.
+pub fn js_number_to_string(n: f64) -> String {
+    ecma::number_to_string(n)
 }
 
-js_compat_pub! {
-    /// A JS number in the validator's value shape: an integral one as a JSON
-    /// integer, so that the messages that print it (`JSON.stringify`,
-    /// `String`) read `1`, not `1.0`; a non-finite one as
-    /// [`js_special_number`].
-    pub fn js_number(n: f64) -> Value {
-        if !n.is_finite() {
-            return js_special_number(&ecma::number_to_string(n));
-        }
-        if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
-            return Value::Number(serde_json::Number::from(n as i64));
-        }
-        serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
+/// A JS number in the validator's value shape: an integral one as a JSON
+/// integer, so that the messages that print it (`JSON.stringify`,
+/// `String`) read `1`, not `1.0`; a non-finite one as
+/// [`js_special_number`].
+pub fn js_number(n: f64) -> Value {
+    if !n.is_finite() {
+        return js_special_number(&ecma::number_to_string(n));
     }
+    if n.trunc() == n && n.abs() < 9_007_199_254_740_992.0 {
+        return Value::Number(serde_json::Number::from(n as i64));
+    }
+    serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
 }
 
-js_compat_pub! {
-    /// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
-    pub fn js_undefined() -> Value {
-        serde_json::json!({ UNDEFINED_TAG: true })
-    }
+/// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+pub fn js_undefined() -> Value {
+    serde_json::json!({ UNDEFINED_TAG: true })
 }
 
-js_compat_pub! {
-    /// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
-    pub fn is_js_undefined(value: &Value) -> bool {
-        value
-            .as_object()
-            .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
-    }
+/// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
+pub fn is_js_undefined(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|o| o.len() == 1 && o.contains_key(UNDEFINED_TAG))
 }
 
-js_compat_pub! {
-    /// What the instance validator reads of the value it walks (P5-102,
-    /// accordproject/concerto-rust#456, C-6): the walk is generic over it,
-    /// so the JS layer (`concerto-core-js`) can have its own values
-    /// validated in place, rather than first deep-copying the whole object
-    /// graph into this module's tagged plain-JSON shape (module doc,
-    /// "Scope") on every call.
-    ///
-    /// Each method answers what that tagged shape would answer, so a value
-    /// gives the same verdict and the same error either way. The
-    /// [`serde_json::Value`] implementation is that shape itself. The
-    /// messages that print a value read it through [`Self::to_value`],
-    /// which may build the tagged shape for that one value: only an error
-    /// pays for it.
-    pub trait ValidatorInput: Sized {
-        /// A JS object's view ([`ValidatorObject`]).
-        type Object<'a>: ValidatorObject<'a, Self>
-        where
-            Self: 'a;
-        /// JS `undefined` ([`UNDEFINED_TAG`]).
-        fn is_undefined(&self) -> bool;
-        /// JS `null`.
-        fn is_null(&self) -> bool;
-        /// The value as a JS object: never a JS `undefined` or a non-finite
-        /// number (each one a one-key tagged object in the plain-JSON
-        /// shape), and never a value without own properties.
-        fn as_object(&self) -> Option<Self::Object<'_>>;
-        /// The value as a JS array.
-        fn as_array(&self) -> Option<&[Self]>;
-        /// The value as a JS string.
-        fn as_str(&self) -> Option<&str>;
-        /// The value as a finite JS number.
-        fn as_f64(&self) -> Option<f64>;
-        /// Whether the value is a JS boolean.
-        fn is_boolean(&self) -> bool;
-        /// Whether the value is a `Dayjs` ([`DAYJS_TAG`]).
-        fn is_dayjs(&self) -> bool;
-        /// A JS `Map`'s entries ([`MAP_TAG`]), in order, read in place
-        /// (B-15: no `Vec` per map).
-        fn map_entries(&self) -> Option<impl Iterator<Item = (&Self, &Self)>>;
-        /// The value in the plain-JSON shape (module doc, "Scope"), for the
-        /// messages that print it.
-        fn to_value(&self) -> Cow<'_, Value>;
-    }
+/// What the instance validator reads of the value it walks (P5-102,
+/// accordproject/concerto-rust#456, C-6): the walk is generic over it,
+/// so the JS layer (`concerto-core-js`) can have its own values
+/// validated in place, rather than first deep-copying the whole object
+/// graph into this module's tagged plain-JSON shape (module doc,
+/// "Scope") on every call.
+///
+/// Each method answers what that tagged shape would answer, so a value
+/// gives the same verdict and the same error either way. The
+/// [`serde_json::Value`] implementation is that shape itself. The
+/// messages that print a value read it through [`Self::to_value`],
+/// which may build the tagged shape for that one value: only an error
+/// pays for it.
+pub trait ValidatorInput: Sized {
+    /// A JS object's view ([`ValidatorObject`]).
+    type Object<'a>: ValidatorObject<'a, Self>
+    where
+        Self: 'a;
+    /// JS `undefined` ([`UNDEFINED_TAG`]).
+    fn is_undefined(&self) -> bool;
+    /// JS `null`.
+    fn is_null(&self) -> bool;
+    /// The value as a JS object: never a JS `undefined` or a non-finite
+    /// number (each one a one-key tagged object in the plain-JSON
+    /// shape), and never a value without own properties.
+    fn as_object(&self) -> Option<Self::Object<'_>>;
+    /// The value as a JS array.
+    fn as_array(&self) -> Option<&[Self]>;
+    /// The value as a JS string.
+    fn as_str(&self) -> Option<&str>;
+    /// The value as a finite JS number.
+    fn as_f64(&self) -> Option<f64>;
+    /// Whether the value is a JS boolean.
+    fn is_boolean(&self) -> bool;
+    /// Whether the value is a `Dayjs` ([`DAYJS_TAG`]).
+    fn is_dayjs(&self) -> bool;
+    /// A JS `Map`'s entries ([`MAP_TAG`]), in order, read in place
+    /// (B-15: no `Vec` per map).
+    fn map_entries(&self) -> Option<impl Iterator<Item = (&Self, &Self)>>;
+    /// The value in the plain-JSON shape (module doc, "Scope"), for the
+    /// messages that print it.
+    fn to_value(&self) -> Cow<'_, Value>;
 }
 
-js_compat_pub! {
-    /// A JS object, as [`ValidatorInput::as_object`] gives it.
-    pub trait ValidatorObject<'a, V: 'a>: Copy {
-        /// Its own `$class`, when that is a string.
-        fn class(&self) -> Option<&'a str>;
-        /// Whether it is a `Relationship` ([`RELATIONSHIP_TAG`]).
-        fn is_relationship(&self) -> bool;
-        /// Its own property `key`. Read only of an object with a
-        /// [`Self::class`], and never for `$class` itself.
-        fn get(&self, key: &str) -> Option<&'a V>;
-        /// Its own property names, in order (`Object.getOwnPropertyNames`),
-        /// `$class` among them or not.
-        fn keys(&self) -> impl Iterator<Item = &'a str>;
-    }
+/// A JS object, as [`ValidatorInput::as_object`] gives it.
+pub trait ValidatorObject<'a, V: 'a>: Copy {
+    /// Its own `$class`, when that is a string.
+    fn class(&self) -> Option<&'a str>;
+    /// Whether it is a `Relationship` ([`RELATIONSHIP_TAG`]).
+    fn is_relationship(&self) -> bool;
+    /// Its own property `key`. Read only of an object with a
+    /// [`Self::class`], and never for `$class` itself.
+    fn get(&self, key: &str) -> Option<&'a V>;
+    /// Its own property names, in order (`Object.getOwnPropertyNames`),
+    /// `$class` among them or not.
+    fn keys(&self) -> impl Iterator<Item = &'a str>;
 }
 
 impl ValidatorInput for Value {

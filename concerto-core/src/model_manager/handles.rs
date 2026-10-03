@@ -9,11 +9,15 @@ macro_rules! handle {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(pub(super) u32);
 
+        // P5-104 (C-9): every handle type gets both conversions, and the
+        // native code uses them for some types only, so without the
+        // `js-compat` feature an unused one is allowed rather than gated.
         impl $name {
             js_compat_pub! {
                 /// The handle with this raw index, as a binding gets it back from
                 /// JS. An index the manager never handed out names nothing: every
                 /// lookup of it answers `None` or an error.
+                #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
                 pub const fn from_index(index: u32) -> Self {
                     Self(index)
                 }
@@ -21,6 +25,7 @@ macro_rules! handle {
 
             js_compat_pub! {
                 /// The raw index, as a binding passes it to JS (a plain number).
+                #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
                 pub const fn index(self) -> u32 {
                     self.0
                 }

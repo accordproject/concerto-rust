@@ -39,11 +39,10 @@ impl<'a> ClassProperties<'a> {
         })
     }
 
-    js_compat_pub! {
-        /// Each property's handle, in `getProperties()` order (P5-106).
-        pub fn ids(&self) -> impl Iterator<Item = PropId> + '_ {
-            self.info.properties.iter().copied()
-        }
+    /// Each property's handle, in `getProperties()` order (P5-106).
+    #[cfg(feature = "js-compat")]
+    pub fn ids(&self) -> impl Iterator<Item = PropId> + '_ {
+        self.info.properties.iter().copied()
     }
 
     /// The first property named `name` (TS `getProperty(name)`).
@@ -505,20 +504,19 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// The handles of the declarations that directly extend the
-        /// declaration `id`, in load order: [`ModelManager::subclasses`] by
-        /// handle (P5-106, BC-52).
-        ///
-        /// TS: `ClassDeclaration.getDirectSubclasses`.
-        pub fn direct_subclasses_of(&self, id: DeclId) -> Result<Arc<[DeclId]>> {
-            if self.declaration(id).is_none() {
-                return Err(unknown(Node::Declaration(id)));
-            }
-            Ok(self
-                .direct_subclass_ids(Some(id))?
-                .unwrap_or_else(|| Arc::from([])))
+    /// The handles of the declarations that directly extend the
+    /// declaration `id`, in load order: [`ModelManager::subclasses`] by
+    /// handle (P5-106, BC-52).
+    ///
+    /// TS: `ClassDeclaration.getDirectSubclasses`.
+    #[cfg(feature = "js-compat")]
+    pub fn direct_subclasses_of(&self, id: DeclId) -> Result<Arc<[DeclId]>> {
+        if self.declaration(id).is_none() {
+            return Err(unknown(Node::Declaration(id)));
         }
+        Ok(self
+            .direct_subclass_ids(Some(id))?
+            .unwrap_or_else(|| Arc::from([])))
     }
 
     /// The direct subclasses of `id` (`None`: of no declaration, only

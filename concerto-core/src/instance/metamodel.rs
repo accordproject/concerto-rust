@@ -87,75 +87,71 @@ fn metamodel_model_manager() -> Result<ModelManager> {
     Ok(mm)
 }
 
-js_compat_pub! {
-    /// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
-    /// P5-21, accordproject/concerto-rust#319): built on the first call on each
-    /// thread, then kept with its caches warm, so a later call pays for no
-    /// system-model or metamodel load.
-    ///
-    /// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
-    /// [`validate_metamodel`], [`validate_meta_model_instance`],
-    /// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
-    /// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
-    ///
-    /// The concerto-wasm binding `validateMetaModelInstance` runs on it too
-    /// (P5-102, F-7), so TS's `validateMetaModel` holds no metamodel manager
-    /// of its own; that is why it is `pub` under `js-compat`.
-    ///
-    /// The manager is only ever read (`f` gets it by shared reference, and
-    /// nothing else can reach it), so every call sees the same models a
-    /// fresh manager would hold, and gets the same result and error.
-    /// A build error is returned and not cached, exactly as an uncached build
-    /// returns it. Being per-thread, the cache adds no shared state: nothing
-    /// here changes what is `Send` or `Sync` (P6-01).
-    pub fn with_resident_metamodel_manager<R>(
-        f: impl FnOnce(&ModelManager) -> Result<R>,
-    ) -> Result<R> {
-        thread_local! {
-            static RESIDENT: RefCell<Option<ModelManager>> =
-                const { RefCell::new(None) };
-        }
-        RESIDENT.with(|cell| {
-            if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
-                let mm = metamodel_model_manager()?;
-                if let Ok(mut slot) = cell.try_borrow_mut() {
-                    *slot = Some(mm);
-                }
-            }
-            match cell.try_borrow() {
-                Ok(resident) => match resident.as_ref() {
-                    Some(mm) => f(mm),
-                    None => f(&metamodel_model_manager()?),
-                },
-                // Unreachable in practice (the closure cannot re-enter this
-                // function), but a fresh manager is always a correct answer.
-                Err(_) => f(&metamodel_model_manager()?),
-            }
-        })
+/// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
+/// P5-21, accordproject/concerto-rust#319): built on the first call on each
+/// thread, then kept with its caches warm, so a later call pays for no
+/// system-model or metamodel load.
+///
+/// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
+/// [`validate_metamodel`], [`validate_meta_model_instance`],
+/// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
+/// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
+///
+/// The concerto-wasm binding `validateMetaModelInstance` runs on it too
+/// (P5-102, F-7), so TS's `validateMetaModel` holds no metamodel manager
+/// of its own; that is why it is `pub` under `js-compat`.
+///
+/// The manager is only ever read (`f` gets it by shared reference, and
+/// nothing else can reach it), so every call sees the same models a
+/// fresh manager would hold, and gets the same result and error.
+/// A build error is returned and not cached, exactly as an uncached build
+/// returns it. Being per-thread, the cache adds no shared state: nothing
+/// here changes what is `Send` or `Sync` (P6-01).
+pub fn with_resident_metamodel_manager<R>(
+    f: impl FnOnce(&ModelManager) -> Result<R>,
+) -> Result<R> {
+    thread_local! {
+        static RESIDENT: RefCell<Option<ModelManager>> =
+            const { RefCell::new(None) };
     }
+    RESIDENT.with(|cell| {
+        if cell.try_borrow().is_ok_and(|resident| resident.is_none()) {
+            let mm = metamodel_model_manager()?;
+            if let Ok(mut slot) = cell.try_borrow_mut() {
+                *slot = Some(mm);
+            }
+        }
+        match cell.try_borrow() {
+            Ok(resident) => match resident.as_ref() {
+                Some(mm) => f(mm),
+                None => f(&metamodel_model_manager()?),
+            },
+            // Unreachable in practice (the closure cannot re-enter this
+            // function), but a fresh manager is always a correct answer.
+            Err(_) => f(&metamodel_model_manager()?),
+        }
+    })
 }
 
-js_compat_pub! {
-    /// The `Serializer.fromJSON` options a metamodel instance is checked
-    /// with, one per caller of [`with_resident_metamodel_manager`] (P5-102,
-    /// F-7), so the concerto-wasm binding `validateMetaModelInstance` can
-    /// take the preset as an argument and its TS caller hold no metamodel
-    /// manager of its own.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum MetaModelPreset {
-        /// accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`:
-        /// `validateAst`'s check ([`validate_metamodel`]).
-        Strict,
-        /// The manager's serializer defaults, `baseDefaultOptions`
-        /// (`{validate: true, utcOffset}`): `validateAst`'s check over the
-        /// caller's own manager (`deserialize_ast`).
-        Default,
-        /// A `new Serializer(factory, modelManager)`'s defaults:
-        /// `validateMetaModel`'s check ([`validate_meta_model_instance`]).
-        /// `Object.assign({}, baseDefaultOptions, {})`, so the same options
-        /// as [`Self::Default`], named apart for its caller.
-        Serializer,
-    }
+/// The `Serializer.fromJSON` options a metamodel instance is checked
+/// with, one per caller of [`with_resident_metamodel_manager`] (P5-102,
+/// F-7), so the concerto-wasm binding `validateMetaModelInstance` can
+/// take the preset as an argument and its TS caller hold no metamodel
+/// manager of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaModelPreset {
+    /// accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`:
+    /// `validateAst`'s check ([`validate_metamodel`]).
+    Strict,
+    /// The manager's serializer defaults, `baseDefaultOptions`
+    /// (`{validate: true, utcOffset}`): `validateAst`'s check over the
+    /// caller's own manager (`deserialize_ast`).
+    Default,
+    /// A `new Serializer(factory, modelManager)`'s defaults:
+    /// `validateMetaModel`'s check ([`validate_meta_model_instance`]).
+    /// `Object.assign({}, baseDefaultOptions, {})`, so the same options
+    /// as [`Self::Default`], named apart for its caller.
+    Serializer,
 }
 
 impl MetaModelPreset {

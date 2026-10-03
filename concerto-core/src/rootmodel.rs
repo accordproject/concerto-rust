@@ -57,25 +57,24 @@ pub fn decorator_model_ast() -> serde_json::Value {
         .expect("Decorator model could not be converted to JSON.")
 }
 
-js_compat_pub! {
-    /// P5-73 (accordproject/concerto-rust#414): the two system models' ASTs
-    /// as compact JSON text, decorator model first, each with the file name
-    /// TS `addDecoratorModel`/`addRootModel` give it. Each text is the
-    /// vendored JSON written out again without whitespace, in its own key
-    /// order, which is what JS `JSON.stringify` gives for concerto-core's own
-    /// copies of the same files (`src/decoratormodelhelper.ts`,
-    /// `src/rootmodelhelper.ts`). concerto-wasm recognises exactly these
-    /// texts, so the verdict of their load is computed once
-    /// (`systemModelFileHeader`). Computed on first use.
-    pub fn system_model_json_texts() -> [(&'static str, &'static str); 2] {
-        static TEXTS: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
-        let [decorator, root] = TEXTS
-            .get_or_init(|| [compact(DECORATOR_MODEL_JSON), compact(ROOT_MODEL_JSON)]);
-        [
-            ("concerto_decorator_1.0.0.cto", decorator.as_str()),
-            ("concerto_1.0.0.cto", root.as_str()),
-        ]
-    }
+/// P5-73 (accordproject/concerto-rust#414): the two system models' ASTs
+/// as compact JSON text, decorator model first, each with the file name
+/// TS `addDecoratorModel`/`addRootModel` give it. Each text is the
+/// vendored JSON written out again without whitespace, in its own key
+/// order, which is what JS `JSON.stringify` gives for concerto-core's own
+/// copies of the same files (`src/decoratormodelhelper.ts`,
+/// `src/rootmodelhelper.ts`). concerto-wasm recognises exactly these
+/// texts, so the verdict of their load is computed once
+/// (`systemModelFileHeader`). Computed on first use.
+#[cfg(feature = "js-compat")]
+pub fn system_model_json_texts() -> [(&'static str, &'static str); 2] {
+    static TEXTS: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
+    let [decorator, root] =
+        TEXTS.get_or_init(|| [compact(DECORATOR_MODEL_JSON), compact(ROOT_MODEL_JSON)]);
+    [
+        ("concerto_decorator_1.0.0.cto", decorator.as_str()),
+        ("concerto_1.0.0.cto", root.as_str()),
+    ]
 }
 
 /// `json` (a vendored system model) without whitespace, in its own key order.

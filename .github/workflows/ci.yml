@@ -29,6 +29,12 @@ jobs:
         run: rustup component add rustfmt && cargo fmt -p accordproject-concerto-core -- --check
       - name: Clippy (concerto-core)
         run: rustup component add clippy && cargo clippy -p accordproject-concerto-core --no-deps --all-targets -- -D warnings
+      # P5-104 (C-9, accordproject/concerto-rust#458): the library alone, with
+      # its default features. The run above builds the tests, whose
+      # dev-dependencies turn `js-compat` on, so a seam item the native
+      # build no longer uses is reported only here.
+      - name: Clippy (concerto-core, default features, lib)
+        run: cargo clippy -p accordproject-concerto-core --no-deps --lib -- -D warnings
       - name: Format check (concerto-wasm)
         run: cargo fmt --manifest-path concerto-wasm/Cargo.toml -- --check
       - name: Clippy (concerto-wasm, wasm32)

@@ -94,11 +94,10 @@ impl Error {
         }
     }
 
-    js_compat_pub! {
-        /// [`Error::contract`], by value.
-        pub fn into_contract(self) -> ContractError {
-            *self.0
-        }
+    /// [`Error::contract`], by value.
+    #[cfg(feature = "js-compat")]
+    pub fn into_contract(self) -> ContractError {
+        *self.0
     }
 
     /// The contract shape behind this error, to amend in place.

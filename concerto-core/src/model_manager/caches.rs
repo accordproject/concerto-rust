@@ -82,6 +82,7 @@ impl DeclCache {
     }
 
     /// A copy of every answer, for a fork ([`ModelManager::fork`]).
+    #[cfg(feature = "js-compat")]
     pub(super) fn snapshot(&self) -> Self {
         Self(Mutex::new(lock(&self.0).clone()))
     }
@@ -221,6 +222,7 @@ impl ModelManager {
     }
 
     /// P5-97: forgets every validated mark (an option changed).
+    #[cfg(feature = "js-compat")]
     pub(super) fn clear_validated(&mut self) {
         for slot in &mut self.files {
             *slot.validated.get_mut() = false;

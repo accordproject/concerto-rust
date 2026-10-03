@@ -80,10 +80,8 @@ js_compat_pub! {
 js_compat_pub! {
     pub use resolution_context::{ResolutionContext, ValidatedElement};
 }
-js_compat_pub! {
-    #[allow(unused_imports)]
-    pub use ts_compat::ModelFileSource;
-}
+#[cfg(feature = "js-compat")]
+pub use ts_compat::ModelFileSource;
 
 /// The namespaces TS `BaseModelManager.getModelFiles()` leaves out unless it
 /// is asked to include them: the system model, its unversioned name, and the
@@ -445,20 +443,19 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// [`ModelManager::add_model_with_definitions`], taking ownership of the
-        /// AST so it is kept without being copied
-        /// ([`ModelFile::from_owned_json_with_definitions`], P5-06). Same
-        /// result, same errors, in the same order.
-        pub fn add_owned_model_with_definitions(
-            &mut self,
-            value: serde_json::Value,
-            definitions: Option<String>,
-            file_name: Option<String>,
-        ) -> Result<()> {
-            let mf = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
-            self.add_loaded_model_file(mf).map(drop)
-        }
+    /// [`ModelManager::add_model_with_definitions`], taking ownership of the
+    /// AST so it is kept without being copied
+    /// ([`ModelFile::from_owned_json_with_definitions`], P5-06). Same
+    /// result, same errors, in the same order.
+    #[cfg(feature = "js-compat")]
+    pub fn add_owned_model_with_definitions(
+        &mut self,
+        value: serde_json::Value,
+        definitions: Option<String>,
+        file_name: Option<String>,
+    ) -> Result<()> {
+        let mf = ModelFile::from_owned_json_with_definitions(value, definitions, file_name)?;
+        self.add_loaded_model_file(mf).map(drop)
     }
 
     js_compat_pub! {
@@ -492,40 +489,39 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// P5-97 (accordproject/concerto-rust#448): a new manager over the
-        /// same models: the same options, the same model files in the same
-        /// order (shared, `Arc`, never copied), and the same handles, so
-        /// every [`ModelFileId`], [`DeclId`] and [`PropId`] of this manager
-        /// names the same element in the fork. Nothing is validated again:
-        /// each file keeps whether it was validated here.
-        ///
-        /// The fork starts with this manager's warmed caches (inheritance
-        /// chains, instance facts, validation plans). Those answers are about
-        /// this manager's declarations, which the fork holds unchanged, and a
-        /// file the fork adds later cannot change them
-        /// (`ModelManager::keep_caches_for_append`: the files here cannot
-        /// import a namespace they did not already resolve). So a server can
-        /// keep one base manager of its common models, warm it once, and fork
-        /// it per request: each request adds its own models to its fork,
-        /// isolated from every other fork and from the base.
-        ///
-        /// The two managers are independent from then on: a later change to
-        /// either one never reaches the other.
-        pub fn fork(&self) -> Self {
-            Self {
-                files: self.files.clone(),
-                namespaces: self.namespaces.clone(),
-                declarations: self.declarations.clone(),
-                properties: self.properties.clone(),
-                state_version: self.state_version,
-                options: self.options.clone(),
-                decl_cache: self.decl_cache.snapshot(),
-                system_files_checked: std::sync::atomic::AtomicU64::new(
-                    self.system_files_checked
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                ),
-            }
+    /// P5-97 (accordproject/concerto-rust#448): a new manager over the
+    /// same models: the same options, the same model files in the same
+    /// order (shared, `Arc`, never copied), and the same handles, so
+    /// every [`ModelFileId`], [`DeclId`] and [`PropId`] of this manager
+    /// names the same element in the fork. Nothing is validated again:
+    /// each file keeps whether it was validated here.
+    ///
+    /// The fork starts with this manager's warmed caches (inheritance
+    /// chains, instance facts, validation plans). Those answers are about
+    /// this manager's declarations, which the fork holds unchanged, and a
+    /// file the fork adds later cannot change them
+    /// (`ModelManager::keep_caches_for_append`: the files here cannot
+    /// import a namespace they did not already resolve). So a server can
+    /// keep one base manager of its common models, warm it once, and fork
+    /// it per request: each request adds its own models to its fork,
+    /// isolated from every other fork and from the base.
+    ///
+    /// The two managers are independent from then on: a later change to
+    /// either one never reaches the other.
+    #[cfg(feature = "js-compat")]
+    pub fn fork(&self) -> Self {
+        Self {
+            files: self.files.clone(),
+            namespaces: self.namespaces.clone(),
+            declarations: self.declarations.clone(),
+            properties: self.properties.clone(),
+            state_version: self.state_version,
+            options: self.options.clone(),
+            decl_cache: self.decl_cache.snapshot(),
+            system_files_checked: std::sync::atomic::AtomicU64::new(
+                self.system_files_checked
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
         }
     }
 
@@ -545,24 +541,23 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// P5-77: each model file's AST as compact JSON text, in
-        /// [`ModelManager::model_files`] order ([`ModelFile::compact_ast`]).
-        /// A file only this manager holds keeps its AST as that text from
-        /// then on, so a manager that is kept but whose ASTs are rarely read
-        /// again holds the text instead of the parsed tree; a file shared
-        /// with another manager is serialised and left as it is. Every
-        /// [`ModelFile::ast`] stays equal to what it was, so nothing a
-        /// caller can read changes, and the caches stay valid.
-        pub fn compact_model_asts(&mut self) -> serde_json::Result<Vec<Arc<str>>> {
-            self.files
-                .iter_mut()
-                .map(|slot| match Arc::get_mut(&mut slot.model_file) {
-                    Some(model_file) => model_file.compact_ast(),
-                    None => Ok(Arc::from(serde_json::to_string(slot.model_file.ast())?)),
-                })
-                .collect()
-        }
+    /// P5-77: each model file's AST as compact JSON text, in
+    /// [`ModelManager::model_files`] order ([`ModelFile::compact_ast`]).
+    /// A file only this manager holds keeps its AST as that text from
+    /// then on, so a manager that is kept but whose ASTs are rarely read
+    /// again holds the text instead of the parsed tree; a file shared
+    /// with another manager is serialised and left as it is. Every
+    /// [`ModelFile::ast`] stays equal to what it was, so nothing a
+    /// caller can read changes, and the caches stay valid.
+    #[cfg(feature = "js-compat")]
+    pub fn compact_model_asts(&mut self) -> serde_json::Result<Vec<Arc<str>>> {
+        self.files
+            .iter_mut()
+            .map(|slot| match Arc::get_mut(&mut slot.model_file) {
+                Some(model_file) => model_file.compact_ast(),
+                None => Ok(Arc::from(serde_json::to_string(slot.model_file.ast())?)),
+            })
+            .collect()
     }
 
     /// The duplicate-namespace check and registration
@@ -631,6 +626,7 @@ impl ModelManager {
     /// what [`ModelManager::undo_append`] needs to take it out again, or
     /// `None` (nothing changed) when that is not the case or no handle can
     /// be allocated; the file is then still the caller's.
+    #[cfg(feature = "js-compat")]
     pub(crate) fn append_for_validation(
         &mut self,
         model_file: &Arc<ModelFile>,
@@ -648,6 +644,7 @@ impl ModelManager {
     /// leaving the arena, the namespaces and the state version as they were
     /// before it (as [`ModelManager::load_models`] rolls a batch back). The
     /// caches are dropped: they may hold the appended file's handles.
+    #[cfg(feature = "js-compat")]
     pub(crate) fn undo_append(&mut self, mark: AppendMark) {
         self.rollback(mark);
     }
@@ -896,19 +893,18 @@ impl ModelManager {
         &self.options.decorator_validation
     }
 
-    js_compat_pub! {
-        /// Sets the decorator validation options, matching the TS constructor's
-        /// `options.decoratorValidation` (there is no separate TS setter; the
-        /// port exposes one so a manager already built can still opt in, as this
-        /// crate's own tests do).
-        pub fn set_decorator_validation(
-            &mut self,
-            options: crate::introspect::decorator::DecoratorValidationOptions,
-        ) {
-            // P5-97: validity depends on the options.
-            self.clear_validated();
-            self.options.decorator_validation = options;
-        }
+    /// Sets the decorator validation options, matching the TS constructor's
+    /// `options.decoratorValidation` (there is no separate TS setter; the
+    /// port exposes one so a manager already built can still opt in, as this
+    /// crate's own tests do).
+    #[cfg(feature = "js-compat")]
+    pub fn set_decorator_validation(
+        &mut self,
+        options: crate::introspect::decorator::DecoratorValidationOptions,
+    ) {
+        // P5-97: validity depends on the options.
+        self.clear_validated();
+        self.options.decorator_validation = options;
     }
 
     js_compat_pub! {
@@ -919,15 +915,14 @@ impl ModelManager {
         }
     }
 
-    js_compat_pub! {
-        /// Sets the escape hatch above, matching the TS constructor's
-        /// `options.dangerouslyAllowReservedSystemTypeNamesInUserModels` (there is
-        /// no separate TS setter; the port exposes one the same way
-        /// [`Self::set_decorator_validation`] does).
-        pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
-            self.clear_validated();
-            self.options.allow_reserved_system_type_names = allow;
-        }
+    /// Sets the escape hatch above, matching the TS constructor's
+    /// `options.dangerouslyAllowReservedSystemTypeNamesInUserModels` (there is
+    /// no separate TS setter; the port exposes one the same way
+    /// [`Self::set_decorator_validation`] does).
+    #[cfg(feature = "js-compat")]
+    pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+        self.clear_validated();
+        self.options.allow_reserved_system_type_names = allow;
     }
 
     /// TS: `this.options?.metamodelValidation`, as `addModelFile` reads it
@@ -936,18 +931,17 @@ impl ModelManager {
         self.options.metamodel_validation
     }
 
-    js_compat_pub! {
-        /// Sets the option above, matching the TS constructor's
-        /// `options.metamodelValidation` (there is no separate TS setter; the
-        /// port exposes one the same way [`Self::set_decorator_validation`]
-        /// does). This port's `add_model` never validates (validation is an
-        /// explicit step), so a caller replaying TS's validating `addModelFile`
-        /// runs [`Self::validate_ast`] when this is set, then the new file's
-        /// semantic validation (`Self::validate_detached_model_file`).
-        pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
-            self.clear_validated();
-            self.options.metamodel_validation = metamodel_validation;
-        }
+    /// Sets the option above, matching the TS constructor's
+    /// `options.metamodelValidation` (there is no separate TS setter; the
+    /// port exposes one the same way [`Self::set_decorator_validation`]
+    /// does). This port's `add_model` never validates (validation is an
+    /// explicit step), so a caller replaying TS's validating `addModelFile`
+    /// runs [`Self::validate_ast`] when this is set, then the new file's
+    /// semantic validation (`Self::validate_detached_model_file`).
+    #[cfg(feature = "js-compat")]
+    pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+        self.clear_validated();
+        self.options.metamodel_validation = metamodel_validation;
     }
 
     /// TS `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`,
@@ -1107,19 +1101,18 @@ impl ModelManager {
         self.add_shared_model_file(model_file)
     }
 
-    js_compat_pub! {
-        /// The version of the manager's state, which every mutation of the
-        /// manager increases (P5-100, F-3: named `generation` before). A
-        /// snapshot of an element taken at one version is current while the
-        /// version is unchanged. It never repeats an earlier value for a different state:
-        /// a manager rebuilt from this one and adopted in its place
-        /// ([`ModelManager::adopt`]: an update, a removal, external models)
-        /// continues the count (A-3, accordproject/concerto-rust#448), and a
-        /// failed batch that is rolled back restores the count it started from
-        /// together with the very state it had then.
-        pub fn state_version(&self) -> u64 {
-            self.state_version
-        }
+    /// The version of the manager's state, which every mutation of the
+    /// manager increases (P5-100, F-3: named `generation` before). A
+    /// snapshot of an element taken at one version is current while the
+    /// version is unchanged. It never repeats an earlier value for a different state:
+    /// a manager rebuilt from this one and adopted in its place
+    /// ([`ModelManager::adopt`]: an update, a removal, external models)
+    /// continues the count (A-3, accordproject/concerto-rust#448), and a
+    /// failed batch that is rolled back restores the count it started from
+    /// together with the very state it had then.
+    #[cfg(feature = "js-compat")]
+    pub fn state_version(&self) -> u64 {
+        self.state_version
     }
 
     js_compat_pub! {

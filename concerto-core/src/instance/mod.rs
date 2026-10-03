@@ -45,19 +45,6 @@
 //! lose clippy's exemption for exported names, which the JS-facing names
 //! (`from_json::from_json`) keep through the `allow`s below.
 
-/// Declares a module that is `pub` with the `js-compat` feature and
-/// crate-private without it (docs/public-api.md section 4.6).
-macro_rules! js_compat_mod {
-    ($name:ident) => {
-        #[cfg(feature = "js-compat")]
-        pub mod $name;
-        #[cfg(not(feature = "js-compat"))]
-        #[allow(dead_code, unused_imports)]
-        #[allow(clippy::enum_variant_names, clippy::wrong_self_convention)]
-        pub(crate) mod $name;
-    };
-}
-
 js_compat_mod!(dayjs);
 mod diagnostic;
 js_compat_mod!(from_json);

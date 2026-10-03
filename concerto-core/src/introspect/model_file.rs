@@ -569,23 +569,22 @@ impl ModelFile {
         self.ast.get()
     }
 
-    js_compat_pub! {
-        /// P5-77 (accordproject/concerto-rust#419): [`ModelFile::ast`]'s
-        /// compact JSON text (`serde_json::to_string`). A file built from a
-        /// parsed AST then keeps that text in place of the parsed AST, which
-        /// is parsed again from it on first use, as for a file read from text
-        /// (P5-06c); with `float_roundtrip` and `preserve_order` that gives
-        /// an AST equal to the one it replaces (P5-92: so does a file read
-        /// from the compact layout, in place of its bytes). A file read from
-        /// text is left as it is (its own text is the caller's, not this
-        /// one).
-        pub fn compact_ast(&mut self) -> serde_json::Result<Arc<str>> {
-            let text: Arc<str> = Arc::from(serde_json::to_string(self.ast())?);
-            if self.ast.text().is_none() {
-                self.ast = Ast::from_text(Arc::clone(&text));
-            }
-            Ok(text)
+    /// P5-77 (accordproject/concerto-rust#419): [`ModelFile::ast`]'s
+    /// compact JSON text (`serde_json::to_string`). A file built from a
+    /// parsed AST then keeps that text in place of the parsed AST, which
+    /// is parsed again from it on first use, as for a file read from text
+    /// (P5-06c); with `float_roundtrip` and `preserve_order` that gives
+    /// an AST equal to the one it replaces (P5-92: so does a file read
+    /// from the compact layout, in place of its bytes). A file read from
+    /// text is left as it is (its own text is the caller's, not this
+    /// one).
+    #[cfg(feature = "js-compat")]
+    pub fn compact_ast(&mut self) -> serde_json::Result<Arc<str>> {
+        let text: Arc<str> = Arc::from(serde_json::to_string(self.ast())?);
+        if self.ast.text().is_none() {
+            self.ast = Ast::from_text(Arc::clone(&text));
         }
+        Ok(text)
     }
 
     /// Whether this file was built by the typed AST path.
@@ -1315,6 +1314,7 @@ impl Ast {
     }
 
     /// The kept JSON text, if the AST was read from text.
+    #[cfg(feature = "js-compat")]
     fn text(&self) -> Option<&Arc<str>> {
         match &self.source {
             AstSource::Text(text) => Some(text),

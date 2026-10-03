@@ -714,20 +714,19 @@ pub(crate) fn parse_decorator_list<N: AstNode>(decorators: Option<&N>) -> Vec<De
         .unwrap_or_default()
 }
 
-js_compat_pub! {
-    /// The DV-018 error for a decorator node that is `value` (`null`, or
-    /// `undefined` through the WASM boundary), with no location and no model
-    /// file yet. Raised by the `decoratorProcess` binding, for a decorator
-    /// view built outside a model load (a model load reads every decorator
-    /// node strictly, so a `null` one there is a `modelfile-load-unreadable`
-    /// error, P5-61).
-    pub fn not_an_object(value: &str) -> ContractError {
-        ContractError::new(
-            ErrorKind::IllegalModel,
-            "decorator-process-notobject",
-            vec![("value", value.to_string())],
-        )
-    }
+/// The DV-018 error for a decorator node that is `value` (`null`, or
+/// `undefined` through the WASM boundary), with no location and no model
+/// file yet. Raised by the `decoratorProcess` binding, for a decorator
+/// view built outside a model load (a model load reads every decorator
+/// node strictly, so a `null` one there is a `modelfile-load-unreadable`
+/// error, P5-61).
+#[cfg(feature = "js-compat")]
+pub fn not_an_object(value: &str) -> ContractError {
+    ContractError::new(
+        ErrorKind::IllegalModel,
+        "decorator-process-notobject",
+        vec![("value", value.to_string())],
+    )
 }
 
 /// Wraps a generated metamodel node together with its processed decorators
