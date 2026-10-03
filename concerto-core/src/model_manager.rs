@@ -380,11 +380,6 @@ impl<'a> ClassProperties<'a> {
     pub fn find(&self, name: &str) -> Option<(&'a str, &'a Property)> {
         self.iter().find(|(_, p)| p.name() == name)
     }
-
-    /// Whether a property named `name` exists.
-    pub fn contains(&self, name: &str) -> bool {
-        self.find(name).is_some()
-    }
 }
 
 /// The arena lengths and generation before

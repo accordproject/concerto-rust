@@ -24,20 +24,33 @@
 //!   the enum or class declaration it visits, or a relationship;
 //! - the identifier field's regex validator, for `Factory.newResource`.
 //!
-//! The plan is always on. It serves `validate` (`ResourceValidator`), both
-//! `fromJSON` populators, the `toJSON` generator, the factory's identifier
-//! check, and `setPropertyValue`/`addArrayValue` (including the WASM
+//! The plan is always on, and it is the only route: it serves `validate`
+//! (`ResourceValidator`, one walk, P5-99), both `fromJSON` populators, the
+//! `toJSON` generator, the factory's identifier check, and
+//! `setPropertyValue`/`addArrayValue` (including the WASM
 //! `validatePropertyBinary` fast path).
 //!
 //! # Behaviour
 //!
 //! A plan is built lazily, on the first instance call that meets the
-//! declaration, and never raises: whatever fails while building it (an
-//! unresolvable field type, a validator whose construction throws, a cyclic
-//! chain) is recorded as "unplanned", and the caller takes the unplanned
-//! path for that piece, which raises exactly the error it raised before. So
-//! the plan changes no throw scenario and no exception class, and the first
-//! error is reported in the same order.
+//! declaration, and is total (P5-99, accordproject/concerto-rust#453):
+//! whatever fails while building it is recorded in it, never swallowed, and
+//! raised at the point the check that needs it runs, which is where the
+//! model lookups ran before there was a plan:
+//!
+//! - the declaration's own chain (an unresolvable super type, a cyclic
+//!   chain): [`class_plan`] returns the recorded error, the one
+//!   `getProperties()`/`getIdentifierFieldName()` raise;
+//! - a property whose type does not resolve: [`PlanKind::Unresolved`], raised
+//!   when a value of the property is checked (or, for a relationship, at the
+//!   point `checkRelationship` resolves its declared type);
+//! - a validator whose construction throws: [`Prepared::Failed`], raised
+//!   where the validator would have been built for the value;
+//! - a map whose key or value type does not resolve: [`MapSlot::Unresolved`],
+//!   raised for the first entry that reaches that slot.
+//!
+//! So the plan changes no throw scenario and no exception class, and the
+//! first error is reported in the same order.
 //!
 //! # Invalidation and memory
 //!
@@ -55,15 +68,16 @@
 //! # Testing
 //!
 //! With the dev-only `validation-plan-testing` feature (never enabled by a
-//! release build), [`testing`] can run a closure with the plan turned off on
-//! the current thread, so a test can compare planned and unplanned outcomes,
+//! release build), [`testing`] can run a closure that builds every plan
+//! afresh instead of reading the cache, so a test can check that a cached
+//! plan (and a cached build error) gives the same outcome as a fresh one,
 //! and count the plans a manager holds.
 
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::error::{ContractError, Error, ErrorKind};
+use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::{CollectionSizeValidator, NumberValidator, StringValidator};
 use crate::introspect::{Declaration, Property};
@@ -85,21 +99,17 @@ pub enum PlanKind {
         /// The primitive it aliases (`processedType`).
         primitive: Option<&'static str>,
     },
-    /// A field whose type is an enum, with the enum's value names.
-    Enum {
-        /// The enum declaration.
-        decl: DeclId,
-        /// Its value names.
-        values: FxHashSet<Box<str>>,
-    },
+    /// A field whose type is an enum.
+    Enum(EnumPlan),
     /// A field whose type is a map.
     Map {
         /// The map declaration.
         decl: DeclId,
-        /// Its key and value kinds, resolved once; `None` when either did
-        /// not resolve, and the caller takes the unplanned path, which
-        /// raises the same error (or none, for an empty map) it always did.
-        entries: Option<MapPlan>,
+        /// Its key and value kinds, resolved once; the error
+        /// `ModelUtil.isScalar(mapDeclaration.getKey())` raises when the
+        /// key's type does not resolve, which a map value meets before its
+        /// first entry.
+        entries: std::result::Result<MapPlan, Error>,
     },
     /// A field whose type is a concept-like declaration.
     Class(DeclId),
@@ -107,9 +117,28 @@ pub enum PlanKind {
     Relationship(Arc<str>),
     /// An enum declaration's own value member.
     EnumValue,
-    /// The type did not resolve: the caller takes the unplanned path, which
-    /// raises the same error it always did.
-    Unresolved,
+    /// The type did not resolve: the error resolving it raises, at the point
+    /// the type is needed (P5-99).
+    Unresolved(Error),
+}
+
+/// An enum declaration and its value names.
+#[derive(Debug)]
+pub struct EnumPlan {
+    /// The enum declaration.
+    pub decl: DeclId,
+    /// Its value names.
+    pub values: FxHashSet<Box<str>>,
+}
+
+impl EnumPlan {
+    fn of(mm: &ModelManager, decl: DeclId) -> Self {
+        let values = match mm.declaration(decl) {
+            Some(Declaration::Enum(e)) => e.values().iter().map(|v| v.name().into()).collect(),
+            _ => FxHashSet::default(),
+        };
+        Self { decl, values }
+    }
 }
 
 /// What `ResourceValidator.checkMapType` does with one map key or value,
@@ -118,16 +147,22 @@ pub enum PlanKind {
 pub enum MapSlot {
     /// The primitive type name its value is checked against (`String`,
     /// `DateTime`, `Boolean`; any other name checks nothing, as in TS).
-    Primitive(Box<str>),
+    Primitive(&'static str),
     /// An enum declaration: `visitEnumDeclaration`.
-    Enum(DeclId),
+    Enum(EnumPlan),
     /// A class declaration: `visitClassDeclaration`.
     Class(DeclId),
-    /// A relationship map value: `checkRelationship`.
-    Relationship,
+    /// A relationship map value: `checkRelationship`, against the declared
+    /// target type resolved in the map's namespace (or the error resolving
+    /// it, which `checkRelationship` raises once the value's own target has
+    /// checked out).
+    Relationship(std::result::Result<Arc<str>, Error>),
     /// Nothing is checked (an object slot whose type is neither an enum, a
     /// class nor, under a scalar key, a scalar).
     Skip,
+    /// The slot's type did not resolve: the error resolving it, raised for
+    /// each entry that reaches the slot (P5-99).
+    Unresolved(Error),
 }
 
 /// A map declaration's resolved key and value kinds.
@@ -146,8 +181,9 @@ pub enum Prepared<T> {
     None,
     /// Built.
     Built(T),
-    /// Building it threw: the caller takes the unplanned path.
-    Unplanned,
+    /// Building it threw: the error, raised where the validator would have
+    /// been built for a value (P5-99).
+    Failed(Error),
 }
 
 /// The value validator of a field: its own (a primitive's), or its
@@ -196,6 +232,9 @@ pub struct ClassPlan {
     /// The identifier field's regex validator, for `Factory.newResource`
     /// (`idFullField?.validator`), when it has a regex.
     pub id_regex: Prepared<StringValidator>,
+    /// The error building the plan met (the declaration's chain does not
+    /// resolve), which [`class_plan`] returns in place of the plan.
+    failure: Option<Error>,
     /// P5-97 (accordproject/concerto-rust#448): whether every part of the
     /// plan resolved and was built ([`ClassPlan::is_settled`]).
     settled: bool,
@@ -245,15 +284,15 @@ impl ClassPlan {
             .expect("a plan's property handle is live")
     }
 
-    /// [`super::model::field`] of the property at `index`, from the plan;
-    /// `None` when the plan could not resolve it.
-    pub fn field<'a>(&self, mm: &'a ModelManager, index: usize) -> Option<Field<'a>> {
+    /// [`super::model::field`] of the property at `index`, from the plan:
+    /// the same field, or the same error when its type does not resolve.
+    pub fn field<'a>(&'a self, mm: &'a ModelManager, index: usize) -> Result<Field<'a>> {
         let (owner_fqn, property) = self.property(mm, index);
         let field_type = match &self.props[index].kind {
             PlanKind::Primitive(t) => FieldType::Primitive(t),
             PlanKind::Scalar { decl, primitive } => {
                 let Some(Declaration::Scalar(s)) = mm.declaration(*decl) else {
-                    return None;
+                    unreachable!("a scalar kind's declaration is a scalar");
                 };
                 FieldType::Scalar {
                     primitive: *primitive,
@@ -261,14 +300,14 @@ impl ClassPlan {
                     validator: s.validator(),
                 }
             }
-            PlanKind::Enum { decl, .. } => FieldType::Enum(mm.decl_fqn(*decl).ok()?),
-            PlanKind::Map { decl, .. } => FieldType::Map(mm.decl_fqn(*decl).ok()?),
-            PlanKind::Class(d) => FieldType::Class(mm.decl_fqn(*d).ok()?),
-            PlanKind::Relationship(t) => FieldType::Relationship(t.to_string()),
+            PlanKind::Enum(e) => FieldType::Enum(mm.decl_fqn(e.decl)?),
+            PlanKind::Map { decl, .. } => FieldType::Map(mm.decl_fqn(*decl)?),
+            PlanKind::Class(d) => FieldType::Class(mm.decl_fqn(*d)?),
+            PlanKind::Relationship(t) => FieldType::Relationship(std::borrow::Cow::Borrowed(&**t)),
             PlanKind::EnumValue => FieldType::EnumValue,
-            PlanKind::Unresolved => return None,
+            PlanKind::Unresolved(e) => return Err(e.clone()),
         };
-        Some(Field {
+        Ok(Field {
             owner_fqn,
             property,
             field_type,
@@ -277,29 +316,57 @@ impl ClassPlan {
 }
 
 /// The plan of declaration `id`, built on first use and cached until the
-/// registered files change; `None` when `id` is not a class-like or enum
-/// declaration whose chain resolves (the caller then takes the unplanned
-/// path).
-pub fn class_plan(mm: &ModelManager, id: DeclId) -> Option<Arc<ClassPlan>> {
+/// registered files change; the error its chain raises when it does not
+/// resolve (or `id` is not a class-like or enum declaration), cached with
+/// it (P5-99).
+pub fn class_plan(mm: &ModelManager, id: DeclId) -> Result<Arc<ClassPlan>> {
     #[cfg(feature = "validation-plan-testing")]
-    if testing::plan_is_off() {
-        return None;
+    if testing::is_uncached() {
+        return checked(Arc::new(build(mm, id)));
     }
-    mm.cached_plan(id, || build(mm, id))
+    let plan = mm
+        .cached_plan(id, || Some(build(mm, id)))
+        .expect("a plan is always built");
+    checked(plan)
 }
 
-/// [`class_plan`] by fully-qualified name.
-pub fn class_plan_by_name(mm: &ModelManager, fqn: &str) -> Option<Arc<ClassPlan>> {
-    class_plan(mm, mm.declaration_id(fqn)?)
+/// [`class_plan`] by fully-qualified name: the declaration `getType` finds,
+/// so an unknown name raises what [`ModelManager::properties`] raises for
+/// it.
+pub fn class_plan_by_name(mm: &ModelManager, fqn: &str) -> Result<Arc<ClassPlan>> {
+    class_plan(mm, mm.type_declaration(fqn)?)
 }
 
-fn build(mm: &ModelManager, id: DeclId) -> Option<ClassPlan> {
-    let is_abstract = match mm.declaration(id)? {
-        Declaration::Class(c) => c.is_abstract(),
-        Declaration::Enum(e) => e.is_abstract(),
-        Declaration::Scalar(_) | Declaration::Map(_) => return None,
+fn checked(plan: Arc<ClassPlan>) -> Result<Arc<ClassPlan>> {
+    match &plan.failure {
+        Some(err) => Err(err.clone()),
+        None => Ok(plan),
+    }
+}
+
+fn build(mm: &ModelManager, id: DeclId) -> ClassPlan {
+    let (chain, prop_ids) = match mm.class_chain_and_properties(id) {
+        Ok(found) => found,
+        Err(err) => {
+            return ClassPlan {
+                decl: id,
+                is_abstract: false,
+                identifier_owner: None,
+                chain: Box::default(),
+                props: Box::default(),
+                index: FxHashMap::default(),
+                id_regex: Prepared::None,
+                failure: Some(err),
+                settled: false,
+            };
+        }
     };
-    let (chain, prop_ids) = mm.class_chain_and_properties(id).ok()?;
+    // The chain resolved, so `id` is a class-like or enum declaration.
+    let is_abstract = match mm.declaration(id) {
+        Some(Declaration::Class(c)) => c.is_abstract(),
+        Some(Declaration::Enum(e)) => e.is_abstract(),
+        _ => false,
+    };
     let identifier_owner = chain
         .iter()
         .copied()
@@ -307,11 +374,15 @@ fn build(mm: &ModelManager, id: DeclId) -> Option<ClassPlan> {
     let mut props = Vec::with_capacity(prop_ids.len());
     let mut index = FxHashMap::default();
     for (i, prop) in prop_ids.iter().copied().enumerate() {
-        let owner = mm.property_owner_of(prop)?;
-        let (owner_fqn, property) = mm.property_with_owner_of(prop)?;
+        let owner = mm
+            .property_owner_of(prop)
+            .expect("a chain's property handle is live");
+        let (owner_fqn, property) = mm
+            .property_with_owner_of(prop)
+            .expect("a chain's property handle is live");
         index
             .entry(property.name().into())
-            .or_insert(u32::try_from(i).ok()?);
+            .or_insert(u32::try_from(i).expect("fewer than 2^32 properties"));
         let kind = resolve_kind(mm, owner_fqn, property);
         let (validator, size) = prepare_validators(mm, owner_fqn, property, &kind);
         props.push(PlanProp {
@@ -330,51 +401,73 @@ fn build(mm: &ModelManager, id: DeclId) -> Option<ClassPlan> {
         props: props.into(),
         index,
         id_regex: Prepared::None,
+        failure: None,
         settled: false,
     };
     plan.id_regex = identifier_regex(mm, &plan);
-    plan.settled = !matches!(plan.id_regex, Prepared::Unplanned)
+    plan.settled = !matches!(plan.id_regex, Prepared::Failed(_))
         && plan.props.iter().all(|p| {
-            !matches!(
-                p.kind,
-                PlanKind::Unresolved | PlanKind::Map { entries: None, .. }
-            ) && !matches!(p.validator, Prepared::Unplanned)
-                && !matches!(p.size, Prepared::Unplanned)
+            kind_is_settled(&p.kind)
+                && !matches!(p.validator, Prepared::Failed(_))
+                && !matches!(p.size, Prepared::Failed(_))
         });
-    Some(plan)
+    plan
 }
 
-fn resolve_kind(mm: &ModelManager, owner_fqn: &str, property: &Property) -> PlanKind {
-    let resolve = |name: &str| -> Option<String> {
-        let namespace = model_util::get_namespace(Some(owner_fqn)).ok()?;
-        mm.resolve_type_name_at(namespace, name, None).ok()
+/// P5-97: whether a property's kind resolved completely (a map's key and
+/// value, and a map relationship's target, too). A kind holding a resolution
+/// error could resolve once another model file is added, so its plan is not
+/// settled.
+fn kind_is_settled(kind: &PlanKind) -> bool {
+    let slot_is_settled = |slot: &MapSlot| {
+        !matches!(slot, MapSlot::Unresolved(_) | MapSlot::Relationship(Err(_)))
     };
-    match property {
-        Property::Relationship(rp) => match resolve(&rp.type_.name) {
-            Some(fqn) => PlanKind::Relationship(fqn.into()),
-            None => PlanKind::Unresolved,
-        },
-        Property::Object(op) => {
-            let Some(id) = resolve(&op.type_.name).and_then(|fqn| mm.declaration_id(&fqn)) else {
-                return PlanKind::Unresolved;
-            };
-            match mm.declaration(id) {
-                Some(Declaration::Enum(e)) => PlanKind::Enum {
-                    decl: id,
-                    values: e.values().iter().map(|v| v.name().into()).collect(),
-                },
-                Some(Declaration::Scalar(s)) => PlanKind::Scalar {
+    match kind {
+        PlanKind::Unresolved(_) => false,
+        PlanKind::Map { entries, .. } => entries
+            .as_ref()
+            .is_ok_and(|m| slot_is_settled(&m.key) && slot_is_settled(&m.value)),
+        _ => true,
+    }
+}
+
+/// A property's type, resolved as [`super::model::field`] resolves it, with
+/// the error that raises when it does not resolve.
+fn resolve_kind(mm: &ModelManager, owner_fqn: &str, property: &Property) -> PlanKind {
+    let resolve = |name: &str| -> Result<String> {
+        let namespace = model_util::get_namespace(Some(owner_fqn))?;
+        mm.resolve_type_name_at(namespace, name, None)
+    };
+    let object = |name: &str| -> Result<PlanKind> {
+        let fqn = resolve(name)?;
+        let id = mm
+            .declaration_id(&fqn)
+            .ok_or_else(|| Error::type_not_found(fqn.clone()))?;
+        mm.decl_fqn(id)?;
+        Ok(
+            match mm
+                .declaration(id)
+                .expect("declaration_id returns a live handle")
+            {
+                Declaration::Enum(_) => PlanKind::Enum(EnumPlan::of(mm, id)),
+                Declaration::Scalar(s) => PlanKind::Scalar {
                     decl: id,
                     primitive: s.processed_type(),
                 },
-                Some(Declaration::Map(_)) => PlanKind::Map {
+                Declaration::Map(_) => PlanKind::Map {
                     decl: id,
                     entries: map_plan(mm, id),
                 },
-                Some(Declaration::Class(_)) => PlanKind::Class(id),
-                None => PlanKind::Unresolved,
-            }
-        }
+                Declaration::Class(_) => PlanKind::Class(id),
+            },
+        )
+    };
+    match property {
+        Property::Relationship(rp) => match resolve(&rp.type_.name) {
+            Ok(fqn) => PlanKind::Relationship(fqn.into()),
+            Err(err) => PlanKind::Unresolved(err),
+        },
+        Property::Object(op) => object(&op.type_.name).unwrap_or_else(PlanKind::Unresolved),
         Property::Enum(_) => PlanKind::EnumValue,
         Property::Boolean(_) => PlanKind::Primitive("Boolean"),
         Property::String(_) => PlanKind::Primitive("String"),
@@ -386,54 +479,73 @@ fn resolve_kind(mm: &ModelManager, owner_fqn: &str, property: &Property) -> Plan
 }
 
 /// The map declaration `id`'s key and value kinds, resolved the way
-/// `visit_map_declaration` and `check_map_type` resolve them for each entry;
-/// `None` when any resolution fails.
-pub(super) fn map_plan(mm: &ModelManager, id: DeclId) -> Option<MapPlan> {
+/// `ResourceValidator.visitMapDeclaration`/`checkMapType` resolve them for
+/// each entry: the error `ModelUtil.isScalar(mapDeclaration.getKey())`
+/// raises, or each slot (with the error resolving it, if any).
+pub(super) fn map_plan(mm: &ModelManager, id: DeclId) -> std::result::Result<MapPlan, Error> {
     let Some(Declaration::Map(map)) = mm.declaration(id) else {
-        return None;
+        unreachable!("map_plan is only called for a map declaration");
     };
-    let map_fqn = mm.decl_fqn(id).ok()?;
-    let key_is_scalar = super::validate::map_key_is_scalar(mm, map_fqn, map).ok()?;
-    let key = map_slot(mm, map_fqn, map.key_kind(), map.key_type(), key_is_scalar)?;
-    let value = if map.value_kind() == "RelationshipMapValueType" && map.value_type().is_some() {
-        MapSlot::Relationship
+    let map_fqn = mm.decl_fqn(id)?;
+    let key_is_scalar = super::validate::map_key_is_scalar(mm, map_fqn, map)?;
+    let key = map_slot(mm, map_fqn, map.key_kind(), map.key_type(), key_is_scalar);
+    let value = if map.value_kind() == "RelationshipMapValueType"
+        && let Some(type_id) = map.value_type()
+    {
+        MapSlot::Relationship(
+            model_util::get_namespace(Some(map_fqn))
+                .and_then(|namespace| mm.resolve_type_name_at(namespace, &type_id.name, None))
+                .map(Arc::from),
+        )
     } else {
-        map_slot(mm, map_fqn, map.value_kind(), map.value_type(), key_is_scalar)?
+        map_slot(mm, map_fqn, map.value_kind(), map.value_type(), key_is_scalar)
     };
-    Some(MapPlan { key, value })
+    Ok(MapPlan { key, value })
 }
 
-/// One slot of [`map_plan`], mirroring `check_map_type`'s resolution.
+/// One slot of [`map_plan`], mirroring `checkMapType`'s resolution.
 fn map_slot(
     mm: &ModelManager,
     map_fqn: &str,
     kind: &str,
     type_id: Option<&concerto_metamodel::concerto_metamodel_1_0_0::TypeIdentifier>,
     key_is_scalar: bool,
-) -> Option<MapSlot> {
+) -> MapSlot {
     if !super::validate::is_object_map_kind(kind) {
-        return Some(MapSlot::Primitive(super::validate::kind_primitive_name(kind).into()));
+        return MapSlot::Primitive(super::validate::kind_primitive_name(kind));
     }
     let Some(ti) = type_id else {
-        return Some(MapSlot::Skip);
+        return MapSlot::Skip;
     };
-    let namespace = model_util::get_namespace(Some(map_fqn)).ok()?;
-    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None).ok()?;
-    let id = mm.declaration_id(&fqn)?;
-    let decl = mm.declaration(id)?;
-    Some(if key_is_scalar && let Some(scalar) = decl.as_scalar() {
-        MapSlot::Primitive(scalar.processed_type().unwrap_or_default().into())
+    let resolved = model_util::get_namespace(Some(map_fqn))
+        .and_then(|namespace| mm.resolve_type_name_at(namespace, &ti.name, None))
+        .and_then(|fqn| {
+            mm.declaration_id(&fqn)
+                .ok_or_else(|| Error::type_not_found(fqn))
+        });
+    let id = match resolved {
+        Ok(id) => id,
+        Err(err) => return MapSlot::Unresolved(err),
+    };
+    let decl = mm
+        .declaration(id)
+        .expect("declaration_id returns a live handle");
+    if key_is_scalar && let Some(scalar) = decl.as_scalar() {
+        MapSlot::Primitive(scalar.processed_type().unwrap_or_default())
     } else if decl.is_enum_declaration() {
-        MapSlot::Enum(id)
+        MapSlot::Enum(EnumPlan::of(mm, id))
     } else if decl.is_class_declaration() {
         MapSlot::Class(id)
     } else {
         MapSlot::Skip
-    })
+    }
 }
 
-fn prepared<T>(r: crate::error::Result<T>) -> Prepared<T> {
-    r.map_or(Prepared::Unplanned, Prepared::Built)
+fn prepared<T>(r: Result<T>) -> Prepared<T> {
+    match r {
+        Ok(v) => Prepared::Built(v),
+        Err(err) => Prepared::Failed(err),
+    }
 }
 
 fn invalid_string_validator(e: serde_json::Error) -> Error {
@@ -452,14 +564,13 @@ fn prepare_validators(
     property: &Property,
     kind: &PlanKind,
 ) -> (Prepared<ValueValidator>, Prepared<CollectionSizeValidator>) {
-    let elem = FieldElement::new(mm, owner_fqn, property);
+    let elem = FieldElement::new(owner_fqn, property);
     let size = match property.size_validator() {
         Some(sv) => prepared(CollectionSizeValidator::new(&elem, sv, None)),
         None => Prepared::None,
     };
     let number = |lower, upper| {
-        let ast = super::validate::number_validator_ast(lower, upper);
-        prepared(NumberValidator::new(&elem, &ast).map(ValueValidator::Number))
+        prepared(NumberValidator::from_bounds(&elem, lower, upper).map(ValueValidator::Number))
     };
     let validator = match (property, kind) {
         (Property::String(sp), _) if sp.validator.is_some() || sp.length_validator.is_some() => {
@@ -471,17 +582,14 @@ fn prepare_validators(
         (Property::Integer(ip), _) => ip.validator.as_ref().map_or(Prepared::None, |v| number(v.lower, v.upper)),
         (Property::Long(lp), _) => lp.validator.as_ref().map_or(Prepared::None, |v| number(v.lower, v.upper)),
         (Property::Double(dp), _) => dp.validator.as_ref().map_or(Prepared::None, |v| number(v.lower, v.upper)),
-        (_, PlanKind::Scalar { decl, .. }) => {
-            let Some(Declaration::Scalar(s)) = mm.declaration(*decl) else {
-                return (Prepared::Unplanned, size);
-            };
-            match s.validator() {
+        (_, PlanKind::Scalar { decl, .. }) => match mm.declaration(*decl) {
+            Some(Declaration::Scalar(s)) => match s.validator() {
                 Some(ScalarValidator::Number(_)) => Prepared::Built(ValueValidator::ScalarNumber),
                 Some(ScalarValidator::String {
                     validator,
                     length_validator,
                 }) => {
-                    let build = || -> crate::error::Result<StringValidator> {
+                    let build = || -> Result<StringValidator> {
                         let validator = validator
                             .as_ref()
                             .map(|v| serde_json::from_value(v.clone()).map_err(invalid_string_validator))
@@ -495,22 +603,23 @@ fn prepare_validators(
                     prepared(build().map(ValueValidator::String))
                 }
                 None => Prepared::None,
-            }
-        }
+            },
+            _ => Prepared::None,
+        },
         _ => Prepared::None,
     };
     (validator, size)
 }
 
 /// `model::identifier_regex`, from the plan: the identifying property's
-/// regex validator.
+/// regex validator, or the error building it raises.
 fn identifier_regex(mm: &ModelManager, plan: &ClassPlan) -> Prepared<StringValidator> {
     let Some(id_field) = plan.identifier_field(mm) else {
         return Prepared::None;
     };
-    let Some(class_decl) = mm.declaration(plan.decl) else {
-        return Prepared::Unplanned;
-    };
+    let class_decl = mm
+        .declaration(plan.decl)
+        .expect("a plan's declaration handle is live");
     let type_ref = super::model::TypeRef {
         mm,
         id: plan.decl,
@@ -519,7 +628,7 @@ fn identifier_regex(mm: &ModelManager, plan: &ClassPlan) -> Prepared<StringValid
     match super::model::identifier_regex(&type_ref, id_field) {
         Ok(Some(v)) => Prepared::Built(v),
         Ok(None) => Prepared::None,
-        Err(_) => Prepared::Unplanned,
+        Err(err) => Prepared::Failed(err),
     }
 }
 
@@ -532,23 +641,24 @@ pub mod testing {
     use crate::model_manager::ModelManager;
 
     thread_local! {
-        static OFF: Cell<bool> = const { Cell::new(false) };
+        static UNCACHED: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub(super) fn plan_is_off() -> bool {
-        OFF.with(Cell::get)
+    pub(super) fn is_uncached() -> bool {
+        UNCACHED.with(Cell::get)
     }
 
-    /// Runs `f` with the validation plan turned off on this thread: every
-    /// instance call in it takes the unplanned path. For parity tests only.
-    pub fn without_plan<R>(f: impl FnOnce() -> R) -> R {
+    /// Runs `f` with every plan built afresh on this thread, never read from
+    /// (or written to) a manager's plan cache: a fresh plan, and a fresh
+    /// build error, for each instance call in it. For parity tests only.
+    pub fn uncached<R>(f: impl FnOnce() -> R) -> R {
         struct Restore(bool);
         impl Drop for Restore {
             fn drop(&mut self) {
-                OFF.with(|off| off.set(self.0));
+                UNCACHED.with(|off| off.set(self.0));
             }
         }
-        let _restore = Restore(OFF.with(|off| off.replace(true)));
+        let _restore = Restore(UNCACHED.with(|off| off.replace(true)));
         f()
     }
 
@@ -562,11 +672,13 @@ pub mod testing {
 mod tests {
     //! A stale plan is never used (P5-80 item 6). Each test builds plans by
     //! validating, changes the model, then validates an instance whose
-    //! answer depends on the change.
+    //! answer depends on the change. And a cached build error is the error a
+    //! fresh build raises (P5-99).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use serde_json::{Value, json};
 
+    use super::class_plan;
     use crate::error::ErrorKind;
     use crate::instance::validate::{ValidateOptions, validate_instance};
     use crate::introspect::model_file::ModelFile;
@@ -674,12 +786,10 @@ mod tests {
         assert_eq!(check(&mm, x()).unwrap_err().kind(), ErrorKind::Validation);
     }
 
-    #[test]
-    fn adding_a_model_in_place_drops_a_plan_that_could_not_resolve_a_type() {
-        // `concept A { o org.other@1.0.0.B b }`, loaded before `B`'s
-        // namespace: the plan records `b` as unresolved, and validating a
-        // `b` raises the unplanned path's type error.
-        let a = json!({
+    /// `concept A { o org.other@1.0.0.B b }`, importing `B` from a namespace
+    /// that may not be loaded.
+    fn a_model() -> Value {
+        json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": NS,
             "imports": [{
@@ -695,7 +805,13 @@ mod tests {
                     "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "B" }
                 }]
             }]
-        });
+        })
+    }
+
+    #[test]
+    fn adding_a_model_in_place_drops_a_plan_that_could_not_resolve_a_type() {
+        // `A` loaded before `B`'s namespace: the plan records `b` as
+        // unresolved, and validating a `b` raises the error resolving it.
         let b = json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.other@1.0.0",
@@ -712,11 +828,51 @@ mod tests {
             "$class": "org.acme@1.0.0.A",
             "b": { "$class": "org.other@1.0.0.B", "s": "x" }
         });
-        let mut mm = manager(&a);
+        let mut mm = manager(&a_model());
         assert!(check(&mm, instance.clone()).is_err());
         assert!(stats(&mm).0 > 0);
         mm.load_model(&b, None).unwrap();
         assert_eq!(stats(&mm), (0, 0));
         check(&mm, instance).unwrap();
+    }
+
+    /// A plan whose property type does not resolve raises, from the cache,
+    /// the very error a fresh build records; and a declaration whose chain
+    /// does not resolve caches that error in its plan.
+    #[test]
+    fn a_cached_build_error_is_the_fresh_build_s_error() {
+        let mm = manager(&a_model());
+        let instance = json!({
+            "$class": "org.acme@1.0.0.A",
+            "b": { "$class": "org.other@1.0.0.B", "s": "x" }
+        });
+        let fresh = check(&mm, instance.clone()).unwrap_err();
+        let cached = check(&mm, instance).unwrap_err();
+        assert_eq!(fresh, cached);
+        let a = mm.declaration_id("org.acme@1.0.0.A").unwrap();
+        let plan = class_plan(&mm, a).unwrap();
+        assert_eq!(plan.field(&mm, 0).unwrap_err(), fresh);
+
+        // `concept C extends Missing {}`: no plan, and the chain's own error.
+        let mut mm = ModelManager::new().unwrap();
+        mm.load_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": NS,
+                "declarations": [{
+                    "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+                    "name": "C", "isAbstract": false,
+                    "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" },
+                    "properties": []
+                }]
+            }),
+            None,
+        )
+        .ok();
+        if let Some(c) = mm.declaration_id("org.acme@1.0.0.C") {
+            let expected = mm.properties("org.acme@1.0.0.C").unwrap_err();
+            assert_eq!(class_plan(&mm, c).unwrap_err(), expected);
+            assert_eq!(class_plan(&mm, c).unwrap_err(), expected);
+        }
     }
 }

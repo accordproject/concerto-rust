@@ -175,14 +175,14 @@ fn replays_the_oracle_corpus() {
 
 /// P5-88 (accordproject/concerto-rust#434): the validation plan's parity
 /// property (`plan_parity.rs`): every instance fixture of the corpus gives
-/// the same outcome with the plan on and off. Located, and skipped, like
-/// [`replays_the_oracle_corpus`].
+/// the same outcome with cached plans as with fresh ones (P5-99). Located,
+/// and skipped, like [`replays_the_oracle_corpus`].
 #[test]
 #[cfg_attr(
     concerto_oracle_skip,
     ignore = "CONCERTO_ORACLE_SKIP=1: the oracle corpus was not replayed"
 )]
-fn the_validation_plan_matches_the_unplanned_path_on_the_corpus() {
+fn cached_validation_plans_match_fresh_ones_on_the_corpus() {
     let (fixtures_dir, source) = match find_fixtures_dir() {
         Ok(found) => found,
         Err(tried) => panic!(
@@ -209,7 +209,7 @@ fn the_validation_plan_matches_the_unplanned_path_on_the_corpus() {
     );
     assert!(
         differences.is_empty(),
-        "plan parity: {} of {compared} instance fixtures differ with the plan on and off:\n{}",
+        "plan parity: {} of {compared} instance fixtures differ with cached and fresh plans:\n{}",
         differences.len(),
         differences.join("\n")
     );

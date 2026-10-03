@@ -455,18 +455,6 @@ impl crate::model_manager::ValidatedElement for BoundElement<'_> {
     }
 }
 
-/// Converts a generated numeric domain validator struct (`IntegerDomainValidator`,
-/// `LongDomainValidator` or `DoubleDomainValidator` — all three share the same
-/// `{$class, lower, upper}` shape) to the raw JSON [`validators::NumberValidator::new`]
-/// reads, the same shape [`ScalarDeclaration::process`](super::scalar::ScalarDeclaration::process)
-/// and [`field::process`](super::field::process) read straight from the AST.
-fn domain_validator_json<T: serde::Serialize>(validator: &T) -> Value {
-    // Infallible: every field of these generated structs serializes (no
-    // floating `NaN`/`Infinity`, which `serde_json` alone cannot represent —
-    // OD-3's widened numeric AST fields never hold one).
-    serde_json::to_value(validator).unwrap_or(Value::Null)
-}
-
 impl Property {
     /// Checks a collection size validator's own bounds, as TS's
     /// `CollectionSizeValidator` constructor does while the property is
@@ -549,6 +537,17 @@ impl Property {
                 name: &name,
                 default_value,
             };
+            // A-9 (P5-99): the typed bounds, as the strict read gave them.
+            let number = |bounds: Option<(Option<f64>, Option<f64>)>, default_value: Option<f64>| {
+                if let Some((lower, upper)) = bounds {
+                    validators::NumberValidator::from_bounds(
+                        &element(default_value.map(Value::from)),
+                        lower,
+                        upper,
+                    )?;
+                }
+                Ok(())
+            };
             match self {
                 Self::String(p) if p.validator.is_some() || p.length_validator.is_some() => {
                     let default_value = p.default_value.clone().map(Value::String);
@@ -560,24 +559,9 @@ impl Property {
                     )?;
                     Ok(())
                 }
-                Self::Integer(p) if p.validator.is_some() => {
-                    let ast = domain_validator_json(p.validator.as_ref().unwrap());
-                    let default_value = p.default_value.map(Value::from);
-                    validators::NumberValidator::new(&element(default_value), &ast)?;
-                    Ok(())
-                }
-                Self::Long(p) if p.validator.is_some() => {
-                    let ast = domain_validator_json(p.validator.as_ref().unwrap());
-                    let default_value = p.default_value.map(Value::from);
-                    validators::NumberValidator::new(&element(default_value), &ast)?;
-                    Ok(())
-                }
-                Self::Double(p) if p.validator.is_some() => {
-                    let ast = domain_validator_json(p.validator.as_ref().unwrap());
-                    let default_value = p.default_value.map(Value::from);
-                    validators::NumberValidator::new(&element(default_value), &ast)?;
-                    Ok(())
-                }
+                Self::Integer(p) => number(p.validator.as_ref().map(|v| (v.lower, v.upper)), p.default_value),
+                Self::Long(p) => number(p.validator.as_ref().map(|v| (v.lower, v.upper)), p.default_value),
+                Self::Double(p) => number(p.validator.as_ref().map(|v| (v.lower, v.upper)), p.default_value),
                 _ => Ok(()),
             }
         }
