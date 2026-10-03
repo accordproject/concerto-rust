@@ -3792,7 +3792,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let generation = manager.generation();
+        let state_version = manager.state_version();
         let importing = |declarations: serde_json::Value| {
             ModelFile::from_json(
                 &serde_json::json!({
@@ -3833,7 +3833,7 @@ mod tests {
             "org.b@1.0.0.Person",
         );
         assert!(manager.model_file("org.b@1.0.0").is_none());
-        assert_eq!(manager.generation(), generation);
+        assert_eq!(manager.state_version(), state_version);
     }
 
     /// TS `Property.validate`'s size-validator check for a primitive field
