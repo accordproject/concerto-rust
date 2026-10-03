@@ -8,6 +8,7 @@
 //! produce).
 
 use std::cmp::Ordering;
+use std::sync::LazyLock;
 
 use serde_json::Value;
 
@@ -224,10 +225,13 @@ pub(crate) fn parse_int(s: &str) -> f64 {
 /// prefix that is a `StrDecimalLiteral` (`Infinity`, digits with an optional
 /// fraction and exponent); `NaN` when there is none.
 pub(crate) fn parse_float(s: &str) -> f64 {
+    // F-11 (accordproject/concerto-rust#458): compiled once, not per call.
+    static STR_DECIMAL_LITERAL: LazyLock<regress::Regex> = LazyLock::new(|| {
+        regress::Regex::new(r"^[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
+            .expect("static pattern")
+    });
     let s = s.trim_start_matches(is_js_whitespace);
-    let re = regress::Regex::new(r"^[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
-        .expect("static pattern");
-    match re.find(s) {
+    match STR_DECIMAL_LITERAL.find(s) {
         Some(m) => string_to_number(&s[m.range]),
         None => f64::NAN,
     }

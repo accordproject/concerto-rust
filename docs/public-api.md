@@ -96,6 +96,20 @@ is done. Items outside the stable surface carry none of them.
    while the crate is `0.x`, and a major bump after `1.0`. P6-03 enforces this
    with `cargo public-api` and `cargo semver-checks`, run on
    `accordproject-concerto-core` alone with default features.
+
+   **Waiver until the first release (maintainer decision 2026-10-03, #458).**
+   Nothing from the Rust crates has been merged to `main` or released yet, so
+   the Rust crates may take breaking changes until their first release, with
+   no version bump. A `cargo semver-checks` failure on a PR into the
+   integration branch `claude/tender-pascal-ocwf9q` is waived until then, and
+   a Rust-only API break needs no maintainer decision. The PR body lists each
+   break. The waiver does not cover the TS `@accordproject/concerto-core`
+   public API, which the v5 types check (P5-84) still guards. P5-104 phase A
+   was the first PR under this waiver; its breaks are
+   `ScalarValidator::String` becoming a tuple variant that holds the built
+   `StringValidator`, and `Decorator::from_ast` becoming generic over the
+   sealed `introspect::decorator::AstNode` trait. The waiver ends with the
+   first release, after which item 1 applies as written.
 2. **Same verdict as the TS reference.** Loading, semantic validation and
    instance validation accept and reject what `@accordproject/concerto-core@5.0.0`
    accepts and rejects (D10), and each rejection has the `ErrorKind` of the TS
@@ -187,8 +201,9 @@ Each item falls into one of five groups:
 | `validation`: `validate_detached_*`, `validate_map_key`, `validate_map_value` | 6 | Seam | For views over a file or declaration not yet in the arena. PORTING.md section 4 calls `validation.rs` "crate-private", but it is `pub`. |
 | `introspect::{Declaration, ClassDeclaration, ClassKind, EnumDeclaration, MapDeclaration, ScalarDeclaration, Property, Import, ModelFile, Decorator, DecoratorArgument, TypeReferenceArgument}` and their read-only methods | about 110 | Stable | The introspection surface. |
 | `introspect` traits: `Named`, `FullyQualified`, `Typed`, `Decorated`, `DeclarationKind` | 5 | Stable | Kept for generic code, but the methods are inherent again (5.8). `FullyQualified`'s associated `Error` exists only because the JS context can fail. |
+| `introspect::decorator::AstNode` | 1 | Stable, sealed | Added by P5-104 (A-10), when `Decorator::from_ast` became generic: `from_ast<N: AstNode>(&N)` is the one decoder for a decorator node, whether it is a `serde_json::Value` or the node as the crate's typed read keeps it (`Kept`, crate-private). Callers pass a `&Value` as before. The trait is sealed (its supertrait sits in a private module), so only the crate implements it, for those two node types, and methods can be added without a semver break. It appears in the `cargo public-api` snapshot together with its `Value` impl. |
 | `introspect` traits: `HasValidators`, `Validate` | 2 | Internal | Load-time check plumbing. |
-| `introspect`: `ProcessedField`, `ProcessedProperty`, `ProcessedScalar`, `ProcessDecision`, `field::process`, `property::process`, `ScalarDeclaration::process`/`validate_new`/`build_standalone`, `field::scalar_to_field_ast`, `ClassDeclaration::process_decision`/`kinds_compatible`/`identifier_redeclare_conflict`/`is_kind`/`to_string`, `EnumDeclaration::to_string`, `ModelFile::check_constructor_arguments`, `Property::check_bound_validators`, `Decorator::validate`, `Decorator::js_name` (a TS `undefined` name) | about 20 | Seam | The constructor and `process()` ports of PORTING.md 1.2. They read `serde_json::Value` ASTs without `$class` that only the TS views produce. |
+| `introspect`: `ProcessedField`, `FieldValidator`, `ProcessedProperty`, `ProcessedScalar`, `ProcessDecision`, `field::process`, `property::process`, `ScalarDeclaration::process`/`validate_new`/`build_standalone`, `field::scalar_to_field_ast`, `ClassDeclaration::process_decision`/`kinds_compatible`/`identifier_redeclare_conflict`/`is_kind`/`to_string`, `EnumDeclaration::to_string`, `ModelFile::check_constructor_arguments`, `Property::check_bound_validators`, `Decorator::validate`, `Decorator::js_name` (a TS `undefined` name) | about 20 | Seam | The constructor and `process()` ports of PORTING.md 1.2. They read `serde_json::Value` ASTs without `$class` that only the TS views produce. |
 | `introspect::validators::{Validator, NumberValidator, StringValidator, CollectionSizeValidator}` | 4 | Stable type, Seam constructors | Reading bounds and the regex is introspection. `new(&dyn ValidatedElement, …)` and `validate(…)` are view plumbing. |
 | `introspect::DecoratorValidationOptions` | 1 | Stable | The `decoratorValidation` option. |
 | `ModelFile::from_json`, `ModelFile::from_json_text` | 2 | Stable | `from_json_text` is the P5-06d typed fast path (#239), 1.5 to 2.7 times faster than parsing a `Value` first. |

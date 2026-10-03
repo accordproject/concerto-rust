@@ -5,16 +5,15 @@
 //! into `this.defaultValue`. The selection is identical in shape to
 //! `ScalarDeclaration.process`'s own (`introspect::scalar`): a `NumberValidator`
 //! for Integer/Long/Double when `ast.validator` is set, a `StringValidator`
-//! for String when either `ast.validator` or `ast.lengthValidator` is set —
-//! so this reuses the same [`ScalarValidator`] result shape rather than
-//! duplicating it under a new name.
+//! for String when either `ast.validator` or `ast.lengthValidator` is set.
+//! Unlike the scalar's, the field's `StringValidator` is not built here: the
+//! view builds it ([`FieldValidator::String`]).
 
 use serde_json::Value;
 
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind};
 use crate::introspect::FullyQualified;
-use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::NumberValidator;
 use crate::model_manager::ValidatedElement;
 
@@ -23,11 +22,31 @@ use crate::model_manager::ValidatedElement;
 const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
 js_compat_pub! {
+    /// The validator `Field.process` attaches.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum FieldValidator {
+        /// `new NumberValidator(this, this.ast.validator)`, for Integer, Long
+        /// and Double fields.
+        Number(NumberValidator),
+        /// `new StringValidator(this, this.ast.validator,
+        /// this.ast.lengthValidator)`, for String fields: the arguments TS
+        /// passes (`None` is `undefined`), from which the view builds the
+        /// TS-facing `StringValidator`.
+        String {
+            /// `this.ast.validator`.
+            validator: Option<Value>,
+            /// `this.ast.lengthValidator`.
+            length_validator: Option<Value>,
+        },
+    }
+}
+
+js_compat_pub! {
     /// What `Field.process` computes, after `Property.process` has set `type`.
     #[derive(Debug, Clone, PartialEq)]
     pub struct ProcessedField {
         /// `this.validator`, or `None` (JS `null`).
-        pub validator: Option<ScalarValidator>,
+        pub validator: Option<FieldValidator>,
         /// `this.defaultValue`, or `None` (JS `null`) when the AST has none or a
         /// nullish one.
         pub default_value: Option<Value>,
@@ -89,13 +108,13 @@ js_compat_pub! {
                     fully_qualified_name,
                 };
                 let validator_ast = ast.get("validator").unwrap_or(&Value::Null);
-                Some(ScalarValidator::Number(NumberValidator::new(
+                Some(FieldValidator::Number(NumberValidator::new(
                     &element,
                     validator_ast,
                 )?))
             }
             Some("String") if truthy("validator") || truthy("lengthValidator") => {
-                Some(ScalarValidator::String {
+                Some(FieldValidator::String {
                     validator: ast.get("validator").cloned(),
                     length_validator: ast.get("lengthValidator").cloned(),
                 })
@@ -132,27 +151,6 @@ js_compat_pub! {
         format!(
             "Field {{name={name}, type={fully_qualified_type_name}, array={array}, optional={optional}}}"
         )
-    }
-}
-
-#[cfg(test)]
-mod to_string_tests {
-    use super::*;
-
-    #[test]
-    fn matches_ts_format() {
-        assert_eq!(
-            to_string("name", "String", false, false),
-            "Field {name=name, type=String, array=false, optional=false}"
-        );
-        assert_eq!(
-            to_string("tags", "String", true, true),
-            "Field {name=tags, type=String, array=true, optional=true}"
-        );
-        assert_eq!(
-            to_string("code", "supp.core@1.0.0.Code", false, true),
-            "Field {name=code, type=supp.core@1.0.0.Code, array=false, optional=true}"
-        );
     }
 }
 
@@ -216,48 +214,4 @@ js_compat_pub! {
 }
 
 #[cfg(test)]
-mod scalar_to_field_ast_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[derive(Debug)]
-    struct TestError(ContractError);
-
-    impl From<ContractError> for TestError {
-        fn from(err: ContractError) -> Self {
-            Self(err)
-        }
-    }
-
-    #[test]
-    fn maps_every_scalar_class_to_its_property_class() {
-        let cases = [
-            ("StringScalar", "StringProperty"),
-            ("BooleanScalar", "BooleanProperty"),
-            ("DateTimeScalar", "DateTimeProperty"),
-            ("DoubleScalar", "DoubleProperty"),
-            ("IntegerScalar", "IntegerProperty"),
-            ("LongScalar", "LongProperty"),
-        ];
-        for (scalar_class, property_class) in cases {
-            let scalar_ast = json!({
-                "$class": format!("{METAMODEL_NAMESPACE}.{scalar_class}"),
-                "name": "S",
-            });
-            let field_ast: Value =
-                scalar_to_field_ast::<TestError>(&scalar_ast, json!("myField")).unwrap();
-            assert_eq!(
-                field_ast["$class"],
-                json!(format!("{METAMODEL_NAMESPACE}.{property_class}"))
-            );
-            assert_eq!(field_ast["name"], json!("myField"));
-        }
-    }
-
-    #[test]
-    fn errors_on_an_unrecognized_scalar_class() {
-        let scalar_ast = json!({ "$class": format!("{METAMODEL_NAMESPACE}.MapScalar") });
-        let err = scalar_to_field_ast::<TestError>(&scalar_ast, json!("myField")).unwrap_err();
-        assert_eq!(err.0.code, "field-getscalarfield-unrecognizedtype");
-    }
-}
+mod tests;

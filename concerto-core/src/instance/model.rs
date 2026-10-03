@@ -489,26 +489,13 @@ pub fn identifier_regex(
             },
             _,
         ) => {
-            let ScalarValidator::String {
-                validator: Some(regex),
-                length_validator,
-            } = scalar_validator
-            else {
+            let ScalarValidator::String(built) = scalar_validator else {
                 return Ok(None);
             };
-            let bad = |e: serde_json::Error| {
-                Error::from(ContractError::pre_port(
-                    ErrorKind::InvalidArgument,
-                    format!("invalid string validator: {e}"),
-                    None,
-                ))
-            };
-            let regex = serde_json::from_value(regex.clone()).map_err(bad)?;
-            let length = length_validator
-                .as_ref()
-                .map(|v| serde_json::from_value(v.clone()).map_err(bad))
-                .transpose()?;
-            StringValidator::new(&element, Some(&regex), length.as_ref(), None)?
+            if built.regex().is_none() {
+                return Ok(None);
+            }
+            built.for_field(&element)?
         }
         _ => return Ok(None),
     };

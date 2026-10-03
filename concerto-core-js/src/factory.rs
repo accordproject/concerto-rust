@@ -629,8 +629,8 @@ mod tests {
     #[test]
     fn new_resource_checks_in_ts_order() {
         let mm = model();
-        let message = |r: Result<Instance>| match r.map_err(Error::into_ported) {
-            Err(Some(e)) => e.message(),
+        let message = |r: Result<Instance>| match r.map_err(Error::into_contract) {
+            Err(e) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         };
         assert_eq!(
@@ -711,9 +711,9 @@ mod tests {
             false,
             &mut Env,
         )
-        .map_err(Error::into_ported)
+        .map_err(Error::into_contract)
         {
-            Err(Some(e)) => e.message(),
+            Err(e) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         };
         assert_eq!(message, "ns not specified");

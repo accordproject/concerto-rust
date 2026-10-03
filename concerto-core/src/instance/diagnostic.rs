@@ -396,11 +396,8 @@ fn named_type_diagnostic(err: &Error, message: &Error) -> Diagnostic {
 /// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
 /// diagnostic is always produced rather than silently dropped.
 fn classify_error(err: &Error) -> DiagnosticCode {
-    if err.unported_type_not_found().is_some() {
+    if err.is_pre_port_type_not_found() {
         return DiagnosticCode::TypeNotFound;
-    }
-    if err.unported_illegal_model().is_some() {
-        return DiagnosticCode::TypeViolation;
     }
     let ce = err.contract();
     if ce.validator.is_some() {

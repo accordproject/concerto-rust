@@ -622,25 +622,30 @@ impl ValidatorInput for JsValue {
         }
     }
 
-    fn map_entries(&self) -> Option<Vec<(&JsValue, &JsValue)>> {
-        match self {
-            Self::Map(entries) => Some(entries.iter().map(|(k, v)| (k, v)).collect()),
+    fn map_entries(&self) -> Option<impl Iterator<Item = (&JsValue, &JsValue)>> {
+        // A JS `Map`'s own entries, or a `MAP_TAG` object's pairs: one
+        // iterator over whichever the value is (B-15: no `Vec` per map).
+        let (own, tagged) = match self {
+            Self::Map(entries) => (Some(entries.iter().map(|(k, v)| (k, v))), None),
             Self::Object(map) => {
                 let JsValue::Array(entries) = sole_tag(map, MAP_TAG)? else {
                     return None;
                 };
-                Some(
-                    entries
-                        .iter()
-                        .filter_map(|entry| match entry {
-                            JsValue::Array(pair) => Some((pair.first()?, pair.get(1)?)),
-                            _ => None,
-                        })
-                        .collect(),
+                (
+                    None,
+                    Some(entries.iter().filter_map(|entry| match entry {
+                        JsValue::Array(pair) => Some((pair.first()?, pair.get(1)?)),
+                        _ => None,
+                    })),
                 )
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        Some(
+            own.into_iter()
+                .flatten()
+                .chain(tagged.into_iter().flatten()),
+        )
     }
 
     fn to_value(&self) -> std::borrow::Cow<'_, Value> {
@@ -674,7 +679,6 @@ mod validator_input_tests {
         });
         let entries = value.map_entries().map(|entries| {
             entries
-                .iter()
                 .map(|(k, v)| json!([k.to_value(), v.to_value()]))
                 .collect::<Vec<_>>()
         });

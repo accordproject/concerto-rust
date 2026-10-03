@@ -77,7 +77,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::error::{ContractError, Error, ErrorKind, Result};
+use crate::error::{Error, Result};
 use crate::introspect::scalar::ScalarValidator;
 use crate::introspect::validators::{CollectionSizeValidator, NumberValidator, StringValidator};
 use crate::introspect::{Declaration, Property};
@@ -548,14 +548,6 @@ fn prepared<T>(r: Result<T>) -> Prepared<T> {
     }
 }
 
-fn invalid_string_validator(e: serde_json::Error) -> Error {
-    Error::from(ContractError::pre_port(
-        ErrorKind::InvalidArgument,
-        format!("invalid string validator: {e}"),
-        None,
-    ))
-}
-
 /// The validators `ResourceValidator` builds for each value of the
 /// property, built once, with the same element.
 fn prepare_validators(
@@ -585,22 +577,8 @@ fn prepare_validators(
         (_, PlanKind::Scalar { decl, .. }) => match mm.declaration(*decl) {
             Some(Declaration::Scalar(s)) => match s.validator() {
                 Some(ScalarValidator::Number(_)) => Prepared::Built(ValueValidator::ScalarNumber),
-                Some(ScalarValidator::String {
-                    validator,
-                    length_validator,
-                }) => {
-                    let build = || -> Result<StringValidator> {
-                        let validator = validator
-                            .as_ref()
-                            .map(|v| serde_json::from_value(v.clone()).map_err(invalid_string_validator))
-                            .transpose()?;
-                        let length_validator = length_validator
-                            .as_ref()
-                            .map(|v| serde_json::from_value(v.clone()).map_err(invalid_string_validator))
-                            .transpose()?;
-                        StringValidator::new(&elem, validator.as_ref(), length_validator.as_ref(), None)
-                    };
-                    prepared(build().map(ValueValidator::String))
+                Some(ScalarValidator::String(built)) => {
+                    prepared(built.for_field(&elem).map(ValueValidator::String))
                 }
                 None => Prepared::None,
             },

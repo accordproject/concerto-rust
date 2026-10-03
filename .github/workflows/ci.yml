@@ -35,6 +35,10 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo clippy --manifest-path concerto-wasm/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+      # P5-104 (accordproject/concerto-rust#458): the host-side tests too,
+      # which the wasm32 lib-only run above never lints.
+      - name: Clippy (concerto-wasm, all targets)
+        run: cargo clippy --manifest-path concerto-wasm/Cargo.toml --all-targets -- -D warnings
       # concerto-metamodel's committed src/generated/ must be exactly what
       # codegen/generate.js produces from the pinned concerto-codegen
       # (accordproject/concerto-rust#461); tests/drift.rs checks the

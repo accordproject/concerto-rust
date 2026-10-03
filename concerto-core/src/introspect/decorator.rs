@@ -93,7 +93,9 @@ pub struct Decorator {
 }
 
 impl Decorator {
-    /// Builds a decorator from its raw `Decorator` AST node.
+    /// Builds a decorator from its raw `Decorator` AST node: a
+    /// [`serde_json::Value`], or the node as the typed read keeps it
+    /// ([`AstNode`]). One decoder for both (A-10).
     ///
     /// TS: `Decorator.process` (`this.name = ast.name`, then one argument at
     /// a time). A `DecoratorTypeReference` argument becomes
@@ -101,49 +103,26 @@ impl Decorator {
     /// `value` as the literal it already is (`DecoratorString`,
     /// `DecoratorNumber` or `DecoratorBoolean`, by construction of the CTO
     /// grammar and the AST codec).
-    pub fn from_ast(ast: &Value) -> Self {
-        let name_present = ast.get("name").is_some();
-        let name = ast
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into();
+    pub fn from_ast<N: AstNode>(ast: &N) -> Self {
+        let name = ast.field("name");
         let arguments = ast
-            .get("arguments")
-            .and_then(Value::as_array)
+            .field("arguments")
+            .and_then(N::items)
             .map(|items| items.iter().filter_map(decode_argument).collect())
             .unwrap_or_default();
         Decorator {
-            name,
-            name_present,
-            arguments,
-            location: ast.get("location").cloned(),
-        }
-    }
-
-    /// [`Decorator::from_ast`], for a node the typed read kept as a
-    /// [`Kept`] (P5-76): the same decorator as from its `Value`.
-    pub(crate) fn from_kept(ast: &Kept) -> Self {
-        let name = ast.get("name");
-        let arguments = match ast.get("arguments") {
-            Some(Kept::Array(items)) => items.iter().filter_map(decode_kept_argument).collect(),
-            _ => Vec::new(),
-        };
-        Decorator {
-            name: match name {
-                Some(Kept::Other(Value::String(name))) => Name::from(name),
-                _ => Name::default(),
-            },
+            name: name.and_then(N::text).map(Name::from).unwrap_or_default(),
             name_present: name.is_some(),
             arguments,
-            location: ast.get("location").map(Kept::to_value),
+            location: ast.field("location").map(N::to_json),
         }
     }
 
     /// A decorator node of a string `name` and the given arguments, with
-    /// no `location`, as [`Decorator::from_kept`] builds it from such a
-    /// node (P5-93: for a decorator the typed read reads field by field,
-    /// `kept::DecoratorsSeed`).
+    /// no `location`, as [`Decorator::from_ast`] builds it from such a
+    /// node. For a decorator the typed read has already read field by
+    /// field (P5-93, `kept::DecoratorsSeed`): there is no node left to
+    /// decode, only its name and decoded arguments.
     pub(crate) fn from_read(name: Name, arguments: Vec<DecoratorArgument>) -> Self {
         Decorator {
             name,
@@ -558,12 +537,6 @@ fn illegal_model(message: String, location: Option<Value>) -> Error {
 /// oracle harness reads off a [`Error`], `to_oracle_error`), for
 /// [`Decorator::rethrow`] to carry into its `IllegalModelException`.
 fn js_message(err: &Error) -> String {
-    if let Some(type_name) = err.unported_type_not_found() {
-        return format!("Type \"{type_name}\" not found.");
-    }
-    if let Some(message) = err.unported_illegal_model() {
-        return message.to_string();
-    }
     err.contract().final_message()
 }
 
@@ -599,62 +572,126 @@ fn json_stringify(arg: &DecoratorArgument) -> String {
 /// produced by a well-formed AST; skipped rather than failing the whole
 /// decorator, since TS's `if (thing)` guard already tolerates a hole in a
 /// sparse `arguments` array the same way).
-fn decode_argument(node: &Value) -> Option<DecoratorArgument> {
-    if node.is_null() {
+fn decode_argument<N: AstNode>(node: &N) -> Option<DecoratorArgument> {
+    if node.is_null_node() {
         return None;
     }
-    let class = node.get("$class").and_then(Value::as_str).unwrap_or("");
+    let class = node.field("$class").and_then(N::text).unwrap_or("");
     if class == qualified_class("DecoratorTypeReference") || class == "DecoratorTypeReference" {
-        let type_name = node.get("type")?.get("name")?.as_str()?.to_string();
-        let array = node.get("isArray").and_then(Value::as_bool);
+        let type_name = node.field("type")?.field("name")?.text()?.to_string();
+        let array = node.field("isArray").and_then(N::boolean);
         return Some(DecoratorArgument::TypeReference(TypeReferenceArgument {
             name: type_name,
             array,
         }));
     }
-    match node.get("value")? {
-        Value::String(s) => Some(DecoratorArgument::String(s.clone())),
-        Value::Number(n) => Some(DecoratorArgument::Number(n.as_f64()?)),
-        Value::Bool(b) => Some(DecoratorArgument::Boolean(*b)),
-        _ => None,
+    let value = node.field("value")?;
+    if let Some(text) = value.text() {
+        return Some(DecoratorArgument::String(text.to_string()));
+    }
+    if value.is_number() {
+        return value.number().map(DecoratorArgument::Number);
+    }
+    value.boolean().map(DecoratorArgument::Boolean)
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for serde_json::Value {}
+    impl Sealed for crate::introspect::kept::Kept {}
+}
+
+/// A metamodel AST node [`Decorator::from_ast`] can read: a
+/// [`serde_json::Value`], or (inside the crate) the node as the typed read
+/// keeps it. Sealed: the crate implements it for those two only.
+pub trait AstNode: sealed::Sealed + Sized {
+    /// The value at `key`, for an object; `None` for anything else.
+    fn field(&self, key: &str) -> Option<&Self>;
+    /// The text of a JSON string.
+    fn text(&self) -> Option<&str>;
+    /// The value of a JSON boolean.
+    fn boolean(&self) -> Option<bool>;
+    /// Whether this is a JSON number.
+    fn is_number(&self) -> bool;
+    /// The value of a JSON number, as an `f64`.
+    fn number(&self) -> Option<f64>;
+    /// The items of a JSON array.
+    fn items(&self) -> Option<&[Self]>;
+    /// Whether this is JSON `null`.
+    fn is_null_node(&self) -> bool;
+    /// The node as a `Value`.
+    fn to_json(&self) -> Value;
+}
+
+impl AstNode for Value {
+    fn field(&self, key: &str) -> Option<&Self> {
+        self.get(key)
+    }
+    fn text(&self) -> Option<&str> {
+        self.as_str()
+    }
+    fn boolean(&self) -> Option<bool> {
+        self.as_bool()
+    }
+    fn is_number(&self) -> bool {
+        Value::is_number(self)
+    }
+    fn number(&self) -> Option<f64> {
+        self.as_f64()
+    }
+    fn items(&self) -> Option<&[Self]> {
+        self.as_array().map(Vec::as_slice)
+    }
+    fn is_null_node(&self) -> bool {
+        self.is_null()
+    }
+    fn to_json(&self) -> Value {
+        self.clone()
     }
 }
 
-/// [`decode_argument`], for a node the typed read kept as a [`Kept`]
-/// (P5-76): the same argument as from its `Value`.
-fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
-    fn string(value: Option<&Kept>) -> Option<&str> {
-        match value {
-            Some(Kept::Other(Value::String(s))) => Some(s.as_str()),
+impl AstNode for Kept {
+    fn field(&self, key: &str) -> Option<&Self> {
+        self.get(key)
+    }
+    fn text(&self) -> Option<&str> {
+        match self {
+            Kept::Other(Value::String(text)) => Some(text),
             _ => None,
         }
     }
-
-    if matches!(node, Kept::Other(Value::Null)) {
-        return None;
-    }
-    let class = string(node.get("$class")).unwrap_or("");
-    if class == qualified_class("DecoratorTypeReference") || class == "DecoratorTypeReference" {
-        let type_name = string(node.get("type")?.get("name"))?.to_string();
-        let array = match node.get("isArray") {
-            Some(Kept::Other(Value::Bool(b))) => Some(*b),
+    fn boolean(&self) -> Option<bool> {
+        match self {
+            Kept::Other(Value::Bool(b)) => Some(*b),
             _ => None,
-        };
-        return Some(DecoratorArgument::TypeReference(TypeReferenceArgument {
-            name: type_name,
-            array,
-        }));
+        }
     }
-    match node.get("value")? {
-        Kept::Other(Value::String(s)) => Some(DecoratorArgument::String(s.clone())),
-        Kept::Other(Value::Number(n)) => Some(DecoratorArgument::Number(n.as_f64()?)),
-        Kept::Other(Value::Bool(b)) => Some(DecoratorArgument::Boolean(*b)),
-        _ => None,
+    fn is_number(&self) -> bool {
+        matches!(self, Kept::Other(Value::Number(_)))
+    }
+    fn number(&self) -> Option<f64> {
+        match self {
+            Kept::Other(Value::Number(n)) => n.as_f64(),
+            _ => None,
+        }
+    }
+    fn items(&self) -> Option<&[Self]> {
+        match self {
+            Kept::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+    fn is_null_node(&self) -> bool {
+        self.is_null()
+    }
+    fn to_json(&self) -> Value {
+        self.to_value()
     }
 }
 
 /// The decorators found on an AST node's `decorators` value, or empty if it
-/// has none.
+/// has none: a test helper, since every loader reads the node's
+/// `decorators` value on its own ([`parse_decorator_list`]).
 ///
 /// TS: `Decorated.process` (src/introspect/decorated.ts), the part that is
 /// not about picking a `DecoratorFactory`'s decorator over the default (that
@@ -662,28 +699,19 @@ fn decode_kept_argument(node: &Kept) -> Option<DecoratorArgument> {
 /// first (the generated structs' `Option<Vec<Decorator>>`), so this only
 /// ever sees an array of decorator nodes, or `null` (P5-61: before BC-19 it
 /// also reproduced TS's iteration of a string by UTF-16 code unit, #218).
+#[cfg(test)]
 pub(crate) fn parse_decorators(ast: &Value) -> Vec<Decorator> {
-    decorators_of(ast.get("decorators"))
-}
-
-/// [`parse_decorators`] given the node's `decorators` value itself (`None`
-/// when the node has no such key).
-pub(crate) fn decorators_of(decorators: Option<&Value>) -> Vec<Decorator> {
-    match decorators {
-        Some(Value::Array(items)) => items.iter().map(Decorator::from_ast).collect(),
-        _ => Vec::new(),
-    }
+    parse_decorator_list(ast.get("decorators"))
 }
 
 /// [`parse_decorators`] given the node's `decorators` value itself (`None`
 /// when the node has no such key), for a loader that has read that value
-/// on its own (the typed AST path, P5-06c), as a [`Kept`] (P5-76): the same
-/// decorators as from its `Value`.
-pub(crate) fn parse_decorator_list(decorators: Option<&Kept>) -> Vec<Decorator> {
-    match decorators {
-        Some(Kept::Array(items)) => items.iter().map(Decorator::from_kept).collect(),
-        _ => Vec::new(),
-    }
+/// on its own (the typed AST path, P5-06c; as a [`Kept`], P5-76).
+pub(crate) fn parse_decorator_list<N: AstNode>(decorators: Option<&N>) -> Vec<Decorator> {
+    decorators
+        .and_then(N::items)
+        .map(|items| items.iter().map(Decorator::from_ast).collect())
+        .unwrap_or_default()
 }
 
 js_compat_pub! {
@@ -811,282 +839,4 @@ impl Decorated for crate::introspect::declaration::Declaration {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn decorator(json: Value) -> Decorator {
-        Decorator::from_ast(&json)
-    }
-
-    fn ast(name: &str, arguments: Value) -> Value {
-        serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.Decorator",
-            "name": name,
-            "arguments": arguments
-        })
-    }
-
-    fn string_arg(value: &str) -> Value {
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": value })
-    }
-
-    fn number_arg(value: f64) -> Value {
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": value })
-    }
-
-    fn boolean_arg(value: bool) -> Value {
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorBoolean", "value": value })
-    }
-
-    fn type_ref_arg(name: &str, array: bool) -> Value {
-        serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
-            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name },
-            "isArray": array
-        })
-    }
-
-    // TS: Decorator #constructor "should store values".
-    #[test]
-    fn stores_name_and_string_arguments() {
-        let d = decorator(ast(
-            "Test",
-            serde_json::json!([string_arg("one"), string_arg("two"), string_arg("three")]),
-        ));
-        assert_eq!(d.name(), "Test");
-        assert_eq!(
-            d.arguments(),
-            &[
-                DecoratorArgument::String("one".into()),
-                DecoratorArgument::String("two".into()),
-                DecoratorArgument::String("three".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn no_arguments_field_gives_an_empty_list() {
-        let d = Decorator::from_ast(&serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.Decorator",
-            "name": "noargs"
-        }));
-        assert!(d.arguments().is_empty());
-    }
-
-    // TS: Decorators #grammar covers every literal kind and a type reference,
-    // array and non-array, plus a boolean literal where a type reference is
-    // written in the CTO source (`@returns(true)`).
-    #[test]
-    fn reads_every_argument_kind() {
-        let d = decorator(ast(
-            "all",
-            serde_json::json!([
-                string_arg("foo"),
-                number_arg(1.0),
-                number_arg(-1.0),
-                number_arg(10.2),
-                number_arg(-10.2),
-                boolean_arg(false),
-                boolean_arg(true),
-            ]),
-        ));
-        assert_eq!(
-            d.arguments(),
-            &[
-                DecoratorArgument::String("foo".into()),
-                DecoratorArgument::Number(1.0),
-                DecoratorArgument::Number(-1.0),
-                DecoratorArgument::Number(10.2),
-                DecoratorArgument::Number(-10.2),
-                DecoratorArgument::Boolean(false),
-                DecoratorArgument::Boolean(true),
-            ]
-        );
-
-        let non_array = decorator(ast(
-            "returns",
-            serde_json::json!([type_ref_arg("MyConcept", false)]),
-        ));
-        assert_eq!(
-            non_array.arguments(),
-            &[DecoratorArgument::TypeReference(TypeReferenceArgument {
-                name: "MyConcept".into(),
-                array: Some(false)
-            })]
-        );
-
-        let array = decorator(ast(
-            "returns",
-            serde_json::json!([type_ref_arg("MyConcept", true)]),
-        ));
-        assert_eq!(
-            array.arguments(),
-            &[DecoratorArgument::TypeReference(TypeReferenceArgument {
-                name: "MyConcept".into(),
-                array: Some(true)
-            })]
-        );
-
-        let boolean_where_identifier_expected =
-            decorator(ast("returns", serde_json::json!([boolean_arg(true)])));
-        assert_eq!(
-            boolean_where_identifier_expected.arguments(),
-            &[DecoratorArgument::Boolean(true)]
-        );
-    }
-
-    #[test]
-    fn a_short_class_is_accepted_for_the_type_reference() {
-        let d = decorator(ast(
-            "returns",
-            serde_json::json!([{
-                "$class": "DecoratorTypeReference",
-                "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "String" },
-                "isArray": false
-            }]),
-        ));
-        assert_eq!(
-            d.arguments(),
-            &[DecoratorArgument::TypeReference(TypeReferenceArgument {
-                name: "String".into(),
-                array: Some(false)
-            })]
-        );
-    }
-
-    fn manager_with(cto_declarations: Value) -> ModelManager {
-        let mut manager = ModelManager::new().expect("system models load");
-        manager
-            .load_model(
-                &serde_json::json!({
-                    "$class": "concerto.metamodel@1.0.0.Model",
-                    "namespace": "org.acme@1.0.0",
-                    "declarations": cto_declarations
-                }),
-                None,
-            )
-            .expect("model loads");
-        manager
-    }
-
-    fn decorated_concept(name: &str, decorators: Value) -> Value {
-        serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-            "name": name,
-            "isAbstract": false,
-            "decorators": decorators,
-            "properties": []
-        })
-    }
-
-    /// Disabled by default (`DEFAULT_DECORATOR_VALIDATION`): even a decorator
-    /// whose name resolves nowhere at all is accepted without a manager
-    /// opting in, matching every "should validate" test in `decorators.js`
-    /// that never sets `decoratorValidation`.
-    #[test]
-    fn validate_is_a_no_op_when_disabled() {
-        let manager = manager_with(serde_json::json!([decorated_concept(
-            "Car",
-            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
-        )]));
-        let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.decorator("category").unwrap();
-        assert!(
-            decorator
-                .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
-                .is_ok()
-        );
-    }
-
-    /// TS `decorators.js` "#validate should fail to validate type refs that
-    /// are not defined locally": `missingDecorator: 'error'`, a decorator
-    /// whose own name ("category") is undeclared anywhere. The undeclared-type
-    /// `IllegalModelException` is thrown as it is, with no embedded
-    /// `IllegalModelException: ` fragment (BC-14, `Decorator::rethrow`).
-    #[test]
-    fn missing_decorator_error_reports_the_undeclared_type_wrapped_once() {
-        let mut manager = manager_with(serde_json::json!([decorated_concept(
-            "Car",
-            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
-        )]));
-        manager.set_decorator_validation(DecoratorValidationOptions {
-            missing_decorator: Some("error".into()),
-            invalid_decorator: None,
-        });
-        let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.decorator("category").unwrap();
-        let err = decorator
-            .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
-            .unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.starts_with("Undeclared type \"category\""),
-            "{message}"
-        );
-        assert!(!message.contains("IllegalModelException"), "{message}");
-    }
-
-    /// The same failure with `missingDecorator` left off: the error is
-    /// logged, not thrown (module doc on `Decorator::handle`).
-    #[test]
-    fn missing_decorator_off_is_silent() {
-        let mut with_invalid_only = manager_with(serde_json::json!([decorated_concept(
-            "Car",
-            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
-        )]));
-        with_invalid_only.set_decorator_validation(DecoratorValidationOptions {
-            missing_decorator: None,
-            invalid_decorator: Some("error".into()),
-        });
-        let decl = with_invalid_only
-            .get_declaration("org.acme@1.0.0.Car")
-            .unwrap();
-        let decorator = decl.decorator("category").unwrap();
-        assert!(
-            decorator
-                .validate(
-                    &with_invalid_only,
-                    "org.acme@1.0.0",
-                    Some("org.acme@1.0.0.Car")
-                )
-                .is_ok()
-        );
-    }
-
-    /// A decorator whose name resolves to a real declaration: too few
-    /// arguments is reported through `invalidDecorator`. `missingDecorator`
-    /// must *also* be `'error'` for the throw to reach the caller: TS wraps
-    /// the whole check in one `try`/`catch`, so an `invalidDecorator` throw
-    /// is itself caught and re-reported through `missingDecorator` (module
-    /// doc on `Decorator::rethrow`) — with `missingDecorator` off, the same
-    /// failure is only logged (`missing_decorator_off_is_silent` covers
-    /// exactly that half of this behaviour, for the resolve-own-name case).
-    #[test]
-    fn too_few_arguments_is_reported_through_invalid_decorator() {
-        let mut manager = manager_with(serde_json::json!([
-            decorated_concept("Marker", serde_json::json!([])),
-            {
-                "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
-                "name": "Category",
-                "isAbstract": false,
-                "properties": [
-                    { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "value", "isArray": false, "isOptional": false }
-                ]
-            },
-            decorated_concept(
-                "Car",
-                serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Category", "arguments": [] }])
-            ),
-        ]));
-        manager.set_decorator_validation(DecoratorValidationOptions {
-            missing_decorator: Some("error".into()),
-            invalid_decorator: Some("error".into()),
-        });
-        let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
-        let decorator = decl.decorator("Category").unwrap();
-        let err = decorator
-            .validate(&manager, "org.acme@1.0.0", Some("org.acme@1.0.0.Car"))
-            .unwrap_err();
-        assert!(err.to_string().contains("too few arguments"), "{err}");
-    }
-}
+mod tests;

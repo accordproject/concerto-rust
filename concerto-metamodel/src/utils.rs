@@ -33,6 +33,12 @@ pub fn class_name(class: &str) -> ClassName {
     intern_class(class).map_or_else(|| Cow::Owned(class.to_string()), Cow::Borrowed)
 }
 
+/// [`class_name`] for an owned `class`: interned when it can be, otherwise
+/// `class` itself, with no copy.
+pub fn class_name_owned(class: String) -> ClassName {
+    intern_class(&class).map_or(Cow::Owned(class), Cow::Borrowed)
+}
+
 /// Whether a `$class` is empty (a `Range` or `Position` read without one is
 /// written back without one).
 pub fn is_empty_class(class: &ClassName) -> bool {

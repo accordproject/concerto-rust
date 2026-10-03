@@ -321,8 +321,8 @@ mod tests {
     }
 
     fn message(result: Result<impl std::fmt::Debug>) -> String {
-        match result.map_err(Error::into_ported) {
-            Err(Some(e)) => e.message(),
+        match result.map_err(Error::into_contract) {
+            Err(e) => e.message(),
             other => panic!("expected an error, got {other:?}"),
         }
     }
