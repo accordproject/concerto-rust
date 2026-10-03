@@ -1,0 +1,36 @@
+native-count-alloc-concerto-core-test-data (n=1) parse=1.37 rebuild=3.22 extract=10.45 encode=4.21 drop=5.16 total=25.84 Alloc=467.6 SipHa=8.9 Memcp=23.4
+native-count-alloc-conformance (n=1) parse=0.39 rebuild=1.19 extract=3.33 encode=1.22 drop=1.23 total=7.61 Alloc=390.5 SipHa=9.2 Memcp=25.1
+native-count-alloc-synthetic-large (n=1) parse=1.98 rebuild=4.75 extract=16.97 encode=9.43 drop=3.24 total=35.74 Alloc=277.4 SipHa=8.8 Memcp=25.2
+native-dlmalloc-concerto-core-test-data (n=3) parse=0.92 rebuild=2.56 extract=7.51 encode=3.38 drop=1.37 total=16.00 Alloc=377.8 SipHa=9.2 Memcp=24.8
+native-dlmalloc-conformance (n=3) parse=0.36 rebuild=0.89 extract=3.10 encode=1.21 drop=0.53 total=6.30 Alloc=381.3 SipHa=9.4 Memcp=24.0
+native-dlmalloc-synthetic-large (n=3) parse=1.72 rebuild=3.96 extract=12.61 encode=5.83 drop=1.90 total=26.08 Alloc=363.8 SipHa=9.4 Memcp=25.3
+native-glibc-concerto-core-test-data (n=3) parse=0.95 rebuild=2.53 extract=7.46 encode=3.83 drop=4.51 total=19.78 Alloc=241.0 SipHa=8.8 Memcp=23.8
+native-glibc-conformance (n=3) parse=0.38 rebuild=0.78 extract=2.70 encode=1.06 drop=1.25 total=6.12 Alloc=233.5 SipHa=9.2 Memcp=21.9
+native-glibc-synthetic-large (n=3) parse=1.68 rebuild=3.95 extract=13.39 encode=7.86 drop=3.00 total=30.21 Alloc=226.1 SipHa=9.5 Memcp=25.0
+rust-engine.json concerto-core-test-data=29.11ms conformance=13.84ms synthetic-large=50.25ms
+ts-reference-5.0.0.json concerto-core-test-data=7.77ms conformance=2.85ms synthetic-large=7.81ms
+wasm-flag-experimental-wasm-inlining-synthetic-large (n=3) copyIn=0.78 parse=2.09 rebuild=5.23 extract=15.22 encode=6.60 copyOut=0.51 jsParse=1.80 drop=2.05 wasmStagesTotal=30.97 allOneCall=33.74 engineBinding=39.70 Alloc=301.8 SipHa=11.5 Memcp=29.9
+wasm-flag-no-liftoff-synthetic-large (n=3) copyIn=0.80 parse=2.15 rebuild=5.51 extract=16.55 encode=7.07 copyOut=0.54 jsParse=1.99 drop=2.01 wasmStagesTotal=33.90 allOneCall=33.18 engineBinding=35.75 Alloc=429.7 SipHa=11.4 Memcp=30.5
+wasm-flag-no-wasm-bounds-checks-synthetic-large (n=3) copyIn=0.79 parse=2.09 rebuild=5.11 extract=15.07 encode=6.63 copyOut=0.51 jsParse=1.88 drop=1.94 wasmStagesTotal=31.65 allOneCall=34.96 engineBinding=34.87 Alloc=409.8 SipHa=11.5 Memcp=31.0
+wasm-flag-wasm-enforce-bounds-checks-synthetic-large (n=3) copyIn=0.88 parse=2.61 rebuild=6.22 extract=17.30 encode=7.31 copyOut=0.55 jsParse=2.42 drop=2.10 wasmStagesTotal=35.96 allOneCall=33.92 engineBinding=36.55 Alloc=497.6 SipHa=12.7 Memcp=29.4
+wasm-no-wasmopt-concerto-core-test-data (n=3) copyIn=0.44 parse=1.20 rebuild=3.41 extract=9.88 encode=3.55 copyOut=0.29 jsParse=1.31 drop=1.51 wasmStagesTotal=20.21 allOneCall=21.06 Alloc=540.1 SipHa=11.4 Memcp=30.5
+wasm-no-wasmopt-conformance (n=3) copyIn=0.16 parse=0.51 rebuild=1.20 extract=3.99 encode=1.35 copyOut=0.05 jsParse=0.44 drop=0.58 wasmStagesTotal=7.66 allOneCall=8.11 Alloc=497.1 SipHa=12.6 Memcp=29.9
+wasm-no-wasmopt-synthetic-large (n=3) copyIn=0.76 parse=2.17 rebuild=5.43 extract=16.08 encode=7.11 copyOut=0.51 jsParse=1.87 drop=2.14 wasmStagesTotal=33.34 allOneCall=36.02 Alloc=490.1 SipHa=10.9 Memcp=29.2
+wasm-nolto-concerto-core-test-data (n=3) copyIn=0.44 parse=1.52 rebuild=4.20 extract=10.82 encode=3.86 copyOut=0.31 jsParse=1.33 drop=1.49 wasmStagesTotal=22.65 allOneCall=22.42 Alloc=450.2 SipHa=10.1 Memcp=31.8
+wasm-nolto-conformance (n=3) copyIn=0.17 parse=0.54 rebuild=1.32 extract=4.40 encode=1.43 copyOut=0.05 jsParse=0.43 drop=0.56 wasmStagesTotal=8.46 allOneCall=9.91 Alloc=464.5 SipHa=9.5 Memcp=30.1
+wasm-nolto-synthetic-large (n=3) copyIn=0.81 parse=2.23 rebuild=5.83 extract=16.40 encode=6.92 copyOut=0.56 jsParse=2.25 drop=2.07 wasmStagesTotal=34.38 allOneCall=34.83 Alloc=466.6 SipHa=9.3 Memcp=27.6
+wasm-o2-concerto-core-test-data (n=3) copyIn=0.43 parse=1.12 rebuild=3.15 extract=8.67 encode=3.31 copyOut=0.31 jsParse=1.26 drop=1.38 wasmStagesTotal=17.73 allOneCall=20.40 Alloc=449.5 SipHa=11.4 Memcp=29.4
+wasm-o2-conformance (n=3) copyIn=0.21 parse=0.68 rebuild=1.49 extract=5.11 encode=1.73 copyOut=0.06 jsParse=0.56 drop=0.66 wasmStagesTotal=9.81 allOneCall=11.13 Alloc=448.2 SipHa=11.3 Memcp=29.0
+wasm-o2-synthetic-large (n=3) copyIn=1.12 parse=2.87 rebuild=6.62 extract=19.29 encode=8.18 copyOut=0.59 jsParse=2.51 drop=2.37 wasmStagesTotal=39.59 allOneCall=33.79 Alloc=425.0 SipHa=18.4 Memcp=40.6
+wasm-os-concerto-core-test-data (n=3) copyIn=0.40 parse=1.43 rebuild=3.88 extract=10.05 encode=4.02 copyOut=0.28 jsParse=1.17 drop=1.41 wasmStagesTotal=20.85 allOneCall=24.90 Alloc=560.9 SipHa=14.4 Memcp=57.6
+wasm-os-conformance (n=3) copyIn=0.17 parse=0.64 rebuild=1.57 extract=4.81 encode=1.74 copyOut=0.05 jsParse=0.43 drop=0.59 wasmStagesTotal=9.45 allOneCall=12.25 Alloc=529.7 SipHa=9.1 Memcp=42.9
+wasm-os-synthetic-large (n=3) copyIn=0.80 parse=3.06 rebuild=6.93 extract=18.92 encode=9.29 copyOut=0.51 jsParse=1.92 drop=2.24 wasmStagesTotal=41.03 allOneCall=42.66 Alloc=608.7 SipHa=9.0 Memcp=38.5
+wasm-shipped-concerto-core-test-data (n=3) copyIn=0.43 parse=1.11 rebuild=3.18 extract=9.11 encode=3.36 copyOut=0.31 jsParse=1.28 drop=1.47 wasmStagesTotal=18.08 allOneCall=19.96 engineBinding=20.28 Alloc=430.7 SipHa=11.1 Memcp=29.7
+wasm-shipped-conformance (n=3) copyIn=0.18 parse=0.61 rebuild=1.30 extract=4.46 encode=1.54 copyOut=0.05 jsParse=0.49 drop=0.57 wasmStagesTotal=8.48 allOneCall=8.82 engineBinding=9.33 Alloc=453.8 SipHa=11.2 Memcp=32.0
+wasm-shipped-synthetic-large (n=3) copyIn=0.76 parse=1.98 rebuild=5.07 extract=14.63 encode=6.48 copyOut=0.46 jsParse=1.83 drop=1.87 wasmStagesTotal=30.24 allOneCall=32.67 engineBinding=40.21 Alloc=418.0 SipHa=10.3 Memcp=26.5
+wasm-simd128-concerto-core-test-data (n=3) copyIn=0.70 parse=1.51 rebuild=4.10 extract=11.54 encode=4.23 copyOut=0.34 jsParse=1.69 drop=1.71 wasmStagesTotal=22.81 allOneCall=20.29 Alloc=433.5 SipHa=11.3 Memcp=29.9
+wasm-simd128-conformance (n=3) copyIn=0.17 parse=0.45 rebuild=1.18 extract=3.79 encode=1.32 copyOut=0.06 jsParse=0.43 drop=0.58 wasmStagesTotal=7.34 allOneCall=7.20 Alloc=409.7 SipHa=11.3 Memcp=29.4
+wasm-simd128-synthetic-large (n=3) copyIn=0.82 parse=2.00 rebuild=5.44 extract=16.77 encode=7.05 copyOut=0.52 jsParse=2.09 drop=2.04 wasmStagesTotal=33.91 allOneCall=34.66 Alloc=431.0 SipHa=11.5 Memcp=30.3
+wasm-talc-concerto-core-test-data (n=3) copyIn=0.42 parse=1.23 rebuild=3.57 extract=9.15 encode=2.80 copyOut=0.30 jsParse=1.21 drop=1.00 wasmStagesTotal=17.85 allOneCall=19.57 Alloc=432.3 SipHa=12.3 Memcp=41.3
+wasm-talc-conformance (n=3) copyIn=0.18 parse=0.62 rebuild=1.44 extract=4.57 encode=1.28 copyOut=0.05 jsParse=0.48 drop=0.40 wasmStagesTotal=8.37 allOneCall=7.73 Alloc=415.1 SipHa=10.8 Memcp=41.2
+wasm-talc-synthetic-large (n=3) copyIn=0.79 parse=2.20 rebuild=6.11 extract=14.55 encode=5.04 copyOut=0.50 jsParse=1.92 drop=1.47 wasmStagesTotal=29.79 allOneCall=32.72 Alloc=425.7 SipHa=10.9 Memcp=41.0

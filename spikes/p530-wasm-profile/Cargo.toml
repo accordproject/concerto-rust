@@ -1,0 +1,69 @@
+# P5-30 (accordproject/concerto-rust#335): measure-only spike. Why is the
+# DCS path (DecoratorManager.extractDecorators) about 2.5x slower inside
+# WASM than in the native crate? This crate runs the exact body of the
+# `decoratorManagerExtractDecorators` binding (concerto-wasm/src/lib.rs),
+# split into stages, both natively (src/main.rs) and as a wasm-bindgen
+# module (src/lib.rs, `wasm` feature), from the same input text, so each
+# stage can be timed and profiled on both sides. See README.md.
+#
+# Not part of the root workspace, and nothing depends on it.
+[package]
+name = "p530-wasm-profile"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "p530-native"
+path = "src/main.rs"
+
+[dependencies]
+accordproject-concerto-core = { path = "../../concerto-core", features = ["js-compat"] }
+# The same serde_json features the engine resolves (core turns on
+# preserve_order; the binding adds float_roundtrip).
+serde_json = { version = "1.0", features = ["float_roundtrip", "preserve_order"] }
+wasm-bindgen = { version = "=0.2.128", optional = true }
+# Allocator experiments (A/B only, never shipped).
+dlmalloc = { version = "0.2", features = ["global"], optional = true }
+talc = { version = "4", default-features = false, features = ["lock_api"], optional = true }
+
+[features]
+default = []
+# The wasm-bindgen exports (build for wasm32-unknown-unknown with this on).
+wasm = ["dep:wasm-bindgen"]
+# Native: use dlmalloc (the allocator Rust's wasm32 std uses) as the
+# global allocator, to separate "dlmalloc vs glibc malloc" from "WASM".
+native-dlmalloc = ["dep:dlmalloc"]
+# Native: count allocations (calls and bytes) per stage.
+count-alloc = []
+# WASM: talc instead of std's dlmalloc.
+wasm-talc = ["dep:talc"]
+
+# The shipped concerto-wasm profile, except that symbols are kept (the
+# name section on WASM, symbols natively) so the profiles are symbolised.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = false
+debug = "line-tables-only"
+
+[profile.release-o2]
+inherits = "release"
+opt-level = 2
+
+[profile.release-os]
+inherits = "release"
+opt-level = "s"
+
+[profile.release-nolto]
+inherits = "release"
+lto = false
+codegen-units = 16

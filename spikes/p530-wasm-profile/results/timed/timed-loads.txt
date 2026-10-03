@@ -1,0 +1,27 @@
+gate ok after 0s: load 1.27 1.89 2.97
+round 1 ts-api start 1.27 1.89 2.97
+round 1 ts-api end 1.33 1.89 2.96
+gate ok after 150s: load 1.61 1.84 2.78
+round 1 native start 1.61 1.84 2.78
+round 1 native end 1.52 1.81 2.76
+gate ok after 180s: load 1.55 1.81 2.73
+round 1 wasm start 1.55 1.81 2.73
+round 1 wasm end 1.63 1.79 2.64
+gate ok after 180s: load 1.63 1.79 2.64
+round 2 ts-api start 1.63 1.79 2.64
+round 2 ts-api end 1.58 1.78 2.63
+gate ok after 180s: load 1.58 1.78 2.63
+round 2 wasm start 1.58 1.78 2.63
+round 2 wasm end 1.27 1.64 2.51
+gate ok after 180s: load 1.27 1.64 2.51
+round 2 native start 1.27 1.64 2.51
+round 2 native end 1.25 1.63 2.50
+gate ok after 180s: load 1.25 1.63 2.50
+round 3 ts-api start 1.25 1.63 2.50
+round 3 ts-api end 1.39 1.65 2.50
+gate ok after 180s: load 1.39 1.65 2.50
+round 3 native start 1.39 1.65 2.50
+round 3 native end 1.33 1.63 2.48
+gate ok after 180s: load 1.33 1.63 2.48
+round 3 wasm start 1.33 1.63 2.48
+round 3 wasm end 1.69 1.68 2.42

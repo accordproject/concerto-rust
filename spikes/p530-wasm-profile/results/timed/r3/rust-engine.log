@@ -1,0 +1,3 @@
+extract_decorators     concerto-core-test-data  n=   1   28085.66 us/item cv 9.1%
+extract_decorators     conformance              n=   1   13835.54 us/item cv 20.2%
+extract_decorators     synthetic-large          n=   1   50250.15 us/item cv 15.5%
