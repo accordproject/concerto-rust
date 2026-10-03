@@ -169,7 +169,7 @@ impl ModelManager {
 /// The answers come from the loader's model state. Where that state is not
 /// yet at parity with TS, so are the answers: super types resolve as the
 /// loader resolves them (P2-08). The implicit `Concept` super type (P2-03) is
-/// in every class-like or enum declaration's `super_chain` (`ClassLike`), so
+/// in every class-like or enum declaration's `class_info` (`ClassLike`), so
 /// it is in [`ResolutionContext::get_all_super_type_declarations`] too, for
 /// both [`Declaration::Class`] and [`Declaration::Enum`] — TS's
 /// `EnumDeclaration extends ClassDeclaration` gives an enum the same implicit
@@ -208,17 +208,14 @@ impl ResolutionContext for ModelManager {
             return Err(not_a_function());
         };
         match self.declaration(id).ok_or_else(|| unknown(*declaration))? {
-            Declaration::Class(_) | Declaration::Enum(_) => self
-                .super_chain(&self.declaration_fqn(id)?)?
-                .into_iter()
-                // The chain starts with the type itself.
-                .skip(1)
-                .map(|(fqn, _)| {
-                    self.declaration_id(&fqn)
-                        .map(Node::Declaration)
-                        .ok_or(Error::type_not_found(fqn))
-                })
-                .collect(),
+            // The cached chain (A-8), resolved by name as `getType` does;
+            // it starts with the type itself.
+            Declaration::Class(_) | Declaration::Enum(_) => {
+                Ok(self.class_info(self.decl_fqn(id)?)?.chain[1..]
+                    .iter()
+                    .map(|id| Node::Declaration(*id))
+                    .collect())
+            }
             Declaration::Scalar(_) | Declaration::Map(_) => Err(not_a_function()),
         }
     }

@@ -1178,15 +1178,17 @@ impl ModelManager {
         let mut result = self.empty_like()?;
         let keep = &keep;
         let result_ref = &result;
-        let kept: std::collections::HashSet<*const Declaration> = self
-            .model_files()
-            .flat_map(|mf| {
-                let namespace = mf.namespace();
-                let held = mf.is_system_namespace() || result_ref.model_file(namespace).is_some();
-                mf.declarations().iter().filter_map(move |decl| {
-                    (held || keep(&qualify(namespace, decl.name()), decl))
-                        .then_some(decl as *const Declaration)
-                })
+        let kept: rustc_hash::FxHashSet<*const Declaration> = self
+            .files
+            .iter()
+            .flat_map(|slot| {
+                let mf = &slot.model_file;
+                let held =
+                    mf.is_system_namespace() || result_ref.model_file(mf.namespace()).is_some();
+                self.declarations_in(std::iter::once(slot))
+                    .filter_map(move |(_, fqn, decl)| {
+                        (held || keep(fqn, decl)).then_some(decl as *const Declaration)
+                    })
             })
             .collect();
 
@@ -1254,8 +1256,8 @@ impl ModelManager {
     pub(crate) fn user_files_with_proofs(
         &self,
     ) -> Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)> {
-        self.shared_model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+        self.user_file_slots()
+            .map(|slot| &slot.model_file)
             .map(|mf| (Arc::clone(mf), self.validity_proof(mf.namespace())))
             .collect()
     }

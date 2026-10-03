@@ -108,8 +108,7 @@ impl ModelManager {
         /// `options.includeExternalModels` (`true` by default there; the oracle
         /// harness always passes it explicitly).
         pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
-            self.model_files()
-                .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            self.user_model_files()
                 .filter(|mf| include_external_models || !mf.is_external())
                 .map(|mf| {
                     let name = match mf.file_name() {
@@ -131,20 +130,14 @@ impl ModelManager {
     /// port already does (P2-08 review) — concatenated in registration
     /// order.
     pub(super) fn declarations_by_ctor(&self, ctor: &str) -> Vec<DeclId> {
-        self.model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
-            .flat_map(|mf| {
-                let file = self.model_file_id(mf.namespace());
-                file.into_iter().flat_map(|f| self.declaration_ids(f))
+        self.declarations_in(self.user_file_slots())
+            .filter(|(_, _, d)| match d {
+                Declaration::Class(class) => class.declaration_kind() == ctor,
+                Declaration::Enum(_) => ctor == "EnumDeclaration",
+                Declaration::Scalar(_) => ctor == "ScalarDeclaration",
+                Declaration::Map(_) => ctor == "MapDeclaration",
             })
-            .filter(|id| {
-                self.declaration(*id).is_some_and(|d| match d {
-                    Declaration::Class(class) => class.declaration_kind() == ctor,
-                    Declaration::Enum(_) => ctor == "EnumDeclaration",
-                    Declaration::Scalar(_) => ctor == "ScalarDeclaration",
-                    Declaration::Map(_) => ctor == "MapDeclaration",
-                })
-            })
+            .map(|(id, _, _)| id)
             .collect()
     }
 

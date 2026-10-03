@@ -80,7 +80,8 @@ impl ModelManager {
         fqn: &str,
         property_path: &str,
     ) -> Result<(String, Property)> {
-        self.nested_property(fqn, property_path)
+        self.property_path(fqn, property_path)
+            .map(|(owner, property)| (owner, property.clone()))
     }
 
     /// The FQN of `fqn`'s direct super type, or `None` when it has none (only
@@ -98,7 +99,7 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
     /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `super_chain`, so it returns the same `IllegalModelException` naming
+    /// `class_info`, so it returns the same `IllegalModelException` naming
     /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
     /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
     #[deprecated(since = "0.1.0", note = "use `super_types`")]

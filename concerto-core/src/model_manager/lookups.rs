@@ -45,8 +45,7 @@ impl ModelManager {
             &self,
             file_name: Option<&str>,
         ) -> Option<&ModelFile> {
-            self.model_files()
-                .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+            self.user_model_files()
                 .find(|mf| mf.file_name() == file_name)
         }
     }
@@ -114,7 +113,7 @@ impl ModelManager {
         /// `Self::all_class_like`, which [`Self::get_assignable_class_declarations`]
         /// and [`Self::get_direct_subclasses`] already search this same way.
         pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
-            self.all_class_like().map(|(_, id)| id)
+            self.all_class_like().map(|(id, _, _)| id)
         }
     }
 
@@ -212,11 +211,33 @@ impl ModelManager {
     /// included, with its fully-qualified name: files in load order, then
     /// declarations in AST order.
     pub fn declarations(&self) -> impl Iterator<Item = (String, &Declaration)> {
-        self.model_files().flat_map(|mf| {
-            mf.declarations()
-                .iter()
-                .map(move |declaration| (qualify(mf.namespace(), declaration.name()), declaration))
+        self.declarations_in(self.files.iter())
+            .map(|(_, fqn, declaration)| (fqn.to_string(), declaration))
+    }
+
+    /// Every declaration of the files `files` yields, with its handle and
+    /// its fully-qualified name borrowed from the arena (A-8,
+    /// accordproject/concerto-rust#458): files in the order given, then
+    /// declarations in AST order.
+    pub(super) fn declarations_in<'a>(
+        &'a self,
+        files: impl Iterator<Item = &'a FileSlot> + 'a,
+    ) -> impl Iterator<Item = (DeclId, &'a str, &'a Declaration)> + 'a {
+        files.flat_map(move |file| {
+            file.declarations.clone().map(DeclId).filter_map(move |id| {
+                let slot = self.declarations.get(id.slot())?;
+                let declaration = file.model_file.declarations().get(slot.index)?;
+                Some((id, &*slot.fqn, declaration))
+            })
         })
+    }
+
+    /// The arena slots of the loaded model files outside `EXCLUDE_NS`, in
+    /// load order ([`ModelManager::user_model_files`]).
+    pub(super) fn user_file_slots(&self) -> impl Iterator<Item = &FileSlot> {
+        self.files
+            .iter()
+            .filter(|slot| !EXCLUDE_NS.contains(&slot.model_file.namespace()))
     }
 
     /// The class declarations of one kind, with their fully-qualified names,
@@ -229,12 +250,11 @@ impl ModelManager {
         &self,
         kind: ClassKind,
     ) -> impl Iterator<Item = (String, &ClassDeclaration)> {
-        self.user_model_files().flat_map(move |mf| {
-            mf.declarations().iter().filter_map(move |declaration| {
+        self.declarations_in(self.user_file_slots())
+            .filter_map(move |(_, fqn, declaration)| {
                 let class = declaration.as_class()?;
-                (class.kind() == kind).then(|| (qualify(mf.namespace(), class.name()), class))
+                (class.kind() == kind).then(|| (fqn.to_string(), class))
             })
-        })
     }
 
     /// The enum declarations of the user models (the system models left
@@ -242,21 +262,17 @@ impl ModelManager {
     ///
     /// TS: `BaseModelManager.getEnumDeclarations`.
     pub fn enum_declarations(&self) -> impl Iterator<Item = (String, &EnumDeclaration)> {
-        self.user_model_files().flat_map(|mf| {
-            mf.declarations()
-                .iter()
-                .filter_map(move |declaration| match declaration {
-                    Declaration::Enum(e) => Some((qualify(mf.namespace(), e.name()), e)),
-                    Declaration::Class(_) | Declaration::Scalar(_) | Declaration::Map(_) => None,
-                })
-        })
+        self.declarations_in(self.user_file_slots())
+            .filter_map(|(_, fqn, declaration)| match declaration {
+                Declaration::Enum(e) => Some((fqn.to_string(), e)),
+                Declaration::Class(_) | Declaration::Scalar(_) | Declaration::Map(_) => None,
+            })
     }
 
     /// The loaded model files outside `EXCLUDE_NS`, in load order: what TS's
     /// `getModelFiles()` returns.
     pub(super) fn user_model_files(&self) -> impl Iterator<Item = &ModelFile> {
-        self.model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
+        self.user_file_slots().map(|slot| &*slot.model_file)
     }
 
     /// Every loaded model's AST, in load order, in the metamodel's `Models`

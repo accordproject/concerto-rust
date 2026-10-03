@@ -4,7 +4,7 @@
 use super::*;
 
 /// The inheritance facts of one class-like or enum declaration, from its
-/// declaration handle up to its root (P5-13): what `super_chain`,
+/// declaration handle up to its root (P5-13): what `class_info`,
 /// `getProperties`, `getProperty` and `getIdentifierFieldName` walk on every
 /// call. It depends only on the registered files, so it is cached per
 /// declaration until they change ([`ModelManager::invalidate_caches`]).
@@ -50,13 +50,22 @@ impl<'a> ClassProperties<'a> {
     pub fn find(&self, name: &str) -> Option<(&'a str, &'a Property)> {
         self.iter().find(|(_, p)| p.name() == name)
     }
+
+    /// [`ClassProperties::find`], with the property's handle (A-14).
+    pub(super) fn find_with_id(&self, name: &str) -> Option<(PropId, &'a Property)> {
+        let mm = self.mm;
+        self.info.properties.iter().find_map(|id| {
+            let property = mm.property_by_id(*id)?;
+            (property.name() == name).then_some((*id, property))
+        })
+    }
 }
 
 /// The class-like facts a `ClassDeclaration` or an `EnumDeclaration` carries,
 /// unified for the members TS defines once on `ClassDeclaration` and
 /// `EnumDeclaration` inherits unchanged (enumdeclaration.ts overrides only
 /// `toString` and `declarationKind`, PORTING.md 1.1 rule 2). The manager's
-/// inheritance-walking members (`super_chain` and everything built on it)
+/// inheritance-walking members (`class_info` and everything built on it)
 /// read a declaration through this instead of `Declaration::as_class`, so
 /// that an enum's implicit `Concept` super type, own properties and identity
 /// are seen the same way a concept-like declaration's are.
@@ -243,13 +252,11 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getNestedProperty`.
     pub fn property_path(&self, fqn: &str, path: &str) -> Result<(String, &Property)> {
-        let (owner, found) = self.nested_property(fqn, path)?;
-        let property = self
-            .own_properties(&owner)?
-            .iter()
-            .find(|p| p.name() == found.name())
-            .ok_or_else(|| Error::type_not_found(qualify(&owner, found.name())))?;
-        Ok((owner, property))
+        let id = self.nested_property_id(fqn, path)?;
+        let (owner, property) = self
+            .property_with_owner(id)
+            .ok_or_else(|| unknown(Node::Property(id)))?;
+        Ok((owner.to_string(), property))
     }
 
     /// The name of the field that identifies instances of `fqn`: its own
@@ -311,23 +318,19 @@ impl ModelManager {
             .collect())
     }
 
-    /// A nested property, following a dotted path (`a.b.c`) through the
-    /// declared types of each element but the last.
+    /// The handle of the property at a dotted `path` (`a.b.c`), following
+    /// the declared types of each element but the last: the walk
+    /// [`ModelManager::property_path`] and the deprecated
+    /// [`ModelManager::get_nested_property`] both map from (A-14).
     ///
     /// TS: `ClassDeclaration.getNestedProperty` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
-    pub(super) fn nested_property(
-        &self,
-        fqn: &str,
-        property_path: &str,
-    ) -> Result<(String, Property)> {
+    pub(super) fn nested_property_id(&self, fqn: &str, property_path: &str) -> Result<PropId> {
         let names: Vec<&str> = property_path.split('.').collect();
         let mut search_root = fqn.to_string();
         let mut result = None;
         for (n, name) in names.iter().enumerate() {
-            let Some((declaring_fqn, property)) = self
-                .property(&search_root, name)?
-                .map(|(owner, property)| (owner, property.clone()))
+            let Some((id, property)) = self.class_properties(&search_root)?.find_with_id(name)
             else {
                 return Err(ContractError::new(
                     ErrorKind::IllegalModel,
@@ -344,20 +347,13 @@ impl ModelManager {
                 // TS: `Property.isTypeEnum` (src/introspect/property.ts):
                 // `this.isPrimitive() ? false : this.getParent().getModelFile()
                 // .getType(this.getType()).isEnum()`. Reached here only for an
-                // object/relationship field (the walk's own `get_property`
+                // object/relationship field (the walk's own `getProperty`
                 // already ruled out a missing property, and an intermediate
                 // step is never itself an enum *value* — the field whose
                 // declared type is an enum trips this same check one level
-                // higher, before the walk ever reaches the value), which is
-                // always a `ClassDeclaration`'s own field (an enum value is
-                // never itself an intermediate step of a nested path), so
-                // its `PropId` is always in the arena (`find_property_id`).
-                let is_enum = !property.is_primitive() && {
-                    let prop_id = self
-                        .find_property_id(&declaring_fqn, name)?
-                        .expect("get_property just found this property");
-                    model_util::is_enum(self, &Node::Property(prop_id))?.unwrap_or(false)
-                };
+                // higher, before the walk ever reaches the value).
+                let is_enum = !property.is_primitive()
+                    && model_util::is_enum(self, &Node::Property(id))?.unwrap_or(false);
                 if property.is_primitive() || is_enum {
                     return Err(ContractError::new(
                         ErrorKind::InvalidArgument,
@@ -369,25 +365,16 @@ impl ModelManager {
                     )
                     .into());
                 }
-                let prop_id = self
-                    .find_property_id(&declaring_fqn, name)?
-                    .expect("get_property just found this property");
-                search_root = self.get_fully_qualified_type_name(&Node::Property(prop_id))?;
+                search_root = self.get_fully_qualified_type_name(&Node::Property(id))?;
             }
-            result = Some((declaring_fqn, property));
+            result = Some(id);
         }
         Ok(result.expect("propertyPath.split('.') always yields at least one name"))
     }
 
     /// The [`PropId`] of the property named `name`, declared directly on
-    /// `declaring_fqn` (not inherited — the id-level counterpart of
-    /// [`ModelManager::get_own_properties`]) — for
-    /// [`ModelManager::get_nested_property`]'s recursive step, which needs a
-    /// [`Node::Property`] handle to reach the already-ported
-    /// `model_util::is_enum` and [`ResolutionContext::get_fully_qualified_type_name`].
-    /// Only ever called for a `ClassDeclaration`'s own field (see the
-    /// caller); works the same for an enum's own values (P2-04), though the
-    /// caller never reaches one.
+    /// `declaring_fqn` (not inherited): a test helper.
+    #[cfg(test)]
     pub(super) fn find_property_id(
         &self,
         declaring_fqn: &str,
@@ -417,16 +404,16 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
     /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `super_chain`, so it returns the same `IllegalModelException` naming
+    /// `class_info`, so it returns the same `IllegalModelException` naming
     /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
     /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
     pub(super) fn super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
-        Ok(self
-            .super_chain(fqn)?
-            .into_iter()
-            .skip(1)
-            .map(|(fqn, _)| fqn)
-            .collect())
+        // The chain starts with the type itself.
+        let info = self.class_info(fqn)?;
+        info.chain[1..]
+            .iter()
+            .map(|id| self.declaration_fqn(*id))
+            .collect()
     }
 
     /// Every class-like or enum declaration loaded, across every model file
@@ -439,16 +426,13 @@ impl ModelManager {
     /// `ModelFile.isSystemModelFile`; then every declaration that is not a
     /// map or a scalar, which leaves the class-like kinds and
     /// `EnumDeclaration`).
-    pub(super) fn all_class_like(&self) -> impl Iterator<Item = (String, DeclId)> + '_ {
-        self.model_files()
-            .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
-            .flat_map(move |mf| {
-                let file = self.model_file_id(mf.namespace()).expect("just iterated");
-                self.declaration_ids(file).filter_map(move |id| {
-                    let declaration = self.declaration(id)?;
-                    ClassLike::from_declaration(declaration)?;
-                    Some((format!("{}.{}", mf.namespace(), declaration.name()), id))
-                })
+    ///
+    /// Each comes with its handle and its fully-qualified name, borrowed
+    /// from the arena (A-8).
+    pub(super) fn all_class_like(&self) -> impl Iterator<Item = (DeclId, &str, ClassLike<'_>)> {
+        self.declarations_in(self.user_file_slots())
+            .filter_map(|(id, fqn, declaration)| {
+                Some((id, fqn, ClassLike::from_declaration(declaration)?))
             })
     }
 
@@ -560,14 +544,18 @@ impl ModelManager {
             return Ok(Some(found));
         }
         let mut buckets: Vec<Vec<DeclId>> = vec![Vec::new(); self.declarations.len()];
-        for (child_fqn, child) in self.all_class_like() {
-            let class = ClassLike::from_declaration(
-                self.declaration(child).expect("all_class_like found it"),
-            )
-            .expect("all_class_like already filtered to class-like");
-            if let Some(super_fqn) = self.super_type_fqn(&class, namespace_of(&child_fqn))?
-                && let Some(parent) = self.declaration_id(&super_fqn)
-            {
+        for (child, child_fqn, class) in self.all_class_like() {
+            // A cached chain already holds the declaration the direct super
+            // type resolved to (A-8): its second entry is exactly what
+            // resolving the name again finds, and it was cached only once
+            // that resolution succeeded.
+            let parent = match self.decl_cache.get(child, |facts| &facts.class) {
+                Some(info) => info.chain.get(1).copied(),
+                None => self
+                    .super_type_fqn(&class, namespace_of(child_fqn))?
+                    .and_then(|super_fqn| self.declaration_id(&super_fqn)),
+            };
+            if let Some(parent) = parent {
                 buckets[parent.slot()].push(child);
             }
         }
@@ -607,7 +595,7 @@ impl ModelManager {
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
     ///
-    /// On a cyclic inheritance chain this walks `super_chain`, so it returns
+    /// On a cyclic inheritance chain this walks `class_info`, so it returns
     /// the same `IllegalModelException` naming the cycle as
     /// `getProperties`/`getProperty`/`getIdentifierFieldName` (BC-11, R1;
     /// TS 5.0.0 returns `true` when the target is in the cycle and otherwise
@@ -630,29 +618,6 @@ impl ModelManager {
                     .any(|id| self.decl_fqn(*id).is_ok_and(|fqn| fqn == super_fqn)))
             }
         }
-    }
-
-    /// Walks a class's inheritance chain, handing back each
-    /// `(full-name, declaration)` pair from the type up to its root.
-    ///
-    /// TS walks this chain by recursion (`ClassDeclaration.getProperties`,
-    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so a
-    /// cyclic chain overflows V8's stack. This walk is a loop with a
-    /// visited set (PORTING.md 2.5 rule 1) and, when it meets a declaration
-    /// again, returns the `RangeError` V8 raises (rule 2), after the same
-    /// earlier checks: a missing or non-class super type still fails first.
-    pub(super) fn super_chain(&self, fqn: &str) -> Result<Vec<(String, ClassLike<'_>)>> {
-        let info = self.class_info(fqn)?;
-        info.chain
-            .iter()
-            .map(|id| {
-                let class = self
-                    .declaration(*id)
-                    .and_then(ClassLike::from_declaration)
-                    .ok_or_else(|| unknown(Node::Declaration(*id)))?;
-                Ok((self.decl_fqn(*id)?.to_string(), class))
-            })
-            .collect()
     }
 
     /// The cached [`ClassInfo`] of the declaration `fqn` names, resolved
