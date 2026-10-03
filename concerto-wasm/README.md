@@ -66,7 +66,8 @@ for the life of the manager.
 | `new ModelManagerHandle()` | a manager with `concerto@1.0.0` loaded |
 | `addModel(astJson, fileName?)` | the new model file's handle; `astJson` is `JSON.stringify(ast)` |
 | `validateModels()` | nothing; throws the first problem |
-| `generation()` | the mutation counter; a cached snapshot is current while it is unchanged |
+| `epoch()` | the mutation counter; a cached snapshot is current while it is unchanged. It moves iff the manager may have changed; staging and the extract memo never move it (P5-101, D-7) |
+| `generation()` | the model files' state version (`ModelManager::state_version`); kept exported, not used by the views |
 | `modelFileId(namespace)`, `declarationId(fqn)` | a handle, or `undefined` |
 | `modelFileIds()`, `declarationIds(file)`, `propertyIds(decl)` | `Uint32Array` of handles, in order |
 | `modelFileOf(decl)`, `parentOf(prop)` | a handle, or `undefined` |
@@ -191,8 +192,9 @@ Chromium main thread, headless shell / full Chromium):
 These agree with the spike:
 - Handle calls cost a few hundred ns.
 - A snapshot costs about as much as 5–8 string getters, but it carries the
-  element's whole state. A view that caches it and checks `generation()`
-  (60 ns) pays that cost once per element per mutation.
+  element's whole state. A view that caches it and checks `epoch()` (the
+  views' key since P5-06; `generation()` was measured, at the same cost)
+  pays that cost once per element per mutation.
 
 For P4-12, nothing here changes the spike's finding that the load cost is
 concerto-core's own rather than the boundary's; these numbers give no
