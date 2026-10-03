@@ -196,9 +196,24 @@ pub struct ClassPlan {
     /// The identifier field's regex validator, for `Factory.newResource`
     /// (`idFullField?.validator`), when it has a regex.
     pub id_regex: Prepared<StringValidator>,
+    /// P5-97 (accordproject/concerto-rust#448): whether every part of the
+    /// plan resolved and was built ([`ClassPlan::is_settled`]).
+    settled: bool,
 }
 
 impl ClassPlan {
+    /// P5-97 (accordproject/concerto-rust#448): true when nothing in the
+    /// plan was left unresolved or unplanned: every property's kind
+    /// resolved (a map's key and value too), and every validator, including
+    /// the identifier's, was built or is absent. Such a plan reads only
+    /// declarations that resolved, so adding a model file to the manager
+    /// cannot change it, and the plan cache keeps it across an append
+    /// (`ModelManager::keep_caches_for_append`); any other plan is built
+    /// again.
+    pub fn is_settled(&self) -> bool {
+        self.settled
+    }
+
     /// The index into [`ClassPlan::props`] of the property called `name`.
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(name).map(|i| *i as usize)
@@ -315,8 +330,17 @@ fn build(mm: &ModelManager, id: DeclId) -> Option<ClassPlan> {
         props: props.into(),
         index,
         id_regex: Prepared::None,
+        settled: false,
     };
     plan.id_regex = identifier_regex(mm, &plan);
+    plan.settled = !matches!(plan.id_regex, Prepared::Unplanned)
+        && plan.props.iter().all(|p| {
+            !matches!(
+                p.kind,
+                PlanKind::Unresolved | PlanKind::Map { entries: None, .. }
+            ) && !matches!(p.validator, Prepared::Unplanned)
+                && !matches!(p.size, Prepared::Unplanned)
+        });
     Some(plan)
 }
 

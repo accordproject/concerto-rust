@@ -80,13 +80,25 @@ impl ModelManager {
         /// that file's own `validate()` error, which names the file, so a
         /// binding needs to know which one failed.
         pub fn validate_models_naming_file(&self) -> std::result::Result<(), (String, Error)> {
+            // P5-97 (accordproject/concerto-rust#448): a file already known
+            // to be valid here (validated in this manager, or shared with a
+            // proof that holds) is not validated again: it would pass, so
+            // the first error found is the same.
             let model_files = self
                 .model_files()
-                .filter(|model_file| !model_file.is_system_namespace());
+                .enumerate()
+                .filter(|(_, model_file)| !model_file.is_system_namespace());
 
-            for model_file in model_files {
+            for (index, model_file) in model_files {
+                let id = crate::model_manager::ModelFileId::from_index(
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                );
+                if self.known_valid(id) {
+                    continue;
+                }
                 self.validate_model_file(model_file)
                     .map_err(|err| (model_file.namespace().to_string(), err))?;
+                self.mark_validated(id);
             }
             Ok(())
         }
@@ -246,7 +258,12 @@ impl ModelManager {
             if let Some((id, mark)) = self.append_for_validation(&shared) {
                 let namespace = shared.namespace();
                 return match self.validate_model_file_with_import_scope(&shared, self, Some(namespace)) {
-                    Ok(()) => Ok(id),
+                    Ok(()) => {
+                        // P5-97: it passed with its own namespace hidden from
+                        // its imports, so it passes `validate_models` too.
+                        self.mark_validated(id);
+                        Ok(id)
+                    }
                     Err(err) => {
                         self.undo_append(mark);
                         let model_file = std::sync::Arc::try_unwrap(shared)

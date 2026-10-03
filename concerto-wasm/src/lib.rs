@@ -76,7 +76,9 @@ use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
-use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, PropId};
+use concerto_core::model_manager::{
+    DeclId, ModelFileId, ModelFileSource, Node, PropId, ValidityProof,
+};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
@@ -5705,6 +5707,11 @@ pub struct ModelManagerHandle {
 #[derive(Default)]
 struct StagedModelFiles {
     files: std::collections::BTreeMap<u32, std::sync::Arc<ModelFile>>,
+    /// P5-97 (accordproject/concerto-rust#448): the source manager's
+    /// [`ValidityProof`] of a file staged shared by
+    /// [`ModelManagerHandle::model_file_filter_staged`], by stage id;
+    /// registered with the file ([`ModelManagerHandle::commit_staged_model_file`]).
+    proofs: std::collections::BTreeMap<u32, std::sync::Arc<ValidityProof>>,
     next: u32,
 }
 
@@ -5735,7 +5742,9 @@ impl StagedModelFiles {
     /// (P5-77): the file is shared, not copied.
     fn insert_shared(&mut self, file: std::sync::Arc<ModelFile>) -> u32 {
         while self.files.len() >= Self::CAPACITY {
-            self.files.pop_first();
+            if let Some((evicted, _)) = self.files.pop_first() {
+                self.proofs.remove(&evicted);
+            }
         }
         let id = self.next;
         self.next = self.next.wrapping_add(1);
@@ -6435,14 +6444,14 @@ impl ModelManagerHandle {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
+        // P5-97: a file staged shared from a manager that had validated it
+        // carries that manager's proof, so a later `validateModelFiles`
+        // need not validate it again where the proof holds.
+        let proof = self.staged.proofs.remove(&stage);
         self.bump_epoch();
         run(|| {
-            let namespace = file.namespace().to_string();
-            self.manager.add_shared_model_file(file)?;
-            self.manager
-                .model_file_id(&namespace)
-                .map(|id| Some(ModelFileId::index(id)))
-                .ok_or_else(|| CoreError::type_not_found(namespace).into())
+            let id = self.manager.add_shared_model_file_with_proof(file, proof)?;
+            Ok(Some(ModelFileId::index(id)))
         })
     }
 
@@ -6465,6 +6474,7 @@ impl ModelManagerHandle {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
+        self.staged.proofs.remove(&stage);
         // P5-48 (accordproject/concerto-rust#369): validated and registered
         // in one step (`ModelManager::validate_and_add_model_file`), without
         // a scratch copy of the manager and of the file. A validation error
@@ -6513,6 +6523,7 @@ impl ModelManagerHandle {
     #[wasm_bindgen(js_name = dropStagedModelFile)]
     pub fn drop_staged_model_file(&mut self, stage: u32) {
         self.staged.files.remove(&stage);
+        self.staged.proofs.remove(&stage);
     }
 
     /// TS `BaseModelManager.resolveType(context, type)` (P4-08): delegates
@@ -6965,6 +6976,121 @@ impl ModelManagerHandle {
                 .map(Some)
                 .ok_or_else(|| CoreError::type_not_found(ns.clone()).into())
         })
+    }
+}
+
+#[wasm_bindgen]
+impl ModelManagerHandle {
+    /// P5-97 (accordproject/concerto-rust#448): TS `ModelFile.filter`, as
+    /// [`Self::model_file_filter`], for `BaseModelManager.filter`'s result
+    /// manager, whose handle is `target`: the predicate is called the same
+    /// way, on the same declarations, in the same order, and throws the same
+    /// errors. Returns `undefined` when no declaration is kept (TS `null`),
+    /// and otherwise JSON text:
+    ///
+    /// - `{"stage": <id>}` when every declaration is kept and every import
+    ///   is unchanged ([`concerto_core::introspect::model_file::FilterOutcome::Unchanged`]):
+    ///   the file itself is staged in `target`, shared, not copied, with
+    ///   this manager's [`concerto_core::model_manager::ValidityProof`] for
+    ///   it, so that `target` registers the same file from its stage
+    ///   ([`Self::commit_staged_model_file`]) and validates it only if the
+    ///   proof does not hold there. Nothing crosses but the stage id: the
+    ///   view builds the filtered ModelFile from the source's own AST.
+    /// - `{"ast": <ast>}` otherwise: the filtered file's AST, which
+    ///   [`Self::model_file_filter`] added to its target and the view read
+    ///   back with [`Self::model_file_snapshot`]. Nothing is added to
+    ///   `target`.
+    ///
+    /// Additive: `modelFileFilter` is unchanged.
+    #[wasm_bindgen(js_name = modelFileFilterStaged)]
+    pub fn model_file_filter_staged(
+        &self,
+        model_file: u32,
+        predicate: Function,
+        target: &mut ModelManagerHandle,
+    ) -> std::result::Result<Option<String>, JsValue> {
+        run(|| {
+            let id = ModelFileId::from_index(model_file);
+            self.require_file(model_file)?;
+            let file = self
+                .manager
+                .shared_model_files()
+                .nth(id.index() as usize)
+                .ok_or_else(|| unknown(Node::ModelFile(id)))?;
+            // The fully-qualified name of every declaration the predicate can
+            // be handed, by identity, as `model_file_filter` builds it.
+            let fqn_by_decl: std::collections::HashMap<
+                *const concerto_core::introspect::Declaration,
+                String,
+            > = self
+                .manager
+                .model_files()
+                .flat_map(|mf| {
+                    let namespace = mf.namespace();
+                    mf.declarations().iter().map(move |decl| {
+                        (
+                            decl as *const concerto_core::introspect::Declaration,
+                            mu::qualify(namespace, decl.name()),
+                        )
+                    })
+                })
+                .collect();
+            let file_namespace = file.namespace().to_string();
+            let js_err: RefCell<Option<Error>> = RefCell::new(None);
+            let outcome = file.filter_outcome(
+                |decl| {
+                    if js_err.borrow().is_some() {
+                        return false;
+                    }
+                    let fqn = fqn_by_decl
+                        .get(&(decl as *const concerto_core::introspect::Declaration))
+                        .cloned()
+                        .unwrap_or_else(|| mu::qualify(&file_namespace, decl.name()));
+                    match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
+                        Ok(v) => v.is_truthy(),
+                        Err(e) => {
+                            *js_err.borrow_mut() = Some(Error::Js(e));
+                            false
+                        }
+                    }
+                },
+                &self.manager,
+            )?;
+            if let Some(err) = js_err.into_inner() {
+                return Err(err);
+            }
+            use concerto_core::introspect::model_file::FilterOutcome;
+            match outcome {
+                FilterOutcome::Empty => Ok(None),
+                FilterOutcome::Unchanged => {
+                    let proof = self.manager.validity_proof(&file_namespace);
+                    let stage = target.staged.insert_shared(std::sync::Arc::clone(file));
+                    if let Some(proof) = proof {
+                        target.staged.proofs.insert(stage, proof);
+                    }
+                    Ok(Some(format!("{{\"stage\":{stage}}}")))
+                }
+                FilterOutcome::Filtered(filtered) => {
+                    snapshot(&json!({ "ast": filtered.ast() })).map(Some)
+                }
+            }
+        })
+    }
+
+    /// P5-97 (accordproject/concerto-rust#448): a new handle over the same
+    /// models ([`ModelManager::fork`]): the same options, the same model
+    /// files (shared, never copied), the same model file, declaration and
+    /// property handles, and this handle's warmed caches. Nothing is
+    /// validated again. Later changes to either handle never reach the
+    /// other. The staging slot and the extract memo are not carried over.
+    /// Additive.
+    pub fn fork(&self) -> ModelManagerHandle {
+        ModelManagerHandle {
+            manager: self.manager.fork(),
+            epoch: 0,
+            staged: StagedModelFiles::default(),
+            dcs_memo: std::cell::RefCell::new(None),
+        }
     }
 }
 

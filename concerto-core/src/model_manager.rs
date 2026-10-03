@@ -268,10 +268,62 @@ js_compat_pub! {
 /// registered, so a scratch copy of the arena
 /// ([`ModelManager::with_model_file_registered`]) shares every file it
 /// keeps instead of deep-cloning it.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct FileSlot {
     model_file: Arc<ModelFile>,
     declarations: Range<u32>,
+    /// P5-97 (accordproject/concerto-rust#448): set once the file has
+    /// passed [`ModelManager::validate_model_file`] in this manager (in
+    /// [`ModelManager::validate_models`], or when
+    /// [`ModelManager::validate_and_add_model_file`] registered it), so a
+    /// later [`ModelManager::validate_models`] need not validate it again.
+    /// A file's validity reads only the file, the files of the namespaces
+    /// it reaches through its imports, and the manager's options: adding a
+    /// file never changes it (a namespace is never registered twice), so
+    /// the mark holds until the options change (each setter clears every
+    /// mark), a failed batch is rolled back (its marks are restored), or
+    /// the manager is rebuilt (update, delete: a new manager starts with
+    /// none).
+    validated: std::sync::atomic::AtomicBool,
+    /// P5-97: what lets this manager take the file as validated without
+    /// validating it, when the file is shared from a manager that had
+    /// validated it ([`ModelManager::validity_proof`]): the namespaces the
+    /// file reaches there, with their files, and that manager's options.
+    proof: Option<Arc<ValidityProof>>,
+}
+
+impl Clone for FileSlot {
+    fn clone(&self) -> Self {
+        Self {
+            model_file: Arc::clone(&self.model_file),
+            declarations: self.declarations.clone(),
+            validated: std::sync::atomic::AtomicBool::new(
+                self.validated.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            proof: self.proof.clone(),
+        }
+    }
+}
+
+js_compat_pub! {
+    /// P5-97 (accordproject/concerto-rust#448): why a model file shared from
+    /// one manager into another ([`ModelManager::add_shared_model_file_with_proof`])
+    /// is valid there too, without validating it again: it passed
+    /// validation in the source manager, whose options were these, and
+    /// these are every namespace it reaches through its imports (its own,
+    /// the system models and the transitive import closure), each with the
+    /// very file (`Arc`) the source held. A file's validity reads nothing
+    /// else, so it holds in any manager with the same options whose files
+    /// under those namespaces are those same files. The target checks that
+    /// when it validates ([`ModelManager::validate_models`]) and validates
+    /// the file as usual when it does not hold.
+    #[derive(Debug)]
+    pub struct ValidityProof {
+        decorator_validation: crate::introspect::decorator::DecoratorValidationOptions,
+        allow_reserved_system_type_names: bool,
+        metamodel_validation: bool,
+        closure: Box<[(Box<str>, Arc<ModelFile>)]>,
+    }
 }
 
 /// Where a declaration is: its model file, its position in
@@ -800,6 +852,192 @@ impl ModelManager {
     }
 
     js_compat_pub! {
+        /// P5-97 (accordproject/concerto-rust#448): a new manager over the
+        /// same models: the same options, the same model files in the same
+        /// order (shared, `Arc`, never copied), and the same handles, so
+        /// every [`ModelFileId`], [`DeclId`] and [`PropId`] of this manager
+        /// names the same element in the fork. Nothing is validated again:
+        /// each file keeps whether it was validated here.
+        ///
+        /// The fork starts with this manager's warmed caches (inheritance
+        /// chains, instance facts, validation plans). Those answers are about
+        /// this manager's declarations, which the fork holds unchanged, and a
+        /// file the fork adds later cannot change them
+        /// (`ModelManager::keep_caches_for_append`: the files here cannot
+        /// import a namespace they did not already resolve). So a server can
+        /// keep one base manager of its common models, warm it once, and fork
+        /// it per request: each request adds its own models to its fork,
+        /// isolated from every other fork and from the base.
+        ///
+        /// The two managers are independent from then on: a later change to
+        /// either one never reaches the other.
+        pub fn fork(&self) -> Self {
+            let class_cache = match self.class_cache.lock() {
+                Ok(cache) => cache.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            let instance_cache = match self.instance_cache.lock() {
+                Ok(cache) => cache.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            let plan_cache = match self.plan_cache.lock() {
+                Ok(cache) => cache.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            Self {
+                files: self.files.clone(),
+                namespaces: self.namespaces.clone(),
+                declarations: self.declarations.clone(),
+                properties: self.properties.clone(),
+                generation: self.generation,
+                decorator_validation: self.decorator_validation.clone(),
+                dangerously_allow_reserved_system_type_names_in_user_models: self
+                    .dangerously_allow_reserved_system_type_names_in_user_models,
+                metamodel_validation: self.metamodel_validation,
+                class_cache: Mutex::new(class_cache),
+                instance_cache: Mutex::new(instance_cache),
+                system_files_checked: std::sync::atomic::AtomicU64::new(
+                    self.system_files_checked
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ),
+                plan_cache: Mutex::new(plan_cache),
+            }
+        }
+    }
+
+    js_compat_pub! {
+        /// P5-97 (accordproject/concerto-rust#448): why the model file
+        /// registered under `namespace` is valid in any manager that holds
+        /// it with the same options and the same files under the namespaces
+        /// it reaches ([`ValidityProof`]), or `None` when it has not been
+        /// validated here (or reaches a namespace this manager does not
+        /// hold). [`ModelManager::add_shared_model_file_with_proof`] takes
+        /// it with the shared file.
+        pub fn validity_proof(&self, namespace: &str) -> Option<Arc<ValidityProof>> {
+            let id = *self.namespaces.get(namespace)?;
+            if !self.known_valid(id) {
+                return None;
+            }
+            // The namespaces the file reaches: its own, the system models
+            // (every file's implicit import) and the transitive closure of
+            // its imports, each with the file held under it.
+            let mut closure: Vec<(Box<str>, Arc<ModelFile>)> = Vec::new();
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut pending: Vec<&str> = vec![namespace];
+            pending.extend(EXCLUDE_NS.iter().copied().filter(|ns| self.namespaces.contains_key(*ns)));
+            while let Some(ns) = pending.pop() {
+                if !seen.insert(ns) {
+                    continue;
+                }
+                let slot = &self.files[self.namespaces.get(ns)?.slot()];
+                for import in slot.model_file.imports() {
+                    pending.push(import.namespace());
+                }
+                closure.push((Box::from(ns), Arc::clone(&slot.model_file)));
+            }
+            Some(Arc::new(ValidityProof {
+                decorator_validation: self.decorator_validation.clone(),
+                allow_reserved_system_type_names: self
+                    .dangerously_allow_reserved_system_type_names_in_user_models,
+                metamodel_validation: self.metamodel_validation,
+                closure: closure.into_boxed_slice(),
+            }))
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::add_shared_model_file`], with the
+        /// [`ValidityProof`] the source manager gave for the file, if any:
+        /// [`ModelManager::validate_models`] then takes the file as valid
+        /// without validating it when the proof holds here (P5-97).
+        pub fn add_shared_model_file_with_proof(
+            &mut self,
+            mf: Arc<ModelFile>,
+            proof: Option<Arc<ValidityProof>>,
+        ) -> Result<ModelFileId> {
+            if let Some(existing) = self
+                .namespaces
+                .get(mf.namespace())
+                .and_then(|id| self.file(*id))
+            {
+                return Err(already_exists(mf.namespace(), mf.file_name(), existing));
+            }
+            let id = self.insert_shared(mf)?;
+            self.files[id.slot()].proof = proof;
+            Ok(id)
+        }
+    }
+
+    /// P5-97: whether the file `id` may be taken as valid without
+    /// validating it: it passed validation in this manager, or it carries a
+    /// [`ValidityProof`] that holds here (then it is marked validated).
+    pub(crate) fn known_valid(&self, id: ModelFileId) -> bool {
+        use std::sync::atomic::Ordering;
+        let Some(slot) = self.files.get(id.slot()) else {
+            return false;
+        };
+        if slot.validated.load(Ordering::Relaxed) {
+            return true;
+        }
+        let Some(proof) = &slot.proof else {
+            return false;
+        };
+        let holds = self.proof_holds(proof);
+        if holds {
+            slot.validated.store(true, Ordering::Relaxed);
+        }
+        holds
+    }
+
+    /// P5-97: whether `proof` holds in this manager: the same options, and
+    /// the very same file under each namespace it names.
+    fn proof_holds(&self, proof: &ValidityProof) -> bool {
+        proof.decorator_validation == self.decorator_validation
+            && proof.allow_reserved_system_type_names
+                == self.dangerously_allow_reserved_system_type_names_in_user_models
+            && proof.metamodel_validation == self.metamodel_validation
+            && proof.closure.iter().all(|(ns, file)| {
+                self.namespaces
+                    .get(&**ns)
+                    .and_then(|id| self.files.get(id.slot()))
+                    .is_some_and(|slot| Arc::ptr_eq(&slot.model_file, file))
+            })
+    }
+
+    /// P5-97: records that the file `id` passed validation in this manager.
+    pub(crate) fn mark_validated(&self, id: ModelFileId) {
+        if let Some(slot) = self.files.get(id.slot()) {
+            slot.validated
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// P5-97: every file's validated mark, for a batch to restore when it
+    /// rolls back ([`ModelManager::restore_validated`]).
+    fn validated_marks(&self) -> Vec<bool> {
+        self.files
+            .iter()
+            .map(|slot| slot.validated.load(std::sync::atomic::Ordering::Relaxed))
+            .collect()
+    }
+
+    /// P5-97: puts back the marks [`ModelManager::validated_marks`] took
+    /// (a file validated while a rolled-back batch was registered may have
+    /// reached one of its files).
+    fn restore_validated(&mut self, marks: &[bool]) {
+        for (slot, mark) in self.files.iter_mut().zip(marks) {
+            *slot.validated.get_mut() = *mark;
+        }
+    }
+
+    /// P5-97: forgets every validated mark (an option changed).
+    fn clear_validated(&mut self) {
+        for slot in &mut self.files {
+            *slot.validated.get_mut() = false;
+        }
+    }
+
+    js_compat_pub! {
         /// P5-77: each model file's AST as compact JSON text, in
         /// [`ModelManager::model_files`] order ([`ModelFile::compact_ast`]).
         /// A file only this manager holds keeps its AST as that text from
@@ -921,6 +1159,7 @@ impl ModelManager {
         let properties_len = self.properties.len();
         let namespaces_snapshot = self.namespaces.clone();
         let generation = self.generation;
+        let validated = self.validated_marks();
 
         let mut result = Ok(Vec::new());
         for (value, file_name) in models {
@@ -961,6 +1200,7 @@ impl ModelManager {
             self.invalidate_caches();
             self.namespaces = namespaces_snapshot;
             self.generation = generation;
+            self.restore_validated(&validated);
             return Err(err);
         }
         result
@@ -1034,7 +1274,9 @@ impl ModelManager {
     /// registered in another manager: the file itself is shared, not
     /// copied (P5-18).
     fn insert_shared(&mut self, model_file: Arc<ModelFile>) -> Result<ModelFileId> {
-        self.invalidate_caches();
+        // P5-97: an append keeps every cached answer that cannot change
+        // (`keep_caches_for_append`).
+        self.keep_caches_for_append();
         let file_id = ModelFileId(next_index(self.files.len())?);
         let mut declarations = Vec::new();
         let mut properties = Vec::new();
@@ -1069,6 +1311,8 @@ impl ModelManager {
         self.files.push(FileSlot {
             model_file,
             declarations: first..end,
+            validated: std::sync::atomic::AtomicBool::new(false),
+            proof: None,
         });
         self.declarations.extend(declarations);
         self.properties.extend(properties);
@@ -1185,6 +1429,8 @@ impl ModelManager {
             &mut self,
             options: crate::introspect::decorator::DecoratorValidationOptions,
         ) {
+            // P5-97: validity depends on the options.
+            self.clear_validated();
             self.decorator_validation = options;
         }
     }
@@ -1203,6 +1449,7 @@ impl ModelManager {
         /// no separate TS setter; the port exposes one the same way
         /// [`Self::set_decorator_validation`] does).
         pub fn set_dangerously_allow_reserved_system_type_names_in_user_models(&mut self, allow: bool) {
+            self.clear_validated();
             self.dangerously_allow_reserved_system_type_names_in_user_models = allow;
         }
     }
@@ -1222,6 +1469,7 @@ impl ModelManager {
         /// runs [`Self::validate_ast`] when this is set, then the new file's
         /// semantic validation (`Self::validate_detached_model_file`).
         pub fn set_metamodel_validation(&mut self, metamodel_validation: bool) {
+            self.clear_validated();
             self.metamodel_validation = metamodel_validation;
         }
     }
@@ -2528,8 +2776,42 @@ impl ModelManager {
         }
     }
 
+    /// P5-97 (accordproject/concerto-rust#448): the caches an append
+    /// ([`ModelManager::insert_shared`]) leaves valid. Appending a file
+    /// adds a namespace no file held (a namespace is never registered
+    /// twice) and changes no registered file or handle, so every name that
+    /// resolved before resolves to the same declaration after: only a
+    /// resolution that failed can change. The caches keep only answers
+    /// built from successful resolutions, so they stay:
+    ///
+    /// - an inheritance chain ([`ClassInfo`]) is cached only once every
+    ///   super type resolved;
+    /// - an instance fact is cached only when its computation succeeded
+    ///   (field defaults: when every field type resolved);
+    /// - a validation plan is kept only when nothing in it was left
+    ///   unresolved or unplanned ([`crate::instance::plan::ClassPlan::is_settled`]);
+    ///   any other plan, and a declaration recorded as having none, is built
+    ///   again on next use.
+    ///
+    /// So adding a request's user files to a manager forked from a base
+    /// ([`ModelManager::fork`]) keeps every warmed answer about the base's
+    /// declarations, and never changes one. A removal, a rollback and a
+    /// rebuild still drop everything ([`ModelManager::invalidate_caches`]).
+    fn keep_caches_for_append(&mut self) {
+        let plans = match self.plan_cache.get_mut() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for slot in plans.iter_mut() {
+            if !matches!(slot, Some(Some(plan)) if plan.is_settled()) {
+                *slot = None;
+            }
+        }
+    }
+
     /// Drops every answer cached from the registered files (P5-06); called
-    /// by every change to them.
+    /// by every change to them but an append
+    /// ([`ModelManager::keep_caches_for_append`]).
     fn invalidate_caches(&mut self) {
         match self.class_cache.get_mut() {
             Ok(cache) => cache.clear(),
@@ -2587,6 +2869,26 @@ impl ModelManager {
             .flatten()
             .flatten()
             .fold((0, 0), |(n, p), plan| (n + 1, p + plan.props.len()))
+    }
+
+    /// P5-97: the number of cached inheritance chains, instance facts and
+    /// validation plans (a declaration recorded as having none included): a
+    /// test-only measure.
+    #[cfg(test)]
+    pub(crate) fn cache_counts(&self) -> (usize, usize, usize) {
+        let classes = match self.class_cache.lock() {
+            Ok(cache) => cache.iter().flatten().count(),
+            Err(poisoned) => poisoned.into_inner().iter().flatten().count(),
+        };
+        let facts = match self.instance_cache.lock() {
+            Ok(cache) => cache.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        };
+        let plans = match self.plan_cache.lock() {
+            Ok(cache) => cache.iter().flatten().count(),
+            Err(poisoned) => poisoned.into_inner().iter().flatten().count(),
+        };
+        (classes, facts, plans)
     }
 
     /// For the validation plan: a class-like declaration's chain and its
@@ -3086,14 +3388,27 @@ impl ModelManager {
             .collect();
 
         let mut filtered_files = Vec::new();
-        for model_file in self.model_files() {
+        for model_file in self.shared_model_files() {
             if model_file.is_system_namespace() {
                 continue;
             }
-            let filtered =
-                model_file.filter(|decl| kept.contains(&(decl as *const Declaration)), self)?;
-            if let Some(f) = filtered {
-                filtered_files.push(f);
+            // P5-97: a file the filter keeps exactly as it is is shared, not
+            // rebuilt, and is not validated again when this manager had
+            // validated it and every file it reaches is shared too
+            // (`ValidityProof`).
+            match model_file
+                .filter_outcome(|decl| kept.contains(&(decl as *const Declaration)), self)?
+            {
+                crate::introspect::model_file::FilterOutcome::Empty => {}
+                crate::introspect::model_file::FilterOutcome::Unchanged => {
+                    filtered_files.push((
+                        Arc::clone(model_file),
+                        self.validity_proof(model_file.namespace()),
+                    ));
+                }
+                crate::introspect::model_file::FilterOutcome::Filtered(f) => {
+                    filtered_files.push((Arc::new(*f), None));
+                }
             }
         }
         result.insert_models(filtered_files, !disable_validation)?;
@@ -3238,24 +3553,21 @@ impl ModelManager {
     /// [`ModelManager::validate_models`] once over the whole manager; either
     /// failure undoes every insert this call made, exactly as `add_models`
     /// does for its own AST-building version of the same loop.
-    fn insert_models(&mut self, files: Vec<ModelFile>, validate: bool) -> Result<()> {
+    fn insert_models(
+        &mut self,
+        files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
+        validate: bool,
+    ) -> Result<()> {
         let files_len = self.files.len();
         let declarations_len = self.declarations.len();
         let properties_len = self.properties.len();
         let namespaces_snapshot = self.namespaces.clone();
         let generation = self.generation;
+        let validated = self.validated_marks();
 
         let mut result: Result<()> = Ok(());
-        for mf in files {
-            if let Some(existing) = self
-                .namespaces
-                .get(mf.namespace())
-                .and_then(|id| self.file(*id))
-            {
-                result = Err(already_exists(mf.namespace(), mf.file_name(), existing));
-                break;
-            }
-            if let Err(err) = self.insert(mf) {
+        for (mf, proof) in files {
+            if let Err(err) = self.add_shared_model_file_with_proof(mf, proof) {
                 result = Err(err);
                 break;
             }
@@ -3274,6 +3586,7 @@ impl ModelManager {
             self.invalidate_caches();
             self.namespaces = namespaces_snapshot;
             self.generation = generation;
+            self.restore_validated(&validated);
             return Err(err);
         }
         Ok(())
@@ -6000,5 +6313,304 @@ mod tests {
             .map(|f| f.namespace().to_string())
             .collect();
         assert_eq!(before, after);
+    }
+
+    /// P5-97 (accordproject/concerto-rust#448): a model AST with one
+    /// namespace and the given declarations and imports.
+    fn model(namespace: &str, imports: Value, declarations: Value) -> Value {
+        serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": namespace,
+            "imports": imports,
+            "declarations": declarations,
+        })
+    }
+
+    /// P5-97: a concept `name` extending `super_type` (if any), with one
+    /// string property `field`.
+    fn p597_concept(name: &str, super_type: Option<&str>, field: &str) -> Value {
+        let mut decl = serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": name, "isAbstract": false,
+            "properties": [
+                { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": field, "isArray": false, "isOptional": false }
+            ]
+        });
+        if let Some(super_type) = super_type {
+            decl["superType"] = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": super_type });
+        }
+        decl
+    }
+
+    /// P5-97: a user model in `namespace` importing `Person` from the
+    /// `manager()` base and declaring `User extends Person`.
+    fn user_model(namespace: &str) -> Value {
+        model(
+            namespace,
+            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ImportType",
+                                 "namespace": "org.example@1.0.0", "name": "Person" }]),
+            serde_json::json!([p597_concept("User", Some("Person"), "login")]),
+        )
+    }
+
+    /// The answers a server reads about one type.
+    fn answers(mgr: &ModelManager, fqn: &str) -> (Vec<String>, Vec<String>, Option<String>, bool) {
+        (
+            mgr.super_types(fqn)
+                .unwrap()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+            mgr.properties(fqn)
+                .unwrap()
+                .into_iter()
+                .map(|(owner, p)| format!("{owner}.{}", p.name()))
+                .collect(),
+            mgr.super_type(fqn).unwrap().map(|(n, _)| n),
+            mgr.is_assignable_to(fqn, "org.example@1.0.0.Person")
+                .unwrap(),
+        )
+    }
+
+    /// P5-97: a fork holds the same files (shared) under the same handles,
+    /// with the same options and validated marks, and starts with the
+    /// base's warmed caches; adding user models to the fork keeps every
+    /// cached base answer and changes none, and neither manager sees the
+    /// other's later changes.
+    #[test]
+    fn fork_shares_files_inherits_caches_and_is_isolated() {
+        let mut base = manager();
+        base.set_decorator_validation(crate::introspect::decorator::DecoratorValidationOptions {
+            missing_decorator: Some("warn".into()),
+            invalid_decorator: None,
+        });
+        base.validate_models().unwrap();
+        let fqns = [
+            "org.example@1.0.0.Person",
+            "org.example@1.0.0.Employee",
+            "org.example@1.0.0.Manager",
+        ];
+        let before: Vec<_> = fqns.iter().map(|f| answers(&base, f)).collect();
+        let person = base.declaration_id("org.example@1.0.0.Manager").unwrap();
+        let plan = crate::instance::plan::class_plan(&base, person).unwrap();
+        assert!(plan.is_settled());
+        let warmed = base.cache_counts();
+        assert!(warmed.0 >= 3 && warmed.2 >= 1, "{warmed:?}");
+
+        let mut fork = base.fork();
+        assert_eq!(fork.cache_counts(), warmed);
+        assert_eq!(fork.generation(), base.generation());
+        assert_eq!(fork.decorator_validation(), base.decorator_validation());
+        for (a, b) in base.shared_model_files().zip(fork.shared_model_files()) {
+            assert!(Arc::ptr_eq(a, b));
+        }
+        for fqn in fqns {
+            assert_eq!(base.declaration_id(fqn), fork.declaration_id(fqn));
+        }
+        let ns = base.model_file_id("org.example@1.0.0").unwrap();
+        assert!(fork.known_valid(ns));
+
+        // A request's user models: the base's cached answers stay, unchanged.
+        fork.add_model_ast(&user_model("org.user@1.0.0"), Some("user.cto"))
+            .unwrap();
+        fork.validate_models().unwrap();
+        let after_add = fork.cache_counts();
+        assert!(
+            after_add.0 >= warmed.0 && after_add.2 >= warmed.2,
+            "{after_add:?} {warmed:?}"
+        );
+        let fork_plan = crate::instance::plan::class_plan(&fork, person).unwrap();
+        assert!(
+            Arc::ptr_eq(&plan, &fork_plan),
+            "the base's plan is reused, not rebuilt"
+        );
+        let after: Vec<_> = fqns.iter().map(|f| answers(&fork, f)).collect();
+        assert_eq!(before, after);
+        assert!(
+            fork.is_assignable_to("org.user@1.0.0.User", "org.example@1.0.0.Person")
+                .unwrap()
+        );
+
+        // Isolation: the base never sees the fork's models, and a fork
+        // never sees the base's or another fork's later ones.
+        assert!(base.model_file("org.user@1.0.0").is_none());
+        assert!(base.get_type_declaration("org.user@1.0.0.User").is_err());
+        let mut other = base.fork();
+        other
+            .add_model_ast(&user_model("org.user@1.0.0"), Some("other.cto"))
+            .unwrap();
+        assert_eq!(
+            fork.model_file("org.user@1.0.0").unwrap().file_name(),
+            Some("user.cto")
+        );
+        assert_eq!(
+            other.model_file("org.user@1.0.0").unwrap().file_name(),
+            Some("other.cto")
+        );
+        base.add_model_ast(&user_model("org.later@1.0.0"), None)
+            .unwrap();
+        assert!(fork.model_file("org.later@1.0.0").is_none());
+        assert!(other.model_file("org.later@1.0.0").is_none());
+        let deleted = base.delete_model_file("org.example@1.0.0").unwrap();
+        assert!(deleted.model_file("org.example@1.0.0").is_none());
+        assert_eq!(
+            after,
+            fqns.iter().map(|f| answers(&fork, f)).collect::<Vec<_>>()
+        );
+    }
+
+    /// P5-97: an append keeps a cached answer only when it cannot change:
+    /// a plan with an unresolved field type is built again once the type's
+    /// namespace is added, and then resolves.
+    #[test]
+    fn an_append_rebuilds_an_unsettled_plan() {
+        let mut mgr = ModelManager::new().unwrap();
+        let mut holder = p597_concept("Holder", None, "name");
+        holder["properties"].as_array_mut().unwrap().push(serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "later", "isArray": false, "isOptional": true,
+            "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Later" }
+        }));
+        mgr.add_model_ast(
+            &model(
+                "org.holder@1.0.0",
+                serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ImportType",
+                                     "namespace": "org.later@1.0.0", "name": "Later" }]),
+                serde_json::json!([holder]),
+            ),
+            None,
+        )
+        .unwrap();
+        let id = mgr.declaration_id("org.holder@1.0.0.Holder").unwrap();
+        let plan = crate::instance::plan::class_plan(&mgr, id).unwrap();
+        assert!(!plan.is_settled());
+        mgr.add_model_ast(
+            &model(
+                "org.later@1.0.0",
+                serde_json::json!([]),
+                serde_json::json!([p597_concept("Later", None, "x")]),
+            ),
+            None,
+        )
+        .unwrap();
+        let rebuilt = crate::instance::plan::class_plan(&mgr, id).unwrap();
+        assert!(!Arc::ptr_eq(&plan, &rebuilt));
+        assert!(rebuilt.is_settled());
+    }
+
+    /// P5-97: `filter` shares a file it keeps unchanged, and does not
+    /// validate it again only when the source had validated it and every
+    /// file it reaches is shared too; the result is the one the rebuilding
+    /// filter gave, and a source never validated still fails the same way.
+    #[test]
+    fn filter_shares_unchanged_files_and_keeps_validation() {
+        let mut base = manager();
+        base.add_model_ast(&user_model("org.user@1.0.0"), Some("user.cto"))
+            .unwrap();
+        base.validate_models().unwrap();
+        let keep_all = |fqn: &str| !fqn.starts_with("concerto.decorator@");
+        let result = base.filter_by_fqn(keep_all, false).unwrap();
+        for ns in ["org.example@1.0.0", "org.user@1.0.0"] {
+            let a = base
+                .shared_model_files()
+                .find(|f| f.namespace() == ns)
+                .unwrap();
+            let b = result
+                .shared_model_files()
+                .find(|f| f.namespace() == ns)
+                .unwrap();
+            assert!(Arc::ptr_eq(a, b), "{ns} is shared");
+            let id = result.model_file_id(ns).unwrap();
+            assert!(result.known_valid(id), "{ns} is known valid");
+        }
+        // Dropping `Manager` changes org.example: it is rebuilt, and the
+        // user file, still shared, is validated again (its proof no longer
+        // holds), exactly as before.
+        let partial = base
+            .filter_by_fqn(|fqn| keep_all(fqn) && !fqn.ends_with(".Manager"), false)
+            .unwrap();
+        let example = partial
+            .shared_model_files()
+            .find(|f| f.namespace() == "org.example@1.0.0")
+            .unwrap();
+        assert!(!base.shared_model_files().any(|f| Arc::ptr_eq(f, example)));
+        let user = partial.model_file_id("org.user@1.0.0").unwrap();
+        let proof = partial.files[user.slot()].proof.clone().unwrap();
+        assert!(
+            !partial.proof_holds(&proof),
+            "its import was rebuilt: validated again"
+        );
+        assert!(partial.known_valid(user), "and it passed");
+        let names = |m: &ModelManager| -> Vec<String> {
+            m.super_types("org.user@1.0.0.User")
+                .unwrap()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        assert_eq!(names(&partial), names(&base));
+
+        // A source that never validated an invalid file: the filter
+        // validates it and throws, as the rebuilding filter did.
+        let mut unvalidated = manager();
+        unvalidated
+            .add_model_ast(
+                &model(
+                    "org.bad@1.0.0",
+                    serde_json::json!([]),
+                    serde_json::json!([p597_concept("Bad", Some("Nowhere"), "x")]),
+                ),
+                None,
+            )
+            .unwrap();
+        let err = unvalidated.filter_by_fqn(keep_all, false).unwrap_err();
+        let expected = unvalidated.validate_models().unwrap_err();
+        assert_eq!(err.to_string(), expected.to_string());
+        assert!(unvalidated.filter_by_fqn(keep_all, true).is_ok());
+    }
+
+    /// P5-97: a proof holds only under the source's options, and the
+    /// validated marks go when an option changes or a batch rolls back.
+    #[test]
+    fn validated_marks_follow_options_and_rollbacks() {
+        let mut base = manager();
+        base.validate_models().unwrap();
+        let id = base.model_file_id("org.example@1.0.0").unwrap();
+        assert!(base.known_valid(id));
+        let proof = base.validity_proof("org.example@1.0.0").unwrap();
+        let shared = base
+            .shared_model_files()
+            .find(|f| f.namespace() == "org.example@1.0.0")
+            .cloned()
+            .unwrap();
+
+        let mut target = ModelManager::new().unwrap();
+        target.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
+        let tid = target
+            .add_shared_model_file_with_proof(Arc::clone(&shared), Some(Arc::clone(&proof)))
+            .unwrap();
+        assert!(
+            !target.known_valid(tid),
+            "other options: the proof does not hold"
+        );
+        let mut same = ModelManager::new().unwrap();
+        let sid = same
+            .add_shared_model_file_with_proof(shared, Some(proof))
+            .unwrap();
+        assert!(same.known_valid(sid));
+
+        base.set_metamodel_validation(true);
+        assert!(!base.known_valid(id));
+        base.validate_models().unwrap();
+        assert!(base.known_valid(id));
+
+        // A batch whose validation fails restores the marks.
+        let bad = model(
+            "org.bad@1.0.0",
+            serde_json::json!([]),
+            serde_json::json!([p597_concept("Bad", Some("Nowhere"), "x")]),
+        );
+        let user = user_model("org.user@1.0.0");
+        assert!(base.load_models([(&user, None), (&bad, None)]).is_err());
+        assert!(base.known_valid(id));
+        assert!(base.model_file("org.user@1.0.0").is_none());
     }
 }
