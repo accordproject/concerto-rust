@@ -1165,11 +1165,12 @@ impl ModelManager {
         // cross-file (import) check, silently dropping every import that
         // should stay. So the fully-qualified check runs once, up front,
         // over every file's own real namespace, and this instead keeps by
-        // *identity*: every declaration the predicate is ever handed here is
-        // a reference into `self`'s own arena (`self` is `source_manager`
-        // below), so a declaration kept by an earlier file is still
-        // recognised when it is reached again through another file's
-        // imports.
+        // arena handle: every declaration the predicate is ever handed here
+        // is one of `self`'s own (`self` is `source_manager` below), named
+        // by its file's namespace and its position there, which together
+        // give its `DeclId` (A-16g). So a declaration kept by an earlier
+        // file is still recognised when it is reached again through another
+        // file's imports.
         //
         // BC-53: every declaration of a file `result` already holds from
         // `Self::new()` counts as kept without asking `keep`, so an import
@@ -1178,19 +1179,24 @@ impl ModelManager {
         let mut result = self.empty_like()?;
         let keep = &keep;
         let result_ref = &result;
-        let kept: rustc_hash::FxHashSet<*const Declaration> = self
-            .files
-            .iter()
-            .flat_map(|slot| {
-                let mf = &slot.model_file;
-                let held =
-                    mf.is_system_namespace() || result_ref.model_file(mf.namespace()).is_some();
-                self.declarations_in(std::iter::once(slot))
-                    .filter_map(move |(_, fqn, decl)| {
-                        (held || keep(fqn, decl)).then_some(decl as *const Declaration)
-                    })
-            })
-            .collect();
+        let mut kept = vec![false; self.declarations.len()];
+        for slot in &self.files {
+            let mf = &slot.model_file;
+            let held = mf.is_system_namespace() || result_ref.model_file(mf.namespace()).is_some();
+            for (id, fqn, decl) in self.declarations_in(std::iter::once(slot)) {
+                kept[id.slot()] = held || keep(fqn, decl);
+            }
+        }
+        let is_kept = |namespace: &str, index: usize, _: &Declaration| {
+            self.model_file_id(namespace)
+                .and_then(|file| self.files.get(file.slot()))
+                .and_then(|slot| {
+                    let id = slot.declarations.start as usize + index;
+                    (id < slot.declarations.end as usize).then_some(id)
+                })
+                .and_then(|id| kept.get(id).copied())
+                .unwrap_or(false)
+        };
 
         let mut filtered_files = Vec::new();
         for model_file in self.shared_model_files() {
@@ -1205,9 +1211,7 @@ impl ModelManager {
             // rebuilt, and is not validated again when this manager had
             // validated it and every file it reaches is shared too
             // (`ValidityProof`).
-            match model_file
-                .filter_outcome(|decl| kept.contains(&(decl as *const Declaration)), self)?
-            {
+            match model_file.filter_outcome_at(is_kept, self)? {
                 crate::introspect::model_file::FilterOutcome::Empty => {}
                 crate::introspect::model_file::FilterOutcome::Unchanged => {
                     filtered_files.push((
