@@ -802,7 +802,7 @@ impl ModelFile {
     /// `importShortNames` with one forward pass over `this.imports`). That
     /// holds for a user import of a system type name too: the built-in
     /// import `fromAst` appends last wins (P5-98, A-2).
-    pub fn import_target(&self, type_name: &str) -> Option<(&str, &str)> {
+    pub(crate) fn import_target(&self, type_name: &str) -> Option<(&str, &str)> {
         let &(import, position) = self.import_short_names.get(type_name)?;
         let import = &self.imports[import as usize];
         Some((
