@@ -212,8 +212,18 @@ impl From<&str> for Name {
 }
 
 impl From<String> for Name {
+    /// `name`'s text in the name's own `Arc<str>`: the one copy an
+    /// `Arc<str>` needs (its counts sit in front of the text). An empty
+    /// name shares the empty text, as [`Name::new`]'s does.
     fn from(name: String) -> Self {
-        Name::new(&name)
+        if name.is_empty() {
+            return Self::default();
+        }
+        Name {
+            text: Arc::from(name),
+            start: WHOLE,
+            len: 0,
+        }
     }
 }
 
@@ -315,5 +325,14 @@ mod tests {
         let (a, b) = (Name::from("a"), Name::from("b"));
         assert!(a < b);
         assert!(serde_json::from_str::<Name>("1").is_err());
+    }
+
+    #[test]
+    fn a_name_from_a_string_holds_its_text() {
+        let name = Name::from(String::from("Person"));
+        assert_eq!(name, "Person");
+        assert_eq!(name.as_str(), "Person");
+        let empty = Name::from(String::new());
+        assert!(Arc::ptr_eq(&empty.text, &Name::default().text));
     }
 }

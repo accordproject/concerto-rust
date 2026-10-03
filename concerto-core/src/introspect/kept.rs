@@ -1055,7 +1055,7 @@ fn into_decorator(node: Kept) -> mm::Decorator {
                     let class = value.into_string();
                     decorator._class = concerto_metamodel::utils::class_name_owned(class);
                 }
-                ("name", value) => decorator.name = value.into_string().into(),
+                ("name", value) => decorator.name = Name::from(value.into_string()),
                 ("arguments", Kept::Array(arguments)) => {
                     decorator.arguments =
                         Some(arguments.into_iter().filter_map(into_argument).collect());
