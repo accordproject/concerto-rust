@@ -19,7 +19,8 @@
 //!   only).
 //!
 //! The ops: `mm_new` (`ModelManager::new`); `modelfile_new`
-//! (`ModelFile::from_json_text`, what `stageModelFileWithHeader` runs);
+//! (`ModelFile::from_json_text`, what `stageModelFileBytes` runs without
+//! the shape check);
 //! `add_model_file` (a fresh manager, then per file `from_json_text`,
 //! `validate_and_add_model_file`: the stage, then the validate and
 //! commit of `addModelFile`/`addCTOModel`). `addCTOModel`'s

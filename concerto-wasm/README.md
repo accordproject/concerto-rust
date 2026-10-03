@@ -56,72 +56,66 @@ concerto links it into `node_modules`, where the shim finds it.
 ## The handle API
 
 There is one exported object per `ModelManager`, `ModelManagerHandle`
-(spike "Input to P1-04"). Model files, declarations and properties are
-named by the P1-04 arena's dense `u32` handles (`ModelFileId`, `DeclId`,
-`PropId`), which are plain JS numbers. A handle keeps naming the same element
-for the life of the manager.
+(spike "Input to P1-04"). Model files are named by the P1-04 arena's dense
+`u32` handles (`ModelFileId`), which are plain JS numbers. A handle keeps
+naming the same file for the life of the manager. The bindings below are
+the ones concerto-core calls (and `epoch()`, which the smoke checks read):
+P5-103 (accordproject/concerto-rust#457) removed every export with no
+caller there, the arena's declaration and property handles among them.
 
 | Member | Returns |
 |---|---|
 | `new ModelManagerHandle()` | a manager with `concerto@1.0.0` loaded |
 | `addModel(astJson, fileName?)` | the new model file's handle; `astJson` is `JSON.stringify(ast)` |
-| `validateModels()` | nothing; throws the first problem |
+| `validateModelFiles(modelFiles)` | nothing; throws the first problem, naming the JS `ModelFile` of `modelFiles` it was found in |
 | `epoch()` | the mutation counter; a cached snapshot is current while it is unchanged. It moves iff the manager may have changed; staging and the extract memo never move it (P5-101, D-7) |
-| `generation()` | the model files' state version (`ModelManager::state_version`); kept exported, not used by the views |
-| `modelFileId(namespace)`, `declarationId(fqn)` | a handle, or `undefined` |
-| `modelFileIds()`, `declarationIds(file)`, `propertyIds(decl)` | `Uint32Array` of handles, in order |
-| `modelFileOf(decl)`, `parentOf(prop)` | a handle, or `undefined` |
+| `modelFileId(namespace)` | a handle, or `undefined` |
 | `modelFileSnapshot(file)` | JSON text `{namespace, version, fileName, ast}` |
-| `declarationSnapshot(decl)` | JSON text `{name, fullyQualifiedName, modelFile, ast}` |
-| `propertySnapshot(prop)` | JSON text `{name, declaration, ast}` |
+| `stageModelFileBytes(ast, definitions, fileName, flags)` | loads a model file without registering it (the one staging binding, P5-101) |
 | `free()` | releases the manager; a `FinalizationRegistry` does it anyway |
 
 - The `ast` in a snapshot is the node as it was loaded (OD-3).
 - Snapshots are JSON text, which the view parses once and caches, because
   per-field getters cost 100–350× more (spike REPORT §3).
-- Enum values have no `PropId` until P2-04.
 
 **Errors.** Every core error is thrown through the error factory that the
-shim registers with `setHost(factory, semverParse)`, as the payload
+shim registers with `setHost(factory)`, as the payload
 `{kind, code, params, message, location, …}` (PORTING.md 2).
 - Loader errors that no unit has ported yet (a duplicate namespace, a
   handle that names nothing) have `code: "pre-port"` and their message
   verbatim.
 - Malformed JSON text is a JS `SyntaxError`.
 
-**The resident DCS manager** (P5-27, F6). `new DcsManagerHandle(models)`
-loads the source models of a `DecoratorManager` call once. The shim keeps it
-for as long as the source `ModelManager`'s epoch and model files are
-unchanged. Its `decorateModels(target, commandSets, options)`,
-`extractDecorators(target, options)`, `extractVocabularies(target, options)`
-and `extractNonVocabDecorators(target, options)` return what the matching
-`decoratorManager*` binding returns. Each also stages the result's model
-files into `target`, the new manager's `ModelManagerHandle`, and adds
-`staged` (a `[stageId, header]` entry, or `null`, for each result model)
-and `validated`. `ModelManagerHandle.dcsValidate(commandSet)` is
-`DecoratorManager.validate`'s structural check against the handle's own
-manager: the shim calls it on the validation manager it has just built,
-instead of `decoratorManagerValidate` rebuilding one from the model files.
-The per-call `decoratorManager*` bindings are unchanged.
-
 **DCS operations on the source handle** (P5-55, F-A1).
-`ModelManagerHandle.dcsDecorateModels(target, commandSets, options)`,
-`dcsExtractDecorators(target, options)`, `dcsExtractVocabularies(target,
-options)` and `dcsExtractNonVocabDecorators(target, options)` are the
-`DcsManagerHandle` operations, run on the source `ModelManager`'s own
-handle, which already mirrors its models. The shim calls them whenever the
-source manager's `getAst`, `getModelFiles` and `resolveMetaModel` are its
-own, so it no longer copies the models into a `DcsManagerHandle`, and keeps
-`DcsManagerHandle` and the per-call bindings as fallbacks. `target` must be
-another handle. `dcsDecorateModels` validates its result with `target`'s
+`ModelManagerHandle.dcsDecorateModels(target, commandSets, options)` and
+`dcsExtract(target, options, action)` (P5-101, D-10: `action` 0
+`extractDecorators`, 1 `extractVocabularies`, 2
+`extractNonVocabDecorators`) run a `DecoratorManager` operation on the
+source `ModelManager`'s own handle, which already mirrors its models. Each
+stages the result's model files into `target`, the new manager's
+`ModelManagerHandle` (another handle), and adds `staged` (a flat
+`[stageId, ...header]` entry, or `null`, for each result model) and
+`validated`. `dcsDecorateModels` validates its result with `target`'s
 `decoratorValidation`; none of them changes the handle or its epoch.
+`ModelManagerHandle.dcsValidate(commandSet)` is `DecoratorManager.validate`'s
+structural check against the handle's own manager: the shim calls it on the
+validation manager it has just built.
+
+**The DCS input manager** (P5-27, F6). `new DcsManagerHandle(models)` loads
+the source models of a `DecoratorManager` call, for a source manager whose
+`getAst`, `getModelFiles` or `resolveMetaModel` is not its own (so its
+handle cannot stand for it). Its `decorateModels(target, commandSets,
+options)` and `extract(target, options, action)` give what the source
+handle's operations give. The shim builds one per call and frees it
+(P5-103 removed the copy it kept per source manager). P5-103 also removed
+the per-call `decoratorManager*` bindings and the per-action extract
+bindings, which no caller used any more.
 
 **Extract result memo** (P5-56, F-A2). With `removeDecoratorsFromModel`
-false, the three `dcsExtract*` methods keep a per-epoch memo on the handle:
-the second call on unchanged models keeps the result manager, its encoded
-AST and the resolved source models, and every later call rebuilds only the
-command sets and vocabularies from them. Any change that moves the epoch
-drops the memo, and so does `ModelManagerHandle.dropDcsMemo()` (additive).
+false, `dcsExtract` keeps a per-epoch memo on the handle: the second call on
+unchanged models keeps the result manager, its encoded AST and the resolved
+source models, and every later call rebuilds only the command sets and
+vocabularies from them. Any change that moves the epoch drops the memo.
 Errors are never memoised, every call returns new JS objects and new staged
 clones, and the memo never moves the epoch.
 
@@ -137,8 +131,9 @@ npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromiu
 ```
 
 - Both run the checks in `scripts/checks.mjs` against the loaded module:
-  handles, snapshots, `generation()`, stable handles across a load,
-  `validateModels`, errors through the factory, `free()`, a trial binding.
+  handles, snapshots, `epoch()`, stable handles across a load,
+  `validateModelFiles`, errors through the factory, `free()`, the staging,
+  serializer and DCS bindings, and a trial binding.
 - `node-smoke.cjs [module]` also takes a module to `require`. For example,
   from the concerto checkout:
   `node ../concerto-rust/concerto-wasm/scripts/node-smoke.cjs @accordproject/concerto-engine`
@@ -179,7 +174,10 @@ after `require`/`import`. In Chromium, importing the ESM loader took
 59–105 ms.
 
 **Boundary cost of the handle API**, in ns per call (best of 3 × 20,000,
-Chromium main thread, headless shell / full Chromium):
+Chromium main thread, headless shell / full Chromium), measured before
+P5-103 removed `generation()` and the declaration and property handles
+(`chromium-smoke.mjs` now times `epoch()`, `modelFileId`, `getTypeName` and
+`modelFileSnapshot` instead):
 
 | Call | ns |
 |---|---|

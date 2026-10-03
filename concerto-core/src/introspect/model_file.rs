@@ -148,7 +148,7 @@ impl ModelFile {
     /// `imports` node exactly as the text holds it (`None` when the AST has
     /// no `imports` key), so a caller that needs it has no second decode of
     /// the text (P5-28, accordproject/concerto-rust#333: the WASM binding's
-    /// `stageModelFileWithHeader` reads the TS `ModelFile` header from it).
+    /// `stageModelFileBytes` reads the TS `ModelFile` header from it).
     /// Same result, same errors in the same order.
     ///
     /// Behind `js-compat`, like the rest of the seam concerto-wasm builds

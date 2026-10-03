@@ -152,11 +152,12 @@ fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::Validation => "Validation",
         ErrorKind::InvalidArgument => "Error",
         ErrorKind::MalformedInput => "JsTypeError",
-        ErrorKind::RecursionLimit => "JsRangeError",
         ErrorKind::Metamodel => "Metamodel",
         // `ErrorKind` is `#[non_exhaustive]`; a new kind is a plain `Error`
-        // until the shim learns it. So is `Validator`, which no check has
-        // raised since BC-39 (P5-103 removed its shim entry).
+        // until the shim learns it. So are `Validator`, which no check has
+        // raised since BC-39, and `RecursionLimit`, raised by none since
+        // BC-11 reports a circular super type chain as an IllegalModel
+        // error (P5-103 removed their shim entries).
         _ => "Error",
     }
 }
@@ -7587,12 +7588,13 @@ fn stage_result(target: &mut ModelManagerHandle, result: &ModelManager) -> Vec<V
     )
 }
 
-/// The input manager of the `DecoratorManager` operations, kept resident
-/// across calls (P5-27, F6): the source models, as the view reads them off
-/// `modelManager.getAst(resolve, false).models`, loaded once
-/// ([`model_manager_from_owned_asts`]). The view keeps one per source
-/// ModelManager and resolution flag, and builds a new one once that manager's epoch or model
-/// files change. The operations never change it. Additive.
+/// The input manager of the `DecoratorManager` operations (P5-27, F6), for
+/// a source ModelManager whose own handle cannot stand for it: the source
+/// models, as the view reads them off `modelManager.getAst(resolve,
+/// false).models`, loaded once ([`model_manager_from_owned_asts`]). The
+/// view builds one per operation and frees it (P5-103 removed the copy it
+/// kept per source manager, which only a manager the source handle serves
+/// could use). The operations never change it.
 #[wasm_bindgen]
 pub struct DcsManagerHandle {
     manager: ModelManager,

@@ -163,7 +163,7 @@ fn benches(c: &mut Criterion) {
     // TS's `Serializer#fromJSON` (populate, then `resource.validate()`),
     // which the P3-01b serializer port now has: the JS layer's
     // `Serializer::from_json` (concerto-core-js, what the WASM binding's
-    // `serializerFromJson` runs), and the native plain-JSON route,
+    // `serializerFromJsonCompact` runs), and the native plain-JSON route,
     // `ModelManager::validate_instance` (P6-01).
     let serializer = Serializer::new(true, true, None).expect("a serializer");
     let js_instances: Vec<JsValue> = instances.iter().map(JsValue::from_json).collect();

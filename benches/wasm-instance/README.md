@@ -26,7 +26,7 @@ node run.mjs --out result.json
   `ResourceValidator` walk, the in-WASM validator floor that P5-12b
   measured (accordproject/concerto-rust#292);
 - `from_json`: concerto-core-js's `Serializer::from_json`, what the
-  engine's `serializerFromJson` runs;
+  engine's `serializerFromJsonCompact` runs;
 - `validate_instance_native`: `ModelManager::validate_instance`.
 
 To time another tree (for example the integration head as a "before"),
