@@ -40,8 +40,8 @@ loads the JSON AST a CTO-to-AST parser (or a hand-built document) already
 produced, shaped like `concerto.metamodel@1.0.0.Model`:
 
 ```rust
+use concerto_core::json;
 use concerto_core::ModelManager;
-use serde_json::json;
 
 let person_model_ast = json!({
     "$class": "concerto.metamodel@1.0.0.Model",
@@ -67,6 +67,13 @@ let person_model_ast = json!({
 let mut models = ModelManager::new()?;
 models.add_model_ast(&person_model_ast, Some("hr.cto"))?;
 ```
+
+`add_model_ast` and the instance validators below take a
+`&concerto_core::json::Value`, not a `serde_json::Value`: the same JSON
+tree, with seeded maps. `concerto_core::json!` builds one the way
+`serde_json::json!` builds a `serde_json::Value`, and
+`serde_json::from_str::<concerto_core::json::Value>` parses JSON text into
+one. The `json!` calls in the rest of this guide use that import.
 
 - `ModelManager::new()` loads the Concerto system models (the root and
   decorator models) and is otherwise empty.
