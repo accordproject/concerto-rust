@@ -1461,9 +1461,8 @@ fn a_decorator_validation_error_carries_the_file_suffix_once() {
 /// (here, [`ModelManager::get_all_properties`]) includes the `$identifier`
 /// field the system `Asset` declaration carries, whether or not the
 /// subtype declares its own identity, and
-/// [`ModelManager::identifier_field_name`] inherits it.
+/// [`ModelManager::identifier_field`] inherits it.
 #[test]
-#[allow(deprecated)]
 fn an_asset_inherits_the_system_identifier_field() {
     let mut manager = ModelManager::new().unwrap();
     manager
@@ -1492,10 +1491,7 @@ fn an_asset_inherits_the_system_identifier_field() {
     let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
     assert_eq!(names, ["price", "$identifier"]);
     assert_eq!(
-        manager
-            .identifier_field_name("org.example@1.0.0.Order")
-            .unwrap()
-            .as_deref(),
+        manager.identifier_field("org.example@1.0.0.Order").unwrap(),
         Some("$identifier")
     );
 }
@@ -1507,7 +1503,6 @@ fn an_asset_inherits_the_system_identifier_field() {
 /// identified", `ClassDeclaration.getProperties`), even though its own
 /// identity is `sku`.
 #[test]
-#[allow(deprecated)]
 fn an_explicitly_identified_asset_still_inherits_the_system_identifier_field() {
     let mut manager = ModelManager::new().unwrap();
     manager
@@ -1539,10 +1534,7 @@ fn an_explicitly_identified_asset_still_inherits_the_system_identifier_field() {
     let names: Vec<&str> = properties.iter().map(|(_, p)| p.name()).collect();
     assert_eq!(names, ["sku", "price", "$identifier"]);
     assert_eq!(
-        manager
-            .identifier_field_name("org.example@1.0.0.Order")
-            .unwrap()
-            .as_deref(),
+        manager.identifier_field("org.example@1.0.0.Order").unwrap(),
         Some("sku")
     );
 }

@@ -3,7 +3,7 @@
 //! (`docs/public-api.md`, accordproject/concerto-rust#83), as opposed to
 //! `load_validate.rs`, `validate_metamodel.rs` and `instance_validate.rs`
 //! (task P5-04, #75), which time internal entry points (`ModelFile::from_json`,
-//! the deprecated `ModelManager::add_model`, `add_owned_model_with_definitions`,
+//! `add_owned_model_with_definitions`,
 //! the `js-compat`-only `instance::validate::validate_instance`, and the
 //! `concerto-core-js` `Serializer`) alongside the public ones.
 //!
@@ -16,8 +16,7 @@
 //!
 //! Covers the workloads P6-04 asks for:
 //!   - **model load**: [`concerto_core::ModelManager::add_model_ast`] (one
-//!     call per file, the stable replacement for the deprecated `add_model`
-//!     `load_validate.rs` still uses) and
+//!     call per file) and
 //!     [`concerto_core::ModelManager::add_model_asts`] (the batch form,
 //!     which loads and then validates the whole set in one call, rolling
 //!     back on any failure — a different entry point with different
@@ -65,8 +64,7 @@ const NUM_INSTANCES: usize = 500;
 // ---------------------------------------------------------------------
 
 /// [`ModelManager::add_model_ast`] for every model in the set, into a fresh
-/// manager. The stable, non-deprecated counterpart to `load_validate.rs`'s
-/// `load_only` (which uses `add_model`, `#[deprecated]` since P6-01).
+/// manager, as `load_validate.rs`'s `load_only` does.
 fn load_via_public_api(set: &[(String, Value)]) -> ModelManager {
     let mut mgr = ModelManager::new().expect("system model loads");
     for (name, ast) in set {

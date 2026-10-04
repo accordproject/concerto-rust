@@ -5,14 +5,14 @@
 //! namespace (as a JSON string and as a JS object built by
 //! serde-wasm-bindgen), fine-grained per-declaration getters keyed either by a
 //! namespace string or by an integer handle, a few boundary probes, and two
-//! ways of turning a `ConcertoError` into a JS `Error`.
+//! ways of turning a `Error` into a JS `Error`.
 //!
 //! Nothing here is meant to survive into `concerto-wasm`; REPORT.md carries the
 //! findings.
 
 use std::cell::RefCell;
 
-use concerto_core::{ConcertoError, Declaration, ModelManager, Property};
+use concerto_core::{Declaration, Error, ModelManager, Property};
 use js_sys::{Error as JsError, Function, Object};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -28,7 +28,7 @@ thread_local! {
     static ERROR_FACTORY: RefCell<Option<Function>> = const { RefCell::new(None) };
 }
 
-/// The structured form of a `ConcertoError`, as the plan's error contract
+/// The structured form of a `Error`, as the plan's error contract
 /// describes it: `{kind, message, fileName, location, ...}`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +45,7 @@ struct ErrorPayload {
     location: Option<String>,
 }
 
-fn payload(err: &ConcertoError) -> ErrorPayload {
+fn payload(err: &Error) -> ErrorPayload {
     let message = err.to_string();
     let mut p = ErrorPayload {
         kind: "",
@@ -56,15 +56,15 @@ fn payload(err: &ConcertoError) -> ErrorPayload {
         location: None,
     };
     match err {
-        ConcertoError::TypeNotFound { type_name } => {
+        Error::TypeNotFound { type_name } => {
             p.kind = "TypeNotFound";
             p.type_name = Some(type_name.clone());
         }
-        ConcertoError::NamespaceNotFound { namespace } => {
+        Error::NamespaceNotFound { namespace } => {
             p.kind = "NamespaceNotFound";
             p.namespace = Some(namespace.clone());
         }
-        ConcertoError::IllegalModel {
+        Error::IllegalModel {
             file_name,
             location,
             ..
@@ -73,19 +73,19 @@ fn payload(err: &ConcertoError) -> ErrorPayload {
             p.file_name = file_name.clone();
             p.location = location.clone();
         }
-        ConcertoError::ValidationFailed { .. } => {
+        Error::ValidationFailed { .. } => {
             p.kind = "ValidationFailed";
         }
     }
     p
 }
 
-/// Converts a `ConcertoError` into the value thrown into JS.
+/// Converts a `Error` into the value thrown into JS.
 ///
 /// With a factory registered, the factory builds the error (strategy B).
 /// Otherwise a plain `Error` is built here, with `name` set to the kind and the
 /// structured fields copied on as own properties (strategy A).
-fn to_js(err: ConcertoError) -> JsValue {
+fn to_js(err: Error) -> JsValue {
     let p = payload(&err);
     let props = serde_wasm_bindgen::to_value(&p).unwrap_or(JsValue::NULL);
     let factory = ERROR_FACTORY.with(|f| f.borrow().clone());
@@ -113,23 +113,23 @@ pub fn set_error_factory(factory: Option<Function>) {
     ERROR_FACTORY.with(|f| *f.borrow_mut() = factory);
 }
 
-/// Throws a sample of each `ConcertoError` variant, for the error-mapping
+/// Throws a sample of each `Error` variant, for the error-mapping
 /// smoke test.
 #[wasm_bindgen(js_name = throwSample)]
 pub fn throw_sample(kind: &str) -> Result<(), JsValue> {
     let err = match kind {
-        "TypeNotFound" => ConcertoError::TypeNotFound {
+        "TypeNotFound" => Error::TypeNotFound {
             type_name: "org.acme@1.0.0.Missing".into(),
         },
-        "NamespaceNotFound" => ConcertoError::NamespaceNotFound {
+        "NamespaceNotFound" => Error::NamespaceNotFound {
             namespace: "org.missing@1.0.0".into(),
         },
-        "IllegalModel" => ConcertoError::IllegalModel {
+        "IllegalModel" => Error::IllegalModel {
             message: "bad model".into(),
             file_name: Some("model.cto".into()),
             location: Some("line 3 column 5".into()),
         },
-        _ => ConcertoError::ValidationFailed {
+        _ => Error::ValidationFailed {
             message: "validation sample".into(),
         },
     };
@@ -137,7 +137,7 @@ pub fn throw_sample(kind: &str) -> Result<(), JsValue> {
 }
 
 /// Panics inside Rust, to show what a panic looks like from JS (it is not a
-/// `ConcertoError`: with `panic = "abort"` it traps).
+/// `Error`: with `panic = "abort"` it traps).
 #[wasm_bindgen(js_name = panicSample)]
 pub fn panic_sample() {
     panic!("sample panic");
@@ -243,7 +243,7 @@ pub struct Engine {
 impl Engine {
     fn file(&self, ns: &str) -> Result<&concerto_core::ModelFile, JsValue> {
         self.manager.model_file(ns).ok_or_else(|| {
-            to_js(ConcertoError::NamespaceNotFound {
+            to_js(Error::NamespaceNotFound {
                 namespace: ns.to_string(),
             })
         })
@@ -269,8 +269,14 @@ impl Engine {
             .ok_or_else(|| JsError::new("bad namespace handle").into())
     }
 
-    fn add(&mut self, value: &serde_json::Value, file_name: Option<String>) -> Result<(), JsValue> {
-        self.manager.add_model(value, file_name).map_err(to_js)?;
+    fn add(
+        &mut self,
+        value: &concerto_core::json::Value,
+        file_name: Option<String>,
+    ) -> Result<(), JsValue> {
+        self.manager
+            .add_model_ast(value, file_name.as_deref())
+            .map_err(to_js)?;
         if let Some(ns) = value.get("namespace").and_then(|v| v.as_str()) {
             self.namespaces.push(ns.to_string());
         }
@@ -292,8 +298,8 @@ impl Engine {
     /// Adds a model from its JSON AST, passed as a JSON string.
     #[wasm_bindgen(js_name = addModel)]
     pub fn add_model(&mut self, json: &str, file_name: Option<String>) -> Result<(), JsValue> {
-        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
-            to_js(ConcertoError::IllegalModel {
+        let value: concerto_core::json::Value = serde_json::from_str(json).map_err(|e| {
+            to_js(Error::IllegalModel {
                 message: e.to_string(),
                 file_name: file_name.clone(),
                 location: None,
@@ -310,7 +316,7 @@ impl Engine {
         ast: JsValue,
         file_name: Option<String>,
     ) -> Result<(), JsValue> {
-        let value: serde_json::Value = serde_wasm_bindgen::from_value(ast)?;
+        let value: concerto_core::json::Value = serde_wasm_bindgen::from_value(ast)?;
         self.add(&value, file_name)
     }
 

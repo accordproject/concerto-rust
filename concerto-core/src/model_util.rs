@@ -107,22 +107,6 @@ pub fn qualify(namespace: &str, short: &str) -> String {
     }
 }
 
-/// Returns everything after the last dot, if present, of the source string:
-/// the TS name of [`short_name`].
-///
-/// TS: ModelUtil.getShortName (src/modelutil.ts)
-///
-/// ```
-/// # #![allow(deprecated)]
-/// # use concerto_core::model_util::get_short_name;
-/// assert_eq!(get_short_name("org.acme.baz@1.0.0.Foo"), "Foo");
-/// assert_eq!(get_short_name("Foo"), "Foo");
-/// ```
-#[deprecated(since = "0.1.0", note = "use `short_name`")]
-pub fn get_short_name(fqn: &str) -> &str {
-    short_name(fqn)
-}
-
 js_compat_pub! {
     /// Returns the namespace of a fully qualified name: everything before the
     /// last dot, or the empty string if there is no dot. `None` (JS `undefined` or
@@ -665,23 +649,6 @@ pub fn is_valid_identifier(name: &str) -> bool {
         return true;
     }
     ID_REGEX.find(name).is_some()
-}
-
-/// Returns the fully qualified name of a type: `namespace.type`, or `type`
-/// alone when the namespace is empty (falsy in TS). The TS name of
-/// [`qualify`].
-///
-/// TS: ModelUtil.getFullyQualifiedName (src/modelutil.ts)
-///
-/// ```
-/// # #![allow(deprecated)]
-/// # use concerto_core::model_util::get_fully_qualified_name;
-/// assert_eq!(get_fully_qualified_name("a.namespace", "type"), "a.namespace.type");
-/// assert_eq!(get_fully_qualified_name("", "type"), "type");
-/// ```
-#[deprecated(since = "0.1.0", note = "use `qualify`")]
-pub fn get_fully_qualified_name(namespace: &str, type_name: &str) -> String {
-    qualify(namespace, type_name)
 }
 
 /// Removes the namespace version from a fully qualified name. Primitive types

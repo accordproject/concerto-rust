@@ -145,16 +145,15 @@ fn property_default_value_reads_the_raw_ast_including_datetime() {
 /// every namespace in `EXCLUDE_NS` (src/basemodelmanager.ts). A fresh
 /// manager has only those, so nothing directly extends the system root.
 #[test]
-#[allow(deprecated)]
 fn direct_subclasses_of_a_fresh_manager_leave_out_the_system_models() {
     let mgr = ModelManager::new().unwrap();
     assert!(
-        mgr.get_direct_subclasses("concerto@1.0.0.Concept")
+        mgr.direct_subclass_names("concerto@1.0.0.Concept")
             .unwrap()
             .is_empty()
     );
     assert!(
-        mgr.get_direct_subclasses("concerto@1.0.0.Asset")
+        mgr.direct_subclass_names("concerto@1.0.0.Asset")
             .unwrap()
             .is_empty()
     );
@@ -165,15 +164,14 @@ fn direct_subclasses_of_a_fresh_manager_leave_out_the_system_models() {
 /// `Asset`, `Participant`, `Transaction`, `Event` and the decorator
 /// model's own declarations are not in the population.
 #[test]
-#[allow(deprecated)]
 fn direct_subclasses_are_only_user_declarations() {
     let mgr = manager();
     assert_eq!(
-        mgr.get_direct_subclasses("concerto@1.0.0.Concept").unwrap(),
+        mgr.direct_subclass_names("concerto@1.0.0.Concept").unwrap(),
         ["org.example@1.0.0.Person", "org.example@1.0.0.Color"]
     );
     assert_eq!(
-        mgr.get_direct_subclasses("org.example@1.0.0.Person")
+        mgr.direct_subclass_names("org.example@1.0.0.Person")
             .unwrap(),
         ["org.example@1.0.0.Employee"]
     );
@@ -182,23 +180,19 @@ fn direct_subclasses_are_only_user_declarations() {
 /// TS `collectSubclasses([this])` always adds the receiver itself, so a
 /// fresh manager's `Concept` is assignable only from itself.
 #[test]
-#[allow(deprecated)]
 fn assignable_class_declarations_of_a_fresh_manager_leave_out_the_system_models() {
     let mgr = ModelManager::new().unwrap();
     assert_eq!(
-        mgr.get_assignable_class_declarations("concerto@1.0.0.Concept")
-            .unwrap(),
+        mgr.assignable_type_names("concerto@1.0.0.Concept").unwrap(),
         ["concerto@1.0.0.Concept"]
     );
 }
 
 #[test]
-#[allow(deprecated)]
 fn assignable_class_declarations_are_the_receiver_and_user_declarations() {
     let mgr = manager();
     assert_eq!(
-        mgr.get_assignable_class_declarations("concerto@1.0.0.Concept")
-            .unwrap(),
+        mgr.assignable_type_names("concerto@1.0.0.Concept").unwrap(),
         [
             "concerto@1.0.0.Concept",
             "org.example@1.0.0.Person",
@@ -212,7 +206,6 @@ fn assignable_class_declarations_are_the_receiver_and_user_declarations() {
 /// A user asset that implicitly extends the system `Asset` is found; the
 /// system root declarations themselves are not.
 #[test]
-#[allow(deprecated)]
 fn a_user_asset_is_the_only_direct_subclass_of_asset() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
@@ -229,16 +222,15 @@ fn a_user_asset_is_the_only_direct_subclass_of_asset() {
         )
         .unwrap();
     assert_eq!(
-        mgr.get_direct_subclasses("concerto@1.0.0.Asset").unwrap(),
+        mgr.direct_subclass_names("concerto@1.0.0.Asset").unwrap(),
         ["org.acme@1.0.0.Car"]
     );
     assert_eq!(
-        mgr.get_assignable_class_declarations("concerto@1.0.0.Asset")
-            .unwrap(),
+        mgr.assignable_type_names("concerto@1.0.0.Asset").unwrap(),
         ["concerto@1.0.0.Asset", "org.acme@1.0.0.Car"]
     );
     assert!(
-        mgr.get_direct_subclasses("concerto@1.0.0.Concept")
+        mgr.direct_subclass_names("concerto@1.0.0.Concept")
             .unwrap()
             .is_empty()
     );
@@ -297,9 +289,8 @@ fn subclass_queries_by_handle_follow_an_appended_file() {
             "org.other@1.0.0.Student",
         ]
     );
-    #[allow(deprecated)]
     let by_name = mgr
-        .get_assignable_class_declarations("org.example@1.0.0.Person")
+        .assignable_type_names("org.example@1.0.0.Person")
         .unwrap();
     assert_eq!(by_name.len(), 4);
     assert!(mgr.assignable_ids(DeclId::from_index(100_000)).is_err());
@@ -367,7 +358,6 @@ fn preloads_system_model() {
 /// literally named `$identifier`, which an explicit `identified by`
 /// field never is).
 #[test]
-#[allow(deprecated)]
 fn an_asset_with_no_extends_implicitly_extends_asset_itself() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
@@ -387,7 +377,7 @@ fn an_asset_with_no_extends_implicitly_extends_asset_itself() {
         )
         .unwrap();
     assert_eq!(
-        mgr.get_super_type("org.acme.defaults@1.0.0.DefaultAsset")
+        mgr.super_type_name("org.acme.defaults@1.0.0.DefaultAsset")
             .unwrap()
             .as_deref(),
         Some("concerto@1.0.0.Asset")
@@ -2329,13 +2319,11 @@ fn circular_inheritance_is_an_illegal_model_error() {
         None,
     )
     .unwrap();
-    #[allow(deprecated)]
     let errors = [
         mgr.properties("org.cycle@1.0.0.A").unwrap_err(),
         mgr.validate_models().unwrap_err(),
         mgr.super_types("org.cycle@1.0.0.B").unwrap_err(),
-        mgr.get_all_super_type_names("org.cycle@1.0.0.B")
-            .unwrap_err(),
+        mgr.super_type_names("org.cycle@1.0.0.B").unwrap_err(),
         mgr.is_assignable_to("org.cycle@1.0.0.A", "org.cycle@1.0.0.B")
             .unwrap_err(),
         mgr.is_assignable_to("org.cycle@1.0.0.A", "org.cycle@1.0.0.Other")
@@ -2364,7 +2352,6 @@ fn circular_inheritance_is_an_illegal_model_error() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
     // TS `ClassDeclaration._resolveSuperType`, for an *imported* super type,
     // resolves it through `this.modelFile.getModelManager().getType(fqnSuper)`
@@ -2393,7 +2380,7 @@ fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
         .unwrap();
     // `org.acme.l1@1.0.0` (the import's target) is never added.
     for err in [
-        mgr.identifier_field_name("org.acme.l2@1.0.0.Vehicle")
+        mgr.identifier_field("org.acme.l2@1.0.0.Vehicle")
             .unwrap_err(),
         mgr.properties("org.acme.l2@1.0.0.Vehicle").unwrap_err(),
     ] {

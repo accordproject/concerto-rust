@@ -38,6 +38,11 @@
 
   Section 3.5 and the sketch sections (4.4, 5.4 and 5.7) record where the
   code differs from revision 3's plan, and why.
+- **P5-122** (accordproject/concerto-rust#498, maintainer decision of
+  2026-10-04) removed every `#[deprecated]` item before the first release:
+  the TS-named aliases of revisions 3 and 4 are gone, not kept for a minor.
+  Sections 5.2, 5.3, 5.6, 5.7 and 5.8 describe the surface after the
+  removal; the revision notes above and section 7 keep the history.
 
 concerto-wasm enables `js-compat`, and its exported JS API is unchanged: it
 still reports the error kinds to JS by their old names, and it sends the TS
@@ -298,7 +303,7 @@ models, and `default()` does not, so the two constructors disagree. See Q7.
 
 | Group (3.3) | At revision 4 |
 |---|---|
-| Stable | Public with default features, under the names of sections 5.2 to 5.8. The TS-named forms they replace are `#[deprecated]` aliases (5.8's policy). |
+| Stable | Public with default features, under the names of sections 5.2 to 5.8. The TS-named forms they replaced were `#[deprecated]` aliases until P5-122 removed them before the first release (5.8). |
 | JS object model | Moved to the `concerto-core-js` crate (step 5b): `JsValue`, `Instance`, `InstanceKind`, `Serializer`, `SerializerOptions`, the factory, populator, generator and `Resource` functions, and `DeserializeOptions` (since P5-102, core's `ValidationOptions` and `FromJsonOptions` in its place, with `STRICT_VALIDATE_OPTIONS` and `serializer_options` for the option bag). `Dayjs`, `UtcOffset` and `ResourceId` stay in core's seam (4.4). |
 | Seam | Behind `js-compat`: the handle API but the four cheap-key lookups (5.3), the collaborator traits (`ResolutionContext`, `ValidatedElement`, `FullyQualified`, `Node`), the `process` family, the option setters, the CTO and file-level loaders, `resolve_type_name_at`, `filter_by_fqn`, `parse_namespace_with`, and the TS side of the error contract (5.6). |
 | Follow-up | In `concerto-core-js` with the object model (`Serializer`, `Factory`, `Resource`, `InstanceGenerator`'s JSON generator). |
@@ -523,10 +528,9 @@ impl ModelManager {
     pub fn add_model_ast(&mut self, ast: &Value, file_name: Option<&str>) -> Result<ModelFileId>;
     pub fn add_model_ast_text(&mut self, json: &str, file_name: Option<&str>) -> Result<ModelFileId>; // the typed fast path (#239)
     pub fn add_model_asts<'a>(&mut self, models: impl IntoIterator<Item = (&'a Value, Option<&'a str>)>)
-        -> Result<Vec<ModelFileId>>;                               // [add_models], deprecated
+        -> Result<Vec<ModelFileId>>;                               // [add_models], removed
     pub fn update_model_ast(&mut self, ast: &Value, file_name: Option<&str>) -> Result<ModelFileId>;
     pub fn remove_model(&mut self, namespace: &str) -> Result<()>; // [delete_model_file]
-    #[deprecated] pub fn add_model(&mut self, value: &Value, file_name: Option<String>) -> Result<()>; // main's signature
 }
 
 pub struct ModelManagerBuilder { /* private */ }
@@ -543,8 +547,9 @@ impl ModelManagerBuilder {
   against `main`, the conformance harness among them, for no gain to the
   caller.
 - **`add_model_ast`.** The `_ast` suffix leaves `add_model` free for the CTO
-  follow-up (BR-06). `add_model` stays as a deprecated alias with `main`'s
-  signature for one minor release.
+  follow-up (BR-06). The deprecated `add_model` alias with `main`'s
+  signature was removed before the first release (5.8), so there is no
+  `add_model` until that follow-up.
 - **`add_model_ast_text`** exposes P5-06d's typed read, which parses the
   text straight into the typed model. It is the fast path for a caller that
   holds JSON text, and it gives the same result as `add_model_ast` by
@@ -602,7 +607,7 @@ impl ModelManager {
     pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<ModelManager>;
 }
 
-impl ModelFile {                                                            // each [get_…] kept, deprecated
+impl ModelFile {                                                            // each [get_…] removed (5.8)
     pub fn local_type(&self, name: &str) -> Option<&Declaration>;           // short or qualified name
     pub fn fully_qualified_type_name(&self, name: &str) -> Option<String>;
     pub fn imported_type(&self, name: &str) -> Result<String>;
@@ -769,8 +774,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
   built on demand, so `location()` returns it by value. It is `None` when
   the AST's `location` is not a well-formed `Range`. The seam keeps the
   verbatim `serde_json::Value` it hands to TS.
-- **`ConcertoError` stays as a deprecated alias of `Error`** for one minor
-  release. `main`'s variants (`NamespaceNotFound`, `ValidationFailed`, and
+- **`ConcertoError` is gone.** It was a deprecated alias of `Error` until
+  P5-122 removed it before the first release (5.8). `main`'s variants (`NamespaceNotFound`, `ValidationFailed`, and
   `IllegalModel { location: Option<String> }`) are already gone on the
   integration branch and are not restored: they cannot carry a code, and
   the crate is pre-1.0 and unpublished (D9). The crate CHANGELOG records the
@@ -783,8 +788,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
   proposed renaming `Renderer::Globalize`; behind the feature it is not in
   the stable API, so it keeps the name that says where its templates come
   from.
-- **`ValidationDetail` is `Detail`,** with the old name as a deprecated
-  alias.
+- **`ValidationDetail` is `Detail`.** The deprecated alias under the old
+  name was removed before the first release (5.8).
 
 ### 5.7 Instance validation (#1273, #1239)
 
@@ -811,7 +816,7 @@ impl ModelManager {
     pub fn check_instance_as(&self, fqn: &str, instance: &Value, opts: &ValidationOptions) -> ValidationReport;
 }
 
-pub struct ValidationReport { /* Vec<Diagnostic> */ }       // [ValidationResult], kept as a deprecated alias
+pub struct ValidationReport { /* Vec<Diagnostic> */ }       // [ValidationResult], alias removed (5.8)
 impl ValidationReport {
     pub fn is_valid(&self) -> bool;
     pub fn diagnostics(&self) -> &[Diagnostic];
@@ -898,10 +903,10 @@ impl<'a> IntoIterator for &'a ValidationReport { /* &Diagnostic */ }
 
 ### 5.8 `main`'s names (R4)
 
-**Decision proposed: restore `main`'s names as the real API, not as
-deprecated shims.** They are the idiomatic Rust names, and they are what a
-caller of the Git crate had. The trait-based and TS-named forms added on the
-integration branch are what get deprecated, or move to the seam.
+**Decision: `main`'s names are the real API, not deprecated shims.** They
+are the idiomatic Rust names, and they are what a caller of the Git crate
+had. The trait-based and TS-named forms added on the integration branch
+were deprecated, or moved to the seam.
 
 | `main` | `af207c5` | Proposal |
 |---|---|---|
@@ -910,19 +915,39 @@ integration branch are what get deprecated, or move to the seam.
 | `ClassDeclaration::decorators()`, `Property::decorators()` → `&[mm::Decorator]` | `Decorated::decorators()` → `&[Decorator]` | Restore the inherent `decorators()`, returning the richer `&[Decorator]`. That is a type change from `main`, recorded in the CHANGELOG. `Decorator` has `name()` and typed `arguments()`, so a caller loses nothing. |
 | `Declaration::declaration_kind()`, `ScalarDeclaration::declaration_kind()`, `ClassKind::declaration_kind(self)` (inherent) | only `DeclarationKind::declaration_kind()`; not on `ClassKind` | Restore all three. |
 | `ScalarDeclaration::scalar_type() -> &'static str` | `-> Option<&'static str>` (JS `null` for an unknown `$class`) | Restore `&'static str`. A loaded scalar always has one of the six classes, so the `None` case is a view-only answer and moves to the seam. |
-| `model_util::{short_name, namespace_of, qualify}` | `get_short_name`, `get_namespace(Option<&str>) -> Result<&str>`, `get_fully_qualified_name` | **Restore `main`'s three.** `get_short_name` and `get_fully_qualified_name` become deprecated aliases. `get_namespace` (a JS `null` argument) moves to the seam. |
+| `model_util::{short_name, namespace_of, qualify}` | `get_short_name`, `get_namespace(Option<&str>) -> Result<&str>`, `get_fully_qualified_name` | **Restore `main`'s three.** `get_short_name` and `get_fully_qualified_name` were deprecated aliases, removed before the first release. `get_namespace` (a JS `null` argument) moves to the seam. |
 | `model_util::{Namespace, parse_namespace(&str)}` | `ParsedNamespace`, `parse_namespace(Option<&str>, bool)` | A stable `parse_namespace(&str) -> Result<ParsedNamespace>`. The two-argument TS form moves to the seam. `Namespace` is not restored, since `ParsedNamespace` carries more (the semver parts). |
 | `ModelManager::get_all_properties -> Vec<&Property>` | `-> Vec<(String, Property)>` | Restore `main`'s signature (5.3). |
-| `ModelManager::{new, add_model, model_file, model_files, get_declaration, resolve_type_name, is_assignable_to}` | the same names; `resolve_type_name` has a third `location` argument | Unchanged. `add_model` is deprecated in favour of `add_model_ast`, with `main`'s signature kept. `resolve_type_name` gets `main`'s two arguments back; the three-argument form is the seam's `resolve_type_name_at`. |
-| `ModelFile::from_json`, `ModelFile::{namespace, version, file_name, declarations, imports, local_declaration, is_system_namespace, resolve_local_type}`, `Import::{namespace, imported_names, local_names, resolve}` | the same | Unchanged. |
+| `ModelManager::{new, add_model, model_file, model_files, get_declaration, resolve_type_name, is_assignable_to}` | the same names; `resolve_type_name` has a third `location` argument | `add_model` is replaced by `add_model_ast`; the deprecated `add_model` alias with `main`'s signature was removed before the first release. `resolve_type_name` gets `main`'s two arguments back; the three-argument form is the seam's `resolve_type_name_at`. |
+| `ModelFile::from_json`, `ModelFile::{namespace, version, file_name, declarations, imports, local_declaration, is_system_namespace, resolve_local_type}`, `Import::{namespace, imported_names, local_names, resolve}` | the same | Unchanged, except `ModelFile::resolve_local_type` and `Import::resolve`: P5-116 deprecated them in favour of `ModelFile::fully_qualified_type_name`, and they were removed before the first release. |
 | `ConcertoError::{TypeNotFound, NamespaceNotFound, IllegalModel, ValidationFailed}` | `{TypeNotFound, IllegalModel, Contract}` | Not restored; see 5.6. |
 
-The traits stay public for generic code, and are also re-exported from a new
+The traits stay public for generic code, and are also re-exported from
 `concerto_core::prelude`. `Decorated`'s methods are `decorators` and
-`decorator`; `get_decorators` and `get_decorator` stay as deprecated provided
-methods. **Deprecation policy:** a `#[deprecated(since, note)]`
-alias for one minor release, then removal. P6-03's semver check produces the
-CHANGELOG entries (BR-06).
+`decorator`.
+
+**Deprecated items were removed before the first release** (maintainer
+decision of 2026-10-04, P5-122, accordproject/concerto-rust#498). Revisions
+3 and 4 kept each TS-named form as a `#[deprecated(since, note)]` alias for
+one minor release, then removal. The crate has not been released, so no
+caller depends on those aliases, and they are gone instead: the
+`ModelManager` wrappers with their `serde_json::Value` signatures
+(`add_model`, `add_models`, `identifier_field_name`, `get_property`,
+`get_own_properties`, `get_nested_property`, `get_super_type`,
+`get_all_super_type_names`, `get_assignable_class_declarations`,
+`get_direct_subclasses`, `get_ast`), the `ModelFile` `get_…` getters and
+`resolve_local_type`, `Import::resolve`, `Decorated::{get_decorators,
+get_decorator}`, `model_util::{get_short_name, get_fully_qualified_name}`,
+and the type aliases `ConcertoError`, `ValidationDetail` and
+`ValidationResult`. The workspace has no `#[deprecated]` item. A later
+rename after the first release follows the semver rules of section 2, and
+the P6-03 semver check produces its CHANGELOG entries (BR-06).
+
+**The inherent `name()` and `declaration_kind()` wrappers stay.** They are
+not deprecated. As the first rows of the table say, an inherent method
+takes precedence over the trait method in method-call syntax, so a caller
+needs no `use concerto_core::Named` (or `DeclarationKind`) import, and code
+that imports the trait still compiles. The maintainer kept them on #83.
 
 ---
 
@@ -937,7 +962,7 @@ CHANGELOG entries (BR-06).
 | BR-03 | JS-modelling types in the default API. | Sections 4.6 and 7, steps 1 and 5 (`js-compat`, then `concerto-core-js`), both done. The P5-07 row says `binding` feature; the feature is now called `js-compat`. |
 | BR-04 | Binding-shaped traits and the `process` family are public. | The seam, behind `js-compat` (step 1). |
 | BR-05 | Two lookup styles. | 5.3 (step 4). |
-| BR-06 | 44 `get_*` names, and `add_model` takes a JSON AST. | 5.5 and 5.8, with deprecation aliases (step 4). |
+| BR-06 | 44 `get_*` names, and `add_model` takes a JSON AST. | 5.5 and 5.8 (step 4). The deprecation aliases step 4 added were removed before the first release (P5-122). |
 | BR-07 | Three error shapes; no `#[non_exhaustive]`. | 5.6 (step 3) and step 6. |
 | BR-08 | #1273 options are only reachable through `SerializerOptions`. | 5.7 (step 5a, done): `ValidationOptions` over `&Value`. |
 | BR-09 | The typed decode falls back to the `Value` path for every error. | 6.2. **Done in P5-61** (accordproject/concerto-rust#393), after BC-19. |
@@ -1098,7 +1123,8 @@ stay byte-identical in its JS behaviour.
    `ModelFile`, `model_util` and `Decorated` names of 5.5 and 5.8. The
    concerto-conformance harness keeps compiling unchanged (with a
    deprecation warning for `add_model`); `concerto-validate-rs` does not
-   depend on core at its current head.
+   depend on core at its current head. P5-122 later removed every alias before the
+   first release (5.8), once the harness had moved to `add_model_ast`.
 5. **Instance validation and `concerto-core-js`** (5.7, 4.6 part 2; BR-08).
    **Done in revision 4,** in four commits:
    - **5a:** `instance::from_json`, `Serializer.fromJSON` over plain JSON
@@ -1147,7 +1173,7 @@ stay byte-identical in its JS behaviour.
 | Q1 | R2: a `js-compat` feature, a `concerto-core-js` crate, or both? | **Both, in order** (4.6): the feature first, which meets the exit condition with no behaviour risk, then the object model moves to `concerto-core-js`, and the feature keeps only the seam. |
 | Q2 | What are the two instance-validation forms called? | `validate_instance` returns `Result<()>` and `check_instance` returns `ValidationReport` (5.7). The alternative follows #1239's TS names: `validate_instance` returns the report and `validate_instance_or_throw` returns `Result`, as today. |
 | Q3 | Are the decorator command sets (`dcs`) part of the D11 surface? | **Not yet.** Behind `js-compat` for now. Their signatures are TS-shaped, and D11 does not list them. |
-| Q4 | R4: restore `main`'s names as the API, or as deprecated shims? | **As the API** (5.8). The TS-named and trait-only forms are what get deprecated. |
+| Q4 | R4: restore `main`'s names as the API, or as deprecated shims? | **As the API** (5.8). The TS-named and trait-only forms were deprecated, then removed before the first release (maintainer decision of 2026-10-04, P5-122). |
 | Q5 | Should semantic model validation get a collect-all mode like #1239's? | **No, not in P6.** It has no TS reference. |
 | Q6 | Is the crate renamed from `accordproject-concerto-core`? | **No.** Publishing is out of scope (D9). |
 | Q7 | `ModelManager: Default` builds a manager without the system models (F10). Keep it? | **Make `default()` equal to `new()`,** loading the system models and panicking only on the vendored-model bug that `new()` reports as an error. Removing `Default` would break `main`. |

@@ -15,7 +15,7 @@ use concerto_metamodel::utils::class_name;
 
 use crate::error::{Error, Result};
 use crate::introspect::declared_class;
-use crate::model_util::{qualify, short_name};
+use crate::model_util::short_name;
 
 /// A single import statement in a model file. Wildcard imports (`import ns.*`)
 /// are rejected while parsing, mirroring strict mode in Concerto v4.
@@ -73,19 +73,6 @@ impl Import {
                 })
                 .collect(),
         }
-    }
-
-    /// Deprecated: resolves a short name this import names explicitly, as
-    /// the fully-qualified name of the type it imports. An aliased type is
-    /// matched only under its alias. Model files resolve names through
-    /// [`ModelFile::fully_qualified_type_name`](crate::introspect::model_file::ModelFile::fully_qualified_type_name).
-    #[deprecated(since = "0.1.0", note = "use `ModelFile::fully_qualified_type_name`")]
-    pub fn resolve(&self, short: &str) -> Option<String> {
-        self.local_names()
-            .into_iter()
-            .zip(self.imported_names())
-            .find(|(local, _)| *local == short)
-            .map(|(_, name)| qualify(self.namespace(), name))
     }
 }
 

@@ -51,7 +51,6 @@ use crate::model_util::{
 use crate::rootmodel::{decorator_model_ast, root_model_ast};
 
 mod caches;
-mod deprecated;
 mod handles;
 mod hierarchy;
 mod lookups;
@@ -387,7 +386,9 @@ impl ModelManager {
         Ok(mgr)
     }
 
-    /// [`ModelManager::add_model`]'s load, for the crate's own callers.
+    /// Loads a model from its JSON AST, discarding the handle
+    /// [`ModelManager::add_model_ast`] returns: a test helper.
+    #[cfg(test)]
     pub(crate) fn load_model(
         &mut self,
         value: &crate::json::Value,
@@ -397,9 +398,13 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// [`ModelManager::add_model`], keeping `definitions`, the CTO source
+        /// [`ModelManager::add_model_ast`], keeping `definitions`, the CTO source
         /// text, as TS's `ModelFile.getDefinitions()` does. A model loaded
         /// from an AST has none, as in TS's `astProcessFile`.
+        #[cfg_attr(
+            all(not(feature = "js-compat"), not(test)),
+            expect(dead_code, reason = "js-compat seam only")
+        )]
         pub fn add_model_with_definitions(
             &mut self,
             value: &crate::json::Value,

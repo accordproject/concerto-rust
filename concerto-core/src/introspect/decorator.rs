@@ -737,18 +737,6 @@ pub trait Decorated {
     fn decorator(&self, name: &str) -> Option<&Decorator> {
         self.decorators().iter().find(|d| d.name() == name)
     }
-
-    /// Deprecated name of [`Decorated::decorators`].
-    #[deprecated(since = "0.1.0", note = "use `decorators`")]
-    fn get_decorators(&self) -> &[Decorator] {
-        self.decorators()
-    }
-
-    /// Deprecated name of [`Decorated::decorator`].
-    #[deprecated(since = "0.1.0", note = "use `decorator`")]
-    fn get_decorator(&self, name: &str) -> Option<&Decorator> {
-        self.decorator(name)
-    }
 }
 
 impl Decorated for ClassDeclaration {

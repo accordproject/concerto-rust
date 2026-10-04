@@ -26,8 +26,8 @@
 //!
 //! `decorateModels` and the `extract*` statics read `modelManager.getAst(true,
 //! …)`, which resolves every model (`BaseModelManager.resolveMetaModel`), as
-//! [`ModelManager::get_ast`] does here. Resolving an already resolved AST is
-//! idempotent.
+//! [`ModelManager::ast`] does here (with `resolve`). Resolving an already
+//! resolved AST is idempotent.
 pub mod dcsconverter;
 #[cfg(test)]
 #[path = "tests/decoratormanager.rs"]
