@@ -1892,7 +1892,6 @@ pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str)
 pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
-impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
 pub fn concerto_core::model_manager::ModelManager::get_all_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<&concerto_core::introspect::property::Property>>
@@ -2476,7 +2475,6 @@ pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error
 pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
-impl concerto_core::model_manager::ModelManager
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
