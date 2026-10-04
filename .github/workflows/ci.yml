@@ -69,28 +69,27 @@ jobs:
           CONCERTO_ORACLE_SKIP: "1"
 
 
-  # The source comment policy (no migration task ids, no bare or
-  # concerto-rust issue numbers in concerto-*/src comments). The check lives
-  # in accordproject/concerto's guardrails, so it runs from a checkout of
-  # concerto's migration integration branch. Until that branch has
-  # comment-policy.mjs, the step says so and passes.
+  # The source comment policy (no migration task ids, no bare, short
+  # cross-repo or concerto-rust issue numbers or URLs in concerto-*/src
+  # comments). The check lives in accordproject/concerto's guardrails, so it
+  # runs from a checkout of concerto pinned to a commit that has the guard
+  # (from concerto's migration integration branch); bump the pin together
+  # with the guard. A missing script fails the job. Only this checkout is
+  # scanned (`--rust-only`): concerto-core's TS sources are concerto's own
+  # guardrails' job.
   comment-policy:
     name: Comment policy
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: accordproject/concerto
-          ref: claude/tender-pascal-ocwf9q
+          ref: f369d30ffd492a11becfc5c05401a2f0d16107ba
           path: .concerto
           sparse-checkout: |
             migration/guardrails
-            packages/concerto-core/src
       - name: Check source comments
-        run: |
-          if [ ! -f .concerto/migration/guardrails/comment-policy.mjs ]; then
-            echo "::notice::concerto's integration branch has no comment-policy.mjs yet; skipped."
-            exit 0
-          fi
-          node .concerto/migration/guardrails/comment-policy.mjs --rust-root .
+        run: node .concerto/migration/guardrails/comment-policy.mjs --rust-root . --rust-only
