@@ -4,9 +4,9 @@
 //! generates from the models in `vendor/` (through `codegen/generate.js`).
 //! The concerto-codegen version that produced them is recorded in
 //! `codegen.version`; while it matches the version pinned in
-//! `codegen/package.json` the build does nothing, so routine builds stay
-//! offline and need no Node.js. Bumping the pin triggers a regeneration,
-//! which needs Node.js and network access. Drift between the committed
+//! `codegen/package.json` (an exact version) the build does nothing, so
+//! routine builds stay offline and need no Node.js. Bumping the pin
+//! triggers a regeneration, which needs Node.js and network access. Drift between the committed
 //! sources and their inputs is caught by `tests/drift.rs` and by
 //! `node codegen/generate.js --check`, not here.
 
@@ -35,6 +35,16 @@ fn main() {
     let pinned = manifest["dependencies"][CODEGEN]
         .as_str()
         .unwrap_or_else(|| panic!("codegen/package.json does not pin {CODEGEN}"));
+    // An exact version: a range never equals the recorded version, so it
+    // would regenerate (with npm and the network) on every build.
+    assert!(
+        !pinned.is_empty()
+            && pinned.split('.').count() == 3
+            && pinned
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())),
+        "codegen/package.json must pin an exact {CODEGEN} version, not {pinned:?}"
+    );
     let recorded = fs::read_to_string(root.join(RECORD)).unwrap_or_default();
     if recorded.trim() == pinned {
         return;

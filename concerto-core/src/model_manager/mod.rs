@@ -182,8 +182,10 @@ struct ManagerOptions {
     add_metamodel: bool,
 }
 
-/// Owns a set of model files and resolves types across them.
-#[derive(Debug, Default)]
+/// Owns a set of model files and resolves types across them. There is no
+/// `Default`: an empty manager would lack the system models every manager
+/// holds, so [`ModelManager::new`] is the way to make one.
+#[derive(Debug)]
 pub struct ModelManager {
     files: Vec<FileSlot>,
     /// Keyed by namespaces from user models, so hashed with the per-process
@@ -353,6 +355,22 @@ fn system_model_files() -> Result<(Arc<ModelFile>, Arc<ModelFile>)> {
 }
 
 impl ModelManager {
+    /// A manager with no model file at all, not even the system models: what
+    /// [`ModelManager::new`] and the scratch copies, which register their
+    /// files themselves, start from.
+    pub(crate) fn empty() -> Self {
+        Self {
+            files: Vec::new(),
+            namespaces: FastSeededHashMap::default(),
+            declarations: Vec::new(),
+            properties: Vec::new(),
+            state_version: 0,
+            options: ManagerOptions::default(),
+            decl_cache: DeclCache::default(),
+            system_files_checked: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     /// A fresh manager with both system models already loaded: the decorator
     /// model, then the root model.
     ///
@@ -360,7 +378,7 @@ impl ModelManager {
     /// `addRootModel()`, each adding a vendored AST with validation disabled;
     /// a load here never validates.
     pub fn new() -> Result<Self> {
-        let mut mgr = Self::default();
+        let mut mgr = Self::empty();
         // TS: the vendored `.cto` file names `addDecoratorModel`/
         // `addRootModel` pass to `addModelFile`, which `getName()` returns.
         let (decorator, root) = system_model_files()?;
@@ -614,7 +632,7 @@ impl ModelManager {
             !self.namespaces.contains_key(namespace) && self.namespaces.len() == self.files.len();
         let mut scratch = Self {
             options: self.options.clone(),
-            ..Self::default()
+            ..Self::empty()
         };
         if appended {
             scratch.files = self.files.clone();
@@ -654,9 +672,6 @@ impl ModelManager {
     /// be allocated. The file may already be registered in another manager:
     /// it is shared, not copied.
     fn insert_shared(&mut self, model_file: Arc<ModelFile>) -> Result<ModelFileId> {
-        // An append keeps every cached answer that cannot change
-        // (`keep_caches_for_append`).
-        self.keep_caches_for_append();
         let file_id = ModelFileId(next_index(self.files.len())?);
         let mut declarations = Vec::new();
         let mut properties = Vec::new();
@@ -682,6 +697,10 @@ impl ModelManager {
         let first = next_index(self.declarations.len())?;
         let end = next_index(self.declarations.len() + declarations.len())?;
 
+        // Every handle is allocated: from here on the append happens. It
+        // keeps every cached answer that cannot change
+        // (`keep_caches_for_append`).
+        self.keep_caches_for_append();
         self.namespaces
             .insert(model_file.namespace().to_string(), file_id);
         self.files.push(FileSlot {
@@ -1174,7 +1193,7 @@ impl ModelManager {
             }
             let mut scratch = Self {
                 options: self.options.clone(),
-                ..Self::default()
+                ..Self::empty()
             };
             for existing in self.shared_model_files() {
                 if existing.namespace() != namespace {

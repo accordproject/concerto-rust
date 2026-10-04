@@ -2046,8 +2046,6 @@ pub fn concerto_core::model_manager::ModelManager::validate_instance_as(&self, &
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::validate_model_file(&self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::validate_models(&self) -> concerto_core::error::Result<()>
-impl core::default::Default for concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::default() -> Self
 impl core::fmt::Debug for concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl !core::marker::Freeze for concerto_core::model_manager::ModelManager
@@ -2691,8 +2689,6 @@ pub fn concerto_core::model_manager::ModelManager::validate_instance_as(&self, &
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::validate_model_file(&self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::validate_models(&self) -> concerto_core::error::Result<()>
-impl core::default::Default for concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::default() -> Self
 impl core::fmt::Debug for concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl !core::marker::Freeze for concerto_core::model_manager::ModelManager

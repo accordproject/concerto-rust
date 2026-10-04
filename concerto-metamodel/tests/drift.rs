@@ -2,7 +2,8 @@
 //! checked-in inputs (accordproject/concerto-rust#461).
 //!
 //! `generate.js` records a fingerprint of every input (itself, the npm pin
-//! and lock file, and the vendored models) and of every file it generates in
+//! and lock file, the recorded `codegen.version` and the vendored models)
+//! and of every file it generates in
 //! `src/generated/fingerprints.tsv`. This test recomputes them, so a hand
 //! edit to the generated sources, or a change to an input without a
 //! regeneration, fails `cargo test` without needing Node.js. CI also runs
@@ -61,6 +62,8 @@ fn the_generated_sources_match_their_inputs() {
             }
         }
     }
+    // The recorded concerto-codegen version `build.rs` compares with the pin.
+    present.push("codegen.version".to_string());
     for file in present.iter().filter(|f| !listed.contains(*f)) {
         stale.push(format!("{file} is not in fingerprints.tsv"));
     }

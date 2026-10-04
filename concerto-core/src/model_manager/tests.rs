@@ -2114,7 +2114,7 @@ fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
         .with_model_file_registered(Arc::new(fresh.clone()))
         .unwrap();
 
-    let mut rebuilt = ModelManager::default();
+    let mut rebuilt = ModelManager::empty();
     for existing in mgr.model_files() {
         rebuilt.insert(existing.clone()).unwrap();
     }

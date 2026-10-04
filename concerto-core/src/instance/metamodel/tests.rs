@@ -489,7 +489,7 @@ fn manager_validate_ast_value_resolves_the_callers_own_types() {
     assert_eq!(namespaces(&mm), before);
 }
 
-/// A manager without the system models (`ModelManager::default()`) does
+/// A manager without the system models (`ModelManager::empty()`) does
 /// not match the resident manager's, so its own check runs: the
 /// metamodel's declarations cannot resolve their implicit `Concept`
 /// super type there.
@@ -507,7 +507,7 @@ fn manager_validate_ast_value_without_system_models_checks_the_manager_itself() 
             .validate_ast_value(&ast)
             .is_ok()
     );
-    let mut bare = ModelManager::default();
+    let mut bare = ModelManager::empty();
     let err = bare
         .validate_ast_value(&ast)
         .expect_err("no system models to resolve against");

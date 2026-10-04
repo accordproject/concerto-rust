@@ -322,6 +322,9 @@ function readJson(file) {
 /** The checked-in files `src/generated/` is generated from, relative to the crate. */
 function inputs() {
     return [
+        // The version `build.rs` compares with the pin: a hand edit to it
+        // would otherwise go unnoticed.
+        'codegen.version',
         'codegen/generate.js',
         'codegen/package.json',
         'codegen/package-lock.json',
@@ -425,6 +428,7 @@ function check() {
 if (process.argv.includes('--check')) {
     check();
 } else {
-    generate(OUT);
+    // Recorded first: it is one of the fingerprinted inputs.
     fs.writeFileSync(RECORD, `${CODEGEN_VERSION}\n`);
+    generate(OUT);
 }
