@@ -69,7 +69,7 @@ pub fn system_model_json_texts() -> [(&'static str, &'static str); 2] {
 }
 
 /// `json` (a vendored system model) without whitespace, in its own key order.
-#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+#[cfg(feature = "js-compat")]
 fn compact(json: &str) -> String {
     let value: crate::json::Value =
         serde_json::from_str(json).expect("A system model could not be parsed as JSON.");

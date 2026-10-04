@@ -1355,7 +1355,10 @@ enum AstSource {
     Text(Arc<str>),
     /// The AST in the compact binary layout
     /// ([`ModelFile::from_compact_with_imports`]).
-    #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "js-compat"),
+        expect(dead_code, reason = "js-compat seam only")
+    )]
     Compact(Arc<[u8]>),
 }
 

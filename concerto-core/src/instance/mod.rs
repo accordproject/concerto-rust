@@ -42,7 +42,8 @@
 //!
 //! Without the feature these modules are crate-private. Crate-private, they
 //! lose clippy's exemption for exported names, which the JS-facing names
-//! (`from_json::from_json`) keep through the `allow`s below.
+//! (`from_json::from_json`) keep through the `allow`s in `js_compat_mod!`
+//! (lib.rs).
 
 js_compat_mod!(dayjs);
 mod diagnostic;

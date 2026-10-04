@@ -417,7 +417,10 @@ pub struct Diagnosis {
 /// walk collects every violation (with `collect_all`) or the first, each at
 /// its JSON Pointer; the first is the error `fromJSON` throws
 /// ([`Diagnosis::error`]).
-#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "js-compat"),
+    expect(dead_code, reason = "js-compat seam only")
+)]
 pub fn diagnose(
     mm: &ModelManager,
     fqn: Option<&str>,
@@ -461,7 +464,10 @@ pub fn diagnose(
 /// accordproject/concerto#1273 detail, else one for the error, at the
 /// pointer the walk found it at or where the error says, with its
 /// [`expected`](Diagnostic::expected) type.
-#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "js-compat"),
+    expect(dead_code, reason = "js-compat seam only")
+)]
 pub fn diagnostics_of_error(
     mm: &ModelManager,
     fqn: Option<&str>,
@@ -489,7 +495,10 @@ pub fn diagnostics_of_error(
 /// the document's tagged forms; the diagnostics are [`diagnose`]'s over the
 /// first reading whose walk raises the same error, else the error's own
 /// (located in the first reading, or at the root when there is none).
-#[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "js-compat"),
+    expect(dead_code, reason = "js-compat seam only")
+)]
 pub fn diagnose_read(
     mm: &ModelManager,
     fqn: Option<&str>,

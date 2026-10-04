@@ -1103,7 +1103,12 @@ js_compat_pub! {
         {
             // TS names the value type `ObjectMapValueType` here for a
             // relationship value too (the template's own text).
-            return Err(Error::new(ErrorKind::IllegalModel, "mapvaluetype-process-invalidtypeclass", vec![("name", map.name().to_string())]).at(None));
+            return Err(Error::new(
+                ErrorKind::IllegalModel,
+                "mapvaluetype-process-invalidtypeclass",
+                vec![("name", map.name().to_string())],
+            )
+            .at(None));
         }
 
         // TS: any declaration but a MapDeclaration is a valid value.
@@ -1122,7 +1127,12 @@ js_compat_pub! {
                 ));
             };
             if declared.is_map_declaration() {
-                return Err(Error::new(ErrorKind::IllegalModel, "mapvaluetype-validate-mapnotsupported", vec![("type", value.name.to_string())]).at(None));
+                return Err(Error::new(
+                    ErrorKind::IllegalModel,
+                    "mapvaluetype-validate-mapnotsupported",
+                    vec![("type", value.name.to_string())],
+                )
+                .at(None));
             }
         }
         Ok(())
