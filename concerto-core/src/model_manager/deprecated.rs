@@ -1,7 +1,26 @@
 //! The deprecated wrappers kept for the pre-D11 names
 //! (docs/public-api.md section 5.2).
+//!
+//! They keep their original `serde_json::Value` parameter and return types,
+//! so existing callers still compile. An AST passed in is converted to a
+//! [`crate::json::Value`] before it is read, which rebuilds every object as a
+//! seeded [`crate::json::Map`] (PORTING.md 3.7).
 
-use super::{ModelFileId, ModelManager, Property, Result, Value};
+use serde::Deserialize;
+
+use super::{ModelFileId, ModelManager, Property, Result};
+
+/// `value` as a [`crate::json::Value`]: the same tree, numbers and key order,
+/// with its objects rebuilt as seeded maps.
+fn to_seeded(value: &serde_json::Value) -> crate::json::Value {
+    crate::json::Value::deserialize(value)
+        .expect("every serde_json::Value is a valid crate::json::Value")
+}
+
+/// `value` as a `serde_json::Value`: the same tree, numbers and key order.
+fn to_serde_json(value: &crate::json::Value) -> serde_json::Value {
+    serde_json::to_value(value).expect("every crate::json::Value is a valid serde_json::Value")
+}
 
 impl ModelManager {
     /// Loads a model from its JSON AST. Loading two models with the same
@@ -12,10 +31,10 @@ impl ModelManager {
     #[deprecated(since = "0.1.0", note = "use `add_model_ast`")]
     pub fn add_model(
         &mut self,
-        value: &crate::json::Value,
+        value: &serde_json::Value,
         file_name: Option<String>,
     ) -> Result<()> {
-        self.load_model(value, file_name)
+        self.load_model(&to_seeded(value), file_name)
     }
 
     /// Loads a batch of models irrespective of import order between them,
@@ -24,9 +43,13 @@ impl ModelManager {
     #[deprecated(since = "0.1.0", note = "use `add_model_asts`")]
     pub fn add_models<'a>(
         &mut self,
-        models: impl IntoIterator<Item = (&'a crate::json::Value, Option<String>)>,
+        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
     ) -> Result<Vec<ModelFileId>> {
-        self.load_models(models)
+        let (values, file_names): (Vec<crate::json::Value>, Vec<Option<String>>) = models
+            .into_iter()
+            .map(|(value, file_name)| (to_seeded(value), file_name))
+            .unzip();
+        self.load_models(values.iter().zip(file_names))
     }
 
     /// The name of the field that gives `fqn` its identity, its own (`identified
@@ -121,7 +144,12 @@ impl ModelManager {
     /// `include_concerto_namespaces`. `resolve` runs
     /// [`ModelManager::resolve_meta_model`] first, the only possible failure.
     #[deprecated(since = "0.1.0", note = "use `ast`")]
-    pub fn get_ast(&self, resolve: bool, include_concerto_namespaces: bool) -> Result<Value> {
+    pub fn get_ast(
+        &self,
+        resolve: bool,
+        include_concerto_namespaces: bool,
+    ) -> Result<serde_json::Value> {
         self.models_ast(resolve, include_concerto_namespaces)
+            .map(|ast| to_serde_json(&ast))
     }
 }

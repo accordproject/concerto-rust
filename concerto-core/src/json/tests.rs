@@ -123,7 +123,7 @@ fn decodes_as_serde_json_decodes() {
         let theirs: serde_json::Value = serde_json::from_str(text).unwrap();
         let by_value = from_value::<Typed>(ours.clone()).map_err(|e| e.to_string());
         let by_ref = Typed::deserialize(&ours).map_err(|e| e.to_string());
-        let expected = serde_json::from_value::<Typed>(theirs.clone()).map_err(|e| e.to_string());
+        let expected = serde_json::from_value::<Typed>(theirs).map_err(|e| e.to_string());
         assert_eq!(by_value, expected, "{text}");
         assert_eq!(by_ref, expected, "{text}");
         if let Ok(typed) = expected {

@@ -9,7 +9,7 @@
 //! validate per file; here we do the structural load for every file first,
 //! `ModelFile::from_json`, then one whole-manager semantic pass,
 //! `validate_models`):
-//!   - `load`: `ModelManager::add_model` for every model in the set, into a
+//!   - `load`: `ModelManager::add_model_ast` for every model in the set, into a
 //!     fresh manager.
 //!   - `validate`: `ModelManager::validate_models` once, over the whole set.
 //!
@@ -31,7 +31,7 @@ mod common;
 fn load_only(set: &[(String, concerto_core::json::Value)]) -> ModelManager {
     let mut mgr = ModelManager::new().expect("system model loads");
     for (name, ast) in set {
-        mgr.add_model(ast, Some(name.clone()))
+        mgr.add_model_ast(ast, Some(name))
             .unwrap_or_else(|e| panic!("loading {name}: {e}"));
     }
     mgr
