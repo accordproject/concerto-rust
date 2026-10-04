@@ -813,6 +813,13 @@ impl ModelFile {
         self.fully_qualified_type_name(type_name)
     }
 
+    /// Deprecated: [`ModelFile::fully_qualified_type_name`] resolves a short
+    /// name the same way, and a qualified local one too.
+    #[deprecated(since = "0.1.0", note = "use `fully_qualified_type_name`")]
+    pub fn resolve_local_type(&self, short: &str) -> Option<String> {
+        self.fully_qualified_type_name(short)
+    }
+
     /// TS: `ModelFile.getAssetDeclaration`.
     pub fn asset_declaration(&self, name: &str) -> Option<&Declaration> {
         self.local_type(name)

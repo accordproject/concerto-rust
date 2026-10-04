@@ -300,6 +300,36 @@ fn a_model_file_answers_by_short_or_qualified_name() {
 }
 
 #[test]
+#[allow(deprecated)]
+fn the_deprecated_name_resolvers_still_answer() {
+    let manager = loaded();
+    let mf = manager.model_file("org.acme@1.0.0").unwrap();
+    assert_eq!(
+        mf.resolve_local_type("Person").as_deref(),
+        Some("org.acme@1.0.0.Person")
+    );
+    assert_eq!(mf.resolve_local_type("String").as_deref(), Some("String"));
+    assert_eq!(mf.resolve_local_type("Missing"), None);
+
+    let import = concerto_core::introspect::import::Import::try_from(&json!({
+        "$class": format!("{MM}.ImportTypes"),
+        "namespace": "org.other@1.0.0",
+        "types": ["Cat", "Dog"],
+        "aliasedTypes": [{ "$class": format!("{MM}.AliasedType"), "name": "Dog", "aliasedName": "Hound" }]
+    }))
+    .unwrap();
+    assert_eq!(
+        import.resolve("Cat").as_deref(),
+        Some("org.other@1.0.0.Cat")
+    );
+    assert_eq!(
+        import.resolve("Hound").as_deref(),
+        Some("org.other@1.0.0.Dog")
+    );
+    assert_eq!(import.resolve("Dog"), None);
+}
+
+#[test]
 fn errors_are_read_through_accessors() {
     let located = json!({
         "$class": format!("{MM}.Model"),
