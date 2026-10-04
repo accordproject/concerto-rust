@@ -1062,30 +1062,45 @@ impl ModelFile {
         // super type, and every import read verbatim. Then the AST's imports
         // are unchanged iff every name they import is kept, which the typed
         // imports answer with the same predicate calls `filter_import` makes,
-        // in the same order. Those answers are remembered, so a pruned
+        // in the same order. Those answers are recorded in call order, one
+        // per call (a name imported twice is asked twice, as TS asks it),
+        // and replayed in that order if the AST pass runs, so a pruned
         // import does not call the predicate again below.
-        let mut answers: rustc_hash::FxHashMap<(*const str, usize), bool> =
-            rustc_hash::FxHashMap::default();
+        let mut answers: Vec<((*const u8, usize), bool)> = Vec::new();
         if kept == self.declarations.len()
             && self.imports_verbatim
             && !self.declarations.iter().any(|decl| {
                 matches!(decl, Declaration::Class(class) if class.may_take_default_super_type())
             })
         {
-            let mut remembered = |namespace: &str, index: usize, decl: &Declaration| {
-                *answers
-                    .entry((std::ptr::from_ref(namespace), index))
-                    .or_insert_with(|| predicate(namespace, index, decl))
+            let mut recorded = |namespace: &str, index: usize, decl: &Declaration| {
+                let answer = predicate(namespace, index, decl);
+                answers.push(((namespace.as_ptr(), index), answer));
+                answer
             };
-            if typed_imports_all_kept(&self.imports, &mut remembered, source_manager) {
+            if typed_imports_all_kept(&self.imports, &mut recorded, source_manager) {
                 return Ok(FilterOutcome::Unchanged);
             }
         }
+        // The AST pass asks the same questions in the same order, so each
+        // call takes the next recorded answer. Should a question ever differ
+        // from the recorded one, the replay stops and the predicate is asked.
+        let replay = std::cell::Cell::new(Some(0_usize));
         let predicate = |namespace: &str, index: usize, decl: &Declaration| {
-            answers
-                .get(&(std::ptr::from_ref(namespace), index))
-                .copied()
-                .unwrap_or_else(|| predicate(namespace, index, decl))
+            if let Some(next) = replay.get() {
+                match answers.get(next) {
+                    Some(&(key, answer)) if key == (namespace.as_ptr(), index) => {
+                        replay.set(Some(next + 1));
+                        return answer;
+                    }
+                    Some(_) => {
+                        debug_assert!(false, "filter: the AST pass asked a different question");
+                        replay.set(None);
+                    }
+                    None => replay.set(None),
+                }
+            }
+            predicate(namespace, index, decl)
         };
 
         let ast_declarations: &[crate::json::Value] = self

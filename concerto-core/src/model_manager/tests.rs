@@ -3348,3 +3348,61 @@ fn filter_model_file_reads_the_ast_of_an_import_the_typed_read_skipped_part_of()
         assert_ne!(filtered.ast()["imports"], imports);
     }
 }
+
+/// A name imported more than once (twice in one multi-type import, or by a
+/// single-type import and a multi-type import) is asked of the predicate
+/// once per occurrence, as TS 5.0.0 `ModelFile.filter` asks it, whether the
+/// file is kept unchanged or an import is pruned (the AST pass replaying
+/// the typed pass's answers in call order).
+#[test]
+fn filter_model_file_asks_a_name_imported_twice_twice() {
+    use crate::introspect::model_file::FilterOutcome;
+    let types = |names: &[&str]| {
+        crate::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.lib@1.0.0",
+            "types": names
+        })
+    };
+    let single = crate::json!({
+        "$class": "concerto.metamodel@1.0.0.ImportType",
+        "namespace": "org.lib@1.0.0",
+        "name": "Address"
+    });
+    for imports in [
+        crate::json!([types(&["Address", "Address"])]),
+        crate::json!([single, types(&["Address"])]),
+        crate::json!([types(&["Address", "Phone", "Address"])]),
+    ] {
+        let mm = text_built_filter_manager(imports.clone());
+        let app = mm.model_file_id("org.app@1.0.0").unwrap();
+        let expected: Vec<String> = std::iter::once("org.app@1.0.0.Person".to_string())
+            .chain(
+                imports
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|imp| match imp.get("types") {
+                        Some(t) => t.as_array().unwrap().clone(),
+                        None => vec![imp["name"].clone()],
+                    })
+                    .map(|n| format!("org.lib@1.0.0.{}", n.as_str().unwrap())),
+            )
+            .collect();
+        for (reject, unchanged) in [(None, true), (Some("org.lib@1.0.0.Address"), false)] {
+            let asked = std::cell::RefCell::new(Vec::new());
+            let outcome = mm
+                .filter_model_file(app, |fqn| {
+                    asked.borrow_mut().push(fqn.to_string());
+                    Some(fqn) != reject
+                })
+                .unwrap();
+            assert_eq!(
+                matches!(outcome, FilterOutcome::Unchanged),
+                unchanged,
+                "{imports} {reject:?}"
+            );
+            assert_eq!(*asked.borrow(), expected, "{imports} {reject:?}");
+        }
+    }
+}
