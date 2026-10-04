@@ -148,15 +148,37 @@ fn local_types_find_the_last_declaration_of_a_name() {
 fn resolves_local_primitive_and_import() {
     let mf = sample();
     assert_eq!(
-        mf.resolve_local_type("Person").as_deref(),
+        mf.fully_qualified_type_name("Person").as_deref(),
         Some("org.example@1.0.0.Person")
     );
-    assert_eq!(mf.resolve_local_type("String").as_deref(), Some("String"));
     assert_eq!(
-        mf.resolve_local_type("Address").as_deref(),
+        mf.fully_qualified_type_name("String").as_deref(),
+        Some("String")
+    );
+    assert_eq!(
+        mf.fully_qualified_type_name("Address").as_deref(),
         Some("org.common@1.0.0.Address")
     );
-    assert_eq!(mf.resolve_local_type("Missing"), None);
+    assert_eq!(mf.fully_qualified_type_name("Missing"), None);
+}
+
+/// R2A-1: TS `getLocalType` prefixes the namespace only when the name does
+/// not already start with it, so a local type written as its own
+/// fully-qualified name resolves; a name that starts with the namespace
+/// but has no dot after it does not.
+#[test]
+fn resolves_a_local_type_written_with_its_own_namespace() {
+    let mf = sample();
+    assert_eq!(
+        mf.fully_qualified_type_name("org.example@1.0.0.Person")
+            .as_deref(),
+        Some("org.example@1.0.0.Person")
+    );
+    assert_eq!(mf.local_type_index("org.example@1.0.0Person"), None);
+    assert_eq!(
+        mf.fully_qualified_type_name("org.example@1.0.0.Missing"),
+        None
+    );
 }
 
 /// TS: test/introspect/modelfile.js #constructor "should throw when null
@@ -643,5 +665,32 @@ fn filter_drops_an_import_whose_only_type_is_filtered_out_of_its_source_file() {
             .get("imports")
             .and_then(|v| v.as_array())
             .is_none_or(Vec::is_empty)
+    );
+}
+
+/// R2A-6: TS assigns `importUriMap[fqn] = uri` once per import, so the last
+/// import with the key wins, for `getImportURI` as for
+/// `getExternalImports`.
+#[test]
+fn import_uri_answers_the_last_import_of_the_key() {
+    let mf = ModelFile::from_json(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.example@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportType",
+                  "namespace": "a@1.0.0", "name": "Foo", "uri": "u1" },
+                { "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                  "namespace": "a@1.0.0", "types": ["Foo", "Bar"], "uri": "u2" }
+            ],
+            "declarations": []
+        }),
+        None,
+    )
+    .unwrap();
+    assert_eq!(mf.import_uri("a@1.0.0.Foo"), Some("u2"));
+    assert_eq!(
+        mf.external_imports().get("a@1.0.0.Foo").map(String::as_str),
+        Some("u2")
     );
 }

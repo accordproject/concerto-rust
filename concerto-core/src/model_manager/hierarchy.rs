@@ -1,7 +1,11 @@
 //! Inheritance: class-like chains ([`ClassInfo`]), properties along them,
 //! super types, subclasses and assignability.
 
-use super::*;
+use super::{
+    Arc, ClassDeclaration, ContractError, DeclId, Declaration, EnumDeclaration, Error, ErrorKind,
+    FxHashSet, ModelFile, ModelManager, Node, PropId, Property, ResolutionContext, Result, mm,
+    model_util, namespace_of, unknown,
+};
 
 /// The inheritance facts of one class-like or enum declaration, from its
 /// declaration handle up to its root: what `class_info`, `getProperties`,
@@ -506,11 +510,15 @@ impl ModelManager {
         for (child, child_fqn, class) in self.all_class_like() {
             // A cached chain's second entry is the declaration the direct
             // super type resolved to.
+            // Otherwise the super type is resolved as `getType` does, the
+            // same step `compute_class_info` takes, so a name that resolves
+            // to no declaration fails the pass.
             let parent = match self.decl_cache.get(child, |facts| &facts.class) {
                 Some(info) => info.chain.get(1).copied(),
                 None => self
                     .super_type_fqn(&class, namespace_of(child_fqn))?
-                    .and_then(|super_fqn| self.declaration_id(&super_fqn)),
+                    .map(|super_fqn| self.type_declaration_impl(&super_fqn))
+                    .transpose()?,
             };
             if let Some(parent) = parent {
                 buckets[parent.slot()].push(child);
@@ -690,29 +698,78 @@ impl ModelManager {
         // TS: `_resolveSuperType` passes `this.ast.location` to every error
         // it raises; it is re-serialised only on an error path.
         let location = || class.location().and_then(crate::error::location_value);
-        match self.resolve_type_name_lazy(in_namespace, &ti.name, location) {
-            Ok(fqn) => Ok(Some(fqn)),
-            // TS: `_resolveSuperType`'s own `IllegalModelException`, where
-            // `resolve_type_name` fails with `getType`'s `TypeNotFound`.
-            Err(err) if err.is_pre_port_type_not_found() => Err(ContractError::pre_port(
+        if self.model_file(in_namespace).is_none() {
+            // `getType`'s unregistered-namespace `TypeNotFoundException`.
+            return self
+                .resolve_type_name_lazy(in_namespace, &ti.name, location)
+                .map(Some);
+        }
+        match self.model_file_fully_qualified_type_name(in_namespace, &ti.name) {
+            Some(fqn) => Ok(Some(fqn)),
+            // TS: `_resolveSuperType`'s own `IllegalModelException`, the
+            // catalogue entry `validate_models` raises too.
+            None => Err(Error::new(
                 ErrorKind::IllegalModel,
-                format!("Could not find super type {}", ti.name),
-                location(),
+                "classdeclaration-resolvesupertype-notfound",
+                vec![("superType", ti.name.to_string())],
             )
-            .into()),
-            Err(other) => Err(other),
+            .at(location())),
         }
     }
 
     /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)`: `fqt1` must resolve,
     /// with `getType`'s error; then true when `fqt1` is `fqt2` or
-    /// transitively extends it ([`ModelManager::is_assignable_to`]).
+    /// transitively extends it.
+    ///
+    /// As TS's walk of `getSuperTypeDeclaration()`, each step is resolved
+    /// only when it is reached, so a super type that does not resolve above
+    /// `fqt2` is never an error: the answer is `true`. A cyclic chain is
+    /// the BC-11 `IllegalModelException` all the same, also when `fqt2` is
+    /// in the cycle (where TS answers `true`). The walk does not repeat
+    /// `_resolveSuperType`'s kind check (`X cannot extend Y`), which only a
+    /// model loaded with validation disabled can fail.
     ///
     /// For a map declaration `fqt1` this is `true` against itself and
     /// otherwise `false`, where TS 5.0.0 throws a `TypeError` (DV-022). A
     /// scalar matches TS.
     pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> Result<bool> {
-        self.get_type_declaration(fqt1)?;
-        self.is_assignable_to(fqt1, fqt2)
+        let id = self.get_type_declaration(fqt1)?;
+        if let Some(info) = self.decl_cache.get(id, |facts| &facts.class) {
+            return Ok(info
+                .chain
+                .iter()
+                .any(|id| self.decl_fqn(*id).is_ok_and(|fqn| fqn == fqt2)));
+        }
+        let mut found = false;
+        let mut chain: Vec<DeclId> = Vec::new();
+        let mut current = id;
+        loop {
+            if let Some(start) = chain.iter().position(|seen| *seen == current) {
+                return Err(self.circular_inheritance(&chain[start..], current));
+            }
+            let current_fqn = self.decl_fqn(current)?;
+            found |= current_fqn == fqt2;
+            chain.push(current);
+            let declaration = self
+                .declaration(current)
+                .ok_or_else(|| unknown(Node::Declaration(current)))?;
+            // A scalar or map has no super type.
+            let Some(class) = ClassLike::from_declaration(declaration) else {
+                return Ok(found);
+            };
+            // Past `fqt2`, the walk goes on only to find a cycle.
+            let next = self
+                .super_type_fqn(&class, namespace_of(current_fqn))
+                .and_then(|next| {
+                    next.map(|parent| self.type_declaration_impl(&parent))
+                        .transpose()
+                });
+            match next {
+                Ok(Some(parent)) => current = parent,
+                Ok(None) => return Ok(found),
+                Err(_) if found => return Ok(true),
+                Err(err) => return Err(err),
+            }
+        }
     }
 }

@@ -116,6 +116,17 @@ pub(crate) fn to_js(value: &Value) -> JsValue {
 /// file TS passes to an `IllegalModelException`, when the core error says TS
 /// passes one.
 pub(crate) fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
+    throw_with(err, model_file, false)
+}
+
+/// [`throw`] for an error of `validateAst`'s metamodel check when
+/// `metamodel_check`: the payload's `metamodelCheck` flag tells the caller
+/// to throw it as `validateAst` does, not re-wrapped.
+pub(crate) fn throw_with(
+    err: Error,
+    model_file: Option<&JsValue>,
+    metamodel_check: bool,
+) -> JsValue {
     let unsupported = matches!(err, Error::Unsupported(_));
     let (err, details) = match err {
         Error::Js(value) => return value,
@@ -126,6 +137,9 @@ pub(crate) fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
     let payload = Object::new();
     if unsupported {
         set(&payload, "fastPathUnsupported", &JsValue::TRUE);
+    }
+    if metamodel_check {
+        set(&payload, "metamodelCheck", &JsValue::TRUE);
     }
     if let Some(details) = &details {
         set(&payload, "details", &to_js(details));

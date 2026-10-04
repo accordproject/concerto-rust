@@ -2,7 +2,13 @@
 //! ([`ResolutionContext`], [`ValidatedElement`]), and the manager's
 //! implementation over its arena.
 
-use super::*;
+use super::{
+    ContractError, DeclId, Error, ErrorKind, FullyQualified, ModelManager, Node, PRIMITIVE_TYPES,
+    Result, Value, is_primitive_type, not_a_function, unknown,
+};
+#[cfg(feature = "js-compat")]
+use super::{Declaration, ModelFile};
+use crate::introspect::model_file::TypeTarget;
 
 js_compat_pub! {
     /// The collaborator calls a ported member makes. Where TS calls another
@@ -163,18 +169,24 @@ impl ResolutionContext for ModelManager {
         let Some(type_name) = type_name else {
             return Ok(None);
         };
-        if let Some(&primitive) = PRIMITIVE_TYPES.iter().find(|&&p| p == type_name) {
-            return Ok(Some(Node::Primitive(primitive)));
-        }
-        if let Some(fqn) = mf.find_import(type_name) {
+        Ok(match mf.type_target(type_name) {
+            None => None,
+            Some(TypeTarget::Primitive) => PRIMITIVE_TYPES
+                .iter()
+                .find(|&&p| p == type_name)
+                .map(|&primitive| Node::Primitive(primitive)),
             // `getModelManager().getModelFile(getNamespace(fqn))`, then that
             // file's `getLocalType(fqn)`.
-            return Ok(self
-                .model_file_id(namespace_of(&fqn))
-                .and_then(|other| self.local_type(other, &fqn))
-                .map(Node::Declaration));
-        }
-        Ok(self.local_type(file, type_name).map(Node::Declaration))
+            Some(TypeTarget::Imported { namespace, name }) => self
+                .model_file_id(namespace)
+                .and_then(|other| self.local_type(other, name))
+                .map(Node::Declaration),
+            Some(TypeTarget::Local(index)) => self
+                .files
+                .get(file.slot())
+                .and_then(|slot| self.decl_id_at(slot, index))
+                .map(Node::Declaration),
+        })
     }
 
     #[cfg(feature = "js-compat")]
@@ -237,16 +249,7 @@ impl ResolutionContext for ModelManager {
         }
         let mf = self.file(file).ok_or_else(|| unknown(*property))?;
         // TS: ModelFile.getFullyQualifiedTypeName (src/introspect/modelfile.ts)
-        let resolved = match type_name {
-            None => None,
-            Some(type_name) => match mf.find_import(type_name) {
-                Some(fqn) => Some(fqn),
-                None => self
-                    .local_type(file, type_name)
-                    .map(|local| self.declaration_fqn(local))
-                    .transpose()?,
-            },
-        };
+        let resolved = type_name.and_then(|type_name| mf.fully_qualified_type_name(type_name));
         // TS: `Property.getFullyQualifiedTypeName` throws a plain `Error`
         // (`property-getfullyqualifiedtypename-notfound`) when
         // `ModelFile.getFullyQualifiedTypeName` returns `null`; an enum

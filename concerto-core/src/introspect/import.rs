@@ -15,7 +15,7 @@ use concerto_metamodel::utils::class_name;
 
 use crate::error::{Error, Result};
 use crate::introspect::declared_class;
-use crate::model_util::{qualify, short_name};
+use crate::model_util::short_name;
 
 /// A single import statement in a model file. Wildcard imports (`import ns.*`)
 /// are rejected while parsing, mirroring strict mode in Concerto v4.
@@ -54,9 +54,11 @@ impl Import {
         }
     }
 
-    /// The names this import makes visible in the importing file. An aliased
-    /// type is visible under its alias rather than its declared name, so these
-    /// are the names a local declaration could collide with.
+    /// The names this import makes visible in the importing file, one per
+    /// [`Import::imported_names`] entry. An aliased type is visible under its
+    /// alias rather than its declared name, so these are the names a local
+    /// declaration could collide with. When `aliasedTypes` aliases a name
+    /// twice, the last alias wins, as TS `fromAst`'s `Map.set` has it.
     pub fn local_names(&self) -> Vec<&str> {
         match self {
             Self::Type(t) => vec![t.name.as_str()],
@@ -66,32 +68,10 @@ impl Import {
                 .map(|name| {
                     aliases(t)
                         .iter()
-                        .find(|aliased| &aliased.name == name)
+                        .rfind(|aliased| &aliased.name == name)
                         .map_or(name.as_str(), |aliased| aliased.aliased_name.as_str())
                 })
                 .collect(),
-        }
-    }
-
-    /// Resolves a short name this import names explicitly. As TS
-    /// `importShortNames`, an aliased type is registered only under its alias,
-    /// never under its declared name.
-    ///
-    /// TS: `ModelFile.fromAst` (modelfile.ts)
-    pub fn resolve(&self, short: &str) -> Option<String> {
-        match self {
-            Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
-            Self::Type(_) => None,
-            Self::Types(t) => {
-                let aliased = aliases(t);
-                t.types.iter().find_map(|name| {
-                    let local_name = aliased
-                        .iter()
-                        .find(|a| &a.name == name)
-                        .map_or(name.as_str(), |a| a.aliased_name.as_str());
-                    (local_name == short).then(|| qualify(&t.namespace, name))
-                })
-            }
         }
     }
 }

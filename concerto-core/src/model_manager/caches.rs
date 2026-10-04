@@ -1,7 +1,10 @@
 //! The manager's per-declaration answer cache ([`DeclCache`]) and its
 //! validity marks and proofs ([`ValidityProof`]).
 
-use super::*;
+use super::{
+    Arc, ClassInfo, DeclId, EXCLUDE_NS, ManagerOptions, ModelFile, ModelFileId, ModelManager,
+    Mutex, Result, SeededHashSet,
+};
 
 js_compat_pub! {
     /// Why a model file shared into another manager

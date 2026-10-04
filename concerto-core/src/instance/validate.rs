@@ -382,17 +382,34 @@ fn visit_class_declaration_dispatch<V: ValidatorInput>(
                 false,
             ));
         }
-        return Err(type_not_found(own_fqn));
+        return Err(Error::type_not_found(own_fqn));
     };
-    if p.mm.declaration(id).and_then(Declaration::as_class).is_none() {
-        // An enum, scalar or map `$class`: not TS-reachable, a harness
-        // error.
-        return Err(ContractError::pre_port(
-            ErrorKind::InvalidArgument,
-            format!("'{own_fqn}' is not a class-like type and cannot back a Resource"),
-            None,
-        )
-        .into());
+    match p.mm.declaration(id) {
+        // TS `EnumDeclaration.isClassDeclaration()` is true, so a `$class`
+        // naming an enum builds a `Resource` whose walk reports what TS
+        // reports (a missing enum value is a missing required property).
+        Some(Declaration::Class(_) | Declaration::Enum(_)) => {}
+        // A scalar or map `$class` in a map value: the populator kept the
+        // object as received, as TS does, so it is not a `Resource`.
+        Some(Declaration::Scalar(_) | Declaration::Map(_)) if is_map_value => {
+            return Err(not_resource_violation_with(
+                p,
+                declared_fqn,
+                &value.to_value(),
+                false,
+            ));
+        }
+        // A scalar or map `$class` anywhere else cannot back a `Resource`
+        // (the populator rejects it first), so only a direct caller of the
+        // walk reaches this.
+        _ => {
+            return Err(ContractError::pre_port(
+                ErrorKind::InvalidArgument,
+                format!("'{own_fqn}' is not a class-like type and cannot back a Resource"),
+                None,
+            )
+            .into());
+        }
     }
     // The validation plan; its chain's error, when it does not
     // resolve, is the one `getIdentifierFieldName()` raises.
@@ -850,10 +867,15 @@ fn check_object_item<V: ValidatorInput>(
     // here is a `Resource`, so its own `$class` takes over, and
     // `visit_class_declaration` re-resolves and re-checks it, after the
     // `isAssignableTo` check below.
-    if let Some(own_fqn) = value.as_object().and_then(|o| o.class())
-        && !is_assignable(p.mm, own_fqn, declared_class_fqn)?
-    {
-        return Err(invalid_field_assignment(p, owner_fqn, property, own_fqn));
+    if let Some(own_fqn) = value.as_object().and_then(|o| o.class()) {
+        // `try { getType(obj.getFullyQualifiedType()) } catch {
+        // reportFieldTypeViolation }`.
+        if p.mm.declaration_id(own_fqn).is_none() {
+            return Err(field_type_violation(p, property, &value.to_value()));
+        }
+        if !is_assignable(p.mm, own_fqn, declared_class_fqn)? {
+            return Err(invalid_field_assignment(p, owner_fqn, property, own_fqn));
+        }
     }
     // TS passes the field's declared type into the recursive `accept`, so a
     // `reportNotResouceViolation` names it.
@@ -861,7 +883,8 @@ fn check_object_item<V: ValidatorInput>(
 }
 
 /// [`ModelManager::is_assignable_to`], from `sub_fqn`'s plan when it is a
-/// class declaration: the same answer and errors.
+/// class or enum declaration (an enum's chain has the implicit `Concept`
+/// super type): the same answer and errors.
 fn is_assignable(mm: &ModelManager, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
     if sub_fqn == super_fqn {
         return Ok(true);
@@ -869,10 +892,12 @@ fn is_assignable(mm: &ModelManager, sub_fqn: &str, super_fqn: &str) -> Result<bo
     let Some(id) = mm.declaration_id(sub_fqn) else {
         return Err(Error::type_not_found(sub_fqn.to_string()));
     };
-    if mm.declaration(id).and_then(Declaration::as_class).is_none() {
-        return Ok(false);
+    match mm.declaration(id) {
+        Some(Declaration::Class(_) | Declaration::Enum(_)) => {
+            Ok(plan::class_plan(mm, id)?.is_assignable_to(mm, super_fqn))
+        }
+        _ => Ok(false),
     }
-    Ok(plan::class_plan(mm, id)?.is_assignable_to(mm, super_fqn))
 }
 
 // ---------------------------------------------------------------------
@@ -1290,9 +1315,15 @@ fn check_relationship<V: ValidatorInput>(
 
     // `modelManager.getType(obj.getFullyQualifiedType())`.
     let Some(target_id) = p.mm.declaration_id(target_fqn) else {
-        return Err(type_not_found(target_fqn));
+        return Err(Error::type_not_found(target_fqn));
     };
-    if p.mm.declaration(target_id).and_then(Declaration::as_class).is_none() {
+    // An enum target goes on to its plan, which has no identifier field,
+    // so it fails `getIdentifierFieldName()` as in TS. A scalar or map has
+    // no such method in TS (a `TypeError`); it is not a relationship.
+    if !matches!(
+        p.mm.declaration(target_id),
+        Some(Declaration::Class(_) | Declaration::Enum(_))
+    ) {
         return Err(not_relationship_violation(p, holder, &value.to_value()));
     }
     // The target's plan; its chain's error, when it does not
@@ -1870,19 +1901,6 @@ fn invalid_field_assignment_shape(
     }
 }
 
-/// The catalogue's `TypeNotFoundException` for `fqn` (table 2.3's default
-/// message), which `modelManager.getType` throws for a type that is not
-/// declared.
-fn type_not_found(fqn: &str) -> Error {
-    ContractError::type_not_found(
-        "typenotfounderror-defaultmessage",
-        Vec::new(),
-        fqn.to_string(),
-        None,
-    )
-    .into()
-}
-
 
 // ---------------------------------------------------------------------
 // The named type of the `_as` entry points
@@ -1911,19 +1929,16 @@ pub(crate) fn check_assignable_to_declaration(
     }
     match mm.is_assignable_to(own_fqn, declared_fqn) {
         Ok(true) => Ok(()),
-        Ok(false) => Err(ContractError::pre_port(
+        Ok(false) => Err(ContractError::new(
             ErrorKind::Validation,
-            format!("'{own_fqn}' is not assignable to '{declared_fqn}'"),
-            None,
+            "engine-validateinstanceas-notassignable",
+            vec![
+                ("type", own_fqn.to_string()),
+                ("declared", declared_fqn.to_string()),
+            ],
         )
         .into()),
-        Err(_) => Err(ContractError::type_not_found(
-            "typenotfounderror-defaultmessage",
-            Vec::new(),
-            own_fqn.to_string(),
-            None,
-        )
-        .into()),
+        Err(_) => Err(Error::type_not_found(own_fqn)),
     }
 }
 

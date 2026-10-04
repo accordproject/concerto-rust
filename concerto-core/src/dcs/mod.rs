@@ -757,7 +757,7 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
         .into());
     };
     let short = model_util::short_name(type_name);
-    if mf.resolve_local_type(short).as_deref() == Some(type_name) {
+    if mf.fully_qualified_type_name(short).as_deref() == Some(type_name) {
         Ok(())
     } else {
         Err(ContractError::new(

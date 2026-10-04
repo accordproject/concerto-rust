@@ -1,7 +1,14 @@
 //! Lookups by name and by handle: model files, declarations, properties,
 //! type-name resolution and the models' AST.
 
-use super::*;
+use super::{
+    AstOptions, ClassDeclaration, ClassKind, ClassLike, ContractError, DeclId, Declaration,
+    EXCLUDE_NS, EnumDeclaration, Error, ErrorKind, FileSlot, ModelFile, ModelFileId, ModelManager,
+    Node, PropId, Property, ResolutionContext, Result, Value, already_exists, get_namespace,
+    is_primitive_type, metamodel_util, namespace_of, qualify, short_name, unknown,
+};
+#[cfg(feature = "js-compat")]
+use crate::introspect::model_file::TypeTarget;
 
 impl ModelManager {
     /// The loaded model file for a namespace, if there is one.
@@ -265,21 +272,14 @@ impl ModelManager {
         namespace: &str,
         type_name: &str,
     ) -> Option<String> {
-        let mf = self.model_file(namespace)?;
-        if crate::model_util::is_primitive_type(type_name) {
-            return Some(type_name.to_string());
-        }
-        if let Some(fqn) = mf.find_import(type_name) {
-            return Some(fqn);
-        }
-        let file = self.model_file_id(namespace)?;
-        let id = self.local_type(file, type_name)?;
-        self.declaration_fqn(id).ok()
+        self.model_file(namespace)?
+            .fully_qualified_type_name(type_name)
     }
 
-    /// Resolves a short name, as written inside `in_namespace`, to its
-    /// fully-qualified name, using the primitives, local declarations and named
-    /// imports the model file can see.
+    /// Resolves a type name, as written inside `in_namespace`, to its
+    /// fully-qualified name, using the primitives, named imports and local
+    /// declarations (short or qualified) the model file can see
+    /// ([`ModelFile::fully_qualified_type_name`]).
     pub fn resolve_type_name(&self, in_namespace: &str, short: &str) -> Result<String> {
         self.resolve_type_name_at(in_namespace, short, None)
     }
@@ -317,7 +317,7 @@ impl ModelManager {
             )
         })?;
 
-        mf.resolve_local_type(short)
+        mf.fully_qualified_type_name(short)
             .ok_or_else(|| Error::type_not_found(qualify(in_namespace, short)))
     }
 
@@ -404,11 +404,14 @@ impl ModelManager {
         let mf = self
             .file(file)
             .ok_or_else(|| unknown(Node::ModelFile(file)))?;
-        if let Some(fqn) = mf.find_import(type_name) {
-            return self.resolve_type(context, &fqn).map(|_| ());
-        }
-        if mf.is_local_type(type_name) {
-            return Ok(());
+        match mf.type_target(type_name) {
+            Some(TypeTarget::Imported { namespace, name }) => {
+                return self
+                    .resolve_type(context, &qualify(namespace, name))
+                    .map(|_| ());
+            }
+            Some(TypeTarget::Primitive | TypeTarget::Local(_)) => return Ok(()),
+            None => {}
         }
         let mut err = ContractError::new(
             ErrorKind::IllegalModel,
@@ -430,14 +433,12 @@ impl ModelManager {
     /// TS: ModelFile.getLocalType (src/introspect/modelfile.ts)
     pub(super) fn local_type(&self, file: ModelFileId, type_name: &str) -> Option<DeclId> {
         let slot = self.files.get(file.slot())?;
-        let namespace = slot.model_file.namespace();
-        let short = match type_name.strip_prefix(namespace) {
-            // Keyed by `<namespace>.<name>`, so what follows the namespace
-            // must be a dot and a name.
-            Some(rest) => rest.strip_prefix('.')?,
-            None => type_name,
-        };
-        let index = u32::try_from(slot.model_file.local_index(short)?).ok()?;
+        self.decl_id_at(slot, slot.model_file.local_type_index(type_name)?)
+    }
+
+    /// The handle of the declaration at `index` in `slot`'s model file.
+    pub(super) fn decl_id_at(&self, slot: &FileSlot, index: usize) -> Option<DeclId> {
+        let index = u32::try_from(index).ok()?;
         Some(DeclId(slot.declarations.start.checked_add(index)?))
     }
 

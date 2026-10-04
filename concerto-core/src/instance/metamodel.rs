@@ -291,11 +291,18 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
 ///    (`modelfile-load-nodenotobject`).
 /// 2. `validateAst`'s strict check ([`validate_ast`]), its error re-thrown
 ///    as an `IllegalModelException` after a fixed prefix
-///    (`modelfile-load-astshape`).
+///    (`modelfile-load-astshape`), but for its metamodel version check's
+///    `MetamodelException`, thrown as it is, as TS 5.0.0's `validateAst`
+///    throws it (`basemodelmanager-validateast-versionmismatch`).
 ///
-/// **One tolerance.** concerto-cto 5.0.0 writes a string `defaultValue` on a
-/// `DateTimeProperty`, which the metamodel does not declare; so that such a
-/// model still loads, that value is left out of step 2.
+/// **Two tolerances.** concerto-cto 5.0.0 writes a string `defaultValue` on
+/// a `DateTimeProperty`, which the metamodel does not declare; so that such
+/// a model still loads, that value is left out of step 2. And
+/// `ModelFile.filter` builds the filtered file from its declarations'
+/// ASTs, as TS 5.0.0 does, which carry the default super type of an asset,
+/// participant, transaction or event with the `$class` `TypeIdentified`
+/// (not in the metamodel); so that the filtered file loads, step 2 checks
+/// that super type as a `TypeIdentifier`.
 ///
 /// The check reads only `ast`. It is folded into the typed read every load
 /// runs (`introspect::shape`): only an AST that read cannot vouch for is
@@ -323,6 +330,11 @@ pub(crate) fn check_ast_shape_exact(ast: &Value) -> Result<()> {
         validate_ast(ast)
     };
     result.map_err(|err| {
+        // R2F-5: a metamodel version mismatch stays TS 5.0.0's
+        // `MetamodelException`.
+        if err.code() == "basemodelmanager-validateast-versionmismatch" {
+            return err;
+        }
         ContractError::new(
             ErrorKind::IllegalModel,
             "modelfile-load-astshape",
@@ -343,12 +355,42 @@ fn has_parser_default(map: &serde_json::Map<String, Value>) -> bool {
         && map.get("defaultValue").is_some_and(Value::is_string)
 }
 
-/// Removes every value [`has_parser_default`] matches from `node`.
+/// Whether `map` is a declaration whose `superType` is exactly the default
+/// one TS 5.0.0 gives an asset, participant, transaction or event view
+/// (`ModelFile._declarationView`, with the `$class` `TypeIdentified`
+/// written there), which `ModelFile.filter` copies into the filtered file:
+/// [`check_ast_shape`] checks it as a `TypeIdentifier`.
+fn has_default_super_type(map: &serde_json::Map<String, Value>) -> bool {
+    let Some(super_type) = map.get("superType").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(name) = map
+        .get("$class")
+        .and_then(Value::as_str)
+        .and_then(|class| {
+            crate::introspect::model_file::default_super_type(&serde_json::json!({ "$class": class }))
+        })
+    else {
+        return false;
+    };
+    super_type.len() == 2
+        && super_type.get("$class").and_then(Value::as_str)
+            == Some(crate::introspect::model_file::DEFAULT_SUPER_TYPE_CLASS)
+        && super_type.get("name").and_then(Value::as_str) == Some(name)
+}
+
+/// Removes every value [`has_parser_default`] matches from `node`, and
+/// gives every super type [`has_default_super_type`] matches the
+/// metamodel's `TypeIdentifier` class.
 fn strip_parser_extras(node: &mut Value) {
     match node {
         Value::Object(map) => {
             if has_parser_default(map) {
                 map.remove("defaultValue");
+            }
+            if has_default_super_type(map) {
+                map["superType"]["$class"] =
+                    Value::String("concerto.metamodel@1.0.0.TypeIdentifier".to_string());
             }
             map.values_mut().for_each(strip_parser_extras);
         }
@@ -369,7 +411,7 @@ const NODE_KEYS: [&str; 4] = ["identified", "sizeValidator", "lengthValidator", 
 fn check_node_shapes(node: &Value, super_type: bool, parser_extras: &mut bool) -> Result<()> {
     match node {
         Value::Object(map) => {
-            *parser_extras |= has_parser_default(map);
+            *parser_extras |= has_parser_default(map) || has_default_super_type(map);
             if let Some(decorators) = map.get("decorators")
                 && !decorators.is_array()
                 && !decorators.is_null()

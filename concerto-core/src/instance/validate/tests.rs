@@ -1741,3 +1741,71 @@
         let pointers: Vec<String> = params.into_found().into_iter().map(|(p, _)| p).collect();
         assert_eq!(pointers, ["/a", "/7"]);
     }
+
+    // ---- The enum blind spots (R2B-1, R2B-2) and an unknown
+    //      nested `$class` (R2B-4) ----
+
+    /// R2B-1: a map value whose `$class` names a scalar is kept by the
+    /// populator as received (not a `Resource`), so TS's
+    /// `visitClassDeclaration` reports it as not a resource, a
+    /// `ValidationException`.
+    #[test]
+    fn a_map_value_whose_class_is_a_scalar_is_not_a_resource() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!({ "$class": "org.acme@1.0.0.VIN" }))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ItemMap", &map));
+        assert_eq!(err.kind(), ErrorKind::Validation);
+        assert_eq!(err.code(), "resourcevalidator-notresourceorconcept");
+    }
+
+    /// R2B-1: a map value whose `$class` names an enum is a `Resource` of
+    /// the enum (TS `EnumDeclaration.isClassDeclaration()` is true), whose
+    /// walk reports the missing enum values as missing required properties.
+    #[test]
+    fn a_map_value_whose_class_is_an_enum_is_walked_as_a_resource() {
+        let mgr = fixture();
+        let map = js_map(vec![(json!("a"), json!({ "$class": "org.acme@1.0.0.Color" }))]);
+        let err = err_of(validate_map(&mgr, "org.acme@1.0.0.ItemMap", &map));
+        assert_eq!(err.kind(), ErrorKind::Validation);
+        assert_eq!(err.code(), "resourcevalidator-missingrequiredproperty");
+    }
+
+    /// R2B-2 (a): a relationship to an enum reaches `checkRelationship`'s
+    /// `getIdentifierFieldName()` test, the plain `Error` TS throws.
+    #[test]
+    fn a_relationship_to_an_enum_is_not_identifiable() {
+        let mgr = fixture();
+        let owner = json!({
+            "$class": "org.acme@1.0.0.Owner", "ownerId": "O1",
+            "vehicle": { "$$relationship": true, "$class": "org.acme@1.0.0.Color" }
+        });
+        let err = err_of(validate_instance(&mgr, &owner, &ValidateOptions::default()));
+        assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+        assert_eq!(err.code(), "resourcevalidator-checkrelationship-notidentifiable");
+    }
+
+    /// R2B-2 (b): an enum is assignable to its implicit `Concept` super
+    /// type, as [`ModelManager::is_assignable_to`] answers.
+    #[test]
+    fn an_enum_is_assignable_to_concept_in_the_walk() {
+        let mgr = fixture();
+        let concept = "concerto@1.0.0.Concept";
+        assert!(is_assignable(&mgr, "org.acme@1.0.0.Color", concept).unwrap());
+        assert!(mgr.is_assignable_to("org.acme@1.0.0.Color", concept).unwrap());
+        assert!(!is_assignable(&mgr, "org.acme@1.0.0.Color", "org.acme@1.0.0.Animal").unwrap());
+    }
+
+    /// R2B-4: a nested object whose own `$class` is not declared is TS
+    /// `checkItem`'s field type violation (its `getType` failure is caught),
+    /// not a `TypeNotFoundException`.
+    #[test]
+    fn a_nested_object_of_an_unknown_class_is_a_field_type_violation() {
+        let mgr = fixture();
+        let vehicle = json!({
+            "$class": "org.acme@1.0.0.Vehicle", "vin": "ABC12", "mileage": 1,
+            "pet": { "$class": "org.acme@1.0.0.Missing", "name": "x" }
+        });
+        let err = err_of(validate_instance(&mgr, &vehicle, &ValidateOptions::default()));
+        assert_eq!(err.kind(), ErrorKind::Validation);
+        assert_eq!(err.code(), "resourcevalidator-fieldtypeviolation");
+    }

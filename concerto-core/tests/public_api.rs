@@ -332,7 +332,7 @@ fn errors_are_read_through_accessors() {
 
     let err = manager.get_declaration("org.bad@1.0.0.Nope").unwrap_err();
     assert_eq!(err.kind(), ErrorKind::TypeNotFound);
-    assert_eq!(err.code(), "pre-port");
+    assert_eq!(err.code(), "typenotfounderror-defaultmessage");
 }
 
 #[test]
