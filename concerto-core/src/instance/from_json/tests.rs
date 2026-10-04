@@ -309,3 +309,36 @@
             [("0", 'z'), ("1", 'x'), ("y", 'y')]
         );
     }
+
+    /// A map declaration's entries (its relationship target and defaults)
+    /// are resolved once per declaration and kept on the manager, so every
+    /// map value of the type, in every document, reads the same answer.
+    #[test]
+    fn map_entries_are_resolved_once_per_declaration() {
+        let mm = manager();
+        let car_map = model::get_type(&mm, "org.acme@1.0.0.CarMap").unwrap();
+        let first = model::map_entries(&car_map);
+        let again = model::map_entries(&car_map);
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        let Some(Ok(relationship)) = &first.relationship else {
+            panic!("a relationship map");
+        };
+        assert_eq!(relationship.target_fqn, "org.acme@1.0.0.Car");
+        assert_eq!(relationship.default_namespace, "org.acme@1.0.0");
+        assert_eq!(relationship.default_type, "Car");
+        assert_eq!(
+            first.relationship_slot(&car_map).unwrap().owner_fqn,
+            "org.acme@1.0.0.CarMap"
+        );
+        assert!(first.key_declaration.is_none() && first.value_declaration.is_none());
+        // Two documents, each with a map: the same entries serve both.
+        for vin in ["a", "b"] {
+            check(json!({
+                "$class": "org.acme@1.0.0.Car",
+                "vin": vin,
+                "doors": 4,
+                "fleet": { "x": "resource:org.acme@1.0.0.Car#c" }
+            }))
+            .unwrap();
+        }
+    }

@@ -379,6 +379,132 @@ pub fn map_relationship_slot<'a>(
     }
 }
 
+/// `visitRelationshipDeclaration`'s `defaultNamespace` and `defaultType`
+/// for a relationship held in `slot`: the target type's namespace (else the
+/// owner's) and short name, which a URI without them takes.
+pub fn relationship_defaults(slot: &RelationshipSlot) -> Result<(String, String)> {
+    let type_fqn = slot.target_fqn;
+    let mut default_namespace = model_util::get_namespace(Some(type_fqn))?.to_string();
+    if default_namespace.is_empty() {
+        default_namespace = model_util::get_namespace(Some(slot.owner_fqn))?.to_string();
+    }
+    Ok((default_namespace, model_util::short_name(type_fqn).to_string()))
+}
+
+/// The relationship target of a map whose value type is a relationship,
+/// with the defaults its relationships are read with
+/// ([`relationship_defaults`]).
+#[derive(Debug)]
+pub struct MapRelationship {
+    /// The target's fully-qualified name ([`map_relationship_target`]).
+    pub target_fqn: String,
+    /// The default namespace of a relationship read for the map.
+    pub default_namespace: String,
+    /// The default type of a relationship read for the map.
+    pub default_type: String,
+}
+
+/// What the populators' `JSONPopulator.visitMapDeclaration` and
+/// `processMapType` resolve for a map declaration. It is the same for every
+/// value of the map type, so it is resolved once per declaration and kept
+/// on the manager ([`map_entries`]), as the validator keeps its `MapPlan`.
+#[derive(Debug)]
+pub struct MapEntries {
+    /// For a map whose value is a relationship, its target and defaults, or
+    /// the error resolving them, which a populator raises at the map's first
+    /// value, where TS resolves it; `None` for any other map.
+    pub relationship: Option<std::result::Result<MapRelationship, Error>>,
+    /// `processMapType`'s declaration for a key with no `$class` of its
+    /// own: the one the key type names in the map's model file, if any
+    /// (`None` too for a primitive key, which is never processed).
+    pub key_declaration: Option<DeclId>,
+    /// The same for a value.
+    pub value_declaration: Option<DeclId>,
+}
+
+impl MapEntries {
+    /// The [`RelationshipSlot`] of the map's relationship-typed values,
+    /// when its target resolved.
+    pub fn relationship_slot<'a>(
+        &'a self,
+        map_declaration: &TypeRef<'a>,
+    ) -> Option<RelationshipSlot<'a>> {
+        match &self.relationship {
+            Some(Ok(relationship)) => Some(map_relationship_slot(
+                map_declaration,
+                &relationship.target_fqn,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Whether everything resolved, so that loading another model file
+    /// cannot change the answer.
+    pub(crate) fn is_settled(&self, map_declaration: &Declaration) -> bool {
+        let Declaration::Map(map) = map_declaration else {
+            return true;
+        };
+        let found = |name: &str, declaration: Option<DeclId>| {
+            model_util::is_primitive_type(name) || declaration.is_some()
+        };
+        !matches!(self.relationship, Some(Err(_)))
+            && found(map.key_type_name(), self.key_declaration)
+            && (self.relationship.is_some()
+                || found(map.value_type_name(), self.value_declaration))
+    }
+}
+
+/// [`MapEntries`] for `map_declaration`, resolved on first use and then
+/// kept on the manager until the registered files change.
+pub fn map_entries(map_declaration: &TypeRef) -> std::sync::Arc<MapEntries> {
+    let mm = map_declaration.mm;
+    mm.cached_map_entries(map_declaration.id, || {
+        let Declaration::Map(map) = map_declaration.decl else {
+            return MapEntries {
+                relationship: None,
+                key_declaration: None,
+                value_declaration: None,
+            };
+        };
+        let namespace = map_declaration.namespace();
+        let declaration = |type_name: &str| {
+            if model_util::is_primitive_type(type_name) {
+                return None;
+            }
+            mm.model_file_fully_qualified_type_name(namespace, type_name)
+                .and_then(|name| get_type(mm, &name).ok())
+                .map(|found| found.id)
+        };
+        let relationship = is_relationship_map(map_declaration).then(|| {
+            let target_fqn = map_relationship_target(map_declaration)?
+                .expect("is_relationship_map was checked");
+            let (default_namespace, default_type) =
+                relationship_defaults(&map_relationship_slot(map_declaration, &target_fqn))?;
+            Ok(MapRelationship {
+                target_fqn,
+                default_namespace,
+                default_type,
+            })
+        });
+        let value_declaration = if relationship.is_some() {
+            None
+        } else {
+            declaration(map.value_type_name())
+        };
+        MapEntries {
+            relationship,
+            key_declaration: declaration(map.key_type_name()),
+            value_declaration,
+        }
+    })
+}
+
+/// The declaration a handle names, as a [`TypeRef`]: one of
+/// [`MapEntries`]' resolved declarations.
+pub fn type_ref(mm: &ModelManager, id: DeclId) -> Option<TypeRef<'_>> {
+    mm.declaration(id).map(|decl| TypeRef { mm, id, decl })
+}
+
 /// Resolves a property's declared type in its owner's model file.
 pub fn field<'a>(
     mm: &'a ModelManager,

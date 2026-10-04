@@ -532,27 +532,17 @@ impl<'a> Populator<'a> {
         let Declaration::Map(map) = map_declaration.decl else {
             unreachable!("visit_map_declaration is only reached for a map");
         };
-        let key_type = map.key_type_name().to_string();
-        let value_type = map.value_type_name().to_string();
+        let key_type = map.key_type_name();
+        let value_type = map.value_type_name();
         // BC-05, DV-007: a relationship-typed value is read as a
         // relationship property is, not as an embedded concept. Its target
-        // type, and its slot, are resolved once; an error resolving them is
-        // raised at the first value, as TS resolves it there.
-        let relationship = model::is_relationship_map(map_declaration).then(|| {
-            let target = model::map_relationship_target(map_declaration)?
-                .expect("is_relationship_map was checked");
-            let (default_namespace, default_type) =
-                relationship_defaults(&model::map_relationship_slot(map_declaration, &target))?;
-            Ok::<_, Error>((target, default_namespace, default_type))
-        });
-        let slot = match &relationship {
-            Some(Ok((target, _, _))) => Some(model::map_relationship_slot(map_declaration, target)),
-            _ => None,
-        };
-        // `processMapType`'s declaration for a key or value with no `$class`
-        // of its own: the same for every entry, so resolved once.
-        let mut key_declaration = None;
-        let mut value_declaration = None;
+        // type and slot, and `processMapType`'s declarations for a key or
+        // value with no `$class` of its own, are the same for every value of
+        // the map type, so they are resolved once per declaration and kept
+        // on the manager (`model::map_entries`); an error resolving the
+        // target is raised at the first value, as TS resolves it there.
+        let entries = model::map_entries(map_declaration);
+        let slot = entries.relationship_slot(map_declaration);
         let mut result: Vec<(JsValue, JsValue)> = Vec::new();
         // `new Map(Object.entries(jsonObj))`. The keys are an object's, so
         // each is new, and each `map.set` appends: a key's
@@ -565,43 +555,40 @@ impl<'a> Populator<'a> {
                 result.push((key, value));
                 continue;
             }
-            let key = if model_util::is_primitive_type(&key_type) {
+            let key = if model_util::is_primitive_type(key_type) {
                 key
             } else {
-                self.process_map_type(map_declaration, &key, &key_type, &mut key_declaration)?
+                self.process_map_type(map_declaration, &key, entries.key_declaration)?
             };
-            let value = match &relationship {
+            let value = match &entries.relationship {
                 Some(resolved) => {
-                    let (_, default_namespace, default_type) =
-                        resolved.as_ref().map_err(Clone::clone)?;
+                    let resolved = resolved.as_ref().map_err(Clone::clone)?;
+                    let (default_namespace, default_type) =
+                        (&resolved.default_namespace, &resolved.default_type);
                     let slot = slot.as_ref().expect("resolved with the target");
                     self.convert_relationship(slot, default_namespace, default_type, &value)?
                 }
-                None if model_util::is_primitive_type(&value_type) => value,
-                None => self.process_map_type(
-                    map_declaration,
-                    &value,
-                    &value_type,
-                    &mut value_declaration,
-                )?,
+                None if model_util::is_primitive_type(value_type) => value,
+                None => {
+                    self.process_map_type(map_declaration, &value, entries.value_declaration)?
+                }
             };
             result.push((key, value));
         }
         Ok(JsValue::Map(result))
     }
 
-    /// TS: JSONPopulator.processMapType. `declaration` holds the
-    /// declaration `type_name` names in the map's model file, resolved at
-    /// the first entry that needs it.
+    /// TS: JSONPopulator.processMapType. `declaration` is the declaration
+    /// the key or value type names in the map's model file, if any
+    /// ([`model::MapEntries`]).
     fn process_map_type(
         &mut self,
         map_declaration: &TypeRef,
         value: &JsValue,
-        type_name: &str,
-        declaration: &mut Option<Option<TypeRef<'a>>>,
+        declaration: Option<concerto_core::model_manager::DeclId>,
     ) -> Result<JsValue> {
-        let namespace = map_declaration.namespace();
         let mm = self.mm;
+        debug_assert!(std::ptr::eq(mm, map_declaration.mm));
         // `try { ... } catch (err) { decl = undefined; }`
         let class_name = match value {
             JsValue::Object(_) | JsValue::Instance(_) | JsValue::Array(_) | JsValue::Map(_) => {
@@ -614,10 +601,7 @@ impl<'a> Populator<'a> {
         let found = match class_name {
             Some(JsValue::String(s)) => model::get_type(mm, &s).ok(),
             Some(_) => None,
-            None => *declaration.get_or_insert_with(|| {
-                mm.model_file_fully_qualified_type_name(namespace, type_name)
-                    .and_then(|name| model::get_type(mm, &name).ok())
-            }),
+            None => declaration.and_then(|id| model::type_ref(mm, id)),
         };
         if let Some(declaration) = found
             && declaration.is_class_declaration()
@@ -728,7 +712,7 @@ impl<'a> Populator<'a> {
         let slot = relationship
             .relationship_slot()
             .expect("visit_relationship_declaration is only reached for a relationship");
-        let (default_namespace, default_type) = relationship_defaults(&slot)?;
+        let (default_namespace, default_type) = model::relationship_defaults(&slot)?;
 
         if slot.is_array {
             let JsValue::Array(items) = json else {
@@ -842,21 +826,6 @@ impl<'a> Populator<'a> {
         let sub_resource = factory::new_resource_of(&class_declaration, id, false, self.env)?;
         self.accept_declaration(&class_declaration, item, Some(sub_resource))
     }
-}
-
-/// `visitRelationshipDeclaration`'s `defaultNamespace` and `defaultType`:
-/// the target type's namespace (else the owner's) and short name, which a
-/// URI without them takes.
-fn relationship_defaults(slot: &RelationshipSlot) -> Result<(String, String)> {
-    let type_fqn = slot.target_fqn;
-    let mut default_namespace = model_util::get_namespace(Some(type_fqn))?.to_string();
-    if default_namespace.is_empty() {
-        default_namespace = model_util::get_namespace(Some(slot.owner_fqn))?.to_string();
-    }
-    Ok((
-        default_namespace,
-        model_util::short_name(type_fqn).to_string(),
-    ))
 }
 
 /// What `utcOffset(this.utcOffset)` receives: a string as it is, anything
