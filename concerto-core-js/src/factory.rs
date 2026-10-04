@@ -1,5 +1,5 @@
-//! `Factory` (src/factory.ts): the model checks of `newResource`, which #32
-//! point 4 moves to Rust ([`check_new_resource`]), and the construction of
+//! `Factory` (src/factory.ts): the model checks of `newResource`, which run
+//! in Rust ([`check_new_resource`]), and the construction of
 //! the instances the Rust serializer builds ([`new_resource`] and the
 //! `newConcept`/`newRelationship`/`newTransaction`/`newEvent` wrappers).
 //!
@@ -45,7 +45,7 @@ fn error(code: &'static str, params: Vec<(&'static str, String)>) -> Error {
     ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
-/// The model checks of `Factory.newResource`, in TS order (#32 point 4),
+/// The model checks of `Factory.newResource`, in TS order,
 /// for an identifier that is any JS value: the checks are the native
 /// route's ([`from_json::check_new_resource`]).
 ///

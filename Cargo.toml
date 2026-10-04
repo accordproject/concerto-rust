@@ -54,8 +54,9 @@ indexmap = "2"
 # The one fast, non-cryptographic hasher of the internal lookup maps
 # (P5-13, accordproject/concerto-rust#297). None of them is iterated on an
 # observable path; maps keyed by untrusted input (JsObject, user model
-# names and regex patterns) use concerto_core::hash's seeded SipHash instead
-# (PORTING.md 3.7).
+# names and regex patterns) use concerto_core::hash's seeded hashers instead
+# (SipHash, or seeded foldhash for the per-lookup model-name tables;
+# PORTING.md 3.7).
 rustc-hash = "2"
 # The seeded fast hasher of the per-lookup tables keyed by user model names
 # (concerto_core::hash::FastSeededState; P5-110, accordproject/concerto-rust#477:

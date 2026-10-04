@@ -25,10 +25,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install toolchain
         run: rustup update ${{matrix.toolchain}} && rustup default ${{matrix.toolchain}}
-      - name: Format check (concerto-core)
-        run: rustup component add rustfmt && cargo fmt -p accordproject-concerto-core -- --check
-      - name: Clippy (concerto-core)
-        run: rustup component add clippy && cargo clippy -p accordproject-concerto-core --no-deps --all-targets -- -D warnings
+      # Every workspace member: concerto-core, concerto-core-js,
+      # concerto-metamodel, concerto-vocabulary and concerto-macros, so the
+      # `[workspace.lints]` every member opts into are enforced on all of
+      # them. concerto-wasm, a separate workspace, has its own steps below.
+      - name: Format check (workspace)
+        run: rustup component add rustfmt && cargo fmt --all -- --check
+      - name: Clippy (workspace)
+        run: rustup component add clippy && cargo clippy --workspace --all-targets -- -D warnings
       # P5-104 (C-9, accordproject/concerto-rust#458): the library alone, with
       # its default features. The run above builds the tests, whose
       # dev-dependencies turn `js-compat` on, so a seam item the native

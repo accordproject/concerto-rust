@@ -19,9 +19,10 @@
 //! (`update_model_file`, `delete_model_file`, `update_model_ast`,
 //! `remove_model`) rebuilds the arena from the surviving files, and every
 //! handle handed out before it is invalid after it.
-//! `ModelManager::state_version` counts the mutations and never returns to
-//! an earlier value for a different state, so a binding caching a snapshot
-//! knows when to drop it.
+//! `ModelManager::state_version` counts the mutations, so a binding caching
+//! a snapshot knows when to drop it. Within one uninterrupted history it
+//! never returns to an earlier value for a different state; a rolled back
+//! batch restores the count, so the next mutation can reuse a value.
 //!
 //! A ported member reaches its collaborators through the
 //! `ResolutionContext` trait, which the manager implements over the arena.
@@ -939,10 +940,13 @@ impl ModelManager {
     }
 
     /// The version of the manager's state, increased by every mutation: a
-    /// snapshot taken at one version is current while it is unchanged. It
-    /// never repeats an earlier value for a different state: an adopted
-    /// rebuild ([`ModelManager::adopt`]) continues the count, and a rolled
-    /// back batch restores the count with the state.
+    /// snapshot taken at one version is current while it is unchanged.
+    /// Within one uninterrupted history it never repeats an earlier value
+    /// for a different state, and an adopted rebuild
+    /// ([`ModelManager::adopt`]) continues the count. A rolled back batch
+    /// restores the count with the state, so the next mutation after it can
+    /// reuse a value an undone one had: a snapshot taken inside a batch that
+    /// was rolled back is not covered.
     #[cfg(feature = "js-compat")]
     pub fn state_version(&self) -> u64 {
         self.state_version

@@ -7,7 +7,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// A handle that names nothing in this manager, as the arena reports one
-/// (`model_manager.rs`, `unknown`): a `TypeNotFound` naming the node.
+/// (`model_manager/mod.rs`, `unknown`): a `TypeNotFound` naming the node.
 pub(crate) fn unknown(node: Node) -> Error {
     CoreError::type_not_found(format!("{node:?}")).into()
 }
@@ -22,7 +22,8 @@ pub(crate) fn snapshot(value: &Value) -> Result<String> {
 /// A `ModelManager`, exported to JS as one object. Model files,
 /// declarations and properties cross as dense `u32` arena handles
 /// (PORTING.md 1.4); state crosses as JSON snapshots a view caches until
-/// [`ModelManagerHandle::epoch`] changes (PORTING.md 1.5). wasm-bindgen
+/// the manager changes (PORTING.md 1.5; the TS side keys its caches on its
+/// own `EngineState.version`). wasm-bindgen
 /// registers a `FinalizationRegistry`; after `free()`, every call throws.
 #[wasm_bindgen]
 pub struct ModelManagerHandle {
@@ -31,7 +32,10 @@ pub struct ModelManagerHandle {
     /// (a file added, replaced or removed, an option set, or a check that may
     /// leave a file registered) and never goes back. Staging, the extract memo
     /// and reads leave it alone. A binding that changes the manager calls
-    /// [`Self::bump_epoch`]. The TS views key their caches on it alone.
+    /// [`Self::bump_epoch`]. It stamps the handle's own caches: the
+    /// `validatePropertyById` slots ([`Self::validation_property_slot`]) and
+    /// the extract memo. The TS views do not read it: they key their caches
+    /// on their own `EngineState.version`.
     pub(crate) epoch: u64,
     /// Model files loaded by [`Self::stage_model_file_bytes`] and not yet
     /// committed or dropped.
@@ -125,9 +129,9 @@ impl ModelManagerHandle {
         })
     }
 
-    /// The handle's mutation counter (the rule on the field): anything a view
-    /// read from the handle is current while it is unchanged. A JS number
-    /// (exact up to 2^53). The smoke checks read it.
+    /// The handle's mutation counter (the rule on the field): anything read
+    /// from the handle is current while it is unchanged. A JS number (exact
+    /// up to 2^53). The smoke checks read it; the TS views do not.
     pub fn epoch(&self) -> f64 {
         // Precision loss only past 2^53 mutations.
         #[allow(clippy::cast_precision_loss)]

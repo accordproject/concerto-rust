@@ -445,8 +445,8 @@ impl StagedHeader<'_> {
 /// implicit system import's five, which every non-system header ends with
 /// ([`IMPLICIT_IMPORT_SHORT_NAMES`]) and the TS side appends itself, and
 /// the pairs after them are its `uriMap`, in order. The one writer of the
-/// staged-header wire format; the TS side has the one reader (engine/views.ts
-/// `applyStagedFileHeader`).
+/// staged-header wire format; the TS side has the one reader
+/// (engine/views-staging.ts `applyStagedFileHeader`).
 pub(crate) struct FlatStaged<'h, 'a> {
     pub(crate) id: u32,
     pub(crate) header: Option<&'h StagedHeader<'a>>,

@@ -45,7 +45,14 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 # out of a model AST, skipping the rest unparsed (`IgnoredAny`).
 serde = { version = "1.0", features = ["derive"] }
 
+# The root workspace's `[workspace.lints]`, mirrored: this crate is its own
+# workspace, so it cannot inherit them. Keep the two in step.
+[lints.rust]
+missing_docs = "warn"
+
 [lints.clippy]
+format_push_string = "warn"
+redundant_clone = "warn"
 # A panic on the boundary path poisons the object it happened in (spike
 # REPORT §4): the binding never unwraps or indexes.
 unwrap_used = "deny"
