@@ -41,8 +41,8 @@
 //! node rule for `identified` and the validators (a node or `null`) are each
 //! a field of the wrong JSON type, rejected by the read's decode or here.
 
+use crate::json::{Map, Value};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-use serde_json::{Map, Value};
 
 use crate::introspect::kept::{Kept, Location};
 use crate::introspect::property::Property;

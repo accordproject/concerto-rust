@@ -113,7 +113,7 @@ impl Error {
 
     /// This error at `location`: the AST node's `location`, verbatim, or
     /// `None` where TS passes none.
-    pub(crate) fn at(mut self, location: Option<serde_json::Value>) -> Self {
+    pub(crate) fn at(mut self, location: Option<crate::json::Value>) -> Self {
         self.0.location = location;
         self
     }
@@ -140,7 +140,7 @@ impl Error {
         pub fn illegal_model(
             message: impl Into<String>,
             file_name: Option<String>,
-            location: Option<serde_json::Value>,
+            location: Option<crate::json::Value>,
         ) -> Self {
             let mut contract =
                 ContractError::pre_port(ErrorKind::IllegalModel, message.into(), location);
@@ -193,8 +193,8 @@ pub struct Location {
 impl Location {
     /// Reads a `Range` node. `None` when a position is missing or one of its
     /// numbers is not a non-negative integer.
-    fn from_value(value: &serde_json::Value) -> Option<Self> {
-        fn number(value: &serde_json::Value) -> Option<u64> {
+    fn from_value(value: &crate::json::Value) -> Option<Self> {
+        fn number(value: &crate::json::Value) -> Option<u64> {
             value.as_u64().or_else(|| {
                 value
                     .as_f64()
@@ -202,7 +202,7 @@ impl Location {
                     .map(|f| f as u64)
             })
         }
-        fn position(value: Option<&serde_json::Value>) -> Option<Position> {
+        fn position(value: Option<&crate::json::Value>) -> Option<Position> {
             let value = value?;
             Some(Position {
                 line: number(value.get("line")?)?,
@@ -483,7 +483,7 @@ js_compat_pub! {
         /// order.
         pub params: Vec<(&'static str, String)>,
         /// The AST node's `location`, verbatim, or `None` where TS passes none.
-        pub location: Option<serde_json::Value>,
+        pub location: Option<crate::json::Value>,
         /// `IllegalModel` only: `Some` when TS passes a model file to the
         /// exception, holding that file's name (`modelFile.getName()`, `None`
         /// when it has none). The WASM shim passes the real JS model file instead.
@@ -566,7 +566,7 @@ impl ContractError {
         code: &'static str,
         mut params: Vec<(&'static str, String)>,
         type_name: String,
-        location: Option<serde_json::Value>,
+        location: Option<crate::json::Value>,
     ) -> Self {
         debug_assert_catalogued(code);
         params.push(("typeName", type_name));
@@ -585,7 +585,11 @@ impl ContractError {
     /// is used verbatim, through [`Renderer::Raw`], claiming no verbatim TS
     /// template; the completeness test needs a golden test only for the
     /// shared `"pre-port"` entry.
-    pub fn pre_port(kind: ErrorKind, message: String, location: Option<serde_json::Value>) -> Self {
+    pub fn pre_port(
+        kind: ErrorKind,
+        message: String,
+        location: Option<crate::json::Value>,
+    ) -> Self {
         Self {
             kind,
             code: "pre-port",
@@ -701,9 +705,9 @@ impl ContractError {
 /// more, keeps its float form. No real source position comes near 2^53.
 pub(crate) fn location_value(
     range: &concerto_metamodel::concerto_metamodel_1_0_0::Range,
-) -> Option<serde_json::Value> {
-    fn js_numbers(value: serde_json::Value) -> serde_json::Value {
-        use serde_json::Value;
+) -> Option<crate::json::Value> {
+    fn js_numbers(value: crate::json::Value) -> crate::json::Value {
+        use crate::json::Value;
         // 2^63 and 2^64, both exact in f64.
         const TWO_63: f64 = 9_223_372_036_854_775_808.0;
         const TWO_64: f64 = 18_446_744_073_709_551_616.0;
@@ -722,7 +726,7 @@ pub(crate) fn location_value(
             other => other,
         }
     }
-    serde_json::to_value(range).ok().map(js_numbers)
+    crate::json::to_value(range).ok().map(js_numbers)
 }
 
 #[cfg(test)]
@@ -2661,7 +2665,7 @@ mod tests {
             "Invalid scalar name 'String'. Name conflicts with primitive type. "
         );
         err.model_file = Some(Some("org.acme.cto".into()));
-        err.location = Some(serde_json::json!({
+        err.location = Some(crate::json!({
             "start": {"line": 1, "column": 2}, "end": {"line": 3, "column": 4}
         }));
         assert_eq!(
@@ -2688,12 +2692,12 @@ mod tests {
         end: [f64; 3],
     ) -> concerto_metamodel::concerto_metamodel_1_0_0::Range {
         let position = |[line, column, offset]: [f64; 3]| {
-            serde_json::json!({
+            crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Position",
                 "line": line, "column": column, "offset": offset
             })
         };
-        serde_json::from_value(serde_json::json!({
+        crate::json::from_value(crate::json!({
             "$class": "concerto.metamodel@1.0.0.Range",
             "start": position(start),
             "end": position(end)

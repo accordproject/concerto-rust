@@ -12,7 +12,7 @@
 //! objects (`ModelFile.getAst()`, mutated and fed back through
 //! `ModelManager.fromAst`), not through the typed introspection views. This
 //! port keeps that shape: every command, target, decorator and AST node is a
-//! [`serde_json::Value`], and [`decorate_models`] round-trips a
+//! [`crate::json::Value`], and [`decorate_models`] round-trips a
 //! [`ModelManager`] through [`ModelFile::ast`] as `fromAst` does. Where TS
 //! reads a property of `undefined`/`null` (a command set with no `commands`,
 //! a command with no `decorator`), this port raises the same JS `TypeError`.
@@ -42,7 +42,7 @@ use crate::hash::{SeededHashMap, SeededHashSet};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
+use crate::json::{Map, Value};
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::instance::metamodel::metamodel_class;

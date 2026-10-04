@@ -31,11 +31,15 @@ test = true
 accordproject-concerto-macros = { path = "../concerto-macros", version = "0.1.0" }
 accordproject-concerto-metamodel = { path = "../concerto-metamodel", version = "3.17.0"}
 serde = { workspace = true }
-# OD-3: keep the given AST in its original key order. DV-001
-serde_json = { workspace = true, features = ["preserve_order"] }
+# Reads and writes JSON text. The crate's JSON values are its own
+# `json::Value` (OD-3: an object keeps its key order, DV-001), not
+# `serde_json::Value`, whose `preserve_order` maps hash with std's
+# `RandomState`, which has fixed, address-derived keys on
+# wasm32-unknown-unknown (PORTING.md 3.7).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 # PORTING.md OD-8: insertion-ordered maps (3.7), for a model file's external
-# imports.
+# imports and the objects of `json::Value`.
 indexmap = { workspace = true }
 # PORTING.md OD-8: ECMAScript regular expressions (ID_REGEX) and ECMAScript
 # Number::toString.
@@ -97,6 +101,9 @@ sha2 = { workspace = true }
 # vocabulary YAML (the `yaml` npm package, YAML 1.2) to check its values;
 # src/dcs/tests/decoratormanager.rs does the same.
 yaml-rust2 = "0.10"
+# `json::tests` checks `json::Value` against `serde_json::Value` with the
+# same `preserve_order` semantics, key order included.
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [lints]
 workspace = true

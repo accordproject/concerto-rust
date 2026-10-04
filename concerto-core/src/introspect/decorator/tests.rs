@@ -5,7 +5,7 @@ fn decorator(json: Value) -> Decorator {
 }
 
 fn ast(name: &str, arguments: Value) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Decorator",
         "name": name,
         "arguments": arguments
@@ -13,19 +13,19 @@ fn ast(name: &str, arguments: Value) -> Value {
 }
 
 fn string_arg(value: &str) -> Value {
-    serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": value })
+    crate::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorString", "value": value })
 }
 
 fn number_arg(value: f64) -> Value {
-    serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": value })
+    crate::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorNumber", "value": value })
 }
 
 fn boolean_arg(value: bool) -> Value {
-    serde_json::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorBoolean", "value": value })
+    crate::json!({ "$class": "concerto.metamodel@1.0.0.DecoratorBoolean", "value": value })
 }
 
 fn type_ref_arg(name: &str, array: bool) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.DecoratorTypeReference",
         "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name },
         "isArray": array
@@ -37,7 +37,7 @@ fn type_ref_arg(name: &str, array: bool) -> Value {
 fn stores_name_and_string_arguments() {
     let d = decorator(ast(
         "Test",
-        serde_json::json!([string_arg("one"), string_arg("two"), string_arg("three")]),
+        crate::json!([string_arg("one"), string_arg("two"), string_arg("three")]),
     ));
     assert_eq!(d.name(), "Test");
     assert_eq!(
@@ -52,7 +52,7 @@ fn stores_name_and_string_arguments() {
 
 #[test]
 fn no_arguments_field_gives_an_empty_list() {
-    let d = Decorator::from_ast(&serde_json::json!({
+    let d = Decorator::from_ast(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.Decorator",
         "name": "noargs"
     }));
@@ -66,7 +66,7 @@ fn no_arguments_field_gives_an_empty_list() {
 fn reads_every_argument_kind() {
     let d = decorator(ast(
         "all",
-        serde_json::json!([
+        crate::json!([
             string_arg("foo"),
             number_arg(1.0),
             number_arg(-1.0),
@@ -91,7 +91,7 @@ fn reads_every_argument_kind() {
 
     let non_array = decorator(ast(
         "returns",
-        serde_json::json!([type_ref_arg("MyConcept", false)]),
+        crate::json!([type_ref_arg("MyConcept", false)]),
     ));
     assert_eq!(
         non_array.arguments(),
@@ -103,7 +103,7 @@ fn reads_every_argument_kind() {
 
     let array = decorator(ast(
         "returns",
-        serde_json::json!([type_ref_arg("MyConcept", true)]),
+        crate::json!([type_ref_arg("MyConcept", true)]),
     ));
     assert_eq!(
         array.arguments(),
@@ -114,7 +114,7 @@ fn reads_every_argument_kind() {
     );
 
     let boolean_where_identifier_expected =
-        decorator(ast("returns", serde_json::json!([boolean_arg(true)])));
+        decorator(ast("returns", crate::json!([boolean_arg(true)])));
     assert_eq!(
         boolean_where_identifier_expected.arguments(),
         &[DecoratorArgument::Boolean(true)]
@@ -125,7 +125,7 @@ fn reads_every_argument_kind() {
 fn a_short_class_is_accepted_for_the_type_reference() {
     let d = decorator(ast(
         "returns",
-        serde_json::json!([{
+        crate::json!([{
             "$class": "DecoratorTypeReference",
             "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "String" },
             "isArray": false
@@ -144,7 +144,7 @@ fn manager_with(cto_declarations: Value) -> ModelManager {
     let mut manager = ModelManager::new().expect("system models load");
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
                 "declarations": cto_declarations
@@ -156,7 +156,7 @@ fn manager_with(cto_declarations: Value) -> ModelManager {
 }
 
 fn decorated_concept(name: &str, decorators: Value) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
         "name": name,
         "isAbstract": false,
@@ -171,9 +171,9 @@ fn decorated_concept(name: &str, decorators: Value) -> Value {
 /// that never sets `decoratorValidation`.
 #[test]
 fn validate_is_a_no_op_when_disabled() {
-    let manager = manager_with(serde_json::json!([decorated_concept(
+    let manager = manager_with(crate::json!([decorated_concept(
         "Car",
-        serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
+        crate::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
     )]));
     let decl = manager.get_declaration("org.acme@1.0.0.Car").unwrap();
     let decorator = decl.decorator("category").unwrap();
@@ -191,9 +191,9 @@ fn validate_is_a_no_op_when_disabled() {
 /// `IllegalModelException: ` fragment (BC-14, `Decorator::rethrow`).
 #[test]
 fn missing_decorator_error_reports_the_undeclared_type_wrapped_once() {
-    let mut manager = manager_with(serde_json::json!([decorated_concept(
+    let mut manager = manager_with(crate::json!([decorated_concept(
         "Car",
-        serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
+        crate::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
     )]));
     manager.set_decorator_validation(DecoratorValidationOptions {
         missing_decorator: Some("error".into()),
@@ -216,9 +216,9 @@ fn missing_decorator_error_reports_the_undeclared_type_wrapped_once() {
 /// logged, not thrown (module doc on `Decorator::handle`).
 #[test]
 fn missing_decorator_off_is_silent() {
-    let mut with_invalid_only = manager_with(serde_json::json!([decorated_concept(
+    let mut with_invalid_only = manager_with(crate::json!([decorated_concept(
         "Car",
-        serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
+        crate::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "category", "arguments": [] }])
     )]));
     with_invalid_only.set_decorator_validation(DecoratorValidationOptions {
         missing_decorator: None,
@@ -249,8 +249,8 @@ fn missing_decorator_off_is_silent() {
 /// exactly that half of this behaviour, for the resolve-own-name case).
 #[test]
 fn too_few_arguments_is_reported_through_invalid_decorator() {
-    let mut manager = manager_with(serde_json::json!([
-        decorated_concept("Marker", serde_json::json!([])),
+    let mut manager = manager_with(crate::json!([
+        decorated_concept("Marker", crate::json!([])),
         {
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "Category",
@@ -261,7 +261,7 @@ fn too_few_arguments_is_reported_through_invalid_decorator() {
         },
         decorated_concept(
             "Car",
-            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Category", "arguments": [] }])
+            crate::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Category", "arguments": [] }])
         ),
     ]));
     manager.set_decorator_validation(DecoratorValidationOptions {

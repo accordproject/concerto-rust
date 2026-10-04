@@ -932,11 +932,11 @@ impl Declaration {
     }
 }
 
-impl TryFrom<&serde_json::Value> for Declaration {
+impl TryFrom<&crate::json::Value> for Declaration {
     type Error = Error;
 
     /// Loads a declaration outside any namespace or file.
-    fn try_from(value: &serde_json::Value) -> Result<Self> {
+    fn try_from(value: &crate::json::Value) -> Result<Self> {
         Self::from_model_json(value, "", None)
     }
 }
@@ -946,7 +946,7 @@ impl Declaration {
     /// `file_name`: both are what the TS declaration reads from its model
     /// file when it reports an error.
     pub(crate) fn from_model_json(
-        value: &serde_json::Value,
+        value: &crate::json::Value,
         namespace: &str,
         file_name: Option<&str>,
     ) -> Result<Self> {
@@ -995,7 +995,7 @@ impl Declaration {
             // As `from_model_json` loads a map declaration's `Value`.
             TypedDeclaration::Scalar(node) => {
                 let short = match node.get("$class") {
-                    Some(Kept::Other(serde_json::Value::String(class))) => class
+                    Some(Kept::Other(crate::json::Value::String(class))) => class
                         .strip_prefix("concerto.metamodel@1.0.0.")
                         .unwrap_or_default()
                         .to_string(),
@@ -1131,7 +1131,7 @@ fn is_recognised_kind(kind: &str) -> bool {
 /// fails. The typed read has already required a string `name`.
 fn check_declaration_name(
     name: &str,
-    location: impl FnOnce() -> Option<serde_json::Value>,
+    location: impl FnOnce() -> Option<crate::json::Value>,
     file_name: Option<&str>,
 ) -> Result<()> {
     if is_valid_identifier(name) {

@@ -106,10 +106,10 @@ impl Import {
     }
 }
 
-impl TryFrom<&serde_json::Value> for Import {
+impl TryFrom<&crate::json::Value> for Import {
     type Error = Error;
 
-    fn try_from(value: &serde_json::Value) -> Result<Self> {
+    fn try_from(value: &crate::json::Value) -> Result<Self> {
         let class = declared_class(value);
         if class.is_empty() {
             return Err(Error::illegal_model(
@@ -197,7 +197,7 @@ impl TryFrom<&serde_json::Value> for Import {
 /// Reads one `aliasedTypes` entry, or `None` if it lacks a string `name` or
 /// `aliasedName`. An entry with no `$class` of its own is still an alias, and
 /// is given the metamodel's.
-fn aliased_type(entry: &serde_json::Value) -> Option<mm::AliasedType> {
+fn aliased_type(entry: &crate::json::Value) -> Option<mm::AliasedType> {
     let aliased_name = entry.get("aliasedName").and_then(|v| v.as_str())?;
     let name = entry.get("name").and_then(|v| v.as_str())?;
     let class = match declared_class(entry) {

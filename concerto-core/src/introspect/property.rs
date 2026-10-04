@@ -10,8 +10,8 @@
 //! not cover. The getters hang off the enum directly, and those it shares
 //! with the declarations come from the traits in [`crate::introspect`].
 
+use crate::json::Value;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-use serde_json::Value;
 
 use crate::derive::Named;
 use crate::error::{ContractError, Error, ErrorKind, Result};
@@ -334,7 +334,7 @@ pub(crate) fn property_kind(class: &str) -> Option<&str> {
     PROPERTY_KINDS.contains(&kind).then_some(kind)
 }
 
-impl TryFrom<&serde_json::Value> for Property {
+impl TryFrom<&crate::json::Value> for Property {
     type Error = Error;
 
     /// Reads one property node, outside any declaration: the typed read (a
@@ -343,7 +343,7 @@ impl TryFrom<&serde_json::Value> for Property {
     /// reserved system name, then a name that is not a valid identifier.
     /// The validators are checked once the owning class is known
     /// (`Property::check_bound_validators`).
-    fn try_from(value: &serde_json::Value) -> Result<Self> {
+    fn try_from(value: &crate::json::Value) -> Result<Self> {
         let property = crate::introspect::typed_ast::property_from_value(value)
             .map_err(|e| unreadable_ast(&e, None))?;
         let name = property.name();

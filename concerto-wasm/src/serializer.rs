@@ -63,7 +63,7 @@ pub(crate) fn decode_wire_number(text: &str) -> Result<f64> {
 /// A `"typed"` wire value (module doc) as an [`Instance`]: `ctor` selects
 /// the [`InstanceKind`], `fqn` is `class_fqn`, and every entry of `fields`
 /// decodes straight into `props`, in order.
-pub(crate) fn decode_wire_typed(map: &serde_json::Map<String, Value>) -> Result<Instance> {
+pub(crate) fn decode_wire_typed(map: &concerto_core::json::Map<String, Value>) -> Result<Instance> {
     let kind = match map.get("ctor").and_then(Value::as_str) {
         Some("Resource") => InstanceKind::Resource,
         Some("ValidatedResource") => InstanceKind::ValidatedResource,
@@ -243,7 +243,7 @@ pub(crate) fn encode_wire_dayjs(d: &Dayjs) -> Value {
 /// own property, `fields`, plus its class and TS constructor.
 #[cfg(test)]
 pub(crate) fn encode_wire_instance(i: &Instance) -> Value {
-    let fields: serde_json::Map<String, Value> = i
+    let fields: concerto_core::json::Map<String, Value> = i
         .props
         .iter()
         .map(|(k, v)| (k.clone(), encode_wire(v)))
@@ -289,7 +289,7 @@ pub(crate) fn encode_wire(v: &CoreValue) -> Value {
 
 // `serializerFromJsonCompact` reads its document straight into a
 // [`CoreValue`] ([`parse_wire`]) and writes its result straight to JSON text
-// ([`WireOut`]), without an intermediate `serde_json::Value` tree either
+// ([`WireOut`]), without an intermediate `concerto_core::json::Value` tree either
 // way; the tests check both against the `Value` route.
 
 /// Deserializes one wire value (module doc) directly into a [`CoreValue`],
@@ -343,7 +343,7 @@ impl<'de> serde::de::Visitor<'de> for WireSeed<'_> {
     }
 
     fn visit_f64<E>(self, n: f64) -> std::result::Result<CoreValue, E> {
-        // `serde_json::Value` holds a non-finite double as `null`.
+        // `concerto_core::json::Value` holds a non-finite double as `null`.
         Ok(if n.is_finite() {
             CoreValue::Number(n)
         } else {
@@ -827,7 +827,7 @@ impl WireDoc<'_> {
         }
     }
 
-    /// The document as a `serde_json::Value`, as `serde_json::from_str`
+    /// The document as a `concerto_core::json::Value`, as `serde_json::from_str`
     /// reads its text; `None` when it is not one.
     pub(crate) fn value(self) -> Option<Value> {
         match self {

@@ -71,12 +71,12 @@ pub(crate) fn number_validator(
         Ok(to_json(&value)?.unwrap_or(Value::Null))
     };
     let snapshot = json!({ "lowerBound": read(lower)?, "upperBound": read(upper)? });
-    serde_json::from_value(snapshot).map_err(internal)
+    concerto_core::json::from_value(snapshot).map_err(internal)
 }
 
 /// The `{lowerBound, upperBound}` snapshot as a JS object.
 pub(crate) fn number_snapshot(validator: &NumberValidator) -> JsValue {
-    serde_json::to_value(validator).map_or(JsValue::NULL, |v| to_js(&v))
+    concerto_core::json::to_value(validator).map_or(JsValue::NULL, |v| to_js(&v))
 }
 
 /// TS: NumberValidator constructor, after `super(field, ast)`. `view` is the
@@ -94,7 +94,7 @@ pub fn number_validator_new(view: JsValue, ast: JsValue) -> JsResult<JsValue> {
             }
             Ok(Some(to_json(&get(&ast, key)?)?.unwrap_or(Value::Null)))
         };
-        let mut node = serde_json::Map::new();
+        let mut node = concerto_core::json::Map::new();
         for key in ["lower", "upper"] {
             if let Some(value) = own(key)? {
                 node.insert(key.to_string(), value);
@@ -284,7 +284,7 @@ pub(crate) fn string_validator(view: &JsValue) -> Result<StringValidator> {
             }),
             "concerto.metamodel@1.0.0.StringLengthValidator",
         );
-        Some(serde_json::from_value::<mm::StringLengthValidator>(json).map_err(internal)?)
+        Some(concerto_core::json::from_value::<mm::StringLengthValidator>(json).map_err(internal)?)
     };
     StringValidator::new(
         &JsElement { validator: view },

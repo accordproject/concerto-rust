@@ -1,6 +1,6 @@
 //! Reading a model's JSON AST into the typed model: the only model loader.
 //!
-//! [`parse`] reads JSON text without building a [`serde_json::Value`] for
+//! [`parse`] reads JSON text without building a [`crate::json::Value`] for
 //! the whole document; [`from_value`] reads a `Value` the caller already
 //! parsed, through the same readers. Each class-like and enum declaration,
 //! and each of their properties, is deserialized straight into its
@@ -62,6 +62,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::thread::LocalKey;
 
+use crate::json::{Map, Value};
 use concerto_metamodel::Name;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::Deserialize;
@@ -69,7 +70,6 @@ use serde::de::value::{
     BoolDeserializer, BorrowedStrDeserializer, MapAccessDeserializer, StringDeserializer,
 };
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
-use serde_json::{Map, Value};
 
 use crate::introspect::METAMODEL_NAMESPACE;
 use crate::introspect::declaration::{ClassKind, ClassNode};
@@ -1194,7 +1194,7 @@ impl PropertyKeys {
             KEY_IS_OPTIONAL => Resumed::Bool(self.is_optional.unwrap_or_default()),
             // An already-decoded node, handed back as the `Value` it
             // serializes to, which decodes to the same node.
-            _ => Resumed::Value(serde_json::to_value(self.type_.take())?),
+            _ => Resumed::Value(crate::json::to_value(self.type_.take())?),
         })
     }
 }

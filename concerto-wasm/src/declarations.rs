@@ -27,7 +27,7 @@ pub fn scalar_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
         let validator = match &processed.validator {
             None => Value::Null,
             Some(ScalarValidator::Number(v)) => {
-                let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
+                let mut snapshot = concerto_core::json::to_value(v).unwrap_or(Value::Null);
                 if let Value::Object(map) = &mut snapshot {
                     map.insert("kind".to_string(), json!("NumberValidator"));
                 }

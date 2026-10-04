@@ -1,7 +1,7 @@
 //! Crate-private helpers for the ECMAScript semantics the TypeScript
 //! reference relies on (PORTING.md section 3.1).
 //!
-//! The model ASTs reach Rust as `serde_json::Value`, so these helpers take
+//! The model ASTs reach Rust as `crate::json::Value`, so these helpers take
 //! JSON values. A JSON value can hold every JS value a model AST holds,
 //! except `undefined` (an absent key, modelled as `Option::None` by callers)
 //! and the non-finite numbers (which neither the CTO parser nor `JSON.parse`
@@ -10,7 +10,7 @@
 use std::cmp::Ordering;
 use std::sync::LazyLock;
 
-use serde_json::Value;
+use crate::json::Value;
 
 /// ECMAScript `Number::toString` (radix 10): `1` not `1.0`, `1e+21`, `NaN`,
 /// `Infinity`, and `-0` gives `"0"`.
@@ -250,7 +250,7 @@ pub(crate) fn is_truthy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use crate::json;
 
     use super::*;
 

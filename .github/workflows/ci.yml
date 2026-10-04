@@ -45,6 +45,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo clippy --manifest-path concerto-wasm/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+          # The HashDoS check's key source (scripts/hashdos.mjs), feature-gated.
+          cargo clippy --manifest-path concerto-wasm/Cargo.toml --target wasm32-unknown-unknown --features hashdos-probe -- -D warnings
       # P5-104 (accordproject/concerto-rust#458): the host-side tests too,
       # which the wasm32 lib-only run above never lints.
       - name: Clippy (concerto-wasm, all targets)

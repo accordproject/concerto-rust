@@ -10,7 +10,7 @@
 //! `undefined`, a dayjs or a live `Resource` included, because that is what
 //! a JS caller can hand it. A native caller holds JSON, and all it needs is
 //! the verdict. This module walks the same steps in the same order over a
-//! `serde_json::Value`, and builds what the instance validator
+//! `crate::json::Value`, and builds what the instance validator
 //! ([`super::validate`]) reads: the populated instance in the validator's
 //! value shape, a `DateTime` as a parsed date and a relationship URI as a
 //! relationship. Each function is the TS method, or the Rust port, its doc
@@ -26,7 +26,7 @@
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
-use serde_json::{Map, Value};
+use crate::json::{Map, Value};
 
 use super::dayjs::{Dayjs, UtcOffset};
 use super::model::{self, Field, FieldType, RelationshipSlot, TypeRef};

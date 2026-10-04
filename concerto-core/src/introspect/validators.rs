@@ -11,11 +11,11 @@ use crate::hash::SeededHashMap;
 use std::cell::RefCell;
 use std::fmt;
 
+use crate::json::Value;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 #[cfg(feature = "js-compat")]
 use concerto_metamodel::utils::class_name;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::ecma;
 use crate::error::{ContractError, ErrorKind, ValidatorReport};

@@ -7,9 +7,19 @@
 //! a map quadratic. [`SeededState`] hashes with SipHash-2-4 under
 //! process-wide secret keys. On a native target they come from the standard
 //! library's OS-seeded [`RandomState`]. On `wasm32-unknown-unknown` the
-//! standard library has no entropy source and `RandomState`'s keys are the
-//! same in every instantiation, so concerto-wasm sets them from
-//! `crypto.getRandomValues` at instantiation, through [`seed_hasher`].
+//! standard library has no entropy source: `RandomState`'s keys are derived
+//! from memory addresses, the same in every instantiation of a build and
+//! only bumped by one per map, so anyone with the build can compute them.
+//! concerto-wasm sets these keys from `crypto.getRandomValues` at
+//! instantiation instead, through [`seed_hasher`].
+//!
+//! Only the maps built on these hashers are covered: `JsObject`
+//! (concerto-core-js), every JSON object ([`crate::json::Map`], which is
+//! what untrusted JSON text is parsed into, in place of
+//! `serde_json::Value`, whose maps use `RandomState`), and the tables below.
+//! A `std::collections::HashMap` or `HashSet` with its default hasher, or a
+//! `serde_json::Value`, still hashes with `RandomState`: never key one by
+//! untrusted input.
 //!
 //! [`FastSeededState`] is foldhash under a shared seed derived from the same
 //! process-wide keys: near-FxHash speed, for the per-lookup tables keyed by

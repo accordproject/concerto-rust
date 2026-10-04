@@ -227,7 +227,7 @@ impl Serializer {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use concerto_core::json;
 
     use super::*;
     use crate::deserialize::{STRICT_VALIDATE_OPTIONS, serializer_options};
@@ -247,7 +247,11 @@ mod tests {
         }
     }
 
-    fn property(class: &str, name: &str, extra: serde_json::Value) -> serde_json::Value {
+    fn property(
+        class: &str,
+        name: &str,
+        extra: concerto_core::json::Value,
+    ) -> concerto_core::json::Value {
         let mut p = json!({
             "$class": format!("concerto.metamodel@1.0.0.{class}"),
             "name": name,
@@ -437,7 +441,7 @@ mod tests {
             Some("dates.cto".into()),
         )
         .expect("a lenient DateTime default does not fail model load");
-        let from = |v: serde_json::Value| {
+        let from = |v: concerto_core::json::Value| {
             serializer().from_json(&mm, &JsValue::from_json(&v), None, &mut Env)
         };
         let code = |r: Result<Instance>| {
@@ -470,7 +474,7 @@ mod tests {
     #[test]
     fn from_json_reports_the_populator_checks() {
         let mm = model();
-        let from = |v: serde_json::Value| {
+        let from = |v: concerto_core::json::Value| {
             serializer().from_json(&mm, &JsValue::from_json(&v), None, &mut Env)
         };
         assert_eq!(
@@ -627,7 +631,7 @@ mod tests {
     }
 
     /// A car whose `drivers` map holds `drivers`.
-    fn car_with_drivers(drivers: serde_json::Value) -> JsValue {
+    fn car_with_drivers(drivers: concerto_core::json::Value) -> JsValue {
         JsValue::from_json(&json!({
             "$class": "org.acme@1.0.0.Car",
             "vin": "ABC",
@@ -817,7 +821,7 @@ mod tests {
 
     /// `from_json` with `options`' flags, plus `validate`.
     fn deserialize(
-        json: serde_json::Value,
+        json: concerto_core::json::Value,
         options: ValidationOptions,
         validate: bool,
     ) -> Result<Instance> {
@@ -1087,7 +1091,7 @@ mod tests {
     #[test]
     fn from_json_populates_every_entry_of_a_relationship_map() {
         let mm = model();
-        let drivers: serde_json::Map<String, serde_json::Value> = (0..50)
+        let drivers: concerto_core::json::Map<String, concerto_core::json::Value> = (0..50)
             .map(|i| (format!("d{i}"), json!(format!("p{i}"))))
             .collect();
         let json = JsValue::from_json(&json!({
@@ -1121,7 +1125,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let from = |v: serde_json::Value| {
+        let from = |v: concerto_core::json::Value| {
             serializer().from_json(&mm, &JsValue::from_json(&v), Some(&options), &mut Env)
         };
         let err = from(json!({
@@ -1261,7 +1265,7 @@ mod tests {
                 JsValue::Undefined,
             )))
         };
-        let plain = |v: serde_json::Value| JsValue::from_json(&v);
+        let plain = |v: concerto_core::json::Value| JsValue::from_json(&v);
         let variants: Vec<(&str, JsValue)> = vec![
             ("wheels", JsValue::String("x".into())),
             ("wheels", JsValue::Number(f64::NAN)),

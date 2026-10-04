@@ -33,8 +33,8 @@ use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use concerto_core::json::Value;
 use concerto_core::{ModelFile, ModelManager};
-use serde_json::Value;
 
 struct Counting;
 

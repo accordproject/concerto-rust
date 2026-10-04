@@ -13,7 +13,7 @@
 //! vendors, so the runtime preloads exactly what the reference preloads.
 //! [`root_model`] and [`decorator_model`] deserialize each into
 //! [`mm::Model`]; [`root_model_ast`] and [`decorator_model_ast`], which the
-//! model manager loads, parse the same JSON as a `serde_json::Value`, in the
+//! model manager loads, parse the same JSON as a `crate::json::Value`, in the
 //! file's own key order.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
@@ -40,14 +40,14 @@ pub fn decorator_model() -> mm::Model {
 /// The `concerto@1.0.0` system model, as a JSON AST: the vendored JSON, in
 /// its own key order, as [`crate::model_manager::ModelManager::new`] loads
 /// it.
-pub fn root_model_ast() -> serde_json::Value {
+pub fn root_model_ast() -> crate::json::Value {
     serde_json::from_str(ROOT_MODEL_JSON).expect("Root model could not be parsed as JSON.")
 }
 
 /// The `concerto.decorator@1.0.0` model, as a JSON AST: the vendored JSON,
 /// in its own key order, as [`crate::model_manager::ModelManager::new`]
 /// loads it.
-pub fn decorator_model_ast() -> serde_json::Value {
+pub fn decorator_model_ast() -> crate::json::Value {
     serde_json::from_str(DECORATOR_MODEL_JSON)
         .expect("Decorator model could not be parsed as JSON.")
 }
@@ -71,7 +71,7 @@ pub fn system_model_json_texts() -> [(&'static str, &'static str); 2] {
 /// `json` (a vendored system model) without whitespace, in its own key order.
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 fn compact(json: &str) -> String {
-    let value: serde_json::Value =
+    let value: crate::json::Value =
         serde_json::from_str(json).expect("A system model could not be parsed as JSON.");
     serde_json::to_string(&value).expect("A system model could not be written as JSON.")
 }
@@ -91,16 +91,16 @@ mod tests {
             assert!(text.starts_with(r#"{"$class":"concerto.metamodel@1.0.0.Model","#));
             assert!(!text.contains('\n') && !text.contains(": "));
             assert_eq!(
-                serde_json::from_str::<serde_json::Value>(text).unwrap(),
-                serde_json::from_str::<serde_json::Value>(json).unwrap()
+                serde_json::from_str::<crate::json::Value>(text).unwrap(),
+                serde_json::from_str::<crate::json::Value>(json).unwrap()
             );
         }
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(decorator).unwrap()["namespace"],
+            serde_json::from_str::<crate::json::Value>(decorator).unwrap()["namespace"],
             "concerto.decorator@1.0.0"
         );
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(root).unwrap()["namespace"],
+            serde_json::from_str::<crate::json::Value>(root).unwrap()["namespace"],
             "concerto@1.0.0"
         );
     }

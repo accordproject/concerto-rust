@@ -1,4 +1,4 @@
-//! A JSON node the typed read keeps as given, without a `serde_json::Value`
+//! A JSON node the typed read keeps as given, without a `crate::json::Value`
 //! for its objects.
 //!
 //! The typed read ([`super::typed_ast`]) keeps a declaration's and a
@@ -28,12 +28,13 @@ use concerto_metamodel::utils::class_name;
 use concerto_metamodel::{ClassName, Name};
 
 use super::decorator::Decorator;
+use crate::json::{Map, Value};
 use serde::de::value::{MapDeserializer, SeqDeserializer};
 use serde::de::{
     self, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Unexpected,
     Visitor,
 };
-use serde_json::{Map, Number, Value};
+use serde_json::Number;
 
 type Error = serde_json::Error;
 

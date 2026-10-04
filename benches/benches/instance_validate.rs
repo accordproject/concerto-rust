@@ -39,7 +39,8 @@ use concerto_core::instance::validate::{ValidateOptions, validate_instance};
 use concerto_core::instance::{InstanceEnv, ValidationOptions};
 use concerto_core_js::{JsValue, Serializer};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use serde_json::{Value, json};
+use concerto_core::json;
+use concerto_core::json::Value;
 
 const NUM_INSTANCES: usize = 500;
 
@@ -100,7 +101,7 @@ fn model_ast() -> Value {
 
 fn build_workload() -> (ModelManager, Vec<Value>) {
     let mut mgr = ModelManager::new().expect("system model loads");
-    mgr.add_model(&model_ast(), Some("bench-instance.json".to_string()))
+    mgr.add_model_ast(&model_ast(), Some("bench-instance.json"))
         .expect("bench-instance model loads");
     mgr.validate_models()
         .expect("bench-instance model validates");

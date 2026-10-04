@@ -112,11 +112,12 @@ use concerto_core::introspect::scalar::ProcessedScalar;
 use concerto_core::introspect::{
     Declaration, DeclarationKind, DecoratorValidationOptions, ModelFile, Named, ScalarDeclaration,
 };
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::model_manager::{
     DeclId, ModelFileId, ModelFileSource, ModelManager, Node, PropId,
 };
 use concerto_core::model_util;
-use serde_json::{Value, json};
 
 use super::Harness;
 use super::cto_cache::CacheEntry;
@@ -668,9 +669,10 @@ impl<'h> Session<'h> {
         let mut r = match node.get("derived") {
             Some(derived) => {
                 let op = derived.get("op").and_then(Value::as_str).unwrap_or("?");
-                let inputs: super::fixture::Inputs =
-                    serde_json::from_value(derived.get("inputs").cloned().unwrap_or(Value::Null))
-                        .map_err(|e| Fault::Harness(format!("derived inputs of {op}: {e}")))?;
+                let inputs: super::fixture::Inputs = concerto_core::json::from_value(
+                    derived.get("inputs").cloned().unwrap_or(Value::Null),
+                )
+                .map_err(|e| Fault::Harness(format!("derived inputs of {op}: {e}")))?;
                 let Some(derived_mm) =
                     super::ops::derive_model_manager(self.h, op, &inputs, derived.get("path"))?
                 else {
@@ -1243,7 +1245,7 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
         // an `Identifiable` value's id up by `ModelManager::identifier_field_name`,
         // the same way for a `Relationship` or a nested `Resource` alike —
         // finds it.
-        let mut wire = serde_json::Map::new();
+        let mut wire = concerto_core::json::Map::new();
         wire.insert(RELATIONSHIP_TAG.to_string(), Value::Bool(true));
         wire.insert("$class".to_string(), Value::String(fqn.clone()));
         if let (Some(id_field), Some(id)) = (&identifier_field_name, &identifier) {
@@ -1285,7 +1287,7 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
         "$superTypes",
         "$id",
     ];
-    let mut wire = serde_json::Map::new();
+    let mut wire = concerto_core::json::Map::new();
     wire.insert("$class".to_string(), Value::String(fqn.clone()));
     for (key, value) in fields {
         if PRIVATE_ONLY_KEYS.contains(&key.as_str()) {

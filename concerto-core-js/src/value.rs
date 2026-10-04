@@ -21,8 +21,8 @@
 //! reports, which `ResourceValidator` walks (first undeclared field wins).
 
 use concerto_core::hash::SeededState;
+use concerto_core::json::Value;
 use indexmap::IndexMap;
-use serde_json::Value;
 
 /// The key-ordered map behind a plain object, an instance's own properties
 /// and the serializer options: insertion (`Object.keys`) order. Its keys
@@ -288,7 +288,7 @@ impl Instance {
     /// but the private ones.
     pub fn to_validator_value(&self) -> Value {
         if self.kind == InstanceKind::Relationship {
-            let mut wire = serde_json::Map::new();
+            let mut wire = concerto_core::json::Map::new();
             wire.insert(RELATIONSHIP_TAG.to_string(), Value::Bool(true));
             wire.insert("$class".to_string(), Value::String(self.class_fqn.clone()));
             let field = self.identifier_field_name();
@@ -297,7 +297,7 @@ impl Instance {
             }
             return Value::Object(wire);
         }
-        let mut wire = serde_json::Map::with_capacity(self.props.len() + 1);
+        let mut wire = concerto_core::json::Map::with_capacity(self.props.len() + 1);
         wire.insert("$class".to_string(), Value::String(self.class_fqn.clone()));
         for (key, value) in &self.props {
             if is_private_only(key) {
@@ -651,7 +651,7 @@ impl ValidatorInput for JsValue {
 #[cfg(test)]
 mod validator_input_tests {
     use super::*;
-    use serde_json::json;
+    use concerto_core::json;
 
     /// Everything the validator reads of `value`, through `V`'s
     /// [`ValidatorInput`], in the plain-JSON shape, for comparison.

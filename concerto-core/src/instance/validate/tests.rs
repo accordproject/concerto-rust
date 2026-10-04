@@ -7,7 +7,7 @@
     use super::*;
     use crate::instance::{Diagnostic, DiagnosticCode, ValidationReport};
     use crate::model_manager::ModelManager;
-    use serde_json::json;
+    use crate::json;
 
     /// One model exercising every kind this validator supports: multi-level
     /// inheritance (`Base` -> `Mid` -> `Leaf`), an

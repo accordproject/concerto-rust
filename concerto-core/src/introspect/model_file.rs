@@ -104,14 +104,14 @@ impl ModelFile {
     /// with no CTO source text (`ModelFile::get_definitions` will answer
     /// `None`). TS: `new ModelFile(modelManager, ast, definitions, fileName)`
     /// with `definitions` omitted.
-    pub fn from_json(value: &serde_json::Value, file_name: Option<String>) -> Result<Self> {
+    pub fn from_json(value: &crate::json::Value, file_name: Option<String>) -> Result<Self> {
         Self::from_json_with_definitions(value, None, file_name)
     }
 
     /// [`ModelFile::from_json`], keeping the given CTO source text verbatim
     /// for `ModelFile::get_definitions`, never parsed.
     pub fn from_json_with_definitions(
-        value: &serde_json::Value,
+        value: &crate::json::Value,
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
@@ -123,7 +123,7 @@ impl ModelFile {
     /// [`ModelFile::from_json_with_definitions`], taking ownership of the
     /// AST so it is kept without being copied. Same result and errors.
     pub fn from_owned_json_with_definitions(
-        value: serde_json::Value,
+        value: crate::json::Value,
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
@@ -153,7 +153,7 @@ impl ModelFile {
         text: &str,
         definitions: Option<String>,
         file_name: Option<String>,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         Self::load_text_with_imports(text, definitions, file_name)
     }
 
@@ -167,7 +167,7 @@ impl ModelFile {
         text: &str,
         definitions: Option<String>,
         file_name: Option<String>,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         Self::load_text(text, definitions, file_name, true)
     }
 
@@ -182,7 +182,7 @@ impl ModelFile {
         bytes: &[u8],
         definitions: Option<String>,
         file_name: Option<String>,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         Self::load_compact(bytes, definitions, file_name, false)
     }
 
@@ -194,7 +194,7 @@ impl ModelFile {
         bytes: &[u8],
         definitions: Option<String>,
         file_name: Option<String>,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         Self::load_compact(bytes, definitions, file_name, true)
     }
 
@@ -208,7 +208,7 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
         checked: bool,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         use crate::introspect::compact;
         let model = match typed_ast::from_compact(bytes) {
             Ok(model) => model,
@@ -247,7 +247,7 @@ impl ModelFile {
         text: &str,
         definitions: Option<String>,
         file_name: Option<String>,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         Self::load_text(text, definitions, file_name, false)
     }
 
@@ -258,7 +258,7 @@ impl ModelFile {
         definitions: Option<String>,
         file_name: Option<String>,
         checked: bool,
-    ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
+    ) -> std::result::Result<Result<(Self, Option<crate::json::Value>)>, serde_json::Error> {
         // The kept copy of the text is made first, so the names the read
         // reads share it rather than each being copied.
         let source: Arc<str> = Arc::from(text);
@@ -271,7 +271,7 @@ impl ModelFile {
                 if !err.is_data() {
                     return Err(err);
                 }
-                let value = serde_json::from_str::<serde_json::Value>(text)?;
+                let value = serde_json::from_str::<crate::json::Value>(text)?;
                 // The check decides first: an AST it accepts but the read cannot
                 // read is the load's error.
                 if checked
@@ -283,7 +283,7 @@ impl ModelFile {
             }
         };
         if checked && !shape::conforms(&model) {
-            let value = serde_json::from_str::<serde_json::Value>(text)?;
+            let value = serde_json::from_str::<crate::json::Value>(text)?;
             if let Err(shape) = crate::instance::metamodel::check_ast_shape_exact(&value) {
                 return Ok(Err(shape));
             }
@@ -301,7 +301,7 @@ impl ModelFile {
     /// Reads `value` into the typed model and loads it, leaving
     /// [`ModelFile::ast`] `Null` for the caller to fill in.
     fn load_value(
-        value: &serde_json::Value,
+        value: &crate::json::Value,
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<Self> {
@@ -348,7 +348,7 @@ impl ModelFile {
 
         // The header's own string, taken rather than copied.
         let namespace = match header.namespace.take() {
-            Some(serde_json::Value::String(namespace)) => namespace,
+            Some(crate::json::Value::String(namespace)) => namespace,
             _ => {
                 return Err(Error::illegal_model(
                     "model missing 'namespace'",
@@ -366,7 +366,7 @@ impl ModelFile {
 
         let mut imports = match &header.imports {
             None => Vec::new(),
-            Some(serde_json::Value::Array(arr)) => arr
+            Some(crate::json::Value::Array(arr)) => arr
                 .iter()
                 .map(Import::try_from)
                 .collect::<Result<Vec<_>>>()?,
@@ -464,7 +464,7 @@ impl ModelFile {
             local_types,
             file_name,
             decorators,
-            ast: Ast::from_value(serde_json::Value::Null),
+            ast: Ast::from_value(crate::json::Value::Null),
             concerto_version,
             definitions,
             external,
@@ -480,11 +480,11 @@ impl ModelFile {
         /// non-string `fileName`.
         #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
         pub fn check_constructor_arguments(
-            ast: Option<&serde_json::Value>,
-            definitions: Option<&serde_json::Value>,
-            file_name: Option<&serde_json::Value>,
+            ast: Option<&crate::json::Value>,
+            definitions: Option<&crate::json::Value>,
+            file_name: Option<&crate::json::Value>,
         ) -> Result<()> {
-            let truthy = |v: Option<&serde_json::Value>| v.is_some_and(crate::ecma::is_truthy);
+            let truthy = |v: Option<&crate::json::Value>| v.is_some_and(crate::ecma::is_truthy);
             if !truthy(ast) {
                 return Err(plain_error("ast not specified".into()));
             }
@@ -492,18 +492,18 @@ impl ModelFile {
             // already rejected above as falsy.
             if !matches!(
                 ast,
-                Some(serde_json::Value::Object(_) | serde_json::Value::Array(_))
+                Some(crate::json::Value::Object(_) | crate::json::Value::Array(_))
             ) {
                 return Err(plain_error(
                     "ModelFile expects a Concerto model AST as input.".into(),
                 ));
             }
-            if truthy(definitions) && !matches!(definitions, Some(serde_json::Value::String(_))) {
+            if truthy(definitions) && !matches!(definitions, Some(crate::json::Value::String(_))) {
                 return Err(plain_error(
                     "ModelFile expects an (optional) Concerto model definition as a string.".into(),
                 ));
             }
-            if truthy(file_name) && !matches!(file_name, Some(serde_json::Value::String(_))) {
+            if truthy(file_name) && !matches!(file_name, Some(crate::json::Value::String(_))) {
                 return Err(plain_error(
                     "ModelFile expects an (optional) filename as a string.".into(),
                 ));
@@ -523,7 +523,7 @@ impl ModelFile {
     }
 
     /// The JSON AST this model file was built from, exactly as it was given.
-    pub fn ast(&self) -> &serde_json::Value {
+    pub fn ast(&self) -> &crate::json::Value {
         self.ast.get()
     }
 
@@ -1026,7 +1026,7 @@ impl ModelFile {
         predicate: impl Fn(&str, usize, &Declaration) -> bool,
         source_manager: &crate::model_manager::ModelManager,
     ) -> Result<FilterOutcome> {
-        let ast_declarations: &[serde_json::Value] = self
+        let ast_declarations: &[crate::json::Value] = self
             .ast()
             .get("declarations")
             .and_then(|v| v.as_array())
@@ -1045,7 +1045,7 @@ impl ModelFile {
             kept == ast_declarations.len() && kept == self.declarations.len();
 
         let original_imports = self.ast().get("imports").and_then(|v| v.as_array());
-        let kept_imports: Option<Vec<serde_json::Value>> =
+        let kept_imports: Option<Vec<crate::json::Value>> =
             original_imports.cloned().map(|imports| {
                 imports
                     .into_iter()
@@ -1069,16 +1069,16 @@ impl ModelFile {
 
         // TS builds the filtered file from each kept declaration's own
         // `ast`, which carries the default super type its view was given.
-        let declarations: Vec<serde_json::Value> = ast_declarations
+        let declarations: Vec<crate::json::Value> = ast_declarations
             .iter()
             .zip(&keep)
             .filter(|(_, keep)| **keep)
             .map(|(ast, _)| with_default_super_type(ast).unwrap_or_else(|| ast.clone()))
             .collect();
         let mut filtered = self.ast().clone();
-        filtered["declarations"] = serde_json::Value::Array(declarations);
+        filtered["declarations"] = crate::json::Value::Array(declarations);
         if let Some(kept) = kept_imports {
-            filtered["imports"] = serde_json::Value::Array(kept);
+            filtered["imports"] = crate::json::Value::Array(kept);
         }
 
         Self::from_json_with_definitions(
@@ -1113,7 +1113,7 @@ pub(crate) const DEFAULT_SUPER_TYPE_CLASS: &str = "concerto.metamodel@1.0.0.Type
 /// a declaration AST `ast` (an asset, participant, transaction or event
 /// declaration, by its exact `$class`, whose `superType` is falsy), or
 /// `None` when it gives none.
-pub(crate) fn default_super_type(ast: &serde_json::Value) -> Option<&'static str> {
+pub(crate) fn default_super_type(ast: &crate::json::Value) -> Option<&'static str> {
     let name = match ast.get("$class")?.as_str()? {
         "concerto.metamodel@1.0.0.AssetDeclaration" => "Asset",
         "concerto.metamodel@1.0.0.TransactionDeclaration" => "Transaction",
@@ -1127,10 +1127,10 @@ pub(crate) fn default_super_type(ast: &serde_json::Value) -> Option<&'static str
 /// A copy of the declaration AST `ast` with the default super type TS gives
 /// its view ([`default_super_type`]), as TS's `Object.assign({}, thing)`
 /// then `thing.superType = …` writes it; `None` when it gets none.
-fn with_default_super_type(ast: &serde_json::Value) -> Option<serde_json::Value> {
+fn with_default_super_type(ast: &crate::json::Value) -> Option<crate::json::Value> {
     let name = default_super_type(ast)?;
     let mut ast = ast.clone();
-    ast["superType"] = serde_json::json!({ "$class": DEFAULT_SUPER_TYPE_CLASS, "name": name });
+    ast["superType"] = crate::json!({ "$class": DEFAULT_SUPER_TYPE_CLASS, "name": name });
     Some(ast)
 }
 
@@ -1138,10 +1138,10 @@ fn with_default_super_type(ast: &serde_json::Value) -> Option<serde_json::Value>
 /// its `types`/`aliasedTypes` pruned, or dropped (`None`), as TS
 /// `ModelFile.filter` prunes it.
 fn filter_import(
-    mut imp: serde_json::Value,
+    mut imp: crate::json::Value,
     predicate: &impl Fn(&str, usize, &Declaration) -> bool,
     source_manager: &crate::model_manager::ModelManager,
-) -> Option<serde_json::Value> {
+) -> Option<crate::json::Value> {
     let namespace = imp.get("namespace").and_then(|v| v.as_str())?.to_string();
     if namespace.starts_with("concerto@") || namespace == "concerto" {
         return Some(imp);
@@ -1171,7 +1171,7 @@ fn filter_import(
             if let Some(aliased) = imp.get("aliasedTypes").and_then(|v| v.as_array()).cloned()
                 && !aliased.is_empty()
             {
-                let kept_aliased: Vec<serde_json::Value> = aliased
+                let kept_aliased: Vec<crate::json::Value> = aliased
                     .into_iter()
                     .filter(|a| {
                         a.get("name")
@@ -1179,12 +1179,12 @@ fn filter_import(
                             .is_some_and(|n| kept_types.iter().any(|k| k == n))
                     })
                     .collect();
-                imp["aliasedTypes"] = serde_json::Value::Array(kept_aliased);
+                imp["aliasedTypes"] = crate::json::Value::Array(kept_aliased);
             }
-            imp["types"] = serde_json::Value::Array(
+            imp["types"] = crate::json::Value::Array(
                 kept_types
                     .into_iter()
-                    .map(serde_json::Value::String)
+                    .map(crate::json::Value::String)
                     .collect(),
             );
             Some(imp)
@@ -1224,12 +1224,12 @@ pub(crate) fn unreadable_ast(err: &serde_json::Error, file_name: Option<&str>) -
     contract.into()
 }
 
-/// [`ModelFile::ast`]: the AST as a `serde_json::Value`, either given
+/// [`ModelFile::ast`]: the AST as a `crate::json::Value`, either given
 /// directly or parsed on first use from the source the typed AST path
 /// read ([`ModelFile::from_json_text`]).
 #[derive(Clone)]
 struct Ast {
-    value: OnceLock<serde_json::Value>,
+    value: OnceLock<crate::json::Value>,
     /// What `value` is parsed from on first use, when it was not given
     /// (one sum type where three independent fields could disagree).
     source: AstSource,
@@ -1249,7 +1249,7 @@ enum AstSource {
 }
 
 impl Ast {
-    fn from_value(value: serde_json::Value) -> Self {
+    fn from_value(value: crate::json::Value) -> Self {
         Self {
             value: OnceLock::from(value),
             source: AstSource::None,
@@ -1280,7 +1280,7 @@ impl Ast {
         }
     }
 
-    fn get(&self) -> &serde_json::Value {
+    fn get(&self) -> &crate::json::Value {
         self.value.get_or_init(|| match &self.source {
             #[cfg(feature = "js-compat")]
             AstSource::Compact(bytes) => crate::introspect::compact::to_value(bytes)
@@ -1292,8 +1292,8 @@ impl Ast {
             AstSource::Text(text) => serde_json::from_str(text)
                 .expect("the typed AST path accepted this text, so it is JSON"),
             #[cfg(not(feature = "js-compat"))]
-            AstSource::Compact(_) => serde_json::Value::Null,
-            AstSource::None => serde_json::Value::Null,
+            AstSource::Compact(_) => crate::json::Value::Null,
+            AstSource::None => crate::json::Value::Null,
         })
     }
 }
@@ -1316,9 +1316,9 @@ impl std::fmt::Debug for Ast {
 
 /// The system import every non-system model file gets implicitly (TS:
 /// `ModelFile.fromAst`).
-fn built_in_import() -> serde_json::Value {
+fn built_in_import() -> crate::json::Value {
     // TS: `fromAst`'s object literal, in its own key order.
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "concerto@1.0.0",
         "types": ["Concept", "Asset", "Transaction", "Participant", "Event"]
@@ -1386,13 +1386,13 @@ impl ModelFile {
     /// file.
     fn imports_json(&self) -> String {
         let mut values = match self.ast().get("imports") {
-            Some(serde_json::Value::Array(imports)) => imports.clone(),
+            Some(crate::json::Value::Array(imports)) => imports.clone(),
             _ => Vec::new(),
         };
         if values.len() < self.imports.len() {
             values.push(built_in_import());
         }
-        serde_json::Value::Array(values).to_string()
+        crate::json::Value::Array(values).to_string()
     }
 }
 
@@ -1401,7 +1401,7 @@ impl ModelFile {
 /// anything else is a plain `Error`. The range grammar is node-semver's
 /// ([`crate::semver_range::satisfies`]), not Cargo's, which disagrees on
 /// space-separated comparators, hyphen ranges and a bare version.
-fn check_compatible_version(value: Option<&serde_json::Value>) -> Result<Option<String>> {
+fn check_compatible_version(value: Option<&crate::json::Value>) -> Result<Option<String>> {
     let Some(range) = value.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };

@@ -9,7 +9,7 @@
 //! validate per file; here we do the structural load for every file first,
 //! `ModelFile::from_json`, then one whole-manager semantic pass,
 //! `validate_models`):
-//!   - `load`: `ModelManager::add_model` for every model in the set, into a
+//!   - `load`: `ModelManager::add_model_ast` for every model in the set, into a
 //!     fresh manager.
 //!   - `validate`: `ModelManager::validate_models` once, over the whole set.
 //!
@@ -28,10 +28,10 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 #[path = "common/mod.rs"]
 mod common;
 
-fn load_only(set: &[(String, serde_json::Value)]) -> ModelManager {
+fn load_only(set: &[(String, concerto_core::json::Value)]) -> ModelManager {
     let mut mgr = ModelManager::new().expect("system model loads");
     for (name, ast) in set {
-        mgr.add_model(ast, Some(name.clone()))
+        mgr.add_model_ast(ast, Some(name))
             .unwrap_or_else(|e| panic!("loading {name}: {e}"));
     }
     mgr
@@ -40,7 +40,7 @@ fn load_only(set: &[(String, serde_json::Value)]) -> ModelManager {
 fn load_text_value(texts: &[(String, String)]) -> ModelManager {
     let mut mgr = ModelManager::new().expect("system model loads");
     for (name, text) in texts {
-        let value: serde_json::Value = serde_json::from_str(text).expect("fixture is JSON");
+        let value: concerto_core::json::Value = serde_json::from_str(text).expect("fixture is JSON");
         mgr.add_owned_model_with_definitions(value, None, Some(name.clone()))
             .unwrap_or_else(|e| panic!("loading {name}: {e}"));
     }

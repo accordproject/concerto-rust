@@ -66,7 +66,8 @@ use concerto_core::{Decorated, ModelFile, ModelManager};
 use concerto_core_js::value::Instance;
 use concerto_core_js::{JsValue, Serializer, factory, resource};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use serde_json::{Value, json};
+use concerto_core::json;
+use concerto_core::json::Value;
 
 const SETS: [&str; 3] = ["concerto-core-test-data", "conformance", "synthetic-large"];
 

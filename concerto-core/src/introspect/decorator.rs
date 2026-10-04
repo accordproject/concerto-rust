@@ -16,8 +16,8 @@
 //! every [`super::property::Property`] variant); [`ClassDeclaration`] and
 //! `ModelFile` hold a `Vec<Decorator>` field.
 
+use crate::json::Value;
 use concerto_metamodel::Name;
-use serde_json::Value;
 
 use crate::ecma::number_to_string;
 use crate::error::{ContractError, Error, ErrorKind, Result};
@@ -78,7 +78,7 @@ pub struct Decorator {
 
 impl Decorator {
     /// Builds a decorator from its `Decorator` AST node, a
-    /// [`serde_json::Value`] or the typed read's node ([`AstNode`]).
+    /// [`crate::json::Value`] or the typed read's node ([`AstNode`]).
     ///
     /// TS: `Decorator.process`. A `DecoratorTypeReference` argument becomes
     /// [`DecoratorArgument::TypeReference`]; any other contributes its literal
@@ -534,12 +534,12 @@ fn decode_argument<N: AstNode>(node: &N) -> Option<DecoratorArgument> {
 
 mod sealed {
     pub trait Sealed {}
-    impl Sealed for serde_json::Value {}
+    impl Sealed for crate::json::Value {}
     impl Sealed for crate::introspect::kept::Kept {}
 }
 
 /// A metamodel AST node [`Decorator::from_ast`] can read: a
-/// [`serde_json::Value`], or (inside the crate) the node as the typed read
+/// [`crate::json::Value`], or (inside the crate) the node as the typed read
 /// keeps it. Sealed: the crate implements it for those two only.
 pub trait AstNode: sealed::Sealed + Sized {
     /// The value at `key`, for an object; `None` for anything else.

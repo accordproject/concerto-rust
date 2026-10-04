@@ -1,10 +1,11 @@
 //! The stable surface of docs/public-api.md section 5, as a native caller
 //! uses it (task P6-01, accordproject/concerto-rust#83).
 
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::model_manager::AstOptions;
 use concerto_core::model_util::{ParsedNamespace, parse_namespace, qualify, short_name};
 use concerto_core::{ClassKind, Declaration, ErrorKind, ModelManager};
-use serde_json::{Value, json};
 
 const MM: &str = "concerto.metamodel@1.0.0";
 
@@ -327,6 +328,37 @@ fn the_deprecated_name_resolvers_still_answer() {
         Some("org.other@1.0.0.Dog")
     );
     assert_eq!(import.resolve("Dog"), None);
+}
+
+/// The deprecated `ModelManager` wrappers keep their original
+/// `serde_json::Value` types (as the concerto-conformance harness calls
+/// them), and give the same models and AST as the stable API.
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_model_manager_wrappers_take_serde_json_values() {
+    let ast: serde_json::Value = serde_json::to_value(model()).unwrap();
+
+    let mut manager = ModelManager::new().unwrap();
+    manager
+        .add_model(&ast, Some("acme.cto".to_string()))
+        .unwrap();
+    manager.validate_models().unwrap();
+    let expected = serde_json::to_value(loaded().ast(AstOptions::default()).unwrap()).unwrap();
+    let got: serde_json::Value = manager.get_ast(false, false).unwrap();
+    assert_eq!(got, expected);
+    assert_eq!(got.to_string(), expected.to_string(), "key order is kept");
+
+    let mut batch = ModelManager::new().unwrap();
+    let ids = batch
+        .add_models([(&ast, Some("acme.cto".to_string()))])
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(batch.get_ast(false, false).unwrap(), expected);
+
+    let err = manager
+        .add_model(&ast, None)
+        .expect_err("the namespace is already loaded");
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
 #[test]

@@ -24,7 +24,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use concerto_core::json;
+use concerto_core::json::Value;
 use sha2::{Digest, Sha256};
 
 /// One cache entry.

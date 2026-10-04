@@ -52,7 +52,8 @@
 use concerto_core::instance::ValidationOptions;
 use concerto_core::{metamodel, ModelManager};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use serde_json::{json, Value};
+use concerto_core::json;
+use concerto_core::json::Value;
 
 #[path = "common/mod.rs"]
 mod common;

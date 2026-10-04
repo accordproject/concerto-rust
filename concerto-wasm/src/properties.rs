@@ -9,7 +9,7 @@ use super::*;
 
 /// The snapshot [`property_process`] returns for a processed property.
 pub(crate) fn property_snapshot(processed: &property::ProcessedProperty) -> Value {
-    let mut snapshot = serde_json::Map::new();
+    let mut snapshot = concerto_core::json::Map::new();
     snapshot.insert("name".to_string(), json!(processed.name));
     if processed.type_set {
         snapshot.insert("type".to_string(), json!(processed.property_type));
@@ -24,7 +24,7 @@ pub(crate) fn field_snapshot(processed: &field::ProcessedField) -> Value {
     let validator = match &processed.validator {
         None => Value::Null,
         Some(field::FieldValidator::Number(v)) => {
-            let mut snapshot = serde_json::to_value(v).unwrap_or(Value::Null);
+            let mut snapshot = concerto_core::json::to_value(v).unwrap_or(Value::Null);
             if let Value::Object(map) = &mut snapshot {
                 map.insert("kind".to_string(), json!("NumberValidator"));
             }
@@ -64,7 +64,7 @@ impl LightProperty {
     /// The property as the JSON object the per-property bindings would
     /// have read those keys from.
     pub(crate) fn into_value(self) -> Value {
-        let mut map = serde_json::Map::new();
+        let mut map = concerto_core::json::Map::new();
         for (key, value) in [
             ("$class", self.class),
             ("name", self.name),
@@ -362,7 +362,7 @@ pub(crate) fn decorators_view_snapshot(decorators: Option<&Value>) -> Option<Val
                 _ => return None,
             });
         }
-        let mut entry = serde_json::Map::new();
+        let mut entry = concerto_core::json::Map::new();
         if let Some(name) = decorator.js_name() {
             entry.insert("n".to_string(), json!(name));
         }
@@ -395,7 +395,7 @@ pub(crate) fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Valu
     let Some(Value::String(name)) = &declaration.name else {
         return None;
     };
-    let mut ast = serde_json::Map::new();
+    let mut ast = concerto_core::json::Map::new();
     ast.insert("$class".to_string(), json!(class));
     ast.insert("name".to_string(), json!(name));
     for (key, value) in [
@@ -413,7 +413,7 @@ pub(crate) fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Valu
     let validator = match &processed.validator {
         None => Value::Null,
         Some(ScalarValidator::Number(v)) => {
-            let mut snapshot = serde_json::to_value(v).ok()?;
+            let mut snapshot = concerto_core::json::to_value(v).ok()?;
             let Value::Object(map) = &mut snapshot else {
                 return None;
             };
@@ -493,7 +493,7 @@ pub(crate) fn map_view_snapshot(declaration: &ViewDeclaration) -> Option<Value> 
         _ => return None,
     };
     let side = |node: &Value, type_name: String| -> Option<Value> {
-        let mut entry = serde_json::Map::new();
+        let mut entry = concerto_core::json::Map::new();
         entry.insert("t".to_string(), json!(type_name));
         // A present `decorators` must be one the snapshot can decide.
         match node.get("decorators") {

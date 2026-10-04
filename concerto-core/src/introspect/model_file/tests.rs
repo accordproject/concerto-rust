@@ -28,7 +28,7 @@ fn names_read_from_text_share_the_text_the_file_keeps() {
 
 fn sample() -> ModelFile {
     ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0",
             "imports": [
@@ -51,7 +51,7 @@ fn sample() -> ModelFile {
 /// shares the text; a file read from text keeps its own text.
 #[test]
 fn compact_ast_keeps_an_equal_ast_as_text() {
-    let value = serde_json::json!({
+    let value = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.compact@1.0.0",
         "decorators": [{
@@ -106,11 +106,11 @@ fn parses_namespace_imports_and_declarations() {
 #[test]
 fn local_types_find_the_last_declaration_of_a_name() {
     let concept = |name: &str| {
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
                 "name": name, "isAbstract": false, "properties": [] })
     };
-    let model = |declarations: Vec<serde_json::Value>| {
-        serde_json::json!({
+    let model = |declarations: Vec<crate::json::Value>| {
+        crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0",
             "declarations": declarations,
@@ -186,7 +186,7 @@ fn resolves_a_local_type_written_with_its_own_namespace() {
 /// filename" — each a plain `Error`, checked in TS's order.
 #[test]
 fn constructor_arguments_are_checked_in_ts_order() {
-    use serde_json::json;
+    use crate::json;
     let message = |r: Result<()>| match Some(r.unwrap_err().into_contract()) {
         Some(c) => {
             assert_eq!(c.kind, ErrorKind::InvalidArgument);
@@ -246,13 +246,13 @@ fn constructor_arguments_are_checked_in_ts_order() {
 /// the declaration's own `ast.location` and the model file's name.
 #[test]
 fn a_system_property_name_is_rejected_with_the_declaration_location() {
-    let location = serde_json::json!({
+    let location = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Range",
         "start": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 55, "line": 3, "column": 1 },
         "end": { "$class": "concerto.metamodel@1.0.0.Position", "offset": 103, "line": 5, "column": 2 }
     });
     let err = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.acme@1.0.0",
             "declarations": [{
@@ -283,7 +283,7 @@ fn a_system_property_name_is_rejected_with_the_declaration_location() {
 #[allow(deprecated)]
 fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
     let mf = ModelFile::from_json(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.dup@1.0.0",
                 "declarations": [
@@ -302,7 +302,7 @@ fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
 #[test]
 fn missing_namespace_is_rejected() {
     let err = ModelFile::from_json(
-        &serde_json::json!({ "$class": "concerto.metamodel@1.0.0.Model" }),
+        &crate::json!({ "$class": "concerto.metamodel@1.0.0.Model" }),
         None,
     );
     assert!(err.is_err());
@@ -311,7 +311,7 @@ fn missing_namespace_is_rejected() {
 #[test]
 fn unversioned_namespace_is_rejected() {
     let err = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example",
             "declarations": []
@@ -324,7 +324,7 @@ fn unversioned_namespace_is_rejected() {
 #[test]
 fn non_array_declarations_or_imports_is_rejected() {
     let bad_decls = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.x@1.0.0",
             "declarations": { "not": "an array" }
@@ -334,7 +334,7 @@ fn non_array_declarations_or_imports_is_rejected() {
     assert!(bad_decls.is_err());
 
     let bad_imports = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.x@1.0.0",
             "imports": "nope"
@@ -347,7 +347,7 @@ fn non_array_declarations_or_imports_is_rejected() {
 #[test]
 fn keeps_the_ast_it_was_given_in_its_original_key_order() {
     let text = r#"{"namespace":"org.order@1.0.0","$class":"concerto.metamodel@1.0.0.Model","declarations":[{"properties":[],"name":"A","$class":"concerto.metamodel@1.0.0.ConceptDeclaration","isAbstract":false,"decorators":[]}]}"#;
-    let value: serde_json::Value = serde_json::from_str(text).unwrap();
+    let value: crate::json::Value = serde_json::from_str(text).unwrap();
     let mf = ModelFile::from_json(&value, None).unwrap();
     assert_eq!(mf.ast(), &value);
     assert_eq!(serde_json::to_string(mf.ast()).unwrap(), text);
@@ -363,8 +363,8 @@ fn is_external_reflects_an_at_prefixed_file_name() {
     assert!(!sample().is_external());
 }
 
-fn model_with_version(concerto_version: &str) -> serde_json::Value {
-    serde_json::json!({
+fn model_with_version(concerto_version: &str) -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.v@1.0.0",
         "concertoVersion": concerto_version,
@@ -405,7 +405,7 @@ fn no_concerto_version_at_all_leaves_it_none() {
 #[test]
 fn resolve_import_failure_lists_the_imports_as_ts_stringifies_them() {
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.acme@1.0.0",
             "imports": [
@@ -446,7 +446,7 @@ fn resolves_and_reports_imported_types_by_their_visible_local_name() {
 #[allow(deprecated)]
 fn get_imports_lists_declared_names_never_aliases() {
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.alias@1.0.0",
             "imports": [
@@ -475,11 +475,11 @@ fn get_imports_lists_declared_names_never_aliases() {
 /// or `None` when the AST has none.
 #[test]
 fn from_json_text_with_imports_returns_the_imports_node() {
-    let imports = serde_json::json!([
+    let imports = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.ImportType",
           "namespace": "org.common@1.0.0", "name": "Address", "uri": "u" }
     ]);
-    let text = serde_json::json!({
+    let text = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.uri@1.0.0",
         "imports": imports,
@@ -503,7 +503,7 @@ fn from_json_text_with_imports_returns_the_imports_node() {
 #[allow(deprecated)]
 fn get_import_uri_is_keyed_by_the_imports_first_fully_qualified_name() {
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.uri@1.0.0",
             "imports": [
@@ -533,9 +533,9 @@ fn external_imports_preserves_import_order_for_several_uri_imports() {
     // (TS builds `importUriMap` by assigning one key per import, in
     // file order), not the arbitrary order a `HashMap` would give.
     let n = 12;
-    let imports: Vec<serde_json::Value> = (0..n)
+    let imports: Vec<crate::json::Value> = (0..n)
         .map(|i| {
-            serde_json::json!({
+            crate::json!({
                 "$class": "concerto.metamodel@1.0.0.ImportType",
                 "namespace": format!("org.n{i}@1.0.0"),
                 "name": format!("T{i}"),
@@ -544,7 +544,7 @@ fn external_imports_preserves_import_order_for_several_uri_imports() {
         })
         .collect();
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.order@1.0.0",
             "imports": imports,
@@ -564,7 +564,7 @@ fn external_imports_last_write_wins_in_place_for_a_duplicate_key() {
     // Matches TS's `importUriMap[key] = imp.uri`: assigning to an
     // existing plain-object key updates the value without moving it.
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.dup@1.0.0",
             "imports": [
@@ -598,8 +598,8 @@ fn external_imports_last_write_wins_in_place_for_a_duplicate_key() {
     );
 }
 
-fn model_with_two_concepts(ns: &str) -> serde_json::Value {
-    serde_json::json!({
+fn model_with_two_concepts(ns: &str) -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": ns,
         "declarations": [
@@ -638,7 +638,7 @@ fn filter_drops_an_import_whose_only_type_is_filtered_out_of_its_source_file() {
         .load_model(&model_with_two_concepts("org.src@1.0.0"), None)
         .unwrap();
 
-    let importing = serde_json::json!({
+    let importing = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.importing@1.0.0",
         "imports": [
@@ -674,7 +674,7 @@ fn filter_drops_an_import_whose_only_type_is_filtered_out_of_its_source_file() {
 #[test]
 fn import_uri_answers_the_last_import_of_the_key() {
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0",
             "imports": [

@@ -7,9 +7,9 @@
 //! them.
 //!
 //! Like [`super`], this stays on the untyped metamodel AST
-//! ([`serde_json::Value`]) throughout, matching the reference.
+//! ([`crate::json::Value`]) throughout, matching the reference.
 
-use serde_json::Value;
+use crate::json::Value;
 
 // A decorator argument's value reads in the vocabulary YAML this module
 // hand-builds as JS template-literal interpolation writes it, `String(value)`:
@@ -499,7 +499,7 @@ impl serde::Serialize for ArgumentView<'_> {
 /// The entry for `key` in an insertion-ordered list of borrowed keys, added
 /// (with `V::default()`) at the end when it is missing: an `IndexMap`'s
 /// `entry(key).or_insert_with(..)`, which the `Value` route's
-/// `serde_json::Map` (`preserve_order`) is. A node's decorators all come
+/// `crate::json::Map` (`preserve_order`) is. A node's decorators all come
 /// together in the walk, so the last entry is tried first.
 fn entry_of<'s, 'a, V: Default>(entries: &'s mut Vec<(&'a str, V)>, key: &'a str) -> &'s mut V {
     let index = match entries.iter().rposition(|(k, _)| *k == key) {
@@ -551,7 +551,7 @@ impl Default for DeclarationVocab<'_> {
 }
 
 /// `vocabObject` (`src/decoratorextractor.ts`) for one namespace, over
-/// borrowed keys, in place of the `Value` route's `serde_json::Value`
+/// borrowed keys, in place of the `Value` route's `crate::json::Value`
 /// object. `namespace` and `declarations` are `None` until a decorator
 /// creates them.
 #[derive(Default)]

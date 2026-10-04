@@ -292,7 +292,7 @@ impl ModelManager {
             &self,
             in_namespace: &str,
             short: &str,
-            location: Option<serde_json::Value>,
+            location: Option<crate::json::Value>,
         ) -> Result<String> {
             self.resolve_type_name_lazy(in_namespace, short, || location)
         }
@@ -304,7 +304,7 @@ impl ModelManager {
         &self,
         in_namespace: &str,
         short: &str,
-        location: impl FnOnce() -> Option<serde_json::Value>,
+        location: impl FnOnce() -> Option<crate::json::Value>,
     ) -> Result<String> {
         let mf = self.model_file(in_namespace).ok_or_else(|| {
             // TS: `BaseModelManager.getType`'s unregistered-namespace error.
@@ -396,7 +396,7 @@ impl ModelManager {
         file: ModelFileId,
         context: &str,
         type_name: &str,
-        location: Option<serde_json::Value>,
+        location: Option<crate::json::Value>,
     ) -> Result<()> {
         if is_primitive_type(type_name) {
             return Ok(());
@@ -504,7 +504,7 @@ impl ModelManager {
         resolve: bool,
         include_concerto_namespaces: bool,
     ) -> Result<Value> {
-        Ok(serde_json::json!({
+        Ok(crate::json!({
             "$class": "concerto.metamodel@1.0.0.Models",
             "models": self.model_asts(resolve, include_concerto_namespaces)?,
         }))

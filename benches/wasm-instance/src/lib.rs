@@ -21,7 +21,8 @@ use concerto_core::ModelManager;
 use concerto_core::instance::validate::{ValidateOptions, validate_instance};
 use concerto_core::instance::{InstanceEnv, ValidationOptions};
 use concerto_core_js::{JsValue as CoreJsValue, Serializer};
-use serde_json::{Value, json};
+use concerto_core::json;
+use concerto_core::json::Value;
 use wasm_bindgen::prelude::*;
 
 const NUM_INSTANCES: usize = 500;
@@ -84,10 +85,8 @@ fn err(e: impl std::fmt::Display) -> JsError {
 #[wasm_bindgen]
 pub fn setup() -> Result<u32, JsError> {
     let mut mgr = ModelManager::new().map_err(err)?;
-    // `add_model`, as `instance_validate.rs` calls it, so the same file
-    // builds on trees from before `add_model_ast`.
-    #[allow(deprecated)]
-    mgr.add_model(&model_ast(), Some("bench-instance.json".to_string()))
+    // `add_model_ast`, as `instance_validate.rs` calls it.
+    mgr.add_model_ast(&model_ast(), Some("bench-instance.json"))
         .map_err(err)?;
     mgr.validate_models().map_err(err)?;
     let instances: Vec<Value> = (0..NUM_INSTANCES)

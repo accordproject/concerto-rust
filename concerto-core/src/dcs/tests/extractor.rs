@@ -1,6 +1,6 @@
 use super::*;
 use crate::dcs::yaml_quote::DECORATOR_STRING_TYPE;
-use serde_json::json;
+use crate::json;
 
 /// The `models` of a `Models` envelope, as [`DecoratorExtractor::extract`]
 /// takes them.

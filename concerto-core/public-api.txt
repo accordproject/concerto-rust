@@ -336,9 +336,9 @@ pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self,
 pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::declaration::Declaration
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
 pub type concerto_core::introspect::declaration::Declaration::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::declaration::Declaration::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::declaration::Declaration::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::declaration::Declaration
@@ -553,16 +553,16 @@ pub fn concerto_core::introspect::decorator::AstNode::is_number(&self) -> bool
 pub fn concerto_core::introspect::decorator::AstNode::items(&self) -> core::option::Option<&[Self]>
 pub fn concerto_core::introspect::decorator::AstNode::number(&self) -> core::option::Option<f64>
 pub fn concerto_core::introspect::decorator::AstNode::text(&self) -> core::option::Option<&str>
-pub fn concerto_core::introspect::decorator::AstNode::to_json(&self) -> serde_json::value::Value
-impl concerto_core::introspect::decorator::AstNode for serde_json::value::Value
-pub fn serde_json::value::Value::boolean(&self) -> core::option::Option<bool>
-pub fn serde_json::value::Value::field(&self, &str) -> core::option::Option<&Self>
-pub fn serde_json::value::Value::is_null_node(&self) -> bool
-pub fn serde_json::value::Value::is_number(&self) -> bool
-pub fn serde_json::value::Value::items(&self) -> core::option::Option<&[Self]>
-pub fn serde_json::value::Value::number(&self) -> core::option::Option<f64>
-pub fn serde_json::value::Value::text(&self) -> core::option::Option<&str>
-pub fn serde_json::value::Value::to_json(&self) -> serde_json::value::Value
+pub fn concerto_core::introspect::decorator::AstNode::to_json(&self) -> concerto_core::json::Value
+impl concerto_core::introspect::decorator::AstNode for concerto_core::json::Value
+pub fn concerto_core::json::Value::boolean(&self) -> core::option::Option<bool>
+pub fn concerto_core::json::Value::field(&self, &str) -> core::option::Option<&Self>
+pub fn concerto_core::json::Value::is_null_node(&self) -> bool
+pub fn concerto_core::json::Value::is_number(&self) -> bool
+pub fn concerto_core::json::Value::items(&self) -> core::option::Option<&[Self]>
+pub fn concerto_core::json::Value::number(&self) -> core::option::Option<f64>
+pub fn concerto_core::json::Value::text(&self) -> core::option::Option<&str>
+pub fn concerto_core::json::Value::to_json(&self) -> concerto_core::json::Value
 pub trait concerto_core::introspect::decorator::Decorated
 pub fn concerto_core::introspect::decorator::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::decorator::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
@@ -618,9 +618,9 @@ pub fn concerto_core::introspect::import::Import::resolve(&self, &str) -> core::
 pub fn concerto_core::introspect::import::Import::uri(&self) -> core::option::Option<&str>
 impl core::clone::Clone for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::import::Import
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::import::Import
 pub type concerto_core::introspect::import::Import::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::import::Import::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::import::Import::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::import::Import
@@ -635,7 +635,7 @@ pub struct concerto_core::introspect::model_file::ModelFile
 impl concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::asset_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::ast(&self) -> &serde_json::value::Value
+pub fn concerto_core::introspect::model_file::ModelFile::ast(&self) -> &concerto_core::json::Value
 pub fn concerto_core::introspect::model_file::ModelFile::class_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::concept_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::concerto_version(&self) -> core::option::Option<&str>
@@ -647,10 +647,10 @@ pub fn concerto_core::introspect::model_file::ModelFile::event_declarations(&sel
 pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::file_name(&self) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::filter(&self, impl core::ops::function::Fn(&concerto_core::introspect::declaration::Declaration) -> bool, &concerto_core::model_manager::ModelManager) -> concerto_core::error::Result<core::option::Option<Self>>
-pub fn concerto_core::introspect::model_file::ModelFile::from_json(&serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_json(&concerto_core::json::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::from_json_text(&str, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<concerto_core::error::Result<Self>, serde_json::error::Error>
-pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&serde_json::value::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
-pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(serde_json::value::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
@@ -743,9 +743,9 @@ pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str)
 pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::property::Property
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
 pub type concerto_core::introspect::property::Property::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::property::Property::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::property::Property::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::property::Property
@@ -777,7 +777,7 @@ pub struct concerto_core::introspect::scalar::ScalarDeclaration
 impl concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::ast(&self) -> &concerto_metamodel::concerto_metamodel_1_0_0::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::default_value(&self) -> core::option::Option<&serde_json::value::Value>
+pub fn concerto_core::introspect::scalar::ScalarDeclaration::default_value(&self) -> core::option::Option<&concerto_core::json::Value>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::scalar_type(&self) -> &'static str
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::validator(&self) -> core::option::Option<&concerto_core::introspect::scalar::ScalarValidator>
 impl concerto_core::introspect::scalar::ScalarDeclaration
@@ -848,8 +848,8 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::validat
 pub struct concerto_core::introspect::validators::NumberValidator
 impl concerto_core::introspect::validators::NumberValidator
 pub fn concerto_core::introspect::validators::NumberValidator::compatible_with(&self, core::option::Option<&concerto_core::introspect::validators::Validator>) -> bool
-pub fn concerto_core::introspect::validators::NumberValidator::lower_bound(&self) -> core::option::Option<&serde_json::value::Value>
-pub fn concerto_core::introspect::validators::NumberValidator::upper_bound(&self) -> core::option::Option<&serde_json::value::Value>
+pub fn concerto_core::introspect::validators::NumberValidator::lower_bound(&self) -> core::option::Option<&concerto_core::json::Value>
+pub fn concerto_core::introspect::validators::NumberValidator::upper_bound(&self) -> core::option::Option<&concerto_core::json::Value>
 impl core::clone::Clone for concerto_core::introspect::validators::NumberValidator
 pub fn concerto_core::introspect::validators::NumberValidator::clone(&self) -> Self
 impl core::cmp::PartialEq for concerto_core::introspect::validators::NumberValidator
@@ -949,9 +949,9 @@ pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self,
 pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::declaration::Declaration
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
 pub type concerto_core::introspect::declaration::Declaration::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::declaration::Declaration::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::declaration::Declaration::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::declaration::Declaration
@@ -993,9 +993,9 @@ pub fn concerto_core::introspect::import::Import::resolve(&self, &str) -> core::
 pub fn concerto_core::introspect::import::Import::uri(&self) -> core::option::Option<&str>
 impl core::clone::Clone for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::import::Import
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::import::Import
 pub type concerto_core::introspect::import::Import::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::import::Import::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::import::Import::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::import::Import
@@ -1039,9 +1039,9 @@ pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str)
 pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::property::Property
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
 pub type concerto_core::introspect::property::Property::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::property::Property::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::property::Property::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::property::Property
@@ -1168,7 +1168,7 @@ pub struct concerto_core::introspect::ModelFile
 impl concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::asset_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::ast(&self) -> &serde_json::value::Value
+pub fn concerto_core::introspect::model_file::ModelFile::ast(&self) -> &concerto_core::json::Value
 pub fn concerto_core::introspect::model_file::ModelFile::class_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::concept_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::concerto_version(&self) -> core::option::Option<&str>
@@ -1180,10 +1180,10 @@ pub fn concerto_core::introspect::model_file::ModelFile::event_declarations(&sel
 pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::file_name(&self) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::filter(&self, impl core::ops::function::Fn(&concerto_core::introspect::declaration::Declaration) -> bool, &concerto_core::model_manager::ModelManager) -> concerto_core::error::Result<core::option::Option<Self>>
-pub fn concerto_core::introspect::model_file::ModelFile::from_json(&serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_json(&concerto_core::json::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::from_json_text(&str, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<concerto_core::error::Result<Self>, serde_json::error::Error>
-pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&serde_json::value::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
-pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(serde_json::value::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
@@ -1245,7 +1245,7 @@ pub struct concerto_core::introspect::ScalarDeclaration
 impl concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::ast(&self) -> &concerto_metamodel::concerto_metamodel_1_0_0::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::default_value(&self) -> core::option::Option<&serde_json::value::Value>
+pub fn concerto_core::introspect::scalar::ScalarDeclaration::default_value(&self) -> core::option::Option<&concerto_core::json::Value>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::scalar_type(&self) -> &'static str
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::validator(&self) -> core::option::Option<&concerto_core::introspect::scalar::ScalarValidator>
 impl concerto_core::introspect::scalar::ScalarDeclaration
@@ -1366,10 +1366,552 @@ impl concerto_core::Typed for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::type_name(&self) -> core::option::Option<&str>
 impl concerto_core::Typed for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::type_name(&self) -> core::option::Option<&str>
+pub mod concerto_core::json
+pub use concerto_core::json::Error
+pub use concerto_core::json::Number
+pub enum concerto_core::json::Value
+pub concerto_core::json::Value::Array(alloc::vec::Vec<concerto_core::json::Value>)
+pub concerto_core::json::Value::Bool(bool)
+pub concerto_core::json::Value::Null
+pub concerto_core::json::Value::Number(serde_json::number::Number)
+pub concerto_core::json::Value::Object(concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>)
+pub concerto_core::json::Value::String(alloc::string::String)
+impl concerto_core::json::Value
+pub fn concerto_core::json::Value::as_array(&self) -> core::option::Option<&alloc::vec::Vec<concerto_core::json::Value>>
+pub fn concerto_core::json::Value::as_array_mut(&mut self) -> core::option::Option<&mut alloc::vec::Vec<concerto_core::json::Value>>
+pub fn concerto_core::json::Value::as_bool(&self) -> core::option::Option<bool>
+pub fn concerto_core::json::Value::as_f64(&self) -> core::option::Option<f64>
+pub fn concerto_core::json::Value::as_i64(&self) -> core::option::Option<i64>
+pub fn concerto_core::json::Value::as_null(&self) -> core::option::Option<()>
+pub fn concerto_core::json::Value::as_number(&self) -> core::option::Option<&serde_json::number::Number>
+pub fn concerto_core::json::Value::as_object(&self) -> core::option::Option<&concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>>
+pub fn concerto_core::json::Value::as_object_mut(&mut self) -> core::option::Option<&mut concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>>
+pub fn concerto_core::json::Value::as_str(&self) -> core::option::Option<&str>
+pub fn concerto_core::json::Value::as_u64(&self) -> core::option::Option<u64>
+pub fn concerto_core::json::Value::get<I: concerto_core::json::Index>(&self, I) -> core::option::Option<&concerto_core::json::Value>
+pub fn concerto_core::json::Value::get_mut<I: concerto_core::json::Index>(&mut self, I) -> core::option::Option<&mut concerto_core::json::Value>
+pub fn concerto_core::json::Value::is_array(&self) -> bool
+pub fn concerto_core::json::Value::is_boolean(&self) -> bool
+pub fn concerto_core::json::Value::is_f64(&self) -> bool
+pub fn concerto_core::json::Value::is_i64(&self) -> bool
+pub fn concerto_core::json::Value::is_null(&self) -> bool
+pub fn concerto_core::json::Value::is_number(&self) -> bool
+pub fn concerto_core::json::Value::is_object(&self) -> bool
+pub fn concerto_core::json::Value::is_string(&self) -> bool
+pub fn concerto_core::json::Value::is_u64(&self) -> bool
+pub fn concerto_core::json::Value::pointer(&self, &str) -> core::option::Option<&concerto_core::json::Value>
+pub fn concerto_core::json::Value::pointer_mut(&mut self, &str) -> core::option::Option<&mut concerto_core::json::Value>
+pub fn concerto_core::json::Value::sort_all_objects(&mut self)
+pub fn concerto_core::json::Value::take(&mut self) -> concerto_core::json::Value
+impl concerto_core::introspect::decorator::AstNode for concerto_core::json::Value
+pub fn concerto_core::json::Value::boolean(&self) -> core::option::Option<bool>
+pub fn concerto_core::json::Value::field(&self, &str) -> core::option::Option<&Self>
+pub fn concerto_core::json::Value::is_null_node(&self) -> bool
+pub fn concerto_core::json::Value::is_number(&self) -> bool
+pub fn concerto_core::json::Value::items(&self) -> core::option::Option<&[Self]>
+pub fn concerto_core::json::Value::number(&self) -> core::option::Option<f64>
+pub fn concerto_core::json::Value::text(&self) -> core::option::Option<&str>
+pub fn concerto_core::json::Value::to_json(&self) -> concerto_core::json::Value
+impl core::clone::Clone for concerto_core::json::Value
+pub fn concerto_core::json::Value::clone(&self) -> Self
+impl core::cmp::Eq for concerto_core::json::Value
+impl core::cmp::PartialEq for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &Self) -> bool
+impl core::cmp::PartialEq<&str> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &&str) -> bool
+impl core::cmp::PartialEq<alloc::string::String> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &alloc::string::String) -> bool
+impl core::cmp::PartialEq<bool> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &bool) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for &str
+pub fn &str::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for alloc::string::String
+pub fn alloc::string::String::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for bool
+pub fn bool::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for f32
+pub fn f32::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for f64
+pub fn f64::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for i16
+pub fn i16::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for i32
+pub fn i32::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for i64
+pub fn i64::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for i8
+pub fn i8::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for isize
+pub fn isize::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for str
+pub fn str::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for u16
+pub fn u16::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for u32
+pub fn u32::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for u64
+pub fn u64::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for u8
+pub fn u8::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<concerto_core::json::Value> for usize
+pub fn usize::eq(&self, &concerto_core::json::Value) -> bool
+impl core::cmp::PartialEq<f32> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &f32) -> bool
+impl core::cmp::PartialEq<f64> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &f64) -> bool
+impl core::cmp::PartialEq<i16> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &i16) -> bool
+impl core::cmp::PartialEq<i32> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &i32) -> bool
+impl core::cmp::PartialEq<i64> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &i64) -> bool
+impl core::cmp::PartialEq<i8> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &i8) -> bool
+impl core::cmp::PartialEq<isize> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &isize) -> bool
+impl core::cmp::PartialEq<str> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &str) -> bool
+impl core::cmp::PartialEq<u16> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &u16) -> bool
+impl core::cmp::PartialEq<u32> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &u32) -> bool
+impl core::cmp::PartialEq<u64> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &u64) -> bool
+impl core::cmp::PartialEq<u8> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &u8) -> bool
+impl core::cmp::PartialEq<usize> for concerto_core::json::Value
+pub fn concerto_core::json::Value::eq(&self, &usize) -> bool
+impl core::convert::From<&str> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(&str) -> Self
+impl core::convert::From<()> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(()) -> Self
+impl core::convert::From<alloc::string::String> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(alloc::string::String) -> Self
+impl core::convert::From<bool> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(bool) -> Self
+impl core::convert::From<concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>) -> Self
+impl core::convert::From<f32> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(f32) -> Self
+impl core::convert::From<f64> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(f64) -> Self
+impl core::convert::From<i16> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(i16) -> Self
+impl core::convert::From<i32> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(i32) -> Self
+impl core::convert::From<i64> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(i64) -> Self
+impl core::convert::From<i8> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(i8) -> Self
+impl core::convert::From<isize> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(isize) -> Self
+impl core::convert::From<serde_json::number::Number> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(serde_json::number::Number) -> Self
+impl core::convert::From<u16> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(u16) -> Self
+impl core::convert::From<u32> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(u32) -> Self
+impl core::convert::From<u64> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(u64) -> Self
+impl core::convert::From<u8> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(u8) -> Self
+impl core::convert::From<usize> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(usize) -> Self
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
+pub type concerto_core::introspect::declaration::Declaration::Error = concerto_core::error::Error
+pub fn concerto_core::introspect::declaration::Declaration::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::import::Import
+pub type concerto_core::introspect::import::Import::Error = concerto_core::error::Error
+pub fn concerto_core::introspect::import::Import::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
+pub type concerto_core::introspect::property::Property::Error = concerto_core::error::Error
+pub fn concerto_core::introspect::property::Property::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
+impl core::default::Default for &concerto_core::json::Value
+pub fn &concerto_core::json::Value::default() -> Self
+impl core::default::Default for concerto_core::json::Value
+pub fn concerto_core::json::Value::default() -> Self
+impl core::fmt::Debug for concerto_core::json::Value
+pub fn concerto_core::json::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for concerto_core::json::Value
+pub fn concerto_core::json::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for concerto_core::json::Value
+pub fn concerto_core::json::Value::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for concerto_core::json::Value
+impl core::str::traits::FromStr for concerto_core::json::Value
+pub type concerto_core::json::Value::Err = serde_json::error::Error
+pub fn concerto_core::json::Value::from_str(&str) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+impl serde_core::ser::Serialize for concerto_core::json::Value
+pub fn concerto_core::json::Value::serialize<S>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'a> core::cmp::PartialEq<bool> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &bool) -> bool
+impl<'a> core::cmp::PartialEq<bool> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &bool) -> bool
+impl<'a> core::cmp::PartialEq<f32> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &f32) -> bool
+impl<'a> core::cmp::PartialEq<f32> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &f32) -> bool
+impl<'a> core::cmp::PartialEq<f64> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &f64) -> bool
+impl<'a> core::cmp::PartialEq<f64> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &f64) -> bool
+impl<'a> core::cmp::PartialEq<i16> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &i16) -> bool
+impl<'a> core::cmp::PartialEq<i16> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &i16) -> bool
+impl<'a> core::cmp::PartialEq<i32> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &i32) -> bool
+impl<'a> core::cmp::PartialEq<i32> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &i32) -> bool
+impl<'a> core::cmp::PartialEq<i64> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &i64) -> bool
+impl<'a> core::cmp::PartialEq<i64> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &i64) -> bool
+impl<'a> core::cmp::PartialEq<i8> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &i8) -> bool
+impl<'a> core::cmp::PartialEq<i8> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &i8) -> bool
+impl<'a> core::cmp::PartialEq<isize> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &isize) -> bool
+impl<'a> core::cmp::PartialEq<isize> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &isize) -> bool
+impl<'a> core::cmp::PartialEq<u16> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &u16) -> bool
+impl<'a> core::cmp::PartialEq<u16> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &u16) -> bool
+impl<'a> core::cmp::PartialEq<u32> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &u32) -> bool
+impl<'a> core::cmp::PartialEq<u32> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &u32) -> bool
+impl<'a> core::cmp::PartialEq<u64> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &u64) -> bool
+impl<'a> core::cmp::PartialEq<u64> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &u64) -> bool
+impl<'a> core::cmp::PartialEq<u8> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &u8) -> bool
+impl<'a> core::cmp::PartialEq<u8> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &u8) -> bool
+impl<'a> core::cmp::PartialEq<usize> for &'a concerto_core::json::Value
+pub fn &'a concerto_core::json::Value::eq(&self, &usize) -> bool
+impl<'a> core::cmp::PartialEq<usize> for &'a mut concerto_core::json::Value
+pub fn &'a mut concerto_core::json::Value::eq(&self, &usize) -> bool
+impl<'a> core::convert::From<alloc::borrow::Cow<'a, str>> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(alloc::borrow::Cow<'a, str>) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for concerto_core::json::Value
+pub fn concerto_core::json::Value::deserialize<D>(D) -> core::result::Result<concerto_core::json::Value, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl<'de> serde_core::de::Deserializer<'de> for &'de concerto_core::json::Value
+pub type &'de concerto_core::json::Value::Error = serde_json::error::Error
+pub fn &'de concerto_core::json::Value::deserialize_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_bool<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_byte_buf<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_bytes<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_char<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_enum<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_f32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_f64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_i128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_i16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_i32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_i64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_i8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_identifier<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_ignored_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_map<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_newtype_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_option<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_seq<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_str<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_string<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_struct<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_tuple<V>(self, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_tuple_struct<V>(self, &'static str, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_u128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_u16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_u32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_u64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_u8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_unit<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Value::deserialize_unit_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+impl<'de> serde_core::de::Deserializer<'de> for concerto_core::json::Value
+pub type concerto_core::json::Value::Error = serde_json::error::Error
+pub fn concerto_core::json::Value::deserialize_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_bool<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_byte_buf<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_bytes<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_char<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_enum<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_f32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_f64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_i128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_i16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_i32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_i64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_i8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_identifier<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_ignored_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_map<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_newtype_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_option<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_seq<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_str<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_string<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_struct<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_tuple<V>(self, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_tuple_struct<V>(self, &'static str, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_u128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_u16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_u32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_u64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_u8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_unit<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Value::deserialize_unit_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+impl<'de> serde_core::de::IntoDeserializer<'de, serde_json::error::Error> for &'de concerto_core::json::Value
+pub type &'de concerto_core::json::Value::Deserializer = &'de concerto_core::json::Value
+pub fn &'de concerto_core::json::Value::into_deserializer(self) -> Self::Deserializer
+impl<'de> serde_core::de::IntoDeserializer<'de, serde_json::error::Error> for concerto_core::json::Value
+pub type concerto_core::json::Value::Deserializer = concerto_core::json::Value
+pub fn concerto_core::json::Value::into_deserializer(self) -> Self::Deserializer
+impl<I> core::ops::index::Index<I> for concerto_core::json::Value where I: concerto_core::json::Index
+pub type concerto_core::json::Value::Output = concerto_core::json::Value
+pub fn concerto_core::json::Value::index(&self, I) -> &concerto_core::json::Value
+impl<I> core::ops::index::IndexMut<I> for concerto_core::json::Value where I: concerto_core::json::Index
+pub fn concerto_core::json::Value::index_mut(&mut self, I) -> &mut concerto_core::json::Value
+impl<K: core::convert::Into<alloc::string::String>, V: core::convert::Into<concerto_core::json::Value>> core::iter::traits::collect::FromIterator<(K, V)> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from_iter<I: core::iter::traits::collect::IntoIterator<Item = (K, V)>>(I) -> Self
+impl<T: core::clone::Clone + core::convert::Into<concerto_core::json::Value>> core::convert::From<&[T]> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(&[T]) -> Self
+impl<T: core::convert::Into<concerto_core::json::Value>, const N: usize> core::convert::From<[T; N]> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from([T; N]) -> Self
+impl<T: core::convert::Into<concerto_core::json::Value>> core::convert::From<alloc::vec::Vec<T>> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(alloc::vec::Vec<T>) -> Self
+impl<T: core::convert::Into<concerto_core::json::Value>> core::iter::traits::collect::FromIterator<T> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from_iter<I: core::iter::traits::collect::IntoIterator<Item = T>>(I) -> Self
+impl<T> core::convert::From<core::option::Option<T>> for concerto_core::json::Value where T: core::convert::Into<concerto_core::json::Value>
+pub fn concerto_core::json::Value::from(core::option::Option<T>) -> Self
+impl core::marker::Freeze for concerto_core::json::Value
+impl core::marker::Send for concerto_core::json::Value
+impl core::marker::Sync for concerto_core::json::Value
+impl core::marker::Unpin for concerto_core::json::Value
+impl core::marker::UnsafeUnpin for concerto_core::json::Value
+impl core::panic::unwind_safe::RefUnwindSafe for concerto_core::json::Value
+impl core::panic::unwind_safe::UnwindSafe for concerto_core::json::Value
+pub struct concerto_core::json::Map<K, V>
+impl concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::append(&mut self, &mut Self)
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::clear(&mut self)
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::contains_key<Q>(&self, &Q) -> bool where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::entry<S>(&mut self, S) -> concerto_core::json::Entry<'_> where S: core::convert::Into<alloc::string::String>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::get<Q>(&self, &Q) -> core::option::Option<&concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::get_key_value<Q>(&self, &Q) -> core::option::Option<(&alloc::string::String, &concerto_core::json::Value)> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::get_mut<Q>(&mut self, &Q) -> core::option::Option<&mut concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::insert(&mut self, alloc::string::String, concerto_core::json::Value) -> core::option::Option<concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::into_values(self) -> concerto_core::json::IntoValues
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::is_empty(&self) -> bool
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::iter(&self) -> concerto_core::json::Iter<'_>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::iter_mut(&mut self) -> concerto_core::json::IterMut<'_>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::keys(&self) -> concerto_core::json::Keys<'_>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::len(&self) -> usize
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::new() -> Self
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::remove<Q>(&mut self, &Q) -> core::option::Option<concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::remove_entry<Q>(&mut self, &Q) -> core::option::Option<(alloc::string::String, concerto_core::json::Value)> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::retain<F>(&mut self, F) where F: core::ops::function::FnMut(&alloc::string::String, &mut concerto_core::json::Value) -> bool
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::shift_insert(&mut self, usize, alloc::string::String, concerto_core::json::Value) -> core::option::Option<concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::shift_remove<Q>(&mut self, &Q) -> core::option::Option<concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::shift_remove_entry<Q>(&mut self, &Q) -> core::option::Option<(alloc::string::String, concerto_core::json::Value)> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::sort_keys(&mut self)
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::swap_remove<Q>(&mut self, &Q) -> core::option::Option<concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::swap_remove_entry<Q>(&mut self, &Q) -> core::option::Option<(alloc::string::String, concerto_core::json::Value)> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::values(&self) -> concerto_core::json::Values<'_>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::values_mut(&mut self) -> concerto_core::json::ValuesMut<'_>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::with_capacity(usize) -> Self
+impl core::clone::Clone for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::clone(&self) -> Self
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::clone_from(&mut self, &Self)
+impl core::cmp::Eq for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+impl core::cmp::PartialEq for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::eq(&self, &Self) -> bool
+impl core::convert::From<concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>> for concerto_core::json::Value
+pub fn concerto_core::json::Value::from(concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>) -> Self
+impl core::default::Default for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::default() -> Self
+impl core::fmt::Debug for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::result::Result<(), core::fmt::Error>
+impl core::hash::Hash for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::hash<H: core::hash::Hasher>(&self, &mut H)
+impl core::iter::traits::collect::Extend<(alloc::string::String, concerto_core::json::Value)> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::extend<T>(&mut self, T) where T: core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, concerto_core::json::Value)>
+impl core::iter::traits::collect::FromIterator<(alloc::string::String, concerto_core::json::Value)> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::from_iter<T>(T) -> Self where T: core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, concerto_core::json::Value)>
+impl core::iter::traits::collect::IntoIterator for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::IntoIter = indexmap::map::iter::IntoIter<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Item = (alloc::string::String, concerto_core::json::Value)
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::into_iter(self) -> Self::IntoIter
+impl core::str::traits::FromStr for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Err = serde_json::error::Error
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::from_str(&str) -> core::result::Result<Self, serde_json::error::Error>
+impl serde_core::ser::Serialize for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::serialize<S>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'a> core::iter::traits::collect::IntoIterator for &'a concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type &'a concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::IntoIter = indexmap::map::iter::Iter<'a, alloc::string::String, concerto_core::json::Value>
+pub type &'a concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Item = (&'a alloc::string::String, &'a concerto_core::json::Value)
+pub fn &'a concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::into_iter(self) -> Self::IntoIter
+impl<'a> core::iter::traits::collect::IntoIterator for &'a mut concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type &'a mut concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::IntoIter = indexmap::map::iter::IterMut<'a, alloc::string::String, concerto_core::json::Value>
+pub type &'a mut concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Item = (&'a alloc::string::String, &'a mut concerto_core::json::Value)
+pub fn &'a mut concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::into_iter(self) -> Self::IntoIter
+impl<'de> serde_core::de::Deserialize<'de> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl<'de> serde_core::de::Deserializer<'de> for &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Error = serde_json::error::Error
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, Self::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_bool<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_byte_buf<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_bytes<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_char<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_enum<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, Self::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_f32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_f64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_identifier<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_ignored_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, serde_json::error::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_map<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_newtype_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_option<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_seq<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_str<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_string<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_struct<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_tuple<V>(self, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_tuple_struct<V>(self, &'static str, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_unit<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_unit_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+impl<'de> serde_core::de::Deserializer<'de> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Error = serde_json::error::Error
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, Self::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_bool<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_byte_buf<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_bytes<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_char<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_enum<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, Self::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_f32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_f64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_i8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_identifier<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_ignored_any<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, Self::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_map<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_newtype_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_option<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_seq<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_str<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_string<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_struct<V>(self, &'static str, &'static [&'static str], V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_tuple<V>(self, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_tuple_struct<V>(self, &'static str, usize, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u128<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u16<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u32<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u64<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_u8<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_unit<V>(self, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::deserialize_unit_struct<V>(self, &'static str, V) -> core::result::Result<<V as serde_core::de::Visitor>::Value, <Self as serde_core::de::Deserializer<'de>>::Error> where V: serde_core::de::Visitor<'de>
+impl<'de> serde_core::de::IntoDeserializer<'de, serde_json::error::Error> for &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Deserializer = &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn &'de concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::into_deserializer(self) -> Self::Deserializer
+impl<'de> serde_core::de::IntoDeserializer<'de, serde_json::error::Error> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Deserializer = concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::into_deserializer(self) -> Self::Deserializer
+impl<Q> core::ops::index::Index<&Q> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub type concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::Output = concerto_core::json::Value
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::index(&self, &Q) -> &concerto_core::json::Value
+impl<Q> core::ops::index::IndexMut<&Q> for concerto_core::json::Map<alloc::string::String, concerto_core::json::Value> where alloc::string::String: core::borrow::Borrow<Q>, Q: ?core::marker::Sized + core::cmp::Ord + core::cmp::Eq + core::hash::Hash
+pub fn concerto_core::json::Map<alloc::string::String, concerto_core::json::Value>::index_mut(&mut self, &Q) -> &mut concerto_core::json::Value
+impl<K, V> core::marker::Freeze for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::marker::Freeze
+impl<K, V> core::marker::Send for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::marker::Send
+impl<K, V> core::marker::Sync for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::marker::Sync
+impl<K, V> core::marker::Unpin for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::marker::Unpin
+impl<K, V> core::marker::UnsafeUnpin for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::marker::UnsafeUnpin
+impl<K, V> core::panic::unwind_safe::RefUnwindSafe for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::panic::unwind_safe::RefUnwindSafe
+impl<K, V> core::panic::unwind_safe::UnwindSafe for concerto_core::json::Map<K, V> where indexmap::map::IndexMap<K, V, SeededState>: core::panic::unwind_safe::UnwindSafe
+pub struct concerto_core::json::Serializer
+impl serde_core::ser::Serializer for concerto_core::json::Serializer
+pub type concerto_core::json::Serializer::Error = serde_json::error::Error
+pub type concerto_core::json::Serializer::Ok = concerto_core::json::Value
+pub type concerto_core::json::Serializer::SerializeMap = concerto_core::json::ser::SerializeMap
+pub type concerto_core::json::Serializer::SerializeSeq = concerto_core::json::ser::SerializeVec
+pub type concerto_core::json::Serializer::SerializeStruct = concerto_core::json::ser::SerializeMap
+pub type concerto_core::json::Serializer::SerializeStructVariant = concerto_core::json::ser::SerializeStructVariant
+pub type concerto_core::json::Serializer::SerializeTuple = concerto_core::json::ser::SerializeVec
+pub type concerto_core::json::Serializer::SerializeTupleStruct = concerto_core::json::ser::SerializeVec
+pub type concerto_core::json::Serializer::SerializeTupleVariant = concerto_core::json::ser::SerializeTupleVariant
+pub fn concerto_core::json::Serializer::collect_str<T>(self, &T) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error> where T: ?core::marker::Sized + core::fmt::Display
+pub fn concerto_core::json::Serializer::serialize_bool(self, bool) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_bytes(self, &[u8]) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_char(self, char) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_f32(self, f32) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_f64(self, f64) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_i128(self, i128) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_i16(self, i16) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_i32(self, i32) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_i64(self, i64) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_i8(self, i8) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_map(self, core::option::Option<usize>) -> core::result::Result<Self::SerializeMap, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_newtype_struct<T>(self, &'static str, &T) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error> where T: ?core::marker::Sized + serde_core::ser::Serialize
+pub fn concerto_core::json::Serializer::serialize_newtype_variant<T>(self, &'static str, u32, &'static str, &T) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error> where T: ?core::marker::Sized + serde_core::ser::Serialize
+pub fn concerto_core::json::Serializer::serialize_none(self) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_seq(self, core::option::Option<usize>) -> core::result::Result<Self::SerializeSeq, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_some<T>(self, &T) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error> where T: ?core::marker::Sized + serde_core::ser::Serialize
+pub fn concerto_core::json::Serializer::serialize_str(self, &str) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_struct(self, &'static str, usize) -> core::result::Result<Self::SerializeStruct, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_struct_variant(self, &'static str, u32, &'static str, usize) -> core::result::Result<Self::SerializeStructVariant, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_tuple(self, usize) -> core::result::Result<Self::SerializeTuple, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_tuple_struct(self, &'static str, usize) -> core::result::Result<Self::SerializeTupleStruct, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_tuple_variant(self, &'static str, u32, &'static str, usize) -> core::result::Result<Self::SerializeTupleVariant, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_u128(self, u128) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_u16(self, u16) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_u32(self, u32) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_u64(self, u64) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_u8(self, u8) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_unit(self) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_unit_struct(self, &'static str) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+pub fn concerto_core::json::Serializer::serialize_unit_variant(self, &'static str, u32, &'static str) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error>
+impl core::marker::Freeze for concerto_core::json::Serializer
+impl core::marker::Send for concerto_core::json::Serializer
+impl core::marker::Sync for concerto_core::json::Serializer
+impl core::marker::Unpin for concerto_core::json::Serializer
+impl core::marker::UnsafeUnpin for concerto_core::json::Serializer
+impl core::panic::unwind_safe::RefUnwindSafe for concerto_core::json::Serializer
+impl core::panic::unwind_safe::UnwindSafe for concerto_core::json::Serializer
+pub trait concerto_core::json::Index: concerto_core::json::index::private::Sealed
+impl concerto_core::json::Index for alloc::string::String
+impl concerto_core::json::Index for str
+impl concerto_core::json::Index for usize
+impl<T> concerto_core::json::Index for &T where T: ?core::marker::Sized + concerto_core::json::Index
+pub fn concerto_core::json::from_value<T>(concerto_core::json::Value) -> core::result::Result<T, serde_json::error::Error> where T: serde_core::de::DeserializeOwned
+pub fn concerto_core::json::to_value<T>(T) -> core::result::Result<concerto_core::json::Value, serde_json::error::Error> where T: serde_core::ser::Serialize
+pub type concerto_core::json::Entry<'a> = indexmap::map::entry::Entry<'a, alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::IntoIter = indexmap::map::iter::IntoIter<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::IntoValues = indexmap::map::iter::IntoValues<alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Iter<'a> = indexmap::map::iter::Iter<'a, alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::IterMut<'a> = indexmap::map::iter::IterMut<'a, alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Keys<'a> = indexmap::map::iter::Keys<'a, alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::Values<'a> = indexmap::map::iter::Values<'a, alloc::string::String, concerto_core::json::Value>
+pub type concerto_core::json::ValuesMut<'a> = indexmap::map::iter::ValuesMut<'a, alloc::string::String, concerto_core::json::Value>
 pub mod concerto_core::metamodel
 pub const concerto_core::metamodel::NAMESPACE: &str
-pub fn concerto_core::metamodel::validate_ast(&serde_json::value::Value) -> concerto_core::error::Result<()>
-pub fn concerto_core::metamodel::validate_structure(&serde_json::value::Value) -> concerto_core::error::Result<()>
+pub fn concerto_core::metamodel::validate_ast(&concerto_core::json::Value) -> concerto_core::error::Result<()>
+pub fn concerto_core::metamodel::validate_structure(&concerto_core::json::Value) -> concerto_core::error::Result<()>
 pub mod concerto_core::model_manager
 pub struct concerto_core::model_manager::AstOptions
 pub concerto_core::model_manager::AstOptions::include_system_models: bool
@@ -1441,16 +1983,16 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::model_manager::Mode
 pub struct concerto_core::model_manager::ModelManager
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::add_metamodel(&mut self) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::add_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
+pub fn concerto_core::model_manager::ModelManager::add_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::add_model_ast_text(&mut self, &str, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
-pub fn concerto_core::model_manager::ModelManager::add_model_asts<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<&'a str>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
+pub fn concerto_core::model_manager::ModelManager::add_model_asts<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a concerto_core::json::Value, core::option::Option<&'a str>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
 pub fn concerto_core::model_manager::ModelManager::builder() -> concerto_core::model_manager::ModelManagerBuilder
 pub fn concerto_core::model_manager::ModelManager::decorator_validation(&self) -> &concerto_core::introspect::decorator::DecoratorValidationOptions
 pub fn concerto_core::model_manager::ModelManager::filter(&self, impl core::ops::function::Fn(&str, &concerto_core::introspect::declaration::Declaration) -> bool) -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
 pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
+pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
@@ -1480,7 +2022,7 @@ pub fn concerto_core::model_manager::ModelManager::subclasses(&self, &str) -> co
 pub fn concerto_core::model_manager::ModelManager::super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 pub fn concerto_core::model_manager::ModelManager::super_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 impl concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<serde_json::value::Value>
+pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<concerto_core::json::Value>
 pub fn concerto_core::model_manager::ModelManager::class_declarations_of_kind(&self, concerto_core::introspect::declaration::ClassKind) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::ClassDeclaration)>
 pub fn concerto_core::model_manager::ModelManager::declaration(&self, concerto_core::model_manager::DeclId) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::model_manager::ModelManager::declaration_id(&self, &str) -> core::option::Option<concerto_core::model_manager::DeclId>
@@ -1493,14 +2035,14 @@ pub fn concerto_core::model_manager::ModelManager::model_file_by_file_name(&self
 pub fn concerto_core::model_manager::ModelManager::model_file_fully_qualified_type_name(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::model_file_id(&self, &str) -> core::option::Option<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::model_files(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::model_file::ModelFile>
-pub fn concerto_core::model_manager::ModelManager::resolve_meta_model(&self, &serde_json::value::Value) -> concerto_core::error::Result<serde_json::value::Value>
+pub fn concerto_core::model_manager::ModelManager::resolve_meta_model(&self, &concerto_core::json::Value) -> concerto_core::error::Result<concerto_core::json::Value>
 pub fn concerto_core::model_manager::ModelManager::resolve_type(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::resolve_type_name(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
 impl concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::check_instance(&self, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
-pub fn concerto_core::model_manager::ModelManager::check_instance_as(&self, &str, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
-pub fn concerto_core::model_manager::ModelManager::validate_instance(&self, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::validate_instance_as(&self, &str, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::check_instance(&self, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
+pub fn concerto_core::model_manager::ModelManager::check_instance_as(&self, &str, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
+pub fn concerto_core::model_manager::ModelManager::validate_instance(&self, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::validate_instance_as(&self, &str, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::validate_model_file(&self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::validate_models(&self) -> concerto_core::error::Result<()>
@@ -1708,10 +2250,11 @@ impl concerto_core::Typed for concerto_core::introspect::scalar::ScalarDeclarati
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::type_name(&self) -> core::option::Option<&str>
 pub mod concerto_core::rootmodel
 pub fn concerto_core::rootmodel::decorator_model() -> concerto_metamodel::concerto_metamodel_1_0_0::Model
-pub fn concerto_core::rootmodel::decorator_model_ast() -> serde_json::value::Value
+pub fn concerto_core::rootmodel::decorator_model_ast() -> concerto_core::json::Value
 pub fn concerto_core::rootmodel::root_model() -> concerto_metamodel::concerto_metamodel_1_0_0::Model
-pub fn concerto_core::rootmodel::root_model_ast() -> serde_json::value::Value
+pub fn concerto_core::rootmodel::root_model_ast() -> concerto_core::json::Value
 pub mod concerto_core::validation
+pub macro concerto_core::json!
 #[non_exhaustive] pub enum concerto_core::ClassKind
 pub concerto_core::ClassKind::Asset
 pub concerto_core::ClassKind::Concept
@@ -1770,9 +2313,9 @@ pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self,
 pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::declaration::Declaration
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
 pub type concerto_core::introspect::declaration::Declaration::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::declaration::Declaration::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::declaration::Declaration::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::declaration::Declaration
@@ -1841,9 +2384,9 @@ pub fn concerto_core::introspect::import::Import::resolve(&self, &str) -> core::
 pub fn concerto_core::introspect::import::Import::uri(&self) -> core::option::Option<&str>
 impl core::clone::Clone for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::import::Import
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::import::Import
 pub type concerto_core::introspect::import::Import::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::import::Import::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::import::Import::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::import::Import
@@ -1887,9 +2430,9 @@ pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str)
 pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::clone(&self) -> Self
-impl core::convert::TryFrom<&serde_json::value::Value> for concerto_core::introspect::property::Property
+impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
 pub type concerto_core::introspect::property::Property::Error = concerto_core::error::Error
-pub fn concerto_core::introspect::property::Property::try_from(&serde_json::value::Value) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::property::Property::try_from(&concerto_core::json::Value) -> concerto_core::error::Result<Self>
 impl core::fmt::Debug for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for concerto_core::introspect::property::Property
@@ -2009,7 +2552,7 @@ pub struct concerto_core::ModelFile
 impl concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::asset_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::ast(&self) -> &serde_json::value::Value
+pub fn concerto_core::introspect::model_file::ModelFile::ast(&self) -> &concerto_core::json::Value
 pub fn concerto_core::introspect::model_file::ModelFile::class_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::concept_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::concerto_version(&self) -> core::option::Option<&str>
@@ -2021,10 +2564,10 @@ pub fn concerto_core::introspect::model_file::ModelFile::event_declarations(&sel
 pub fn concerto_core::introspect::model_file::ModelFile::external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::file_name(&self) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::filter(&self, impl core::ops::function::Fn(&concerto_core::introspect::declaration::Declaration) -> bool, &concerto_core::model_manager::ModelManager) -> concerto_core::error::Result<core::option::Option<Self>>
-pub fn concerto_core::introspect::model_file::ModelFile::from_json(&serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_json(&concerto_core::json::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::from_json_text(&str, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<concerto_core::error::Result<Self>, serde_json::error::Error>
-pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&serde_json::value::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
-pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(serde_json::value::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
+pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
@@ -2085,16 +2628,16 @@ impl core::panic::unwind_safe::UnwindSafe for concerto_core::introspect::model_f
 pub struct concerto_core::ModelManager
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::add_metamodel(&mut self) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::add_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
+pub fn concerto_core::model_manager::ModelManager::add_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::add_model_ast_text(&mut self, &str, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
-pub fn concerto_core::model_manager::ModelManager::add_model_asts<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<&'a str>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
+pub fn concerto_core::model_manager::ModelManager::add_model_asts<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a concerto_core::json::Value, core::option::Option<&'a str>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
 pub fn concerto_core::model_manager::ModelManager::builder() -> concerto_core::model_manager::ModelManagerBuilder
 pub fn concerto_core::model_manager::ModelManager::decorator_validation(&self) -> &concerto_core::introspect::decorator::DecoratorValidationOptions
 pub fn concerto_core::model_manager::ModelManager::filter(&self, impl core::ops::function::Fn(&str, &concerto_core::introspect::declaration::Declaration) -> bool) -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
 pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &serde_json::value::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
+pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
@@ -2124,7 +2667,7 @@ pub fn concerto_core::model_manager::ModelManager::subclasses(&self, &str) -> co
 pub fn concerto_core::model_manager::ModelManager::super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 pub fn concerto_core::model_manager::ModelManager::super_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 impl concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<serde_json::value::Value>
+pub fn concerto_core::model_manager::ModelManager::ast(&self, concerto_core::model_manager::AstOptions) -> concerto_core::error::Result<concerto_core::json::Value>
 pub fn concerto_core::model_manager::ModelManager::class_declarations_of_kind(&self, concerto_core::introspect::declaration::ClassKind) -> impl core::iter::traits::iterator::Iterator<Item = (alloc::string::String, &concerto_core::introspect::declaration::ClassDeclaration)>
 pub fn concerto_core::model_manager::ModelManager::declaration(&self, concerto_core::model_manager::DeclId) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::model_manager::ModelManager::declaration_id(&self, &str) -> core::option::Option<concerto_core::model_manager::DeclId>
@@ -2137,14 +2680,14 @@ pub fn concerto_core::model_manager::ModelManager::model_file_by_file_name(&self
 pub fn concerto_core::model_manager::ModelManager::model_file_fully_qualified_type_name(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::model_file_id(&self, &str) -> core::option::Option<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::model_files(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::model_file::ModelFile>
-pub fn concerto_core::model_manager::ModelManager::resolve_meta_model(&self, &serde_json::value::Value) -> concerto_core::error::Result<serde_json::value::Value>
+pub fn concerto_core::model_manager::ModelManager::resolve_meta_model(&self, &concerto_core::json::Value) -> concerto_core::error::Result<concerto_core::json::Value>
 pub fn concerto_core::model_manager::ModelManager::resolve_type(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::model_manager::ModelManager::resolve_type_name(&self, &str, &str) -> concerto_core::error::Result<alloc::string::String>
 impl concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::check_instance(&self, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
-pub fn concerto_core::model_manager::ModelManager::check_instance_as(&self, &str, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
-pub fn concerto_core::model_manager::ModelManager::validate_instance(&self, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::validate_instance_as(&self, &str, &serde_json::value::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::check_instance(&self, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
+pub fn concerto_core::model_manager::ModelManager::check_instance_as(&self, &str, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::instance::ValidationReport
+pub fn concerto_core::model_manager::ModelManager::validate_instance(&self, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
+pub fn concerto_core::model_manager::ModelManager::validate_instance_as(&self, &str, &concerto_core::json::Value, &concerto_core::instance::ValidationOptions) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::validate_model_file(&self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::validate_models(&self) -> concerto_core::error::Result<()>
@@ -2163,7 +2706,7 @@ pub struct concerto_core::ScalarDeclaration
 impl concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::ast(&self) -> &concerto_metamodel::concerto_metamodel_1_0_0::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::default_value(&self) -> core::option::Option<&serde_json::value::Value>
+pub fn concerto_core::introspect::scalar::ScalarDeclaration::default_value(&self) -> core::option::Option<&concerto_core::json::Value>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::scalar_type(&self) -> &'static str
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::validator(&self) -> core::option::Option<&concerto_core::introspect::scalar::ScalarValidator>
 impl concerto_core::introspect::scalar::ScalarDeclaration

@@ -113,7 +113,7 @@ js_compat_pub! {
     /// [`FullyQualified`] name is read only when an error is reported.
     pub trait ValidatedElement: FullyQualified {
         /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
-        fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
+        fn default_value(&self) -> std::result::Result<Option<crate::json::Value>, Self::Error>;
 
         /// TS: `field.getName()`. `StringValidator` and `CollectionSizeValidator`
         /// (unlike `NumberValidator`) pass this as the identifier of every error

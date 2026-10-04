@@ -4,13 +4,13 @@
 //!
 //! Only the parts of the schema this harness (task P1-07) actually decodes
 //! are modelled precisely; `inputs.args`/`inputs.target` stay as raw
-//! [`serde_json::Value`] and are decoded op by op (see `decode.rs`).
+//! [`concerto_core::json::Value`] and are decoded op by op (see `decode.rs`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use concerto_core::json::Value;
 use serde::Deserialize;
-use serde_json::Value;
 
 /// One recorded call, replayed against the Rust engine.
 #[derive(Debug, Deserialize)]
@@ -145,7 +145,8 @@ fn load_one(path: &Path, root: &Path) -> Result<Fixture, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
     let mut value: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {e}"))?;
     resolve_blobs(&mut value, root)?;
-    let mut fixture: Fixture = serde_json::from_value(value).map_err(|e| format!("schema: {e}"))?;
+    let mut fixture: Fixture =
+        concerto_core::json::from_value(value).map_err(|e| format!("schema: {e}"))?;
     fixture.path = path.to_path_buf();
     Ok(fixture)
 }

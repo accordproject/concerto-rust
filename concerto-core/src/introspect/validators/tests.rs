@@ -56,7 +56,7 @@ fn field() -> TestField {
 }
 
 fn regex_ast(pattern: &str, flags: &str) -> mm::StringRegexValidator {
-    serde_json::from_value(serde_json::json!({
+    crate::json::from_value(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringRegexValidator",
         "pattern": pattern,
         "flags": flags,
@@ -65,26 +65,25 @@ fn regex_ast(pattern: &str, flags: &str) -> mm::StringRegexValidator {
 }
 
 fn length_ast(min: Option<f64>, max: Option<f64>) -> mm::StringLengthValidator {
-    let mut ast = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
+    let mut ast = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
     if let Some(min) = min {
         ast["minLength"] = min.into();
     }
     if let Some(max) = max {
         ast["maxLength"] = max.into();
     }
-    serde_json::from_value(ast).expect("valid StringLengthValidator AST")
+    crate::json::from_value(ast).expect("valid StringLengthValidator AST")
 }
 
 fn size_ast(min: Option<f64>, max: Option<f64>) -> mm::CollectionSizeValidator {
-    let mut ast =
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator" });
+    let mut ast = crate::json!({ "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator" });
     if let Some(min) = min {
         ast["minSize"] = min.into();
     }
     if let Some(max) = max {
         ast["maxSize"] = max.into();
     }
-    serde_json::from_value(ast).expect("valid CollectionSizeValidator AST")
+    crate::json::from_value(ast).expect("valid CollectionSizeValidator AST")
 }
 
 fn string_validator(
@@ -165,9 +164,9 @@ fn string_validator_rejects_length_with_no_bounds() {
 #[test]
 fn string_validator_rejects_length_with_absent_bounds() {
     for ast in [
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator", "minLength": null }),
-        serde_json::json!(true),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator", "minLength": null }),
+        crate::json!(true),
     ] {
         let length = length_validator_from_ast(Some(&ast));
         let err = StringValidator::new(&field(), None, length.as_ref(), Some(&ast))
@@ -181,7 +180,7 @@ fn string_validator_rejects_length_with_absent_bounds() {
         );
     }
     // One bound is enough.
-    let min_only = serde_json::json!({ "minLength": 1 });
+    let min_only = crate::json!({ "minLength": 1 });
     let length = length_validator_from_ast(Some(&min_only));
     assert!(StringValidator::new(&field(), None, length.as_ref(), Some(&min_only)).is_ok());
 }
@@ -213,7 +212,7 @@ fn string_validator_rejects_negative_lengths() {
 
 #[test]
 fn string_validator_rejects_a_default_value_shorter_than_min_length() {
-    let f = field().with_default(serde_json::json!("abc"));
+    let f = field().with_default(crate::json!("abc"));
     let err =
         StringValidator::new(&f, None, Some(&length_ast(Some(5.0), Some(10.0))), None).unwrap_err();
     assert!(
@@ -224,7 +223,7 @@ fn string_validator_rejects_a_default_value_shorter_than_min_length() {
 
 #[test]
 fn string_validator_rejects_a_default_value_longer_than_max_length() {
-    let f = field().with_default(serde_json::json!("abcdefgh"));
+    let f = field().with_default(crate::json!("abcdefgh"));
     let err =
         StringValidator::new(&f, None, Some(&length_ast(Some(2.0), Some(5.0))), None).unwrap_err();
     assert!(
@@ -235,7 +234,7 @@ fn string_validator_rejects_a_default_value_longer_than_max_length() {
 
 #[test]
 fn string_validator_accepts_a_default_value_matching_length_and_pattern() {
-    let f = field().with_default(serde_json::json!("ABC"));
+    let f = field().with_default(crate::json!("ABC"));
     assert!(
         StringValidator::new(
             &f,
@@ -369,8 +368,7 @@ fn string_validator_length_takes_precedence_over_regex() {
 
 #[test]
 fn string_validator_is_incompatible_with_a_number_validator() {
-    let other =
-        NumberValidator::new(&field(), &serde_json::json!({"lower": -1, "upper": 1})).unwrap();
+    let other = NumberValidator::new(&field(), &crate::json!({"lower": -1, "upper": 1})).unwrap();
     let v = string_validator(Some(("foo", "")), Some((Some(1.0), Some(100.0)))).unwrap();
     assert!(!v.compatible_with(Some(&Validator::Number(other))));
 }
@@ -439,8 +437,7 @@ fn string_validator_length_compatibility() {
 #[test]
 fn string_validator_length_compatibility_with_an_absent_bound_matches_an_explicit_null_one() {
     fn length_validator_via_ast(min: Option<f64>, max: Option<f64>) -> StringValidator {
-        let mut ast =
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
+        let mut ast = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringLengthValidator" });
         if let Some(min) = min {
             ast["minLength"] = min.into();
         }
@@ -658,7 +655,7 @@ fn number_validator_to_string() {
 // ---- NumberValidator: #compatibleWith ----
 
 fn number_ast(lower: Option<f64>, upper: Option<f64>) -> Value {
-    let mut ast = serde_json::json!({});
+    let mut ast = crate::json!({});
     if let Some(lower) = lower {
         ast["lower"] = lower.into();
     }
@@ -767,7 +764,7 @@ fn validator_errors_are_illegal_model_at_load_and_validation_for_instances() {
     assert_eq!(kind_and_type(no_bounds), (MODEL, DEFAULT));
     let swapped = NumberValidator::new(&field(), &number_ast(Some(5.0), Some(1.0))).unwrap_err();
     assert_eq!(kind_and_type(swapped), (MODEL, DEFAULT));
-    let number_default = field().with_default(serde_json::json!(50));
+    let number_default = field().with_default(crate::json!(50));
     let outside =
         NumberValidator::new(&number_default, &number_ast(Some(1.0), Some(10.0))).unwrap_err();
     assert_eq!(kind_and_type(outside), (MODEL, DEFAULT));
@@ -777,7 +774,7 @@ fn validator_errors_are_illegal_model_at_load_and_validation_for_instances() {
     assert_eq!(kind_and_type(bad_regex), (MODEL, REGEX_VALIDATOR_EXCEPTION));
     let negative = string_validator(None, Some((Some(-1.0), None))).unwrap_err();
     assert_eq!(kind_and_type(negative), (MODEL, DEFAULT));
-    let string_default = field().with_default(serde_json::json!("abc"));
+    let string_default = field().with_default(crate::json!("abc"));
     let too_short = StringValidator::new(
         &string_default,
         None,

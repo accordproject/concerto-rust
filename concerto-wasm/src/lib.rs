@@ -56,6 +56,8 @@ use concerto_core::introspect::validators;
 use concerto_core::introspect::validators::{
     CollectionSizeValidator, NumberValidator, StringValidator, Validator,
 };
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, PropId};
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
@@ -65,7 +67,6 @@ use concerto_core_js::{Serializer, SerializerOptions, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use js_sys::{Array, Function, JSON, Object, Reflect};
 use serde::Serialize;
-use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 
 // The bindings, split along lib.rs's section banners.
@@ -74,6 +75,8 @@ mod dcs_bindings;
 mod declarations;
 mod decorators;
 mod handle;
+#[cfg(feature = "hashdos-probe")]
+mod hashdos_probe;
 mod host;
 mod js_values;
 mod model_file;

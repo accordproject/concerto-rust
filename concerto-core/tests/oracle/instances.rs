@@ -30,9 +30,10 @@ use concerto_core::instance::from_json::{FromJsonOptions, from_json};
 use concerto_core::instance::{
     InstanceEnv, ValidateOptions, diagnose, diagnose_read, diagnostics_of_error,
 };
+use concerto_core::json;
+use concerto_core::json::{Map, Value};
 use concerto_core_js::value::{Instance, InstanceKind, JsValue};
 use concerto_core_js::{Serializer, SerializerOptions, factory, resource};
-use serde_json::{Map, Value, json};
 
 use super::Harness;
 use super::fixture::Inputs;

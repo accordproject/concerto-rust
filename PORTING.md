@@ -120,7 +120,7 @@ Mechanical rules. Apply them in order.
   `null` into absent, or narrows a JS number to `i32`/`i64`), see Open
   decision OD-3. Do not work around it locally.
 - **A member that TS runs over any JS object reads the AST as
-  `serde_json::Value`** (OD-3), not as the generated type. Constructors and
+  `concerto_core::json::Value`** (OD-3; `serde_json::Value` before, 3.7), not as the generated type. Constructors and
   `process()` methods are the usual case: the unit tests build them over ASTs
   the generated types reject (`new ScalarDeclaration(modelFile, {name:
   'suchName'})` has no `$class`; `new NumberValidator(field, {lower: null,
@@ -998,12 +998,28 @@ The ported test asserts the TS behaviour.
   namespaces, `ModelFile`'s local types and its import short names. Never
   use foldhash's own `RandomState` or `FixedState`: on WASM its global seed
   has no entropy. Natively the keys come from the OS-seeded `RandomState`.
-  On `wasm32-unknown-unknown`, where `RandomState`'s keys are fixed and so
-  public, concerto-wasm sets them from `crypto.getRandomValues` at
-  instantiation (`seed_hasher`, concerto-wasm/src/hash_seed.rs). The
-  regression tests are `concerto-core-js/tests/hashdos.rs`,
-  `tests/hash_seed.rs` and concerto-core's `hash::tests`; the concerto-wasm
-  Node smoke checks the WASM seeding.
+  On `wasm32-unknown-unknown`, where `RandomState`'s keys are derived from
+  memory addresses (the same in every instantiation of a build, bumped by
+  one per map) and so computable by anyone with the build, concerto-wasm
+  sets them from `crypto.getRandomValues` at instantiation (`seed_hasher`,
+  concerto-wasm/src/hash_seed.rs). The regression tests are
+  `concerto-core-js/tests/hashdos.rs`, `tests/hash_seed.rs` and
+  concerto-core's `hash::tests` and `json::tests`; the concerto-wasm Node
+  smoke checks the WASM seeding, and `npm run smoke:hashdos`
+  (scripts/hashdos.mjs) times the JSON entry points on wasm32 with keys
+  crafted against the fixed-key hasher.
+- **JSON values are `concerto_core::json::Value`, never
+  `serde_json::Value`.** `serde_json::Map` (with `preserve_order`, an
+  `IndexMap`) hashes with `RandomState`, so on WASM every object of a
+  parsed document, the largest copy of the user's keys, would be keyed
+  with the fixed keys above. `json::Value` and `json::Map` are
+  `serde_json`'s with `preserve_order` semantics (key order, `remove` as
+  `swap_remove`, the same `Deserialize`, `Deserializer` and `json!`), their
+  maps hashed with `SeededState`. Parse untrusted text with
+  `serde_json::from_str::<json::Value>` (or straight into a `JsValue`);
+  `serde_json` still reads and writes the text, so its syntax errors,
+  recursion limit and `float_roundtrip` numbers are unchanged
+  (P5-118, accordproject/concerto-rust#488).
 
 ---
 
@@ -1587,7 +1603,7 @@ named task.
 |---|---|---|---|
 | OD-1 | What is `code`: the message key, or the concerto-util `errorType`? | `code` is the catalogue key. The catalogue entry carries `error_type` for `Validator`/`TypeNotFound` kinds (`DefaultValidatorException`, `RegexValidatorException`, `TypeNotFoundException`). | P1-05 |
 | OD-2 | Who applies the exception-class decoration (the `IllegalModelException` file and line suffix, the `Validator error for field …` prefix)? | The shim passes the raw message to the real TS constructor, which decorates it. Rust keeps a verbatim port of each decoration that is used only to compute the final message for the native harness, and golden-tests it against fixtures. The `Validator error for field …` prefix is not a constructor decoration: `Validator.reportError` builds it before constructing the `BaseException`, so Rust renders it as part of the message (P0-04b; 2.1). | P1-05, P1-07 |
-| OD-3 | The generated metamodel types collapse `null` into absent and narrow Integer/Long AST fields to `i32`/`i64`, while TS keeps the JS object (key order, `null`, any number) and exposes it as `.ast` / `getAst()` | Each `ModelFile` keeps the AST it was given as `serde_json::Value` (with `preserve_order`) as the source of truth for `ast()`/`getAst()` and for tri-state reads. The typed `mm::*` view is used for logic. A numeric field that fails to deserialise where TS accepts the model is a failure to fix in `concerto-metamodel` codegen, not in core. | P1-02 |
+| OD-3 | The generated metamodel types collapse `null` into absent and narrow Integer/Long AST fields to `i32`/`i64`, while TS keeps the JS object (key order, `null`, any number) and exposes it as `.ast` / `getAst()` | Each `ModelFile` keeps the AST it was given as `concerto_core::json::Value` (`serde_json::Value`'s `preserve_order` semantics, seeded maps; 3.7) as the source of truth for `ast()`/`getAst()` and for tri-state reads. The typed `mm::*` view is used for logic. A numeric field that fails to deserialise where TS accepts the model is a failure to fix in `concerto-metamodel` codegen, not in core. | P1-02 |
 | OD-4 | The message for an invalid regex comes from the engine (V8 in TS, `regress` in Rust). No fixture or unit test observes it today. | Rust reports `kind = Validator`, `errorType = RegexValidatorException`, with V8's wording (`Invalid regular expression: /<source>/<flags>: <reason>`) for the reasons that regress can map. Record any other reason as an `engine` divergence. | P2-02 |
 | OD-5 | Which en.json keys belong in the Rust catalogue? `composer-*`, `whereastvalidator-*`, `like` and `test-*` have no throw site in concerto-core. | Port every key used by a RUST or HYBRID member, plus `factory-newinstance-*` (#32 point 4) and `typenotfounderror-defaultmessage`. Do not port unused keys. `Globalize` stays TS and keeps en.json for them. | P1-05 |
 | OD-6 | The ledger at `accordproject/concerto` commit `c48423c` applies #32 points 1, 2 and 9 (new D1 denominator; `w_tests`/`direct_tests`/`needs_fallback` in place of `coupled_tests`), but `classification.js` does not yet apply points 3 to 8: Factory model checks are still TS, `quoteStringValue` is HYBRID, DCS rows point only at P4-09, and the `Serializer.toJSON`/`fromJSON` reasons still describe a Serializer-level visitor path that option B forbids. Also, the P2-12 brief lists "the DCS/YAML converter", but the ledger keeps `dcsconverter.ts` TS (`yaml` npm lib). | Wherever a row's classification or reason differs from any decision in section 5 (points 3 to 8), section 5 overrides the TSV until `classification.js` applies them and the ledger is re-run. For everything else, including the fallback rows (`needs_fallback=true`, 1.4) and the D1 figures (85.3% full weight, 57.2% RUST only, denominator 6498.5), the TSV and SUMMARY at `c48423c` are authoritative as published. P2-12 does the DCS rows. The Factory helper is planned as P3-01 (Rust) and P4-10 (view). `dcsconverter.ts` stays TS unless the maintainer extends #32 point 5 to cover it. | P2-12 / maintainer |

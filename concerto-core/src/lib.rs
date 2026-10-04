@@ -78,6 +78,9 @@ pub mod error;
 js_compat_mod!(hash);
 pub mod instance;
 pub mod introspect;
+// JSON values hashed with the seeded hasher: every JSON value the crate
+// reads, writes or takes.
+pub mod json;
 pub mod model_manager;
 pub mod model_util;
 pub mod rootmodel;

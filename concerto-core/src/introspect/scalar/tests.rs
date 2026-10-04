@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+use crate::json;
 
 const NS: &str = METAMODEL_NAMESPACE;
 

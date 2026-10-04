@@ -29,8 +29,8 @@
 //! ```
 
 use concerto_core::instance::{DiagnosticCode, ValidationOptions};
+use concerto_core::json;
 use concerto_core::{ClassKind, ErrorKind, ModelManager};
-use serde_json::json;
 
 /// The `Person` model, as a JSON AST (`concerto.metamodel@1.0.0.Model`).
 ///
@@ -38,7 +38,7 @@ use serde_json::json;
 /// CTO front end itself, `concerto-tree-sitter`, is a named follow-up —
 /// docs/public-api.md section 1); the AST is the stable input to
 /// `add_model_ast`.
-fn person_model_ast() -> serde_json::Value {
+fn person_model_ast() -> concerto_core::json::Value {
     json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.acme.hr@1.0.0",

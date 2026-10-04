@@ -1,12 +1,12 @@
 use super::*;
 
-fn decl(json: serde_json::Value) -> Declaration {
+fn decl(json: crate::json::Value) -> Declaration {
     Declaration::try_from(&json).expect("valid declaration")
 }
 
 #[test]
 fn parses_concept_with_typed_properties() {
-    let d = decl(serde_json::json!({
+    let d = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
         "name": "Person",
         "isAbstract": false,
@@ -30,8 +30,8 @@ fn parses_concept_with_typed_properties() {
     assert!(!d.is_enum_declaration());
 }
 
-fn identified(value: serde_json::Value) -> Result<Declaration> {
-    Declaration::try_from(&serde_json::json!({
+fn identified(value: crate::json::Value) -> Result<Declaration> {
+    Declaration::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
         "name": "Person",
         "isAbstract": false,
@@ -45,7 +45,7 @@ fn identified(value: serde_json::Value) -> Result<Declaration> {
 /// (`if (this.idField)`), so this loads with no id field at all.
 #[test]
 fn an_empty_identified_by_name_loads_with_no_id_field() {
-    let d = identified(serde_json::json!({
+    let d = identified(crate::json!({
         "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": ""
     }))
     .expect("an empty name loads");
@@ -62,29 +62,29 @@ fn an_empty_identified_by_name_loads_with_no_id_field() {
 #[test]
 fn a_malformed_identified_is_an_error() {
     for value in [
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": null }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": 0 }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": false }),
-        serde_json::json!({ "$class": "foo.IdentifiedBy", "name": "email" }),
-        serde_json::json!({ "name": "email" }),
-        serde_json::json!({}),
-        serde_json::json!(true),
-        serde_json::json!(0),
-        serde_json::json!(""),
-        serde_json::json!([]),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": null }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": 0 }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": false }),
+        crate::json!({ "$class": "foo.IdentifiedBy", "name": "email" }),
+        crate::json!({ "name": "email" }),
+        crate::json!({}),
+        crate::json!(true),
+        crate::json!(0),
+        crate::json!(""),
+        crate::json!([]),
     ] {
         let err = identified(value.clone()).expect_err(&value.to_string());
         assert_eq!(err.code(), "modelfile-load-unreadable", "{value}");
         assert_eq!(err.kind(), ErrorKind::IllegalModel, "{value}");
     }
     // `null` is no identity.
-    let d = identified(serde_json::Value::Null).expect("null loads");
+    let d = identified(crate::json::Value::Null).expect("null loads");
     assert!(!d.as_class().expect("class").is_identified());
 }
 
 #[test]
 fn asset_kind_is_tagged() {
-    let d = decl(serde_json::json!({
+    let d = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.AssetDeclaration",
         "name": "Vehicle",
         "isAbstract": false,
@@ -96,7 +96,7 @@ fn asset_kind_is_tagged() {
 
 #[test]
 fn parses_enum_and_scalar_and_map() {
-    let e = decl(serde_json::json!({
+    let e = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
         "name": "Color",
         "properties": [
@@ -108,7 +108,7 @@ fn parses_enum_and_scalar_and_map() {
     assert!(!e.is_class_declaration());
     assert_eq!(e.name(), "Color");
 
-    let s = decl(serde_json::json!({
+    let s = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringScalar",
         "name": "Email",
         "validator": { "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": ".*", "flags": "" }
@@ -117,7 +117,7 @@ fn parses_enum_and_scalar_and_map() {
     assert_eq!(s.name(), "Email");
     assert!(s.is_scalar_declaration());
 
-    let m = decl(serde_json::json!({
+    let m = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "Dictionary",
         "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
@@ -130,7 +130,7 @@ fn parses_enum_and_scalar_and_map() {
 #[test]
 fn unknown_declaration_kind_errors() {
     assert!(
-        Declaration::try_from(&serde_json::json!({
+        Declaration::try_from(&crate::json!({
             "$class": "concerto.metamodel@1.0.0.WidgetDeclaration",
             "name": "X"
         }))
@@ -142,7 +142,7 @@ fn unknown_declaration_kind_errors() {
 fn missing_class_is_rejected() {
     // TS `fromAst`'s `default` case, `thing.$class` interpolated as
     // `undefined`.
-    let err = Declaration::try_from(&serde_json::json!({ "name": "X" }));
+    let err = Declaration::try_from(&crate::json!({ "name": "X" }));
     assert_eq!(
         err.unwrap_err().to_string(),
         "Unrecognised model element \"undefined\"."
@@ -152,7 +152,7 @@ fn missing_class_is_rejected() {
 #[test]
 fn non_array_properties_is_rejected() {
     assert!(
-        Declaration::try_from(&serde_json::json!({
+        Declaration::try_from(&crate::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "Bad",
             "properties": { "not": "an array" }
@@ -164,12 +164,12 @@ fn non_array_properties_is_rejected() {
 #[test]
 fn a_declaration_name_must_be_an_identifier() {
     for kind in ["ConceptDeclaration", "EnumDeclaration"] {
-        let mut ast = serde_json::json!({
+        let mut ast = crate::json!({
             "$class": format!("concerto.metamodel@1.0.0.{kind}"),
             "name": "1Bad", "properties": []
         });
         if kind == "ConceptDeclaration" {
-            ast["isAbstract"] = serde_json::json!(false);
+            ast["isAbstract"] = crate::json!(false);
         }
         let err = Declaration::try_from(&ast);
         assert_eq!(
@@ -188,24 +188,21 @@ fn a_declaration_name_must_be_an_identifier() {
 #[test]
 fn only_the_exact_metamodel_classes_are_recognised() {
     let cases = [
+        (crate::json!("ConceptDeclaration"), "ConceptDeclaration"),
         (
-            serde_json::json!("ConceptDeclaration"),
-            "ConceptDeclaration",
-        ),
-        (
-            serde_json::json!("other.ns@1.0.0.ConceptDeclaration"),
+            crate::json!("other.ns@1.0.0.ConceptDeclaration"),
             "other.ns@1.0.0.ConceptDeclaration",
         ),
         (
-            serde_json::json!("concerto.metamodel@1.0.0.FooScalar"),
+            crate::json!("concerto.metamodel@1.0.0.FooScalar"),
             "concerto.metamodel@1.0.0.FooScalar",
         ),
-        (serde_json::Value::Null, "null"),
+        (crate::json::Value::Null, "null"),
     ];
     for (class, shown) in cases {
         for name in ["Good", "1bad"] {
             let err = Declaration::from_model_json(
-                    &serde_json::json!({
+                    &crate::json!({
                         "$class": class, "name": name, "isAbstract": false, "properties": [],
                         "location": {
                             "$class": "concerto.metamodel@1.0.0.Range",
@@ -226,9 +223,8 @@ fn only_the_exact_metamodel_classes_are_recognised() {
             );
         }
     }
-    let err =
-        Declaration::from_model_json(&serde_json::json!({ "name": "A" }), "org.acme@1.0.0", None)
-            .unwrap_err();
+    let err = Declaration::from_model_json(&crate::json!({ "name": "A" }), "org.acme@1.0.0", None)
+        .unwrap_err();
     assert_eq!(err.to_string(), "Unrecognised model element \"undefined\".");
 }
 
@@ -238,7 +234,7 @@ fn only_the_exact_metamodel_classes_are_recognised() {
 #[test]
 fn an_invalid_class_name_is_reported_before_a_system_field_name() {
     let err = Declaration::from_model_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "1bad", "isAbstract": false,
             "properties": [
@@ -259,7 +255,7 @@ fn an_invalid_class_name_is_reported_before_a_system_field_name() {
 
 #[test]
 fn scalar_reports_its_concrete_kind() {
-    let s = decl(serde_json::json!({
+    let s = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Email"
     }));
     assert_eq!(s.declaration_kind(), "StringScalar");
@@ -267,7 +263,7 @@ fn scalar_reports_its_concrete_kind() {
 
 #[test]
 fn scalar_with_reversed_range_is_rejected() {
-    let err = Declaration::try_from(&serde_json::json!({
+    let err = Declaration::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.IntegerScalar",
         "name": "Score",
         "validator": {
@@ -281,7 +277,7 @@ fn scalar_with_reversed_range_is_rejected() {
 #[test]
 fn scalar_with_valid_range_is_accepted() {
     assert!(
-        Declaration::try_from(&serde_json::json!({
+        Declaration::try_from(&crate::json!({
             "$class": "concerto.metamodel@1.0.0.IntegerScalar",
             "name": "Score",
             "validator": {
@@ -310,8 +306,8 @@ fn unreadable(err: Error) -> String {
 /// `classdeclaration-process-unrecmodelelem`).
 #[test]
 fn a_malformed_properties_value_is_an_unreadable_ast() {
-    let class = |properties: Option<serde_json::Value>| {
-        let mut node = serde_json::json!({
+    let class = |properties: Option<crate::json::Value>| {
+        let mut node = crate::json!({
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "Bad",
             "isAbstract": false
@@ -322,18 +318,18 @@ fn a_malformed_properties_value_is_an_unreadable_ast() {
         node
     };
     let property = |class: &str| {
-        serde_json::json!([
+        crate::json!([
             { "$class": class, "name": "firstName", "isArray": false, "isOptional": false }
         ])
     };
     for node in [
         class(None),
-        class(Some(serde_json::json!({ "not": "an array" }))),
+        class(Some(crate::json!({ "not": "an array" }))),
         class(Some(property("StringProperty"))),
         class(Some(property(
             "concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty",
         ))),
-        class(Some(serde_json::json!([null]))),
+        class(Some(crate::json!([null]))),
     ] {
         let err = Declaration::from_model_json(&node, "org.acme@1.0.0", Some("x.cto")).unwrap_err();
         unreadable(err);
@@ -349,7 +345,7 @@ fn a_malformed_properties_value_is_an_unreadable_ast() {
 /// one of them first.
 #[test]
 fn a_malformed_map_is_an_unreadable_ast() {
-    let object_value = |ty: serde_json::Value| serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType", "type": ty });
+    let object_value = |ty: crate::json::Value| crate::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType", "type": ty });
     let mut shapes = Vec::new();
     for class in [
         "StringMapKeyType",
@@ -357,31 +353,31 @@ fn a_malformed_map_is_an_unreadable_ast() {
         "concerto.metamodel@1.0.0.IntegerMapKeyType",
     ] {
         shapes.push(map_to_nope(
-            serde_json::json!({ "$class": class }),
-            serde_json::json!({}),
+            crate::json!({ "$class": class }),
+            crate::json!({}),
         ));
     }
     for value in [
-        serde_json::json!({ "$class": "StringMapValueType" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }),
-        object_value(serde_json::Value::Null),
-        object_value(serde_json::json!(true)),
-        object_value(serde_json::json!([])),
-        object_value(serde_json::json!({ "$class": null, "name": "Foo" })),
+        crate::json!({ "$class": "StringMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }),
+        object_value(crate::json::Value::Null),
+        object_value(crate::json!(true)),
+        object_value(crate::json!([])),
+        object_value(crate::json!({ "$class": null, "name": "Foo" })),
     ] {
-        let mut node = map_to_nope(string_key(), serde_json::json!({}));
+        let mut node = map_to_nope(string_key(), crate::json!({}));
         node["value"] = value;
         shapes.push(node);
     }
     for key in ["key", "value", "name"] {
-        let mut node = map_to_nope(string_key(), serde_json::json!({}));
+        let mut node = map_to_nope(string_key(), crate::json!({}));
         node.as_object_mut().unwrap().remove(key);
         shapes.push(node);
     }
-    shapes.push(map_to_nope(string_key(), serde_json::json!({ "name": 5 })));
+    shapes.push(map_to_nope(string_key(), crate::json!({ "name": 5 })));
     shapes.push(map_to_nope(
         string_key(),
-        serde_json::json!({ "decorators": "x" }),
+        crate::json!({ "decorators": "x" }),
     ));
     for node in shapes {
         let err = Declaration::try_from(&node).unwrap_err();
@@ -391,7 +387,7 @@ fn a_malformed_map_is_an_unreadable_ast() {
 
 #[test]
 fn an_enum_property_in_a_class_declaration_is_kept() {
-    let d = decl(serde_json::json!({
+    let d = decl(crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
         "name": "C",
         "properties": [
@@ -407,7 +403,7 @@ fn an_enum_property_in_a_class_declaration_is_kept() {
 /// short scalar `$class` is an unrecognised model element.
 #[test]
 fn a_scalar_class_given_as_the_short_name_is_unrecognised() {
-    let err = Declaration::try_from(&serde_json::json!({
+    let err = Declaration::try_from(&crate::json!({
         "$class": "StringScalar",
         "name": "Email"
     }));
@@ -419,7 +415,7 @@ fn a_scalar_class_given_as_the_short_name_is_unrecognised() {
 
 #[test]
 fn unknown_scalar_kind_errors() {
-    let err = Declaration::try_from(&serde_json::json!({
+    let err = Declaration::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.MysteryScalar",
         "name": "X"
     }));
@@ -431,8 +427,8 @@ fn unknown_scalar_kind_errors() {
 }
 
 /// A map declaration with the given key, and an object value naming `Nope`.
-fn map_to_nope(key: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
-    let mut map = serde_json::json!({
+fn map_to_nope(key: crate::json::Value, extra: crate::json::Value) -> crate::json::Value {
+    let mut map = crate::json!({
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "M",
         "key": key,
@@ -447,13 +443,13 @@ fn map_to_nope(key: serde_json::Value, extra: serde_json::Value) -> serde_json::
     map
 }
 
-fn string_key() -> serde_json::Value {
-    serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" })
+fn string_key() -> crate::json::Value {
+    crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" })
 }
 
 #[test]
 fn a_well_formed_map_is_typed() {
-    let d = decl(map_to_nope(string_key(), serde_json::json!({})));
+    let d = decl(map_to_nope(string_key(), crate::json!({})));
     let map = d.as_map().unwrap();
     assert_eq!(map.key_kind(), "StringMapKeyType");
     assert_eq!(map.value_kind(), "ObjectMapValueType");
@@ -461,8 +457,8 @@ fn a_well_formed_map_is_typed() {
 }
 
 /// A `MapDeclaration` with the given key and value nodes.
-fn map_with(key: serde_json::Value, value: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
+fn map_with(key: crate::json::Value, value: crate::json::Value) -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "MapPermutation1",
         "key": key,
@@ -470,12 +466,12 @@ fn map_with(key: serde_json::Value, value: serde_json::Value) -> serde_json::Val
     })
 }
 
-fn kind(short: &str) -> serde_json::Value {
-    serde_json::json!({ "$class": format!("concerto.metamodel@1.0.0.{short}") })
+fn kind(short: &str) -> crate::json::Value {
+    crate::json!({ "$class": format!("concerto.metamodel@1.0.0.{short}") })
 }
 
-fn object_kind(short: &str, type_name: &str) -> serde_json::Value {
-    serde_json::json!({
+fn object_kind(short: &str, type_name: &str) -> crate::json::Value {
+    crate::json!({
         "$class": format!("concerto.metamodel@1.0.0.{short}"),
         "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": type_name },
     })
@@ -582,16 +578,16 @@ fn declaration_kind_and_is_map_declaration_agree_with_ts() {
 #[test]
 fn key_and_value_decorators_are_read_independently_of_the_map_s_own() {
     let mut key = kind("StringMapKeyType");
-    key["decorators"] = serde_json::json!([
+    key["decorators"] = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onKey", "arguments": [] }
     ]);
     let mut value = kind("StringMapValueType");
-    value["decorators"] = serde_json::json!([
+    value["decorators"] = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onValue1", "arguments": [] },
         { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onValue2", "arguments": [] }
     ]);
     let mut map = map_with(key, value);
-    map["decorators"] = serde_json::json!([
+    map["decorators"] = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "onMap", "arguments": [] }
     ]);
     let decl = decl(map);

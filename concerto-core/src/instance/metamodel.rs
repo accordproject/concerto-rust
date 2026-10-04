@@ -15,7 +15,7 @@
 
 use std::cell::RefCell;
 
-use serde_json::Value;
+use crate::json::Value;
 
 use super::from_json::{FixedEnv, FromJsonOptions, from_json};
 use super::model::not_a_function;
@@ -350,7 +350,7 @@ const DATE_TIME_PROPERTY: &str = "concerto.metamodel@1.0.0.DateTimeProperty";
 
 /// Whether `map` is a `DateTimeProperty` node with a string `defaultValue`,
 /// which [`check_ast_shape`] leaves out of the metamodel check.
-fn has_parser_default(map: &serde_json::Map<String, Value>) -> bool {
+fn has_parser_default(map: &crate::json::Map<String, Value>) -> bool {
     map.get("$class").and_then(Value::as_str) == Some(DATE_TIME_PROPERTY)
         && map.get("defaultValue").is_some_and(Value::is_string)
 }
@@ -360,7 +360,7 @@ fn has_parser_default(map: &serde_json::Map<String, Value>) -> bool {
 /// (`ModelFile._declarationView`, with the `$class` `TypeIdentified`
 /// written there), which `ModelFile.filter` copies into the filtered file:
 /// [`check_ast_shape`] checks it as a `TypeIdentifier`.
-fn has_default_super_type(map: &serde_json::Map<String, Value>) -> bool {
+fn has_default_super_type(map: &crate::json::Map<String, Value>) -> bool {
     let Some(super_type) = map.get("superType").and_then(Value::as_object) else {
         return false;
     };
@@ -368,7 +368,7 @@ fn has_default_super_type(map: &serde_json::Map<String, Value>) -> bool {
         .get("$class")
         .and_then(Value::as_str)
         .and_then(|class| {
-            crate::introspect::model_file::default_super_type(&serde_json::json!({ "$class": class }))
+            crate::introspect::model_file::default_super_type(&crate::json!({ "$class": class }))
         })
     else {
         return false;
@@ -517,7 +517,7 @@ fn namespace_version(ns: &str) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::json;
 
     /// One resident manager, holding the one shared metamodel file under
     /// its namespace, as `validateAst` registers it.

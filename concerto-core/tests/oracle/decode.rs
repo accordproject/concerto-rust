@@ -9,7 +9,7 @@
 //! rather than guessed at: a later task that ports those op families adds
 //! their decoding here.
 
-use serde_json::Value;
+use concerto_core::json::Value;
 
 /// One decoded fixture value: a plain JSON value, or the JS `undefined` the
 /// oracle cannot represent as JSON (README: `{"@@oracle":"undefined"}`).

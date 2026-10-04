@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use crate::json;
+use crate::json::Value;
 
 use crate::ModelFile;
 use crate::introspect::Decorated;
@@ -408,7 +409,7 @@ fn mutations(ast: &Value) -> Vec<Value> {
 
 /// [`mutations`] for the declaration at `index`.
 fn mutate(ast: &Value, index: usize, out: &mut Vec<Value>) {
-    let mut edit = |path: &[&str], change: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+    let mut edit = |path: &[&str], change: &dyn Fn(&mut crate::json::Map<String, Value>)| {
         let mut copy = ast.clone();
         let mut node = copy.get_mut("declarations").and_then(|d| d.get_mut(index));
         for step in path {
@@ -422,7 +423,7 @@ fn mutate(ast: &Value, index: usize, out: &mut Vec<Value>) {
             out.push(copy);
         }
     };
-    type Change = dyn Fn(&mut serde_json::Map<String, Value>);
+    type Change = dyn Fn(&mut crate::json::Map<String, Value>);
     let changes: &[&Change] = &[
         &|m| {
             m.remove("name");

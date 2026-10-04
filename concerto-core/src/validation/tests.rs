@@ -4,7 +4,7 @@ use crate::model_manager::ModelManager;
 use crate::validation::{attach_model_file, validate_map_key, validate_map_value};
 
 /// Loads `org.example@1.0.0` with the given declarations and validates it.
-fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
+fn validate(declarations: crate::json::Value) -> crate::error::Result<()> {
     let mut manager = ModelManager::new().unwrap();
     // A malformed `MapDeclaration` (an out-of-set key/value kind, a
     // missing key or value node, ...) is rejected at construction time
@@ -12,7 +12,7 @@ fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
     // `validate_models` runs, so the caller sees the `add_model` error
     // itself, not a panic.
     manager.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0",
             "declarations": declarations
@@ -33,8 +33,8 @@ fn assert_unreadable(result: crate::error::Result<()>) {
     assert_eq!(contract.code, "modelfile-load-unreadable", "{err}");
 }
 
-fn concept(body: serde_json::Value) -> serde_json::Value {
-    let mut v = serde_json::json!({
+fn concept(body: crate::json::Value) -> crate::json::Value {
+    let mut v = crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
         "isAbstract": false,
         "properties": []
@@ -47,9 +47,9 @@ fn concept(body: serde_json::Value) -> serde_json::Value {
 
 #[test]
 fn super_type_that_exists_passes() {
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({ "name": "Person" })),
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({ "name": "Person" })),
+        concept(crate::json!({
             "name": "Employee",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" }
         }))
@@ -59,7 +59,7 @@ fn super_type_that_exists_passes() {
 
 #[test]
 fn super_type_that_is_missing_fails() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Employee",
         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" }
     }))]));
@@ -73,7 +73,7 @@ fn super_type_that_is_missing_fails() {
 /// non-strings (`0`, `false`) are the loader's error.
 #[test]
 fn identified_by_an_empty_name_has_no_id_field_and_validates() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Manufactured",
         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "" }
     }))]));
@@ -84,12 +84,12 @@ fn identified_by_an_empty_name_has_no_id_field_and_validates() {
 /// `location`, copied verbatim, not hard-coded to `None`.
 #[test]
 fn super_type_that_is_missing_carries_the_class_ast_location() {
-    let location = serde_json::json!({
+    let location = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Range",
         "start": {"$class": "concerto.metamodel@1.0.0.Position", "line": 3, "column": 1, "offset": 20},
         "end": {"$class": "concerto.metamodel@1.0.0.Position", "line": 3, "column": 9, "offset": 28}
     });
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Employee",
         "location": location,
         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Ghost" }
@@ -108,12 +108,12 @@ fn super_type_that_is_missing_carries_the_class_ast_location() {
 /// read from the owning class or hard-coded to `None`/`Default`.
 #[test]
 fn relationship_to_primitive_carries_the_property_ast_location() {
-    let location = serde_json::json!({
+    let location = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Range",
         "start": {"$class": "concerto.metamodel@1.0.0.Position", "line": 5, "column": 3, "offset": 40},
         "end": {"$class": "concerto.metamodel@1.0.0.Position", "line": 5, "column": 11, "offset": 48}
     });
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Order",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "total",
@@ -133,17 +133,17 @@ fn relationship_to_primitive_carries_the_property_ast_location() {
 /// a class's is.
 #[test]
 fn an_enum_clashing_with_an_imported_name_carries_the_enum_ast_location() {
-    let location = serde_json::json!({
+    let location = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Range",
         "start": {"$class": "concerto.metamodel@1.0.0.Position", "line": 2, "column": 1, "offset": 10},
         "end": {"$class": "concerto.metamodel@1.0.0.Position", "line": 2, "column": 9, "offset": 18}
     });
     let err = validate_with_imports(
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.common@1.0.0", "name": "Address" }
         ]),
-        serde_json::json!([{
+        crate::json!([{
             "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
             "name": "Address",
             "location": location,
@@ -173,7 +173,7 @@ fn an_enum_clashing_with_an_imported_name_carries_the_enum_ast_location() {
 #[test]
 fn attach_model_file_only_stamps_a_file_less_illegalmodel_error() {
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.attach@1.0.0",
             "declarations": []
@@ -217,14 +217,14 @@ fn attach_model_file_only_stamps_a_file_less_illegalmodel_error() {
 
 #[test]
 fn field_redeclared_from_super_type_fails() {
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({
             "name": "Person",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id", "isArray": false, "isOptional": false }
             ]
         })),
-        concept(serde_json::json!({
+        concept(crate::json!({
             "name": "Employee",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" },
             "properties": [
@@ -237,14 +237,14 @@ fn field_redeclared_from_super_type_fails() {
 
 #[test]
 fn unique_field_names_across_inheritance_pass() {
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({
             "name": "Person",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "name", "isArray": false, "isOptional": false }
             ]
         })),
-        concept(serde_json::json!({
+        concept(crate::json!({
             "name": "Employee",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" },
             "properties": [
@@ -257,7 +257,7 @@ fn unique_field_names_across_inheritance_pass() {
 
 #[test]
 fn relationship_to_primitive_fails() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Order",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "total",
@@ -276,9 +276,9 @@ fn relationship_to_primitive_fails() {
 
 #[test]
 fn relationship_to_unidentified_class_fails() {
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({ "name": "Address" })),
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({ "name": "Address" })),
+        concept(crate::json!({
             "name": "Order",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "shipTo",
@@ -306,12 +306,12 @@ fn relationship_to_identified_class_passes() {
     // implicitly extend their own system kind and so would already carry
     // a `$identifier` of their own — this test is about the relationship
     // check, not that.
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({
             "name": "Vehicle",
             "identified": { "$class": "concerto.metamodel@1.0.0.Identified" },
         })),
-        concept(serde_json::json!({
+        concept(crate::json!({
             "name": "Order",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "car",
@@ -338,7 +338,7 @@ fn relationship_to_identified_class_passes() {
 /// not the relationship-specific message.
 #[test]
 fn relationship_to_unresolvable_type_fails_with_the_undeclared_type_message() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Order",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "ship",
@@ -354,7 +354,7 @@ fn relationship_to_unresolvable_type_fails_with_the_undeclared_type_message() {
 
 #[test]
 fn object_property_of_undeclared_type_fails() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Order",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "line",
@@ -373,9 +373,9 @@ fn object_property_of_undeclared_type_fails() {
 
 #[test]
 fn object_property_of_declared_type_passes() {
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({ "name": "LineItem" })),
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({ "name": "LineItem" })),
+        concept(crate::json!({
             "name": "Order",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "line",
@@ -396,7 +396,7 @@ fn object_property_of_declared_type_passes() {
 /// an enum value, a scalar, a map and its key and value types.
 #[test]
 fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
-    let mut model = serde_json::json!({
+    let mut model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "decorators": [],
         "namespace": "org.example@1.0.0",
@@ -436,12 +436,12 @@ fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
         &["declarations", "3", "value", "decorators"],
     ];
     let malformed = [
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Hide" },
             null
         ]),
-        serde_json::json!("ab"),
-        serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator" }]),
+        crate::json!("ab"),
+        crate::json!([{ "$class": "concerto.metamodel@1.0.0.Decorator" }]),
     ];
     for (site, decorators) in sites
         .iter()
@@ -471,7 +471,7 @@ fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
                 .unwrap_err();
             assert_eq!(format!("{owned:?}"), format!("{err:?}"), "{pointer}");
         }
-        *model.pointer_mut(&pointer).unwrap() = serde_json::json!([]);
+        *model.pointer_mut(&pointer).unwrap() = crate::json!([]);
     }
 }
 
@@ -486,7 +486,7 @@ fn an_empty_super_type_name_is_not_found() {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "decorators": [],
                 "namespace": "org.vehicle@1.0.0",
@@ -515,7 +515,7 @@ fn an_empty_super_type_name_is_not_found() {
 
 #[test]
 fn duplicate_decorator_is_rejected() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Product",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "productId",
@@ -531,7 +531,7 @@ fn duplicate_decorator_is_rejected() {
 
 #[test]
 fn distinct_decorators_are_accepted() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Product",
         "decorators": [
             { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "one", "arguments": [] },
@@ -552,7 +552,7 @@ fn distinct_decorators_are_accepted() {
 /// only on class-like declarations and their properties.
 #[test]
 fn duplicate_decorator_on_an_enum_declaration_is_rejected() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
         "name": "Colour",
         "decorators": [
@@ -571,7 +571,7 @@ fn duplicate_decorator_on_an_enum_declaration_is_rejected() {
 /// `super.validate()`.
 #[test]
 fn duplicate_decorator_on_a_scalar_declaration_is_rejected() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.StringScalar",
         "name": "Email",
         "decorators": [
@@ -587,7 +587,7 @@ fn duplicate_decorator_on_a_scalar_declaration_is_rejected() {
 /// `super.validate()`.
 #[test]
 fn duplicate_decorator_on_a_map_declaration_is_rejected() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "Lookup",
         "decorators": [
@@ -608,11 +608,11 @@ fn duplicate_decorator_on_a_map_declaration_is_rejected() {
 #[test]
 fn a_map_declaration_clashing_with_an_imported_name_is_rejected() {
     let err = validate_with_imports(
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.common@1.0.0", "name": "Address" }
         ]),
-        serde_json::json!([{
+        crate::json!([{
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
             "name": "Address",
             "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
@@ -630,7 +630,7 @@ fn a_map_declaration_clashing_with_an_imported_name_is_rejected() {
 /// and an illegal key reports the duplicate decorator.
 #[test]
 fn duplicate_decorator_is_reported_before_the_key_and_value_checks() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "Lookup",
         "decorators": [
@@ -653,11 +653,11 @@ fn duplicate_decorator_is_reported_before_the_key_and_value_checks() {
 #[test]
 fn map_import_clash_is_reported_before_the_key_check() {
     let err = validate_with_imports(
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.common@1.0.0", "name": "Address" }
         ]),
-        serde_json::json!([{
+        crate::json!([{
             "$class": "concerto.metamodel@1.0.0.MapDeclaration",
             "name": "Address",
             "key": { "$class": "concerto.metamodel@1.0.0.ObjectMapKeyType",
@@ -676,7 +676,7 @@ fn map_import_clash_is_reported_before_the_key_check() {
 /// include "those of its values".
 #[test]
 fn duplicate_decorator_on_an_enum_value_is_rejected() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.EnumDeclaration",
         "name": "Colour",
         "properties": [
@@ -698,7 +698,7 @@ fn duplicate_decorator_on_a_namespace_is_rejected() {
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
                     "decorators": [
@@ -721,7 +721,7 @@ fn duplicate_decorator_on_a_namespace_is_rejected() {
 
 #[test]
 fn duplicate_decorator_on_a_declaration_is_rejected() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Product",
         "decorators": [
             { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
@@ -734,23 +734,23 @@ fn duplicate_decorator_on_a_declaration_is_rejected() {
 
 /// Loads `org.example@1.0.0` with the given imports and declarations.
 fn validate_with_imports(
-    imports: serde_json::Value,
-    declarations: serde_json::Value,
+    imports: crate::json::Value,
+    declarations: crate::json::Value,
 ) -> crate::error::Result<()> {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.common@1.0.0",
-                "declarations": [concept(serde_json::json!({ "name": "Address" }))]
+                "declarations": [concept(crate::json!({ "name": "Address" }))]
             }),
             None,
         )
         .unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "imports": imports,
@@ -766,16 +766,16 @@ fn validate_with_imports(
 /// concept Person { o SSN id }`; `org.b@1.0.0` imports only `Person` and
 /// declares `concept Emp identified by id extends Person {}`, plus
 /// `extra` (e.g. a shadowing `SSN` of its own). Validates both.
-fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::error::Result<()> {
+fn validate_inherited_scalar_identifier(extra: crate::json::Value) -> crate::error::Result<()> {
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
                     "declarations": [
                         { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "SSN" },
-                        concept(serde_json::json!({
+                        concept(crate::json!({
                             "name": "Person",
                             "isAbstract": true,
                             "properties": [
@@ -789,7 +789,7 @@ fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::erro
                 None,
             )
             .unwrap();
-    let mut declarations = vec![concept(serde_json::json!({
+    let mut declarations = vec![concept(crate::json!({
         "name": "Emp",
         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Person" }
@@ -797,7 +797,7 @@ fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::erro
     declarations.extend(extra.as_array().unwrap().iter().cloned());
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.b@1.0.0",
                 "imports": [
@@ -818,7 +818,7 @@ fn validate_inherited_scalar_identifier(extra: serde_json::Value) -> crate::erro
 /// imports still counts.
 #[test]
 fn inherited_identifier_scalar_resolves_in_the_declaring_namespace() {
-    let result = validate_inherited_scalar_identifier(serde_json::json!([]));
+    let result = validate_inherited_scalar_identifier(crate::json!([]));
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -827,7 +827,7 @@ fn inherited_identifier_scalar_resolves_in_the_declaring_namespace() {
 /// identifier non-String.
 #[test]
 fn inherited_identifier_scalar_ignores_a_shadowing_scalar_in_the_subclass_namespace() {
-    let result = validate_inherited_scalar_identifier(serde_json::json!([
+    let result = validate_inherited_scalar_identifier(crate::json!([
         { "$class": "concerto.metamodel@1.0.0.IntegerScalar", "name": "SSN" }
     ]));
     assert!(result.is_ok(), "{result:?}");
@@ -836,11 +836,11 @@ fn inherited_identifier_scalar_ignores_a_shadowing_scalar_in_the_subclass_namesp
 #[test]
 fn declaration_clashing_with_an_imported_name_is_rejected() {
     let err = validate_with_imports(
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.common@1.0.0", "name": "Address" }
         ]),
-        serde_json::json!([concept(serde_json::json!({ "name": "Address" }))]),
+        crate::json!([concept(crate::json!({ "name": "Address" }))]),
     );
     // TS: test/introspect/modelfile.js, the exact
     // `IllegalModelException` message `Declaration.validate` throws.
@@ -858,8 +858,8 @@ fn declaration_clashing_with_an_imported_name_is_rejected() {
 /// of its own, still clashes.
 #[test]
 fn a_user_declaration_clashes_with_the_implicitly_imported_system_types() {
-    let err = validate(serde_json::json!([concept(
-        serde_json::json!({ "name": "Transaction" })
+    let err = validate(crate::json!([concept(
+        crate::json!({ "name": "Transaction" })
     )]));
     assert_eq!(
         err.unwrap_err().to_string(),
@@ -875,7 +875,7 @@ fn dangerously_allow_reserved_system_type_names_permits_a_system_name_clash() {
     manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "A@1.0.0",
                     "declarations": [{
@@ -905,10 +905,10 @@ fn dangerously_allow_reserved_system_type_names_does_not_permit_other_clashes() 
     manager.set_dangerously_allow_reserved_system_type_names_in_user_models(true);
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "A@1.0.0",
-                "declarations": [concept(serde_json::json!({
+                "declarations": [concept(crate::json!({
                     "name": "B",
                     "properties": [
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "name",
@@ -921,14 +921,14 @@ fn dangerously_allow_reserved_system_type_names_does_not_permit_other_clashes() 
         .unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "B@1.0.0",
                 "imports": [
                     { "$class": "concerto.metamodel@1.0.0.ImportType",
                       "namespace": "A@1.0.0", "name": "B" }
                 ],
-                "declarations": [concept(serde_json::json!({ "name": "B" }))]
+                "declarations": [concept(crate::json!({ "name": "B" }))]
             }),
             None,
         )
@@ -942,11 +942,11 @@ fn dangerously_allow_reserved_system_type_names_does_not_permit_other_clashes() 
 #[test]
 fn declaration_beside_a_distinct_import_is_accepted() {
     let err = validate_with_imports(
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.common@1.0.0", "name": "Address" }
         ]),
-        serde_json::json!([concept(serde_json::json!({ "name": "Person" }))]),
+        crate::json!([concept(crate::json!({ "name": "Person" }))]),
     );
     assert!(err.is_ok());
 }
@@ -957,14 +957,14 @@ fn importing_from_the_files_own_namespace_is_rejected() {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "imports": [
                     { "$class": "concerto.metamodel@1.0.0.ImportType",
                       "namespace": "org.example@1.0.0", "name": "LocalType" }
                 ],
-                "declarations": [concept(serde_json::json!({ "name": "LocalType" }))]
+                "declarations": [concept(crate::json!({ "name": "LocalType" }))]
             }),
             None,
         )
@@ -989,14 +989,14 @@ fn importing_from_the_files_own_namespace_is_not_yet_defined_before_it_is_regist
     // `conformance/ModelManager.addCTOModel/c1b2125619408b3b8b968ce8`).
     let manager = ModelManager::new().unwrap();
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0",
             "imports": [
                 { "$class": "concerto.metamodel@1.0.0.ImportType",
                   "namespace": "org.example@1.0.0", "name": "LocalType" }
             ],
-            "declarations": [concept(serde_json::json!({ "name": "LocalType" }))]
+            "declarations": [concept(crate::json!({ "name": "LocalType" }))]
         }),
         None,
     )
@@ -1013,7 +1013,7 @@ fn importing_from_the_files_own_namespace_is_not_yet_defined_before_it_is_regist
 #[test]
 fn an_aliased_import_clashes_under_its_alias() {
     // `import org.common.{Address as Location}` occupies Location, not Address.
-    let imports = serde_json::json!([
+    let imports = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.ImportTypes",
           "namespace": "org.common@1.0.0", "types": ["Address"],
           "aliasedTypes": [
@@ -1023,28 +1023,28 @@ fn an_aliased_import_clashes_under_its_alias() {
     ]);
     let clash = validate_with_imports(
         imports.clone(),
-        serde_json::json!([concept(serde_json::json!({ "name": "Location" }))]),
+        crate::json!([concept(crate::json!({ "name": "Location" }))]),
     );
     assert!(clash.unwrap_err().to_string().contains("clashes"));
 
     let free = validate_with_imports(
         imports,
-        serde_json::json!([concept(serde_json::json!({ "name": "Address" }))]),
+        crate::json!([concept(crate::json!({ "name": "Address" }))]),
     );
     assert!(free.is_ok());
 }
 
 /// Loads `org.a@1.0.0` and `org.a@2.0.0`, then `org.t@1.0.0` with the
 /// given imports, and validates.
-fn validate_importing(imports: serde_json::Value) -> crate::error::Result<()> {
+fn validate_importing(imports: crate::json::Value) -> crate::error::Result<()> {
     let mut manager = ModelManager::new().unwrap();
     for (namespace, declared) in [("org.a@1.0.0", "X"), ("org.a@2.0.0", "Y")] {
         manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": namespace,
-                    "declarations": [concept(serde_json::json!({ "name": declared }))]
+                    "declarations": [concept(crate::json!({ "name": declared }))]
                 }),
                 None,
             )
@@ -1052,11 +1052,11 @@ fn validate_importing(imports: serde_json::Value) -> crate::error::Result<()> {
     }
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.t@1.0.0",
                 "imports": imports,
-                "declarations": [concept(serde_json::json!({ "name": "Local" }))]
+                "declarations": [concept(crate::json!({ "name": "Local" }))]
             }),
             None,
         )
@@ -1064,8 +1064,8 @@ fn validate_importing(imports: serde_json::Value) -> crate::error::Result<()> {
     manager.validate_models()
 }
 
-fn import_of(namespace: &str, name: &str) -> serde_json::Value {
-    serde_json::json!({
+fn import_of(namespace: &str, name: &str) -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportType",
         "namespace": namespace, "name": name
     })
@@ -1073,18 +1073,18 @@ fn import_of(namespace: &str, name: &str) -> serde_json::Value {
 
 #[test]
 fn importing_a_type_that_does_not_exist_is_rejected() {
-    let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "Ghost")]));
+    let err = validate_importing(crate::json!([import_of("org.a@1.0.0", "Ghost")]));
     assert!(err.unwrap_err().to_string().contains("not defined"));
 }
 
 #[test]
 fn importing_a_declared_type_is_accepted() {
-    assert!(validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X")])).is_ok());
+    assert!(validate_importing(crate::json!([import_of("org.a@1.0.0", "X")])).is_ok());
 }
 
 #[test]
 fn importing_two_versions_of_one_namespace_is_rejected() {
-    let err = validate_importing(serde_json::json!([
+    let err = validate_importing(crate::json!([
         import_of("org.a@1.0.0", "X"),
         import_of("org.a@2.0.0", "Y")
     ]));
@@ -1108,8 +1108,8 @@ fn importing_two_versions_of_one_namespace_is_rejected() {
 /// fixed).
 #[test]
 fn an_import_name_that_makes_the_synthesised_namespace_fail_parse_first() {
-    let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X../../etc")]))
-        .unwrap_err();
+    let err =
+        validate_importing(crate::json!([import_of("org.a@1.0.0", "X../../etc")])).unwrap_err();
     let c = err.contract().clone();
     assert_eq!(c.kind, ErrorKind::InvalidArgument);
     assert_eq!(c.message(), "Invalid namespace org.a@1.0.0.X../.");
@@ -1117,7 +1117,7 @@ fn an_import_name_that_makes_the_synthesised_namespace_fail_parse_first() {
 
 #[test]
 fn a_system_identifier_may_not_extend_an_explicit_one() {
-    let err = validate(serde_json::json!([
+    let err = validate(crate::json!([
         {
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Explicit",
             "isAbstract": false,
@@ -1151,7 +1151,7 @@ fn a_system_identifier_may_not_extend_an_explicit_one() {
 /// rejected.
 #[test]
 fn an_explicit_identifier_may_not_extend_an_explicit_one() {
-    let err = validate(serde_json::json!([
+    let err = validate(crate::json!([
         {
             "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "p1",
             "isAbstract": true,
@@ -1187,7 +1187,7 @@ fn an_explicit_identifier_may_not_extend_an_explicit_one() {
 /// system identifier over a system identifier.
 #[test]
 fn a_system_identifier_over_a_system_identifier_collides_as_a_duplicate_field() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "FancyOrder",
         "isAbstract": false,
         // The metamodel AST an `asset` with no explicit `extends`
@@ -1227,7 +1227,7 @@ fn a_system_identifier_over_a_system_identifier_collides_as_a_duplicate_field() 
 /// named "ACTIVE".`, matching this test verbatim.
 #[test]
 fn duplicate_enum_value_name_is_rejected() {
-    let err = validate(serde_json::json!([{
+    let err = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Status",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" },
@@ -1244,7 +1244,7 @@ fn duplicate_enum_value_name_is_rejected() {
 /// cleanly, the same as the reference.
 #[test]
 fn distinct_enum_value_names_pass() {
-    let ok = validate(serde_json::json!([{
+    let ok = validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Status",
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "ACTIVE" },
@@ -1260,7 +1260,7 @@ fn distinct_enum_value_names_pass() {
 /// incompatible on its face.
 #[test]
 fn a_participant_cannot_extend_an_asset() {
-    let err = validate(serde_json::json!([
+    let err = validate(crate::json!([
         {
             "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "A",
             "isAbstract": false,
@@ -1288,7 +1288,7 @@ fn a_participant_cannot_extend_an_asset() {
 /// kind).
 #[test]
 fn a_participant_may_extend_a_participant() {
-    let err = validate(serde_json::json!([
+    let err = validate(crate::json!([
         {
             "$class": "concerto.metamodel@1.0.0.ParticipantDeclaration", "name": "A",
             "isAbstract": true,
@@ -1311,8 +1311,8 @@ fn a_participant_may_extend_a_participant() {
 #[test]
 fn a_class_with_no_super_type_implicitly_extends_concept() {
     assert!(
-        validate(serde_json::json!([concept(
-            serde_json::json!({ "name": "Standalone" })
+        validate(crate::json!([concept(
+            crate::json!({ "name": "Standalone" })
         )]))
         .is_ok()
     );
@@ -1322,7 +1322,7 @@ fn a_class_with_no_super_type_implicitly_extends_concept() {
 /// (src/introspect/classdeclaration.ts).
 #[test]
 fn a_class_extending_itself_is_rejected() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Loop",
         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Loop" }
     }))]));
@@ -1338,7 +1338,7 @@ fn a_class_extending_itself_is_rejected() {
 /// duplicate decorator, not the self-extending super type.
 #[test]
 fn duplicate_decorator_is_reported_before_a_self_extending_super_type() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Loop",
         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Loop" },
         "decorators": [
@@ -1356,11 +1356,11 @@ fn duplicate_decorator_is_reported_before_a_self_extending_super_type() {
 #[test]
 fn duplicate_decorator_is_reported_before_an_import_clash() {
     let err = validate_with_imports(
-        serde_json::json!([
+        crate::json!([
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.common@1.0.0", "name": "Address" }
         ]),
-        serde_json::json!([concept(serde_json::json!({
+        crate::json!([concept(crate::json!({
             "name": "Address",
             "decorators": [
                 { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
@@ -1384,10 +1384,10 @@ fn undeclared_decorator_is_reported_before_the_duplicate_scan_when_decorator_val
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "Product",
                         "decorators": [
                             { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
@@ -1422,10 +1422,10 @@ fn a_decorator_validation_error_carries_the_file_suffix_once() {
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "test@1.0.0",
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "Person",
                         "properties": [{
                             "$class": "concerto.metamodel@1.0.0.StringProperty",
@@ -1468,7 +1468,7 @@ fn an_asset_inherits_the_system_identifier_field() {
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
                     "declarations": [{
@@ -1512,7 +1512,7 @@ fn an_explicitly_identified_asset_still_inherits_the_system_identifier_field() {
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
                     "declarations": [{
@@ -1555,7 +1555,7 @@ fn a_transaction_inherits_the_system_timestamp_field() {
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
                     "declarations": [{
@@ -1588,7 +1588,7 @@ fn a_transaction_inherits_the_system_timestamp_field() {
 /// `isIdentified()` (src/introspect/relationshipdeclaration.ts).
 #[test]
 fn a_relationship_to_a_class_identified_only_through_its_super_type_passes() {
-    let err = validate(serde_json::json!([
+    let err = validate(crate::json!([
         {
             "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "Vehicle",
             "isAbstract": false,
@@ -1598,7 +1598,7 @@ fn a_relationship_to_a_class_identified_only_through_its_super_type_passes() {
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Asset", "namespace": "concerto@1.0.0" },
             "properties": []
         },
-        concept(serde_json::json!({
+        concept(crate::json!({
             "name": "Fleet",
             "properties": [{
                 "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "vehicle",
@@ -1612,18 +1612,18 @@ fn a_relationship_to_a_class_identified_only_through_its_super_type_passes() {
 
 /// A map with the given key and value nodes, beside a String scalar and a
 /// concept it can point at.
-fn map_with(key: serde_json::Value, value: serde_json::Value) -> serde_json::Value {
-    serde_json::json!([
+fn map_with(key: crate::json::Value, value: crate::json::Value) -> crate::json::Value {
+    crate::json!([
         { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Code" },
         { "$class": "concerto.metamodel@1.0.0.DateTimeScalar", "name": "When" },
-        concept(serde_json::json!({ "name": "Item" })),
+        concept(crate::json!({ "name": "Item" })),
         { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
           "key": key, "value": value }
     ])
 }
 
-fn object_type(name: &str, class: &str) -> serde_json::Value {
-    serde_json::json!({
+fn object_type(name: &str, class: &str) -> crate::json::Value {
+    crate::json!({
         "$class": format!("concerto.metamodel@1.0.0.{class}"),
         "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": name }
     })
@@ -1631,8 +1631,7 @@ fn object_type(name: &str, class: &str) -> serde_json::Value {
 
 #[test]
 fn a_map_key_must_be_string_or_datetime() {
-    let string_value =
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+    let string_value = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
     // A concept is not a legal key.
     let err = validate(map_with(
         object_type("Item", "ObjectMapKeyType"),
@@ -1659,7 +1658,7 @@ fn a_map_key_must_be_string_or_datetime() {
     // As is a plain String key.
     assert!(
         validate(map_with(
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             string_value
         ))
         .is_ok()
@@ -1673,8 +1672,8 @@ fn a_map_key_kind_outside_the_allowed_set_is_rejected() {
     // (`ModelUtil.isValidMapKey`) rejects this at construction, before
     // `validate_models` is ever reached.
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.IntegerMapKeyType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
     ));
     assert_unreadable(err);
 }
@@ -1684,7 +1683,7 @@ fn an_undeclared_map_value_type_is_an_illegal_model_error() {
     // BC-12: an `IllegalModelException` naming the undeclared type (TS
     // 5.0.0 threw V8's `TypeError` reading `isMapDeclaration` off
     // `null`, DV-014).
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
     let err = validate(map_with(
         key.clone(),
         object_type("Missing", "ObjectMapValueType"),
@@ -1707,7 +1706,7 @@ fn a_map_value_may_be_a_relationship() {
     // MapDeclaration, including a relationship to a concept.
     assert!(
         validate(map_with(
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+            crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
             object_type("Item", "RelationshipMapValueType"),
         ))
         .is_ok()
@@ -1717,17 +1716,14 @@ fn a_map_value_may_be_a_relationship() {
 #[test]
 fn a_map_value_may_be_an_enum() {
     // TS: same rule as above; an enum is a declaration like any other.
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
     let mut declarations = map_with(key, object_type("Colour", "ObjectMapValueType"));
-    declarations
-        .as_array_mut()
-        .unwrap()
-        .push(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Colour",
-            "properties": [
-                { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
-            ]
-        }));
+    declarations.as_array_mut().unwrap().push(crate::json!({
+        "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Colour",
+        "properties": [
+            { "$class": "concerto.metamodel@1.0.0.EnumProperty", "name": "RED" }
+        ]
+    }));
     assert!(validate(declarations).is_ok());
 }
 
@@ -1735,16 +1731,13 @@ fn a_map_value_may_be_an_enum() {
 fn a_map_value_may_not_be_a_map_declaration() {
     // TS: `MapValueType.validate` throws only when the referenced
     // declaration is itself a MapDeclaration.
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
     let mut declarations = map_with(key.clone(), object_type("Other", "ObjectMapValueType"));
-    declarations
-        .as_array_mut()
-        .unwrap()
-        .push(serde_json::json!({
-            "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Other",
-            "key": key,
-            "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
-        }));
+    declarations.as_array_mut().unwrap().push(crate::json!({
+        "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Other",
+        "key": key,
+        "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
+    }));
     let err = validate(declarations);
     assert!(
         err.unwrap_err()
@@ -1765,9 +1758,9 @@ fn a_map_value_may_not_be_a_map_declaration() {
 /// reject size on a non-array, non-map object property".
 #[test]
 fn size_validator_on_a_non_array_object_property_of_a_non_map_type_is_rejected() {
-    let err = validate(serde_json::json!([
-        concept(serde_json::json!({ "name": "B" })),
-        concept(serde_json::json!({
+    let err = validate(crate::json!([
+        concept(crate::json!({ "name": "B" })),
+        concept(crate::json!({
             "name": "A",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "thing",
@@ -1787,11 +1780,11 @@ fn size_validator_on_a_non_array_object_property_of_a_non_map_type_is_rejected()
 /// allow size on a map-typed property".
 #[test]
 fn size_validator_on_a_non_array_object_property_of_a_map_type_is_allowed() {
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
-    let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
-    let err = validate(serde_json::json!([
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let value = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+    let err = validate(crate::json!([
         { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "M", "key": key, "value": value },
-        concept(serde_json::json!({
+        concept(crate::json!({
             "name": "A",
             "properties": [
                 { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "data",
@@ -1814,7 +1807,7 @@ fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "maps@1.0.0",
                 "declarations": [
@@ -1828,13 +1821,13 @@ fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
         .unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "t@1.0.0",
                     "imports": [
                         { "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "maps@1.0.0", "name": "PhoneBook" }
                     ],
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "A",
                         "properties": [
                             { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "contacts",
@@ -1864,7 +1857,7 @@ fn test_fresh_model_manager_is_valid() {
 
 #[test]
 fn identifier_of_non_string_type_fails() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Entity",
         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
         "properties": [
@@ -1880,7 +1873,7 @@ fn identifier_of_non_string_type_fails() {
 
 #[test]
 fn identifier_of_string_type_passes() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Entity",
         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
         "properties": [
@@ -1892,9 +1885,9 @@ fn identifier_of_string_type_passes() {
 
 #[test]
 fn identifier_of_string_scalar_type_passes() {
-    let err = validate(serde_json::json!([
+    let err = validate(crate::json!([
         { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "CustomString" },
-        concept(serde_json::json!({
+        concept(crate::json!({
             "name": "Book",
             "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "isbn" },
             "properties": [
@@ -1908,7 +1901,7 @@ fn identifier_of_string_scalar_type_passes() {
 
 #[test]
 fn optional_identifier_fails() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Product",
         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "productId" },
         "properties": [
@@ -1927,7 +1920,7 @@ fn optional_identifier_fails() {
 /// optional and not a String reports the type.
 #[test]
 fn optional_non_string_identifier_reports_the_type_first() {
-    let err = validate(serde_json::json!([concept(serde_json::json!({
+    let err = validate(crate::json!([concept(crate::json!({
         "name": "Product",
         "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "productId" },
         "properties": [
@@ -1947,10 +1940,10 @@ fn reserved_field_name_is_rejected_at_load() {
     // A `$`-prefixed field name is rejected while loading, before validation.
     let mut manager = ModelManager::new().unwrap();
     let result = manager.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
-                "declarations": [concept(serde_json::json!({
+                "declarations": [concept(crate::json!({
                     "name": "Thing",
                     "properties": [
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "$class", "isArray": false, "isOptional": false }
@@ -1968,12 +1961,12 @@ fn reserved_field_name_is_rejected_at_load() {
 }
 
 /// A model with two declarations named `A` (a concept, then an asset).
-fn duplicate_model(namespace: &str) -> serde_json::Value {
-    serde_json::json!({
+fn duplicate_model(namespace: &str) -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": namespace,
         "declarations": [
-            concept(serde_json::json!({ "name": "A" })),
+            concept(crate::json!({ "name": "A" })),
             { "$class": "concerto.metamodel@1.0.0.AssetDeclaration", "name": "A",
               "isAbstract": false, "properties": [
                 { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "id",
@@ -2038,7 +2031,7 @@ fn add_models_rejects_a_duplicate_declaration_at_validation() {
 fn duplicate_declaration_scan_runs_between_imports_and_declarations() {
     let mut manager = ModelManager::new().unwrap();
     let mut model = duplicate_model("org.dup@1.0.0");
-    model["declarations"][0]["superType"] = serde_json::json!({
+    model["declarations"][0]["superType"] = crate::json!({
         "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing"
     });
     manager.load_model(&model, None).unwrap();
@@ -2046,7 +2039,7 @@ fn duplicate_declaration_scan_runs_between_imports_and_declarations() {
 
     let mut manager = ModelManager::new().unwrap();
     let mut model = duplicate_model("org.dup@1.0.0");
-    model["imports"] = serde_json::json!([
+    model["imports"] = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.ImportType",
           "namespace": "org.missing@1.0.0", "name": "X" }
     ]);
@@ -2063,24 +2056,24 @@ fn duplicate_declaration_scan_runs_between_imports_and_declarations() {
 #[test]
 fn validate_and_add_model_file_matches_validate_detached_then_add() {
     use crate::introspect::model_file::ModelFile;
-    let base = serde_json::json!({
+    let base = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.base@1.0.0",
-        "declarations": [concept(serde_json::json!({ "name": "Base" }))]
+        "declarations": [concept(crate::json!({ "name": "Base" }))]
     });
-    let good = serde_json::json!({
+    let good = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.good@1.0.0",
         "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType",
                       "namespace": "org.base@1.0.0", "name": "Base" }],
-        "declarations": [concept(serde_json::json!({
+        "declarations": [concept(crate::json!({
             "name": "Good",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" }
         }))]
     });
     let mut bad = good.clone();
-    bad["declarations"][0]["superType"]["name"] = serde_json::json!("Missing");
-    let file = |ast: &serde_json::Value| ModelFile::from_json(ast, Some("f.cto".into())).unwrap();
+    bad["declarations"][0]["superType"]["name"] = crate::json!("Missing");
+    let file = |ast: &crate::json::Value| ModelFile::from_json(ast, Some("f.cto".into())).unwrap();
 
     let mut two_step = ModelManager::new().unwrap();
     two_step.add_model_file(file(&base)).unwrap();
@@ -2132,13 +2125,14 @@ fn validate_and_add_model_file_matches_validate_detached_then_add() {
 fn validate_and_add_shared_model_file_shares_the_file() {
     use crate::introspect::model_file::ModelFile;
     use std::sync::Arc;
-    let good = serde_json::json!({
+    let good = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.good@1.0.0",
-        "declarations": [concept(serde_json::json!({ "name": "Good" }))]
+        "declarations": [concept(crate::json!({ "name": "Good" }))]
     });
     let mut bad = good.clone();
-    bad["declarations"][0]["superType"] = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" });
+    bad["declarations"][0]["superType"] =
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" });
     let mut manager = ModelManager::new().unwrap();
     let rejected = Arc::new(ModelFile::from_json(&bad, None).unwrap());
     let (_, handed_back) = manager
@@ -2167,12 +2161,12 @@ fn validate_and_add_shared_model_file_shares_the_file() {
 #[test]
 fn validate_and_add_model_file_does_not_resolve_a_self_import() {
     use crate::introspect::model_file::ModelFile;
-    let ast = serde_json::json!({
+    let ast = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.self@1.0.0",
         "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType",
                       "namespace": "org.self@1.0.0", "name": "A" }],
-        "declarations": [concept(serde_json::json!({ "name": "B" }))]
+        "declarations": [concept(crate::json!({ "name": "B" }))]
     });
     let file = || ModelFile::from_json(&ast, None).unwrap();
     let manager = ModelManager::new().unwrap();
@@ -2200,17 +2194,17 @@ fn validate_and_add_model_file_does_not_resolve_a_self_import() {
 fn validate_detached_model_file_rejects_a_namesake_with_different_content() {
     use crate::introspect::model_file::ModelFile;
     let mut manager = ModelManager::new().unwrap();
-    let valid = serde_json::json!({
+    let valid = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.namesake@1.0.0",
-        "declarations": [concept(serde_json::json!({ "name": "Widget" }))]
+        "declarations": [concept(crate::json!({ "name": "Widget" }))]
     });
     manager
         .load_model(&valid, Some("namesake.cto".into()))
         .unwrap();
 
     let mut invalid = valid;
-    invalid["declarations"][0]["decorators"] = serde_json::json!([
+    invalid["declarations"][0]["decorators"] = crate::json!([
         { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
         { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] }
     ]);
@@ -2237,10 +2231,10 @@ fn validate_detached_model_file_rejects_a_namesake_with_different_content() {
 #[test]
 fn validate_detached_model_file_names_the_file_it_was_actually_asked_to_validate() {
     use crate::introspect::model_file::ModelFile;
-    let ast = serde_json::json!({
+    let ast = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.renamed@1.0.0",
-        "declarations": [concept(serde_json::json!({
+        "declarations": [concept(crate::json!({
             "name": "Widget",
             "decorators": [
                 { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "tag", "arguments": [] },
@@ -2279,18 +2273,18 @@ fn a_detached_model_file_validates_against_its_manager() {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.common@1.0.0",
-                "declarations": [concept(serde_json::json!({ "name": "Address" }))]
+                "declarations": [concept(crate::json!({ "name": "Address" }))]
             }),
             None,
         )
         .unwrap();
     let state_version = manager.state_version();
-    let importing = |declarations: serde_json::Value| {
+    let importing = |declarations: crate::json::Value| {
         ModelFile::from_json(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.b@1.0.0",
                 "imports": [
@@ -2303,9 +2297,9 @@ fn a_detached_model_file_validates_against_its_manager() {
         )
         .unwrap()
     };
-    let valid = importing(serde_json::json!([
-        concept(serde_json::json!({ "name": "Base" })),
-        concept(serde_json::json!({
+    let valid = importing(crate::json!([
+        concept(crate::json!({ "name": "Base" })),
+        concept(crate::json!({
             "name": "Person",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" },
             "properties": [
@@ -2317,9 +2311,9 @@ fn a_detached_model_file_validates_against_its_manager() {
     ]));
     manager.validate_detached_model_file(&valid).unwrap();
 
-    let duplicate = importing(serde_json::json!([
-        concept(serde_json::json!({ "name": "Person" })),
-        concept(serde_json::json!({ "name": "Person" }))
+    let duplicate = importing(crate::json!([
+        concept(crate::json!({ "name": "Person" })),
+        concept(crate::json!({ "name": "Person" }))
     ]));
     assert_duplicate_class_name(
         manager
@@ -2340,8 +2334,8 @@ fn a_detached_model_file_validates_against_its_manager() {
 /// reject size on a non-array String property" / "... Integer property".
 #[test]
 fn size_validator_on_a_non_array_primitive_or_relationship_is_rejected_by_validation() {
-    let sized = |class: &str, name: &str, extra: serde_json::Value| {
-        let mut p = serde_json::json!({
+    let sized = |class: &str, name: &str, extra: crate::json::Value| {
+        let mut p = crate::json!({
             "$class": format!("concerto.metamodel@1.0.0.{class}"),
             "name": name, "isArray": false, "isOptional": false,
             "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
@@ -2353,17 +2347,17 @@ fn size_validator_on_a_non_array_primitive_or_relationship_is_rejected_by_valida
         p
     };
     let cases = [
-        sized("StringProperty", "name", serde_json::json!({})),
-        sized("IntegerProperty", "count", serde_json::json!({})),
+        sized("StringProperty", "name", crate::json!({})),
+        sized("IntegerProperty", "count", crate::json!({})),
         sized(
             "RelationshipProperty",
             "owner",
-            serde_json::json!({ "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "String" } }),
+            crate::json!({ "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "String" } }),
         ),
     ];
     for property in cases {
         let name = property["name"].as_str().unwrap().to_string();
-        let err = validate(serde_json::json!([concept(serde_json::json!({
+        let err = validate(crate::json!([concept(crate::json!({
             "name": "A",
             "properties": [property]
         }))]))
@@ -2403,25 +2397,25 @@ fn size_validator_on_a_non_array_primitive_or_relationship_is_rejected_by_valida
 // the typed read can read.
 #[test]
 fn map_missing_its_key_field_is_rejected_at_construction() {
-    let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
-    let mut node = serde_json::json!({
+    let value = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+    let mut node = crate::json!({
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "MapPermutation1",
         "value": value
     });
-    let err = validate(serde_json::json!([node.take()]));
+    let err = validate(crate::json!([node.take()]));
     assert_unreadable(err);
 }
 
 #[test]
 fn map_missing_its_value_field_is_rejected_at_construction() {
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
-    let node = serde_json::json!({
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let node = crate::json!({
         "$class": "concerto.metamodel@1.0.0.MapDeclaration",
         "name": "MapPermutation1",
         "key": key
     });
-    let err = validate(serde_json::json!([node]));
+    let err = validate(crate::json!([node]));
     assert_unreadable(err);
 }
 
@@ -2431,8 +2425,8 @@ fn map_missing_its_value_field_is_rejected_at_construction() {
 #[test]
 fn map_key_with_an_unknown_class_is_rejected_at_construction() {
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapKeyType" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.BadMapKeyType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
     ));
     assert_unreadable(err);
 }
@@ -2440,8 +2434,8 @@ fn map_key_with_an_unknown_class_is_rejected_at_construction() {
 #[test]
 fn map_value_with_an_unknown_class_is_rejected_at_construction() {
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.BadMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.BadMapValueType" }),
     ));
     assert_unreadable(err);
 }
@@ -2452,8 +2446,8 @@ fn map_value_with_an_unknown_class_is_rejected_at_construction() {
 #[test]
 fn map_value_kind_the_metamodel_does_not_declare_is_rejected() {
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.EnumMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.EnumMapValueType" }),
     ));
     assert_unreadable(err);
 }
@@ -2466,7 +2460,7 @@ fn map_value_kind_the_metamodel_does_not_declare_is_rejected() {
 fn map_key_kind_the_metamodel_does_not_declare_is_rejected_even_with_a_type() {
     let err = validate(map_with(
         object_type("States", "EnumMapKeyType"),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" }),
     ));
     assert_unreadable(err);
 }
@@ -2482,8 +2476,7 @@ fn map_key_kind_the_metamodel_does_not_declare_is_rejected_even_with_a_type() {
 // `a_bare_double_map_key_kind_is_rejected`, below.
 #[test]
 fn a_scalar_map_key_over_long_integer_double_or_boolean_is_rejected() {
-    let string_value =
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
+    let string_value = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
     for (scalar_name, scalar_class) in [
         ("Amount", "LongScalar"),
         ("Count", "IntegerScalar"),
@@ -2494,13 +2487,10 @@ fn a_scalar_map_key_over_long_integer_double_or_boolean_is_rejected() {
             object_type(scalar_name, "ObjectMapKeyType"),
             string_value.clone(),
         );
-        declarations
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::json!({
-                "$class": format!("concerto.metamodel@1.0.0.{scalar_class}"),
-                "name": scalar_name
-            }));
+        declarations.as_array_mut().unwrap().push(crate::json!({
+            "$class": format!("concerto.metamodel@1.0.0.{scalar_class}"),
+            "name": scalar_name
+        }));
         let err = validate(declarations);
         assert!(
             err.unwrap_err()
@@ -2519,17 +2509,17 @@ fn a_map_key_imported_from_another_namespace_and_not_string_or_datetime_is_rejec
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.base@1.0.0",
-                "declarations": [concept(serde_json::json!({ "name": "Thing" }))]
+                "declarations": [concept(crate::json!({ "name": "Thing" }))]
             }),
             None,
         )
         .unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "imports": [{
@@ -2563,7 +2553,7 @@ fn a_map_key_imported_from_another_namespace_and_is_a_string_scalar_validates() 
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.base@1.0.0",
                 "declarations": [{
@@ -2575,7 +2565,7 @@ fn a_map_key_imported_from_another_namespace_and_is_a_string_scalar_validates() 
         .unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "imports": [{
@@ -2603,8 +2593,8 @@ fn a_map_key_imported_from_another_namespace_and_is_a_string_scalar_validates() 
 #[test]
 fn an_object_map_value_missing_its_type_property_is_rejected() {
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType" }),
     ));
     assert_unreadable(err);
 }
@@ -2612,8 +2602,8 @@ fn an_object_map_value_missing_its_type_property_is_rejected() {
 #[test]
 fn an_object_map_value_type_missing_its_name_is_rejected() {
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-        serde_json::json!({
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+        crate::json!({
             "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
             "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier" }
         }),
@@ -2624,8 +2614,8 @@ fn an_object_map_value_type_missing_its_name_is_rejected() {
 #[test]
 fn an_object_map_value_type_with_a_bad_class_is_rejected() {
     let err = validate(map_with(
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
-        serde_json::json!({
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" }),
+        crate::json!({
             "$class": "concerto.metamodel@1.0.0.ObjectMapValueType",
             "type": { "$class": "concerto.metamodel@1.0.0.BAD_$CLASS", "name": "Person" }
         }),
@@ -2642,7 +2632,7 @@ fn an_object_map_value_type_with_a_bad_class_is_rejected() {
 // referenced-type check at all.
 #[test]
 fn every_primitive_map_value_kind_validates() {
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
     for value_kind in [
         "BooleanMapValueType",
         "StringMapValueType",
@@ -2651,8 +2641,7 @@ fn every_primitive_map_value_kind_validates() {
         "IntegerMapValueType",
         "LongMapValueType",
     ] {
-        let value =
-            serde_json::json!({ "$class": format!("concerto.metamodel@1.0.0.{value_kind}") });
+        let value = crate::json!({ "$class": format!("concerto.metamodel@1.0.0.{value_kind}") });
         assert!(
             validate(map_with(key.clone(), value)).is_ok(),
             "{value_kind} should be a legal map value"
@@ -2669,19 +2658,19 @@ fn every_primitive_map_value_kind_validates() {
 // validate...") a `RelationshipMapValueType`.
 #[test]
 fn every_declared_class_kind_validates_as_a_map_value() {
-    let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
+    let key = crate::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
     for (decl_class, extra) in [
-        ("AssetDeclaration", serde_json::json!({})),
-        ("ParticipantDeclaration", serde_json::json!({})),
-        ("TransactionDeclaration", serde_json::json!({})),
-        ("EventDeclaration", serde_json::json!({})),
-        ("ConceptDeclaration", serde_json::json!({})),
+        ("AssetDeclaration", crate::json!({})),
+        ("ParticipantDeclaration", crate::json!({})),
+        ("TransactionDeclaration", crate::json!({})),
+        ("EventDeclaration", crate::json!({})),
+        ("ConceptDeclaration", crate::json!({})),
         (
             "ConceptDeclaration",
-            serde_json::json!({ "identified": { "$class": "concerto.metamodel@1.0.0.Identified" } }),
+            crate::json!({ "identified": { "$class": "concerto.metamodel@1.0.0.Identified" } }),
         ),
     ] {
-        let mut decl = serde_json::json!({
+        let mut decl = crate::json!({
             "$class": format!("concerto.metamodel@1.0.0.{decl_class}"),
             "name": "Item", "isAbstract": false, "properties": []
         });
@@ -2689,7 +2678,7 @@ fn every_declared_class_kind_validates_as_a_map_value() {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         for value_kind in ["ObjectMapValueType", "RelationshipMapValueType"] {
-            let declarations = serde_json::json!([
+            let declarations = crate::json!([
                 decl.clone(),
                 {
                     "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
@@ -2704,8 +2693,8 @@ fn every_declared_class_kind_validates_as_a_map_value() {
     }
 
     // A concept derived from another concept is equally a legal value.
-    let declarations = serde_json::json!([
-        concept(serde_json::json!({ "name": "Base" })),
+    let declarations = crate::json!([
+        concept(crate::json!({ "name": "Base" })),
         {
             "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": "Derived",
             "isAbstract": false, "properties": [],
@@ -2724,16 +2713,16 @@ fn every_declared_class_kind_validates_as_a_map_value() {
 #[test]
 fn a_map_value_imported_from_another_namespace_validates() {
     for (base_decl, value_ref) in [
-        (concept(serde_json::json!({ "name": "Thing" })), "Thing"),
+        (concept(crate::json!({ "name": "Thing" })), "Thing"),
         (
-            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "GUID" }),
+            crate::json!({ "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "GUID" }),
             "GUID",
         ),
     ] {
         let mut manager = ModelManager::new().unwrap();
         manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.base@1.0.0",
                     "declarations": [base_decl]
@@ -2743,7 +2732,7 @@ fn a_map_value_imported_from_another_namespace_validates() {
             .unwrap();
         manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.example@1.0.0",
                     "imports": [{
@@ -2780,12 +2769,12 @@ fn aliased_map_manager() -> ModelManager {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "child@1.0.0",
                 "declarations": [
                     { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "FullName" },
-                    concept(serde_json::json!({ "name": "Child" }))
+                    concept(crate::json!({ "name": "Child" }))
                 ]
             }),
             None,
@@ -2793,7 +2782,7 @@ fn aliased_map_manager() -> ModelManager {
         .unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "parent@1.0.0",
                     "imports": [{
@@ -2863,7 +2852,7 @@ fn assert_illegal_model(result: crate::error::Result<()>) {
 #[test]
 fn a_primitive_datetime_map_key_validates() {
     assert!(
-        validate(serde_json::json!([{
+        validate(crate::json!([{
             "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Dictionary",
             "key": { "$class": "concerto.metamodel@1.0.0.DateTimeMapKeyType" },
             "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
@@ -2877,7 +2866,7 @@ fn a_primitive_datetime_map_key_validates() {
 /// `concerto@1.0.0` import every non-system model file carries
 /// (`ModelFile::from_json`, TS `ModelFile.fromAst`).
 fn validate_root_type_map_value(root: &str) -> crate::error::Result<()> {
-    validate(serde_json::json!([{
+    validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Dictionary",
         "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
         "value": object_type(root, "ObjectMapValueType")
@@ -2927,7 +2916,7 @@ fn a_root_transaction_map_value_validates() {
 // throws an `IllegalModelException`.
 #[test]
 fn an_enum_declaration_as_an_object_map_key_is_rejected() {
-    assert_illegal_model(validate(serde_json::json!([
+    assert_illegal_model(validate(crate::json!([
         {
             "$class": "concerto.metamodel@1.0.0.EnumDeclaration", "name": "Phase",
             "properties": [
@@ -2947,7 +2936,7 @@ fn an_enum_declaration_as_an_object_map_key_is_rejected() {
 /// AST TS's "should throw if ast contains illegal Map Key Type - <kind>"
 /// cases hand to `new MapDeclaration`.
 fn validate_bare_map_key_kind(kind: &str) -> crate::error::Result<()> {
-    validate(serde_json::json!([{
+    validate(crate::json!([{
         "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "MapPermutation1",
         "key": { "$class": format!("concerto.metamodel@1.0.0.{kind}") },
         "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" }
@@ -2985,7 +2974,7 @@ fn a_loaded_map_declaration_introspects_as_ts_does() {
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "com.acme@1.0.0",
                 "declarations": [{
@@ -3015,8 +3004,8 @@ fn a_loaded_map_declaration_introspects_as_ts_does() {
 /// `abstract concept X { o String s }` (with `s_extra` merged into the
 /// property's AST), loaded without validation; `org.b` imports `X` and
 /// declares `concept Y extends X`, named `b.cto`.
-fn inherited_property_files(s_extra: serde_json::Value) -> (ModelManager, serde_json::Value) {
-    let mut property = serde_json::json!({
+fn inherited_property_files(s_extra: crate::json::Value) -> (ModelManager, crate::json::Value) {
+    let mut property = crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "s", "isArray": false, "isOptional": false
     });
@@ -3027,24 +3016,24 @@ fn inherited_property_files(s_extra: serde_json::Value) -> (ModelManager, serde_
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.a@1.0.0",
-                "declarations": [concept(serde_json::json!({
+                "declarations": [concept(crate::json!({
                     "name": "X", "isAbstract": true, "properties": [property]
                 }))]
             }),
             Some("a.cto".into()),
         )
         .unwrap();
-    let b = serde_json::json!({
+    let b = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.b@1.0.0",
         "imports": [
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.a@1.0.0", "name": "X" }
         ],
-        "declarations": [concept(serde_json::json!({
+        "declarations": [concept(crate::json!({
             "name": "Y",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
         }))]
@@ -3060,7 +3049,7 @@ fn inherited_property_files(s_extra: serde_json::Value) -> (ModelManager, serde_
 #[test]
 fn an_inherited_property_is_validated_in_the_subclass_pass() {
     use crate::introspect::model_file::ModelFile;
-    let (mut manager, b) = inherited_property_files(serde_json::json!({
+    let (mut manager, b) = inherited_property_files(crate::json!({
         "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator",
                            "minSize": 1, "maxSize": 5 }
     }));
@@ -3108,7 +3097,7 @@ fn an_inherited_property_is_validated_in_the_subclass_pass() {
 #[test]
 fn a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file() {
     use crate::introspect::model_file::ModelFile;
-    let (manager, b) = inherited_property_files(serde_json::json!({
+    let (manager, b) = inherited_property_files(crate::json!({
         "decorators": [
             { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] },
             { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "custom", "arguments": [] }
@@ -3144,10 +3133,10 @@ fn a_duplicate_decorator_on_an_own_property_is_not_misattached_via_detached_decl
     use crate::introspect::model_file::ModelFile;
     let manager = ModelManager::new().unwrap();
     let mf = ModelFile::from_json(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.owned@1.0.0",
-                "declarations": [concept(serde_json::json!({
+                "declarations": [concept(crate::json!({
                     "name": "X",
                     "properties": [
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "p",
@@ -3182,19 +3171,19 @@ fn a_duplicate_decorator_on_an_own_property_is_not_misattached_via_detached_decl
 /// TS validates it against its type's own declaration.
 #[test]
 fn a_valid_inherited_property_passes_the_subclass_pass() {
-    let (mut manager, b) = inherited_property_files(serde_json::json!({}));
+    let (mut manager, b) = inherited_property_files(crate::json!({}));
     manager.load_model(&b, Some("b.cto".into())).unwrap();
     assert!(manager.validate_models().is_ok());
 
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
                     "declarations": [
-                        concept(serde_json::json!({ "name": "Address" })),
-                        concept(serde_json::json!({
+                        concept(crate::json!({ "name": "Address" })),
+                        concept(crate::json!({
                             "name": "X", "isAbstract": true, "properties": [
                                 { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "home",
                                   "isArray": false, "isOptional": false,
@@ -3223,7 +3212,7 @@ fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() 
         if load_c {
             manager
                 .load_model(
-                    &serde_json::json!({
+                    &crate::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.c@1.0.0",
                         "declarations": []
@@ -3234,14 +3223,14 @@ fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() 
         }
         manager
                 .load_model(
-                    &serde_json::json!({
+                    &crate::json!({
                         "$class": "concerto.metamodel@1.0.0.Model",
                         "namespace": "org.a@1.0.0",
                         "imports": [
                             { "$class": "concerto.metamodel@1.0.0.ImportType",
                               "namespace": "org.c@1.0.0", "name": "Cc" }
                         ],
-                        "declarations": [concept(serde_json::json!({
+                        "declarations": [concept(crate::json!({
                             "name": "X", "isAbstract": true, "properties": [
                                 { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "c",
                                   "isArray": false, "isOptional": false,
@@ -3252,7 +3241,7 @@ fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() 
                     None,
                 )
                 .unwrap();
-        let (_, b) = inherited_property_files(serde_json::json!({}));
+        let (_, b) = inherited_property_files(crate::json!({}));
         manager.load_model(&b, Some("b.cto".into())).unwrap();
         let file = manager.model_file("org.b@1.0.0").unwrap();
         let err = manager.validate_model_file(file).unwrap_err();
@@ -3286,24 +3275,24 @@ fn an_inherited_relationship_to_an_unidentified_type_is_attached_to_the_types_fi
     let mut manager = ModelManager::new().unwrap();
     manager
         .load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.c@1.0.0",
-                "declarations": [concept(serde_json::json!({ "name": "Cc" }))]
+                "declarations": [concept(crate::json!({ "name": "Cc" }))]
             }),
             Some("c.cto".into()),
         )
         .unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
                     "imports": [
                         { "$class": "concerto.metamodel@1.0.0.ImportType",
                           "namespace": "org.c@1.0.0", "name": "Cc" }
                     ],
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "X", "isAbstract": true, "properties": [
                             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "c",
                               "isArray": false, "isOptional": false,
@@ -3314,14 +3303,14 @@ fn an_inherited_relationship_to_an_unidentified_type_is_attached_to_the_types_fi
                 Some("a.cto".into()),
             )
             .unwrap();
-    let b = serde_json::json!({
+    let b = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.b@1.0.0",
         "imports": [
             { "$class": "concerto.metamodel@1.0.0.ImportType",
               "namespace": "org.a@1.0.0", "name": "X" }
         ],
-        "declarations": [concept(serde_json::json!({
+        "declarations": [concept(crate::json!({
             "name": "Y",
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
         }))]
@@ -3366,14 +3355,14 @@ fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misatt
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "org.a@1.0.0",
                     "imports": [
                         { "$class": "concerto.metamodel@1.0.0.ImportType",
                           "namespace": "org.b@1.0.0", "name": "NoId" }
                     ],
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "X", "isAbstract": true, "properties": [
                             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "r",
                               "isArray": false, "isOptional": false,
@@ -3384,7 +3373,7 @@ fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misatt
                 Some("a.cto".into()),
             )
             .unwrap();
-    let b = serde_json::json!({
+    let b = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.b@1.0.0",
         "imports": [
@@ -3392,8 +3381,8 @@ fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misatt
               "namespace": "org.a@1.0.0", "name": "X" }
         ],
         "declarations": [
-            concept(serde_json::json!({ "name": "NoId" })),
-            concept(serde_json::json!({
+            concept(crate::json!({ "name": "NoId" })),
+            concept(crate::json!({
                 "name": "Y",
                 "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "X" }
             }))
@@ -3442,11 +3431,11 @@ fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misatt
 fn validate_detached_declaration_rejects_an_invalid_map_key() {
     let manager = ModelManager::new().unwrap();
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.detached@1.0.0",
             "declarations": [
-                concept(serde_json::json!({ "name": "Item" })),
+                concept(crate::json!({ "name": "Item" })),
                 { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
                   "key": object_type("Item", "ObjectMapKeyType"),
                   "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
@@ -3473,7 +3462,7 @@ fn validate_detached_declaration_rejects_an_invalid_map_key() {
 fn validate_detached_declaration_out_of_bounds_index_is_rejected() {
     let manager = ModelManager::new().unwrap();
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.detached@1.0.0",
             "declarations": []
@@ -3495,12 +3484,12 @@ fn validate_detached_declaration_out_of_bounds_index_is_rejected() {
 fn validate_detached_map_key_and_value_in_isolation() {
     let manager = ModelManager::new().unwrap();
     let mf = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.detached@1.0.0",
             "declarations": [
                 { "$class": "concerto.metamodel@1.0.0.StringScalar", "name": "Code" },
-                concept(serde_json::json!({ "name": "Item" })),
+                concept(crate::json!({ "name": "Item" })),
                 { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "Lookup",
                   "key": object_type("Item", "ObjectMapKeyType"),
                   "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } },
@@ -3598,7 +3587,7 @@ fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_th
     let mut manager = ModelManager::new().unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.x@1.0.0",
                     "declarations": [{
@@ -3625,7 +3614,7 @@ fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_th
             .unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.a@1.0.0",
                     "imports": [
@@ -3636,7 +3625,7 @@ fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_th
                               "name": "T", "aliasedName": "N" }
                           ] }
                     ],
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "Base",
                         "properties": [
                             { "$class": "concerto.metamodel@1.0.0.RelationshipProperty", "name": "rel",
@@ -3650,14 +3639,14 @@ fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_th
             .unwrap();
     manager
             .load_model(
-                &serde_json::json!({
+                &crate::json!({
                     "$class": "concerto.metamodel@1.0.0.Model",
                     "namespace": "ns.b@1.0.0",
                     "imports": [
                         { "$class": "concerto.metamodel@1.0.0.ImportType",
                           "namespace": "ns.a@1.0.0", "name": "Base" }
                     ],
-                    "declarations": [concept(serde_json::json!({
+                    "declarations": [concept(crate::json!({
                         "name": "Sub",
                         "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Base" }
                     }))]
