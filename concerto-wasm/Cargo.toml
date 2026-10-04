@@ -22,12 +22,12 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["cdylib"]
 
-# The key source of the WASM HashDoS check (scripts/hashdos.mjs, run by
-# `npm run smoke:node`): keys crafted against the standard library's
-# fixed-key hasher on wasm32, and a control map that shows they collide.
-[[example]]
-name = "hashdos_keys"
-crate-type = ["cdylib"]
+[features]
+# The WASM HashDoS check's key source (src/hashdos_probe.rs, used by
+# scripts/hashdos.mjs, `npm run smoke:hashdos`): exports that read the
+# standard library's address-derived hasher keys and craft keys colliding
+# under them. Test builds only; build.sh never enables it.
+hashdos-probe = []
 
 [dependencies]
 # `js-compat` (P6-01, docs/public-api.md section 4.6): the JS object model and

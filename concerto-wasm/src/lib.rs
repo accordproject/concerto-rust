@@ -75,6 +75,8 @@ mod dcs_bindings;
 mod declarations;
 mod decorators;
 mod handle;
+#[cfg(feature = "hashdos-probe")]
+mod hashdos_probe;
 mod host;
 mod js_values;
 mod model_file;
