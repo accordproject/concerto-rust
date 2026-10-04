@@ -87,14 +87,10 @@ pub(crate) fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValu
     call(value, name, &[], name).map(Some)
 }
 
-/// A JS value as JSON, `None` for `undefined`. Values JSON cannot hold
-/// (`NaN`, `Infinity`, functions) are not modelled: no model AST holds one.
-///
-/// A JS string may hold an unpaired UTF-16 surrogate, which
-/// `JSON.stringify` emits as a `\uD800`-range escape and `serde_json`
-/// rejects. Each unpaired escape is replaced with U+FFFD, so the rest of the
-/// value survives and the string fails whatever check reads it with that
-/// check's own, correctly classed error (e.g. `is_valid_identifier`).
+/// A JS value as JSON, `None` for `undefined`; `NaN`, `Infinity` and
+/// functions are not modelled (no model AST holds one). An unpaired
+/// surrogate escape, which `serde_json` rejects, becomes U+FFFD, so the
+/// string fails its own check with that check's error.
 pub(crate) fn to_json(value: &JsValue) -> Result<Option<Value>> {
     if value.is_undefined() {
         return Ok(None);
@@ -114,13 +110,9 @@ pub(crate) fn to_json(value: &JsValue) -> Result<Option<Value>> {
     }
 }
 
-/// Replaces every `\uXXXX` escape inside a JSON string literal that is an
-/// unpaired UTF-16 surrogate (high without an immediately following low, or
-/// low without an immediately preceding high) with the `�` escape,
-/// leaving every other character — including valid surrogate pairs and
-/// every other escape — untouched. Only escapes inside string literals are
-/// considered; the surrounding JSON structure (keys, punctuation) never
-/// contains a `\u` sequence of its own in text `JSON.stringify` produces.
+/// Replaces each `\uXXXX` escape of an unpaired UTF-16 surrogate inside a
+/// JSON string literal with the `�` escape, leaving pairs and other
+/// escapes untouched. `JSON.stringify` output has no `\u` outside strings.
 pub(crate) fn sanitize_lone_surrogate_escapes(text: &str) -> String {
     /// Reads a `\uXXXX` escape's 4 hex digits starting at `chars[at]`,
     /// returning the unit and its source characters, or `None` if `at` is

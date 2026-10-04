@@ -264,14 +264,11 @@ pub fn resource_id_to_uri(namespace: JsValue, type_name: JsValue, id: JsValue) -
     })
 }
 
-/// TS: `ResourceId.fromURI` over many URIs at once, for the visitor path of
-/// a relationship-typed map: one crossing per map rather than one per value.
-/// `uris` is an array of URI strings, all read with the same legacy
-/// namespace and type. The result is flat, three slots per URI: its
-/// `namespace`, `type` and `id`, or `undefined` in all three when that URI
-/// is not a string or does not parse. The caller then reads that one URI
-/// with `resourceIdFromURI`, which throws its error at the same point of the
-/// walk as before.
+/// TS: `ResourceId.fromURI` over a relationship-typed map's URIs in one
+/// crossing, with one legacy namespace and type. Flat, three slots per URI
+/// (`namespace`, `type`, `id`), all `undefined` where a URI is not a string
+/// or does not parse; the caller then calls `resourceIdFromURI` for it,
+/// which throws at the same point.
 #[wasm_bindgen(js_name = resourceIdsFromURIs)]
 pub fn resource_ids_from_uris(
     uris: Array,

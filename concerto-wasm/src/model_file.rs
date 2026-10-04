@@ -65,16 +65,12 @@ pub fn model_file_is_compatible_version(view: JsValue) -> JsResult<()> {
     })
 }
 
-/// TS: `ModelFile._fromAstHeader(ast)`, the part of `ModelFile.fromAst` before
-/// the declarations, on the JS `ModelFile` `view`: checks `ast.namespace`
-/// (every part a valid identifier, and a version, for a system file too:
-/// BC-02, where TS 5.0.0 exempted `view.isSystemModelFile()`), then sets
-/// `view.namespace`, `view.version`, `view.imports` (with the implicit
-/// system import for a non-system file), `view.importShortNames` and
-/// `view.importUriMap`, rejecting an unversioned import, a wildcard import
-/// and an alias to a primitive type. Each error has TS's class, and a
-/// malformed AST raises TS's own JS errors, since this runs over the same JS
-/// values in the same order.
+/// TS: `ModelFile._fromAstHeader(ast)` on the JS `ModelFile` `view`: checks
+/// `ast.namespace` (versioned for a system file too, BC-02), then sets
+/// `namespace`, `version`, `imports` (with the implicit system import),
+/// `importShortNames` and `importUriMap`, rejecting an unversioned or
+/// wildcard import and an alias to a primitive. It reads the same JS values
+/// in TS's order, so a malformed AST raises TS's own errors.
 #[wasm_bindgen(js_name = modelFileFromAstHeader)]
 pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
@@ -276,25 +272,12 @@ pub(crate) fn system_model_header(ast: &str) -> Option<String> {
     })
 }
 
-/// What [`model_file_from_ast_header`] sets on a JS `ModelFile` being
-/// constructed, read from a staged file's namespace and its AST's `imports`
-/// node instead of from the JS values, so
-/// [`ModelManagerHandle::stage_model_file_bytes`] can return it with the stage.
-/// `{namespace, version, system, shortNames, uriMap}`: `version` is the
-/// namespace's version or `null` (TS `this.version`), `system` whether
-/// `isSystemModelFile()` holds during construction (TS: the namespace is
-/// `concerto` or starts with `concerto@`, since the file is not registered
-/// yet), `shortNames` the `importShortNames.set(key, fqn)` calls in order, and
-/// `uriMap` the `importUriMap[key] = uri` assignments in order. `this.imports`
-/// itself (a copy of `ast.imports` plus the implicit import) is left to the
-/// caller, which keeps the AST's own import objects.
-///
-/// `None` whenever that binding would not simply set these values: any
-/// error it would raise, and any AST shape outside the canonical one (a
-/// non-string `$class`, namespace, name, type or alias, a non-array
-/// `types` or `aliasedTypes`, a URI on an import with no first name, an
-/// unrecognised import class). The caller then runs that binding over the
-/// JS values, as before, so every error and every oddity keeps its path.
+/// What [`model_file_from_ast_header`] would set, read from a staged file
+/// for [`ModelManagerHandle::stage_model_file_bytes`] to return with the
+/// stage: `{namespace, version, system, shortNames, uriMap}`, the last two
+/// as their assignments in order. `None` for any error or non-canonical
+/// AST shape; the caller then runs that binding over the JS values, so
+/// every error keeps its path.
 pub(crate) fn staged_header_from_parts<'a>(
     namespace: &'a str,
     imports: Option<&'a Value>,

@@ -8,14 +8,11 @@ use super::*;
 // Decorator, Decorated (src/introspect/decorator.ts, decorated.ts)
 // ---------------------------------------------------------------------------
 
-/// TS: Decorator.process. Builds `{name, arguments}` from the raw AST node
-/// ([`Decorator::from_ast`]).
-///
-/// DV-018: a `null` or `undefined` node, where TS's `this.ast.name` throws a
-/// `TypeError`, is an `IllegalModelException` instead
-/// ([`decorator::not_an_object`]). `view`, when given, is the `Decorator`
-/// being processed; its `getParent().getModelFile()` is the model file the
-/// exception names, as TS's `Decorator.handleError` passes it.
+/// TS: Decorator.process: `{name, arguments}` from the raw AST node
+/// ([`Decorator::from_ast`]). DV-018: a `null` or `undefined` node, where TS
+/// throws a `TypeError`, is an `IllegalModelException`
+/// ([`decorator::not_an_object`]) naming the model file of `view`, the
+/// Decorator being processed.
 #[wasm_bindgen(js_name = decoratorProcess)]
 pub fn decorator_process(ast: JsValue, view: JsValue) -> JsResult<JsValue> {
     if ast.is_null() || ast.is_undefined() {
@@ -58,13 +55,10 @@ pub fn decorator_process(ast: JsValue, view: JsValue) -> JsResult<JsValue> {
     })
 }
 
-/// One decoded [`DecoratorArgument`], as TS's `Decorator.process` would have
-/// pushed it onto `this.arguments`. Built as a JS value directly, not
-/// through [`to_js`]'s JSON round trip, which cannot represent `undefined`
-/// (TS: `{ type: 'Identifier', name: ..., array: thing.isArray }` — the
-/// object literal always creates the `array` *property*, even when
-/// `thing.isArray` is `undefined`, which is a different, observable state
-/// from the property being absent).
+/// One decoded [`DecoratorArgument`], as TS's `Decorator.process` pushes
+/// it. Built as a JS value directly, not through [`to_js`]'s JSON round
+/// trip: TS's object literal always creates the `array` property, even
+/// when it is `undefined`, which differs observably from it being absent.
 pub(crate) fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
     match arg {
         DecoratorArgument::String(s) => JsValue::from_str(s),
@@ -168,12 +162,9 @@ pub(crate) fn level_js(level: &Option<String>) -> JsValue {
 }
 
 /// TS: `this.handleError(level, err)`, called back on `view` so its own
-/// method builds the exact `IllegalModelException` (message, model file,
-/// location) and logs through `Logger.dispatch`, exactly as every other
-/// call site of `handleError` does. `err` is a message string for one of
-/// this function's own checks, or (from the outer catch,
-/// [`ModelManagerHandle::decorator_validate`]) whatever the try-equivalent
-/// threw — TS passes `handleError` either shape.
+/// method builds the `IllegalModelException` and logs as every other call
+/// site does. `err` is a message string for this function's own checks, or
+/// whatever the outer catch caught.
 pub(crate) fn handle_error(view: &JsValue, level: &Option<String>, err: &JsValue) -> Result<()> {
     call(
         view,

@@ -115,16 +115,11 @@ pub fn convert_primitive(
     })
 }
 
-/// TS `ResourceValidator.checkItem`'s primitive `switch(field.getType())`
-/// (resourcevalidator.ts): whether `value` (already coerced by
-/// [`convert_primitive`], as a real Resource's field value always is by the
-/// time it reaches `checkItem`) is valid for the declared primitive type
-/// `type_name`. `checkItem` reports `dataType === 'undefined' || dataType
-/// === 'symbol'` before this switch (a check the wire codec cannot cross,
-/// so the TS shell still makes it); every other TS branch is
-/// `typeof`/`isFinite` on the value alone, with no declaration lookup, so
-/// it is safe to call from the TS shell per field. A type name the TS
-/// switch has no `case` for is valid (`invalid` stays `false`).
+/// TS `ResourceValidator.checkItem`'s primitive `switch(field.getType())`:
+/// whether the coerced `value` is valid for primitive `type_name`. The
+/// `undefined`/`symbol` check before the switch stays in TS; each branch
+/// tests the value alone, so the TS shell may call this per field. A type
+/// name with no `case` is valid.
 pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
     match type_name {
         "String" => matches!(value, JsValue::String(_)),
@@ -925,13 +920,10 @@ fn utc_offset_input(value: &JsValue) -> UtcOffset {
     }
 }
 
-/// What `Serializer.fromJSON` reads from its merged options (the
-/// populator's options, and `validate`), as core's own [`FromJsonOptions`]
-/// (this crate kept its own copies of the same options, with `utcOffset`
-/// as a JS value). `pub` so the concerto-wasm binding can read them for
-/// [`convert_primitive`] from the options object the TS visitor shell
-/// already has. The validator's own options are not read here: a
-/// `ValidatedResource` validates with its own.
+/// What `Serializer.fromJSON` reads from its merged options, as core's
+/// [`FromJsonOptions`]. `pub` so concerto-wasm can read them for
+/// [`convert_primitive`] from the TS shell's options object. The
+/// validator's options are not read: a `ValidatedResource` uses its own.
 pub fn from_json_options(options: &JsObject) -> FromJsonOptions {
     let get = |key: &str| options.get(key).unwrap_or(&JsValue::Undefined);
     let truthy = |key: &str| get(key).is_truthy();

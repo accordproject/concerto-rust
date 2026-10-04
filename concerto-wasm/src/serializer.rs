@@ -519,14 +519,10 @@ pub(crate) fn parse_wire(text: &str) -> Result<CoreValue> {
     }
 }
 
-/// A [`CoreValue`] written as [`encode_wire`]'s JSON text, without building
-/// the `serde_json::Value` first: `serde_json::to_string(&WireOut(v))` is
-/// `serde_json::to_string(&encode_wire(v))`.
-///
-/// With `INTS` (the compact result), a finite number with no fractional
-/// part below 2^53 in magnitude is written as an integer (`42`, not
-/// `42.0`): the same number to `JSON.parse`, which reads an integer
-/// literal faster.
+/// A [`CoreValue`] as [`encode_wire`]'s JSON text, without building the
+/// `Value` first. With `INTS` (the compact result), an integral finite
+/// number below 2^53 is written as an integer, which `JSON.parse` reads
+/// faster and as the same number.
 pub(crate) struct WireOut<'a, const INTS: bool = false>(pub(crate) &'a CoreValue);
 
 /// An [`Instance`] written as [`encode_wire_instance`]'s JSON text.
@@ -677,14 +673,11 @@ pub(crate) const COMPACT_HEADER_KEYS: [&str; 5] = [
     "$timestamp",
 ];
 
-/// An [`Instance`] in the compact result shape of
-/// `serializerFromJsonCompact`: the JSON array `[ctor, fqn, $namespace,
-/// $type, $identifierFieldName, $identifier, $timestamp, fields]`, each value
-/// in its wire encoding (a missing one as `undefined`), where `fields` is the
-/// `"typed"` shape's field object less what the view's `materializeTyped`
-/// skips: those five keys, `$class`, and the key named by
-/// `$identifierFieldName` when that is a string (the constructor sets it from
-/// `$identifier`). Nested instances keep the `"typed"` shape.
+/// An [`Instance`] as `serializerFromJsonCompact`'s array `[ctor, fqn,
+/// $namespace, $type, $identifierFieldName, $identifier, $timestamp,
+/// fields]`, in wire encoding; `fields` omits those keys, `$class` and the
+/// identifier field the constructor sets. Nested instances keep the
+/// `"typed"` shape.
 pub(crate) struct CompactInstanceOut<'a>(pub(crate) &'a Instance);
 
 impl serde::Serialize for CompactInstanceOut<'_> {

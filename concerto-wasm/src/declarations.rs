@@ -78,17 +78,12 @@ pub(crate) fn short_class(ast_class: &str) -> &str {
     ast_class.rsplit('.').next().unwrap_or(ast_class)
 }
 
-/// TS: `ClassDeclaration.process`, the superType/idField decision made
-/// before the `ast.properties` loop. Returns `{superType, idField,
-/// addIdentifierField, addTimestampField}`:
-/// - `superType`: `this.ast.superType.name` as is when the AST names a super
-///   type (`undefined` stays `undefined`, not `null`: only an explicit `name:
-///   null` reads as "no super type"); otherwise `null` for the system
-///   `Concept`, else the implicit `'Concept'`.
-/// - `idField`/`addIdentifierField`: the `this.ast.identified` match;
-///   `addIdentifierField` tells the view to call its own
-///   `addIdentifierField()`.
-/// - `addTimestampField`: `this.fqn` is the system `Transaction` or `Event`.
+/// TS: `ClassDeclaration.process`'s superType/idField decision, as
+/// `{superType, idField, addIdentifierField, addTimestampField}`.
+/// `superType` is the AST's `superType.name` as is (`undefined` stays
+/// `undefined`; only `name: null` is no super type), else `null` for the
+/// system `Concept` and `'Concept'` otherwise. `addTimestampField` is set
+/// for the system `Transaction` and `Event`.
 #[wasm_bindgen(js_name = classDeclarationProcess)]
 pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
@@ -631,22 +626,12 @@ pub fn class_declaration_get_identifier_field_name(declaration: JsValue) -> JsRe
     })
 }
 
-/// TS `ClassDeclaration.getIdentifierFieldName`, with its super type walk,
-/// in one binding: each level inlines the `ClassDeclaration` methods TS
-/// reaches (`getSuperType`, `getSuperTypeDeclaration`'s field reads,
-/// `getFullyQualifiedName`, `getModelFile`), while `_resolveSuperType`,
-/// `getLocalType`, `getModelManager` and `getType` are called as TS calls
-/// them, so every error comes from the same collaborator.
-///
-/// BC-50: a `ClassDeclaration` method replaced at runtime is not called. A
-/// scalar or map declaration reached as a super type gives `null`, as its
-/// own `getIdentifierFieldName` does. A super type seen earlier in the walk
-/// is BC-11's `IllegalModelException`.
-///
-/// Returns `[answer, cacheable, ...chain]`: `chain` is every declaration the
-/// walk read, and `cacheable` is false when the walk ended in a call (a
-/// nullish super type resolution), so the answer depends on more than the
-/// chain's fields.
+/// TS `ClassDeclaration.getIdentifierFieldName` with its super type walk in
+/// one binding, calling `_resolveSuperType`, `getLocalType`,
+/// `getModelManager` and `getType` as TS does (BC-50: replaced methods are
+/// not called; BC-11 for a cycle). Returns `[answer, cacheable, ...chain]`:
+/// every declaration read, and whether the walk ended without a call, so
+/// the answer depends only on the chain's fields.
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldNameWalk)]
 pub fn class_declaration_get_identifier_field_name_walk(declaration: JsValue) -> JsResult<Array> {
     run(|| {

@@ -104,15 +104,11 @@ pub(crate) struct DcsExtractKept {
 }
 
 impl DcsExtractKept {
-    /// The staged headers are read from the result's parsed ASTs first,
-    /// then the ASTs are compacted ([`ModelManager::compact_model_asts`]):
-    /// each result model file keeps its AST as compact JSON text, and
-    /// [`Self::ast_text`] is spliced from those texts, byte for byte the
-    /// text of `model_manager_to_ast`'s value. So the files staged from it
-    /// (shared, see [`Self::stage`]) hold text, not a parsed tree, for as
-    /// long as the result ModelManager lives. Compaction serialises values
-    /// serde built, which cannot fail; should it, the error is [`internal`]
-    /// (no intermediate-`Value` fallback).
+    /// Reads the staged headers from the result's parsed ASTs, then compacts
+    /// them ([`ModelManager::compact_model_asts`]): each file keeps compact JSON
+    /// text, from which [`Self::ast_text`] is spliced byte for byte as
+    /// `model_manager_to_ast`'s value. Compaction cannot fail on values serde
+    /// built; should it, the error is [`internal`].
     pub(crate) fn new(source: Vec<Value>, mut result: ModelManager) -> Result<Self> {
         let headers = result
             .model_files()

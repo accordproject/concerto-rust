@@ -190,13 +190,10 @@ pub(crate) fn tag(mut json: Value, class: &str) -> Value {
     json
 }
 
-/// `{pattern, flags}`, or `None` for a nullish value. Built through
-/// `validators::regex_validator_from_ast`, which coerces `pattern`/`flags`
-/// the way `new RegExp(validator.pattern, validator.flags)` does, not with
-/// `serde`'s strict decode: TS's `Property.process` reads
-/// `this.ast.validator` with no type check, so a wrongly typed
-/// `pattern`/`flags` (a bool, a number, an array) must coerce here too, not
-/// fail the property's `process()`.
+/// `{pattern, flags}`, or `None` for a nullish value, coerced as
+/// `new RegExp(pattern, flags)` coerces them: TS's `Property.process` reads
+/// the validator with no type check, so a wrongly typed `pattern`/`flags`
+/// must coerce, not fail `process()`.
 pub(crate) fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
     if nullish(value) {
         return Ok(None);
@@ -217,17 +214,9 @@ pub(crate) fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLeng
     Ok(validators::length_validator_from_ast(Some(&json)))
 }
 
-/// `{minSize, maxSize}`. Built through `validators::size_validator_from_ast`,
-/// for the same reason as [`string_regex_ast`] — TS's own call site for `new
-/// CollectionSizeValidator(this, this.ast.sizeValidator)`
-/// (property.ts/field.ts), reading `minSize`/`maxSize` with no type check. A
-/// nullish `value` (this binding's own caller, like TS's constructor call
-/// site, only ever passes one when `this.ast.sizeValidator` is itself
-/// present) falls back to the same "$class only" node
-/// `size_validator_from_ast`'s own null-filter maps to `None` for, so this
-/// preserves this function's pre-existing contract of never itself returning
-/// `None`: an absent `minSize`/`maxSize` decodes as `None` either way, so the
-/// unwrap below only ever supplies the `$class`/bounds-absent shape.
+/// `{minSize, maxSize}`, coerced as [`string_regex_ast`] is, since TS reads
+/// them with no type check. A nullish `value` falls back to the `$class`
+/// only node, so this never returns `None` itself.
 pub(crate) fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
     let json = to_json(value)?.unwrap_or(Value::Null);
     Ok(
@@ -239,13 +228,10 @@ pub(crate) fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeV
     )
 }
 
-/// TS: StringValidator constructor, after `super(field, validator)`. `view`
-/// is the object under construction; the result is its `{minLength,
-/// maxLength}` snapshot. The view builds its own cached `RegExp` from
-/// `validator` afterwards: `StringValidator.getRegex` stays TS (public API
-/// returns a live `RegExp`), and the pluggable `options.regExp` hook is never
-/// reached here (the view only calls this binding when no hook is
-/// configured, PORTING.md section 3).
+/// TS: StringValidator constructor, after `super(field, validator)`; returns
+/// the `{minLength, maxLength}` snapshot for `view`. The view builds its own
+/// `RegExp` (`getRegex` returns a live one) and calls this only when no
+/// `options.regExp` hook is configured (PORTING.md section 3).
 #[wasm_bindgen(js_name = stringValidatorNew)]
 pub fn string_validator_new(
     view: JsValue,

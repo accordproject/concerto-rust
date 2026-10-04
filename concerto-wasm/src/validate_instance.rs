@@ -8,13 +8,10 @@ use super::*;
 // accordproject/concerto#1239: validateInstance
 // ---------------------------------------------------------------------------
 
-/// The options [`diagnose`] reads, from a `fromJSON` call's merged options
-/// as plain JSON, the way `Serializer.fromJSON` reads them (concerto-core-js
-/// `from_json_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
-/// true`, `acceptResourcesForRelationships === true`, the two
-/// `DeserializeOptions` flags (`rejectUnknownKeys`, `rejectRequiredNull`)
-/// for their truthiness, and the validator's own defaults, as
-/// `ValidatedResource.validate` has them.
+/// The options [`diagnose`] reads from a `fromJSON` call's merged options,
+/// as `Serializer.fromJSON` reads them: `utcOffset || 0`, the strict
+/// boolean flags, the truthy `DeserializeOptions` flags, and the
+/// validator's defaults as `ValidatedResource.validate` has them.
 pub(crate) fn native_from_json_options(options: &Value) -> FromJsonOptions {
     let get = |key: &str| options.get(key);
     let utc_offset = match get("utcOffset") {
@@ -64,27 +61,14 @@ pub(crate) fn diagnostics_json(diagnostics: &[Diagnostic]) -> Value {
 
 #[wasm_bindgen]
 impl ModelManagerHandle {
-    /// accordproject/concerto#1239 `validateInstance`: validates `json_text`, the
-    /// document in `Serializer.fromJSON`'s own wire encoding (module doc above
-    /// "Serializer fast path"; plain JSON is its own encoding), as
-    /// `Serializer.fromJSON` with `validate: true` and the options `options_text` (a
-    /// `fromJSON` call's merged options, in the same wire encoding as
-    /// `serializerFromJsonCompact`'s, plain JSON included) would, without handing
-    /// any resource back. Plain JSON is checked by the native walk alone
-    /// ([`diagnose`]); a document with a wire tag (an `undefined` field, `-0`,
-    /// `NaN`, ...) is read by `serializerFromJsonCompact`'s engine for the verdict
-    /// and the error, with the walk's codes, paths and collect-all report kept
-    /// wherever it raises that same error ([`diagnose_read`]). A wire shape the
-    /// codec does not know throws the error `serializerFromJsonCompact` throws for
-    /// it. With `fqn`, the document is checked as that type, which its own `$class`
-    /// (when it has one) must be or extend.
-    ///
-    /// `mode` 0 throws the error `Serializer.fromJSON` would throw, with its
-    /// diagnostics as the exception's `details`, and returns `""` for a valid
-    /// document; 1 returns `{"diagnostics": [...]}` with the first error's
-    /// diagnostics only, and 2 with every violation found, the first
-    /// error's first. A valid document has no diagnostics. Malformed JSON
-    /// throws a JS `SyntaxError`.
+    /// accordproject/concerto#1239 `validateInstance`: validates `json_text`
+    /// (`fromJSON`'s wire encoding) as `Serializer.fromJSON` with `validate:
+    /// true` and `options_text` would, as `fqn` when given. Plain JSON takes
+    /// the native walk ([`diagnose`]); a tagged document takes
+    /// `serializerFromJsonCompact`'s verdict, with the walk's report where it
+    /// raises the same error ([`diagnose_read`]). `mode` 0 throws with the
+    /// diagnostics as `details` (`""` when valid); 1 returns
+    /// `{"diagnostics": [...]}` for the first error, 2 for every violation.
     #[wasm_bindgen(js_name = validateInstance)]
     pub fn validate_instance(
         &self,

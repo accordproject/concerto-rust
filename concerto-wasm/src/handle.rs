@@ -19,26 +19,19 @@ pub(crate) fn snapshot(value: &Value) -> Result<String> {
     serde_json::to_string(value).map_err(internal)
 }
 
-/// A `ModelManager`, exported to JS as one object. The model files,
-/// declarations and properties it holds are addressed by the arena's dense
-/// `u32` handles, which cross as plain numbers (PORTING.md 1.4). An
-/// element's state crosses as a JSON snapshot, which a view caches until
-/// [`ModelManagerHandle::epoch`] changes (PORTING.md 1.5).
-///
-/// wasm-bindgen registers a `FinalizationRegistry`, so a view need not call
-/// `free()`; after `free()`, every call throws.
+/// A `ModelManager`, exported to JS as one object. Model files,
+/// declarations and properties cross as dense `u32` arena handles
+/// (PORTING.md 1.4); state crosses as JSON snapshots a view caches until
+/// [`ModelManagerHandle::epoch`] changes (PORTING.md 1.5). wasm-bindgen
+/// registers a `FinalizationRegistry`; after `free()`, every call throws.
 #[wasm_bindgen]
 pub struct ModelManagerHandle {
     pub(crate) manager: ModelManager,
-    /// The epoch ([`Self::epoch`]), under one rule: **the epoch moves iff
-    /// `manager` may have changed** (a model file added, replaced or
-    /// removed, an option set, or a check that may leave a model file
-    /// registered, `validateAstValue`'s metamodel copy) and never goes back.
-    /// Staging, dropping a stage, the extract memo and every read leave it
-    /// alone, so a view's cache stays current across them, whether or not
-    /// the binding takes `&mut self`. A binding that changes the manager
-    /// calls [`Self::bump_epoch`], as [`Self::model_file_filter`] does for
-    /// its `target`. The TS views key their caches on the epoch only.
+    /// The epoch ([`Self::epoch`]): **it moves iff `manager` may have changed**
+    /// (a file added, replaced or removed, an option set, or a check that may
+    /// leave a file registered) and never goes back. Staging, the extract memo
+    /// and reads leave it alone. A binding that changes the manager calls
+    /// [`Self::bump_epoch`]. The TS views key their caches on it alone.
     pub(crate) epoch: u64,
     /// Model files loaded by [`Self::stage_model_file_bytes`] and not yet
     /// committed or dropped.
@@ -244,14 +237,11 @@ impl ModelManagerHandle {
         })
     }
 
-    /// Loads a model from its JSON AST, as [`Self::add_model`] does, keeping
-    /// `definitions` (the CTO source text) as
-    /// [`ModelManager::add_model_with_definitions`] does, for
-    /// `getDefinitions()`. `validate` is TS `addModelFile`'s
-    /// `!disableValidation`: the new file is validated against the manager
-    /// as it stands, before it is registered
-    /// ([`ModelManager::validate_detached_model_file`]). The
-    /// duplicate-namespace check fires first either way, as in TS.
+    /// [`Self::add_model`], keeping `definitions` (the CTO source) for
+    /// `getDefinitions()`. With `validate` (TS `!disableValidation`) the file
+    /// is validated before it is registered
+    /// ([`ModelManager::validate_detached_model_file`]); the
+    /// duplicate-namespace check comes first either way, as in TS.
     #[wasm_bindgen(js_name = addModelWithDefinitions)]
     pub fn add_model_with_definitions(
         &mut self,
@@ -279,13 +269,11 @@ impl ModelManagerHandle {
         })
     }
 
-    /// The staging binding every model file is staged through: loads the AST
-    /// from `ast`, its JSON text as UTF-8 or, with `STAGE_COMPACT`, its
-    /// compact binary layout, with BC-19's shape check folded in when
-    /// `STAGE_CHECKED` is set, and stages it. Returns the stage and its
-    /// header in the flat layout (`FlatStaged`). Bytes that are not UTF-8
-    /// or not in the layout throw a `TypeError`, malformed JSON a
-    /// `SyntaxError`. Does not change the manager or its epoch.
+    /// The staging binding every model file goes through: loads the AST from
+    /// JSON text as UTF-8 or, with `STAGE_COMPACT`, the compact layout, with
+    /// BC-19's check folded in under `STAGE_CHECKED`, and returns the stage
+    /// with its header (`FlatStaged`). Bad bytes throw a `TypeError`, malformed
+    /// JSON a `SyntaxError`. Leaves the manager and epoch unchanged.
     #[wasm_bindgen(js_name = stageModelFileBytes)]
     pub fn stage_model_file_bytes(
         &mut self,
@@ -350,14 +338,11 @@ impl ModelManagerHandle {
         })
     }
 
-    /// [`Self::commit_staged_model_file`] for several staged files, in order,
-    /// in one call (the batch `addModelFiles` and DecoratorManager results).
-    /// On success each entry of `stages` is overwritten with its file's
-    /// handle, in the caller's reused buffer, and `true` is returned;
-    /// `false`, changing nothing, when any stage id is unknown. A
-    /// registration error is thrown as [`Self::commit_staged_model_file`]
-    /// throws it, with the files before it registered and the stages after
-    /// it left staged.
+    /// [`Self::commit_staged_model_file`] for several stages, in order, in one
+    /// call: each entry of `stages` is overwritten with its file's handle and
+    /// `true` returned; `false`, changing nothing, for an unknown stage. A
+    /// registration error is thrown with the earlier files registered and the
+    /// later ones still staged.
     #[wasm_bindgen(js_name = commitStagedModelFiles)]
     pub fn commit_staged_model_files(&mut self, stages: &mut [u32]) -> JsResult<bool> {
         if stages
@@ -710,14 +695,11 @@ impl ModelManagerHandle {
         })
     }
 
-    /// TS: the apply, validate and rollback part of
-    /// `BaseModelManager.updateExternalModels` (the download stays in JS).
-    /// `sources` is JSON text, the downloaded files in order, each `{ast,
-    /// definitions, fileName}`: each is added, or replaces its namespace's
-    /// file, without validation; then every file is validated, and any
-    /// failure leaves the handle as it was. `model_files` is the view's
-    /// model files as they would be once applied, for naming the JS
-    /// `ModelFile` a failure is found in.
+    /// TS: `BaseModelManager.updateExternalModels` after the download. `sources`
+    /// is JSON text, `[{ast, definitions, fileName}]`: each is added or replaces
+    /// its namespace unvalidated, then every file is validated; any failure
+    /// leaves the handle as it was. `model_files` are the view's files once
+    /// applied, for naming the JS `ModelFile` a failure is in.
     #[wasm_bindgen(js_name = updateExternalModels)]
     pub fn update_external_models(&mut self, sources: &str, model_files: &JsValue) -> JsResult<()> {
         self.bump_epoch();
@@ -806,14 +788,11 @@ impl ModelManagerHandle {
         })
     }
 
-    /// TS: `ModelFile.filter(predicate, modelManager)`, for a model file this
-    /// manager holds; `target` is the `modelManager` argument, usually a
-    /// fresh manager (`BaseModelManager.filter` builds one). `predicate` is
-    /// called with each candidate declaration's fully-qualified name, a
-    /// declaration of an imported file included, as `ModelManager::filter`
-    /// keys it; a predicate that throws propagates. The filtered file, if any
-    /// declaration survives, is added to `target` as `addModel` would add it
-    /// and its handle returned; `undefined` (TS `null`) otherwise.
+    /// TS: `ModelFile.filter(predicate, modelManager)` for a file this manager
+    /// holds, into `target`. `predicate` gets each candidate's fqn, imported
+    /// declarations included; a throw propagates. A file with a surviving
+    /// declaration is added to `target` as `addModel` would and its handle
+    /// returned; `undefined` (TS `null`) otherwise.
     #[wasm_bindgen(js_name = modelFileFilter)]
     pub fn model_file_filter(
         &self,

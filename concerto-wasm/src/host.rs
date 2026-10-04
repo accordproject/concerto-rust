@@ -23,15 +23,12 @@ pub fn set_host(error_factory: Function) {
     });
 }
 
-/// What a binding can fail with: a JS exception raised by a callback (passed
-/// through unchanged), or a core error to map.
-///
-/// The rule for errors raised here rather than by the error factory:
-/// malformed JSON text is the JS `SyntaxError` `JSON.parse` throws
-/// ([`json_syntax`]); bytes not in the encoding a binding reads, which the
-/// TS side never writes, are a bare JS `TypeError` ([`utf8_text`],
-/// [`compact_layout_error`]); and a failure no input can cause is a plain JS
-/// `Error` ([`internal`]). Everything else goes through [`throw`].
+/// What a binding can fail with: a JS exception from a callback (passed
+/// through), or a core error to map with [`throw`]. Raised here instead:
+/// malformed JSON is `JSON.parse`'s `SyntaxError` ([`json_syntax`]), bytes
+/// the TS side never writes a bare `TypeError` ([`utf8_text`],
+/// [`compact_layout_error`]), and an impossible failure a plain `Error`
+/// ([`internal`]).
 pub(crate) enum Error {
     Js(JsValue),
     Contract(Box<ContractError>),

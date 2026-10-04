@@ -177,18 +177,12 @@ pub fn decorator_manager_execute_property_command(
 pub(crate) const DCS_EXCLUDE_NS: [&str; 3] =
     ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
 
-/// Stages each of a DecoratorManager result's model files, with its header, into
-/// `target`'s staging slot, and returns one entry per file, in the manager's load
-/// order: `null` for a system file `fromAst` skips ([`DCS_EXCLUDE_NS`]), otherwise
-/// the stage in the flat layout every staging path returns ([`FlatStaged`]). The
-/// one helper both [`stage_result`] and [`dcs_memo::DcsExtractKept::stage`] stage
-/// through. Staging never changes `target`'s manager or epoch, and has one
-/// capacity policy: past [`StagedModelFiles::CAPACITY`] the oldest stage is
-/// evicted ([`StagedModelFiles::insert_shared`]), and its file falls back to
-/// sending its AST, as any evicted stage does.
-///
-/// Each file is staged shared with the result
-/// (`ModelManager::shared_model_files`), not deep-copied.
+/// Stages each file of a DecoratorManager result, shared and with its
+/// header, into `target`'s staging slot: one entry per file in load order,
+/// `null` for a system file `fromAst` skips ([`DCS_EXCLUDE_NS`]), else a
+/// [`FlatStaged`]. The one helper [`stage_result`] and
+/// [`dcs_memo::DcsExtractKept::stage`] stage through; it never moves
+/// `target`'s epoch, and evicts as [`StagedModelFiles::insert_shared`] does.
 pub(crate) fn stage_shared<'h, 'a: 'h>(
     target: &mut ModelManagerHandle,
     files: impl Iterator<Item = (&'h Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
@@ -244,20 +238,11 @@ impl DcsManagerHandle {
         })
     }
 
-    /// TS: `DecoratorManager.decorateModels` on the resident manager, with
-    /// the result staged into `target` (the new ModelManager's handle, as
-    /// the view's `clearModelFiles` left it). Returns `{ast, staged,
-    /// validated}`: `ast` is the decorated models' AST, `staged` is
-    /// `stage_result`'s entries for `ast.models`, and `validated` is
-    /// whether the result manager was validated (every model but the system
-    /// ones).
-    ///
-    /// The result is validated with `target`'s `decoratorValidation`, as TS
-    /// validates it in `new ModelManager({decoratorValidation: modelManager
-    /// .getDecoratorValidation()}).fromAst(…)`. A fresh resident manager has
-    /// the default (disabled) option, so it takes `target`'s before it runs;
-    /// otherwise the view, which trusts `validated`, would skip the decorator
-    /// checks.
+    /// TS: `DecoratorManager.decorateModels` on the resident manager, staging
+    /// the result into `target`. Returns `{ast, staged, validated}`. The result
+    /// is validated with `target`'s `decoratorValidation`, as TS's
+    /// `new ModelManager({decoratorValidation: ...}).fromAst(...)` does;
+    /// otherwise the view, which trusts `validated`, would skip those checks.
     #[wasm_bindgen(js_name = decorateModels)]
     pub fn decorate_models(
         &mut self,
@@ -288,15 +273,11 @@ impl DcsManagerHandle {
 
 #[wasm_bindgen]
 impl ModelManagerHandle {
-    /// TS: `DecoratorManager.validate`'s structural check
-    /// (`serializer.fromJSON(decoratorCommandSet)`), against this handle's
-    /// own resident manager. The view calls it on the
-    /// `validationModelManager` it has just built and returns (the
-    /// metamodel, the caller's model files and the DCS model), once that
-    /// manager's rustHandle mirrors its model files; so it neither sends the
-    /// model files again nor rebuilds a manager from them, and
-    /// [`dcs::validate_against`] throws what [`dcs::validate`] throws at the
-    /// same step. Never changes the manager.
+    /// TS: `DecoratorManager.validate`'s structural check, on this handle's
+    /// manager: the view calls it on the `validationModelManager` it has just
+    /// built, once its rustHandle mirrors the files, so nothing is sent or
+    /// rebuilt. [`dcs::validate_against`] throws what [`dcs::validate`] throws
+    /// at the same step. Never changes the manager.
     #[wasm_bindgen(js_name = dcsValidate)]
     pub fn dcs_validate(&self, decorator_command_set: JsValue) -> JsResult<()> {
         run(|| {

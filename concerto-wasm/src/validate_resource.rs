@@ -206,14 +206,11 @@ impl ModelManagerHandle {
         }))
     }
 
-    /// The slot [`Self::validate_property_by_id`] takes for property
-    /// `prop_name` of type `class_fqn`, which TS looks up once per class
-    /// and property and keeps for the model version: `[declId, propIndex,
-    /// epoch]`, the declaration's handle, the property's index in its
-    /// validation plan and this handle's epoch, low 32 bits. `undefined`
-    /// when [`Self::validate_property_binary`] would answer
-    /// `CODE_UNSUPPORTED` for them (a type whose plan does not resolve,
-    /// or no such property). Reads only.
+    /// The `[declId, propIndex, epoch]` slot [`Self::validate_property_by_id`]
+    /// takes for `class_fqn.prop_name` (epoch's low 32 bits), which TS keeps
+    /// per model version. `undefined` where
+    /// [`Self::validate_property_binary`] would answer `CODE_UNSUPPORTED`.
+    /// Reads only.
     #[wasm_bindgen(js_name = validationPropertySlot)]
     pub fn validation_property_slot(&self, class_fqn: &str, prop_name: &str) -> Option<Vec<u32>> {
         let decl = self.manager.type_declaration(class_fqn).ok()?;

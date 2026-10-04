@@ -178,29 +178,15 @@ impl ModelManagerHandle {
         })
     }
 
-    /// TS: `Decorator.validate`. `view` is the Decorator, already processed
-    /// (`name`/`arguments` set), whose `handleError` reports each problem;
-    /// `model_file` is `this.getParent().getModelFile()` (for the errors it
-    /// names) and `model_file_id` its handle, which every type is resolved
-    /// in; `context` is `this.getParent().getFullyQualifiedName?.()` —
-    /// nullish for a model file's own decorator, exactly as TS's optional
-    /// call leaves it; `options` is the manager's
-    /// `getDecoratorValidation()`.
-    ///
-    /// Every exception this method raises is built by calling back into
-    /// `view.handleError` (or, for the try block's own resolution failure,
-    /// the shim's own `IllegalModelException`): the `IllegalModelException`
-    /// construction, its "File '...': " decoration and the log call are
-    /// never reimplemented here, so they cannot drift from TS's.
-    /// `handleError` rethrows a caught `IllegalModelException` as it is
-    /// (BC-14; TS 5.0.0 wrapped it again; DV-016). TS's outer `catch`
-    /// re-reports *every* thrown value — including V8's `TypeError` for a
-    /// type with no `getProperties` (a decorator named after a primitive or
-    /// a scalar) — through `missingDecorator`, so both of this method's
-    /// `Error` variants are routed the same way: a `Error::Contract` is
-    /// first turned into the JS exception it would coerce to (`throw`), so
-    /// `handleError` sees the same kind of value TS's `catch (err)` would
-    /// have caught.
+    /// TS: `Decorator.validate`. `view` is the processed Decorator; `model_file`
+    /// and `model_file_id` are its file and handle, where types resolve;
+    /// `context` is the parent's optional `getFullyQualifiedName?.()`, nullish
+    /// for a model file's own decorator; `options` is
+    /// `getDecoratorValidation()`. Every exception is built by calling back
+    /// into `view.handleError`, so its construction, decoration and logging
+    /// cannot drift from TS's (BC-14; DV-016). As TS's outer `catch`
+    /// re-reports every thrown value through `missingDecorator`, a contract
+    /// error is first turned into the JS exception it would be.
     #[wasm_bindgen(js_name = decoratorValidate)]
     pub fn decorator_validate(
         &self,

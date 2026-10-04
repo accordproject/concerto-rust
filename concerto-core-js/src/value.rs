@@ -24,17 +24,11 @@ use concerto_core::hash::SeededState;
 use indexmap::IndexMap;
 use serde_json::Value;
 
-/// The key-ordered map behind a plain object ([`JsValue::Object`]), an
-/// instance's own properties ([`Instance::props`]) and the serializer
-/// options (`SerializerOptions`): an `IndexMap`, so iteration is in
-/// insertion order (`Object.keys` order).
-///
-/// Its keys come from user-supplied JSON instances, so it hashes with
-/// SipHash under secret keys ([`SeededState`]), not FxHash: with an unseeded
-/// or publicly keyed hash an attacker can send an object whose keys all
-/// collide, making building, validating or serializing it quadratic
-/// (tests/hashdos.rs; PORTING.md 3.7). FxHash stays for the engine's
-/// internal tables keyed by identifiers.
+/// The key-ordered map behind a plain object, an instance's own properties
+/// and the serializer options: insertion (`Object.keys`) order. Its keys
+/// come from user JSON, so it hashes with secret-keyed SipHash
+/// ([`SeededState`]) against key-collision DoS (tests/hashdos.rs;
+/// PORTING.md 3.7).
 pub type JsObject = IndexMap<String, JsValue, SeededState>;
 
 use concerto_core::error::Result;

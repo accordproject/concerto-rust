@@ -11,21 +11,11 @@ use std::sync::Arc;
 use concerto_core::ModelFile;
 use concerto_core::model_manager::ValidityProof;
 
-/// The staging slot of a [`crate::ModelManagerHandle`]: model
-/// files loaded from their AST once, by
-/// [`crate::ModelManagerHandle::stage_model_file`], kept until the view registers
-/// ([`crate::ModelManagerHandle::commit_staged_model_file`]), validates
-/// ([`crate::ModelManagerHandle::model_file_validate_staged`]) or drops them.
-/// Staging never changes the manager, so it never moves the epoch.
-///
-/// Bounded: past [`StagedModelFiles::CAPACITY`] entries the oldest one is
-/// evicted. A view whose stage id was evicted gets `undefined` back and
-/// falls back to sending the AST again, so eviction only costs time.
-///
-/// Each file is kept shared (`Arc`), so a DecoratorManager result staged from a
-/// manager that keeps its files (the extract memo) or is about to drop them
-/// ([`crate::stage_result`]) is staged without a deep copy, and registered as the
-/// same shared file ([`concerto_core::ModelManager::add_shared_model_file`]).
+/// The staging slot of a [`crate::ModelManagerHandle`]: files loaded once by
+/// [`crate::ModelManagerHandle::stage_model_file`], kept shared (`Arc`) until
+/// the view registers, validates or drops them. Staging never moves the
+/// epoch. Past [`StagedModelFiles::CAPACITY`] the oldest entry is evicted;
+/// an evicted stage gets `undefined` and the view sends the AST again.
 #[derive(Default)]
 pub(crate) struct StagedModelFiles {
     pub(crate) files: BTreeMap<u32, Arc<ModelFile>>,
