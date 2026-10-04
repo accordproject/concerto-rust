@@ -35,7 +35,6 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use concerto_core::dcs;

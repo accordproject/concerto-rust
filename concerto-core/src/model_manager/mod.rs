@@ -437,6 +437,15 @@ impl ModelManager {
         }
     }
 
+    js_compat_pub! {
+        /// The model file a handle names, as the shared handle this manager
+        /// keeps it in ([`ModelManager::shared_model_files`]).
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn shared_file(&self, id: ModelFileId) -> Option<&Arc<ModelFile>> {
+            self.files.get(id.slot()).map(|slot| &slot.model_file)
+        }
+    }
+
     /// A new manager over the same models: the same options, the same model
     /// files in the same order (shared, never copied), and the same handles.
     /// Nothing is validated again, and the fork starts with this manager's
@@ -985,6 +994,37 @@ impl ModelManager {
         self.filter_declarations(keep, false)
     }
 
+    js_compat_pub! {
+        /// TS `ModelFile.filter(predicate, modelManager)` for the file `id`
+        /// names here ([`ModelFile::filter_outcome`]), with `keep` handed
+        /// each candidate's fully-qualified name, borrowed from the arena:
+        /// the file's own declarations, then those its imports name in
+        /// their source files here.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn filter_model_file(
+            &self,
+            id: ModelFileId,
+            keep: impl Fn(&str) -> bool,
+        ) -> Result<crate::introspect::model_file::FilterOutcome> {
+            let file = self.file(id).ok_or_else(|| unknown(Node::ModelFile(id)))?;
+            file.filter_outcome_at(
+                |namespace, index, decl| match self.decl_id_in(namespace, index) {
+                    Some(id) => keep(&self.declarations[id.slot()].fqn),
+                    None => keep(&qualify(namespace, decl.name())),
+                },
+                self,
+            )
+        }
+    }
+
+    /// The handle of the declaration at `index` in the file registered
+    /// under `namespace`, if there is one.
+    fn decl_id_in(&self, namespace: &str, index: usize) -> Option<DeclId> {
+        let slot = self.files.get(self.model_file_id(namespace)?.slot())?;
+        self.decl_id_at(slot, index)
+            .filter(|id| slot.declarations.contains(&id.index()))
+    }
+
     /// [`ModelManager::filter_by_fqn`] over a predicate on the declaration too.
     fn filter_declarations(
         &self,
@@ -1017,13 +1057,8 @@ impl ModelManager {
             }
         }
         let is_kept = |namespace: &str, index: usize, _: &Declaration| {
-            self.model_file_id(namespace)
-                .and_then(|file| self.files.get(file.slot()))
-                .and_then(|slot| {
-                    let id = slot.declarations.start as usize + index;
-                    (id < slot.declarations.end as usize).then_some(id)
-                })
-                .and_then(|id| kept.get(id).copied())
+            self.decl_id_in(namespace, index)
+                .and_then(|id| kept.get(id.slot()).copied())
                 .unwrap_or(false)
         };
 
