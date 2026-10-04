@@ -249,7 +249,7 @@ impl ClassDeclaration {
 
     /// True if this declaration's own AST declares an identity, system or
     /// explicit: TS's `this.idField`, not the inherited `isIdentified()`
-    /// (`ModelManager::identifier_field_name` walks the chain).
+    /// (`ModelManager::identifier_field` walks the chain).
     pub fn is_identified(&self) -> bool {
         self.identified().is_some()
     }
@@ -269,7 +269,7 @@ impl ClassDeclaration {
 
     /// [`ClassDeclaration::identifier_field_name`], but also giving
     /// `$identifier` for a system-identified type: the per-class step
-    /// `ModelManager::identifier_field_name` walks up the chain.
+    /// `ModelManager::identifier_field` walks up the chain.
     pub(crate) fn own_identifier_field_name(&self) -> Option<&str> {
         match self.identified() {
             Some(mm::Identified::IdentifiedBy(by)) => Some(&by.name),

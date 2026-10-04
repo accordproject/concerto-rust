@@ -25,10 +25,15 @@ jobs:
         with:
           repository: accordproject/concerto-conformance
           # Pinned to a fixed suite commit so new scenarios landing upstream
-          # cannot turn this job red on their own. Bumped to conformance main
-          # 57d3c23 after P5-08a/b (#39, #40) landed (P5-08c,
-          # accordproject/concerto-rust#257). main pins 9339642 until it catches up.
-          ref: 57d3c2397acf333985f761684ad2cbef55ba7ead
+          # cannot turn this job red on their own. P5-122
+          # (accordproject/concerto-rust#498) removed the deprecated
+          # `ModelManager::add_model` the harness at main 57d3c23 calls, so the
+          # pin moved to 3035de1, the top of the conformance stack
+          # (#41 on #43 on #42, branch claude/tender-pascal-ocwf9q-local-matt-P5-53),
+          # whose harness uses the stable `add_model_ast`. That is a draft
+          # branch commit: move the pin to conformance main once the stack
+          # merges. main pins 9339642 until it catches up.
+          ref: 3035de1e726566c15242972b4d5ca96019c066ba
           path: concerto-conformance
       
       - name: Install Conformance Suite Dependencies

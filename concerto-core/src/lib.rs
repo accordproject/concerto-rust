@@ -107,8 +107,6 @@ pub mod prelude {
     pub use crate::introspect::{DeclarationKind, Decorated, Named, Typed};
 }
 
-#[allow(deprecated)]
-pub use error::ConcertoError;
 pub use error::{Error, ErrorKind, Result};
 pub use introspect::{
     ClassDeclaration, ClassKind, Declaration, DeclarationKind, Decorated, Decorator,

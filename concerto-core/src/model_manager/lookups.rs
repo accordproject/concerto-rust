@@ -496,8 +496,7 @@ impl ModelManager {
         .into())
     }
 
-    /// The body of [`ModelManager::ast`] and the deprecated
-    /// [`ModelManager::get_ast`]: [`ModelManager::model_asts`] in the
+    /// The body of [`ModelManager::ast`]: [`ModelManager::model_asts`] in the
     /// metamodel's `Models` envelope.
     pub(crate) fn models_ast(
         &self,

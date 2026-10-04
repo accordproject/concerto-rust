@@ -668,14 +668,8 @@ impl ModelFile {
         })
     }
 
-    /// Deprecated name of [`ModelFile::import_uri`].
-    #[deprecated(since = "0.1.0", note = "use `import_uri`")]
-    pub fn get_import_uri(&self, key: &str) -> Option<&str> {
-        self.import_uri(key)
-    }
-
     /// TS: `ModelFile.getExternalImports` — every import-URI pair
-    /// [`ModelFile::get_import_uri`] can answer, keyed the same way.
+    /// [`ModelFile::import_uri`] can answer, keyed the same way.
     ///
     /// In import order, as TS's `importUriMap` keeps insertion order with a
     /// later duplicate key overwriting in place (PORTING.md 3.7).
@@ -691,12 +685,6 @@ impl ModelFile {
         out
     }
 
-    /// Deprecated name of [`ModelFile::external_imports`].
-    #[deprecated(since = "0.1.0", note = "use `external_imports`")]
-    pub fn get_external_imports(&self) -> IndexMap<String, String> {
-        self.external_imports()
-    }
-
     /// TS: `ModelFile.getImports`: the fully-qualified names this file
     /// imports (declared names, never aliases), with the built-in system
     /// import for a non-system file.
@@ -709,12 +697,6 @@ impl ModelFile {
                     .map(|name| qualify(imp.namespace(), name))
             })
             .collect()
-    }
-
-    /// Deprecated name of [`ModelFile::imported_type_names`].
-    #[deprecated(since = "0.1.0", note = "use `imported_type_names`")]
-    pub fn get_imports(&self) -> Vec<String> {
-        self.imported_type_names()
     }
 
     /// TS: `ModelFile.getLocalType` — accepts either a short name, or a name
@@ -734,12 +716,6 @@ impl ModelFile {
             None => type_name,
         };
         self.local_index(short)
-    }
-
-    /// Deprecated name of [`ModelFile::local_type`].
-    #[deprecated(since = "0.1.0", note = "use `local_type`")]
-    pub fn get_local_type(&self, type_name: &str) -> Option<&Declaration> {
-        self.local_type(type_name)
     }
 
     /// TS: `ModelFile.isLocalType`.
@@ -796,12 +772,6 @@ impl ModelFile {
             .map(|fqn| short_name(&fqn).to_string())
     }
 
-    /// Deprecated name of [`ModelFile::imported_type`].
-    #[deprecated(since = "0.1.0", note = "use `imported_type`")]
-    pub fn get_imported_type(&self, type_name: &str) -> Result<String> {
-        self.imported_type(type_name)
-    }
-
     /// TS: `ModelFile.isDefined` — a primitive, or a type this file declares
     /// itself (an imported-only name is not "defined" by this file).
     pub fn is_defined(&self, type_name: &str) -> bool {
@@ -822,29 +792,10 @@ impl ModelFile {
         })
     }
 
-    /// Deprecated name of [`ModelFile::fully_qualified_type_name`].
-    #[deprecated(since = "0.1.0", note = "use `fully_qualified_type_name`")]
-    pub fn get_fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
-        self.fully_qualified_type_name(type_name)
-    }
-
-    /// Deprecated: [`ModelFile::fully_qualified_type_name`] resolves a short
-    /// name the same way, and a qualified local one too.
-    #[deprecated(since = "0.1.0", note = "use `fully_qualified_type_name`")]
-    pub fn resolve_local_type(&self, short: &str) -> Option<String> {
-        self.fully_qualified_type_name(short)
-    }
-
     /// TS: `ModelFile.getAssetDeclaration`.
     pub fn asset_declaration(&self, name: &str) -> Option<&Declaration> {
         self.local_type(name)
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_asset))
-    }
-
-    /// Deprecated name of [`ModelFile::asset_declaration`].
-    #[deprecated(since = "0.1.0", note = "use `asset_declaration`")]
-    pub fn get_asset_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.asset_declaration(name)
     }
 
     /// TS: `ModelFile.getTransactionDeclaration`.
@@ -853,22 +804,10 @@ impl ModelFile {
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_transaction))
     }
 
-    /// Deprecated name of [`ModelFile::transaction_declaration`].
-    #[deprecated(since = "0.1.0", note = "use `transaction_declaration`")]
-    pub fn get_transaction_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.transaction_declaration(name)
-    }
-
     /// TS: `ModelFile.getEventDeclaration`.
     pub fn event_declaration(&self, name: &str) -> Option<&Declaration> {
         self.local_type(name)
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_event))
-    }
-
-    /// Deprecated name of [`ModelFile::event_declaration`].
-    #[deprecated(since = "0.1.0", note = "use `event_declaration`")]
-    pub fn get_event_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.event_declaration(name)
     }
 
     /// TS: `ModelFile.getParticipantDeclaration`.
@@ -877,21 +816,9 @@ impl ModelFile {
             .filter(|d| d.as_class().is_some_and(ClassDeclaration::is_participant))
     }
 
-    /// Deprecated name of [`ModelFile::participant_declaration`].
-    #[deprecated(since = "0.1.0", note = "use `participant_declaration`")]
-    pub fn get_participant_declaration(&self, name: &str) -> Option<&Declaration> {
-        self.participant_declaration(name)
-    }
-
     /// TS: `ModelFile.getAssetDeclarations`.
     pub fn asset_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_asset)
-    }
-
-    /// Deprecated name of [`ModelFile::asset_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `asset_declarations`")]
-    pub fn get_asset_declarations(&self) -> Vec<&Declaration> {
-        self.asset_declarations().collect()
     }
 
     /// TS: `ModelFile.getTransactionDeclarations`.
@@ -899,21 +826,9 @@ impl ModelFile {
         self.by_class_kind(ClassDeclaration::is_transaction)
     }
 
-    /// Deprecated name of [`ModelFile::transaction_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `transaction_declarations`")]
-    pub fn get_transaction_declarations(&self) -> Vec<&Declaration> {
-        self.transaction_declarations().collect()
-    }
-
     /// TS: `ModelFile.getEventDeclarations`.
     pub fn event_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_event)
-    }
-
-    /// Deprecated name of [`ModelFile::event_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `event_declarations`")]
-    pub fn get_event_declarations(&self) -> Vec<&Declaration> {
-        self.event_declarations().collect()
     }
 
     /// TS: `ModelFile.getParticipantDeclarations`.
@@ -921,21 +836,9 @@ impl ModelFile {
         self.by_class_kind(ClassDeclaration::is_participant)
     }
 
-    /// Deprecated name of [`ModelFile::participant_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `participant_declarations`")]
-    pub fn get_participant_declarations(&self) -> Vec<&Declaration> {
-        self.participant_declarations().collect()
-    }
-
     /// TS: `ModelFile.getConceptDeclarations`.
     pub fn concept_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.by_class_kind(ClassDeclaration::is_concept)
-    }
-
-    /// Deprecated name of [`ModelFile::concept_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `concept_declarations`")]
-    pub fn get_concept_declarations(&self) -> Vec<&Declaration> {
-        self.concept_declarations().collect()
     }
 
     fn by_class_kind(
@@ -955,21 +858,9 @@ impl ModelFile {
             .filter(|d| !d.is_map_declaration() && !d.is_scalar_declaration())
     }
 
-    /// Deprecated name of [`ModelFile::class_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `class_declarations`")]
-    pub fn get_class_declarations(&self) -> Vec<&Declaration> {
-        self.class_declarations().collect()
-    }
-
     /// TS: `ModelFile.getEnumDeclarations`.
     pub fn enum_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.declarations.iter().filter(|d| d.is_enum_declaration())
-    }
-
-    /// Deprecated name of [`ModelFile::enum_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `enum_declarations`")]
-    pub fn get_enum_declarations(&self) -> Vec<&Declaration> {
-        self.enum_declarations().collect()
     }
 
     /// TS: `ModelFile.getMapDeclarations`.
@@ -977,23 +868,11 @@ impl ModelFile {
         self.declarations.iter().filter(|d| d.is_map_declaration())
     }
 
-    /// Deprecated name of [`ModelFile::map_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `map_declarations`")]
-    pub fn get_map_declarations(&self) -> Vec<&Declaration> {
-        self.map_declarations().collect()
-    }
-
     /// TS: `ModelFile.getScalarDeclarations`.
     pub fn scalar_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.declarations
             .iter()
             .filter(|d| d.is_scalar_declaration())
-    }
-
-    /// Deprecated name of [`ModelFile::scalar_declarations`].
-    #[deprecated(since = "0.1.0", note = "use `scalar_declarations`")]
-    pub fn get_scalar_declarations(&self) -> Vec<&Declaration> {
-        self.scalar_declarations().collect()
     }
 
     /// TS: `ModelFile.filter`: a new model file with only the declarations

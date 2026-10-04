@@ -155,10 +155,6 @@ pub struct ValidationReport {
     diagnostics: Vec<Diagnostic>,
 }
 
-/// Deprecated name of [`ValidationReport`].
-#[deprecated(since = "0.1.0", note = "renamed to `ValidationReport`")]
-pub type ValidationResult = ValidationReport;
-
 impl ValidationReport {
     pub(crate) fn new(diagnostics: Vec<Diagnostic>) -> Self {
         Self { diagnostics }

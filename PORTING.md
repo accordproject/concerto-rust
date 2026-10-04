@@ -1478,7 +1478,10 @@ static getShortName(fqn) {
 ```
 
 **Rust** (`concerto-core/src/model_util.rs`, which replaced the existing
-`short_name` in P0-04b; callers were renamed in the same commit):
+`short_name` in P0-04b; callers were renamed in the same commit). This is
+the trial's code: D11 restored `short_name` as the stable name, and
+`get_short_name` was removed before the first release (P5-122,
+docs/public-api.md section 5.8):
 
 ```rust
 /// Returns everything after the last dot, if present, of the source string.

@@ -139,9 +139,7 @@ impl core::marker::Unpin for concerto_core::error::Position
 impl core::marker::UnsafeUnpin for concerto_core::error::Position
 impl core::panic::unwind_safe::RefUnwindSafe for concerto_core::error::Position
 impl core::panic::unwind_safe::UnwindSafe for concerto_core::error::Position
-pub type concerto_core::error::ConcertoError = concerto_core::error::Error
 pub type concerto_core::error::Result<T, E> = core::result::Result<T, E>
-pub type concerto_core::error::ValidationDetail = concerto_core::error::Detail
 pub mod concerto_core::instance
 #[non_exhaustive] pub enum concerto_core::instance::DiagnosticCode
 pub concerto_core::instance::DiagnosticCode::AbstractClass
@@ -275,7 +273,6 @@ impl core::marker::Unpin for concerto_core::instance::ValidationReport
 impl core::marker::UnsafeUnpin for concerto_core::instance::ValidationReport
 impl core::panic::unwind_safe::RefUnwindSafe for concerto_core::instance::ValidationReport
 impl core::panic::unwind_safe::UnwindSafe for concerto_core::instance::ValidationReport
-pub type concerto_core::instance::ValidationResult = concerto_core::instance::ValidationReport
 pub mod concerto_core::introspect
 pub mod concerto_core::introspect::declaration
 #[non_exhaustive] pub enum concerto_core::introspect::declaration::ClassKind
@@ -332,8 +329,6 @@ pub fn concerto_core::introspect::declaration::Declaration::type_name(&self) -> 
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::clone(&self) -> Self
 impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
@@ -375,8 +370,6 @@ pub fn concerto_core::introspect::declaration::ClassDeclaration::name(&self) -> 
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::declaration::ClassDeclaration
@@ -405,8 +398,6 @@ pub fn concerto_core::introspect::declaration::EnumDeclaration::name(&self) -> &
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::EnumDeclaration
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::EnumDeclaration
 pub fn concerto_core::introspect::declaration::EnumDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::declaration::EnumDeclaration
@@ -437,8 +428,6 @@ pub fn concerto_core::introspect::declaration::MapDeclaration::name(&self) -> &s
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::declaration::MapDeclaration
@@ -566,43 +555,27 @@ pub fn concerto_core::json::Value::to_json(&self) -> concerto_core::json::Value
 pub trait concerto_core::introspect::decorator::Decorated
 pub fn concerto_core::introspect::decorator::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::decorator::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::decorator::Decorated::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::decorator::Decorated::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::EnumDeclaration
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 pub mod concerto_core::introspect::field
 pub mod concerto_core::introspect::import
 pub enum concerto_core::introspect::import::Import
@@ -614,7 +587,6 @@ impl concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::imported_names(&self) -> &[alloc::string::String]
 pub fn concerto_core::introspect::import::Import::local_names(&self) -> alloc::vec::Vec<&str>
 pub fn concerto_core::introspect::import::Import::namespace(&self) -> &str
-pub fn concerto_core::introspect::import::Import::resolve(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::import::Import::uri(&self) -> core::option::Option<&str>
 impl core::clone::Clone for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::clone(&self) -> Self
@@ -652,25 +624,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::from_json_text(&str, co
 pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_class_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_concept_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_enum_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_event_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_import_uri(&self, &str) -> core::option::Option<&str>
-pub fn concerto_core::introspect::model_file::ModelFile::get_imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_imports(&self) -> alloc::vec::Vec<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_local_type(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_map_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_participant_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_participant_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_scalar_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_transaction_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_transaction_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::import_uri(&self, &str) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::imported_type_names(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -687,7 +640,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::namespace(&self) -> &st
 pub fn concerto_core::introspect::model_file::ModelFile::participant_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::participant_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::resolve_import(&self, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::resolve_local_type(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::scalar_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::transaction_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::transaction_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
@@ -695,8 +647,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::version(&self) -> &str
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::model_file::ModelFile
@@ -739,8 +689,6 @@ pub fn concerto_core::introspect::property::Property::type_name(&self) -> core::
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::clone(&self) -> Self
 impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
@@ -792,8 +740,6 @@ pub fn concerto_core::introspect::scalar::ScalarDeclaration::type_name(&self) ->
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::scalar::ScalarDeclaration
@@ -945,8 +891,6 @@ pub fn concerto_core::introspect::declaration::Declaration::type_name(&self) -> 
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::clone(&self) -> Self
 impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
@@ -989,7 +933,6 @@ impl concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::imported_names(&self) -> &[alloc::string::String]
 pub fn concerto_core::introspect::import::Import::local_names(&self) -> alloc::vec::Vec<&str>
 pub fn concerto_core::introspect::import::Import::namespace(&self) -> &str
-pub fn concerto_core::introspect::import::Import::resolve(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::import::Import::uri(&self) -> core::option::Option<&str>
 impl core::clone::Clone for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::clone(&self) -> Self
@@ -1035,8 +978,6 @@ pub fn concerto_core::introspect::property::Property::type_name(&self) -> core::
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::clone(&self) -> Self
 impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
@@ -1078,8 +1019,6 @@ pub fn concerto_core::introspect::declaration::ClassDeclaration::name(&self) -> 
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::declaration::ClassDeclaration
@@ -1151,8 +1090,6 @@ pub fn concerto_core::introspect::declaration::MapDeclaration::name(&self) -> &s
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::declaration::MapDeclaration
@@ -1185,25 +1122,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::from_json_text(&str, co
 pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_class_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_concept_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_enum_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_event_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_import_uri(&self, &str) -> core::option::Option<&str>
-pub fn concerto_core::introspect::model_file::ModelFile::get_imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_imports(&self) -> alloc::vec::Vec<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_local_type(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_map_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_participant_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_participant_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_scalar_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_transaction_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_transaction_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::import_uri(&self, &str) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::imported_type_names(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -1220,7 +1138,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::namespace(&self) -> &st
 pub fn concerto_core::introspect::model_file::ModelFile::participant_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::participant_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::resolve_import(&self, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::resolve_local_type(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::scalar_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::transaction_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::transaction_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
@@ -1228,8 +1145,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::version(&self) -> &str
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::model_file::ModelFile
@@ -1260,8 +1175,6 @@ pub fn concerto_core::introspect::scalar::ScalarDeclaration::type_name(&self) ->
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::scalar::ScalarDeclaration
@@ -1307,43 +1220,27 @@ pub fn concerto_core::introspect::scalar::ScalarDeclaration::declaration_kind(&s
 pub trait concerto_core::introspect::Decorated
 pub fn concerto_core::introspect::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::Decorated::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::Decorated::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::EnumDeclaration
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 pub trait concerto_core::introspect::Named
 pub fn concerto_core::introspect::Named::name(&self) -> &str
 impl concerto_core::Named for concerto_core::introspect::declaration::ClassDeclaration
@@ -1995,17 +1892,6 @@ pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str)
 pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::add_models<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<alloc::string::String>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
-pub fn concerto_core::model_manager::ModelManager::get_all_super_type_names(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::get_assignable_class_declarations(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::get_ast(&self, bool, bool) -> concerto_core::error::Result<serde_json::value::Value>
-pub fn concerto_core::model_manager::ModelManager::get_direct_subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::get_nested_property(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, concerto_core::introspect::property::Property)>
-pub fn concerto_core::model_manager::ModelManager::get_own_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::introspect::property::Property>>
-pub fn concerto_core::model_manager::ModelManager::get_property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, concerto_core::introspect::property::Property)>>
-pub fn concerto_core::model_manager::ModelManager::get_super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::identifier_field_name(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
@@ -2159,8 +2045,6 @@ impl core::marker::Unpin for concerto_core::model_util::SemVer
 impl core::marker::UnsafeUnpin for concerto_core::model_util::SemVer
 impl core::panic::unwind_safe::RefUnwindSafe for concerto_core::model_util::SemVer
 impl core::panic::unwind_safe::UnwindSafe for concerto_core::model_util::SemVer
-pub fn concerto_core::model_util::get_fully_qualified_name(&str, &str) -> alloc::string::String
-pub fn concerto_core::model_util::get_short_name(&str) -> &str
 pub fn concerto_core::model_util::is_primitive_type(&str) -> bool
 pub fn concerto_core::model_util::is_private_system_property(&str) -> bool
 pub fn concerto_core::model_util::is_system_property(&str) -> bool
@@ -2187,43 +2071,27 @@ pub fn concerto_core::introspect::scalar::ScalarDeclaration::declaration_kind(&s
 pub trait concerto_core::prelude::Decorated
 pub fn concerto_core::prelude::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::prelude::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::prelude::Decorated::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::prelude::Decorated::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::EnumDeclaration
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 pub trait concerto_core::prelude::Named
 pub fn concerto_core::prelude::Named::name(&self) -> &str
 impl concerto_core::Named for concerto_core::introspect::declaration::ClassDeclaration
@@ -2307,8 +2175,6 @@ pub fn concerto_core::introspect::declaration::Declaration::type_name(&self) -> 
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::clone(&self) -> Self
 impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::declaration::Declaration
@@ -2378,7 +2244,6 @@ impl concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::imported_names(&self) -> &[alloc::string::String]
 pub fn concerto_core::introspect::import::Import::local_names(&self) -> alloc::vec::Vec<&str>
 pub fn concerto_core::introspect::import::Import::namespace(&self) -> &str
-pub fn concerto_core::introspect::import::Import::resolve(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::import::Import::uri(&self) -> core::option::Option<&str>
 impl core::clone::Clone for concerto_core::introspect::import::Import
 pub fn concerto_core::introspect::import::Import::clone(&self) -> Self
@@ -2424,8 +2289,6 @@ pub fn concerto_core::introspect::property::Property::type_name(&self) -> core::
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::clone(&self) -> Self
 impl core::convert::TryFrom<&concerto_core::json::Value> for concerto_core::introspect::property::Property
@@ -2467,8 +2330,6 @@ pub fn concerto_core::introspect::declaration::ClassDeclaration::name(&self) -> 
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::declaration::ClassDeclaration
@@ -2567,25 +2428,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::from_json_text(&str, co
 pub fn concerto_core::introspect::model_file::ModelFile::from_json_with_definitions(&concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::from_owned_json_with_definitions(concerto_core::json::Value, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<Self>
 pub fn concerto_core::introspect::model_file::ModelFile::fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_asset_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_class_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_concept_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_enum_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_event_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_event_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_external_imports(&self) -> indexmap::map::IndexMap<alloc::string::String, alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_fully_qualified_type_name(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_import_uri(&self, &str) -> core::option::Option<&str>
-pub fn concerto_core::introspect::model_file::ModelFile::get_imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_imports(&self) -> alloc::vec::Vec<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::get_local_type(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_map_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_participant_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_participant_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_scalar_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_transaction_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
-pub fn concerto_core::introspect::model_file::ModelFile::get_transaction_declarations(&self) -> alloc::vec::Vec<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::import_uri(&self, &str) -> core::option::Option<&str>
 pub fn concerto_core::introspect::model_file::ModelFile::imported_type(&self, &str) -> concerto_core::error::Result<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::imported_type_names(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -2602,7 +2444,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::namespace(&self) -> &st
 pub fn concerto_core::introspect::model_file::ModelFile::participant_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::participant_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::resolve_import(&self, &str) -> concerto_core::error::Result<alloc::string::String>
-pub fn concerto_core::introspect::model_file::ModelFile::resolve_local_type(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn concerto_core::introspect::model_file::ModelFile::scalar_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::transaction_declaration(&self, &str) -> core::option::Option<&concerto_core::introspect::declaration::Declaration>
 pub fn concerto_core::introspect::model_file::ModelFile::transaction_declarations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &concerto_core::introspect::declaration::Declaration>
@@ -2610,8 +2451,6 @@ pub fn concerto_core::introspect::model_file::ModelFile::version(&self) -> &str
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::model_file::ModelFile
@@ -2638,17 +2477,6 @@ pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str)
 pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
 pub fn concerto_core::model_manager::ModelManager::validate_ast(&mut self, &concerto_core::introspect::model_file::ModelFile) -> concerto_core::error::Result<()>
 impl concerto_core::model_manager::ModelManager
-pub fn concerto_core::model_manager::ModelManager::add_model(&mut self, &serde_json::value::Value, core::option::Option<alloc::string::String>) -> concerto_core::error::Result<()>
-pub fn concerto_core::model_manager::ModelManager::add_models<'a>(&mut self, impl core::iter::traits::collect::IntoIterator<Item = (&'a serde_json::value::Value, core::option::Option<alloc::string::String>)>) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::model_manager::ModelFileId>>
-pub fn concerto_core::model_manager::ModelManager::get_all_super_type_names(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::get_assignable_class_declarations(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::get_ast(&self, bool, bool) -> concerto_core::error::Result<serde_json::value::Value>
-pub fn concerto_core::model_manager::ModelManager::get_direct_subclasses(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::get_nested_property(&self, &str, &str) -> concerto_core::error::Result<(alloc::string::String, concerto_core::introspect::property::Property)>
-pub fn concerto_core::model_manager::ModelManager::get_own_properties(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<concerto_core::introspect::property::Property>>
-pub fn concerto_core::model_manager::ModelManager::get_property(&self, &str, &str) -> concerto_core::error::Result<core::option::Option<(alloc::string::String, concerto_core::introspect::property::Property)>>
-pub fn concerto_core::model_manager::ModelManager::get_super_type(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
-pub fn concerto_core::model_manager::ModelManager::identifier_field_name(&self, &str) -> concerto_core::error::Result<core::option::Option<alloc::string::String>>
 impl concerto_core::model_manager::ModelManager
 pub fn concerto_core::model_manager::ModelManager::assignable_types(&self, &str) -> concerto_core::error::Result<alloc::vec::Vec<(alloc::string::String, &concerto_core::introspect::declaration::Declaration)>>
 pub fn concerto_core::model_manager::ModelManager::derives_from(&self, &str, &str) -> concerto_core::error::Result<bool>
@@ -2717,8 +2545,6 @@ pub fn concerto_core::introspect::scalar::ScalarDeclaration::type_name(&self) ->
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl core::clone::Clone for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::clone(&self) -> Self
 impl core::fmt::Debug for concerto_core::introspect::scalar::ScalarDeclaration
@@ -2764,43 +2590,27 @@ pub fn concerto_core::introspect::scalar::ScalarDeclaration::declaration_kind(&s
 pub trait concerto_core::Decorated
 pub fn concerto_core::Decorated::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::Decorated::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::Decorated::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::Decorated::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::ClassDeclaration
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::ClassDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::ClassDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::Declaration
 pub fn concerto_core::introspect::declaration::Declaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::Declaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::Declaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::Declaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::EnumDeclaration
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::EnumDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::EnumDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::declaration::MapDeclaration
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::declaration::MapDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::declaration::MapDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::model_file::ModelFile
 pub fn concerto_core::introspect::model_file::ModelFile::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::model_file::ModelFile::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::model_file::ModelFile::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::property::Property::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::property::Property::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::property::Property::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 impl concerto_core::introspect::decorator::Decorated for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorator(&self, &str) -> core::option::Option<&concerto_core::introspect::decorator::Decorator>
-pub fn concerto_core::introspect::scalar::ScalarDeclaration::get_decorators(&self) -> &[concerto_core::introspect::decorator::Decorator]
 pub trait concerto_core::Named
 pub fn concerto_core::Named::name(&self) -> &str
 impl concerto_core::Named for concerto_core::introspect::declaration::ClassDeclaration
@@ -2823,5 +2633,4 @@ impl concerto_core::Typed for concerto_core::introspect::property::Property
 pub fn concerto_core::introspect::property::Property::type_name(&self) -> core::option::Option<&str>
 impl concerto_core::Typed for concerto_core::introspect::scalar::ScalarDeclaration
 pub fn concerto_core::introspect::scalar::ScalarDeclaration::type_name(&self) -> core::option::Option<&str>
-pub type concerto_core::ConcertoError = concerto_core::error::Error
 pub type concerto_core::Result<T, E> = core::result::Result<T, E>

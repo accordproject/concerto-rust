@@ -301,67 +301,6 @@ fn a_model_file_answers_by_short_or_qualified_name() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn the_deprecated_name_resolvers_still_answer() {
-    let manager = loaded();
-    let mf = manager.model_file("org.acme@1.0.0").unwrap();
-    assert_eq!(
-        mf.resolve_local_type("Person").as_deref(),
-        Some("org.acme@1.0.0.Person")
-    );
-    assert_eq!(mf.resolve_local_type("String").as_deref(), Some("String"));
-    assert_eq!(mf.resolve_local_type("Missing"), None);
-
-    let import = concerto_core::introspect::import::Import::try_from(&json!({
-        "$class": format!("{MM}.ImportTypes"),
-        "namespace": "org.other@1.0.0",
-        "types": ["Cat", "Dog"],
-        "aliasedTypes": [{ "$class": format!("{MM}.AliasedType"), "name": "Dog", "aliasedName": "Hound" }]
-    }))
-    .unwrap();
-    assert_eq!(
-        import.resolve("Cat").as_deref(),
-        Some("org.other@1.0.0.Cat")
-    );
-    assert_eq!(
-        import.resolve("Hound").as_deref(),
-        Some("org.other@1.0.0.Dog")
-    );
-    assert_eq!(import.resolve("Dog"), None);
-}
-
-/// The deprecated `ModelManager` wrappers keep their original
-/// `serde_json::Value` types (as the concerto-conformance harness calls
-/// them), and give the same models and AST as the stable API.
-#[test]
-#[allow(deprecated)]
-fn the_deprecated_model_manager_wrappers_take_serde_json_values() {
-    let ast: serde_json::Value = serde_json::to_value(model()).unwrap();
-
-    let mut manager = ModelManager::new().unwrap();
-    manager
-        .add_model(&ast, Some("acme.cto".to_string()))
-        .unwrap();
-    manager.validate_models().unwrap();
-    let expected = serde_json::to_value(loaded().ast(AstOptions::default()).unwrap()).unwrap();
-    let got: serde_json::Value = manager.get_ast(false, false).unwrap();
-    assert_eq!(got, expected);
-    assert_eq!(got.to_string(), expected.to_string(), "key order is kept");
-
-    let mut batch = ModelManager::new().unwrap();
-    let ids = batch
-        .add_models([(&ast, Some("acme.cto".to_string()))])
-        .unwrap();
-    assert_eq!(ids.len(), 1);
-    assert_eq!(batch.get_ast(false, false).unwrap(), expected);
-
-    let err = manager
-        .add_model(&ast, None)
-        .expect_err("the namespace is already loaded");
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
-}
-
-#[test]
 fn errors_are_read_through_accessors() {
     let located = json!({
         "$class": format!("{MM}.Model"),

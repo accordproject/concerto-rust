@@ -56,8 +56,6 @@ js_compat_mod!(plan);
 js_compat_mod!(resource_id);
 js_compat_mod!(validate);
 
-#[allow(deprecated)]
-pub use diagnostic::ValidationResult;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, ValidationReport};
 pub use options::ValidationOptions;
 

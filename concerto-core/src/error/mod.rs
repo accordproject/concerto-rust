@@ -39,13 +39,6 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error(Box<ContractError>);
 
-/// The error type under its earlier name.
-#[deprecated(
-    since = "0.1.0",
-    note = "renamed `Error`; the variants are gone, read the error through its accessors"
-)]
-pub type ConcertoError = Error;
-
 impl Error {
     /// The class of failure.
     pub fn kind(&self) -> ErrorKind {
@@ -535,10 +528,6 @@ pub struct Detail {
     /// What the document holds there, when the violation is about it.
     pub actual: Option<String>,
 }
-
-/// [`Detail`] under its earlier name.
-#[deprecated(since = "0.1.0", note = "renamed `Detail`")]
-pub type ValidationDetail = Detail;
 
 impl ContractError {
     /// An error with no location and no model file.

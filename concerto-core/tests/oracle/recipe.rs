@@ -1242,7 +1242,7 @@ fn decode_typed_instance(v: &Value) -> Faulty<DecodedInstance> {
         // `{RELATIONSHIP_TAG: true, "$class": <pointed-at fqn>}`, plus its
         // identifying field under its *own* name (not a URI string), so
         // that `instance/validate.rs`'s `identifiable_parts` — which looks
-        // an `Identifiable` value's id up by `ModelManager::identifier_field_name`,
+        // an `Identifiable` value's id up by `ModelManager::identifier_field`,
         // the same way for a `Relationship` or a nested `Resource` alike —
         // finds it.
         let mut wire = concerto_core::json::Map::new();

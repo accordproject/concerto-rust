@@ -19,8 +19,7 @@ numbers and the TS reference so the three routes line up.
 
 - **The Rust source:** `benches/benches/public_api.rs` — see its module
   docs for exactly which public API item each workload calls, and why it
-  differs from the P5-04 files (in short: `add_model_ast` instead of the
-  deprecated `add_model`, `ModelManager::validate_instance`/
+  differs from the P5-04 files (in short: `ModelManager::validate_instance`/
   `check_instance` instead of the `js-compat`-only `instance::validate`
   and `concerto-core-js`'s `Serializer`).
 - **Raw results:** `benches/results/P6-04-native-{1,2}.json` in this repo
@@ -36,7 +35,7 @@ numbers and the TS reference so the three routes line up.
 
 | Workload | Public API called | Comparable P5-04 workload |
 |---|---|---|
-| model load | `ModelManager::add_model_ast` (+ batch `add_model_asts`) | `load_validate.rs`'s `load` (uses the deprecated `add_model`) |
+| model load | `ModelManager::add_model_ast` (+ batch `add_model_asts`) | `load_validate.rs`'s `load` (`add_model_ast` per file) |
 | model validate | `ModelManager::validate_models` | `load_validate.rs`'s `validate` (same call) |
 | validateAst | `concerto_core::metamodel::validate_ast` (the crate-root free function; resident metamodel since P5-21 — see footnote 1 below) | `validate_metamodel.rs`'s `concerto-core/validate_ast` (`ModelManager::validate_ast`, the resident-metamodel method) |
 | instance populate + validate | `ModelManager::validate_instance` (first error), `ModelManager::check_instance` (collect-all, accordproject/concerto#1239) | `instance_validate.rs`'s `validate_instance_native` (same call, benchmarked there too) and `from_json` (`concerto-core-js`'s `Serializer`, not public API) |

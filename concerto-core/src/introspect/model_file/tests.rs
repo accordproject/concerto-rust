@@ -280,7 +280,6 @@ fn a_system_property_name_is_rejected_with_the_declaration_location() {
 /// the last (a `Map.set` per declaration). Rejecting the duplicate is
 /// `ModelFile.validate()`'s job; TS construction never fails on it.
 #[test]
-#[allow(deprecated)]
 fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
     let mf = ModelFile::from_json(
             &crate::json!({
@@ -296,7 +295,7 @@ fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
         .expect("TS's constructor accepts a duplicate declaration name");
     assert_eq!(mf.declarations().len(), 2);
     assert_eq!(mf.local_index("A"), Some(1));
-    assert!(mf.get_asset_declaration("A").is_some());
+    assert!(mf.asset_declaration("A").is_some());
 }
 
 #[test]
@@ -425,7 +424,6 @@ fn resolve_import_failure_lists_the_imports_as_ts_stringifies_them() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn resolves_and_reports_imported_types_by_their_visible_local_name() {
     let mf = sample();
     assert!(mf.is_imported_type("Address"));
@@ -434,7 +432,7 @@ fn resolves_and_reports_imported_types_by_their_visible_local_name() {
         mf.resolve_import("Address").unwrap(),
         "org.common@1.0.0.Address"
     );
-    assert_eq!(mf.get_imported_type("Address").unwrap(), "Address");
+    assert_eq!(mf.imported_type("Address").unwrap(), "Address");
     assert!(mf.resolve_import("Nonexistent").is_err());
     assert!(mf.is_defined("Person"));
     assert!(mf.is_defined("String"));
@@ -443,8 +441,7 @@ fn resolves_and_reports_imported_types_by_their_visible_local_name() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn get_imports_lists_declared_names_never_aliases() {
+fn imported_type_names_lists_declared_names_never_aliases() {
     let mf = ModelFile::from_json(
         &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
@@ -463,7 +460,7 @@ fn get_imports_lists_declared_names_never_aliases() {
     )
     .unwrap();
     assert!(
-        mf.get_imports()
+        mf.imported_type_names()
             .contains(&"org.common@1.0.0.Address".to_string())
     );
     assert!(mf.is_imported_type("Location"));
@@ -500,8 +497,7 @@ fn from_json_text_with_imports_returns_the_imports_node() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn get_import_uri_is_keyed_by_the_imports_first_fully_qualified_name() {
+fn import_uri_is_keyed_by_the_imports_first_fully_qualified_name() {
     let mf = ModelFile::from_json(
         &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
@@ -517,12 +513,12 @@ fn get_import_uri_is_keyed_by_the_imports_first_fully_qualified_name() {
     )
     .unwrap();
     assert_eq!(
-        mf.get_import_uri("org.common@1.0.0.Address"),
+        mf.import_uri("org.common@1.0.0.Address"),
         Some("https://example.org/common.cto")
     );
-    assert_eq!(mf.get_import_uri("org.common@1.0.0"), None);
+    assert_eq!(mf.import_uri("org.common@1.0.0"), None);
     assert_eq!(
-        mf.get_external_imports().get("org.common@1.0.0.Address"),
+        mf.external_imports().get("org.common@1.0.0.Address"),
         Some(&"https://example.org/common.cto".to_string())
     );
 }

@@ -283,7 +283,7 @@ impl ModelManager {
         })
     }
 
-    /// [`ModelManager::identifier_field_name`], as a boolean.
+    /// [`ModelManager::identifier_field`], as a boolean.
     ///
     /// TS: `ClassDeclaration.isIdentified` (src/introspect/classdeclaration.ts):
     /// `!!this.getIdentifierFieldName()`, inherited unchanged by `EnumDeclaration`.
@@ -291,7 +291,7 @@ impl ModelManager {
         Ok(self.identifier_field(fqn)?.is_some())
     }
 
-    /// [`ModelManager::identifier_field_name`], `true` only for the system
+    /// [`ModelManager::identifier_field`], `true` only for the system
     /// `$identifier`.
     ///
     /// TS: `ClassDeclaration.isSystemIdentified`: `this.getIdentifierFieldName()
@@ -317,8 +317,7 @@ impl ModelManager {
 
     /// The handle of the property at a dotted `path` (`a.b.c`), following
     /// the declared types of each element but the last: the walk
-    /// [`ModelManager::property_path`] and the deprecated
-    /// [`ModelManager::get_nested_property`] both map from.
+    /// [`ModelManager::property_path`] maps from.
     ///
     /// TS: `ClassDeclaration.getNestedProperty` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
@@ -377,16 +376,17 @@ impl ModelManager {
             .find(|id| self.property_by_id(*id).is_some_and(|p| p.name() == name)))
     }
 
-    /// The body of the deprecated [`ModelManager::get_super_type`], whose
-    /// docs say what it returns.
+    /// The FQN of `fqn`'s direct super type, or `None` when it has none (only
+    /// the system model's own `Concept`): the name [`ModelManager::super_type`]
+    /// looks up.
     pub(super) fn super_type_name(&self, fqn: &str) -> Result<Option<String>> {
         let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
             .ok_or_else(|| not_a_class_like(fqn))?;
         self.super_type_fqn(&class, namespace_of(fqn))
     }
 
-    /// The body of the deprecated [`ModelManager::get_all_super_type_names`],
-    /// whose docs say what it returns.
+    /// Every super type of `fqn`, from its direct super type up to the root:
+    /// the names [`ModelManager::super_types`] looks up.
     pub(super) fn super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         // The chain starts with the type itself.
         let info = self.class_info(fqn)?;
@@ -541,8 +541,8 @@ impl ModelManager {
         Ok(found)
     }
 
-    /// The body of the deprecated [`ModelManager::get_direct_subclasses`],
-    /// whose docs say what it returns.
+    /// The FQNs of the declarations that directly extend `fqn`, excluding
+    /// `fqn` itself: the names [`ModelManager::subclasses`] looks up.
     pub(super) fn direct_subclass_names(&self, fqn: &str) -> Result<Vec<String>> {
         let id = self.declaration_id(fqn);
         let Some(children) = self.direct_subclass_ids(id)? else {

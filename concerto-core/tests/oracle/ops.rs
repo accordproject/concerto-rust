@@ -1761,8 +1761,8 @@ fn property_summary(owner_fqn: &str, p: &Property) -> Value {
     })
 }
 
-/// Every fully-qualified super type name `get_all_super_type_names` (or
-/// `get_assignable_class_declarations`/`get_direct_subclasses`) gives, each
+/// Every fully-qualified super type name `super_types` (or
+/// `assignable_types`/`subclasses`) gives, each
 /// resolved back to its declaration and encoded the outcome-only way
 /// (`declaration_summary`).
 /// The fully-qualified names of `found`, in order.
