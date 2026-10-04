@@ -103,10 +103,11 @@ pub enum PlanKind {
     Map {
         /// The map declaration.
         decl: DeclId,
-        /// Its key and value kinds, resolved once; the error
-        /// `ModelUtil.isScalar(mapDeclaration.getKey())` raises when the
-        /// key's type does not resolve, which a map value meets before its
-        /// first entry.
+        /// Its key and value kinds, resolved once, or the error building
+        /// them raised (a slot whose type does not resolve is
+        /// [`MapSlot::Unresolved`] instead). A map value meets the error at
+        /// its first entry that is not a system property, inside TS's
+        /// `obj.forEach`, so an empty map never does.
         entries: std::result::Result<MapPlan, Error>,
     },
     /// A field whose type is a concept-like declaration.
@@ -320,6 +321,12 @@ pub fn class_plan(mm: &ModelManager, id: DeclId) -> Result<Arc<ClassPlan>> {
     if testing::is_uncached() {
         return checked(Arc::new(build(mm, id)));
     }
+    // A handle no declaration holds (a stale or forged one from the JS
+    // binding) fails as `build` fails it, uncached: caching would size the
+    // cache by the handle.
+    if mm.declaration(id).is_none() {
+        return checked(Arc::new(build(mm, id)));
+    }
     let plan = mm
         .cached_plan(id, || Some(build(mm, id)))
         .expect("a plan is always built");
@@ -476,8 +483,7 @@ fn resolve_kind(mm: &ModelManager, owner_fqn: &str, property: &Property) -> Plan
 
 /// The map declaration `id`'s key and value kinds, resolved the way
 /// `ResourceValidator.visitMapDeclaration`/`checkMapType` resolve them for
-/// each entry: the error `ModelUtil.isScalar(mapDeclaration.getKey())`
-/// raises, or each slot (with the error resolving it, if any).
+/// each entry: each slot, with the error resolving it, if any.
 pub(super) fn map_plan(mm: &ModelManager, id: DeclId) -> std::result::Result<MapPlan, Error> {
     let Some(Declaration::Map(map)) = mm.declaration(id) else {
         unreachable!("map_plan is only called for a map declaration");
@@ -706,6 +712,18 @@ mod tests {
 
     fn x() -> Value {
         json!({ "$class": "org.acme@1.0.0.P", "name": "x" })
+    }
+
+    /// A declaration handle no declaration holds (the
+    /// JS binding's `validatePropertyById` takes one from JS) fails, and is
+    /// not cached: caching it would size the cache by the handle.
+    #[test]
+    fn an_unknown_declaration_handle_fails_uncached() {
+        let mm = manager(&p_model(None, false));
+        let before = stats(&mm);
+        let unknown = crate::model_manager::DeclId::from_index(u32::MAX);
+        assert!(class_plan(&mm, unknown).is_err());
+        assert_eq!(stats(&mm), before);
     }
 
     #[test]

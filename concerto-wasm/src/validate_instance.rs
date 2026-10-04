@@ -78,7 +78,9 @@ impl ModelManagerHandle {
         mode: u32,
     ) -> JsResult<String> {
         run(|| {
-            let wire = serde_json::from_str::<Value>(json_text).map_err(json_syntax)?;
+            // A document nested past serde_json's recursion limit is
+            // routed to `fromJSON` ([`wire_text_error`]).
+            let wire = serde_json::from_str::<Value>(json_text).map_err(wire_text_error)?;
             // The options are read once per options text, and the serializer built
             // from them reused, as `serializerFromJsonCompact` reuses them
             // ([`with_serializer_options`]).

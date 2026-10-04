@@ -490,11 +490,8 @@ pub fn diagnostics_of_error(
 /// `NaN`, a `Map`, a dayjs), whose verdict `read` gives (the JS binding's
 /// `Serializer.fromJSON`), so the error is always `read`'s. `readings` are
 /// the document's tagged forms; the diagnostics are [`diagnose`]'s over the
-/// first reading whose walk raises the same error, else the error's own.
-///
-/// # Panics
-///
-/// When `readings` is empty.
+/// first reading whose walk raises the same error, else the error's own
+/// (located in the first reading, or at the root when there is none).
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnose_read(
     mm: &ModelManager,
@@ -504,7 +501,8 @@ pub fn diagnose_read(
     collect_all: bool,
     read: impl FnOnce() -> Result<()>,
 ) -> Diagnosis {
-    let primary = &readings[0];
+    const NO_READING: &Value = &Value::Null;
+    let primary = readings.first().unwrap_or(NO_READING);
     let checked = match fqn {
         Some(fqn) => {
             validate::check_assignable_to_declaration(mm, fqn, primary).and_then(|()| read())
@@ -1307,6 +1305,42 @@ mod tests {
             d.report.diagnostics()[0].code,
             DiagnosticCode::NotAssignable
         );
+    }
+
+    /// No readings is not a panic. The verdict and the
+    /// error are still the read's, and the error's diagnostics are located
+    /// at the root.
+    #[test]
+    fn diagnose_read_takes_no_readings() {
+        let mm = manager();
+        let d = diagnose_read(&mm, None, &[], &options(), true, || Ok(()));
+        assert!(d.error.is_none() && d.report.is_valid());
+        let error = diagnose(
+            &mm,
+            None,
+            &person(json!({ "colour": "BLUE" })),
+            &options(),
+            false,
+        )
+        .error
+        .unwrap();
+        let d = diagnose_read(&mm, None, &[], &options(), true, || Err(error.clone()));
+        assert_eq!(d.error.as_ref(), Some(&error));
+        assert_eq!(
+            d.report.into_diagnostics(),
+            diagnostics_of_error(&mm, None, &Value::Null, &options(), &error)
+        );
+        // With a named type, the class check reads the missing document as
+        // `null`, which has no `$class`, so the read gives the verdict.
+        let d = diagnose_read(
+            &mm,
+            Some("org.acme@1.0.0.Person"),
+            &[],
+            &options(),
+            true,
+            || Ok(()),
+        );
+        assert!(d.error.is_none() && d.report.is_valid());
     }
 
     /// One walk, so every collect-all diagnostic carries the message of the

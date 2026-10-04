@@ -448,6 +448,31 @@ const WIRE_SAMPLES: &[&str] = &[
     r#"{"@@oracle":"typed","ctor":"Resource","fqn":"org.acme@1.0.0.Item","fields":{}}"#,
 ];
 
+/// R2D-1: wire text nested past serde_json's recursion limit (128) is not
+/// malformed: `parse_wire` gives a [`wire_error`] (the fast path's
+/// "unsupported" signal), so the shim runs its TS visitor path, which reads
+/// any depth, as TS 5.0.0 does. One level under the limit still reads.
+#[test]
+fn parse_wire_routes_text_nested_past_the_recursion_limit() {
+    let nested = |depth: usize| {
+        let mut text = String::from("\"leaf\"");
+        for _ in 0..depth {
+            text = format!("{{\"next\":{text}}}");
+        }
+        text
+    };
+    assert!(parse_wire(&nested(127)).is_ok());
+    for depth in [128, 200, 5000] {
+        match parse_wire(&nested(depth)) {
+            Err(Error::Unsupported(_)) => {}
+            Err(_) => panic!("depth {depth}: not the unsupported signal"),
+            Ok(_) => panic!("depth {depth}: read past serde_json's limit"),
+        }
+        let err = serde_json::from_str::<Value>(&nested(depth)).unwrap_err();
+        assert!(matches!(wire_text_error(err), Error::Unsupported(_)));
+    }
+}
+
 /// `parse_wire` reads every sample as `decode_wire` does, and `WireOut`
 /// writes each decoded value as `encode_wire` plus `snapshot` do, byte
 /// for byte.
