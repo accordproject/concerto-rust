@@ -1537,6 +1537,19 @@ export function runChecks(engine) {
     assert(h.serializerToJson(JSON.stringify(built), 'null') === h.serializerToJsonBytes(compact(built), 'null'), 'toJSON');
     const notLayout = thrown(() => h.serializerToJsonBytes(new Uint8Array([9]), 'null'));
     assert(notLayout.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayout.payload)}`);
+    // validateInstance over the compact layout: the same report, and the
+    // same thrown error, as over the text.
+    for (const mode of [1, 2]) {
+      const viaText = h.validateInstance(JSON.stringify(doc), 'null', undefined, mode);
+      const viaBytes = h.validateInstanceBytes(compact(doc), 'null', undefined, mode);
+      assert(viaText === viaBytes, `validateInstance mode ${mode}: ${viaText} vs ${viaBytes}`);
+    }
+    assert(h.validateInstanceBytes(compact(plain), 'null', undefined, 0) === '', 'valid: no error');
+    const throwText = thrown(() => h.validateInstance(JSON.stringify(doc), 'null', undefined, 0));
+    const throwBytes = thrown(() => h.validateInstanceBytes(compact(doc), 'null', undefined, 0));
+    assert(throwText && throwBytes && JSON.stringify(throwText.payload) === JSON.stringify(throwBytes.payload), `${throwText} vs ${throwBytes}`);
+    const notLayoutDoc = thrown(() => h.validateInstanceBytes(new Uint8Array([9]), 'null', undefined, 1));
+    assert(notLayoutDoc.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayoutDoc.payload)}`);
     h.free();
   });
 

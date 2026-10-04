@@ -76,7 +76,7 @@ anyway).
 | Lookups | `modelFileId`, `declarationId`, `modelFileSnapshot`, `getNamespaces`, `getTypeName`, `resolveType`, `derivesFrom`, `isAssignableTo`, `modelManagerGetModelFileByFileName`, and the `modelFile*` members by file handle (`GetImports`, `IsLocalType`, `GetTypeName`, `GetFullyQualifiedTypeName`, `ResolveType`, `Validate`, `ValidateDetached`, `FilterStaged`, `FilterAst`) |
 | Arena answers (BC-52) | `modelUtilIsAssignableTo`, `modelUtilIsEnum`, `modelUtilIsMap`, `modelUtilIsScalar`, `modelUtilIsValidMapKeyScalar`, `scalarDeclarationValidate`, `decoratorValidate`, `classDeclarationGetAssignableClassDeclarations`, `classDeclarationGetDirectSubclasses` |
 | Serializer | `serializerFromJsonCompact(Bytes)`, `serializerToJson(Bytes)`: `Serializer.fromJSON`/`toJSON` in one call, over the wire encoding as JSON text or the compact layout |
-| Instances | `validateInstance` (the collect-all diagnostics), `validateResourceBinary`, `validatePropertyBinary`, `validationPropertySlot`, `validatePropertyById` (`ValidatedResource` validation in one call) |
+| Instances | `validateInstance` and `validateInstanceBytes` (the collect-all diagnostics, over the wire text or the compact layout), `validateResourceBinary`, `validatePropertyBinary`, `validationPropertySlot`, `validatePropertyById` (`ValidatedResource` validation in one call) |
 | DecoratorManager | `dcsValidate`, `dcsDecorateModels`, `dcsExtract` |
 
 **`DcsManagerHandle`**: the input manager of a `DecoratorManager` call whose
