@@ -157,7 +157,7 @@ fn every_shape_rule_has_a_new_home() {
             "version check",
             "shape::header_conforms (Model $class)",
             json!({"$class": "concerto.metamodel@2.0.0.Model", "namespace": "org.acme@1.0.0"}),
-            "modelfile-load-astshape",
+            "basemodelmanager-validateast-versionmismatch",
         ),
         (
             "metamodel: unknown key",

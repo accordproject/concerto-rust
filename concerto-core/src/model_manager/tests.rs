@@ -3149,3 +3149,72 @@ fn filter_keeps_the_metamodel_a_manager_was_given() {
     let plain = manager().filter(|_, _| true).unwrap();
     assert!(plain.model_file("concerto.metamodel@1.0.0").is_none());
 }
+
+/// R2A-4: as TS 5.0.0's `ModelFile.filter` builds the filtered file from
+/// each declaration's `ast`, an asset or participant with no super type
+/// gets the default super type its view was given (`TypeIdentified`), so
+/// such a file is rebuilt even when the filter keeps it whole; a file with
+/// none keeps its own AST.
+#[test]
+fn filter_writes_the_default_super_types_of_the_declaration_asts() {
+    let mut mgr = ModelManager::new().unwrap();
+    let identified = |name: &str, class: &str| {
+        serde_json::json!({ "$class": class, "name": name, "isAbstract": false,
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+            "properties": [{ "$class": "concerto.metamodel@1.0.0.StringProperty",
+                "name": "id", "isArray": false, "isOptional": false }] })
+    };
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "a@1.0.0",
+            "declarations": [
+                identified("A", "concerto.metamodel@1.0.0.AssetDeclaration"),
+                identified("P", "concerto.metamodel@1.0.0.ParticipantDeclaration"),
+                concept_ast("C", None, serde_json::json!([]))
+            ]
+        }),
+        None,
+    )
+    .unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "b@1.0.0",
+            "declarations": [concept_ast("D", None, serde_json::json!([]))]
+        }),
+        None,
+    )
+    .unwrap();
+    let filtered = mgr.filter(|_, _| true).unwrap();
+    let ast = filtered.model_file("a@1.0.0").unwrap().ast();
+    let super_types: Vec<&Value> = ast["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| &d["superType"])
+        .collect();
+    assert_eq!(
+        super_types,
+        [
+            &serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Asset" }),
+            &serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Participant" }),
+            &Value::Null,
+        ]
+    );
+    // The source file's AST is unchanged, and a file with no default super
+    // type is kept, shared.
+    assert!(
+        mgr.model_file("a@1.0.0").unwrap().ast()["declarations"][0]
+            .get("superType")
+            .is_none()
+    );
+    assert!(std::ptr::eq(
+        filtered.model_file("b@1.0.0").unwrap(),
+        mgr.model_file("b@1.0.0").unwrap()
+    ));
+    // The filtered file validates and passes BC-19's shape check.
+    filtered.validate_models().unwrap();
+    #[cfg(feature = "js-compat")]
+    crate::instance::check_ast_shape(ast).unwrap();
+}

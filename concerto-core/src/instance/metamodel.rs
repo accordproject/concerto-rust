@@ -1412,8 +1412,6 @@ mod tests {
             "isOptional": false,
             "validator": {"$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": "0"}
         });
-        let mut version = person_model();
-        version["$class"] = json!("concerto.metamodel@99.0.0.Model");
         // DV-017's typeless relationship and DV-018's `null` decorator: the
         // metamodel check rejects both first, so those rows' own errors are
         // raised only with the check off.
@@ -1426,15 +1424,48 @@ mod tests {
         });
         let mut null_decorator = person_model();
         null_decorator["declarations"][0]["decorators"] = json!([null]);
-        for ast in [unknown, bounds, version, relationship, null_decorator] {
+        for ast in [unknown, bounds, relationship, null_decorator] {
             assert_eq!(shape_code(&ast), Some("modelfile-load-astshape"), "{ast}");
         }
+        // R2F-5: a metamodel version mismatch stays TS 5.0.0's
+        // `MetamodelException`, not re-thrown.
         let mut version = person_model();
         version["$class"] = json!("concerto.metamodel@99.0.0.Model");
+        let err = check_ast_shape(&version).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Metamodel);
+        assert_eq!(err.code(), "basemodelmanager-validateast-versionmismatch");
         assert_eq!(
-            check_ast_shape(&version).unwrap_err().contract().message(),
-            "Model AST does not conform to the metamodel: Model file version 99.0.0 does not match metamodel version 1.0.0"
+            err.contract().message(),
+            "Model file version 99.0.0 does not match metamodel version 1.0.0"
         );
+    }
+
+    /// R2A-4: the default super type TS 5.0.0's `ModelFile.filter` copies
+    /// from a declaration's AST (`TypeIdentified`) is checked as a
+    /// `TypeIdentifier`, on the declaration kind it belongs to only.
+    #[test]
+    fn check_ast_shape_tolerates_a_filtered_default_super_type() {
+        let default = |class: &str, name: &str| {
+            json!({ "$class": class, "name": "A", "isAbstract": false, "properties": [],
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": name } })
+        };
+        let mut model = person_model();
+        model["declarations"] = json!([
+            default("concerto.metamodel@1.0.0.AssetDeclaration", "Asset"),
+        ]);
+        model["declarations"][0]["identified"] =
+            json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" });
+        model["declarations"][0]["properties"] = json!([{ "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "id", "isArray": false, "isOptional": false }]);
+        assert_eq!(shape_code(&model), None);
+        // Not on a concept, nor naming another type.
+        let mut concept = person_model();
+        concept["declarations"][0]["superType"] =
+            json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Concept" });
+        assert_eq!(shape_code(&concept), Some("modelfile-load-astshape"));
+        let mut other = model.clone();
+        other["declarations"][0]["superType"]["name"] = json!("Participant");
+        assert_eq!(shape_code(&other), Some("modelfile-load-astshape"));
     }
 
     #[test]
