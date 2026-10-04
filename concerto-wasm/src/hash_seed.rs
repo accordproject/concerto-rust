@@ -1,12 +1,14 @@
 //! Seeds the hasher of the maps keyed by untrusted input, `JsObject`
-//! (concerto-core-js, the keys of user-supplied instances) and
+//! (concerto-core-js, the keys of user-supplied instances), the objects of
+//! every JSON value the bindings parse ([`concerto_core::json::Value`]) and
 //! concerto-core's tables keyed by model names and regex patterns
 //! ([`concerto_core::hash::SeededState`]), from the host's entropy.
 //!
 //! On `wasm32-unknown-unknown` the standard library has no entropy source:
-//! `RandomState`'s keys are the same fixed values in every instantiation,
-//! so anyone can craft keys that collide under them and make building,
-//! validating or serializing an instance quadratic. [`start`] runs when the
+//! `RandomState`'s keys are derived from memory addresses, the same in every
+//! instantiation of a build, so anyone with the build can craft keys that
+//! collide under them and make parsing, building, validating or serializing
+//! an instance quadratic (scripts/hashdos.mjs). [`start`] runs when the
 //! module is instantiated, before any binding can build a seeded map, and
 //! hands concerto-core 128 bits from `crypto.getRandomValues`
 //! ([`concerto_core::hash::seed_hasher`]). [`hash_seed`] lets the smokes

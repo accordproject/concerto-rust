@@ -107,7 +107,8 @@ Malformed JSON text is a JS `SyntaxError`.
 ## Smokes
 
 ```sh
-npm run smoke:node       # node scripts/node-smoke.cjs && node scripts/node-smoke.mjs
+npm run smoke:node       # node scripts/node-smoke.cjs && node scripts/node-smoke.mjs && npm run smoke:hashdos
+npm run smoke:hashdos    # node scripts/hashdos.mjs
 npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromium)
 ```
 
@@ -119,6 +120,17 @@ npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromiu
   from the concerto checkout:
   `node ../concerto-rust/concerto-wasm/scripts/node-smoke.cjs @accordproject/concerto-engine`
   runs the checks through the workspace link.
+- `hashdos.mjs [module]` is the WASM HashDoS check. It builds the
+  `hashdos_keys` example (examples/hashdos_keys.rs) for wasm32 with
+  wasm-bindgen's Node glue, which crafts object keys that collide under the
+  standard library's fixed-key hasher on wasm32, and shows them quadratic in
+  a std map with that hasher. It then hands the same keys, and ordinary
+  ones, to the engine's JSON entry points (`validateInstance`,
+  `serializerFromJsonCompact`, `checkAstShape`, `validateAstValue`,
+  `dcsValidate`) and requires the crafted ones to cost about the same: the
+  engine parses untrusted JSON into `concerto_core::json::Value`, whose maps
+  are seeded at instantiation. Needs cargo, the wasm32 target and
+  wasm-bindgen-cli, as `build.sh` does.
 - The Chromium smoke runs in the Playwright headless shell and in full
   Chromium. In each, it:
   - probes the main thread's synchronous-compile limit and checks the module
