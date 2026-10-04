@@ -53,8 +53,9 @@
 //!   `EngineFastPathUnsupported` and runs the `ResourceValidator` visitor
 //!   instead, as it does for a value it cannot encode at all.
 //!
-//! The error stays in a thread-local slot until TS takes it, or until the
-//! next call replaces it.
+//! The error behind [`CODE_VALIDATION`] or [`CODE_ERROR`] stays in a
+//! thread-local slot until TS takes it, or until the next call replaces it;
+//! a [`CODE_UNSUPPORTED`] call empties the slot, so TS makes no call for it.
 
 use concerto_core::error::ErrorKind;
 use concerto_core::instance::ValidateOptions;
@@ -63,7 +64,7 @@ use concerto_core::introspect::compact_validator_value;
 use concerto_core::json::Value;
 use wasm_bindgen::prelude::*;
 
-use super::{Error, JsResult, ModelManagerHandle, Result, throw, wire_error};
+use super::{Error, JsResult, ModelManagerHandle, Result, throw};
 
 /// The value is valid.
 const CODE_VALID: u32 = 0;
@@ -76,11 +77,13 @@ const CODE_UNSUPPORTED: u32 = 3;
 /// A [`ModelManagerHandle::validate_property_by_id`] slot of another epoch.
 const CODE_STALE: u32 = 4;
 
-/// A failure of the transport itself, not of the validator.
-struct Unsupported(Error);
+/// A failure of the transport itself, not of the validator: the bytes are
+/// not in the layout, or the engine's model lacks the property TS found.
+struct Unsupported;
 
 /// The code for a validation outcome, keeping the error for
-/// [`validate_error_message`] or [`validate_take_error`].
+/// [`validate_error_message`] or [`validate_take_error`] (none for
+/// [`CODE_UNSUPPORTED`]).
 fn code_of(result: std::result::Result<Result<()>, Unsupported>) -> u32 {
     let (code, err) = match result {
         Ok(Ok(())) => return CODE_VALID,
@@ -96,7 +99,12 @@ fn code_of(result: std::result::Result<Result<()>, Unsupported>) -> u32 {
             };
             (code, err)
         }
-        Err(Unsupported(err)) => (CODE_UNSUPPORTED, err),
+        Err(Unsupported) => {
+            // TS falls back to the visitor and reads no error for this code,
+            // so none is kept: the slot is emptied instead.
+            crate::caches::LAST_ERROR.with(|l| *l.borrow_mut() = None);
+            return CODE_UNSUPPORTED;
+        }
     };
     crate::caches::LAST_ERROR.with(|l| *l.borrow_mut() = Some(err));
     code
@@ -134,15 +142,11 @@ fn options_from_flags(flags: u32) -> ValidateOptions {
     }
 }
 
-fn unsupported(reason: &str) -> Unsupported {
-    Unsupported(wire_error(format!("a binary wire value: {reason}")))
-}
-
 /// The whole of `bytes` as one value, in the validator's shape, through
 /// concerto-core's one reader of the layout ([`compact_validator_value`]).
 /// Bytes not in the layout cannot cross.
 fn decode(bytes: &[u8]) -> std::result::Result<Value, Unsupported> {
-    compact_validator_value(bytes).map_err(|e| unsupported(&e.to_string()))
+    compact_validator_value(bytes).map_err(|_| Unsupported)
 }
 
 #[wasm_bindgen]
@@ -189,10 +193,10 @@ impl ModelManagerHandle {
             let Ok(class_plan) =
                 concerto_core::instance::plan::class_plan_by_name(&self.manager, class_fqn)
             else {
-                return Err(unsupported("no such property in the engine's model"));
+                return Err(Unsupported);
             };
             let Some(index) = class_plan.find(prop_name) else {
-                return Err(unsupported("no such property in the engine's model"));
+                return Err(Unsupported);
             };
             Ok(validate_property_value(
                 &self.manager,
@@ -252,11 +256,11 @@ impl ModelManagerHandle {
         let decl = concerto_core::model_manager::DeclId::from_index(decl_id);
         let outcome = decode(bytes).and_then(|value| {
             let class_plan = concerto_core::instance::plan::class_plan(&self.manager, decl)
-                .map_err(|_| unsupported("no such property in the engine's model"))?;
+                .map_err(|_| Unsupported)?;
             let index = usize::try_from(prop_index)
                 .ok()
                 .filter(|index| *index < class_plan.props.len())
-                .ok_or_else(|| unsupported("no such property in the engine's model"))?;
+                .ok_or(Unsupported)?;
             Ok(validate_property_value(
                 &self.manager,
                 &class_plan,
@@ -275,7 +279,7 @@ impl ModelManagerHandle {
                 }
                 err => Err(throw(err, None)),
             },
-            Err(Unsupported(_)) => Ok(JsValue::from(CODE_UNSUPPORTED)),
+            Err(Unsupported) => Ok(JsValue::from(CODE_UNSUPPORTED)),
         }
     }
 

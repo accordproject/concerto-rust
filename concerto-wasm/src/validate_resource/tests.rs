@@ -113,7 +113,8 @@ fn codes() {
     )
     .into();
     assert_eq!(code_of(Ok(Err(other))), CODE_ERROR);
-    assert_eq!(code_of(Err(unsupported("x"))), CODE_UNSUPPORTED);
-    assert_eq!(validate_error_message(), "a binary wire value: x");
+    // An unsupported value keeps no error, and empties the slot of any
+    // error an earlier call left in it, so TS makes no call to clear it.
+    assert_eq!(code_of(Err(Unsupported)), CODE_UNSUPPORTED);
     assert_eq!(validate_error_message(), "");
 }

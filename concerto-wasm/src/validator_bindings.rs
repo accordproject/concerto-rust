@@ -136,12 +136,6 @@ pub fn number_validator_validate(
     })
 }
 
-/// TS: NumberValidator.toString
-#[wasm_bindgen(js_name = numberValidatorToString)]
-pub fn number_validator_to_string(view: JsValue) -> JsResult<String> {
-    run(|| Ok(number_validator(&view, "lowerBound", "upperBound")?.to_string()))
-}
-
 /// TS: NumberValidator.compatibleWith. `number_validator_class` is the
 /// `NumberValidator` class, for the `other instanceof NumberValidator` check;
 /// the bounds are read through the getters, as TS does.

@@ -127,22 +127,6 @@ pub fn decorator_manager_migrate_to(decorator_command_set: JsValue) -> JsResult<
     })
 }
 
-/// TS: `DecoratorManager.executePropertyCommand`, which mutates `property`
-/// in place and returns nothing; the view copies the mutated fields this
-/// returns back onto its own `property` object.
-#[wasm_bindgen(js_name = decoratorManagerExecutePropertyCommand)]
-pub fn decorator_manager_execute_property_command(
-    property: JsValue,
-    command: JsValue,
-) -> JsResult<JsValue> {
-    run(|| {
-        let mut prop = to_json(&property)?.unwrap_or(Value::Null);
-        let cmd = to_json(&command)?.unwrap_or(Value::Null);
-        dcs::execute_property_command(&mut prop, &cmd)?;
-        Ok(to_js(&prop))
-    })
-}
-
 // ---------------------------------------------------------------------------
 // A resident DCS manager with staged-handle results.
 //

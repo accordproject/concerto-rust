@@ -47,20 +47,6 @@ pub fn scalar_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     )
 }
 
-/// TS: ScalarDeclaration.toString
-#[wasm_bindgen(js_name = scalarDeclarationToString)]
-pub fn scalar_declaration_to_string(declaration: JsValue) -> JsResult<String> {
-    run(|| {
-        let fqn = js_string(&call(
-            &declaration,
-            "getFullyQualifiedName",
-            &[],
-            "this.getFullyQualifiedName",
-        )?)?;
-        Ok(ScalarDeclaration::to_string(&fqn))
-    })
-}
-
 // ---------------------------------------------------------------------------
 // ClassDeclaration family (src/introspect/classdeclaration.ts and its
 // subclasses, enumdeclaration.ts included)
@@ -191,23 +177,6 @@ pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     run_naming(
         || get(&declaration, "modelFile").unwrap_or(JsValue::UNDEFINED),
         body,
-    )
-}
-
-/// TS: the super-type identifier redeclaration check in
-/// `ClassDeclaration.validate`, under `superType.isIdentified()` (the
-/// caller's check): `true` when the super type's identifier cannot be
-/// redeclared.
-#[wasm_bindgen(js_name = classDeclarationIdentifierRedeclareConflict)]
-pub fn class_declaration_identifier_redeclare_conflict(
-    child_is_system_identified: bool,
-    super_is_system_identified: bool,
-    super_is_explicitly_identified: bool,
-) -> bool {
-    concerto_core::ClassDeclaration::identifier_redeclare_conflict(
-        child_is_system_identified,
-        super_is_system_identified,
-        super_is_explicitly_identified,
     )
 }
 

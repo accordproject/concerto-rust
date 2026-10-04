@@ -78,27 +78,6 @@ pub(crate) fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
     }
 }
 
-/// TS: the duplicate-decorator loop in `Decorated.validate`
-/// (src/introspect/decorated.ts) — `names` is `this.decorators.map(d =>
-/// d.getName())`. Returns the first name that repeats, in original order, or
-/// `null`; the view throws the `IllegalModelException` itself (a plain
-/// string message, no engine error payload needed).
-#[wasm_bindgen(js_name = decoratedFindDuplicateName)]
-pub fn decorated_find_duplicate_name(names: JsValue) -> JsResult<JsValue> {
-    run(|| {
-        // Decorator names come from user models: a seeded set
-        // (PORTING.md 3.7).
-        let mut seen = concerto_core::hash::SeededHashSet::default();
-        for name in Array::from(&names).iter() {
-            let name = js_string(&name)?;
-            if !seen.insert(name.clone()) {
-                return Ok(JsValue::from_str(&name));
-            }
-        }
-        Ok(JsValue::NULL)
-    })
-}
-
 /// `value?.name`: `undefined` for a nullish `value`, as an optional-chain
 /// property read is (unlike [`get`], which raises V8's error for one).
 pub(crate) fn opt_get(value: &JsValue, name: &str) -> Result<JsValue> {

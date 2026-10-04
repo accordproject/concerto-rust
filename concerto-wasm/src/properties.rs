@@ -847,30 +847,6 @@ pub fn field_get_scalar_field(view: JsValue) -> JsResult<JsValue> {
     })
 }
 
-/// TS: `Field.toString`: `name`, `array` and `optional` read off `this`;
-/// `getFullyQualifiedTypeName()` called through the view (a scalar field's
-/// is the scalar's own FQN).
-#[wasm_bindgen(js_name = fieldToString)]
-pub fn field_to_string(view: JsValue) -> JsResult<String> {
-    run(|| {
-        let name = js_string(&get(&view, "name")?)?;
-        let fully_qualified_type_name = js_string(&call(
-            &view,
-            "getFullyQualifiedTypeName",
-            &[],
-            "this.getFullyQualifiedTypeName",
-        )?)?;
-        let array = get(&view, "array")?.is_truthy();
-        let optional = get(&view, "optional")?.is_truthy();
-        Ok(field::to_string(
-            &name,
-            &fully_qualified_type_name,
-            array,
-            optional,
-        ))
-    })
-}
-
 // ---------------------------------------------------------------------------
 // RelationshipDeclaration (src/introspect/relationshipdeclaration.ts)
 // ---------------------------------------------------------------------------
